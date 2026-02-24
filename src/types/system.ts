@@ -1,4 +1,5 @@
-export type RoleName = "harvester" | "carrier" | "upgrader" | "builder";
+export type RoleName = "harvester" | "carrier" | "worker" | "upgrader" | "builder";
+export type WorkerTaskType = "build" | "upgrade" | "repair";
 
 export interface CreepConfig {
   role: RoleName;
@@ -11,6 +12,16 @@ export interface RoleLifecycle {
   prepare?: (creep: Creep) => boolean;
   source?: (creep: Creep) => boolean;
   target: (creep: Creep) => boolean;
+}
+
+export interface WorkerTask {
+  id: string;
+  type: WorkerTaskType;
+  targetId: string;
+  roomName: string;
+  priority: number;
+  assignedTo?: string;
+  updatedAt: number;
 }
 
 export type RoleFactory = (...args: string[]) => RoleLifecycle;

@@ -1,12 +1,12 @@
-import { builderRole } from "@/roles/builder";
 import { carrierRole } from "@/roles/carrier";
 import { harvesterRole } from "@/roles/harvester";
-import { upgraderRole } from "@/roles/upgrader";
+import { workerRole } from "@/roles/worker";
 import type { RoleFactory, RoleName } from "@/types/system";
 
 export const roleRegistry: Record<RoleName, RoleFactory> = {
   harvester: harvesterRole,
   carrier: carrierRole,
-  upgrader: upgraderRole,
-  builder: builderRole,
+  worker: workerRole,
+  upgrader: workerRole,
+  builder: workerRole,
 };

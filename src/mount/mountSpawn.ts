@@ -1,4 +1,5 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
+import type { RoleName } from "@/types/system";
 
 const runtimeGlobal = global;
 
@@ -22,6 +23,14 @@ function chooseBody(spawn: StructureSpawn, configName: string): BodyPartConstant
   return spawnProfiles[config.role](spawn.room);
 }
 
+function getCreepNamePrefix(role: RoleName): string {
+  if (role === "builder" || role === "upgrader" || role === "worker") {
+    return "worker";
+  }
+
+  return role;
+}
+
 export function mountSpawn(): void {
   StructureSpawn.prototype.addTask = function addTask(configName: string): number {
     const queue = ensureQueue(this);
@@ -38,7 +47,7 @@ export function mountSpawn(): void {
     }
 
     const body = chooseBody(this, configName);
-    const name = `${config.role}-${Game.time}`;
+    const name = `${getCreepNamePrefix(config.role)}-${Game.time}`;
     const code = this.spawnCreep(body, name, {
       memory: {
         role: config.role,

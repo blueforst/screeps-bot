@@ -1,5 +1,7 @@
 import { upsertConfig } from "@/runtime/creepApi";
 
+const runtimeGlobal = global;
+
 export function bootstrapRooms(): void {
   const myRooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
 
@@ -11,7 +13,9 @@ export function bootstrapRooms(): void {
     });
 
     upsertConfig(`${room.name}:carrier:0`, "carrier", [], room.name);
-    upsertConfig(`${room.name}:upgrader:0`, "upgrader", [], room.name);
-    upsertConfig(`${room.name}:builder:0`, "builder", [], room.name);
+    upsertConfig(`${room.name}:worker:0`, "worker", [], room.name);
+
+    runtimeGlobal.creepApi.remove(`${room.name}:upgrader:0`);
+    runtimeGlobal.creepApi.remove(`${room.name}:builder:0`);
   }
 }

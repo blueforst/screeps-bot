@@ -18,9 +18,22 @@ function clampByCapacity(parts: BodyPartConstant[], room: Room): BodyPartConstan
   return result.length > 0 ? result : [WORK, CARRY, MOVE];
 }
 
+function oneOneOneBody(room: Room): BodyPartConstant[] {
+  const tripletCost = BODYPART_COST[WORK] + BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
+  const tripletCount = Math.max(1, Math.floor(room.energyCapacityAvailable / tripletCost));
+  const parts: BodyPartConstant[] = [];
+
+  for (let i = 0; i < tripletCount; i++) {
+    parts.push(WORK, CARRY, MOVE);
+  }
+
+  return clampByCapacity(parts, room);
+}
+
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => clampByCapacity([WORK, WORK, MOVE, WORK, MOVE], room),
   carrier: (room) => clampByCapacity([CARRY, CARRY, CARRY, MOVE, MOVE], room),
-  upgrader: (room) => clampByCapacity([WORK, WORK, CARRY, MOVE], room),
-  builder: (room) => clampByCapacity([WORK, CARRY, CARRY, MOVE, MOVE], room),
+  worker: oneOneOneBody,
+  upgrader: oneOneOneBody,
+  builder: oneOneOneBody,
 };
