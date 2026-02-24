@@ -57,3 +57,24 @@ Token page: `https://screeps.com/a/#!/account/auth-tokens`
 - `.secret.json` is ignored by git. Do not commit tokens.
 - If `npm run push` returns `Not Authorized`, check `main.token` in `.secret.json`.
 - Rollup output is a single `dist/main.js`, matching Screeps runtime requirements.
+
+## RoomPlanner Auto Construction
+
+After you save layout to `Memory.roomPlanner[roomName]`, construction sites are queued automatically.
+
+- Trigger planner output to Memory: place `SP` flag, or call `savePlanToMemory('W1N1')`
+- Auto builder runs every 5 ticks
+- Per room limit: up to 8 new sites per run (default)
+- Global soft cap: stops when global construction sites reach 95
+
+Optional runtime config in console:
+
+```js
+Memory.roomPlannerBuild = {
+  enabled: true,
+  maxNewSitesPerRoom: 6
+}
+```
+
+- Set `enabled: false` to pause auto site creation
+- Priority order is spawn/extension/tower first, roads/ramparts later

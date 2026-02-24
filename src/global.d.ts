@@ -4,6 +4,11 @@ import type { CreepApi, CreepConfig, RoleName } from "@/types/system";
 declare const _: LoDashStatic;
 
 declare global {
+  const __BUILD_VERSION__: string;
+  const __BUILD_GIT_HASH__: string;
+  const __BUILD_TIME__: string;
+  const __BUILD_TAG__: string;
+
   var creepApi: CreepApi;
   var __screepsMounted: boolean | undefined;
   var RP: (room: string | Room) => { [structureType: string]: { x: number; y: number }[] } | undefined;
@@ -16,6 +21,11 @@ declare global {
   interface Memory {
     creepConfigs?: Record<string, CreepConfig>;
     lastDeployTag?: string;
+    roomPlannerAuto?: Record<string, number>;
+    roomPlannerBuild?: {
+      enabled?: boolean;
+      maxNewSitesPerRoom?: number;
+    };
     roomPlanner?: {
       [roomName: string]: {
         layout: { [structureType: string]: { x: number; y: number }[] };
