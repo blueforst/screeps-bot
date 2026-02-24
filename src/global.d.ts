@@ -15,6 +15,7 @@ declare global {
 
   interface Memory {
     creepConfigs?: Record<string, CreepConfig>;
+    lastDeployTag?: string;
     roomPlanner?: {
       [roomName: string]: {
         layout: { [structureType: string]: { x: number; y: number }[] };

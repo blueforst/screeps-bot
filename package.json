@@ -4,10 +4,11 @@
   "description": "Screeps local development workspace",
   "main": "dist/main.js",
   "scripts": {
-    "build": "rollup -c",
-    "push": "rollup -c --environment DEST:main",
-    "local": "rollup -c --environment DEST:local",
-    "watch": "rollup -cw",
+    "gen:meta": "node scripts/generate-build-meta.mjs",
+    "build": "npm run gen:meta && rollup -c",
+    "push": "npm run gen:meta && rollup -c --environment DEST:main",
+    "local": "npm run gen:meta && rollup -c --environment DEST:local",
+    "watch": "npm run gen:meta && rollup -cw",
     "test": "jest --config jest.config.cjs",
     "test-c": "jest --config jest.config.cjs --coverage"
   },
