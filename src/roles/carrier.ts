@@ -7,22 +7,32 @@ export const carrierRole: RoleFactory = () => ({
       filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
     });
 
-    if (dropped && creep.pickup(dropped) === ERR_NOT_IN_RANGE) {
-      moveToTarget(creep, dropped);
-      return false;
+    if (dropped) {
+      const pickupCode = creep.pickup(dropped);
+      if (pickupCode === ERR_NOT_IN_RANGE) {
+        moveToTarget(creep, dropped);
+      }
+      if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0) {
+        return true;
+      }
     }
 
     const sourceTarget = getWithdrawEnergyTarget(creep);
     if (!sourceTarget) {
-      return false;
+      return creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
     }
 
     const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
     if (withdrawCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, sourceTarget);
+      return false;
     }
 
-    return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
+    if (withdrawCode === OK) {
+      return true;
+    }
+
+    return creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
   },
   target: (creep): boolean => {
     const target = getEnergyStoreTarget(creep);

@@ -1,5 +1,5 @@
 import type { RoleFactory } from "@/types/system";
-import { getDroppedEnergyTarget, getWithdrawEnergyTarget, moveToTarget } from "@/roles/shared";
+import { getDroppedEnergyTarget, getWithdrawEnergyTarget, moveToRemoteWorkTarget, moveToTarget } from "@/roles/shared";
 
 export const builderRole: RoleFactory = () => ({
   source: (creep): boolean => {
@@ -29,7 +29,7 @@ export const builderRole: RoleFactory = () => ({
     if (site) {
       const buildCode = creep.build(site);
       if (buildCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, site, { squareSize: 7 });
+        moveToRemoteWorkTarget(creep, site);
       }
       return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
     }
@@ -38,7 +38,7 @@ export const builderRole: RoleFactory = () => ({
     if (controller) {
       const upgradeCode = creep.upgradeController(controller);
       if (upgradeCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, controller, { squareSize: 7 });
+        moveToRemoteWorkTarget(creep, controller);
       }
     }
 

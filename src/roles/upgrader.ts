@@ -1,5 +1,5 @@
 import type { RoleFactory } from "@/types/system";
-import { getDroppedEnergyTarget, getWithdrawEnergyTarget, moveToTarget } from "@/roles/shared";
+import { getDroppedEnergyTarget, getWithdrawEnergyTarget, moveToRemoteWorkTarget, moveToTarget } from "@/roles/shared";
 
 export const upgraderRole: RoleFactory = () => ({
   source: (creep): boolean => {
@@ -32,7 +32,7 @@ export const upgraderRole: RoleFactory = () => ({
 
     const code = creep.upgradeController(controller);
     if (code === ERR_NOT_IN_RANGE) {
-      moveToTarget(creep, controller, { squareSize: 7 });
+      moveToRemoteWorkTarget(creep, controller);
       return false;
     }
 
