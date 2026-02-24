@@ -1,4 +1,5 @@
 import { errorMapper } from "@/modules/errorMapper";
+import { runAutoPlannerByFlag } from "@/modules/autoplanner";
 import { mountAll } from "@/mount";
 import { bootstrapRooms } from "@/runtime/bootstrap";
 import { registerGlobalApi } from "@/runtime/creepApi";
@@ -12,6 +13,7 @@ export function addNumbers(num1: number, num2: number): number {
 }
 
 function gameLoop(): void {
+  runAutoPlannerByFlag();
   bootstrapRooms();
   scheduleSpawnTasks();
 
