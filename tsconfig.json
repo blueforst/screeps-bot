@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "es2017",
+    "moduleResolution": "Node",
+    "outDir": "dist/",
+    "baseUrl": "./",
+    "sourceMap": true,
+    "allowSyntheticDefaultImports": true,
+    "types": ["screeps", "node", "jest", "lodash"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@mock/*": ["./test/mock/*"]
+    }
+  },
+  "exclude": ["node_modules"],
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
