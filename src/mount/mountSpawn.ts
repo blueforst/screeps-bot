@@ -1,5 +1,7 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
 
+const runtimeGlobal = global;
+
 function ensureQueue(spawn: StructureSpawn): string[] {
   if (!spawn.memory.spawnList) {
     spawn.memory.spawnList = [];
@@ -8,7 +10,7 @@ function ensureQueue(spawn: StructureSpawn): string[] {
 }
 
 function chooseBody(spawn: StructureSpawn, configName: string): BodyPartConstant[] {
-  const config = globalThis.creepApi.get(configName);
+  const config = runtimeGlobal.creepApi.get(configName);
   if (config?.body && config.body.length > 0) {
     return config.body;
   }
@@ -30,7 +32,7 @@ export function mountSpawn(): void {
   };
 
   StructureSpawn.prototype.mainSpawn = function mainSpawn(configName: string): boolean {
-    const config = globalThis.creepApi.get(configName);
+    const config = runtimeGlobal.creepApi.get(configName);
     if (!config) {
       return true;
     }

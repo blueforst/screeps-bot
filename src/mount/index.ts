@@ -1,8 +1,10 @@
 import { mountCreep } from "@/mount/mountCreep";
 import { mountSpawn } from "@/mount/mountSpawn";
 
+const runtimeGlobal = global;
+
 export function mountAll(): void {
-  if (globalThis.__screepsMounted) {
+  if (runtimeGlobal.__screepsMounted) {
     return;
   }
 
@@ -13,5 +15,5 @@ export function mountAll(): void {
   mountCreep();
   mountSpawn();
 
-  globalThis.__screepsMounted = true;
+  runtimeGlobal.__screepsMounted = true;
 }

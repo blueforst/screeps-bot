@@ -161,6 +161,7 @@ const colours = global.colours || {
     暗青: "#26A69A",
     宝蓝: "#1E88E5"
 };
+global.colours = colours;
 
 
 
@@ -2572,7 +2573,7 @@ function showBetter(layout, rv) {
             let num = 1;
             for (let s of layout[type]) {
                 rv.structure(s.x, s.y, type);
-                rv.text(num, +s.x, +s.y, { color: global.colours.金色, opacity: 1, font: 0.6 });
+                rv.text(num, +s.x, +s.y, { color: colours.金色, opacity: 1, font: 0.6 });
                 num++;
             }
         } else if (type == STRUCTURE_LAB && layout[type].length) {

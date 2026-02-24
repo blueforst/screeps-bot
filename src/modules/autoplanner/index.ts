@@ -1,19 +1,13 @@
-let autoPlannerLoaded = false;
+import "./RoomVisual.js";
+import planner from "./planner.js";
 
-function ensureAutoPlannerLoaded(): boolean {
-  if (autoPlannerLoaded) {
-    return true;
-  }
+type PlannerModule = {
+  runPlan: (roomName: string) => boolean;
+  visualizePlan: (roomName: string) => boolean;
+  savePlanToMemory: (roomName: string) => boolean;
+};
 
-  if (typeof RoomVisual === "undefined") {
-    return false;
-  }
-
-  require("./RoomVisual.js");
-  require("./planner.js");
-  autoPlannerLoaded = true;
-  return true;
-}
+const plannerModule = planner as unknown as PlannerModule;
 
 function createVisualFlag(room: Room, pos: RoomPosition): void {
   const flagName = `VP_${room.name}`;
@@ -21,14 +15,14 @@ function createVisualFlag(room: Room, pos: RoomPosition): void {
 }
 
 export function runAutoPlannerByFlag(): void {
-  if (!ensureAutoPlannerLoaded()) {
+  if (typeof RoomVisual === "undefined") {
     return;
   }
 
   const planningFlag = Game.flags.RP;
   if (planningFlag) {
     const roomName = planningFlag.pos.roomName;
-    if (runPlan(roomName)) {
+    if (plannerModule.runPlan(roomName)) {
       const planningRoom = Game.rooms[roomName];
       const flagPos = planningFlag.pos;
       planningFlag.remove();
@@ -41,7 +35,7 @@ export function runAutoPlannerByFlag(): void {
   const saveFlag = Game.flags.SP;
   if (saveFlag) {
     const roomName = saveFlag.pos.roomName;
-    if (savePlanToMemory(roomName)) {
+    if (plannerModule.savePlanToMemory(roomName)) {
       saveFlag.remove();
     }
   }
@@ -49,6 +43,6 @@ export function runAutoPlannerByFlag(): void {
   Object.values(Game.flags)
     .filter((flag) => flag.name === "VP" || flag.name.startsWith("VP_"))
     .forEach((flag) => {
-      visualizePlan(flag.pos.roomName);
+      plannerModule.visualizePlan(flag.pos.roomName);
     });
 }

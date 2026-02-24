@@ -2,10 +2,20 @@ import { SourceMapConsumer } from "source-map";
 
 let consumer: SourceMapConsumer | null = null;
 const cache: Record<string, string> = {};
+let sourceMapDisabled = false;
 
-function getConsumer(): SourceMapConsumer {
+function getConsumer(): SourceMapConsumer | null {
+  if (sourceMapDisabled) {
+    return null;
+  }
+
   if (consumer === null) {
-    consumer = new SourceMapConsumer(require("main.js.map"));
+    try {
+      consumer = new SourceMapConsumer(require("main.js.map"));
+    } catch {
+      sourceMapDisabled = true;
+      return null;
+    }
   }
   return consumer;
 }
@@ -25,7 +35,12 @@ function sourceMappedStackTrace(error: Error | string): string {
       break;
     }
 
-    const pos = getConsumer().originalPositionFor({
+    const mapConsumer = getConsumer();
+    if (!mapConsumer) {
+      return stack;
+    }
+
+    const pos = mapConsumer.originalPositionFor({
       column: Number.parseInt(match[4], 10),
       line: Number.parseInt(match[3], 10),
     });

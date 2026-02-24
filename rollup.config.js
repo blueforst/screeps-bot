@@ -65,6 +65,7 @@ export default {
   plugins: [
     clear({ targets: ["dist"] }),
     resolve(),
+    typescript({ tsconfig: "./tsconfig.json" }),
     replace({
       preventAssignment: true,
       values: {
@@ -75,7 +76,6 @@ export default {
       },
     }),
     commonjs(),
-    typescript({ tsconfig: "./tsconfig.json" }),
     deployPlugin,
   ],
 };

@@ -1,3 +1,5 @@
+const runtimeGlobal = global;
+
 function isConfigActive(configName: string): boolean {
   const alive = Object.values(Game.creeps).some((creep) => creep.memory.configName === configName);
   if (alive) {
@@ -28,7 +30,7 @@ export function scheduleSpawnTasks(): void {
     }
   });
 
-  const configs = globalThis.creepApi.list();
+  const configs = runtimeGlobal.creepApi.list();
   for (const [configName, config] of Object.entries(configs)) {
     if (!config.roomName) {
       continue;

@@ -1,5 +1,7 @@
 import type { CreepApi, CreepConfig, RoleName } from "@/types/system";
 
+const runtimeGlobal = global;
+
 function getStore(): Record<string, CreepConfig> {
   if (!Memory.creepConfigs) {
     Memory.creepConfigs = {};
@@ -29,11 +31,11 @@ const apiImpl: CreepApi = {
 };
 
 export function registerGlobalApi(): void {
-  globalThis.creepApi = apiImpl;
+  runtimeGlobal.creepApi = apiImpl;
 }
 
 export function upsertConfig(configName: string, role: RoleName, args: string[], roomName?: string): void {
-  const current = globalThis.creepApi.get(configName);
+  const current = runtimeGlobal.creepApi.get(configName);
   const next: CreepConfig = { role, args, roomName };
   if (!current || JSON.stringify(current) !== JSON.stringify(next)) {
     getStore()[configName] = next;

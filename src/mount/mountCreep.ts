@@ -1,12 +1,14 @@
 import { roleRegistry } from "@/roles";
 
+const runtimeGlobal = global;
+
 function resolveRoleLogic(creep: Creep): ReturnType<(typeof roleRegistry)[keyof typeof roleRegistry]> | null {
   const configName = creep.memory.configName;
   if (!configName) {
     return null;
   }
 
-  const config = globalThis.creepApi.get(configName);
+  const config = runtimeGlobal.creepApi.get(configName);
   if (!config) {
     return null;
   }
