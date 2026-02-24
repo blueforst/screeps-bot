@@ -2,6 +2,8 @@ import { BUILD_INFO } from "@/buildMeta";
 import { errorMapper } from "@/modules/errorMapper";
 import { runAutoPlannerByFlag } from "@/modules/autoplanner";
 import { mountAll } from "@/mount";
+import { runMemoryCleanup } from "@/runtime/memoryCleanup";
+import { runPixelGenerator } from "@/runtime/pixelGenerator";
 import { bootstrapRooms } from "@/runtime/bootstrap";
 import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
 import { registerGlobalApi } from "@/runtime/creepApi";
@@ -25,6 +27,8 @@ export function addNumbers(num1: number, num2: number): number {
 
 function gameLoop(): void {
   announceDeploy();
+  runPixelGenerator();
+  runMemoryCleanup();
   runAutoPlannerByFlag();
   runRoomPlannerConstruction();
   bootstrapRooms();

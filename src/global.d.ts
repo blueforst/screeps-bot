@@ -21,6 +21,9 @@ declare global {
   interface Memory {
     creepConfigs?: Record<string, CreepConfig>;
     lastDeployTag?: string;
+    pixelGenerator?: {
+      enabled?: boolean;
+    };
     roomPlannerAuto?: Record<string, number>;
     roomPlannerBuild?: {
       enabled?: boolean;
