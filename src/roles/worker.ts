@@ -1,25 +1,23 @@
 import type { RoleFactory } from "@/types/system";
-import { getDroppedEnergyTarget, getWithdrawEnergyTarget, moveToRemoteWorkTarget, moveToTarget } from "@/roles/shared";
+import { getPreferredEnergyPickupTarget, isDroppedResourceTarget, moveToRemoteWorkTarget, moveToTarget } from "@/roles/shared";
 
 export const workerRole: RoleFactory = () => ({
   source: (creep): boolean => {
-    const dropped = getDroppedEnergyTarget(creep);
-    if (dropped) {
-      const pickupCode = creep.pickup(dropped);
-      if (pickupCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, dropped);
-      }
-      return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
-    }
-
-    const sourceTarget = getWithdrawEnergyTarget(creep);
+    const sourceTarget = getPreferredEnergyPickupTarget(creep);
     if (!sourceTarget) {
       return false;
     }
 
-    const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
-    if (withdrawCode === ERR_NOT_IN_RANGE) {
-      moveToTarget(creep, sourceTarget);
+    if (isDroppedResourceTarget(sourceTarget)) {
+      const pickupCode = creep.pickup(sourceTarget);
+      if (pickupCode === ERR_NOT_IN_RANGE) {
+        moveToTarget(creep, sourceTarget);
+      }
+    } else {
+      const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+      if (withdrawCode === ERR_NOT_IN_RANGE) {
+        moveToTarget(creep, sourceTarget);
+      }
     }
 
     return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;

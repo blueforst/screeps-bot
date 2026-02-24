@@ -7,6 +7,4 @@ export const roleRegistry: Record<RoleName, RoleFactory> = {
   harvester: harvesterRole,
   carrier: carrierRole,
   worker: workerRole,
-  upgrader: workerRole,
-  builder: workerRole,
 };

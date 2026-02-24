@@ -24,7 +24,7 @@ function chooseBody(spawn: StructureSpawn, configName: string): BodyPartConstant
 }
 
 function getCreepNamePrefix(role: RoleName): string {
-  if (role === "builder" || role === "upgrader" || role === "worker") {
+  if (role === "worker") {
     return "worker";
   }
 

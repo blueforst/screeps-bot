@@ -78,3 +78,15 @@ Memory.roomPlannerBuild = {
 
 - Set `enabled: false` to pause auto site creation
 - Priority order is spawn/extension/tower first, roads/ramparts later
+
+## Energy Pickup Tuning
+
+Carrier/worker energy pickup prefers targets with at least `min(creepCapacity, preferredMin)` energy.
+
+```js
+Memory.energyPickup = {
+  preferredMin: 800
+}
+```
+
+If no target reaches the threshold, they will fallback to the nearest available energy source.

@@ -26,7 +26,15 @@ const apiImpl: CreepApi = {
     if (!prefix) {
       return { ...all };
     }
-    return Object.fromEntries(Object.entries(all).filter(([key]) => key.startsWith(prefix)));
+
+    const filtered: Record<string, CreepConfig> = {};
+    for (const key of Object.keys(all)) {
+      if (key.startsWith(prefix)) {
+        filtered[key] = all[key];
+      }
+    }
+
+    return filtered;
   },
 };
 

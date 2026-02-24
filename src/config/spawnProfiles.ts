@@ -34,6 +34,4 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => clampByCapacity([WORK, WORK, MOVE, WORK, MOVE], room),
   carrier: (room) => clampByCapacity([CARRY, CARRY, CARRY, MOVE, MOVE], room),
   worker: oneOneOneBody,
-  upgrader: oneOneOneBody,
-  builder: oneOneOneBody,
 };

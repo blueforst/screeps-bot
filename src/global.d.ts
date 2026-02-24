@@ -21,6 +21,9 @@ declare global {
   interface Memory {
     creepConfigs?: Record<string, CreepConfig>;
     lastDeployTag?: string;
+    energyPickup?: {
+      preferredMin?: number;
+    };
     pixelGenerator?: {
       enabled?: boolean;
     };

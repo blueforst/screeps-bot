@@ -2,6 +2,12 @@ function getTargetPos(target: RoomPosition | { pos: RoomPosition }): RoomPositio
   return target instanceof RoomPosition ? target : target.pos;
 }
 
+export type EnergyPickupTarget = Resource | AnyStoreStructure;
+
+export function isDroppedResourceTarget(target: EnergyPickupTarget): target is Resource {
+  return (target as Resource).amount !== undefined;
+}
+
 export function moveToTarget(
   creep: Creep,
   target: RoomPosition | { pos: RoomPosition },
@@ -39,28 +45,34 @@ export function getEnergyStoreTarget(creep: Creep): AnyStoreStructure | null {
   return null;
 }
 
-export function getDroppedEnergyTarget(creep: Creep): Resource | null {
+function getTargetEnergyAmount(target: EnergyPickupTarget): number {
+  if (isDroppedResourceTarget(target)) {
+    return target.amount;
+  }
+
+  return target.store.getUsedCapacity(RESOURCE_ENERGY);
+}
+
+export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget | null {
   const dropped = creep.room.find(FIND_DROPPED_RESOURCES, {
     filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
   });
-
-  if (dropped.length === 0) {
-    return null;
-  }
-
-  return creep.pos.findClosestByRange(dropped);
-}
-
-export function getWithdrawEnergyTarget(creep: Creep): AnyStoreStructure | null {
   const containers = creep.room.find(FIND_STRUCTURES, {
     filter: (structure) =>
       structure.structureType === STRUCTURE_CONTAINER &&
       (structure as StructureContainer).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  });
+  }) as AnyStoreStructure[];
 
-  if (containers.length > 0) {
-    return creep.pos.findClosestByRange(containers) as AnyStoreStructure;
+  const candidates: EnergyPickupTarget[] = [...dropped, ...containers];
+  if (candidates.length === 0) {
+    return null;
   }
 
-  return null;
+  const configuredMin = Memory.energyPickup?.preferredMin;
+  const preferredMin = typeof configuredMin === "number" && configuredMin > 0 ? configuredMin : 800;
+  const threshold = Math.min(creep.store.getCapacity(RESOURCE_ENERGY) ?? 0, preferredMin);
+  const richCandidates = candidates.filter((target) => getTargetEnergyAmount(target) >= threshold);
+  const preferred = richCandidates.length > 0 ? richCandidates : candidates;
+
+  return creep.pos.findClosestByRange(preferred);
 }
