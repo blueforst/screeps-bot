@@ -1,11 +1,13 @@
+import { spawnProfiles } from "@/config/spawnProfiles";
+import type { CreepConfig } from "@/types/system";
+
 const runtimeGlobal = global;
 
-function isConfigActive(configName: string): boolean {
-  const alive = Object.values(Game.creeps).some((creep) => creep.memory.configName === configName);
-  if (alive) {
-    return true;
-  }
+function isConfigQueued(spawn: StructureSpawn, configName: string): boolean {
+  return spawn.memory.spawnList?.includes(configName) ?? false;
+}
 
+function isConfigSpawning(configName: string): boolean {
   return Object.values(Game.spawns).some((spawn) => {
     if (!spawn.spawning) {
       return false;
@@ -16,8 +18,86 @@ function isConfigActive(configName: string): boolean {
   });
 }
 
-function queueMissingConfig(spawn: StructureSpawn, configName: string): void {
-  if (!isConfigActive(configName)) {
+function getConfigCreeps(configName: string): Creep[] {
+  return Object.values(Game.creeps).filter((creep) => creep.memory.configName === configName);
+}
+
+function getHarvesterWorkPos(config: CreepConfig): RoomPosition | null {
+  const sourceId = config.args[0] as Id<Source> | undefined;
+  if (!sourceId) {
+    return null;
+  }
+
+  const source = Game.getObjectById(sourceId);
+  if (!source) {
+    return null;
+  }
+
+  const containers = source.pos.findInRange(FIND_STRUCTURES, 1, {
+    filter: (structure) => structure.structureType === STRUCTURE_CONTAINER,
+  });
+  if (containers.length > 0) {
+    return containers[0].pos;
+  }
+
+  return source.pos;
+}
+
+function getSpawnBody(spawn: StructureSpawn, configName: string): BodyPartConstant[] {
+  const config = runtimeGlobal.creepApi.get(configName);
+  if (!config) {
+    return [WORK, MOVE];
+  }
+
+  if (config.body && config.body.length > 0) {
+    return config.body;
+  }
+
+  return spawnProfiles[config.role](spawn.room);
+}
+
+function estimateHarvesterPreSpawnThreshold(spawn: StructureSpawn, configName: string, config: CreepConfig): number {
+  const workPos = getHarvesterWorkPos(config);
+  if (!workPos) {
+    return 0;
+  }
+
+  const path = spawn.pos.findPathTo(workPos, { ignoreCreeps: true, swampCost: 2 });
+  const commuteTime = path.length;
+  const body = getSpawnBody(spawn, configName);
+  const produceTime = body.length * CREEP_SPAWN_TIME;
+
+  return commuteTime + produceTime;
+}
+
+function shouldPreSpawnHarvester(spawn: StructureSpawn, configName: string, config: CreepConfig): boolean {
+  const creeps = getConfigCreeps(configName);
+  if (creeps.length === 0) {
+    return true;
+  }
+
+  const threshold = estimateHarvesterPreSpawnThreshold(spawn, configName, config);
+  const soonestDying = creeps.reduce((minCreep, creep) =>
+    creep.ticksToLive < minCreep.ticksToLive ? creep : minCreep,
+  );
+
+  return soonestDying.ticksToLive <= threshold;
+}
+
+function shouldQueueConfig(spawn: StructureSpawn, configName: string, config: CreepConfig): boolean {
+  if (isConfigQueued(spawn, configName) || isConfigSpawning(configName)) {
+    return false;
+  }
+
+  if (config.role === "harvester") {
+    return shouldPreSpawnHarvester(spawn, configName, config);
+  }
+
+  return getConfigCreeps(configName).length === 0;
+}
+
+function queueMissingConfig(spawn: StructureSpawn, configName: string, config: CreepConfig): void {
+  if (shouldQueueConfig(spawn, configName, config)) {
     spawn.addTask(configName);
   }
 }
@@ -41,6 +121,6 @@ export function scheduleSpawnTasks(): void {
       continue;
     }
 
-    queueMissingConfig(spawn, configName);
+    queueMissingConfig(spawn, configName, config);
   }
 }
