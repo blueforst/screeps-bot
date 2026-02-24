@@ -20,6 +20,9 @@ const RUN_INTERVAL = 5;
 const DEFAULT_MAX_NEW_SITES_PER_ROOM = 8;
 const GLOBAL_SITE_SOFT_CAP = 95;
 
+type PlannedLayout = { [structureType: string]: { x: number; y: number }[] };
+type TargetOverrideMap = Partial<Record<BuildableStructureConstant, number>>;
+
 function canBuildAtControllerLevel(structureType: BuildableStructureConstant, level: number): boolean {
   const maxByLevel = CONTROLLER_STRUCTURES[structureType];
   return maxByLevel[level] > 0;
@@ -27,6 +30,54 @@ function canBuildAtControllerLevel(structureType: BuildableStructureConstant, le
 
 function getAllowedCount(structureType: BuildableStructureConstant, level: number): number {
   return CONTROLLER_STRUCTURES[structureType][level] ?? 0;
+}
+
+function getPlannedCount(layout: PlannedLayout, structureType: BuildableStructureConstant): number {
+  return layout[structureType]?.length ?? 0;
+}
+
+function isComplete(room: Room, structureType: BuildableStructureConstant, targetCount: number): boolean {
+  if (targetCount <= 0) {
+    return true;
+  }
+
+  return countExisting(room, structureType) >= targetCount && countSites(room, structureType) === 0;
+}
+
+function getBuildPolicy(room: Room, layout: PlannedLayout, controllerLevel: number): {
+  allowedTypes: Set<BuildableStructureConstant>;
+  targetOverrides: TargetOverrideMap;
+} {
+  const targetOverrides: TargetOverrideMap = {};
+
+  if (controllerLevel <= 1) {
+    return { allowedTypes: new Set(), targetOverrides };
+  }
+
+  if (controllerLevel === 2) {
+    const extTarget = Math.min(5, getPlannedCount(layout, STRUCTURE_EXTENSION), getAllowedCount(STRUCTURE_EXTENSION, controllerLevel));
+    targetOverrides[STRUCTURE_EXTENSION] = extTarget;
+    return { allowedTypes: new Set([STRUCTURE_EXTENSION]), targetOverrides };
+  }
+
+  const extTarget = Math.min(getPlannedCount(layout, STRUCTURE_EXTENSION), getAllowedCount(STRUCTURE_EXTENSION, 3));
+  if (!isComplete(room, STRUCTURE_EXTENSION, extTarget)) {
+    targetOverrides[STRUCTURE_EXTENSION] = extTarget;
+    return { allowedTypes: new Set([STRUCTURE_EXTENSION]), targetOverrides };
+  }
+
+  const towerTarget = Math.min(getPlannedCount(layout, STRUCTURE_TOWER), getAllowedCount(STRUCTURE_TOWER, 3));
+  const containerTarget = Math.min(getPlannedCount(layout, STRUCTURE_CONTAINER), getAllowedCount(STRUCTURE_CONTAINER, 3));
+  const towerReady = isComplete(room, STRUCTURE_TOWER, towerTarget);
+  const containerReady = isComplete(room, STRUCTURE_CONTAINER, containerTarget);
+
+  if (!towerReady || !containerReady) {
+    targetOverrides[STRUCTURE_TOWER] = towerTarget;
+    targetOverrides[STRUCTURE_CONTAINER] = containerTarget;
+    return { allowedTypes: new Set([STRUCTURE_TOWER, STRUCTURE_CONTAINER]), targetOverrides };
+  }
+
+  return { allowedTypes: new Set(CONSTRUCTION_PRIORITY), targetOverrides };
 }
 
 function countExisting(room: Room, structureType: BuildableStructureConstant): number {
@@ -88,9 +139,19 @@ export function runRoomPlannerConstruction(): void {
 
     const controllerLevel = room.controller?.level ?? 0;
     const layout = roomPlan.layout;
+    const { allowedTypes, targetOverrides } = getBuildPolicy(room, layout, controllerLevel);
+
+    if (allowedTypes.size === 0) {
+      continue;
+    }
+
     let newSites = 0;
 
     for (const structureType of CONSTRUCTION_PRIORITY) {
+      if (!allowedTypes.has(structureType)) {
+        continue;
+      }
+
       const plannedPositions = layout[structureType] ?? [];
       if (plannedPositions.length === 0) {
         continue;
@@ -100,14 +161,11 @@ export function runRoomPlannerConstruction(): void {
         continue;
       }
 
-      const allowed = getAllowedCount(structureType, controllerLevel);
+      const policyTarget = targetOverrides[structureType];
+      const allowed = policyTarget ?? Math.min(getAllowedCount(structureType, controllerLevel), plannedPositions.length);
       const existing = countExisting(room, structureType);
       const queued = countSites(room, structureType);
       let remaining = Math.max(0, allowed - existing - queued);
-
-      if (structureType === STRUCTURE_ROAD || structureType === STRUCTURE_RAMPART) {
-        remaining = plannedPositions.length;
-      }
 
       if (remaining <= 0) {
         continue;

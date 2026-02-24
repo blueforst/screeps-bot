@@ -1,27 +1,25 @@
 import type { RoleFactory } from "@/types/system";
-import { getEnergySourceTarget, moveToTarget } from "@/roles/shared";
-
-function isSource(target: AnyStoreStructure | Source): target is Source {
-  return (target as Source).ticksToRegeneration !== undefined;
-}
+import { getDroppedEnergyTarget, getWithdrawEnergyTarget, moveToTarget } from "@/roles/shared";
 
 export const upgraderRole: RoleFactory = () => ({
   source: (creep): boolean => {
-    const sourceTarget = getEnergySourceTarget(creep);
+    const dropped = getDroppedEnergyTarget(creep);
+    if (dropped) {
+      const pickupCode = creep.pickup(dropped);
+      if (pickupCode === ERR_NOT_IN_RANGE) {
+        moveToTarget(creep, dropped);
+      }
+      return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
+    }
+
+    const sourceTarget = getWithdrawEnergyTarget(creep);
     if (!sourceTarget) {
       return false;
     }
 
-    if (isSource(sourceTarget)) {
-      const harvestCode = creep.harvest(sourceTarget);
-      if (harvestCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, sourceTarget);
-      }
-    } else {
-      const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
-      if (withdrawCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, sourceTarget);
-      }
+    const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+    if (withdrawCode === ERR_NOT_IN_RANGE) {
+      moveToTarget(creep, sourceTarget);
     }
 
     return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
@@ -34,7 +32,7 @@ export const upgraderRole: RoleFactory = () => ({
 
     const code = creep.upgradeController(controller);
     if (code === ERR_NOT_IN_RANGE) {
-      moveToTarget(creep, controller);
+      moveToTarget(creep, controller, { squareSize: 7 });
       return false;
     }
 

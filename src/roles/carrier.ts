@@ -1,9 +1,5 @@
 import type { RoleFactory } from "@/types/system";
-import { getEnergySourceTarget, getEnergyStoreTarget, moveToTarget } from "@/roles/shared";
-
-function isSource(target: AnyStoreStructure | Source): target is Source {
-  return (target as Source).ticksToRegeneration !== undefined;
-}
+import { getEnergyStoreTarget, getWithdrawEnergyTarget, moveToTarget } from "@/roles/shared";
 
 export const carrierRole: RoleFactory = () => ({
   source: (creep): boolean => {
@@ -16,21 +12,14 @@ export const carrierRole: RoleFactory = () => ({
       return false;
     }
 
-    const sourceTarget = getEnergySourceTarget(creep);
+    const sourceTarget = getWithdrawEnergyTarget(creep);
     if (!sourceTarget) {
       return false;
     }
 
-    if (isSource(sourceTarget)) {
-      const harvestCode = creep.harvest(sourceTarget);
-      if (harvestCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, sourceTarget);
-      }
-    } else {
-      const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
-      if (withdrawCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, sourceTarget);
-      }
+    const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+    if (withdrawCode === ERR_NOT_IN_RANGE) {
+      moveToTarget(creep, sourceTarget);
     }
 
     return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;

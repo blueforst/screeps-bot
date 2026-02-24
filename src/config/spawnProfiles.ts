@@ -19,7 +19,7 @@ function clampByCapacity(parts: BodyPartConstant[], room: Room): BodyPartConstan
 }
 
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
-  harvester: (room) => clampByCapacity([WORK, WORK, CARRY, MOVE], room),
+  harvester: (room) => clampByCapacity([WORK, WORK, MOVE, WORK, MOVE], room),
   carrier: (room) => clampByCapacity([CARRY, CARRY, CARRY, MOVE, MOVE], room),
   upgrader: (room) => clampByCapacity([WORK, WORK, CARRY, MOVE], room),
   builder: (room) => clampByCapacity([WORK, CARRY, CARRY, MOVE, MOVE], room),
