@@ -1,5 +1,79 @@
 import type { RoleFactory } from "@/types/system";
-import { getEnergyStoreTarget, getPreferredEnergyPickupTarget, isDroppedResourceTarget, moveToTarget } from "@/roles/shared";
+import {
+  getEnergyStoreTarget,
+  isDroppedResourceTarget,
+  moveToTarget,
+} from "@/roles/shared";
+
+type CarrierPickupTarget = Resource | StructureContainer;
+
+function getCarrierPickupAmount(target: CarrierPickupTarget): number {
+  if (isDroppedResourceTarget(target)) {
+    return target.amount;
+  }
+
+  return target.store.getUsedCapacity(RESOURCE_ENERGY);
+}
+
+function getWeightedCarrierPickupTarget(creep: Creep): CarrierPickupTarget | null {
+  const dropped = creep.room.find(FIND_DROPPED_RESOURCES, {
+    filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
+  });
+  const containers = creep.room.find(FIND_STRUCTURES, {
+    filter: (structure) =>
+      structure.structureType === STRUCTURE_CONTAINER &&
+      (structure as StructureContainer).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
+  }) as StructureContainer[];
+
+  const candidates: CarrierPickupTarget[] = [...dropped, ...containers];
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  let bestTarget: CarrierPickupTarget | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const candidate of candidates) {
+    const amount = getCarrierPickupAmount(candidate);
+    if (amount <= 0) {
+      continue;
+    }
+
+    const distance = Math.max(1, creep.pos.getRangeTo(candidate.pos));
+    const score = amount / distance;
+    if (score > bestScore) {
+      bestScore = score;
+      bestTarget = candidate;
+    }
+  }
+
+  return bestTarget;
+}
+
+function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: boolean } {
+  const sourceTarget = getWeightedCarrierPickupTarget(creep);
+  if (!sourceTarget) {
+    return { picked: false, outOfRange: false };
+  }
+
+  if (isDroppedResourceTarget(sourceTarget)) {
+    const pickupCode = creep.pickup(sourceTarget);
+    if (pickupCode === ERR_NOT_IN_RANGE) {
+      moveToTarget(creep, sourceTarget);
+      return { picked: false, outOfRange: true };
+    }
+
+    return { picked: pickupCode === OK, outOfRange: false };
+  }
+
+  const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+  if (withdrawCode === ERR_NOT_IN_RANGE) {
+    moveToTarget(creep, sourceTarget);
+    return { picked: false, outOfRange: true };
+  }
+
+  return { picked: withdrawCode === OK, outOfRange: false };
+}
 
 function setPostTransferPlan(creep: Creep, mode: "pickup" | "deliver", target: Resource | AnyStoreStructure): void {
   creep.memory.carrierPlanMode = mode;
@@ -32,7 +106,7 @@ function precomputePostTransferAction(creep: Creep, currentTarget: AnyStoreStruc
   const free = currentTarget.store.getFreeCapacity(RESOURCE_ENERGY);
 
   if (energy <= free) {
-    const pickupTarget = getPreferredEnergyPickupTarget(creep);
+    const pickupTarget = getWeightedCarrierPickupTarget(creep);
     if (pickupTarget) {
       setPostTransferPlan(creep, "pickup", pickupTarget);
       return;
@@ -52,30 +126,9 @@ export const carrierRole: RoleFactory = () => ({
   source: (creep): boolean => {
     clearPostTransferPlan(creep);
 
-    const sourceTarget = getPreferredEnergyPickupTarget(creep);
-    if (!sourceTarget) {
+    const result = pickupEnergyForCarrier(creep);
+    if (!result.picked && !result.outOfRange) {
       return creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
-    }
-
-    if (isDroppedResourceTarget(sourceTarget)) {
-      const pickupCode = creep.pickup(sourceTarget);
-      if (pickupCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, sourceTarget);
-        return false;
-      }
-      if (pickupCode === OK) {
-        return true;
-      }
-    } else {
-      const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
-      if (withdrawCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, sourceTarget);
-        return false;
-      }
-
-      if (withdrawCode === OK) {
-        return true;
-      }
     }
 
     return creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;

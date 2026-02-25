@@ -94,3 +94,33 @@ export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget
 
   return creep.pos.findClosestByRange(preferred);
 }
+
+interface PickupResult {
+  picked: boolean;
+  outOfRange: boolean;
+}
+
+export function pickupEnergyFromPreferredTarget(creep: Creep): PickupResult {
+  const sourceTarget = getPreferredEnergyPickupTarget(creep);
+  if (!sourceTarget) {
+    return { picked: false, outOfRange: false };
+  }
+
+  if (isDroppedResourceTarget(sourceTarget)) {
+    const pickupCode = creep.pickup(sourceTarget);
+    if (pickupCode === ERR_NOT_IN_RANGE) {
+      moveToTarget(creep, sourceTarget);
+      return { picked: false, outOfRange: true };
+    }
+
+    return { picked: pickupCode === OK, outOfRange: false };
+  }
+
+  const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+  if (withdrawCode === ERR_NOT_IN_RANGE) {
+    moveToTarget(creep, sourceTarget);
+    return { picked: false, outOfRange: true };
+  }
+
+  return { picked: withdrawCode === OK, outOfRange: false };
+}
