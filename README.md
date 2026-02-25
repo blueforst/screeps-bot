@@ -60,7 +60,7 @@ Token page: `https://screeps.com/a/#!/account/auth-tokens`
 
 ## RoomPlanner Auto Construction
 
-After you save layout to `Memory.roomPlanner[roomName]`, construction sites are queued automatically.
+After you save layout to `Memory.data.roomPlanner[roomName]`, construction sites are queued automatically.
 
 - Trigger planner output to Memory: place `SP` flag, or call `savePlanToMemory('W1N1')`
 - Auto builder runs every 5 ticks
@@ -70,7 +70,8 @@ After you save layout to `Memory.roomPlanner[roomName]`, construction sites are 
 Optional runtime config in console:
 
 ```js
-Memory.roomPlannerBuild = {
+Memory.cfg = Memory.cfg || {}
+Memory.cfg.roomPlannerBuild = {
   enabled: true,
   maxNewSitesPerRoom: 6
 }
@@ -84,7 +85,8 @@ Memory.roomPlannerBuild = {
 Carrier/worker energy pickup prefers targets with at least `min(creepCapacity, preferredMin)` energy.
 
 ```js
-Memory.energyPickup = {
+Memory.cfg = Memory.cfg || {}
+Memory.cfg.energyPickup = {
   preferredMin: 800
 }
 ```

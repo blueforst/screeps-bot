@@ -46,14 +46,14 @@ function cleanupSpawnQueueMemory(): number {
 }
 
 function cleanupLegacyConfigMemory(): number {
-  if (!Memory.creepConfigs) {
+  if (!Memory.data?.creepConfigs) {
     return 0;
   }
 
   let removed = 0;
-  for (const [configName, config] of Object.entries(Memory.creepConfigs)) {
+  for (const [configName, config] of Object.entries(Memory.data.creepConfigs)) {
     if (!VALID_ROLES.has(config.role)) {
-      delete Memory.creepConfigs[configName];
+      delete Memory.data.creepConfigs[configName];
       removed += 1;
     }
   }
@@ -62,7 +62,7 @@ function cleanupLegacyConfigMemory(): number {
 }
 
 function cleanupManagedCreepConfigs(): number {
-  if (!Memory.creepConfigs) {
+  if (!Memory.data?.creepConfigs) {
     return 0;
   }
 
@@ -75,13 +75,13 @@ function cleanupManagedCreepConfigs(): number {
   }
   let removed = 0;
 
-  for (const [configName, config] of Object.entries(Memory.creepConfigs)) {
+  for (const [configName, config] of Object.entries(Memory.data.creepConfigs)) {
     if (!VALID_ROLES.has(config.role)) {
       continue;
     }
 
     if (!expected.has(configName)) {
-      delete Memory.creepConfigs[configName];
+      delete Memory.data.creepConfigs[configName];
       removed += 1;
     }
   }
@@ -90,17 +90,17 @@ function cleanupManagedCreepConfigs(): number {
 }
 
 function cleanupRoomPlannerMemory(ownedRooms: Set<string>): number {
-  if (!Memory.roomPlanner) {
+  if (!Memory.data?.roomPlanner) {
     return 0;
   }
 
   let removed = 0;
-  for (const [roomName, data] of Object.entries(Memory.roomPlanner)) {
+  for (const [roomName, data] of Object.entries(Memory.data.roomPlanner)) {
     const staleByRoom = !ownedRooms.has(roomName);
     const staleByTime = Game.time - data.savedAt > ROOM_PLANNER_TTL;
 
     if (staleByRoom || staleByTime) {
-      delete Memory.roomPlanner[roomName];
+      delete Memory.data.roomPlanner[roomName];
       removed += 1;
     }
   }
@@ -109,17 +109,17 @@ function cleanupRoomPlannerMemory(ownedRooms: Set<string>): number {
 }
 
 function cleanupRoomPlannerAutoMemory(ownedRooms: Set<string>): number {
-  if (!Memory.roomPlannerAuto) {
+  if (!Memory.runtime?.roomPlannerAuto) {
     return 0;
   }
 
   let removed = 0;
-  for (const [roomName, touchedAt] of Object.entries(Memory.roomPlannerAuto)) {
+  for (const [roomName, touchedAt] of Object.entries(Memory.runtime.roomPlannerAuto)) {
     const staleByRoom = !ownedRooms.has(roomName);
     const staleByTime = Game.time - touchedAt > ROOM_PLANNER_AUTO_TTL;
 
     if (staleByRoom || staleByTime) {
-      delete Memory.roomPlannerAuto[roomName];
+      delete Memory.runtime.roomPlannerAuto[roomName];
       removed += 1;
     }
   }

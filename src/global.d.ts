@@ -17,29 +17,79 @@ declare global {
   var listPlanCache: () => void;
   var clearRoomPlanCache: (roomName: string) => void;
   var savePlanToMemory: (roomName: string) => boolean;
+  var reportProduction: (roomName?: string) => void;
+  var reportProductionGlobal: () => void;
 
   interface Memory {
-    creepConfigs?: Record<string, CreepConfig>;
-    lastDeployTag?: string;
-    workerControl?: {
-      maxPerRoom?: number;
+    cfg?: {
+      worker?: {
+        maxPerRoom?: number;
+        dynamicBeforeRcl4?: boolean;
+        dynamicMaxBonus?: number;
+        useWorkPosAllocation?: boolean;
+      };
+      energyPickup?: {
+        preferredMin?: number;
+      };
+      pixelGenerator?: {
+        enabled?: boolean;
+      };
+      roomPlannerBuild?: {
+        enabled?: boolean;
+        maxNewSitesPerRoom?: number;
+      };
+      productionMonitor?: {
+        enabled?: boolean;
+      };
     };
-    energyPickup?: {
-      preferredMin?: number;
+    runtime?: {
+      lastDeployTag?: string;
+      roomPlannerAuto?: Record<string, number>;
+      workerDynamic?: Record<
+        string,
+        {
+          lastLooseEnergy: number;
+          trend: number;
+          lastTick: number;
+        }
+      >;
     };
-    pixelGenerator?: {
-      enabled?: boolean;
+    data?: {
+      creepConfigs?: Record<string, CreepConfig>;
+      roomPlanner?: {
+        [roomName: string]: {
+          layout: { [structureType: string]: { x: number; y: number }[] };
+          timestamp: string;
+          savedAt: number;
+        };
+      };
     };
-    roomPlannerAuto?: Record<string, number>;
-    roomPlannerBuild?: {
-      enabled?: boolean;
-      maxNewSitesPerRoom?: number;
-    };
-    roomPlanner?: {
-      [roomName: string]: {
-        layout: { [structureType: string]: { x: number; y: number }[] };
-        timestamp: string;
-        savedAt: number;
+    analytics?: {
+      production?: {
+        rooms?: Record<
+          string,
+          {
+            updatedAt: number;
+            signal?: {
+              looseEnergyTrend: number;
+              sourceEnergyTrend: number;
+              upgradeRate: number;
+              spawnBusy: number;
+            };
+            latest?: {
+              tick: number;
+              looseEnergy: number;
+              storedEnergy: number;
+              sourceEnergy: number;
+              workerCount: number;
+              carrierCount: number;
+              harvesterCount: number;
+              spawnSpawning: number;
+              controllerLevel: number;
+              controllerProgress: number;
+            };
+          }
+        >;
       };
     };
   }

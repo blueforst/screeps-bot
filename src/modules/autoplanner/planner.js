@@ -49,7 +49,7 @@
  *  2. 从缓存读取并可视化
  *     visualizePlan('W1N1')
  *
- *  3. 保存到 Memory.roomPlanner[roomName]（会清除旧数据）
+ *  3. 保存到 Memory.data.roomPlanner[roomName]（会清除旧数据）
  *     savePlanToMemory('W1N1')
  *
  *  4. 列出所有缓存
@@ -141,7 +141,7 @@ function autoPlannerByFlag() {
 
         if (savePlanToMemory(roomName)) {
             flag.remove();
-            console.log(`[AutoPlanner] 已保存到 Memory.roomPlanner['${roomName}']`);
+            console.log(`[AutoPlanner] 已保存到 Memory.data.roomPlanner['${roomName}']`);
         }
     }
 }
@@ -2790,7 +2790,7 @@ function visualizePlan(roomName) {
 
 /**
  * 保存缓存中的规划到 Memory
- * 保存到 Memory.roomPlanner[roomName]
+ * 保存到 Memory.data.roomPlanner[roomName]
  * 保存前会清除该房间的旧数据
  */
 function savePlanToMemory(roomName) {
@@ -2802,25 +2802,28 @@ function savePlanToMemory(roomName) {
         return false;
     }
 
-    // 初始化 Memory.roomPlanner
-    if (!Memory.roomPlanner) {
-        Memory.roomPlanner = {};
+    // 初始化 Memory.data.roomPlanner
+    if (!Memory.data) {
+        Memory.data = {};
+    }
+    if (!Memory.data.roomPlanner) {
+        Memory.data.roomPlanner = {};
     }
 
     // 清除该房间的旧数据
-    if (Memory.roomPlanner[roomName]) {
-        delete Memory.roomPlanner[roomName];
+    if (Memory.data.roomPlanner[roomName]) {
+        delete Memory.data.roomPlanner[roomName];
         console.log(`[Planner] 已清除房间 ${roomName} 的旧规划数据`);
     }
 
     // 保存新布局到 Memory
-    Memory.roomPlanner[roomName] = {
+    Memory.data.roomPlanner[roomName] = {
         layout: cached.layout,
         timestamp: cached.timestamp,
         savedAt: Game.time
     };
 
-    console.log(`[Planner] 已保存房间 ${roomName} 的规划到 Memory.roomPlanner`);
+    console.log(`[Planner] 已保存房间 ${roomName} 的规划到 Memory.data.roomPlanner`);
     return true;
 }
 

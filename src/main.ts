@@ -4,6 +4,7 @@ import { runAutoPlannerByFlag } from "@/modules/autoplanner";
 import { mountAll } from "@/mount";
 import { runMemoryCleanup } from "@/runtime/memoryCleanup";
 import { runPixelGenerator } from "@/runtime/pixelGenerator";
+import { registerProductionApi, runProductionMonitor } from "@/runtime/productionMonitor";
 import { bootstrapRooms } from "@/runtime/bootstrap";
 import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
 import { registerGlobalApi } from "@/runtime/creepApi";
@@ -12,13 +13,15 @@ import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 
 mountAll();
 registerGlobalApi();
+registerProductionApi();
 
 function announceDeploy(): void {
-  if (Memory.lastDeployTag === BUILD_INFO.tag) {
+  Memory.runtime = Memory.runtime || {};
+  if (Memory.runtime.lastDeployTag === BUILD_INFO.tag) {
     return;
   }
 
-  Memory.lastDeployTag = BUILD_INFO.tag;
+  Memory.runtime.lastDeployTag = BUILD_INFO.tag;
   console.log(`[deploy] ${BUILD_INFO.tag}`);
 }
 
@@ -29,6 +32,7 @@ export function addNumbers(num1: number, num2: number): number {
 function gameLoop(): void {
   announceDeploy();
   runPixelGenerator();
+  runProductionMonitor();
   runMemoryCleanup();
   runAutoPlannerByFlag();
   runRoomPlannerConstruction();

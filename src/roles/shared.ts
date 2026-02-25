@@ -86,7 +86,7 @@ export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget
     return null;
   }
 
-  const configuredMin = Memory.energyPickup?.preferredMin;
+  const configuredMin = Memory.cfg?.energyPickup?.preferredMin;
   const preferredMin = typeof configuredMin === "number" && configuredMin > 0 ? configuredMin : 800;
   const threshold = Math.min(creep.store.getCapacity(RESOURCE_ENERGY) ?? 0, preferredMin);
   const richCandidates = candidates.filter((target) => getTargetEnergyAmount(target) >= threshold);

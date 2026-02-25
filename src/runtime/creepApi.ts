@@ -3,10 +3,11 @@ import type { CreepApi, CreepConfig, RoleName } from "@/types/system";
 const runtimeGlobal = global;
 
 function getStore(): Record<string, CreepConfig> {
-  if (!Memory.creepConfigs) {
-    Memory.creepConfigs = {};
+  Memory.data = Memory.data || {};
+  if (!Memory.data.creepConfigs) {
+    Memory.data.creepConfigs = {};
   }
-  return Memory.creepConfigs;
+  return Memory.data.creepConfigs;
 }
 
 const apiImpl: CreepApi = {

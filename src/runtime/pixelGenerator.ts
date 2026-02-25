@@ -1,7 +1,7 @@
 const PIXEL_BUCKET_THRESHOLD = 10000;
 
 export function runPixelGenerator(): void {
-  if (Memory.pixelGenerator?.enabled === false) {
+  if (Memory.cfg?.pixelGenerator?.enabled === false) {
     return;
   }
 

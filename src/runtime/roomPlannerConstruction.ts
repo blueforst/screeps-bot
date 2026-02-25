@@ -110,7 +110,7 @@ function tryPlaceSite(room: Room, structureType: BuildableStructureConstant, x: 
 }
 
 export function runRoomPlannerConstruction(): void {
-  if (Memory.roomPlannerBuild?.enabled === false) {
+  if (Memory.cfg?.roomPlannerBuild?.enabled === false) {
     return;
   }
 
@@ -124,7 +124,7 @@ export function runRoomPlannerConstruction(): void {
   }
 
   const rooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
-  const maxNewSitesPerRoom = Memory.roomPlannerBuild?.maxNewSitesPerRoom ?? DEFAULT_MAX_NEW_SITES_PER_ROOM;
+  const maxNewSitesPerRoom = Memory.cfg?.roomPlannerBuild?.maxNewSitesPerRoom ?? DEFAULT_MAX_NEW_SITES_PER_ROOM;
   let globalRemaining = GLOBAL_SITE_SOFT_CAP - currentGlobalSiteCount;
 
   for (const room of rooms) {
@@ -132,7 +132,7 @@ export function runRoomPlannerConstruction(): void {
       return;
     }
 
-    const roomPlan = Memory.roomPlanner?.[room.name];
+    const roomPlan = Memory.data?.roomPlanner?.[room.name];
     if (!roomPlan) {
       continue;
     }
@@ -199,8 +199,9 @@ export function runRoomPlannerConstruction(): void {
     }
 
     if (newSites > 0) {
-      Memory.roomPlannerAuto = Memory.roomPlannerAuto || {};
-      Memory.roomPlannerAuto[room.name] = Game.time;
+      Memory.runtime = Memory.runtime || {};
+      Memory.runtime.roomPlannerAuto = Memory.runtime.roomPlannerAuto || {};
+      Memory.runtime.roomPlannerAuto[room.name] = Game.time;
       console.log(`[roomPlanner] ${room.name} queued ${newSites} construction site(s)`);
     }
   }
