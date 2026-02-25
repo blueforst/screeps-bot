@@ -21,6 +21,9 @@ declare global {
   interface Memory {
     creepConfigs?: Record<string, CreepConfig>;
     lastDeployTag?: string;
+    workerControl?: {
+      maxPerRoom?: number;
+    };
     energyPickup?: {
       preferredMin?: number;
     };

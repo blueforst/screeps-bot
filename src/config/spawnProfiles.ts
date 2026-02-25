@@ -30,8 +30,20 @@ function oneOneOneBody(room: Room): BodyPartConstant[] {
   return clampByCapacity(parts, room);
 }
 
+function carryMoveBody(room: Room): BodyPartConstant[] {
+  const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
+  const pairCount = Math.max(1, Math.floor(room.energyCapacityAvailable / pairCost));
+  const parts: BodyPartConstant[] = [];
+
+  for (let i = 0; i < pairCount; i++) {
+    parts.push(CARRY, MOVE);
+  }
+
+  return clampByCapacity(parts, room);
+}
+
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => clampByCapacity([WORK, WORK, MOVE, WORK, MOVE], room),
-  carrier: (room) => clampByCapacity([CARRY, CARRY, CARRY, MOVE, MOVE], room),
+  carrier: carryMoveBody,
   worker: oneOneOneBody,
 };

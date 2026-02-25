@@ -1,5 +1,17 @@
+import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
+
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set(["harvester", "carrier", "worker"]);
+const ROOM_PLANNER_TTL = 50000;
+const ROOM_PLANNER_AUTO_TTL = 20000;
+
+function getOwnedRoomNameSet(): Set<string> {
+  return new Set(
+    Object.values(Game.rooms)
+      .filter((room) => room.controller?.my)
+      .map((room) => room.name),
+  );
+}
 
 function cleanupDeadCreepMemory(): number {
   let removed = 0;
@@ -49,6 +61,72 @@ function cleanupLegacyConfigMemory(): number {
   return removed;
 }
 
+function cleanupManagedCreepConfigs(): number {
+  if (!Memory.creepConfigs) {
+    return 0;
+  }
+
+  const expected = new Set<string>();
+  const myRooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  for (const room of myRooms) {
+    for (const name of getExpectedManagedConfigNames(room)) {
+      expected.add(name);
+    }
+  }
+  let removed = 0;
+
+  for (const [configName, config] of Object.entries(Memory.creepConfigs)) {
+    if (!VALID_ROLES.has(config.role)) {
+      continue;
+    }
+
+    if (!expected.has(configName)) {
+      delete Memory.creepConfigs[configName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
+function cleanupRoomPlannerMemory(ownedRooms: Set<string>): number {
+  if (!Memory.roomPlanner) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [roomName, data] of Object.entries(Memory.roomPlanner)) {
+    const staleByRoom = !ownedRooms.has(roomName);
+    const staleByTime = Game.time - data.savedAt > ROOM_PLANNER_TTL;
+
+    if (staleByRoom || staleByTime) {
+      delete Memory.roomPlanner[roomName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
+function cleanupRoomPlannerAutoMemory(ownedRooms: Set<string>): number {
+  if (!Memory.roomPlannerAuto) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [roomName, touchedAt] of Object.entries(Memory.roomPlannerAuto)) {
+    const staleByRoom = !ownedRooms.has(roomName);
+    const staleByTime = Game.time - touchedAt > ROOM_PLANNER_AUTO_TTL;
+
+    if (staleByRoom || staleByTime) {
+      delete Memory.roomPlannerAuto[roomName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
 export function runMemoryCleanup(): void {
   if (Game.time % CLEANUP_INTERVAL !== 0) {
     return;
@@ -57,8 +135,21 @@ export function runMemoryCleanup(): void {
   const removedCreeps = cleanupDeadCreepMemory();
   const trimmedTasks = cleanupSpawnQueueMemory();
   const removedConfigs = cleanupLegacyConfigMemory();
+  const removedManagedConfigs = cleanupManagedCreepConfigs();
+  const ownedRooms = getOwnedRoomNameSet();
+  const removedRoomPlans = cleanupRoomPlannerMemory(ownedRooms);
+  const removedRoomPlannerAuto = cleanupRoomPlannerAutoMemory(ownedRooms);
 
-  if (removedCreeps > 0 || trimmedTasks > 0 || removedConfigs > 0) {
-    console.log(`[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, configs=${removedConfigs}`);
+  if (
+    removedCreeps > 0 ||
+    trimmedTasks > 0 ||
+    removedConfigs > 0 ||
+    removedManagedConfigs > 0 ||
+    removedRoomPlans > 0 ||
+    removedRoomPlannerAuto > 0
+  ) {
+    console.log(
+      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}`,
+    );
   }
 }

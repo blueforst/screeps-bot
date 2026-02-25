@@ -56,6 +56,11 @@ function getSpawnBody(spawn: StructureSpawn, configName: string): BodyPartConsta
   return spawnProfiles[config.role](spawn.room);
 }
 
+function getSpawnTime(spawn: StructureSpawn, configName: string): number {
+  const body = getSpawnBody(spawn, configName);
+  return body.length * CREEP_SPAWN_TIME;
+}
+
 function estimateHarvesterPreSpawnThreshold(spawn: StructureSpawn, configName: string, config: CreepConfig): number {
   const workPos = getHarvesterWorkPos(config);
   if (!workPos) {
@@ -64,16 +69,37 @@ function estimateHarvesterPreSpawnThreshold(spawn: StructureSpawn, configName: s
 
   const path = spawn.pos.findPathTo(workPos, { ignoreCreeps: true, swampCost: 2 });
   const commuteTime = path.length;
-  const body = getSpawnBody(spawn, configName);
-  const produceTime = body.length * CREEP_SPAWN_TIME;
+  const produceTime = getSpawnTime(spawn, configName);
 
   return commuteTime + produceTime;
+}
+
+function shouldPreSpawnCarrier(spawn: StructureSpawn, configName: string): boolean {
+  const creeps = getConfigCreeps(configName);
+  if (creeps.length === 0) {
+    return true;
+  }
+
+  if (creeps.length >= 2) {
+    return false;
+  }
+
+  const threshold = getSpawnTime(spawn, configName);
+  const soonestDying = creeps.reduce((minCreep, creep) =>
+    creep.ticksToLive < minCreep.ticksToLive ? creep : minCreep,
+  );
+
+  return soonestDying.ticksToLive <= threshold;
 }
 
 function shouldPreSpawnHarvester(spawn: StructureSpawn, configName: string, config: CreepConfig): boolean {
   const creeps = getConfigCreeps(configName);
   if (creeps.length === 0) {
     return true;
+  }
+
+  if (creeps.length >= 2) {
+    return false;
   }
 
   const threshold = estimateHarvesterPreSpawnThreshold(spawn, configName, config);
@@ -91,6 +117,10 @@ function shouldQueueConfig(spawn: StructureSpawn, configName: string, config: Cr
 
   if (config.role === "harvester") {
     return shouldPreSpawnHarvester(spawn, configName, config);
+  }
+
+  if (config.role === "carrier") {
+    return shouldPreSpawnCarrier(spawn, configName);
   }
 
   return getConfigCreeps(configName).length === 0;
