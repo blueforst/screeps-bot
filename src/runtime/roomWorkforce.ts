@@ -13,15 +13,8 @@ export function getWorkerCap(room: Room): number {
 
 export function getDesiredWorkerCount(room: Room): number {
   const cap = getWorkerCap(room);
-  let desired = DEFAULT_WORKER_BASE;
-
-  const rcl = room.controller?.level ?? 0;
-  if (rcl >= 2) {
-    desired += 1;
-  }
-  if (rcl >= 3) {
-    desired += 1;
-  }
+  const rcl = room.controller?.level ?? 1;
+  let desired = clamp(5 - rcl, DEFAULT_WORKER_BASE, cap);
 
   const constructionCount = room.find(FIND_CONSTRUCTION_SITES).length;
   if (constructionCount >= 1) {
@@ -30,8 +23,7 @@ export function getDesiredWorkerCount(room: Room): number {
   if (constructionCount >= 6) {
     desired += 1;
   }
-
-  if (room.energyCapacityAvailable >= 550) {
+  if (constructionCount >= 15) {
     desired += 1;
   }
 

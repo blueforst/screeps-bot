@@ -30,6 +30,48 @@ function oneOneOneBody(room: Room): BodyPartConstant[] {
   return clampByCapacity(parts, room);
 }
 
+function twoToOneWorkMoveBody(room: Room): BodyPartConstant[] {
+  const unitCost = BODYPART_COST[WORK] * 2 + BODYPART_COST[MOVE];
+  const unitCount = Math.max(1, Math.floor(room.energyCapacityAvailable / unitCost));
+  const parts: BodyPartConstant[] = [];
+
+  for (let i = 0; i < unitCount; i++) {
+    parts.push(WORK, WORK, MOVE);
+  }
+
+  return clampByCapacity(parts, room);
+}
+
+const FIXED_MINER_BODY: BodyPartConstant[] = [WORK, WORK, WORK, WORK, WORK, MOVE, MOVE];
+
+function hasContainerNearSource(sourceId?: string): boolean {
+  if (!sourceId) {
+    return false;
+  }
+
+  const source = Game.getObjectById(sourceId as Id<Source>);
+  if (!source) {
+    return false;
+  }
+
+  const containers = source.pos.findInRange(FIND_STRUCTURES, 1, {
+    filter: (structure) => structure.structureType === STRUCTURE_CONTAINER,
+  });
+
+  return containers.length > 0;
+}
+
+export function getHarvesterBody(room: Room, sourceId?: string): BodyPartConstant[] {
+  if (hasContainerNearSource(sourceId)) {
+    const fixedBodyCost = FIXED_MINER_BODY.reduce((sum, part) => sum + BODYPART_COST[part], 0);
+    if (room.energyCapacityAvailable >= fixedBodyCost) {
+      return [...FIXED_MINER_BODY];
+    }
+  }
+
+  return twoToOneWorkMoveBody(room);
+}
+
 function carryMoveBody(room: Room): BodyPartConstant[] {
   const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
   const pairCount = Math.max(1, Math.floor(room.energyCapacityAvailable / pairCost));
@@ -43,7 +85,7 @@ function carryMoveBody(room: Room): BodyPartConstant[] {
 }
 
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
-  harvester: (room) => clampByCapacity([WORK, WORK, MOVE, WORK, MOVE], room),
+  harvester: (room) => getHarvesterBody(room),
   carrier: carryMoveBody,
   worker: oneOneOneBody,
 };

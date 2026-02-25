@@ -1,5 +1,5 @@
 import type { LoDashStatic } from "lodash";
-import type { CreepApi, CreepConfig, RoleName } from "@/types/system";
+import type { CreepApi, CreepConfig, RoleName, WorkerTaskType } from "@/types/system";
 
 declare const _: LoDashStatic;
 
@@ -49,6 +49,16 @@ declare global {
     configName?: string;
     working?: boolean;
     ready?: boolean;
+    carrierPlanMode?: "pickup" | "deliver";
+    carrierPlanTargetId?: string;
+    carrierPlanTargetKind?: "resource" | "structure";
+    taskId?: string;
+    taskType?: WorkerTaskType;
+    taskTargetId?: string;
+  }
+
+  interface RoomMemory {
+    tasks?: Record<string, import("@/types/system").WorkerTask>;
   }
 
   interface SpawnMemory {

@@ -1,5 +1,6 @@
 import type { RoleFactory } from "@/types/system";
 import { getPreferredEnergyPickupTarget, isDroppedResourceTarget, moveToRemoteWorkTarget, moveToTarget } from "@/roles/shared";
+import { assignWorkerTask, completeWorkerTaskIfDone, getWorkerTaskTarget, releaseWorkerTask } from "@/runtime/workerTaskPool";
 
 export const workerRole: RoleFactory = () => ({
   source: (creep): boolean => {
@@ -23,26 +24,45 @@ export const workerRole: RoleFactory = () => ({
     return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
   },
   target: (creep): boolean => {
-    const site = creep.pos.findClosestByRange(FIND_CONSTRUCTION_SITES);
-    if (site) {
-      const buildCode = creep.build(site);
-      if (buildCode === ERR_NOT_IN_RANGE) {
-        moveToRemoteWorkTarget(creep, site);
-      }
-      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
-    }
-
-    const controller = creep.room.controller;
-    if (!controller) {
+    const task = assignWorkerTask(creep);
+    if (!task) {
       return true;
     }
 
-    const upgradeCode = creep.upgradeController(controller);
-    if (upgradeCode === ERR_NOT_IN_RANGE) {
-      moveToRemoteWorkTarget(creep, controller);
-      return false;
+    const target = getWorkerTaskTarget(task);
+    if (!target) {
+      releaseWorkerTask(creep);
+      return true;
     }
 
-    return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+    if (task.type === "build") {
+      const buildCode = creep.build(target as ConstructionSite);
+      if (buildCode === ERR_NOT_IN_RANGE) {
+        moveToRemoteWorkTarget(creep, target);
+      }
+
+      if (buildCode === ERR_INVALID_TARGET || completeWorkerTaskIfDone(task)) {
+        releaseWorkerTask(creep);
+      }
+
+      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+    }
+
+    if (task.type === "upgrade") {
+      const upgradeCode = creep.upgradeController(target as StructureController);
+      if (upgradeCode === ERR_NOT_IN_RANGE) {
+        moveToRemoteWorkTarget(creep, target);
+        return false;
+      }
+
+      if (upgradeCode === ERR_INVALID_TARGET || completeWorkerTaskIfDone(task)) {
+        releaseWorkerTask(creep);
+      }
+
+      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+    }
+
+    releaseWorkerTask(creep);
+    return true;
   },
 });

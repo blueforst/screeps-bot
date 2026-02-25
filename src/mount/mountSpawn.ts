@@ -1,4 +1,4 @@
-import { spawnProfiles } from "@/config/spawnProfiles";
+import { getHarvesterBody, spawnProfiles } from "@/config/spawnProfiles";
 import type { RoleName } from "@/types/system";
 
 const runtimeGlobal = global;
@@ -18,6 +18,10 @@ function chooseBody(spawn: StructureSpawn, configName: string): BodyPartConstant
 
   if (!config) {
     return [WORK, CARRY, MOVE];
+  }
+
+  if (config.role === "harvester") {
+    return getHarvesterBody(spawn.room, config.args[0]);
   }
 
   return spawnProfiles[config.role](spawn.room);

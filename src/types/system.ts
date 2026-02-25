@@ -20,7 +20,10 @@ export interface WorkerTask {
   targetId: string;
   roomName: string;
   priority: number;
-  assignedTo?: string;
+  requiredWork?: number;
+  assignedCreeps: string[];
+  maxAssignees: number;
+  status: "active" | "done";
   updatedAt: number;
 }
 

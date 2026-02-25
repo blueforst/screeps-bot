@@ -21,24 +21,42 @@ export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { po
   moveToTarget(creep, target, 3);
 }
 
-export function getEnergyStoreTarget(creep: Creep): AnyStoreStructure | null {
-  const priority = creep.room.find(FIND_STRUCTURES, {
+interface EnergyStoreTargetOptions {
+  excludeIds?: string[];
+}
+
+export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOptions = {}): AnyStoreStructure | null {
+  const excludeSet = new Set(options.excludeIds || []);
+
+  const spawnAndExtensionTargets = creep.room.find(FIND_STRUCTURES, {
     filter: (structure) => {
+      if (excludeSet.has(structure.id)) {
+        return false;
+      }
+
       if (structure.structureType === STRUCTURE_SPAWN || structure.structureType === STRUCTURE_EXTENSION) {
         return (structure as StructureSpawn | StructureExtension).store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-      }
-      if (structure.structureType === STRUCTURE_TOWER) {
-        return (structure as StructureTower).store.getFreeCapacity(RESOURCE_ENERGY) > 0;
       }
       return false;
     },
   });
 
-  if (priority.length > 0) {
-    return priority[0] as AnyStoreStructure;
+  if (spawnAndExtensionTargets.length > 0) {
+    return creep.pos.findClosestByRange(spawnAndExtensionTargets) as AnyStoreStructure;
   }
 
-  if (creep.room.storage) {
+  const towerTargets = creep.room.find(FIND_STRUCTURES, {
+    filter: (structure) =>
+      !excludeSet.has(structure.id) &&
+      structure.structureType === STRUCTURE_TOWER &&
+      (structure as StructureTower).store.getFreeCapacity(RESOURCE_ENERGY) > 0,
+  });
+
+  if (towerTargets.length > 0) {
+    return creep.pos.findClosestByRange(towerTargets) as AnyStoreStructure;
+  }
+
+  if (creep.room.storage && !excludeSet.has(creep.room.storage.id)) {
     return creep.room.storage;
   }
 

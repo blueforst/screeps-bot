@@ -8,6 +8,7 @@ import { bootstrapRooms } from "@/runtime/bootstrap";
 import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
 import { registerGlobalApi } from "@/runtime/creepApi";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
+import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 
 mountAll();
 registerGlobalApi();
@@ -32,6 +33,7 @@ function gameLoop(): void {
   runAutoPlannerByFlag();
   runRoomPlannerConstruction();
   bootstrapRooms();
+  refreshWorkerTasks();
   scheduleSpawnTasks();
 
   Object.values(Game.spawns).forEach((spawn) => spawn.work());
