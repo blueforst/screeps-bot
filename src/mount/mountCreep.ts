@@ -47,6 +47,13 @@ export function mountCreep(): void {
 
     if (shouldSwitch) {
       this.memory.working = !isWorking;
+
+      const switchedToWorking = this.memory.working === true;
+      if (switchedToWorking) {
+        logic.target(this);
+      } else if (logic.source) {
+        logic.source(this);
+      }
     }
   };
 }

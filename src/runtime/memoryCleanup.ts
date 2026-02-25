@@ -131,6 +131,39 @@ function cleanupRoomPlannerAutoMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupPickupReservationMemory(ownedRooms: Set<string>): number {
+  if (!Memory.rooms) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [roomName, roomMemory] of Object.entries(Memory.rooms)) {
+    if (!ownedRooms.has(roomName)) {
+      continue;
+    }
+
+    const reservations = roomMemory.pickupReservations;
+    if (!reservations) {
+      continue;
+    }
+
+    for (const [targetId, reservation] of Object.entries(reservations)) {
+      for (const [creepName, claim] of Object.entries(reservation.claims)) {
+        if (claim.until < Game.time || !Game.creeps[creepName]) {
+          delete reservation.claims[creepName];
+          removed += 1;
+        }
+      }
+
+      if (Object.keys(reservation.claims).length === 0) {
+        delete reservations[targetId];
+      }
+    }
+  }
+
+  return removed;
+}
+
 export function runMemoryCleanup(): void {
   if (Game.time % CLEANUP_INTERVAL !== 0) {
     return;
@@ -143,6 +176,7 @@ export function runMemoryCleanup(): void {
   const ownedRooms = getOwnedRoomNameSet();
   const removedRoomPlans = cleanupRoomPlannerMemory(ownedRooms);
   const removedRoomPlannerAuto = cleanupRoomPlannerAutoMemory(ownedRooms);
+  const removedPickupReservations = cleanupPickupReservationMemory(ownedRooms);
 
   if (
     removedCreeps > 0 ||
@@ -150,10 +184,11 @@ export function runMemoryCleanup(): void {
     removedConfigs > 0 ||
     removedManagedConfigs > 0 ||
     removedRoomPlans > 0 ||
-    removedRoomPlannerAuto > 0
+    removedRoomPlannerAuto > 0 ||
+    removedPickupReservations > 0
   ) {
     console.log(
-      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}`,
+      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, pickupReservations=${removedPickupReservations}`,
     );
   }
 }

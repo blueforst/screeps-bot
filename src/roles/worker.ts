@@ -1,15 +1,21 @@
 import type { RoleFactory } from "@/types/system";
 import { moveToRemoteWorkTarget, pickupEnergyFromPreferredTarget } from "@/roles/shared";
 import { assignWorkerTask, completeWorkerTaskIfDone, getWorkerTaskTarget, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import { releasePickupReservation } from "@/runtime/energyPickupReservation";
 
 export const workerRole: RoleFactory = () => ({
   source: (creep): boolean => {
     const result = pickupEnergyFromPreferredTarget(creep);
-    if (!result.picked && !result.outOfRange) {
-      return creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
+    const shouldSwitchToTarget = creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
+    if (shouldSwitchToTarget) {
+      releasePickupReservation(creep);
     }
 
-    return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
+    if (!result.picked && !result.outOfRange) {
+      return shouldSwitchToTarget;
+    }
+
+    return shouldSwitchToTarget;
   },
   target: (creep): boolean => {
     const task = assignWorkerTask(creep);

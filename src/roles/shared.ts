@@ -1,3 +1,10 @@
+import {
+  getPickupTargetEnergyAmount,
+  getReservedPickupTarget,
+  releasePickupReservation,
+  reservePickupTarget,
+} from "@/runtime/energyPickupReservation";
+
 function getTargetPos(target: RoomPosition | { pos: RoomPosition }): RoomPosition {
   return target instanceof RoomPosition ? target : target.pos;
 }
@@ -64,14 +71,10 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
 }
 
 function getTargetEnergyAmount(target: EnergyPickupTarget): number {
-  if (isDroppedResourceTarget(target)) {
-    return target.amount;
-  }
-
-  return target.store.getUsedCapacity(RESOURCE_ENERGY);
+  return getPickupTargetEnergyAmount(target);
 }
 
-export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget | null {
+function getPreferredEnergyPickupCandidates(creep: Creep): EnergyPickupTarget[] {
   const dropped = creep.room.find(FIND_DROPPED_RESOURCES, {
     filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
   });
@@ -83,7 +86,7 @@ export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget
 
   const candidates: EnergyPickupTarget[] = [...dropped, ...containers];
   if (candidates.length === 0) {
-    return null;
+    return [];
   }
 
   const configuredMin = Memory.cfg?.energyPickup?.preferredMin;
@@ -92,7 +95,12 @@ export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget
   const richCandidates = candidates.filter((target) => getTargetEnergyAmount(target) >= threshold);
   const preferred = richCandidates.length > 0 ? richCandidates : candidates;
 
-  return creep.pos.findClosestByRange(preferred);
+  return preferred.sort((a, b) => creep.pos.getRangeTo(a.pos) - creep.pos.getRangeTo(b.pos));
+}
+
+export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget | null {
+  const candidates = getPreferredEnergyPickupCandidates(creep);
+  return candidates.length > 0 ? candidates[0] : null;
 }
 
 interface PickupResult {
@@ -101,7 +109,24 @@ interface PickupResult {
 }
 
 export function pickupEnergyFromPreferredTarget(creep: Creep): PickupResult {
-  const sourceTarget = getPreferredEnergyPickupTarget(creep);
+  const desiredAmount = creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0;
+
+  let sourceTarget = getReservedPickupTarget(creep) as EnergyPickupTarget | null;
+  if (sourceTarget && !reservePickupTarget(creep, sourceTarget, desiredAmount)) {
+    releasePickupReservation(creep, sourceTarget.id);
+    sourceTarget = null;
+  }
+
+  if (!sourceTarget) {
+    const candidates = getPreferredEnergyPickupCandidates(creep);
+    for (const candidate of candidates) {
+      if (reservePickupTarget(creep, candidate, desiredAmount)) {
+        sourceTarget = candidate;
+        break;
+      }
+    }
+  }
+
   if (!sourceTarget) {
     return { picked: false, outOfRange: false };
   }
@@ -113,6 +138,15 @@ export function pickupEnergyFromPreferredTarget(creep: Creep): PickupResult {
       return { picked: false, outOfRange: true };
     }
 
+    if (pickupCode === ERR_INVALID_TARGET) {
+      releasePickupReservation(creep, sourceTarget.id);
+      return { picked: false, outOfRange: false };
+    }
+
+    if (pickupCode === OK && creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
+      releasePickupReservation(creep, sourceTarget.id);
+    }
+
     return { picked: pickupCode === OK, outOfRange: false };
   }
 
@@ -120,6 +154,15 @@ export function pickupEnergyFromPreferredTarget(creep: Creep): PickupResult {
   if (withdrawCode === ERR_NOT_IN_RANGE) {
     moveToTarget(creep, sourceTarget);
     return { picked: false, outOfRange: true };
+  }
+
+  if (withdrawCode === ERR_NOT_ENOUGH_RESOURCES || withdrawCode === ERR_INVALID_TARGET) {
+    releasePickupReservation(creep, sourceTarget.id);
+    return { picked: false, outOfRange: false };
+  }
+
+  if (withdrawCode === OK && creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
+    releasePickupReservation(creep, sourceTarget.id);
   }
 
   return { picked: withdrawCode === OK, outOfRange: false };

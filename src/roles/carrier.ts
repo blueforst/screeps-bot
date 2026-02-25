@@ -4,18 +4,20 @@ import {
   isDroppedResourceTarget,
   moveToTarget,
 } from "@/roles/shared";
+import {
+  getPickupTargetEnergyAmount,
+  getReservedPickupTarget,
+  releasePickupReservation,
+  reservePickupTarget,
+} from "@/runtime/energyPickupReservation";
 
 type CarrierPickupTarget = Resource | StructureContainer;
 
 function getCarrierPickupAmount(target: CarrierPickupTarget): number {
-  if (isDroppedResourceTarget(target)) {
-    return target.amount;
-  }
-
-  return target.store.getUsedCapacity(RESOURCE_ENERGY);
+  return getPickupTargetEnergyAmount(target);
 }
 
-function getWeightedCarrierPickupTarget(creep: Creep): CarrierPickupTarget | null {
+function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[] {
   const dropped = creep.room.find(FIND_DROPPED_RESOURCES, {
     filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
   });
@@ -27,31 +29,52 @@ function getWeightedCarrierPickupTarget(creep: Creep): CarrierPickupTarget | nul
 
   const candidates: CarrierPickupTarget[] = [...dropped, ...containers];
   if (candidates.length === 0) {
-    return null;
+    return [];
   }
 
-  let bestTarget: CarrierPickupTarget | null = null;
-  let bestScore = Number.NEGATIVE_INFINITY;
+  return candidates
+    .filter((candidate) => getCarrierPickupAmount(candidate) > 0)
+    .sort((a, b) => {
+      const aDistance = Math.max(1, creep.pos.getRangeTo(a.pos));
+      const bDistance = Math.max(1, creep.pos.getRangeTo(b.pos));
+      const aScore = getCarrierPickupAmount(a) / aDistance;
+      const bScore = getCarrierPickupAmount(b) / bDistance;
+      return bScore - aScore;
+    });
+}
 
-  for (const candidate of candidates) {
-    const amount = getCarrierPickupAmount(candidate);
-    if (amount <= 0) {
-      continue;
-    }
-
-    const distance = Math.max(1, creep.pos.getRangeTo(candidate.pos));
-    const score = amount / distance;
-    if (score > bestScore) {
-      bestScore = score;
-      bestTarget = candidate;
-    }
+function isCarrierPickupTarget(target: Resource | AnyStoreStructure): target is CarrierPickupTarget {
+  if (isDroppedResourceTarget(target)) {
+    return true;
   }
 
-  return bestTarget;
+  return target.structureType === STRUCTURE_CONTAINER;
 }
 
 function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: boolean } {
-  const sourceTarget = getWeightedCarrierPickupTarget(creep);
+  const desiredAmount = creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0;
+
+  let sourceTarget = getReservedPickupTarget(creep);
+  if (sourceTarget && !isCarrierPickupTarget(sourceTarget)) {
+    releasePickupReservation(creep, sourceTarget.id);
+    sourceTarget = null;
+  }
+
+  if (sourceTarget && !reservePickupTarget(creep, sourceTarget, desiredAmount)) {
+    releasePickupReservation(creep, sourceTarget.id);
+    sourceTarget = null;
+  }
+
+  if (!sourceTarget) {
+    const candidates = getWeightedCarrierPickupCandidates(creep);
+    for (const candidate of candidates) {
+      if (reservePickupTarget(creep, candidate, desiredAmount)) {
+        sourceTarget = candidate;
+        break;
+      }
+    }
+  }
+
   if (!sourceTarget) {
     return { picked: false, outOfRange: false };
   }
@@ -63,6 +86,11 @@ function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: bo
       return { picked: false, outOfRange: true };
     }
 
+    if (pickupCode === ERR_INVALID_TARGET) {
+      releasePickupReservation(creep, sourceTarget.id);
+      return { picked: false, outOfRange: false };
+    }
+
     return { picked: pickupCode === OK, outOfRange: false };
   }
 
@@ -70,6 +98,11 @@ function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: bo
   if (withdrawCode === ERR_NOT_IN_RANGE) {
     moveToTarget(creep, sourceTarget);
     return { picked: false, outOfRange: true };
+  }
+
+  if (withdrawCode === ERR_NOT_ENOUGH_RESOURCES || withdrawCode === ERR_INVALID_TARGET) {
+    releasePickupReservation(creep, sourceTarget.id);
+    return { picked: false, outOfRange: false };
   }
 
   return { picked: withdrawCode === OK, outOfRange: false };
@@ -106,7 +139,7 @@ function precomputePostTransferAction(creep: Creep, currentTarget: AnyStoreStruc
   const free = currentTarget.store.getFreeCapacity(RESOURCE_ENERGY);
 
   if (energy <= free) {
-    const pickupTarget = getWeightedCarrierPickupTarget(creep);
+    const pickupTarget = getWeightedCarrierPickupCandidates(creep)[0] || null;
     if (pickupTarget) {
       setPostTransferPlan(creep, "pickup", pickupTarget);
       return;
@@ -127,11 +160,16 @@ export const carrierRole: RoleFactory = () => ({
     clearPostTransferPlan(creep);
 
     const result = pickupEnergyForCarrier(creep);
-    if (!result.picked && !result.outOfRange) {
-      return creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
+    const shouldSwitchToTarget = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
+    if (shouldSwitchToTarget) {
+      releasePickupReservation(creep);
     }
 
-    return creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
+    if (!result.picked && !result.outOfRange) {
+      return shouldSwitchToTarget;
+    }
+
+    return shouldSwitchToTarget;
   },
   target: (creep): boolean => {
     const target = getEnergyStoreTarget(creep);

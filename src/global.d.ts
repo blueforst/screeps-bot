@@ -102,6 +102,8 @@ declare global {
     carrierPlanMode?: "pickup" | "deliver";
     carrierPlanTargetId?: string;
     carrierPlanTargetKind?: "resource" | "structure";
+    energyPickupTargetId?: string;
+    energyPickupTargetKind?: "resource" | "structure";
     taskId?: string;
     taskType?: WorkerTaskType;
     taskTargetId?: string;
@@ -109,6 +111,13 @@ declare global {
 
   interface RoomMemory {
     tasks?: Record<string, import("@/types/system").WorkerTask>;
+    pickupReservations?: Record<
+      string,
+      {
+        kind: "resource" | "structure";
+        claims: Record<string, { amount: number; until: number }>;
+      }
+    >;
   }
 
   interface SpawnMemory {
