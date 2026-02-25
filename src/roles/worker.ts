@@ -6,7 +6,7 @@ export const workerRole: RoleFactory = () => ({
   source: (creep): boolean => {
     const result = pickupEnergyFromPreferredTarget(creep);
     if (!result.picked && !result.outOfRange) {
-      return false;
+      return creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
     }
 
     return creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
@@ -14,13 +14,13 @@ export const workerRole: RoleFactory = () => ({
   target: (creep): boolean => {
     const task = assignWorkerTask(creep);
     if (!task) {
-      return true;
+      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
     }
 
     const target = getWorkerTaskTarget(task);
     if (!target) {
       releaseWorkerTask(creep);
-      return true;
+      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
     }
 
     if (task.type === "build") {
@@ -51,6 +51,6 @@ export const workerRole: RoleFactory = () => ({
     }
 
     releaseWorkerTask(creep);
-    return true;
+    return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
   },
 });
