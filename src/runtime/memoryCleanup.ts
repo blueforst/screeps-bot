@@ -14,6 +14,10 @@ function getOwnedRoomNameSet(): Set<string> {
 }
 
 function cleanupDeadCreepMemory(): number {
+  if (!Memory.creeps) {
+    return 0;
+  }
+
   let removed = 0;
 
   for (const creepName of Object.keys(Memory.creeps)) {

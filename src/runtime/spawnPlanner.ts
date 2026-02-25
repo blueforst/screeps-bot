@@ -8,13 +8,14 @@ function isConfigQueued(spawn: StructureSpawn, configName: string): boolean {
 }
 
 function isConfigSpawning(configName: string): boolean {
+  const creepMemory = Memory.creeps || {};
   return Object.values(Game.spawns).some((spawn) => {
     if (!spawn.spawning) {
       return false;
     }
 
     const spawningName = spawn.spawning.name;
-    return Memory.creeps[spawningName]?.configName === configName;
+    return creepMemory[spawningName]?.configName === configName;
   });
 }
 

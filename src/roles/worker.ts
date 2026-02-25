@@ -33,7 +33,12 @@ export const workerRole: RoleFactory = () => ({
         releaseWorkerTask(creep);
       }
 
-      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+      const shouldSwitchToSource = creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+      if (shouldSwitchToSource) {
+        releaseWorkerTask(creep);
+      }
+
+      return shouldSwitchToSource;
     }
 
     if (task.type === "upgrade") {
@@ -47,7 +52,12 @@ export const workerRole: RoleFactory = () => ({
         releaseWorkerTask(creep);
       }
 
-      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+      const shouldSwitchToSource = creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+      if (shouldSwitchToSource) {
+        releaseWorkerTask(creep);
+      }
+
+      return shouldSwitchToSource;
     }
 
     releaseWorkerTask(creep);
