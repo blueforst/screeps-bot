@@ -21,6 +21,7 @@ export interface WorkerTask {
   roomName: string;
   priority: number;
   requiredWork?: number;
+  repairTargetHits?: number;
   assignedCreeps: string[];
   maxAssignees: number;
   status: "active" | "done";

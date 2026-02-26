@@ -9,6 +9,7 @@ import { bootstrapRooms } from "@/runtime/bootstrap";
 import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
 import { registerGlobalApi } from "@/runtime/creepApi";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
+import { runTowerControl } from "@/runtime/towerControl";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 
 mountAll();
@@ -36,6 +37,7 @@ function gameLoop(): void {
   runMemoryCleanup();
   runAutoPlannerByFlag();
   runRoomPlannerConstruction();
+  runTowerControl();
   bootstrapRooms();
   refreshWorkerTasks();
   scheduleSpawnTasks();

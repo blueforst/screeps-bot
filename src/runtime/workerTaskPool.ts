@@ -1,7 +1,38 @@
-import type { WorkerTask, WorkerTaskType } from "@/types/system";
+import type { WorkerTask } from "@/types/system";
 import { getDesiredWorkerCount } from "@/runtime/roomWorkforce";
 
 const TASK_REFRESH_INTERVAL = 3;
+const RAMPART_POST_BUILD_TARGET_HITS = 3000;
+const RAMPART_REPAIR_START_RATIO = 0.7;
+const RAMPART_REPAIR_ENERGY_GATE_RATIO = 0.35;
+
+function getRampartRepairCap(room: Room): number {
+  const rcl = room.controller?.level ?? 1;
+  if (rcl >= 8) {
+    return 1_000_000;
+  }
+  if (rcl >= 7) {
+    return 500_000;
+  }
+  if (rcl >= 6) {
+    return 150_000;
+  }
+  if (rcl >= 5) {
+    return 50_000;
+  }
+  if (rcl >= 4) {
+    return 20_000;
+  }
+  return 10_000;
+}
+
+function canDoHighCapRampartRepair(room: Room): boolean {
+  if (room.energyCapacityAvailable <= 0) {
+    return false;
+  }
+
+  return room.energyAvailable / room.energyCapacityAvailable >= RAMPART_REPAIR_ENERGY_GATE_RATIO;
+}
 
 function ensureRoomMemory(roomName: string): RoomMemory {
   if (!Memory.rooms) {
@@ -58,6 +89,7 @@ function upsertTask(roomName: string, task: WorkerTask): void {
   current.targetId = task.targetId;
   current.priority = task.priority;
   current.requiredWork = task.requiredWork;
+  current.repairTargetHits = task.repairTargetHits;
   current.maxAssignees = task.maxAssignees;
   current.status = task.status;
   current.updatedAt = task.updatedAt;
@@ -103,6 +135,26 @@ function createUpgradeTask(room: Room): WorkerTask | null {
   };
 }
 
+function createRampartRepairTask(rampart: StructureRampart): WorkerTask {
+  const targetHits = getRampartRepairCap(rampart.room);
+  const remaining = Math.max(0, targetHits - rampart.hits);
+  const maxAssignees = Math.max(1, Math.min(2, Math.ceil(remaining / 1500)));
+
+  return {
+    id: `repair:${rampart.id}`,
+    type: "repair",
+    targetId: rampart.id,
+    roomName: rampart.room.name,
+    priority: 780,
+    requiredWork: remaining,
+    repairTargetHits: targetHits,
+    assignedCreeps: [],
+    maxAssignees,
+    status: "active",
+    updatedAt: Game.time,
+  };
+}
+
 function cleanupStaleTasks(roomName: string): void {
   const tasks = ensureRoomTaskStore(roomName);
   for (const [taskId, task] of Object.entries(tasks)) {
@@ -123,6 +175,11 @@ export function refreshWorkerTasks(): void {
   const rooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
   for (const room of rooms) {
     const tasks = ensureRoomTaskStore(room.name);
+    const activeRepairTaskIds = new Set(
+      Object.values(tasks)
+        .filter((task) => task.type === "repair" && task.status === "active")
+        .map((task) => task.id),
+    );
     for (const task of Object.values(tasks)) {
       task.updatedAt = -1;
     }
@@ -130,6 +187,30 @@ export function refreshWorkerTasks(): void {
     const sites = room.find(FIND_CONSTRUCTION_SITES);
     for (const site of sites) {
       upsertTask(room.name, createBuildTask(site));
+    }
+
+    const rampartCap = getRampartRepairCap(room);
+    const startRepairHits = Math.floor(rampartCap * RAMPART_REPAIR_START_RATIO);
+    const allowHighCapRepair = canDoHighCapRampartRepair(room);
+
+    const weakRamparts = room.find(FIND_MY_STRUCTURES, {
+      filter: (structure) =>
+        structure.structureType === STRUCTURE_RAMPART &&
+        (structure as StructureRampart).hits < rampartCap,
+    }) as StructureRampart[];
+    for (const rampart of weakRamparts) {
+      const taskId = `repair:${rampart.id}`;
+      const underStartLine = rampart.hits < startRepairHits;
+      const wasActive = activeRepairTaskIds.has(taskId);
+      const isSurvivalRepair = rampart.hits < RAMPART_POST_BUILD_TARGET_HITS;
+      if (!isSurvivalRepair && !allowHighCapRepair) {
+        continue;
+      }
+      if (!underStartLine && !wasActive) {
+        continue;
+      }
+
+      upsertTask(room.name, createRampartRepairTask(rampart));
     }
 
     const upgradeTask = createUpgradeTask(room);
@@ -148,6 +229,10 @@ function getTaskTarget(task: WorkerTask): RoomObject | null {
 
   if (task.type === "upgrade") {
     return Game.getObjectById(task.targetId as Id<StructureController>);
+  }
+
+  if (task.type === "repair") {
+    return Game.getObjectById(task.targetId as Id<StructureRampart>);
   }
 
   return null;
@@ -263,6 +348,16 @@ export function completeWorkerTaskIfDone(task: WorkerTask): boolean {
   if (task.type === "upgrade") {
     const controller = Game.getObjectById(task.targetId as Id<StructureController>);
     return !controller || !controller.my;
+  }
+
+  if (task.type === "repair") {
+    const rampart = Game.getObjectById(task.targetId as Id<StructureRampart>);
+    if (!rampart) {
+      return true;
+    }
+
+    const targetHits = task.repairTargetHits ?? RAMPART_POST_BUILD_TARGET_HITS;
+    return rampart.hits >= targetHits;
   }
 
   return false;

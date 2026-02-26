@@ -6,7 +6,7 @@ import { releasePickupReservation } from "@/runtime/energyPickupReservation";
 export const workerRole: RoleFactory = () => ({
   source: (creep): boolean => {
     const result = pickupEnergyFromPreferredTarget(creep);
-    const shouldSwitchToTarget = creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
+    const shouldSwitchToTarget = result.picked || creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
     if (shouldSwitchToTarget) {
       releasePickupReservation(creep);
     }
@@ -55,6 +55,25 @@ export const workerRole: RoleFactory = () => ({
       }
 
       if (upgradeCode === ERR_INVALID_TARGET || completeWorkerTaskIfDone(task)) {
+        releaseWorkerTask(creep);
+      }
+
+      const shouldSwitchToSource = creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+      if (shouldSwitchToSource) {
+        releaseWorkerTask(creep);
+      }
+
+      return shouldSwitchToSource;
+    }
+
+    if (task.type === "repair") {
+      const repairCode = creep.repair(target as StructureRampart);
+      if (repairCode === ERR_NOT_IN_RANGE) {
+        moveToRemoteWorkTarget(creep, target);
+        return false;
+      }
+
+      if (repairCode === ERR_INVALID_TARGET || completeWorkerTaskIfDone(task)) {
         releaseWorkerTask(creep);
       }
 
