@@ -5,6 +5,15 @@ function clamp(value: number, minValue: number, maxValue: number): number {
   return Math.max(minValue, Math.min(maxValue, value));
 }
 
+function hasNormalRepairTask(room: Room): boolean {
+  const tasks = room.memory.tasks;
+  if (!tasks) {
+    return false;
+  }
+
+  return Object.values(tasks).some((task) => task.type === "repair" && task.repairMode === "normal" && task.status === "active");
+}
+
 export function getWorkerCap(): number {
   const configured = Memory.cfg?.worker?.maxPerRoom;
   const cap = typeof configured === "number" ? configured : DEFAULT_WORKER_MAX;
@@ -24,6 +33,10 @@ export function getDesiredWorkerCount(room: Room): number {
     desired += 1;
   }
   if (constructionCount >= 15) {
+    desired += 1;
+  }
+
+  if (hasNormalRepairTask(room)) {
     desired += 1;
   }
 

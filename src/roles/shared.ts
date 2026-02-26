@@ -53,10 +53,16 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
   }
 
   const towerTargets = creep.room.find(FIND_STRUCTURES, {
-    filter: (structure) =>
-      !excludeSet.has(structure.id) &&
-      structure.structureType === STRUCTURE_TOWER &&
-      (structure as StructureTower).store.getFreeCapacity(RESOURCE_ENERGY) > 0,
+    filter: (structure) => {
+      if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_TOWER) {
+        return false;
+      }
+
+      const tower = structure as StructureTower;
+      const used = tower.store.getUsedCapacity(RESOURCE_ENERGY);
+      const capacity = tower.store.getCapacity(RESOURCE_ENERGY);
+      return capacity > 0 && tower.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && used <= capacity / 2;
+    },
   });
 
   if (towerTargets.length > 0) {

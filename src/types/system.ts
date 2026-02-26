@@ -22,6 +22,7 @@ export interface WorkerTask {
   priority: number;
   requiredWork?: number;
   repairTargetHits?: number;
+  repairMode?: "emergency" | "normal";
   assignedCreeps: string[];
   maxAssignees: number;
   status: "active" | "done";

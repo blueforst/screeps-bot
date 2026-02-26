@@ -3,10 +3,14 @@ import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 
 const runtimeGlobal = global;
 
+function hasLiveCreepForConfig(configName: string): boolean {
+  return Object.values(Game.creeps).some((creep) => creep.memory.configName === configName);
+}
+
 function cleanupLegacyHarvesterConfigs(roomName: string, validConfigNames: Set<string>): void {
   const configs = runtimeGlobal.creepApi.list(`${roomName}:harvester:`);
   for (const configName of Object.keys(configs)) {
-    if (!validConfigNames.has(configName)) {
+    if (!validConfigNames.has(configName) && !hasLiveCreepForConfig(configName)) {
       runtimeGlobal.creepApi.remove(configName);
     }
   }
@@ -15,7 +19,7 @@ function cleanupLegacyHarvesterConfigs(roomName: string, validConfigNames: Set<s
 function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>): void {
   const configs = runtimeGlobal.creepApi.list(`${roomName}:worker:`);
   for (const configName of Object.keys(configs)) {
-    if (!validConfigNames.has(configName)) {
+    if (!validConfigNames.has(configName) && !hasLiveCreepForConfig(configName)) {
       runtimeGlobal.creepApi.remove(configName);
     }
   }

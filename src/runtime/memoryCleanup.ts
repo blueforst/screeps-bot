@@ -77,6 +77,11 @@ function cleanupManagedCreepConfigs(): number {
       expected.add(name);
     }
   }
+  const activeConfigNames = new Set(
+    Object.values(Game.creeps)
+      .map((creep) => creep.memory.configName)
+      .filter((name): name is string => !!name),
+  );
   let removed = 0;
 
   for (const [configName, config] of Object.entries(Memory.data.creepConfigs)) {
@@ -84,7 +89,8 @@ function cleanupManagedCreepConfigs(): number {
       continue;
     }
 
-    if (!expected.has(configName)) {
+    const hasLiveCreep = activeConfigNames.has(configName);
+    if (!expected.has(configName) && !hasLiveCreep) {
       delete Memory.data.creepConfigs[configName];
       removed += 1;
     }
