@@ -10,21 +10,21 @@ const RAMPART_REPAIR_ENERGY_GATE_RATIO = 0.35;
 function getRampartRepairCap(room: Room): number {
   const rcl = room.controller?.level ?? 1;
   if (rcl >= 8) {
-    return 1_000_000;
+    return 10_000_000;
   }
   if (rcl >= 7) {
-    return 500_000;
+    return 5_000_000;
   }
   if (rcl >= 6) {
-    return 150_000;
+    return 1_500_000;
   }
   if (rcl >= 5) {
-    return 50_000;
+    return 500_000;
   }
   if (rcl >= 4) {
-    return 20_000;
+    return 200_000;
   }
-  return 10_000;
+  return 100_000;
 }
 
 function canDoHighCapRampartRepair(room: Room): boolean {
