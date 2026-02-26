@@ -105,6 +105,7 @@ declare global {
     carrierPlanTargetKind?: "resource" | "structure";
     energyPickupTargetId?: string;
     energyPickupTargetKind?: "resource" | "structure";
+    energyPickupRoomName?: string;
     taskId?: string;
     taskType?: WorkerTaskType;
     taskTargetId?: string;

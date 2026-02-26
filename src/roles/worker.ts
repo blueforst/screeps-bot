@@ -69,7 +69,10 @@ export const workerRole: RoleFactory = () => ({
     if (task.type === "repair") {
       const repairCode = creep.repair(target as StructureRampart);
       if (repairCode === ERR_NOT_IN_RANGE) {
-        moveToRemoteWorkTarget(creep, target);
+        const moveCode = moveToRemoteWorkTarget(creep, target);
+        if (moveCode === ERR_NO_PATH) {
+          releaseWorkerTask(creep);
+        }
         return false;
       }
 

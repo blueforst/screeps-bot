@@ -19,13 +19,28 @@ export function moveToTarget(
   creep: Creep,
   target: RoomPosition | { pos: RoomPosition },
   range: 1 | 3 = 1,
-): void {
+): ScreepsReturnCode {
   const targetPos = getTargetPos(target);
-  creep.moveTo(targetPos, { range, visualizePathStyle: { stroke: "#ffaa00" } });
+  return creep.moveTo(targetPos, { range, visualizePathStyle: { stroke: "#ffaa00" } });
 }
 
-export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { pos: RoomPosition }): void {
-  moveToTarget(creep, target, 3);
+export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { pos: RoomPosition }): ScreepsReturnCode {
+  const targetPos = getTargetPos(target);
+  if (creep.pos.getRangeTo(targetPos) <= 3) {
+    return OK;
+  }
+
+  const path = creep.pos.findPathTo(targetPos, {
+    range: 3,
+    ignoreCreeps: false,
+    swampCost: 2,
+  });
+
+  if (path.length === 0) {
+    return ERR_NO_PATH;
+  }
+
+  return creep.moveByPath(path);
 }
 
 interface EnergyStoreTargetOptions {

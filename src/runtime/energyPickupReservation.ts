@@ -78,10 +78,12 @@ function clearTargetEntryIfEmpty(roomName: string, targetId: string): void {
 export function clearPickupReservationTargetMemory(creep: Creep): void {
   delete creep.memory.energyPickupTargetId;
   delete creep.memory.energyPickupTargetKind;
+  delete creep.memory.energyPickupRoomName;
 }
 
 export function releasePickupReservation(creep: Creep, targetId?: string): void {
-  const roomStore = Memory.rooms?.[creep.room.name]?.pickupReservations as
+  const roomName = creep.memory.energyPickupRoomName || creep.room.name;
+  const roomStore = Memory.rooms?.[roomName]?.pickupReservations as
     | Record<string, PickupTargetReservation>
     | undefined;
   if (roomStore) {
@@ -89,13 +91,13 @@ export function releasePickupReservation(creep: Creep, targetId?: string): void 
       const entry = roomStore[targetId];
       if (entry?.claims[creep.name]) {
         delete entry.claims[creep.name];
-        clearTargetEntryIfEmpty(creep.room.name, targetId);
+        clearTargetEntryIfEmpty(roomName, targetId);
       }
     } else {
       for (const [id, entry] of Object.entries(roomStore)) {
         if (entry.claims[creep.name]) {
           delete entry.claims[creep.name];
-          clearTargetEntryIfEmpty(creep.room.name, id);
+          clearTargetEntryIfEmpty(roomName, id);
         }
       }
     }
@@ -107,6 +109,7 @@ export function releasePickupReservation(creep: Creep, targetId?: string): void 
 function setReservedTargetMemory(creep: Creep, target: PickupTarget): void {
   creep.memory.energyPickupTargetId = target.id;
   creep.memory.energyPickupTargetKind = getTargetKind(target);
+  creep.memory.energyPickupRoomName = target.pos.roomName;
 }
 
 export function reservePickupTarget(creep: Creep, target: PickupTarget, desiredAmount: number): boolean {
@@ -127,10 +130,15 @@ export function reservePickupTarget(creep: Creep, target: PickupTarget, desiredA
 
   const availableForThisCreep = Math.max(0, available - reservedByOthers);
   const wanted = Math.max(0, desiredAmount);
-  const claimAmount = Math.min(wanted, availableForThisCreep);
-  if (claimAmount <= 0) {
+  if (wanted <= 0) {
     return false;
   }
+
+  if (availableForThisCreep < wanted) {
+    return false;
+  }
+
+  const claimAmount = wanted;
 
   entry.claims[creep.name] = {
     amount: claimAmount,
