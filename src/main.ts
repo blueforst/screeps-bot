@@ -38,8 +38,8 @@ function gameLoop(): void {
   runAutoPlannerByFlag();
   runRoomPlannerConstruction();
   runTowerControl();
-  bootstrapRooms();
   refreshWorkerTasks();
+  bootstrapRooms();
   scheduleSpawnTasks();
 
   Object.values(Game.spawns).forEach((spawn) => spawn.work());

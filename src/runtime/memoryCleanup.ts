@@ -137,6 +137,22 @@ function cleanupRoomPlannerAutoMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupTowerEmergencyMemory(ownedRooms: Set<string>): number {
+  if (!Memory.runtime?.towerEmergencyRamparts) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const roomName of Object.keys(Memory.runtime.towerEmergencyRamparts)) {
+    if (!ownedRooms.has(roomName)) {
+      delete Memory.runtime.towerEmergencyRamparts[roomName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
 function cleanupPickupReservationMemory(ownedRooms: Set<string>): number {
   if (!Memory.rooms) {
     return 0;
@@ -182,6 +198,7 @@ export function runMemoryCleanup(): void {
   const ownedRooms = getOwnedRoomNameSet();
   const removedRoomPlans = cleanupRoomPlannerMemory(ownedRooms);
   const removedRoomPlannerAuto = cleanupRoomPlannerAutoMemory(ownedRooms);
+  const removedTowerEmergency = cleanupTowerEmergencyMemory(ownedRooms);
   const removedPickupReservations = cleanupPickupReservationMemory(ownedRooms);
 
   if (
@@ -191,10 +208,11 @@ export function runMemoryCleanup(): void {
     removedManagedConfigs > 0 ||
     removedRoomPlans > 0 ||
     removedRoomPlannerAuto > 0 ||
+    removedTowerEmergency > 0 ||
     removedPickupReservations > 0
   ) {
     console.log(
-      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, pickupReservations=${removedPickupReservations}`,
+      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, towerEmergency=${removedTowerEmergency}, pickupReservations=${removedPickupReservations}`,
     );
   }
 }
