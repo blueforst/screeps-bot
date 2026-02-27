@@ -1,3 +1,5 @@
+import { isColonizationBootstrapRoom } from "@/runtime/colonization";
+
 const CONSTRUCTION_PRIORITY: BuildableStructureConstant[] = [
   STRUCTURE_SPAWN,
   STRUCTURE_EXTENSION,
@@ -49,8 +51,17 @@ function getBuildPolicy(room: Room, layout: PlannedLayout, controllerLevel: numb
   targetOverrides: TargetOverrideMap;
 } {
   const targetOverrides: TargetOverrideMap = {};
+  const colonizationBootstrap = isColonizationBootstrapRoom(room.name);
 
   if (controllerLevel <= 1) {
+    if (colonizationBootstrap) {
+      const spawnTarget = Math.min(getPlannedCount(layout, STRUCTURE_SPAWN), getAllowedCount(STRUCTURE_SPAWN, controllerLevel));
+      if (spawnTarget > 0) {
+        targetOverrides[STRUCTURE_SPAWN] = spawnTarget;
+        return { allowedTypes: new Set([STRUCTURE_SPAWN]), targetOverrides };
+      }
+    }
+
     return { allowedTypes: new Set(), targetOverrides };
   }
 

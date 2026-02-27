@@ -1,11 +1,11 @@
 import { BUILD_INFO } from "@/buildMeta";
 import { errorMapper } from "@/modules/errorMapper";
-import { runAutoPlannerByFlag } from "@/modules/autoplanner";
 import { mountAll } from "@/mount";
 import { runMemoryCleanup } from "@/runtime/memoryCleanup";
 import { runPixelGenerator } from "@/runtime/pixelGenerator";
 import { registerProductionApi, runProductionMonitor } from "@/runtime/productionMonitor";
 import { bootstrapRooms } from "@/runtime/bootstrap";
+import { runFlagControl } from "@/runtime/flagControl";
 import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
 import { registerGlobalApi } from "@/runtime/creepApi";
 import { registerConsoleCommands } from "@/runtime/consoleCommands";
@@ -37,7 +37,7 @@ function gameLoop(): void {
   runPixelGenerator();
   runProductionMonitor();
   runMemoryCleanup();
-  runAutoPlannerByFlag();
+  runFlagControl();
   runRoomPlannerConstruction();
   runTowerControl();
   refreshWorkerTasks();

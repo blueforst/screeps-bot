@@ -1,4 +1,10 @@
-export type RoleName = "harvester" | "carrier" | "worker";
+export type RoleName =
+  | "harvester"
+  | "carrier"
+  | "worker"
+  | "claimer"
+  | "colonizerHarvester"
+  | "colonizerWorker";
 export type WorkerTaskType = "build" | "upgrade" | "repair";
 
 export interface CreepConfig {

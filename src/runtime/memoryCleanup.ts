@@ -1,7 +1,14 @@
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 
 const CLEANUP_INTERVAL = 17;
-const VALID_ROLES = new Set(["harvester", "carrier", "worker"]);
+const VALID_ROLES = new Set([
+  "harvester",
+  "carrier",
+  "worker",
+  "claimer",
+  "colonizerHarvester",
+  "colonizerWorker",
+]);
 const ROOM_PLANNER_TTL = 50000;
 const ROOM_PLANNER_AUTO_TTL = 20000;
 

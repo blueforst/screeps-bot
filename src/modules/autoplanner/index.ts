@@ -9,6 +9,30 @@ type PlannerModule = {
 
 const plannerModule = planner as unknown as PlannerModule;
 
+function canUsePlanner(roomName: string): boolean {
+  if (typeof RoomVisual === "undefined") {
+    return false;
+  }
+
+  return !!Game.rooms[roomName];
+}
+
+export function runPlannerForRoom(roomName: string): boolean {
+  if (!canUsePlanner(roomName)) {
+    return false;
+  }
+
+  return plannerModule.runPlan(roomName);
+}
+
+export function savePlannerForRoom(roomName: string): boolean {
+  if (!canUsePlanner(roomName)) {
+    return false;
+  }
+
+  return plannerModule.savePlanToMemory(roomName);
+}
+
 function createVisualFlag(room: Room, pos: RoomPosition): void {
   const flagName = `VP_${room.name}`;
   room.createFlag(pos, flagName);

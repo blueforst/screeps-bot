@@ -160,7 +160,11 @@ export const carrierRole: RoleFactory = () => ({
     clearPostTransferPlan(creep);
 
     const result = pickupEnergyForCarrier(creep);
-    const shouldSwitchToTarget = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
+    const used = creep.store.getUsedCapacity(RESOURCE_ENERGY);
+    const free = creep.store.getFreeCapacity(RESOURCE_ENERGY);
+    const isFull = free === 0;
+    const hasEnergy = used > 0;
+    const shouldSwitchToTarget = isFull || (!result.picked && !result.outOfRange && hasEnergy);
     if (shouldSwitchToTarget) {
       releasePickupReservation(creep);
     }

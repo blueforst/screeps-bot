@@ -69,6 +69,19 @@ declare global {
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
+      colonization?: Record<
+        string,
+        {
+          targetRoom: string;
+          sourceRoom: string;
+          status: "claiming" | "waiting_plan" | "bootstrapping" | "managed";
+          flagName: string;
+          planReady: boolean;
+          claimCompleted: boolean;
+          createdAt: number;
+          updatedAt: number;
+        }
+      >;
       roomPlanner?: {
         [roomName: string]: {
           layout: { [structureType: string]: { x: number; y: number }[] };

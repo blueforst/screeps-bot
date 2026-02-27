@@ -88,4 +88,7 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => getHarvesterBody(room),
   carrier: carryMoveBody,
   worker: oneOneOneBody,
+  claimer: () => [CLAIM, MOVE],
+  colonizerHarvester: (room) => getHarvesterBody(room),
+  colonizerWorker: oneOneOneBody,
 };

@@ -61,6 +61,10 @@ export function mountSpawn(): void {
       },
     });
 
+    if (code === OK && configName.includes(":manual:")) {
+      runtimeGlobal.creepApi.remove(configName);
+    }
+
     return code === OK;
   };
 
