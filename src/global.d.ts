@@ -19,6 +19,18 @@ declare global {
   var savePlanToMemory: (roomName: string) => boolean;
   var reportProduction: (roomName?: string) => void;
   var reportProductionGlobal: () => void;
+  var spawnMaxCarrier: (roomName: string) =>
+    | {
+        ok: true;
+        roomName: string;
+        spawnName: string;
+        configName: string;
+        energyAvailable: number;
+        bodyParts: number;
+        pairCount: number;
+        queueTop: string[];
+      }
+    | string;
 
   interface Memory {
     cfg?: {
@@ -144,6 +156,18 @@ declare namespace NodeJS {
     Memory: Memory;
     _: LoDashStatic;
     creepApi: CreepApi;
+    spawnMaxCarrier: (roomName: string) =>
+      | {
+          ok: true;
+          roomName: string;
+          spawnName: string;
+          configName: string;
+          energyAvailable: number;
+          bodyParts: number;
+          pairCount: number;
+          queueTop: string[];
+        }
+      | string;
     __screepsMounted?: boolean;
   }
 }

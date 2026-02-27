@@ -8,12 +8,14 @@ import { registerProductionApi, runProductionMonitor } from "@/runtime/productio
 import { bootstrapRooms } from "@/runtime/bootstrap";
 import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
 import { registerGlobalApi } from "@/runtime/creepApi";
+import { registerConsoleCommands } from "@/runtime/consoleCommands";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { runTowerControl } from "@/runtime/towerControl";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 
 mountAll();
 registerGlobalApi();
+registerConsoleCommands();
 registerProductionApi();
 
 function announceDeploy(): void {

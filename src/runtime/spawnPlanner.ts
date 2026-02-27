@@ -2,6 +2,15 @@ import { spawnProfiles } from "@/config/spawnProfiles";
 import type { CreepConfig } from "@/types/system";
 
 const runtimeGlobal = global;
+const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
+
+function ensureQueue(spawn: StructureSpawn): string[] {
+  if (!spawn.memory.spawnList) {
+    spawn.memory.spawnList = [];
+  }
+
+  return spawn.memory.spawnList;
+}
 
 function isConfigQueued(spawn: StructureSpawn, configName: string): boolean {
   return spawn.memory.spawnList?.includes(configName) ?? false;
@@ -85,7 +94,7 @@ function shouldPreSpawnCarrier(spawn: StructureSpawn, configName: string): boole
     return false;
   }
 
-  const threshold = getSpawnTime(spawn, configName);
+  const threshold = getSpawnTime(spawn, configName) + CARRIER_PRESPAWN_BUFFER_TICKS;
   const soonestDying = creeps.reduce((minCreep, creep) =>
     creep.ticksToLive < minCreep.ticksToLive ? creep : minCreep,
   );
@@ -127,9 +136,23 @@ function shouldQueueConfig(spawn: StructureSpawn, configName: string, config: Cr
   return getConfigCreeps(configName).length === 0;
 }
 
+function queueConfig(spawn: StructureSpawn, configName: string, options?: { toFront?: boolean }): void {
+  const queue = ensureQueue(spawn);
+
+  if (options?.toFront) {
+    spawn.memory.spawnList = [configName, ...queue.filter((item) => item !== configName)];
+    return;
+  }
+
+  if (!queue.includes(configName)) {
+    spawn.addTask(configName);
+  }
+}
+
 function queueMissingConfig(spawn: StructureSpawn, configName: string, config: CreepConfig): void {
   if (shouldQueueConfig(spawn, configName, config)) {
-    spawn.addTask(configName);
+    const shouldInsertCarrierAtFront = config.role === "carrier" && getConfigCreeps(configName).length === 0;
+    queueConfig(spawn, configName, { toFront: shouldInsertCarrierAtFront });
   }
 }
 
