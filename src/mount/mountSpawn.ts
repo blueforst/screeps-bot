@@ -59,6 +59,7 @@ export function mountSpawn(): void {
     const code = this.spawnCreep(body, name, {
       memory: {
         role: config.role,
+        roleArgs: [...config.args],
         configName,
         ready: false,
         working: false,

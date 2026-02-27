@@ -122,6 +122,7 @@ declare global {
 
   interface CreepMemory {
     role?: RoleName;
+    roleArgs?: string[];
     configName?: string;
     working?: boolean;
     ready?: boolean;

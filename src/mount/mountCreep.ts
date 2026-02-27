@@ -4,21 +4,29 @@ const runtimeGlobal = global;
 
 function resolveRoleLogic(creep: Creep): ReturnType<(typeof roleRegistry)[keyof typeof roleRegistry]> | null {
   const configName = creep.memory.configName;
-  if (!configName) {
+  if (configName) {
+    const config = runtimeGlobal.creepApi.get(configName);
+    if (config) {
+      const roleFactory = roleRegistry[config.role];
+      if (!roleFactory) {
+        return null;
+      }
+
+      return roleFactory(...config.args);
+    }
+  }
+
+  const memoryRole = creep.memory.role;
+  if (!memoryRole) {
     return null;
   }
 
-  const config = runtimeGlobal.creepApi.get(configName);
-  if (!config) {
-    return null;
-  }
-
-  const roleFactory = roleRegistry[config.role];
+  const roleFactory = roleRegistry[memoryRole];
   if (!roleFactory) {
     return null;
   }
 
-  return roleFactory(...config.args);
+  return roleFactory(...(creep.memory.roleArgs || []));
 }
 
 export function mountCreep(): void {

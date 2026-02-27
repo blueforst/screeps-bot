@@ -160,13 +160,7 @@ function precomputePostTransferAction(creep: Creep, currentTarget: AnyStoreStruc
   const energy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
   const free = currentTarget.store.getFreeCapacity(RESOURCE_ENERGY);
 
-  if (energy <= free) {
-    const pickupTarget = getWeightedCarrierPickupCandidates(creep)[0] || null;
-    if (pickupTarget) {
-      setPostTransferPlan(creep, "pickup", pickupTarget);
-      return;
-    }
-  } else {
+  if (energy > free) {
     const nextTarget = getEnergyStoreTarget(creep, { excludeIds: [currentTarget.id] });
     if (nextTarget) {
       setPostTransferPlan(creep, "deliver", nextTarget);
@@ -235,10 +229,14 @@ export const carrierRole: RoleFactory = () => ({
     }
 
     if (transferCode === OK) {
-      const plannedTarget = getPlannedTarget(creep);
-      if (plannedTarget) {
-        moveToTarget(creep, plannedTarget);
+      const remainingEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
+      if (remainingEnergy > 0) {
+        const plannedTarget = getPlannedTarget(creep);
+        if (plannedTarget) {
+          moveToTarget(creep, plannedTarget);
+        }
       }
+
       clearPostTransferPlan(creep);
     }
 

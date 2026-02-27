@@ -120,6 +120,58 @@ function tryPlaceSite(room: Room, structureType: BuildableStructureConstant, x: 
   return result;
 }
 
+function queueMissingPlannedRamparts(
+  room: Room,
+  layout: PlannedLayout,
+  controllerLevel: number,
+  roomRemaining: number,
+  globalRemaining: number,
+): { roomAdded: number; globalRemaining: number } {
+  if (roomRemaining <= 0 || globalRemaining <= 0) {
+    return { roomAdded: 0, globalRemaining };
+  }
+
+  if (!canBuildAtControllerLevel(STRUCTURE_RAMPART, controllerLevel)) {
+    return { roomAdded: 0, globalRemaining };
+  }
+
+  const plannedPositions = layout[STRUCTURE_RAMPART] ?? [];
+  if (plannedPositions.length === 0) {
+    return { roomAdded: 0, globalRemaining };
+  }
+
+  const allowed = Math.min(getAllowedCount(STRUCTURE_RAMPART, controllerLevel), plannedPositions.length);
+  const existing = countExisting(room, STRUCTURE_RAMPART);
+  const queued = countSites(room, STRUCTURE_RAMPART);
+  let remaining = Math.max(0, allowed - existing - queued);
+  if (remaining <= 0) {
+    return { roomAdded: 0, globalRemaining };
+  }
+
+  let added = 0;
+  for (const pos of plannedPositions) {
+    if (added >= roomRemaining || globalRemaining <= 0 || remaining <= 0) {
+      break;
+    }
+
+    if (hasStructureOrSiteAt(room, pos.x, pos.y, STRUCTURE_RAMPART)) {
+      continue;
+    }
+
+    const code = tryPlaceSite(room, STRUCTURE_RAMPART, pos.x, pos.y);
+    if (code === OK) {
+      added += 1;
+      globalRemaining -= 1;
+      remaining -= 1;
+    } else if (code === ERR_FULL) {
+      globalRemaining = 0;
+      break;
+    }
+  }
+
+  return { roomAdded: added, globalRemaining };
+}
+
 export function runRoomPlannerConstruction(): void {
   if (Memory.cfg?.roomPlannerBuild?.enabled === false) {
     return;
@@ -214,6 +266,22 @@ export function runRoomPlannerConstruction(): void {
       Memory.runtime.roomPlannerAuto = Memory.runtime.roomPlannerAuto || {};
       Memory.runtime.roomPlannerAuto[room.name] = Game.time;
       console.log(`[roomPlanner] ${room.name} queued ${newSites} construction site(s)`);
+    }
+
+    const roomRemainingForRamparts = Math.max(0, maxNewSitesPerRoom - newSites);
+    const rampartQueued = queueMissingPlannedRamparts(
+      room,
+      layout,
+      controllerLevel,
+      roomRemainingForRamparts,
+      globalRemaining,
+    );
+    if (rampartQueued.roomAdded > 0) {
+      globalRemaining = rampartQueued.globalRemaining;
+      Memory.runtime = Memory.runtime || {};
+      Memory.runtime.roomPlannerAuto = Memory.runtime.roomPlannerAuto || {};
+      Memory.runtime.roomPlannerAuto[room.name] = Game.time;
+      console.log(`[roomPlanner] ${room.name} queued ${rampartQueued.roomAdded} rampart site(s)`);
     }
   }
 }
