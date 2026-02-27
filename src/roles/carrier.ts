@@ -177,9 +177,37 @@ function precomputePostTransferAction(creep: Creep, currentTarget: AnyStoreStruc
   clearPostTransferPlan(creep);
 }
 
+function hasReplacementQueuedOrSpawning(creep: Creep): boolean {
+  const configName = creep.memory.configName;
+  if (!configName) {
+    return false;
+  }
+
+  const queued = Object.values(Game.spawns).some((spawn) => spawn.memory.spawnList?.includes(configName));
+  if (queued) {
+    return true;
+  }
+
+  const creepMemory = Memory.creeps || {};
+  return Object.values(Game.spawns).some((spawn) => {
+    if (!spawn.spawning) {
+      return false;
+    }
+
+    const spawningName = spawn.spawning.name;
+    return creepMemory[spawningName]?.configName === configName;
+  });
+}
+
 export const carrierRole: RoleFactory = () => ({
   source: (creep): boolean => {
     clearPostTransferPlan(creep);
+
+    if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0 && hasReplacementQueuedOrSpawning(creep)) {
+      releasePickupReservation(creep);
+      creep.suicide();
+      return false;
+    }
 
     pickupEnergyForCarrier(creep);
     const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
