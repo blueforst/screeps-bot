@@ -21,7 +21,7 @@ function ensureConfigStore(): Record<string, CreepConfig> {
 }
 
 function buildCarrierBodyByEnergy(energyAvailable: number): BodyPartConstant[] {
-  const pairCount = Math.max(1, Math.min(25, Math.floor(energyAvailable / (BODYPART_COST[CARRY] + BODYPART_COST[MOVE]))));
+  const pairCount = Math.max(1, Math.min(20, Math.floor(energyAvailable / (BODYPART_COST[CARRY] + BODYPART_COST[MOVE]))));
   const body: BodyPartConstant[] = [];
 
   for (let i = 0; i < pairCount; i++) {

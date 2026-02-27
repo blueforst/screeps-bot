@@ -4,6 +4,7 @@ import {
   releasePickupReservation,
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
+import { isReceiverLink } from "@/runtime/linkControl";
 
 function getTargetPos(target: RoomPosition | { pos: RoomPosition }): RoomPosition {
   return target instanceof RoomPosition ? target : target.pos;
@@ -76,7 +77,7 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       const tower = structure as StructureTower;
       const used = tower.store.getUsedCapacity(RESOURCE_ENERGY);
       const capacity = tower.store.getCapacity(RESOURCE_ENERGY);
-      return capacity > 0 && tower.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && used <= capacity / 2;
+      return capacity > 0 && tower.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && used <= capacity * 0.6;
     },
   });
 
@@ -101,7 +102,9 @@ function getPreferredEnergyPickupCandidates(creep: Creep): EnergyPickupTarget[] 
   });
   const structureCandidates = creep.room.find(FIND_STRUCTURES, {
     filter: (structure) =>
-      (structure.structureType === STRUCTURE_CONTAINER || structure.structureType === STRUCTURE_STORAGE) &&
+      (structure.structureType === STRUCTURE_CONTAINER ||
+        structure.structureType === STRUCTURE_STORAGE ||
+        (structure.structureType === STRUCTURE_LINK && isReceiverLink(structure as StructureLink))) &&
       (structure as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
   }) as AnyStoreStructure[];
   const tombstones = creep.room.find(FIND_TOMBSTONES, {

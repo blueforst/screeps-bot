@@ -1,14 +1,16 @@
 import { upsertConfig } from "@/runtime/creepApi";
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
+import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 
 const runtimeGlobal = global;
+type SourceWorkerRole = "harvester" | "miner";
 
 function hasLiveCreepForConfig(configName: string): boolean {
   return Object.values(Game.creeps).some((creep) => creep.memory.configName === configName);
 }
 
-function cleanupLegacyHarvesterConfigs(roomName: string, validConfigNames: Set<string>): void {
-  const configs = runtimeGlobal.creepApi.list(`${roomName}:harvester:`);
+function cleanupConfigsByPrefix(roomName: string, prefix: string, validConfigNames: Set<string>): void {
+  const configs = runtimeGlobal.creepApi.list(`${roomName}:${prefix}:`);
   for (const configName of Object.keys(configs)) {
     if (!validConfigNames.has(configName) && !hasLiveCreepForConfig(configName)) {
       runtimeGlobal.creepApi.remove(configName);
@@ -16,12 +18,37 @@ function cleanupLegacyHarvesterConfigs(roomName: string, validConfigNames: Set<s
   }
 }
 
+function cleanupSourceConfigs(roomName: string, validConfigNames: Set<string>): void {
+  cleanupConfigsByPrefix(roomName, "harvester", validConfigNames);
+  cleanupConfigsByPrefix(roomName, "miner", validConfigNames);
+}
+
 function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>): void {
-  const configs = runtimeGlobal.creepApi.list(`${roomName}:worker:`);
-  for (const configName of Object.keys(configs)) {
-    if (!validConfigNames.has(configName) && !hasLiveCreepForConfig(configName)) {
-      runtimeGlobal.creepApi.remove(configName);
+  cleanupConfigsByPrefix(roomName, "worker", validConfigNames);
+}
+
+function isSourceRoleConfigName(roomName: string, configName: string): boolean {
+  return configName.startsWith(`${roomName}:harvester:`) || configName.startsWith(`${roomName}:miner:`);
+}
+
+function cleanupSourceRoleQueueEntries(roomName: string, validConfigNames: Set<string>): void {
+  for (const spawn of Object.values(Game.spawns)) {
+    if (spawn.room.name !== roomName) {
+      continue;
     }
+
+    const queue = spawn.memory.spawnList;
+    if (!queue || queue.length === 0) {
+      continue;
+    }
+
+    spawn.memory.spawnList = queue.filter((configName) => {
+      if (!isSourceRoleConfigName(roomName, configName)) {
+        return true;
+      }
+
+      return validConfigNames.has(configName);
+    });
   }
 }
 
@@ -33,11 +60,13 @@ export function bootstrapRooms(): void {
     const sources = room.find(FIND_SOURCES);
 
     for (const source of sources) {
-      const configName = `${room.name}:harvester:${source.id}`;
-      upsertConfig(configName, "harvester", [source.id], room.name);
+      const role: SourceWorkerRole = hasSourceAdjacentLink(source) ? "miner" : "harvester";
+      const configName = `${room.name}:${role}:${source.id}`;
+      upsertConfig(configName, role, [source.id], room.name);
     }
 
-    cleanupLegacyHarvesterConfigs(room.name, expectedConfigNames);
+    cleanupSourceRoleQueueEntries(room.name, expectedConfigNames);
+    cleanupSourceConfigs(room.name, expectedConfigNames);
 
     upsertConfig(`${room.name}:carrier:0`, "carrier", [], room.name);
 

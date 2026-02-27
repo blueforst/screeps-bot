@@ -3,6 +3,7 @@ import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
   "harvester",
+  "miner",
   "carrier",
   "worker",
   "claimer",
@@ -144,6 +145,22 @@ function cleanupRoomPlannerAutoMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupLinkNetworkMemory(ownedRooms: Set<string>): number {
+  if (!Memory.runtime?.linkNetwork) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const roomName of Object.keys(Memory.runtime.linkNetwork)) {
+    if (!ownedRooms.has(roomName)) {
+      delete Memory.runtime.linkNetwork[roomName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
 function cleanupTowerEmergencyMemory(ownedRooms: Set<string>): number {
   if (!Memory.runtime?.towerEmergencyRamparts) {
     return 0;
@@ -205,6 +222,7 @@ export function runMemoryCleanup(): void {
   const ownedRooms = getOwnedRoomNameSet();
   const removedRoomPlans = cleanupRoomPlannerMemory(ownedRooms);
   const removedRoomPlannerAuto = cleanupRoomPlannerAutoMemory(ownedRooms);
+  const removedLinkNetwork = cleanupLinkNetworkMemory(ownedRooms);
   const removedTowerEmergency = cleanupTowerEmergencyMemory(ownedRooms);
   const removedPickupReservations = cleanupPickupReservationMemory(ownedRooms);
 
@@ -215,11 +233,12 @@ export function runMemoryCleanup(): void {
     removedManagedConfigs > 0 ||
     removedRoomPlans > 0 ||
     removedRoomPlannerAuto > 0 ||
+    removedLinkNetwork > 0 ||
     removedTowerEmergency > 0 ||
     removedPickupReservations > 0
   ) {
     console.log(
-      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, towerEmergency=${removedTowerEmergency}, pickupReservations=${removedPickupReservations}`,
+      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, linkNetwork=${removedLinkNetwork}, towerEmergency=${removedTowerEmergency}, pickupReservations=${removedPickupReservations}`,
     );
   }
 }

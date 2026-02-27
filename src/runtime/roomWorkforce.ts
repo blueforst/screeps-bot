@@ -1,5 +1,9 @@
+import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
+
 const DEFAULT_WORKER_MAX = 8;
 const DEFAULT_WORKER_BASE = 1;
+
+type SourceWorkerRole = "harvester" | "miner";
 
 function clamp(value: number, minValue: number, maxValue: number): number {
   return Math.max(minValue, Math.min(maxValue, value));
@@ -79,7 +83,8 @@ export function getExpectedManagedConfigNames(room: Room): string[] {
 
   const sources = room.find(FIND_SOURCES);
   for (const source of sources) {
-    names.push(`${room.name}:harvester:${source.id}`);
+    const role: SourceWorkerRole = hasSourceAdjacentLink(source) ? "miner" : "harvester";
+    names.push(`${room.name}:${role}:${source.id}`);
   }
 
   names.push(`${room.name}:carrier:0`);

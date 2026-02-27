@@ -1,5 +1,6 @@
 export type RoleName =
   | "harvester"
+  | "miner"
   | "carrier"
   | "worker"
   | "claimer"

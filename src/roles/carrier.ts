@@ -10,8 +10,9 @@ import {
   releasePickupReservation,
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
+import { isReceiverLink } from "@/runtime/linkControl";
 
-type CarrierPickupTarget = Resource | StructureContainer | Tombstone;
+type CarrierPickupTarget = Resource | StructureContainer | StructureLink | Tombstone;
 
 function getCarrierPickupAmount(target: CarrierPickupTarget): number {
   return getPickupTargetEnergyAmount(target);
@@ -25,16 +26,17 @@ function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[]
   const dropped = creep.room.find(FIND_DROPPED_RESOURCES, {
     filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
   });
-  const containers = creep.room.find(FIND_STRUCTURES, {
+  const structures = creep.room.find(FIND_STRUCTURES, {
     filter: (structure) =>
-      structure.structureType === STRUCTURE_CONTAINER &&
-      (structure as StructureContainer).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  }) as StructureContainer[];
+      (structure.structureType === STRUCTURE_CONTAINER ||
+        (structure.structureType === STRUCTURE_LINK && isReceiverLink(structure as StructureLink))) &&
+      (structure as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
+  }) as (StructureContainer | StructureLink)[];
   const tombstones = creep.room.find(FIND_TOMBSTONES, {
     filter: (tombstone) => tombstone.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
   });
 
-  const candidates: CarrierPickupTarget[] = [...dropped, ...containers, ...tombstones];
+  const candidates: CarrierPickupTarget[] = [...dropped, ...structures, ...tombstones];
   if (candidates.length === 0) {
     return [];
   }
@@ -55,7 +57,20 @@ function isCarrierPickupTarget(target: Resource | AnyStoreStructure | Tombstone)
     return true;
   }
 
-  return (target as Structure).structureType === STRUCTURE_CONTAINER || (target as Tombstone).deathTime !== undefined;
+  if ((target as Tombstone).deathTime !== undefined) {
+    return true;
+  }
+
+  const structureType = (target as Structure).structureType;
+  if (structureType === STRUCTURE_CONTAINER) {
+    return true;
+  }
+
+  if (structureType === STRUCTURE_LINK) {
+    return isReceiverLink(target as StructureLink);
+  }
+
+  return false;
 }
 
 function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: boolean } {
@@ -212,6 +227,11 @@ export const carrierRole: RoleFactory = () => ({
     return hasEnergy;
   },
   target: (creep): boolean => {
+    if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
+      clearPostTransferPlan(creep);
+      return true;
+    }
+
     const target = getEnergyStoreTarget(creep);
     if (!target) {
       clearPostTransferPlan(creep);

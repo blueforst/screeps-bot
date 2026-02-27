@@ -5,7 +5,9 @@ import { runMemoryCleanup } from "@/runtime/memoryCleanup";
 import { runPixelGenerator } from "@/runtime/pixelGenerator";
 import { registerProductionApi, runProductionMonitor } from "@/runtime/productionMonitor";
 import { bootstrapRooms } from "@/runtime/bootstrap";
+import { runCoreDefense } from "@/runtime/coreDefense";
 import { runFlagControl } from "@/runtime/flagControl";
+import { runLinkControl } from "@/runtime/linkControl";
 import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
 import { registerGlobalApi } from "@/runtime/creepApi";
 import { registerConsoleCommands } from "@/runtime/consoleCommands";
@@ -39,6 +41,8 @@ function gameLoop(): void {
   runMemoryCleanup();
   runFlagControl();
   runRoomPlannerConstruction();
+  runLinkControl();
+  runCoreDefense();
   runTowerControl();
   refreshWorkerTasks();
   bootstrapRooms();

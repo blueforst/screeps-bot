@@ -3,27 +3,6 @@ import type { WorkerTask } from "@/types/system";
 const TASK_REFRESH_INTERVAL = 3;
 const RAMPART_EMERGENCY_TARGET_HITS = 6000;
 const RAMPART_NORMAL_REPAIR_PRIORITY = 320;
-const RAMPART_REPAIR_START_RATIO = 0.7;
-
-function getRampartRepairCap(room: Room): number {
-  const rcl = room.controller?.level ?? 1;
-  if (rcl >= 8) {
-    return 10_000_000;
-  }
-  if (rcl >= 7) {
-    return 5_000_000;
-  }
-  if (rcl >= 6) {
-    return 1_500_000;
-  }
-  if (rcl >= 5) {
-    return 500_000;
-  }
-  if (rcl >= 4) {
-    return 200_000;
-  }
-  return 100_000;
-}
 
 function ensureRoomMemory(roomName: string): RoomMemory {
   if (!Memory.rooms) {
@@ -116,7 +95,7 @@ function createUpgradeTask(room: Room): WorkerTask | null {
     const configName = creep.memory.configName;
     return typeof configName === "string" && configName.startsWith(`${room.name}:worker:`);
   }).length;
-  const maxAssignees = Math.max(1, Math.min(3, liveWorkers));
+  const maxAssignees = Math.max(1, liveWorkers);
 
   return {
     id: `upgrade:${controller.id}`,
@@ -132,7 +111,7 @@ function createUpgradeTask(room: Room): WorkerTask | null {
 }
 
 function createRampartRepairTask(rampart: StructureRampart): WorkerTask {
-  const targetHits = getRampartRepairCap(rampart.room);
+  const targetHits = rampart.hitsMax;
   const remaining = Math.max(0, targetHits - rampart.hits);
   const priority = RAMPART_NORMAL_REPAIR_PRIORITY;
   const repairMode: "normal" = "normal";
@@ -181,11 +160,6 @@ export function refreshWorkerTasks(): void {
         task.status === "active" &&
         task.assignedCreeps.some((name) => !!Game.creeps[name]),
     );
-    const activeRepairTaskIds = new Set(
-      Object.values(tasks)
-        .filter((task) => task.type === "repair" && task.status === "active")
-        .map((task) => task.id),
-    );
     for (const task of Object.values(tasks)) {
       task.updatedAt = -1;
     }
@@ -195,24 +169,15 @@ export function refreshWorkerTasks(): void {
       upsertTask(room.name, createBuildTask(site));
     }
 
-    const rampartCap = getRampartRepairCap(room);
-    const startRepairHits = Math.floor(rampartCap * RAMPART_REPAIR_START_RATIO);
-
     const weakRamparts = room.find(FIND_MY_STRUCTURES, {
       filter: (structure) =>
         structure.structureType === STRUCTURE_RAMPART &&
-        (structure as StructureRampart).hits < rampartCap,
+        (structure as StructureRampart).hits < (structure as StructureRampart).hitsMax,
     }) as StructureRampart[];
     const normalRepairCandidates: StructureRampart[] = [];
 
     for (const rampart of weakRamparts) {
-      const taskId = `repair:${rampart.id}`;
       if (rampart.hits < RAMPART_EMERGENCY_TARGET_HITS) {
-        continue;
-      }
-      const underStartLine = rampart.hits < startRepairHits;
-      const wasActive = activeRepairTaskIds.has(taskId);
-      if (!underStartLine && !wasActive) {
         continue;
       }
 

@@ -3,7 +3,7 @@ import type { CreepConfig } from "@/types/system";
 
 const runtimeGlobal = global;
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
-const CRITICAL_SPAWN_ROLES = new Set(["harvester", "carrier"]);
+const CRITICAL_SPAWN_ROLES = new Set(["harvester", "miner", "carrier"]);
 
 function ensureQueue(spawn: StructureSpawn): string[] {
   if (!spawn.memory.spawnList) {
@@ -33,7 +33,7 @@ function getConfigCreeps(configName: string): Creep[] {
   return Object.values(Game.creeps).filter((creep) => creep.memory.configName === configName);
 }
 
-function getHarvesterWorkPos(config: CreepConfig): RoomPosition | null {
+function getSourceWorkerWorkPos(config: CreepConfig): RoomPosition | null {
   const sourceId = config.args[0] as Id<Source> | undefined;
   if (!sourceId) {
     return null;
@@ -72,8 +72,8 @@ function getSpawnTime(spawn: StructureSpawn, configName: string): number {
   return body.length * CREEP_SPAWN_TIME;
 }
 
-function estimateHarvesterPreSpawnThreshold(spawn: StructureSpawn, configName: string, config: CreepConfig): number {
-  const workPos = getHarvesterWorkPos(config);
+function estimateSourceWorkerPreSpawnThreshold(spawn: StructureSpawn, configName: string, config: CreepConfig): number {
+  const workPos = getSourceWorkerWorkPos(config);
   if (!workPos) {
     return 0;
   }
@@ -103,7 +103,7 @@ function shouldPreSpawnCarrier(spawn: StructureSpawn, configName: string): boole
   return soonestDying.ticksToLive <= threshold;
 }
 
-function shouldPreSpawnHarvester(spawn: StructureSpawn, configName: string, config: CreepConfig): boolean {
+function shouldPreSpawnSourceWorker(spawn: StructureSpawn, configName: string, config: CreepConfig): boolean {
   const creeps = getConfigCreeps(configName);
   if (creeps.length === 0) {
     return true;
@@ -113,7 +113,7 @@ function shouldPreSpawnHarvester(spawn: StructureSpawn, configName: string, conf
     return false;
   }
 
-  const threshold = estimateHarvesterPreSpawnThreshold(spawn, configName, config);
+  const threshold = estimateSourceWorkerPreSpawnThreshold(spawn, configName, config);
   const soonestDying = creeps.reduce((minCreep, creep) =>
     creep.ticksToLive < minCreep.ticksToLive ? creep : minCreep,
   );
@@ -126,8 +126,8 @@ function shouldQueueConfig(spawn: StructureSpawn, configName: string, config: Cr
     return false;
   }
 
-  if (config.role === "harvester") {
-    return shouldPreSpawnHarvester(spawn, configName, config);
+  if (config.role === "harvester" || config.role === "miner") {
+    return shouldPreSpawnSourceWorker(spawn, configName, config);
   }
 
   if (config.role === "carrier") {

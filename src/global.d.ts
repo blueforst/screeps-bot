@@ -57,6 +57,14 @@ declare global {
     runtime?: {
       lastDeployTag?: string;
       roomPlannerAuto?: Record<string, number>;
+      linkNetwork?: Record<
+        string,
+        {
+          updatedAt: number;
+          senderIds: string[];
+          receiverIds: string[];
+        }
+      >;
       towerEmergencyRamparts?: Record<string, Record<string, number>>;
       workerDynamic?: Record<
         string,
@@ -140,6 +148,7 @@ declare global {
   interface RoomMemory {
     tasks?: Record<string, import("@/types/system").WorkerTask>;
     workerConstructionTier?: 0 | 1 | 2 | 3;
+    coreRampartHits?: Record<string, number>;
     pickupReservations?: Record<
       string,
       {

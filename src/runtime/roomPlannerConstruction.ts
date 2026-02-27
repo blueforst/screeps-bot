@@ -1,4 +1,5 @@
 import { isColonizationBootstrapRoom } from "@/runtime/colonization";
+import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 
 const CONSTRUCTION_PRIORITY: BuildableStructureConstant[] = [
   STRUCTURE_SPAWN,
@@ -21,6 +22,7 @@ const CONSTRUCTION_PRIORITY: BuildableStructureConstant[] = [
 const RUN_INTERVAL = 5;
 const DEFAULT_MAX_NEW_SITES_PER_ROOM = 8;
 const GLOBAL_SITE_SOFT_CAP = 95;
+const MINERAL_CONTAINER_MIN_RCL = 6;
 
 type PlannedLayout = { [structureType: string]: { x: number; y: number }[] };
 type TargetOverrideMap = Partial<Record<BuildableStructureConstant, number>>;
@@ -36,6 +38,177 @@ function getAllowedCount(structureType: BuildableStructureConstant, level: numbe
 
 function getPlannedCount(layout: PlannedLayout, structureType: BuildableStructureConstant): number {
   return layout[structureType]?.length ?? 0;
+}
+
+function getAdjacentSourceAt(room: Room, x: number, y: number): Source | null {
+  const position = new RoomPosition(x, y, room.name);
+  const sources = position.findInRange(FIND_SOURCES, 1);
+  return sources.length > 0 ? sources[0] : null;
+}
+
+function isMineralAdjacentPosition(room: Room, x: number, y: number): boolean {
+  const position = new RoomPosition(x, y, room.name);
+  return position.findInRange(FIND_MINERALS, 1).length > 0;
+}
+
+function shouldDelayMineralContainerPlacement(room: Room, x: number, y: number, controllerLevel: number): boolean {
+  return controllerLevel < MINERAL_CONTAINER_MIN_RCL && isMineralAdjacentPosition(room, x, y);
+}
+
+function getContainerReferencePosition(room: Room): RoomPosition {
+  if (room.storage) {
+    return room.storage.pos;
+  }
+
+  const roomSpawn = Object.values(Game.spawns).find((spawn) => spawn.room.name === room.name);
+  if (roomSpawn) {
+    return roomSpawn.pos;
+  }
+
+  if (room.controller) {
+    return room.controller.pos;
+  }
+
+  return new RoomPosition(25, 25, room.name);
+}
+
+function getExistingSourceContainerPosition(source: Source): { x: number; y: number } | null {
+  const containers = source.pos.findInRange(FIND_STRUCTURES, 1, {
+    filter: (structure) => structure.structureType === STRUCTURE_CONTAINER,
+  }) as StructureContainer[];
+  if (containers.length > 0) {
+    return { x: containers[0].pos.x, y: containers[0].pos.y };
+  }
+
+  const sites = source.pos.findInRange(FIND_CONSTRUCTION_SITES, 1, {
+    filter: (site) => site.structureType === STRUCTURE_CONTAINER,
+  });
+  if (sites.length > 0) {
+    return { x: sites[0].pos.x, y: sites[0].pos.y };
+  }
+
+  return null;
+}
+
+function chooseSourceContainerPosition(source: Source, referencePos: RoomPosition): { x: number; y: number } | null {
+  const terrain = source.room.getTerrain();
+  let bestPos: { x: number; y: number } | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
+    for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
+      if (x === source.pos.x && y === source.pos.y) {
+        continue;
+      }
+
+      if (x < 1 || x > 48 || y < 1 || y > 48) {
+        continue;
+      }
+
+      if (terrain.get(x, y) === TERRAIN_MASK_WALL) {
+        continue;
+      }
+
+      const position = new RoomPosition(x, y, source.room.name);
+      const structures = position.lookFor(LOOK_STRUCTURES);
+      if (
+        structures.some(
+          (structure) =>
+            structure.structureType !== STRUCTURE_CONTAINER &&
+            structure.structureType !== STRUCTURE_ROAD &&
+            structure.structureType !== STRUCTURE_RAMPART,
+        )
+      ) {
+        continue;
+      }
+
+      const sites = position.lookFor(LOOK_CONSTRUCTION_SITES);
+      if (sites.some((site) => site.structureType !== STRUCTURE_CONTAINER)) {
+        continue;
+      }
+
+      const score = position.getRangeTo(referencePos);
+      if (score < bestScore) {
+        bestScore = score;
+        bestPos = { x, y };
+      }
+    }
+  }
+
+  return bestPos;
+}
+
+function getAutoSourceContainerCandidates(room: Room): { x: number; y: number }[] {
+  const referencePos = getContainerReferencePosition(room);
+  const sources = room.find(FIND_SOURCES);
+  const candidates: { x: number; y: number }[] = [];
+
+  for (const source of sources) {
+    if (hasSourceAdjacentLink(source)) {
+      continue;
+    }
+
+    const existingPos = getExistingSourceContainerPosition(source);
+    if (existingPos) {
+      candidates.push(existingPos);
+      continue;
+    }
+
+    const chosenPos = chooseSourceContainerPosition(source, referencePos);
+    if (chosenPos) {
+      candidates.push(chosenPos);
+    }
+  }
+
+  return candidates;
+}
+
+function getContainerPlannedPositions(room: Room, layout: PlannedLayout, controllerLevel: number): { x: number; y: number }[] {
+  const merged = [...(layout[STRUCTURE_CONTAINER] ?? []), ...getAutoSourceContainerCandidates(room)];
+  const seen = new Set<string>();
+  const result: { x: number; y: number }[] = [];
+
+  for (const pos of merged) {
+    const key = `${pos.x}:${pos.y}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    if (shouldSkipSourceContainerPlacement(room, pos.x, pos.y)) {
+      continue;
+    }
+
+    if (shouldDelayMineralContainerPlacement(room, pos.x, pos.y, controllerLevel)) {
+      continue;
+    }
+
+    result.push(pos);
+  }
+
+  return result;
+}
+
+function getCoreRampartPositions(layout: PlannedLayout): { x: number; y: number }[] {
+  return [...(layout[STRUCTURE_SPAWN] ?? []), ...(layout[STRUCTURE_STORAGE] ?? [])];
+}
+
+function getPlannedRampartPositions(layout: PlannedLayout): { x: number; y: number }[] {
+  const merged = [...(layout[STRUCTURE_RAMPART] ?? []), ...getCoreRampartPositions(layout)];
+  const seen = new Set<string>();
+  const result: { x: number; y: number }[] = [];
+
+  for (const pos of merged) {
+    const key = `${pos.x}:${pos.y}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(pos);
+  }
+
+  return result;
 }
 
 function isComplete(room: Room, structureType: BuildableStructureConstant, targetCount: number): boolean {
@@ -78,7 +251,10 @@ function getBuildPolicy(room: Room, layout: PlannedLayout, controllerLevel: numb
   }
 
   const towerTarget = Math.min(getPlannedCount(layout, STRUCTURE_TOWER), getAllowedCount(STRUCTURE_TOWER, 3));
-  const containerTarget = Math.min(getPlannedCount(layout, STRUCTURE_CONTAINER), getAllowedCount(STRUCTURE_CONTAINER, 3));
+  const containerTarget = Math.min(
+    getContainerPlannedPositions(room, layout, controllerLevel).length,
+    getAllowedCount(STRUCTURE_CONTAINER, 3),
+  );
   const towerReady = isComplete(room, STRUCTURE_TOWER, towerTarget);
   const containerReady = isComplete(room, STRUCTURE_CONTAINER, containerTarget);
 
@@ -120,6 +296,11 @@ function tryPlaceSite(room: Room, structureType: BuildableStructureConstant, x: 
   return result;
 }
 
+function shouldSkipSourceContainerPlacement(room: Room, x: number, y: number): boolean {
+  const source = getAdjacentSourceAt(room, x, y);
+  return !!source && hasSourceAdjacentLink(source);
+}
+
 function queueMissingPlannedRamparts(
   room: Room,
   layout: PlannedLayout,
@@ -135,7 +316,7 @@ function queueMissingPlannedRamparts(
     return { roomAdded: 0, globalRemaining };
   }
 
-  const plannedPositions = layout[STRUCTURE_RAMPART] ?? [];
+  const plannedPositions = getPlannedRampartPositions(layout);
   if (plannedPositions.length === 0) {
     return { roomAdded: 0, globalRemaining };
   }
@@ -215,7 +396,12 @@ export function runRoomPlannerConstruction(): void {
         continue;
       }
 
-      const plannedPositions = layout[structureType] ?? [];
+      const plannedPositions =
+        structureType === STRUCTURE_CONTAINER
+          ? getContainerPlannedPositions(room, layout, controllerLevel)
+          : structureType === STRUCTURE_RAMPART
+            ? getPlannedRampartPositions(layout)
+          : (layout[structureType] ?? []);
       if (plannedPositions.length === 0) {
         continue;
       }
@@ -241,6 +427,17 @@ export function runRoomPlannerConstruction(): void {
 
         if (remaining <= 0) {
           break;
+        }
+
+        if (structureType === STRUCTURE_CONTAINER && shouldSkipSourceContainerPlacement(room, pos.x, pos.y)) {
+          continue;
+        }
+
+        if (
+          structureType === STRUCTURE_CONTAINER &&
+          shouldDelayMineralContainerPlacement(room, pos.x, pos.y, controllerLevel)
+        ) {
+          continue;
         }
 
         if (!hasStructureOrSiteAt(room, pos.x, pos.y, structureType)) {
