@@ -1,7 +1,7 @@
 const RESERVATION_TTL = 12;
 
 type PickupTargetKind = "resource" | "structure";
-type PickupTarget = Resource | AnyStoreStructure;
+type PickupTarget = Resource | AnyStoreStructure | Tombstone;
 
 interface PickupReservationClaim {
   amount: number;
@@ -22,7 +22,11 @@ export function getPickupTargetEnergyAmount(target: PickupTarget): number {
     return (target as Resource).amount;
   }
 
-  return (target as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY);
+  if ("store" in target) {
+    return target.store.getUsedCapacity(RESOURCE_ENERGY);
+  }
+
+  return 0;
 }
 
 function ensureRoomReservationStore(roomName: string): Record<string, PickupTargetReservation> {
@@ -134,11 +138,11 @@ export function reservePickupTarget(creep: Creep, target: PickupTarget, desiredA
     return false;
   }
 
-  if (availableForThisCreep < wanted) {
+  if (availableForThisCreep <= 0) {
     return false;
   }
 
-  const claimAmount = wanted;
+  const claimAmount = Math.min(availableForThisCreep, wanted);
 
   entry.claims[creep.name] = {
     amount: claimAmount,
@@ -159,7 +163,7 @@ export function getReservedPickupTarget(creep: Creep): PickupTarget | null {
   if (targetKind === "resource") {
     target = Game.getObjectById(targetId as Id<Resource>);
   } else {
-    target = Game.getObjectById(targetId as Id<AnyStoreStructure>);
+    target = Game.getObjectById(targetId as Id<AnyStoreStructure | Tombstone>);
   }
 
   if (!target || getPickupTargetEnergyAmount(target) <= 0) {

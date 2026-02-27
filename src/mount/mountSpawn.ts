@@ -3,6 +3,10 @@ import type { RoleName } from "@/types/system";
 
 const runtimeGlobal = global;
 
+function isTransientConfigName(configName: string): boolean {
+  return configName.includes(":manual:") || configName.includes(":emergency:");
+}
+
 function ensureQueue(spawn: StructureSpawn): string[] {
   if (!spawn.memory.spawnList) {
     spawn.memory.spawnList = [];
@@ -61,7 +65,7 @@ export function mountSpawn(): void {
       },
     });
 
-    if (code === OK && configName.includes(":manual:")) {
+    if (code === OK && isTransientConfigName(configName)) {
       runtimeGlobal.creepApi.remove(configName);
     }
 

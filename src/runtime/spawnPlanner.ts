@@ -3,6 +3,7 @@ import type { CreepConfig } from "@/types/system";
 
 const runtimeGlobal = global;
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
+const CRITICAL_SPAWN_ROLES = new Set(["harvester", "carrier"]);
 
 function ensureQueue(spawn: StructureSpawn): string[] {
   if (!spawn.memory.spawnList) {
@@ -156,6 +157,31 @@ function queueMissingConfig(spawn: StructureSpawn, configName: string, config: C
   }
 }
 
+function prioritizeCriticalQueue(spawn: StructureSpawn): void {
+  const queue = ensureQueue(spawn);
+  if (queue.length < 2) {
+    return;
+  }
+
+  const critical: string[] = [];
+  const normal: string[] = [];
+
+  for (const configName of queue) {
+    const role = runtimeGlobal.creepApi.get(configName)?.role;
+    if (role && CRITICAL_SPAWN_ROLES.has(role)) {
+      critical.push(configName);
+    } else {
+      normal.push(configName);
+    }
+  }
+
+  if (critical.length === 0) {
+    return;
+  }
+
+  spawn.memory.spawnList = [...critical, ...normal];
+}
+
 export function scheduleSpawnTasks(): void {
   const spawnByRoom = new Map<string, StructureSpawn>();
   Object.values(Game.spawns).forEach((spawn) => {
@@ -176,5 +202,9 @@ export function scheduleSpawnTasks(): void {
     }
 
     queueMissingConfig(spawn, configName, config);
+  }
+
+  for (const spawn of spawnByRoom.values()) {
+    prioritizeCriticalQueue(spawn);
   }
 }

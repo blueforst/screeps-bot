@@ -11,10 +11,14 @@ import {
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
 
-type CarrierPickupTarget = Resource | StructureContainer;
+type CarrierPickupTarget = Resource | StructureContainer | Tombstone;
 
 function getCarrierPickupAmount(target: CarrierPickupTarget): number {
   return getPickupTargetEnergyAmount(target);
+}
+
+function isTombstonePickupTarget(target: Resource | AnyStoreStructure | Tombstone): target is Tombstone {
+  return (target as Tombstone).deathTime !== undefined;
 }
 
 function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[] {
@@ -26,8 +30,11 @@ function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[]
       structure.structureType === STRUCTURE_CONTAINER &&
       (structure as StructureContainer).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
   }) as StructureContainer[];
+  const tombstones = creep.room.find(FIND_TOMBSTONES, {
+    filter: (tombstone) => tombstone.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
+  });
 
-  const candidates: CarrierPickupTarget[] = [...dropped, ...containers];
+  const candidates: CarrierPickupTarget[] = [...dropped, ...containers, ...tombstones];
   if (candidates.length === 0) {
     return [];
   }
@@ -43,12 +50,12 @@ function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[]
     });
 }
 
-function isCarrierPickupTarget(target: Resource | AnyStoreStructure): target is CarrierPickupTarget {
+function isCarrierPickupTarget(target: Resource | AnyStoreStructure | Tombstone): target is CarrierPickupTarget {
   if (isDroppedResourceTarget(target)) {
     return true;
   }
 
-  return target.structureType === STRUCTURE_CONTAINER;
+  return (target as Structure).structureType === STRUCTURE_CONTAINER || (target as Tombstone).deathTime !== undefined;
 }
 
 function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: boolean } {
@@ -94,6 +101,21 @@ function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: bo
     return { picked: pickupCode === OK, outOfRange: false };
   }
 
+  if (isTombstonePickupTarget(sourceTarget)) {
+    const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+    if (withdrawCode === ERR_NOT_IN_RANGE) {
+      moveToTarget(creep, sourceTarget);
+      return { picked: false, outOfRange: true };
+    }
+
+    if (withdrawCode === ERR_NOT_ENOUGH_RESOURCES || withdrawCode === ERR_INVALID_TARGET) {
+      releasePickupReservation(creep, sourceTarget.id);
+      return { picked: false, outOfRange: false };
+    }
+
+    return { picked: withdrawCode === OK, outOfRange: false };
+  }
+
   const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
   if (withdrawCode === ERR_NOT_IN_RANGE) {
     moveToTarget(creep, sourceTarget);
@@ -108,10 +130,10 @@ function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: bo
   return { picked: withdrawCode === OK, outOfRange: false };
 }
 
-function setPostTransferPlan(creep: Creep, mode: "pickup" | "deliver", target: Resource | AnyStoreStructure): void {
+function setPostTransferPlan(creep: Creep, mode: "pickup" | "deliver", target: Resource | AnyStoreStructure | Tombstone): void {
   creep.memory.carrierPlanMode = mode;
   creep.memory.carrierPlanTargetId = target.id;
-  creep.memory.carrierPlanTargetKind = isDroppedResourceTarget(target as Resource | AnyStoreStructure)
+  creep.memory.carrierPlanTargetKind = isDroppedResourceTarget(target)
     ? "resource"
     : "structure";
 }
@@ -122,7 +144,7 @@ function clearPostTransferPlan(creep: Creep): void {
   delete creep.memory.carrierPlanTargetKind;
 }
 
-function getPlannedTarget(creep: Creep): Resource | AnyStoreStructure | null {
+function getPlannedTarget(creep: Creep): Resource | AnyStoreStructure | Tombstone | null {
   if (!creep.memory.carrierPlanTargetId || !creep.memory.carrierPlanTargetKind) {
     return null;
   }
@@ -131,7 +153,7 @@ function getPlannedTarget(creep: Creep): Resource | AnyStoreStructure | null {
     return Game.getObjectById(creep.memory.carrierPlanTargetId as Id<Resource>);
   }
 
-  return Game.getObjectById(creep.memory.carrierPlanTargetId as Id<AnyStoreStructure>);
+  return Game.getObjectById(creep.memory.carrierPlanTargetId as Id<AnyStoreStructure | Tombstone>);
 }
 
 function precomputePostTransferAction(creep: Creep, currentTarget: AnyStoreStructure): void {
@@ -159,21 +181,13 @@ export const carrierRole: RoleFactory = () => ({
   source: (creep): boolean => {
     clearPostTransferPlan(creep);
 
-    const result = pickupEnergyForCarrier(creep);
-    const used = creep.store.getUsedCapacity(RESOURCE_ENERGY);
-    const free = creep.store.getFreeCapacity(RESOURCE_ENERGY);
-    const isFull = free === 0;
-    const hasEnergy = used > 0;
-    const shouldSwitchToTarget = isFull || (!result.picked && !result.outOfRange && hasEnergy);
-    if (shouldSwitchToTarget) {
+    pickupEnergyForCarrier(creep);
+    const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
+    if (hasEnergy) {
       releasePickupReservation(creep);
     }
 
-    if (!result.picked && !result.outOfRange) {
-      return shouldSwitchToTarget;
-    }
-
-    return shouldSwitchToTarget;
+    return hasEnergy;
   },
   target: (creep): boolean => {
     const target = getEnergyStoreTarget(creep);
