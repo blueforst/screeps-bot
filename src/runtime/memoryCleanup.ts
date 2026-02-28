@@ -12,9 +12,17 @@ const VALID_ROLES = new Set([
   "colonizerWorker",
   "meleeAttacker",
   "healer",
+  "crossShardClaimer",
+  "crossShardColonizerHarvester",
+  "crossShardColonizerWorker",
 ]);
 const ROOM_PLANNER_TTL = 50000;
 const ROOM_PLANNER_AUTO_TTL = 20000;
+const INTER_SHARD_PORTAL_TTL = 10000;
+const INTER_SHARD_REMOTE_TTL = 500;
+const INTER_SHARD_CLAIM_TTL = 5000;
+const INTER_SHARD_ROOM_STATE_TTL = 5000;
+const CROSS_SHARD_COLONIZATION_TTL = 5000;
 
 function getOwnedRoomNameSet(): Set<string> {
   return new Set(
@@ -241,6 +249,84 @@ function cleanupWarMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupInterShardPortalMemory(): number {
+  if (!Memory.data?.interShardPortals) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [portalId, portal] of Object.entries(Memory.data.interShardPortals)) {
+    const stale = Game.time - portal.lastSeenAt > INTER_SHARD_PORTAL_TTL;
+    const decayed = typeof portal.ticksToDecay === "number" && portal.ticksToDecay <= 0;
+    if (stale || decayed) {
+      delete Memory.data.interShardPortals[portalId];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
+function cleanupCrossShardRuntimeMemory(): number {
+  const crossShard = Memory.runtime?.crossShard;
+  if (!crossShard) {
+    return 0;
+  }
+
+  const remotes = crossShard.remotes || {};
+  const claims = crossShard.claims || {};
+  const rooms = crossShard.rooms || {};
+
+  let removed = 0;
+  for (const [shard, remote] of Object.entries(remotes)) {
+    if (Game.time - remote.updatedAt > INTER_SHARD_REMOTE_TTL) {
+      delete remotes[shard];
+      removed += 1;
+    }
+  }
+
+  for (const [roomName, claim] of Object.entries(claims)) {
+    if (Game.time - claim.updatedAt > INTER_SHARD_CLAIM_TTL) {
+      delete claims[roomName];
+      removed += 1;
+    }
+  }
+
+  for (const [roomName, summary] of Object.entries(rooms)) {
+    if (Game.time - summary.updatedAt > INTER_SHARD_ROOM_STATE_TTL) {
+      delete rooms[roomName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
+function cleanupCrossShardColonizationMemory(ownedRooms: Set<string>): number {
+  const store = Memory.data?.crossShardColonization;
+  if (!store) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [taskId, task] of Object.entries(store)) {
+    const sourceRoomLost = !!task.sourceRoom && !ownedRooms.has(task.sourceRoom);
+    const staleTerminal =
+      (task.status === "blocked" ||
+        task.status === "failed" ||
+        task.status === "claimed" ||
+        task.status === "completed") &&
+      Game.time - task.updatedAt > CROSS_SHARD_COLONIZATION_TTL;
+    const malformed = !task.targetShard || !task.targetRoom;
+    if (sourceRoomLost || staleTerminal || malformed) {
+      delete store[taskId];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
 export function runMemoryCleanup(): void {
   if (Game.time % CLEANUP_INTERVAL !== 0) {
     return;
@@ -258,6 +344,9 @@ export function runMemoryCleanup(): void {
   const removedTowerEmergency = cleanupTowerEmergencyMemory(ownedRooms);
   const removedPickupReservations = cleanupPickupReservationMemory(ownedRooms);
   const removedWarTasks = cleanupWarMemory(ownedRooms);
+  const removedInterShardPortals = cleanupInterShardPortalMemory();
+  const removedCrossShardRuntime = cleanupCrossShardRuntimeMemory();
+  const removedCrossShardColonization = cleanupCrossShardColonizationMemory(ownedRooms);
 
   if (
     removedCreeps > 0 ||
@@ -269,10 +358,13 @@ export function runMemoryCleanup(): void {
     removedLinkNetwork > 0 ||
     removedTowerEmergency > 0 ||
     removedPickupReservations > 0 ||
-    removedWarTasks > 0
+    removedWarTasks > 0 ||
+    removedInterShardPortals > 0 ||
+    removedCrossShardRuntime > 0 ||
+    removedCrossShardColonization > 0
   ) {
     console.log(
-      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, linkNetwork=${removedLinkNetwork}, towerEmergency=${removedTowerEmergency}, pickupReservations=${removedPickupReservations}, warTasks=${removedWarTasks}`,
+      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, linkNetwork=${removedLinkNetwork}, towerEmergency=${removedTowerEmergency}, pickupReservations=${removedPickupReservations}, warTasks=${removedWarTasks}, interShardPortals=${removedInterShardPortals}, crossShardRuntime=${removedCrossShardRuntime}, crossShardColonization=${removedCrossShardColonization}`,
     );
   }
 }

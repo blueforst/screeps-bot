@@ -55,6 +55,23 @@ function parseEncodedRouteRooms(encodedRouteRooms?: string): string[] {
     .filter((roomName) => roomName.length > 0);
 }
 
+function getNearestRouteRoom(currentRoom: string, routeRooms: string[], targetRoom: string): string {
+  const nonTargetRooms = routeRooms.filter((roomName) => roomName !== targetRoom);
+  const candidates = nonTargetRooms.length > 0 ? nonTargetRooms : routeRooms;
+
+  let bestRoom = candidates[0];
+  let bestDistance = Game.map.getRoomLinearDistance(currentRoom, bestRoom);
+  for (let i = 1; i < candidates.length; i++) {
+    const distance = Game.map.getRoomLinearDistance(currentRoom, candidates[i]);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestRoom = candidates[i];
+    }
+  }
+
+  return bestRoom;
+}
+
 function getNextRouteRoom(currentRoom: string, routeRooms: string[], fallbackRoom: string): string {
   if (routeRooms.length === 0) {
     return fallbackRoom;
@@ -69,7 +86,7 @@ function getNextRouteRoom(currentRoom: string, routeRooms: string[], fallbackRoo
     }
   }
 
-  return fallbackRoom;
+  return getNearestRouteRoom(currentRoom, routeRooms, fallbackRoom);
 }
 
 export function moveToTargetRoom(

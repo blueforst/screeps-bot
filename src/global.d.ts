@@ -31,6 +31,20 @@ declare global {
         queueTop: string[];
       }
     | string;
+  var stopColonization: (targetRoom?: string) =>
+    | {
+        ok: true;
+        scope: "all" | "room";
+        targetRoom?: string;
+        stoppedColonizationRooms: string[];
+        stoppedCrossShardTasks: string[];
+        stoppedWarRooms: string[];
+        removedConfigs: number;
+        removedQueuedTasks: number;
+        cancelledSpawns: number;
+        suicidedCreeps: number;
+      }
+    | string;
 
   interface Memory {
     cfg?: {
@@ -51,6 +65,9 @@ declare global {
         maxNewSitesPerRoom?: number;
       };
       productionMonitor?: {
+        enabled?: boolean;
+      };
+      crossShard?: {
         enabled?: boolean;
       };
     };
@@ -74,6 +91,34 @@ declare global {
           lastTick: number;
         }
       >;
+      crossShard?: {
+        remotes?: Record<
+          string,
+          {
+            updatedAt: number;
+            remoteUpdatedAt: number;
+            portalCount: number;
+            colonyCount: number;
+            claimCount: number;
+            roomCount: number;
+          }
+        >;
+        claims?: Record<
+          string,
+          {
+            updatedAt: number;
+            by?: string;
+          }
+        >;
+        rooms?: Record<
+          string,
+          {
+            updatedAt: number;
+            hasSpawn: boolean;
+            hasStorage: boolean;
+          }
+        >;
+      };
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
@@ -116,6 +161,53 @@ declare global {
           savedAt: number;
         };
       };
+      crossShardColonization?: Record<
+        string,
+        {
+          targetShard: string;
+          targetRoom: string;
+          preferredSourceRoom?: string;
+          sourceRoom?: string;
+          status:
+            | "planning"
+            | "ready"
+            | "spawning"
+            | "in_transit"
+            | "claimed"
+            | "bootstrapping"
+            | "completed"
+            | "blocked"
+            | "failed";
+          flagName: string;
+          reason?: string;
+          portalId?: string;
+          portalRoom?: string;
+          destinationRoom?: string;
+          claimerConfigName?: string;
+          claimerName?: string;
+          bootstrapConfigNames?: string[];
+          bootstrapDispatchedAt?: number;
+          launchedAt?: number;
+          claimedAt?: number;
+          completedAt?: number;
+          lastObservedAt?: number;
+          createdAt: number;
+          updatedAt: number;
+          lastReadyAt?: number;
+        }
+      >;
+      interShardPortals?: Record<
+        string,
+        {
+          id: string;
+          originRoom: string;
+          destinationShard: string;
+          destinationRoom?: string;
+          discoveredAt: number;
+          lastSeenAt: number;
+          ticksToDecay?: number;
+        }
+      >;
     };
     analytics?: {
       production?: {
@@ -208,6 +300,20 @@ declare namespace NodeJS {
           bodyParts: number;
           pairCount: number;
           queueTop: string[];
+        }
+      | string;
+    stopColonization: (targetRoom?: string) =>
+      | {
+          ok: true;
+          scope: "all" | "room";
+          targetRoom?: string;
+          stoppedColonizationRooms: string[];
+          stoppedCrossShardTasks: string[];
+          stoppedWarRooms: string[];
+          removedConfigs: number;
+          removedQueuedTasks: number;
+          cancelledSpawns: number;
+          suicidedCreeps: number;
         }
       | string;
     __screepsMounted?: boolean;

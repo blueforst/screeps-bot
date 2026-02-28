@@ -148,4 +148,7 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   colonizerWorker: oneOneOneBody,
   meleeAttacker: meleeAttackBody,
   healer: healerBody,
+  crossShardClaimer: () => [CLAIM, MOVE],
+  crossShardColonizerHarvester: () => [...COLONIZER_HARVESTER_BODY],
+  crossShardColonizerWorker: oneOneOneBody,
 };

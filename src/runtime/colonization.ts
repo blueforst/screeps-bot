@@ -371,13 +371,22 @@ function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abando
   const scouts = getLiveCreepsByConfig(scoutConfigName);
   for (const scout of scouts) {
     if (isDangerousVisibleRoom(scout.room.name, myUsername)) {
-      markDangerousRoom(task, scout.room.name);
-      task.scoutRouteRooms = undefined;
-      task.scoutSafe = false;
+      if (scout.room.name !== task.targetRoom) {
+        markDangerousRoom(task, scout.room.name);
+        task.scoutRouteRooms = undefined;
+        task.scoutSafe = false;
+      }
     }
   }
 
   if (scouts.some((scout) => scout.room.name === task.targetRoom)) {
+    if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
+      const recoveredRoute = findSafeRoute(task);
+      if (recoveredRoute) {
+        task.scoutRouteRooms = recoveredRoute;
+      }
+    }
+
     const targetRoom = Game.rooms[task.targetRoom];
     if (targetRoom) {
       const myUsername = getMyUsername();
@@ -576,6 +585,16 @@ function processTask(task: ColonizationTask): void {
     const scoutConfigName = getTaskConfigName(task, "scout", "0");
     removeQueuedConfig(task, scoutConfigName);
     removeConfigWhenIdle(scoutConfigName);
+
+    if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
+      const recoveredRoute = findSafeRoute(task);
+      if (!recoveredRoute) {
+        task.scoutSafe = false;
+        return;
+      }
+
+      task.scoutRouteRooms = recoveredRoute;
+    }
 
     ensureClaimer(task);
     return;

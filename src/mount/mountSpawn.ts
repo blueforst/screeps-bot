@@ -55,7 +55,7 @@ export function mountSpawn(): void {
     }
 
     const body = chooseBody(this, configName);
-    const name = `${getCreepNamePrefix(config.role)}-${Game.time}`;
+    const name = config.name || `${getCreepNamePrefix(config.role)}-${Game.time}`;
     const code = this.spawnCreep(body, name, {
       memory: {
         role: config.role,

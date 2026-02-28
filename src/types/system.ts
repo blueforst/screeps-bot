@@ -8,7 +8,10 @@ export type RoleName =
   | "colonizerHarvester"
   | "colonizerWorker"
   | "meleeAttacker"
-  | "healer";
+  | "healer"
+  | "crossShardClaimer"
+  | "crossShardColonizerHarvester"
+  | "crossShardColonizerWorker";
 export type WorkerTaskType = "build" | "upgrade" | "repair";
 
 export interface CreepConfig {
@@ -16,6 +19,7 @@ export interface CreepConfig {
   args: string[];
   roomName?: string;
   body?: BodyPartConstant[];
+  name?: string;
 }
 
 export interface RoleLifecycle {

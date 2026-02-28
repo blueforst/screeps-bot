@@ -1,6 +1,32 @@
 import { roleRegistry } from "@/roles";
+import { decodeCrossShardTravelerName } from "@/runtime/crossShardNaming";
 
 const runtimeGlobal = global;
+
+function tryRestoreRoleFromName(creep: Creep): boolean {
+  const traveler = decodeCrossShardTravelerName(creep.name);
+  if (!traveler) {
+    return false;
+  }
+
+  const restoredRoleByKind = {
+    claimer: "crossShardClaimer",
+    harvester: "crossShardColonizerHarvester",
+    worker: "crossShardColonizerWorker",
+  } as const;
+
+  creep.memory.role = restoredRoleByKind[traveler.kind];
+  creep.memory.roleArgs = [
+    traveler.targetShard,
+    traveler.targetRoom,
+    traveler.portalRoom,
+    traveler.destinationRoom || "",
+  ];
+  creep.memory.ready = false;
+  creep.memory.working = false;
+
+  return true;
+}
 
 function resolveRoleLogic(creep: Creep): ReturnType<(typeof roleRegistry)[keyof typeof roleRegistry]> | null {
   const configName = creep.memory.configName;
@@ -18,6 +44,14 @@ function resolveRoleLogic(creep: Creep): ReturnType<(typeof roleRegistry)[keyof 
 
   const memoryRole = creep.memory.role;
   if (!memoryRole) {
+    if (tryRestoreRoleFromName(creep)) {
+      const restoredRole = creep.memory.role;
+      if (restoredRole) {
+        const restoredFactory = roleRegistry[restoredRole];
+        return restoredFactory(...(creep.memory.roleArgs || []));
+      }
+    }
+
     return null;
   }
 
