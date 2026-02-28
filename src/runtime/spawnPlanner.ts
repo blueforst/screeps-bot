@@ -33,8 +33,22 @@ function getConfigCreeps(configName: string): Creep[] {
   return Object.values(Game.creeps).filter((creep) => creep.memory.configName === configName);
 }
 
+function getSourceIdFromConfig(config: CreepConfig): Id<Source> | undefined {
+  if (config.role === "colonizerHarvester") {
+    const sourceId = config.args[1];
+    return sourceId ? (sourceId as Id<Source>) : undefined;
+  }
+
+  if (config.role === "harvester" || config.role === "miner") {
+    const sourceId = config.args[0];
+    return sourceId ? (sourceId as Id<Source>) : undefined;
+  }
+
+  return undefined;
+}
+
 function getSourceWorkerWorkPos(config: CreepConfig): RoomPosition | null {
-  const sourceId = config.args[0] as Id<Source> | undefined;
+  const sourceId = getSourceIdFromConfig(config);
   if (!sourceId) {
     return null;
   }
@@ -126,7 +140,7 @@ function shouldQueueConfig(spawn: StructureSpawn, configName: string, config: Cr
     return false;
   }
 
-  if (config.role === "harvester" || config.role === "miner") {
+  if (config.role === "harvester" || config.role === "miner" || config.role === "colonizerHarvester") {
     return shouldPreSpawnSourceWorker(spawn, configName, config);
   }
 

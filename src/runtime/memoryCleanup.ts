@@ -6,6 +6,7 @@ const VALID_ROLES = new Set([
   "miner",
   "carrier",
   "worker",
+  "scout",
   "claimer",
   "colonizerHarvester",
   "colonizerWorker",
@@ -19,6 +20,15 @@ function getOwnedRoomNameSet(): Set<string> {
       .filter((room) => room.controller?.my)
       .map((room) => room.name),
   );
+}
+
+function getColonizationTargetRoomNameSet(): Set<string> {
+  const colonization = Memory.data?.colonization;
+  if (!colonization) {
+    return new Set();
+  }
+
+  return new Set(Object.keys(colonization));
 }
 
 function cleanupDeadCreepMemory(): number {
@@ -107,14 +117,14 @@ function cleanupManagedCreepConfigs(): number {
   return removed;
 }
 
-function cleanupRoomPlannerMemory(ownedRooms: Set<string>): number {
+function cleanupRoomPlannerMemory(ownedRooms: Set<string>, colonizationTargets: Set<string>): number {
   if (!Memory.data?.roomPlanner) {
     return 0;
   }
 
   let removed = 0;
   for (const [roomName, data] of Object.entries(Memory.data.roomPlanner)) {
-    const staleByRoom = !ownedRooms.has(roomName);
+    const staleByRoom = !ownedRooms.has(roomName) && !colonizationTargets.has(roomName);
     const staleByTime = Game.time - data.savedAt > ROOM_PLANNER_TTL;
 
     if (staleByRoom || staleByTime) {
@@ -220,7 +230,8 @@ export function runMemoryCleanup(): void {
   const removedConfigs = cleanupLegacyConfigMemory();
   const removedManagedConfigs = cleanupManagedCreepConfigs();
   const ownedRooms = getOwnedRoomNameSet();
-  const removedRoomPlans = cleanupRoomPlannerMemory(ownedRooms);
+  const colonizationTargets = getColonizationTargetRoomNameSet();
+  const removedRoomPlans = cleanupRoomPlannerMemory(ownedRooms, colonizationTargets);
   const removedRoomPlannerAuto = cleanupRoomPlannerAutoMemory(ownedRooms);
   const removedLinkNetwork = cleanupLinkNetworkMemory(ownedRooms);
   const removedTowerEmergency = cleanupTowerEmergencyMemory(ownedRooms);

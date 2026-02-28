@@ -86,6 +86,9 @@ declare global {
           flagName: string;
           planReady: boolean;
           claimCompleted: boolean;
+          scoutSafe?: boolean;
+          scoutRouteRooms?: string[];
+          dangerousRooms?: string[];
           createdAt: number;
           updatedAt: number;
         }

@@ -10,7 +10,7 @@ import {
   releasePickupReservation,
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
-import { isReceiverLink } from "@/runtime/linkControl";
+import { isStorageReceiverLink } from "@/runtime/linkControl";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | Tombstone;
 
@@ -29,7 +29,7 @@ function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[]
   const structures = creep.room.find(FIND_STRUCTURES, {
     filter: (structure) =>
       (structure.structureType === STRUCTURE_CONTAINER ||
-        (structure.structureType === STRUCTURE_LINK && isReceiverLink(structure as StructureLink))) &&
+        (structure.structureType === STRUCTURE_LINK && isStorageReceiverLink(structure as StructureLink))) &&
       (structure as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
   }) as (StructureContainer | StructureLink)[];
   const tombstones = creep.room.find(FIND_TOMBSTONES, {
@@ -67,7 +67,7 @@ function isCarrierPickupTarget(target: Resource | AnyStoreStructure | Tombstone)
   }
 
   if (structureType === STRUCTURE_LINK) {
-    return isReceiverLink(target as StructureLink);
+    return isStorageReceiverLink(target as StructureLink);
   }
 
   return false;

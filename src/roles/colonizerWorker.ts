@@ -8,7 +8,7 @@ export const colonizerWorkerRole: RoleFactory = (targetRoom?: string) => {
   return {
     source: (creep): boolean => {
       if (targetRoom && creep.room.name !== targetRoom) {
-        moveToTarget(creep, new RoomPosition(25, 25, targetRoom));
+        moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 1, { swampCost: 8 });
         return false;
       }
 
@@ -16,7 +16,7 @@ export const colonizerWorkerRole: RoleFactory = (targetRoom?: string) => {
     },
     target: (creep): boolean => {
       if (targetRoom && creep.room.name !== targetRoom) {
-        moveToTarget(creep, new RoomPosition(25, 25, targetRoom));
+        moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 1, { swampCost: 8 });
         return false;
       }
 

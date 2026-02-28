@@ -3,6 +3,7 @@ export type RoleName =
   | "miner"
   | "carrier"
   | "worker"
+  | "scout"
   | "claimer"
   | "colonizerHarvester"
   | "colonizerWorker";

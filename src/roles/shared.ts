@@ -10,6 +10,11 @@ function getTargetPos(target: RoomPosition | { pos: RoomPosition }): RoomPositio
   return target instanceof RoomPosition ? target : target.pos;
 }
 
+interface MoveToTargetOptions {
+  swampCost?: number;
+  plainCost?: number;
+}
+
 export type EnergyPickupTarget = Resource | AnyStoreStructure | Tombstone;
 
 export function isDroppedResourceTarget(target: EnergyPickupTarget): target is Resource {
@@ -20,9 +25,15 @@ export function moveToTarget(
   creep: Creep,
   target: RoomPosition | { pos: RoomPosition },
   range: 1 | 3 = 1,
+  options: MoveToTargetOptions = {},
 ): ScreepsReturnCode {
   const targetPos = getTargetPos(target);
-  return creep.moveTo(targetPos, { range, visualizePathStyle: { stroke: "#ffaa00" } });
+  return creep.moveTo(targetPos, {
+    range,
+    swampCost: options.swampCost,
+    plainCost: options.plainCost,
+    visualizePathStyle: { stroke: "#ffaa00" },
+  });
 }
 
 export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { pos: RoomPosition }): ScreepsReturnCode {
@@ -34,7 +45,7 @@ export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { po
   const path = creep.pos.findPathTo(targetPos, {
     range: 3,
     ignoreCreeps: false,
-    swampCost: 2,
+    swampCost: 8,
   });
 
   if (path.length === 0) {
@@ -133,7 +144,7 @@ interface PickupResult {
   outOfRange: boolean;
 }
 
-export function pickupEnergyFromPreferredTarget(creep: Creep): PickupResult {
+export function pickupEnergyFromPreferredTarget(creep: Creep, moveOptions: MoveToTargetOptions = {}): PickupResult {
   const desiredAmount = creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0;
 
   let sourceTarget = getReservedPickupTarget(creep) as EnergyPickupTarget | null;
@@ -159,7 +170,7 @@ export function pickupEnergyFromPreferredTarget(creep: Creep): PickupResult {
   if (isDroppedResourceTarget(sourceTarget)) {
     const pickupCode = creep.pickup(sourceTarget);
     if (pickupCode === ERR_NOT_IN_RANGE) {
-      moveToTarget(creep, sourceTarget);
+      moveToTarget(creep, sourceTarget, 1, moveOptions);
       return { picked: false, outOfRange: true };
     }
 
@@ -177,7 +188,7 @@ export function pickupEnergyFromPreferredTarget(creep: Creep): PickupResult {
 
   const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
   if (withdrawCode === ERR_NOT_IN_RANGE) {
-    moveToTarget(creep, sourceTarget);
+    moveToTarget(creep, sourceTarget, 1, moveOptions);
     return { picked: false, outOfRange: true };
   }
 

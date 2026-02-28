@@ -5,7 +5,7 @@ import { releasePickupReservation } from "@/runtime/energyPickupReservation";
 
 export const workerRole: RoleFactory = () => ({
   source: (creep): boolean => {
-    const result = pickupEnergyFromPreferredTarget(creep);
+    const result = pickupEnergyFromPreferredTarget(creep, { swampCost: 8 });
     const shouldSwitchToTarget = result.picked || creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
     if (shouldSwitchToTarget) {
       releasePickupReservation(creep);

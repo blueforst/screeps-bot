@@ -9,12 +9,17 @@ interface ColonizationTask {
   flagName: string;
   planReady: boolean;
   claimCompleted: boolean;
+  scoutSafe?: boolean;
+  scoutRouteRooms?: string[];
+  dangerousRooms?: string[];
   createdAt: number;
   updatedAt: number;
 }
 
 const CLAIMER_BODY: BodyPartConstant[] = [CLAIM, MOVE];
+const SCOUT_BODY: BodyPartConstant[] = [MOVE];
 const BOOTSTRAP_WORKER_COUNT = 2;
+const MAX_SAFE_ROUTE_LENGTH = 500;
 
 function ensureColonizationStore(): Record<string, ColonizationTask> {
   Memory.data = Memory.data || {};
@@ -77,7 +82,11 @@ function getColonizationFlags(): Flag[] {
   return Object.values(Game.flags).filter((flag) => flag.name === "CL" || flag.name.startsWith("CL_"));
 }
 
-function getTaskConfigName(task: ColonizationTask, role: "claimer" | "harvester" | "worker", indexOrSourceId: string): string {
+function getTaskConfigName(
+  task: ColonizationTask,
+  role: "scout" | "claimer" | "harvester" | "worker",
+  indexOrSourceId: string,
+): string {
   return `${task.sourceRoom}:colonize:${task.targetRoom}:${role}:${indexOrSourceId}`;
 }
 
@@ -138,9 +147,234 @@ function removeConfigWhenIdle(configName: string): void {
   }
 }
 
+function removeQueuedConfig(task: ColonizationTask, configName: string): void {
+  const spawn = getSpawnForRoom(task.sourceRoom);
+  if (!spawn?.memory.spawnList) {
+    return;
+  }
+
+  spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+}
+
+function getMyUsername(): string | null {
+  const firstSpawn = Object.values(Game.spawns)[0];
+  if (firstSpawn) {
+    return firstSpawn.owner.username;
+  }
+
+  const firstCreep = Object.values(Game.creeps)[0];
+  if (firstCreep) {
+    return firstCreep.owner.username;
+  }
+
+  return null;
+}
+
+function isDangerousVisibleRoom(roomName: string, myUsername: string | null): boolean {
+  const room = Game.rooms[roomName];
+  if (!room) {
+    return false;
+  }
+
+  if (room.find(FIND_HOSTILE_CREEPS).length > 0) {
+    return true;
+  }
+
+  const controller = room.controller;
+  if (controller?.owner && !controller.my) {
+    return true;
+  }
+
+  if (controller?.reservation) {
+    if (!myUsername) {
+      return true;
+    }
+
+    if (controller.reservation.username !== myUsername) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function estimateRouteLength(task: ColonizationTask, routeRooms: string[]): number {
+  const allowedRooms = new Set(routeRooms);
+  if (!allowedRooms.has(task.sourceRoom) || !allowedRooms.has(task.targetRoom)) {
+    return Infinity;
+  }
+
+  const spawn = getSpawnForRoom(task.sourceRoom);
+  const startPos = spawn ? spawn.pos : new RoomPosition(25, 25, task.sourceRoom);
+  const targetPos = new RoomPosition(25, 25, task.targetRoom);
+
+  const search = PathFinder.search(
+    startPos,
+    { pos: targetPos, range: 20 },
+    {
+      maxOps: 20000,
+      maxRooms: Math.max(1, allowedRooms.size),
+      plainCost: 2,
+      swampCost: 10,
+      roomCallback: (roomName) => {
+        if (!allowedRooms.has(roomName)) {
+          return false;
+        }
+
+        return new PathFinder.CostMatrix();
+      },
+    },
+  );
+
+  if (search.incomplete) {
+    return Infinity;
+  }
+
+  return search.path.length;
+}
+
+function findSafeRoute(task: ColonizationTask): string[] | null {
+  const myUsername = getMyUsername();
+  const dangerousRooms = new Set(task.dangerousRooms ?? []);
+  const route = Game.map.findRoute(task.sourceRoom, task.targetRoom, {
+    routeCallback: (roomName) => {
+      if (roomName === task.sourceRoom || roomName === task.targetRoom) {
+        return 1;
+      }
+
+      if (dangerousRooms.has(roomName)) {
+        return Infinity;
+      }
+
+      if (Game.map.getRoomStatus(roomName).status !== "normal") {
+        return Infinity;
+      }
+
+      if (isDangerousVisibleRoom(roomName, myUsername)) {
+        return Infinity;
+      }
+
+      return 2;
+    },
+  });
+
+  if (route === ERR_NO_PATH) {
+    return null;
+  }
+
+  const routeRooms = [task.sourceRoom, ...route.map((step) => step.room)];
+  const routeLength = estimateRouteLength(task, routeRooms);
+  if (routeLength > MAX_SAFE_ROUTE_LENGTH) {
+    return null;
+  }
+
+  return routeRooms;
+}
+
+function markDangerousRoom(task: ColonizationTask, roomName: string): void {
+  if (roomName === task.sourceRoom) {
+    return;
+  }
+
+  task.dangerousRooms = task.dangerousRooms || [];
+  if (!task.dangerousRooms.includes(roomName)) {
+    task.dangerousRooms.push(roomName);
+  }
+}
+
+function ensureScout(task: ColonizationTask): void {
+  if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
+    return;
+  }
+
+  const configName = getTaskConfigName(task, "scout", "0");
+  upsertConfig(configName, {
+    role: "scout",
+    args: [task.targetRoom, task.scoutRouteRooms.join("|")],
+    roomName: task.sourceRoom,
+    body: SCOUT_BODY,
+  });
+
+  const spawn = getSpawnForRoom(task.sourceRoom);
+  if (!spawn) {
+    return;
+  }
+
+  const hasLive = getLiveCreepsByConfig(configName).length > 0;
+  const queued = spawn.memory.spawnList?.includes(configName) ?? false;
+  const spawning = isConfigSpawning(configName);
+
+  if (!hasLive && !queued && !spawning) {
+    enqueueConfig(spawn, configName, true);
+  }
+}
+
+function abandonColonization(task: ColonizationTask, reason: string): void {
+  const configNames = getTaskConfigNames(task);
+  for (const configName of configNames) {
+    for (const creep of getLiveCreepsByConfig(configName)) {
+      creep.suicide();
+    }
+    removeQueuedConfig(task, configName);
+    removeConfigWhenIdle(configName);
+  }
+
+  const store = ensureColonizationStore();
+  delete store[task.targetRoom];
+  console.log(`[colonization] abandon ${task.targetRoom}: ${reason}`);
+}
+
+function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abandon" {
+  if (task.scoutSafe) {
+    return "safe";
+  }
+
+  const myUsername = getMyUsername();
+  const scoutConfigName = getTaskConfigName(task, "scout", "0");
+  const scouts = getLiveCreepsByConfig(scoutConfigName);
+  for (const scout of scouts) {
+    if (isDangerousVisibleRoom(scout.room.name, myUsername)) {
+      markDangerousRoom(task, scout.room.name);
+      task.scoutRouteRooms = undefined;
+      task.scoutSafe = false;
+    }
+  }
+
+  if (scouts.some((scout) => scout.room.name === task.targetRoom)) {
+    task.scoutSafe = true;
+    removeQueuedConfig(task, scoutConfigName);
+    removeConfigWhenIdle(scoutConfigName);
+    return "safe";
+  }
+
+  if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
+    const routeRooms = findSafeRoute(task);
+    if (!routeRooms) {
+      return "abandon";
+    }
+
+    task.scoutRouteRooms = routeRooms;
+  }
+
+  ensureScout(task);
+  return "pending";
+}
+
+function hasSavedPlanWithSpawn(roomName: string): boolean {
+  const layout = Memory.data?.roomPlanner?.[roomName]?.layout;
+  return (layout?.[STRUCTURE_SPAWN]?.length ?? 0) > 0;
+}
+
 function ensurePlanReady(task: ColonizationTask): void {
-  if (task.planReady || Memory.data?.roomPlanner?.[task.targetRoom]) {
+  if (hasSavedPlanWithSpawn(task.targetRoom)) {
     task.planReady = true;
+    return;
+  }
+
+  task.planReady = false;
+
+  const targetRoom = Game.rooms[task.targetRoom];
+  if (!targetRoom) {
     return;
   }
 
@@ -150,7 +384,7 @@ function ensurePlanReady(task: ColonizationTask): void {
   }
 
   const saved = savePlannerForRoom(task.targetRoom);
-  if (saved) {
+  if (saved && hasSavedPlanWithSpawn(task.targetRoom)) {
     task.planReady = true;
   }
 }
@@ -234,6 +468,25 @@ function processTask(task: ColonizationTask): void {
   const hasMyController = !!targetRoom?.controller?.my;
   if (!hasMyController) {
     task.status = "claiming";
+
+    const claimerConfigName = getTaskConfigName(task, "claimer", "0");
+    removeQueuedConfig(task, claimerConfigName);
+    removeConfigWhenIdle(claimerConfigName);
+
+    const scoutSafety = ensureScoutSafety(task);
+    if (scoutSafety === "abandon") {
+      abandonColonization(task, "no safe route or route length exceeded 500");
+      return;
+    }
+
+    if (scoutSafety !== "safe") {
+      return;
+    }
+
+    const scoutConfigName = getTaskConfigName(task, "scout", "0");
+    removeQueuedConfig(task, scoutConfigName);
+    removeConfigWhenIdle(scoutConfigName);
+
     ensureClaimer(task);
     return;
   }
@@ -280,6 +533,9 @@ function upsertColonizationTask(flag: Flag): boolean {
     flagName: flag.name,
     planReady: existing?.planReady ?? false,
     claimCompleted: existing?.claimCompleted ?? false,
+    scoutSafe: existing?.scoutSafe ?? false,
+    scoutRouteRooms: existing?.scoutRouteRooms,
+    dangerousRooms: existing?.dangerousRooms ?? [],
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };

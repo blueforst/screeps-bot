@@ -1,4 +1,4 @@
-import { isColonizationBootstrapRoom } from "@/runtime/colonization";
+import { runPlannerForRoom, savePlannerForRoom } from "@/modules/autoplanner";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 
 const CONSTRUCTION_PRIORITY: BuildableStructureConstant[] = [
@@ -19,13 +19,25 @@ const CONSTRUCTION_PRIORITY: BuildableStructureConstant[] = [
   STRUCTURE_RAMPART,
 ];
 
-const RUN_INTERVAL = 5;
+const RUN_INTERVAL = 100;
 const DEFAULT_MAX_NEW_SITES_PER_ROOM = 8;
 const GLOBAL_SITE_SOFT_CAP = 95;
 const MINERAL_CONTAINER_MIN_RCL = 6;
 
 type PlannedLayout = { [structureType: string]: { x: number; y: number }[] };
 type TargetOverrideMap = Partial<Record<BuildableStructureConstant, number>>;
+
+const LINK_PRIORITY_STORAGE = 0;
+const LINK_PRIORITY_SOURCE = 1;
+const LINK_PRIORITY_OTHER = 2;
+const LINK_PRIORITY_CONTROLLER = 3;
+
+interface PlannedLinkOrder {
+  pos: { x: number; y: number };
+  priority: number;
+  commuteDistance: number;
+  referenceDistance: number;
+}
 
 function canBuildAtControllerLevel(structureType: BuildableStructureConstant, level: number): boolean {
   const maxByLevel = CONTROLLER_STRUCTURES[structureType];
@@ -211,6 +223,119 @@ function getPlannedRampartPositions(layout: PlannedLayout): { x: number; y: numb
   return result;
 }
 
+function getPrimaryRoomAnchor(room: Room, layout: PlannedLayout): RoomPosition {
+  if (room.storage) {
+    return room.storage.pos;
+  }
+
+  const plannedStorage = layout[STRUCTURE_STORAGE]?.[0];
+  if (plannedStorage) {
+    return new RoomPosition(plannedStorage.x, plannedStorage.y, room.name);
+  }
+
+  const roomSpawn = Object.values(Game.spawns).find((spawn) => spawn.room.name === room.name);
+  if (roomSpawn) {
+    return roomSpawn.pos;
+  }
+
+  const plannedSpawn = layout[STRUCTURE_SPAWN]?.[0];
+  if (plannedSpawn) {
+    return new RoomPosition(plannedSpawn.x, plannedSpawn.y, room.name);
+  }
+
+  if (room.controller) {
+    return room.controller.pos;
+  }
+
+  return new RoomPosition(25, 25, room.name);
+}
+
+function getPathDistance(from: RoomPosition, to: RoomPosition): number {
+  const path = from.findPathTo(to, { ignoreCreeps: true, swampCost: 2, maxOps: 2000 });
+  if (path.length > 0) {
+    return path.length;
+  }
+
+  return from.getRangeTo(to);
+}
+
+function getSortedLinkPlannedPositions(room: Room, layout: PlannedLayout): { x: number; y: number }[] {
+  const planned = layout[STRUCTURE_LINK] ?? [];
+  if (planned.length <= 1) {
+    return planned;
+  }
+
+  const storageAnchor = room.storage?.pos ?? (layout[STRUCTURE_STORAGE]?.[0]
+    ? new RoomPosition(layout[STRUCTURE_STORAGE][0].x, layout[STRUCTURE_STORAGE][0].y, room.name)
+    : null);
+  const controllerPos = room.controller?.pos || null;
+  const anchor = getPrimaryRoomAnchor(room, layout);
+  const sources = room.find(FIND_SOURCES);
+
+  const ordered: PlannedLinkOrder[] = planned.map((pos) => {
+    const linkPos = new RoomPosition(pos.x, pos.y, room.name);
+    const referenceDistance = anchor.getRangeTo(linkPos);
+
+    if (storageAnchor && linkPos.getRangeTo(storageAnchor) <= 2) {
+      return {
+        pos,
+        priority: LINK_PRIORITY_STORAGE,
+        commuteDistance: Number.POSITIVE_INFINITY,
+        referenceDistance,
+      };
+    }
+
+    const nearestSource = linkPos.findClosestByRange(sources);
+    const sourceRange = nearestSource ? linkPos.getRangeTo(nearestSource.pos) : Number.POSITIVE_INFINITY;
+    if (nearestSource && sourceRange <= 2) {
+      return {
+        pos,
+        priority: LINK_PRIORITY_SOURCE,
+        commuteDistance: getPathDistance(anchor, nearestSource.pos),
+        referenceDistance,
+      };
+    }
+
+    if (controllerPos && linkPos.getRangeTo(controllerPos) <= 2) {
+      return {
+        pos,
+        priority: LINK_PRIORITY_CONTROLLER,
+        commuteDistance: 0,
+        referenceDistance,
+      };
+    }
+
+    return {
+      pos,
+      priority: LINK_PRIORITY_OTHER,
+      commuteDistance: getPathDistance(anchor, linkPos),
+      referenceDistance,
+    };
+  });
+
+  ordered.sort((a, b) => {
+    if (a.priority !== b.priority) {
+      return a.priority - b.priority;
+    }
+
+    if (a.priority === LINK_PRIORITY_SOURCE && a.commuteDistance !== b.commuteDistance) {
+      return b.commuteDistance - a.commuteDistance;
+    }
+
+    if (a.referenceDistance !== b.referenceDistance) {
+      return a.referenceDistance - b.referenceDistance;
+    }
+
+    if (a.pos.x !== b.pos.x) {
+      return a.pos.x - b.pos.x;
+    }
+
+    return a.pos.y - b.pos.y;
+  });
+
+  return ordered.map((entry) => entry.pos);
+}
+
 function isComplete(room: Room, structureType: BuildableStructureConstant, targetCount: number): boolean {
   if (targetCount <= 0) {
     return true;
@@ -224,17 +349,22 @@ function getBuildPolicy(room: Room, layout: PlannedLayout, controllerLevel: numb
   targetOverrides: TargetOverrideMap;
 } {
   const targetOverrides: TargetOverrideMap = {};
-  const colonizationBootstrap = isColonizationBootstrapRoom(room.name);
 
-  if (controllerLevel <= 1) {
-    if (colonizationBootstrap) {
-      const spawnTarget = Math.min(getPlannedCount(layout, STRUCTURE_SPAWN), getAllowedCount(STRUCTURE_SPAWN, controllerLevel));
-      if (spawnTarget > 0) {
-        targetOverrides[STRUCTURE_SPAWN] = spawnTarget;
-        return { allowedTypes: new Set([STRUCTURE_SPAWN]), targetOverrides };
-      }
+  const hasSpawn = countExisting(room, STRUCTURE_SPAWN) > 0;
+  if (!hasSpawn) {
+    const spawnTarget = Math.min(
+      Math.max(getPlannedCount(layout, STRUCTURE_SPAWN), 1),
+      getAllowedCount(STRUCTURE_SPAWN, controllerLevel),
+    );
+    if (spawnTarget > 0) {
+      targetOverrides[STRUCTURE_SPAWN] = spawnTarget;
+      return { allowedTypes: new Set([STRUCTURE_SPAWN]), targetOverrides };
     }
 
+    return { allowedTypes: new Set(), targetOverrides };
+  }
+
+  if (controllerLevel <= 1) {
     return { allowedTypes: new Set(), targetOverrides };
   }
 
@@ -262,6 +392,13 @@ function getBuildPolicy(room: Room, layout: PlannedLayout, controllerLevel: numb
     targetOverrides[STRUCTURE_TOWER] = towerTarget;
     targetOverrides[STRUCTURE_CONTAINER] = containerTarget;
     return { allowedTypes: new Set([STRUCTURE_TOWER, STRUCTURE_CONTAINER]), targetOverrides };
+  }
+
+  if (countExisting(room, STRUCTURE_TOWER) <= 0) {
+    return {
+      allowedTypes: new Set(CONSTRUCTION_PRIORITY.filter((type) => type !== STRUCTURE_RAMPART)),
+      targetOverrides,
+    };
   }
 
   return { allowedTypes: new Set(CONSTRUCTION_PRIORITY), targetOverrides };
@@ -309,6 +446,10 @@ function queueMissingPlannedRamparts(
   globalRemaining: number,
 ): { roomAdded: number; globalRemaining: number } {
   if (roomRemaining <= 0 || globalRemaining <= 0) {
+    return { roomAdded: 0, globalRemaining };
+  }
+
+  if (countExisting(room, STRUCTURE_TOWER) <= 0) {
     return { roomAdded: 0, globalRemaining };
   }
 
@@ -376,8 +517,19 @@ export function runRoomPlannerConstruction(): void {
       return;
     }
 
-    const roomPlan = Memory.data?.roomPlanner?.[room.name];
-    if (!roomPlan) {
+    let roomPlan = Memory.data?.roomPlanner?.[room.name];
+    if (!roomPlan?.layout) {
+      const planned = runPlannerForRoom(room.name);
+      if (planned) {
+        const saved = savePlannerForRoom(room.name);
+        if (saved) {
+          roomPlan = Memory.data?.roomPlanner?.[room.name];
+          console.log(`[roomPlanner] ${room.name} regenerated missing layout`);
+        }
+      }
+    }
+
+    if (!roomPlan?.layout) {
       continue;
     }
 
@@ -399,6 +551,8 @@ export function runRoomPlannerConstruction(): void {
       const plannedPositions =
         structureType === STRUCTURE_CONTAINER
           ? getContainerPlannedPositions(room, layout, controllerLevel)
+          : structureType === STRUCTURE_LINK
+            ? getSortedLinkPlannedPositions(room, layout)
           : structureType === STRUCTURE_RAMPART
             ? getPlannedRampartPositions(layout)
           : (layout[structureType] ?? []);

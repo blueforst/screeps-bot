@@ -60,6 +60,18 @@ const LINK_MINER_BODY: BodyPartConstant[] = [
   MOVE,
   MOVE,
 ];
+const COLONIZER_HARVESTER_BODY: BodyPartConstant[] = [
+  WORK,
+  WORK,
+  WORK,
+  WORK,
+  WORK,
+  MOVE,
+  MOVE,
+  MOVE,
+  MOVE,
+  MOVE,
+];
 
 function hasContainerNearSource(sourceId?: string): boolean {
   if (!sourceId) {
@@ -91,7 +103,7 @@ export function getHarvesterBody(room: Room, sourceId?: string): BodyPartConstan
 
 function carryMoveBody(room: Room): BodyPartConstant[] {
   const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
-  const pairCount = Math.max(1, Math.min(20, Math.floor(room.energyCapacityAvailable / pairCost)));
+  const pairCount = Math.max(1, Math.min(16, Math.floor(room.energyCapacityAvailable / pairCost)));
   const parts: BodyPartConstant[] = [];
 
   for (let i = 0; i < pairCount; i++) {
@@ -106,7 +118,8 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   miner: () => [...LINK_MINER_BODY],
   carrier: carryMoveBody,
   worker: oneOneOneBody,
+  scout: () => [MOVE],
   claimer: () => [CLAIM, MOVE],
-  colonizerHarvester: (room) => getHarvesterBody(room),
+  colonizerHarvester: () => [...COLONIZER_HARVESTER_BODY],
   colonizerWorker: oneOneOneBody,
 };

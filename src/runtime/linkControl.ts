@@ -72,6 +72,11 @@ function isReceiverByPosition(link: StructureLink): boolean {
   );
 }
 
+function isStorageReceiverByPosition(link: StructureLink): boolean {
+  const storagePos = link.room.storage?.pos;
+  return !!storagePos && link.pos.getRangeTo(storagePos) <= RECEIVER_RANGE;
+}
+
 function isLinkUnderfilled(link: StructureLink): boolean {
   const capacity = link.store.getCapacity(RESOURCE_ENERGY);
   if (!capacity || capacity <= 0) {
@@ -141,6 +146,15 @@ export function isReceiverLink(link: StructureLink): boolean {
   }
 
   return roomData.receiverIds.includes(link.id) || isReceiverByPosition(link);
+}
+
+export function isStorageReceiverLink(link: StructureLink): boolean {
+  const roomData = Memory.runtime?.linkNetwork?.[link.room.name];
+  if (!roomData) {
+    return isStorageReceiverByPosition(link);
+  }
+
+  return roomData.receiverIds.includes(link.id) && isStorageReceiverByPosition(link);
 }
 
 export function runLinkControl(): void {
