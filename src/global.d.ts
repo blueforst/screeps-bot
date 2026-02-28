@@ -82,15 +82,31 @@ declare global {
         {
           targetRoom: string;
           sourceRoom: string;
-          status: "claiming" | "waiting_plan" | "bootstrapping" | "managed";
+          status: "claiming" | "clearing" | "waiting_plan" | "bootstrapping" | "managed";
+          mode?: "normal" | "npcStronghold";
           flagName: string;
           planReady: boolean;
           claimCompleted: boolean;
           scoutSafe?: boolean;
           scoutRouteRooms?: string[];
           dangerousRooms?: string[];
+          scoutedAt?: number;
           createdAt: number;
           updatedAt: number;
+        }
+      >;
+      war?: Record<
+        string,
+        {
+          targetRoom: string;
+          sourceRoom: string;
+          status: "staging" | "clearing" | "done" | "failed";
+          reason: "npc_reservation" | "manual";
+          routeRooms?: string[];
+          attempts: number;
+          createdAt: number;
+          updatedAt: number;
+          completedAt?: number;
         }
       >;
       roomPlanner?: {

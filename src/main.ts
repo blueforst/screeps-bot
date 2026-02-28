@@ -13,6 +13,7 @@ import { registerGlobalApi } from "@/runtime/creepApi";
 import { registerConsoleCommands } from "@/runtime/consoleCommands";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { runTowerControl } from "@/runtime/towerControl";
+import { runWarControl } from "@/runtime/warControl";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 
 mountAll();
@@ -40,6 +41,7 @@ function gameLoop(): void {
   runProductionMonitor();
   runMemoryCleanup();
   runFlagControl();
+  runWarControl();
   runRoomPlannerConstruction();
   runLinkControl();
   runCoreDefense();

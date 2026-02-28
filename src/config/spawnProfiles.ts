@@ -113,6 +113,30 @@ function carryMoveBody(room: Room): BodyPartConstant[] {
   return clampByCapacity(parts, room);
 }
 
+function meleeAttackBody(room: Room): BodyPartConstant[] {
+  const unitCost = BODYPART_COST[TOUGH] + BODYPART_COST[ATTACK] + BODYPART_COST[MOVE] * 2;
+  const unitCount = Math.max(1, Math.min(10, Math.floor(room.energyCapacityAvailable / unitCost)));
+  const parts: BodyPartConstant[] = [];
+
+  for (let i = 0; i < unitCount; i++) {
+    parts.push(TOUGH, ATTACK, MOVE, MOVE);
+  }
+
+  return clampByCapacity(parts, room);
+}
+
+function healerBody(room: Room): BodyPartConstant[] {
+  const pairCost = BODYPART_COST[HEAL] + BODYPART_COST[MOVE];
+  const pairCount = Math.max(1, Math.min(8, Math.floor(room.energyCapacityAvailable / pairCost)));
+  const parts: BodyPartConstant[] = [];
+
+  for (let i = 0; i < pairCount; i++) {
+    parts.push(HEAL, MOVE);
+  }
+
+  return clampByCapacity(parts, room);
+}
+
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => getHarvesterBody(room),
   miner: () => [...LINK_MINER_BODY],
@@ -122,4 +146,6 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   claimer: () => [CLAIM, MOVE],
   colonizerHarvester: () => [...COLONIZER_HARVESTER_BODY],
   colonizerWorker: oneOneOneBody,
+  meleeAttacker: meleeAttackBody,
+  healer: healerBody,
 };

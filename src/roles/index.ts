@@ -3,6 +3,8 @@ import { claimerRole } from "@/roles/claimer";
 import { colonizerHarvesterRole } from "@/roles/colonizerHarvester";
 import { colonizerWorkerRole } from "@/roles/colonizerWorker";
 import { harvesterRole } from "@/roles/harvester";
+import { healerRole } from "@/roles/healer";
+import { meleeAttackerRole } from "@/roles/meleeAttacker";
 import { minerRole } from "@/roles/miner";
 import { scoutRole } from "@/roles/scout";
 import { workerRole } from "@/roles/worker";
@@ -17,4 +19,6 @@ export const roleRegistry: Record<RoleName, RoleFactory> = {
   claimer: claimerRole,
   colonizerHarvester: colonizerHarvesterRole,
   colonizerWorker: colonizerWorkerRole,
+  meleeAttacker: meleeAttackerRole,
+  healer: healerRole,
 };

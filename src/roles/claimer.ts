@@ -1,10 +1,10 @@
 import type { RoleFactory } from "@/types/system";
-import { moveToTarget } from "@/roles/shared";
+import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 
-export const claimerRole: RoleFactory = (targetRoom?: string) => ({
+export const claimerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: string) => ({
   source: (creep): boolean => {
     if (targetRoom && creep.room.name !== targetRoom) {
-      moveToTarget(creep, new RoomPosition(25, 25, targetRoom));
+      moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 10 });
       return false;
     }
 

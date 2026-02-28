@@ -1,14 +1,14 @@
 import { harvesterRole } from "@/roles/harvester";
-import { moveToTarget } from "@/roles/shared";
+import { moveToTargetRoom } from "@/roles/shared";
 import type { RoleFactory } from "@/types/system";
 
-export const colonizerHarvesterRole: RoleFactory = (targetRoom?: string, sourceId?: string) => {
+export const colonizerHarvesterRole: RoleFactory = (targetRoom?: string, sourceId?: string, encodedRouteRooms?: string) => {
   const baseRole = harvesterRole(sourceId);
 
   return {
     source: (creep): boolean => {
       if (targetRoom && creep.room.name !== targetRoom) {
-        moveToTarget(creep, new RoomPosition(25, 25, targetRoom));
+        moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 10 });
         return false;
       }
 

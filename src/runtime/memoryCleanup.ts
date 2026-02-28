@@ -10,6 +10,8 @@ const VALID_ROLES = new Set([
   "claimer",
   "colonizerHarvester",
   "colonizerWorker",
+  "meleeAttacker",
+  "healer",
 ]);
 const ROOM_PLANNER_TTL = 50000;
 const ROOM_PLANNER_AUTO_TTL = 20000;
@@ -220,6 +222,25 @@ function cleanupPickupReservationMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupWarMemory(ownedRooms: Set<string>): number {
+  if (!Memory.data?.war) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [targetRoom, task] of Object.entries(Memory.data.war)) {
+    const sourceRoomOwned = ownedRooms.has(task.sourceRoom);
+    const terminalDone = task.status === "done" || task.status === "failed";
+    const expiredTerminal = terminalDone && Game.time - task.updatedAt > 200;
+    if (!sourceRoomOwned || expiredTerminal) {
+      delete Memory.data.war[targetRoom];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
 export function runMemoryCleanup(): void {
   if (Game.time % CLEANUP_INTERVAL !== 0) {
     return;
@@ -236,6 +257,7 @@ export function runMemoryCleanup(): void {
   const removedLinkNetwork = cleanupLinkNetworkMemory(ownedRooms);
   const removedTowerEmergency = cleanupTowerEmergencyMemory(ownedRooms);
   const removedPickupReservations = cleanupPickupReservationMemory(ownedRooms);
+  const removedWarTasks = cleanupWarMemory(ownedRooms);
 
   if (
     removedCreeps > 0 ||
@@ -246,10 +268,11 @@ export function runMemoryCleanup(): void {
     removedRoomPlannerAuto > 0 ||
     removedLinkNetwork > 0 ||
     removedTowerEmergency > 0 ||
-    removedPickupReservations > 0
+    removedPickupReservations > 0 ||
+    removedWarTasks > 0
   ) {
     console.log(
-      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, linkNetwork=${removedLinkNetwork}, towerEmergency=${removedTowerEmergency}, pickupReservations=${removedPickupReservations}`,
+      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, linkNetwork=${removedLinkNetwork}, towerEmergency=${removedTowerEmergency}, pickupReservations=${removedPickupReservations}, warTasks=${removedWarTasks}`,
     );
   }
 }

@@ -6,7 +6,9 @@ export type RoleName =
   | "scout"
   | "claimer"
   | "colonizerHarvester"
-  | "colonizerWorker";
+  | "colonizerWorker"
+  | "meleeAttacker"
+  | "healer";
 export type WorkerTaskType = "build" | "upgrade" | "repair";
 
 export interface CreepConfig {

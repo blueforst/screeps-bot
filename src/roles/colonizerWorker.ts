@@ -1,14 +1,14 @@
-import { moveToTarget } from "@/roles/shared";
+import { moveToTargetRoom } from "@/roles/shared";
 import { workerRole } from "@/roles/worker";
 import type { RoleFactory } from "@/types/system";
 
-export const colonizerWorkerRole: RoleFactory = (targetRoom?: string) => {
+export const colonizerWorkerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: string) => {
   const baseRole = workerRole();
 
   return {
     source: (creep): boolean => {
       if (targetRoom && creep.room.name !== targetRoom) {
-        moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 1, { swampCost: 8 });
+        moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 10 });
         return false;
       }
 
@@ -16,7 +16,7 @@ export const colonizerWorkerRole: RoleFactory = (targetRoom?: string) => {
     },
     target: (creep): boolean => {
       if (targetRoom && creep.room.name !== targetRoom) {
-        moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 1, { swampCost: 8 });
+        moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 10 });
         return false;
       }
 

@@ -13,6 +13,12 @@ function getTargetPos(target: RoomPosition | { pos: RoomPosition }): RoomPositio
 interface MoveToTargetOptions {
   swampCost?: number;
   plainCost?: number;
+  reusePath?: number;
+  maxRooms?: number;
+}
+
+interface MoveToRoomOptions extends MoveToTargetOptions {
+  travelRange?: 1 | 3;
 }
 
 export type EnergyPickupTarget = Resource | AnyStoreStructure | Tombstone;
@@ -24,7 +30,7 @@ export function isDroppedResourceTarget(target: EnergyPickupTarget): target is R
 export function moveToTarget(
   creep: Creep,
   target: RoomPosition | { pos: RoomPosition },
-  range: 1 | 3 = 1,
+  range: 0 | 1 | 3 = 1,
   options: MoveToTargetOptions = {},
 ): ScreepsReturnCode {
   const targetPos = getTargetPos(target);
@@ -32,8 +38,71 @@ export function moveToTarget(
     range,
     swampCost: options.swampCost,
     plainCost: options.plainCost,
+    reusePath: options.reusePath,
+    maxRooms: options.maxRooms,
     visualizePathStyle: { stroke: "#ffaa00" },
   });
+}
+
+function parseEncodedRouteRooms(encodedRouteRooms?: string): string[] {
+  if (!encodedRouteRooms) {
+    return [];
+  }
+
+  return encodedRouteRooms
+    .split("|")
+    .map((roomName) => roomName.trim())
+    .filter((roomName) => roomName.length > 0);
+}
+
+function getNextRouteRoom(currentRoom: string, routeRooms: string[], fallbackRoom: string): string {
+  if (routeRooms.length === 0) {
+    return fallbackRoom;
+  }
+
+  const currentIndex = routeRooms.indexOf(currentRoom);
+  if (currentIndex >= 0) {
+    for (let i = currentIndex + 1; i < routeRooms.length; i++) {
+      if (routeRooms[i] !== currentRoom) {
+        return routeRooms[i];
+      }
+    }
+  }
+
+  return fallbackRoom;
+}
+
+export function moveToTargetRoom(
+  creep: Creep,
+  targetRoom: string,
+  encodedRouteRooms?: string,
+  options: MoveToRoomOptions = {},
+): ScreepsReturnCode {
+  if (creep.room.name === targetRoom) {
+    return OK;
+  }
+
+  const routeRooms = parseEncodedRouteRooms(encodedRouteRooms);
+  const nextRoom = getNextRouteRoom(creep.room.name, routeRooms, targetRoom);
+  const moveRange = options.travelRange ?? 1;
+  const moveOptions: MoveToTargetOptions = {
+    swampCost: options.swampCost,
+    plainCost: options.plainCost,
+    reusePath: options.reusePath ?? 10,
+    maxRooms: options.maxRooms ?? Math.max(routeRooms.length + 1, 16),
+  };
+
+  if (nextRoom !== creep.room.name) {
+    const exitDirection = creep.room.findExitTo(nextRoom);
+    if (typeof exitDirection === "number" && exitDirection >= 1 && exitDirection <= 8) {
+      const exitPos = creep.pos.findClosestByPath(exitDirection as ExitConstant);
+      if (exitPos) {
+        return moveToTarget(creep, exitPos, 0, moveOptions);
+      }
+    }
+  }
+
+  return moveToTarget(creep, new RoomPosition(25, 25, nextRoom), moveRange, moveOptions);
 }
 
 export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { pos: RoomPosition }): ScreepsReturnCode {
