@@ -327,44 +327,45 @@ function cleanupCrossShardColonizationMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupEmptyForeignRoomMemory(ownedRooms: Set<string>): number {
+  if (!Memory.rooms) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [roomName, roomMemory] of Object.entries(Memory.rooms)) {
+    if (ownedRooms.has(roomName)) {
+      continue;
+    }
+
+    if (Object.keys(roomMemory || {}).length === 0) {
+      delete Memory.rooms[roomName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
 export function runMemoryCleanup(): void {
   if (Game.time % CLEANUP_INTERVAL !== 0) {
     return;
   }
 
-  const removedCreeps = cleanupDeadCreepMemory();
-  const trimmedTasks = cleanupSpawnQueueMemory();
-  const removedConfigs = cleanupLegacyConfigMemory();
-  const removedManagedConfigs = cleanupManagedCreepConfigs();
+  cleanupDeadCreepMemory();
+  cleanupSpawnQueueMemory();
+  cleanupLegacyConfigMemory();
+  cleanupManagedCreepConfigs();
   const ownedRooms = getOwnedRoomNameSet();
   const colonizationTargets = getColonizationTargetRoomNameSet();
-  const removedRoomPlans = cleanupRoomPlannerMemory(ownedRooms, colonizationTargets);
-  const removedRoomPlannerAuto = cleanupRoomPlannerAutoMemory(ownedRooms);
-  const removedLinkNetwork = cleanupLinkNetworkMemory(ownedRooms);
-  const removedTowerEmergency = cleanupTowerEmergencyMemory(ownedRooms);
-  const removedPickupReservations = cleanupPickupReservationMemory(ownedRooms);
-  const removedWarTasks = cleanupWarMemory(ownedRooms);
-  const removedInterShardPortals = cleanupInterShardPortalMemory();
-  const removedCrossShardRuntime = cleanupCrossShardRuntimeMemory();
-  const removedCrossShardColonization = cleanupCrossShardColonizationMemory(ownedRooms);
-
-  if (
-    removedCreeps > 0 ||
-    trimmedTasks > 0 ||
-    removedConfigs > 0 ||
-    removedManagedConfigs > 0 ||
-    removedRoomPlans > 0 ||
-    removedRoomPlannerAuto > 0 ||
-    removedLinkNetwork > 0 ||
-    removedTowerEmergency > 0 ||
-    removedPickupReservations > 0 ||
-    removedWarTasks > 0 ||
-    removedInterShardPortals > 0 ||
-    removedCrossShardRuntime > 0 ||
-    removedCrossShardColonization > 0
-  ) {
-    console.log(
-      `[memory] cleaned creeps=${removedCreeps}, spawnTasks=${trimmedTasks}, legacyConfigs=${removedConfigs}, managedConfigs=${removedManagedConfigs}, roomPlans=${removedRoomPlans}, roomPlannerAuto=${removedRoomPlannerAuto}, linkNetwork=${removedLinkNetwork}, towerEmergency=${removedTowerEmergency}, pickupReservations=${removedPickupReservations}, warTasks=${removedWarTasks}, interShardPortals=${removedInterShardPortals}, crossShardRuntime=${removedCrossShardRuntime}, crossShardColonization=${removedCrossShardColonization}`,
-    );
-  }
+  cleanupRoomPlannerMemory(ownedRooms, colonizationTargets);
+  cleanupRoomPlannerAutoMemory(ownedRooms);
+  cleanupLinkNetworkMemory(ownedRooms);
+  cleanupTowerEmergencyMemory(ownedRooms);
+  cleanupPickupReservationMemory(ownedRooms);
+  cleanupWarMemory(ownedRooms);
+  cleanupInterShardPortalMemory();
+  cleanupCrossShardRuntimeMemory();
+  cleanupCrossShardColonizationMemory(ownedRooms);
+  cleanupEmptyForeignRoomMemory(ownedRooms);
 }

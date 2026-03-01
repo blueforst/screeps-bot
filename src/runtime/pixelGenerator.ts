@@ -9,8 +9,5 @@ export function runPixelGenerator(): void {
     return;
   }
 
-  const result = Game.cpu.generatePixel();
-  if (result === OK) {
-    console.log(`[pixel] generated at tick ${Game.time}`);
-  }
+  Game.cpu.generatePixel();
 }

@@ -14,7 +14,7 @@ export const harvesterRole: RoleFactory = (sourceId?: string) => ({
     if (containers.length > 0) {
       const container = containers[0] as StructureContainer;
       if (!creep.pos.isEqualTo(container.pos)) {
-        creep.moveTo(container.pos, { range: 0, visualizePathStyle: { stroke: "#ffaa00" } });
+        creep.moveTo(container.pos, { range: 0, reusePath: 5, visualizePathStyle: { stroke: "#ffaa00" } });
         return false;
       }
     }

@@ -3,7 +3,22 @@ import type { CreepConfig } from "@/types/system";
 
 const runtimeGlobal = global;
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
-const CRITICAL_SPAWN_ROLES = new Set(["harvester", "miner", "carrier"]);
+
+function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
+  if (role === "carrier") {
+    return 0;
+  }
+
+  if (role === "harvester" || role === "miner") {
+    return 1;
+  }
+
+  if (role === "meleeAttacker" || role === "healer") {
+    return 2;
+  }
+
+  return 3;
+}
 
 function ensureQueue(spawn: StructureSpawn): string[] {
   if (!spawn.memory.spawnList) {
@@ -171,29 +186,29 @@ function queueMissingConfig(spawn: StructureSpawn, configName: string, config: C
   }
 }
 
-function prioritizeCriticalQueue(spawn: StructureSpawn): void {
+function prioritizeSpawnQueue(spawn: StructureSpawn): void {
   const queue = ensureQueue(spawn);
   if (queue.length < 2) {
     return;
   }
 
-  const critical: string[] = [];
-  const normal: string[] = [];
+  spawn.memory.spawnList = [...queue]
+    .map((configName, index) => {
+      const role = runtimeGlobal.creepApi.get(configName)?.role;
+      return {
+        configName,
+        index,
+        priority: getSpawnRolePriority(role),
+      };
+    })
+    .sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+      }
 
-  for (const configName of queue) {
-    const role = runtimeGlobal.creepApi.get(configName)?.role;
-    if (role && CRITICAL_SPAWN_ROLES.has(role)) {
-      critical.push(configName);
-    } else {
-      normal.push(configName);
-    }
-  }
-
-  if (critical.length === 0) {
-    return;
-  }
-
-  spawn.memory.spawnList = [...critical, ...normal];
+      return a.index - b.index;
+    })
+    .map((item) => item.configName);
 }
 
 export function scheduleSpawnTasks(): void {
@@ -219,6 +234,6 @@ export function scheduleSpawnTasks(): void {
   }
 
   for (const spawn of spawnByRoom.values()) {
-    prioritizeCriticalQueue(spawn);
+    prioritizeSpawnQueue(spawn);
   }
 }

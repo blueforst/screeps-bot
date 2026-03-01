@@ -136,6 +136,8 @@ declare global {
           scoutSafe?: boolean;
           scoutRouteRooms?: string[];
           dangerousRooms?: string[];
+          temporaryDangerousRooms?: Record<string, number>;
+          permanentDangerousRooms?: string[];
           scoutedAt?: number;
           createdAt: number;
           updatedAt: number;
@@ -255,6 +257,13 @@ declare global {
     taskId?: string;
     taskType?: WorkerTaskType;
     taskTargetId?: string;
+    colonizationLastHits?: number;
+    colonizationLastSeenAt?: number;
+    colonizationLastRoomName?: string;
+    colonizationLastRoomHostileOwned?: boolean;
+    colonizationLastHadHostileCreepAttack?: boolean;
+    colonizationDeathHandled?: boolean;
+    scoutVisitedRooms?: string[];
     travelState?: {
       targetRoom: string;
       lastPosKey?: string;

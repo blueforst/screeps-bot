@@ -15,6 +15,8 @@ interface ColonizationTask {
   scoutSafe?: boolean;
   scoutRouteRooms?: string[];
   dangerousRooms?: string[];
+  temporaryDangerousRooms?: Record<string, number>;
+  permanentDangerousRooms?: string[];
   mode?: ColonizationMode;
   scoutedAt?: number;
   createdAt: number;
@@ -25,6 +27,7 @@ const CLAIMER_BODY: BodyPartConstant[] = [CLAIM, MOVE];
 const SCOUT_BODY: BodyPartConstant[] = [MOVE];
 const BOOTSTRAP_WORKER_COUNT = 2;
 const MAX_SAFE_ROUTE_LENGTH = 500;
+const TEMP_DANGEROUS_ROOM_TTL = 1000;
 
 function getBodyCost(body: BodyPartConstant[]): number {
   return body.reduce((sum, part) => sum + BODYPART_COST[part], 0);
@@ -193,14 +196,32 @@ function getMyUsername(): string | null {
   return null;
 }
 
+function hasHostileCombatCreeps(room: Room): boolean {
+  const hostileCombatCreeps = room.find(FIND_HOSTILE_CREEPS, {
+    filter: (creep) =>
+      creep.getActiveBodyparts(ATTACK) > 0 ||
+      creep.getActiveBodyparts(RANGED_ATTACK) > 0 ||
+      creep.getActiveBodyparts(HEAL) > 0,
+  });
+  return hostileCombatCreeps.length > 0;
+}
+
+function hasHostilePowerCreepPresence(room: Room): boolean {
+  return room.find(FIND_HOSTILE_POWER_CREEPS).length > 0;
+}
+
+function hasHostileStructurePresence(room: Room): boolean {
+  const hostileStructures = room.find(FIND_HOSTILE_STRUCTURES, {
+    filter: (structure) =>
+      structure.structureType !== STRUCTURE_CONTROLLER && structure.structureType !== STRUCTURE_KEEPER_LAIR,
+  });
+  return hostileStructures.length > 0;
+}
+
 function isDangerousVisibleRoom(roomName: string, myUsername: string | null): boolean {
   const room = Game.rooms[roomName];
   if (!room) {
     return false;
-  }
-
-  if (room.find(FIND_HOSTILE_CREEPS).length > 0) {
-    return true;
   }
 
   const controller = room.controller;
@@ -218,7 +239,217 @@ function isDangerousVisibleRoom(roomName: string, myUsername: string | null): bo
     }
   }
 
+  if (hasHostileStructurePresence(room)) {
+    return true;
+  }
+
+  if (!controller?.owner && !controller?.my) {
+    return false;
+  }
+
+  if (hasHostilePowerCreepPresence(room)) {
+    return true;
+  }
+
+  if (hasHostileCombatCreeps(room)) {
+    return true;
+  }
+
   return false;
+}
+
+function ensureDangerTracking(task: ColonizationTask): void {
+  task.permanentDangerousRooms = task.permanentDangerousRooms || [];
+
+  if (!task.temporaryDangerousRooms) {
+    const migratedDangerousRooms = task.dangerousRooms || [];
+    const temporaryDangerousRooms: Record<string, number> = {};
+    for (const roomName of migratedDangerousRooms) {
+      if (roomName === task.sourceRoom) {
+        continue;
+      }
+
+      temporaryDangerousRooms[roomName] = Game.time + TEMP_DANGEROUS_ROOM_TTL;
+    }
+
+    task.temporaryDangerousRooms = temporaryDangerousRooms;
+  }
+}
+
+function refreshDangerousRooms(task: ColonizationTask): void {
+  ensureDangerTracking(task);
+
+  for (const [roomName, expiresAt] of Object.entries(task.temporaryDangerousRooms || {})) {
+    if (expiresAt <= Game.time) {
+      delete task.temporaryDangerousRooms![roomName];
+    }
+  }
+
+  const dangerousRoomSet = new Set<string>(task.permanentDangerousRooms || []);
+  for (const roomName of Object.keys(task.temporaryDangerousRooms || {})) {
+    dangerousRoomSet.add(roomName);
+  }
+
+  dangerousRoomSet.delete(task.sourceRoom);
+  task.dangerousRooms = [...dangerousRoomSet];
+}
+
+function markTemporaryDangerousRoom(task: ColonizationTask, roomName: string): boolean {
+  if (roomName === task.sourceRoom) {
+    return false;
+  }
+
+  ensureDangerTracking(task);
+  if ((task.permanentDangerousRooms || []).includes(roomName)) {
+    return false;
+  }
+
+  const wasMarked = !!task.temporaryDangerousRooms?.[roomName];
+  task.temporaryDangerousRooms![roomName] = Game.time + TEMP_DANGEROUS_ROOM_TTL;
+  refreshDangerousRooms(task);
+  return !wasMarked;
+}
+
+function markPermanentDangerousRoom(task: ColonizationTask, roomName: string): boolean {
+  if (roomName === task.sourceRoom) {
+    return false;
+  }
+
+  ensureDangerTracking(task);
+  if ((task.permanentDangerousRooms || []).includes(roomName)) {
+    delete task.temporaryDangerousRooms![roomName];
+    refreshDangerousRooms(task);
+    return false;
+  }
+
+  task.permanentDangerousRooms!.push(roomName);
+  delete task.temporaryDangerousRooms![roomName];
+  refreshDangerousRooms(task);
+  return true;
+}
+
+function hasHostileCreepAttackInRoom(room: Room): boolean {
+  if (hasHostileCombatCreeps(room)) {
+    return true;
+  }
+
+  return hasHostilePowerCreepPresence(room);
+}
+
+function isRoomHostileOwned(room: Room): boolean {
+  return !!room.controller?.owner && !room.controller.my;
+}
+
+function isRoomNameHostileOwned(roomName: string): boolean {
+  const room = Game.rooms[roomName];
+  if (!room) {
+    return false;
+  }
+
+  return isRoomHostileOwned(room);
+}
+
+function isTaskColonizationConfig(configName: string, task: ColonizationTask): boolean {
+  const prefix = `${task.sourceRoom}:colonize:${task.targetRoom}:`;
+  return configName.startsWith(prefix);
+}
+
+function getTaskSquadCreeps(task: ColonizationTask): Creep[] {
+  const configNames = getTaskConfigNames(task);
+  const squad: Creep[] = [];
+  const seen = new Set<string>();
+
+  for (const configName of configNames) {
+    for (const creep of getLiveCreepsByConfig(configName)) {
+      if (seen.has(creep.name)) {
+        continue;
+      }
+
+      seen.add(creep.name);
+      squad.push(creep);
+    }
+  }
+
+  return squad;
+}
+
+function updateDangerousRoomsFromSquadDamage(task: ColonizationTask): void {
+  refreshDangerousRooms(task);
+
+  const squad = getTaskSquadCreeps(task);
+  for (const creep of squad) {
+    const previousHits = creep.memory.colonizationLastHits;
+    const hostileOwnedRoom = isRoomHostileOwned(creep.room);
+    const hostileCreepAttack = hasHostileCreepAttackInRoom(creep.room);
+
+    if (previousHits !== undefined && creep.hits < previousHits) {
+      if (hostileOwnedRoom) {
+        const newlyMarked = markPermanentDangerousRoom(task, creep.room.name);
+        if (newlyMarked) {
+          console.log(`[colonization] permanent dangerous room: ${creep.room.name} (squad attacked in owned room)`);
+        }
+      } else if (hostileCreepAttack) {
+        const newlyMarked = markTemporaryDangerousRoom(task, creep.room.name);
+        if (newlyMarked) {
+          const expiresAt = task.temporaryDangerousRooms?.[creep.room.name] || Game.time + TEMP_DANGEROUS_ROOM_TTL;
+          console.log(`[colonization] temporary dangerous room: ${creep.room.name} (expires at ${expiresAt})`);
+        }
+      }
+    }
+
+    creep.memory.colonizationLastHits = creep.hits;
+    creep.memory.colonizationLastSeenAt = Game.time;
+    creep.memory.colonizationLastRoomName = creep.room.name;
+    creep.memory.colonizationLastRoomHostileOwned = hostileOwnedRoom;
+    creep.memory.colonizationLastHadHostileCreepAttack = hostileCreepAttack;
+    creep.memory.colonizationDeathHandled = false;
+  }
+
+  const creepMemoryStore = Memory.creeps || {};
+  for (const [creepName, creepMemory] of Object.entries(creepMemoryStore)) {
+    if (!creepMemory.configName || !isTaskColonizationConfig(creepMemory.configName, task)) {
+      continue;
+    }
+
+    if (Game.creeps[creepName]) {
+      continue;
+    }
+
+    if (creepMemory.colonizationDeathHandled) {
+      continue;
+    }
+
+    const lastSeenAt = creepMemory.colonizationLastSeenAt;
+    if (lastSeenAt === undefined || Game.time - lastSeenAt > 2) {
+      continue;
+    }
+
+    const lastRoomName = creepMemory.colonizationLastRoomName;
+    if (!lastRoomName) {
+      creepMemory.colonizationDeathHandled = true;
+      continue;
+    }
+
+    const hostileOwnedRoom = creepMemory.colonizationLastRoomHostileOwned || isRoomNameHostileOwned(lastRoomName);
+    if (hostileOwnedRoom) {
+      const newlyMarked = markPermanentDangerousRoom(task, lastRoomName);
+      if (newlyMarked) {
+        console.log(`[colonization] permanent dangerous room: ${lastRoomName} (squad lost in owned room)`);
+      }
+      creepMemory.colonizationDeathHandled = true;
+      continue;
+    }
+
+    if (creepMemory.colonizationLastHadHostileCreepAttack) {
+      const newlyMarked = markTemporaryDangerousRoom(task, lastRoomName);
+      if (newlyMarked) {
+        const expiresAt = task.temporaryDangerousRooms?.[lastRoomName] || Game.time + TEMP_DANGEROUS_ROOM_TTL;
+        console.log(`[colonization] temporary dangerous room: ${lastRoomName} (squad lost, expires at ${expiresAt})`);
+      }
+    }
+
+    creepMemory.colonizationDeathHandled = true;
+  }
 }
 
 function estimateRouteLength(task: ColonizationTask, routeRooms: string[]): number {
@@ -308,15 +539,157 @@ function findSafeRoute(task: ColonizationTask): string[] | null {
   return routeRooms;
 }
 
-function markDangerousRoom(task: ColonizationTask, roomName: string): void {
-  if (roomName === task.sourceRoom) {
+function isAdjacentRoomByName(fromRoom: string, toRoom: string): boolean {
+  const exits = Game.map.describeExits(fromRoom);
+  if (!exits) {
+    return false;
+  }
+
+  return Object.values(exits).some((roomName) => roomName === toRoom);
+}
+
+function normalizeObservedRoute(task: ColonizationTask, observedRooms: string[]): string[] | null {
+  const route: string[] = [];
+  for (const observedRoom of observedRooms) {
+    const roomName = observedRoom.trim();
+    if (roomName.length === 0) {
+      continue;
+    }
+
+    if (route.length > 0 && route[route.length - 1] === roomName) {
+      continue;
+    }
+
+    const existingIndex = route.indexOf(roomName);
+    if (existingIndex >= 0) {
+      route.splice(existingIndex + 1);
+      continue;
+    }
+
+    route.push(roomName);
+  }
+
+  if (route.length === 0) {
+    return null;
+  }
+
+  const sourceIndex = route.indexOf(task.sourceRoom);
+  if (sourceIndex >= 0) {
+    route.splice(0, sourceIndex);
+  } else {
+    route.unshift(task.sourceRoom);
+  }
+
+  const targetIndex = route.indexOf(task.targetRoom);
+  if (targetIndex >= 0) {
+    route.splice(targetIndex + 1);
+  } else {
+    route.push(task.targetRoom);
+  }
+
+  for (let i = 0; i < route.length - 1; i++) {
+    if (!isAdjacentRoomByName(route[i], route[i + 1])) {
+      return null;
+    }
+  }
+
+  if (route[0] !== task.sourceRoom || route[route.length - 1] !== task.targetRoom) {
+    return null;
+  }
+
+  return route;
+}
+
+function getObservedScoutRoute(task: ColonizationTask, scouts: Creep[]): string[] | null {
+  let bestRoute: string[] | null = null;
+  let bestRouteLength = Infinity;
+
+  for (const scout of scouts) {
+    const observedRoute = scout.memory.scoutVisitedRooms;
+    if (!observedRoute || observedRoute.length === 0) {
+      continue;
+    }
+
+    const normalizedRoute = normalizeObservedRoute(task, observedRoute);
+    if (!normalizedRoute) {
+      continue;
+    }
+
+    const routeLength = estimateRouteLength(task, normalizedRoute);
+    if (routeLength > MAX_SAFE_ROUTE_LENGTH) {
+      continue;
+    }
+
+    if (routeLength < bestRouteLength) {
+      bestRouteLength = routeLength;
+      bestRoute = normalizedRoute;
+    }
+  }
+
+  return bestRoute;
+}
+
+function isScoutRouteShapeValid(task: ColonizationTask): boolean {
+  const route = task.scoutRouteRooms;
+  if (!route || route.length === 0) {
+    return false;
+  }
+
+  if (route[0] !== task.sourceRoom || route[route.length - 1] !== task.targetRoom) {
+    return false;
+  }
+
+  for (let i = 0; i < route.length - 1; i++) {
+    if (!isAdjacentRoomByName(route[i], route[i + 1])) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function isScoutRouteInterruptedByDanger(task: ColonizationTask): boolean {
+  const route = task.scoutRouteRooms;
+  if (!route || route.length === 0) {
+    return true;
+  }
+
+  const dangerous = new Set(task.dangerousRooms || []);
+  for (const roomName of route) {
+    if (roomName === task.sourceRoom || roomName === task.targetRoom) {
+      continue;
+    }
+
+    if (dangerous.has(roomName)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function requestScoutRescan(task: ColonizationTask, reason: string): void {
+  const hadRoute = !!task.scoutRouteRooms && task.scoutRouteRooms.length > 0;
+  if (!task.scoutSafe && !hadRoute) {
     return;
   }
 
-  task.dangerousRooms = task.dangerousRooms || [];
-  if (!task.dangerousRooms.includes(roomName)) {
-    task.dangerousRooms.push(roomName);
+  task.scoutSafe = false;
+  task.scoutRouteRooms = undefined;
+  task.scoutedAt = undefined;
+
+  const claimerConfigName = getTaskConfigName(task, "claimer", "0");
+  removeQueuedConfig(task, claimerConfigName);
+  removeConfigWhenIdle(claimerConfigName);
+
+  const scoutConfigName = getTaskConfigName(task, "scout", "0");
+  for (const scout of getLiveCreepsByConfig(scoutConfigName)) {
+    scout.suicide();
   }
+  removeQueuedConfig(task, scoutConfigName);
+  removeConfigWhenIdle(scoutConfigName);
+
+  console.log(`[colonization] rescout ${task.targetRoom}: ${reason}`);
 }
 
 function ensureScout(task: ColonizationTask): void {
@@ -366,20 +739,27 @@ function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abando
     return "safe";
   }
 
-  const myUsername = getMyUsername();
-  const scoutConfigName = getTaskConfigName(task, "scout", "0");
-  const scouts = getLiveCreepsByConfig(scoutConfigName);
-  for (const scout of scouts) {
-    if (isDangerousVisibleRoom(scout.room.name, myUsername)) {
-      if (scout.room.name !== task.targetRoom) {
-        markDangerousRoom(task, scout.room.name);
-        task.scoutRouteRooms = undefined;
-        task.scoutSafe = false;
+  if (task.scoutRouteRooms && task.scoutRouteRooms.length > 0) {
+    if (!isScoutRouteShapeValid(task) || isScoutRouteInterruptedByDanger(task)) {
+      const recoveredRoute = findSafeRoute(task);
+      if (recoveredRoute) {
+        task.scoutRouteRooms = recoveredRoute;
+      } else {
+        requestScoutRescan(task, "pending scout route invalid or interrupted by dangerous room");
       }
     }
   }
 
-  if (scouts.some((scout) => scout.room.name === task.targetRoom)) {
+  const scoutConfigName = getTaskConfigName(task, "scout", "0");
+  const scouts = getLiveCreepsByConfig(scoutConfigName);
+
+  const scoutsInTarget = scouts.filter((scout) => scout.room.name === task.targetRoom);
+  if (scoutsInTarget.length > 0) {
+    const observedRoute = getObservedScoutRoute(task, scoutsInTarget);
+    if (observedRoute) {
+      task.scoutRouteRooms = observedRoute;
+    }
+
     if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
       const recoveredRoute = findSafeRoute(task);
       if (recoveredRoute) {
@@ -408,12 +788,10 @@ function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abando
   }
 
   if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
-    const routeRooms = findSafeRoute(task);
-    if (!routeRooms) {
-      return "abandon";
+    const safeRoute = findSafeRoute(task);
+    if (safeRoute) {
+      task.scoutRouteRooms = safeRoute;
     }
-
-    task.scoutRouteRooms = routeRooms;
   }
 
   ensureScout(task);
@@ -528,6 +906,7 @@ function cleanupColonizationConfigs(task: ColonizationTask): boolean {
 }
 
 function processTask(task: ColonizationTask): void {
+  updateDangerousRoomsFromSquadDamage(task);
   ensurePlanReady(task);
 
   if (hasOwnedSpawnInTargetRoom(task)) {
@@ -543,6 +922,14 @@ function processTask(task: ColonizationTask): void {
   const targetRoom = Game.rooms[task.targetRoom];
   const hasMyController = !!targetRoom?.controller?.my;
   if (!hasMyController) {
+    if (task.scoutSafe) {
+      if (!isScoutRouteShapeValid(task)) {
+        requestScoutRescan(task, "cached scout route invalid or disconnected");
+      } else if (isScoutRouteInterruptedByDanger(task)) {
+        requestScoutRescan(task, "cached scout route interrupted by dangerous room");
+      }
+    }
+
     const claimerConfigName = getTaskConfigName(task, "claimer", "0");
     removeQueuedConfig(task, claimerConfigName);
     removeConfigWhenIdle(claimerConfigName);
@@ -652,6 +1039,8 @@ function upsertColonizationTask(flag: Flag): boolean {
     scoutSafe: existing?.scoutSafe ?? false,
     scoutRouteRooms: existing?.scoutRouteRooms,
     dangerousRooms: existing?.dangerousRooms ?? [],
+    temporaryDangerousRooms: existing?.temporaryDangerousRooms,
+    permanentDangerousRooms: existing?.permanentDangerousRooms,
     mode: existing?.mode,
     scoutedAt: existing?.scoutedAt,
     createdAt: existing?.createdAt ?? now,
@@ -671,10 +1060,20 @@ export function runColonizationByFlag(): void {
   for (const flag of flags) {
     const scheduled = upsertColonizationTask(flag);
     if (!scheduled) {
+      console.log(`[colonization] flag ignored: ${flag.name} room=${flag.pos.roomName} reason=no_source_room`);
       continue;
     }
 
     flag.remove();
+    const task = Memory.data?.colonization?.[flag.pos.roomName];
+    if (task) {
+      console.log(
+        `[colonization] flag accepted: ${flag.name} target=${task.targetRoom} source=${task.sourceRoom} status=${task.status}`,
+      );
+      continue;
+    }
+
+    console.log(`[colonization] flag accepted: ${flag.name} target=${flag.pos.roomName}`);
   }
 
   const store = ensureColonizationStore();

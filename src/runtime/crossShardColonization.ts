@@ -559,6 +559,10 @@ function upsertTaskFromFlag(flag: Flag): void {
   };
 
   flag.remove();
+  const sourceHint = parsed.preferredSourceRoom ? ` preferredSource=${parsed.preferredSourceRoom}` : "";
+  console.log(
+    `[cross-shard] flag accepted: ${flag.name} targetShard=${parsed.targetShard} targetRoom=${parsed.targetRoom}${sourceHint}`,
+  );
 }
 
 export function getCrossShardColonizationSummaries(limit = 20): CrossShardTaskSummary[] {

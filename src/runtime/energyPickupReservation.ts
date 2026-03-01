@@ -1,7 +1,7 @@
 const RESERVATION_TTL = 12;
 
 type PickupTargetKind = "resource" | "structure";
-type PickupTarget = Resource | AnyStoreStructure | Tombstone;
+type PickupTarget = Resource | AnyStoreStructure | Tombstone | Ruin;
 
 interface PickupReservationClaim {
   amount: number;
@@ -163,7 +163,7 @@ export function getReservedPickupTarget(creep: Creep): PickupTarget | null {
   if (targetKind === "resource") {
     target = Game.getObjectById(targetId as Id<Resource>);
   } else {
-    target = Game.getObjectById(targetId as Id<AnyStoreStructure | Tombstone>);
+    target = Game.getObjectById(targetId as Id<AnyStoreStructure | Tombstone | Ruin>);
   }
 
   if (!target || getPickupTargetEnergyAmount(target) <= 0) {

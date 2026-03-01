@@ -406,13 +406,23 @@ function getBuildPolicy(room: Room, layout: PlannedLayout, controllerLevel: numb
 
 function countExisting(room: Room, structureType: BuildableStructureConstant): number {
   return room.find(FIND_STRUCTURES, {
-    filter: (structure) => structure.structureType === structureType,
+    filter: (structure) => {
+      if (structure.structureType !== structureType) {
+        return false;
+      }
+
+      if ("my" in structure) {
+        return (structure as { my?: boolean }).my === true;
+      }
+
+      return true;
+    },
   }).length;
 }
 
 function countSites(room: Room, structureType: BuildableStructureConstant): number {
   return room.find(FIND_CONSTRUCTION_SITES, {
-    filter: (site) => site.structureType === structureType,
+    filter: (site) => site.structureType === structureType && site.my,
   }).length;
 }
 

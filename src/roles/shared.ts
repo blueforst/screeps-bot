@@ -15,6 +15,7 @@ interface MoveToTargetOptions {
   plainCost?: number;
   reusePath?: number;
   maxRooms?: number;
+  ignoreCreeps?: boolean;
 }
 
 interface MoveToRoomOptions extends MoveToTargetOptions {
@@ -36,7 +37,7 @@ const DYNAMIC_ROUTE_CACHE_TTL = 25;
 const DYNAMIC_ROUTE_CACHE_MAX = 200;
 const dynamicNextRoomCache: Record<string, DynamicRouteCacheEntry> = {};
 
-export type EnergyPickupTarget = Resource | AnyStoreStructure | Tombstone;
+export type EnergyPickupTarget = Resource | AnyStoreStructure | Tombstone | Ruin;
 
 export function isDroppedResourceTarget(target: EnergyPickupTarget): target is Resource {
   return (target as Resource).amount !== undefined;
@@ -49,12 +50,14 @@ export function moveToTarget(
   options: MoveToTargetOptions = {},
 ): ScreepsReturnCode {
   const targetPos = getTargetPos(target);
+  const reusePath = options.reusePath ?? 5;
   return creep.moveTo(targetPos, {
     range,
     swampCost: options.swampCost,
     plainCost: options.plainCost,
-    reusePath: options.reusePath,
+    reusePath,
     maxRooms: options.maxRooms,
+    ignoreCreeps: options.ignoreCreeps,
     visualizePathStyle: { stroke: "#ffaa00" },
   });
 }
@@ -68,6 +71,38 @@ function parseEncodedRouteRooms(encodedRouteRooms?: string): string[] {
     .split("|")
     .map((roomName) => roomName.trim())
     .filter((roomName) => roomName.length > 0);
+}
+
+export function getCurrentColonizationRoute(targetRoom: string, fallbackEncodedRoute?: string): string | undefined {
+  const task = Memory.data?.colonization?.[targetRoom];
+  if (!task) {
+    return fallbackEncodedRoute;
+  }
+
+  if (!task.scoutSafe) {
+    return undefined;
+  }
+
+  const routeRooms = task.scoutRouteRooms;
+  if (!routeRooms || routeRooms.length === 0) {
+    return undefined;
+  }
+
+  return routeRooms.join("|");
+}
+
+export function getCurrentScoutRoute(targetRoom: string, fallbackEncodedRoute?: string): string | undefined {
+  const task = Memory.data?.colonization?.[targetRoom];
+  if (!task) {
+    return fallbackEncodedRoute;
+  }
+
+  const routeRooms = task.scoutRouteRooms;
+  if (!routeRooms || routeRooms.length === 0) {
+    return fallbackEncodedRoute;
+  }
+
+  return routeRooms.join("|");
 }
 
 function getPosKey(pos: RoomPosition): string {
@@ -141,18 +176,49 @@ function setDynamicRouteCache(cacheKey: string, nextRoom: string | null): void {
     });
 }
 
+function hasHostileCombatPresence(room: Room): boolean {
+  const hostileCombatCreeps = room.find(FIND_HOSTILE_CREEPS, {
+    filter: (creep) =>
+      creep.getActiveBodyparts(ATTACK) > 0 ||
+      creep.getActiveBodyparts(RANGED_ATTACK) > 0 ||
+      creep.getActiveBodyparts(HEAL) > 0,
+  });
+  if (hostileCombatCreeps.length > 0) {
+    return true;
+  }
+
+  const hostilePowerCreeps = room.find(FIND_HOSTILE_POWER_CREEPS);
+  if (hostilePowerCreeps.length > 0) {
+    return true;
+  }
+
+  const hostileStructures = room.find(FIND_HOSTILE_STRUCTURES, {
+    filter: (structure) =>
+      structure.structureType !== STRUCTURE_CONTROLLER && structure.structureType !== STRUCTURE_KEEPER_LAIR,
+  });
+
+  return hostileStructures.length > 0;
+}
+
 function isVisibleRoomDangerous(roomName: string): boolean {
   const room = Game.rooms[roomName];
   if (!room) {
     return false;
   }
 
-  if (room.find(FIND_HOSTILE_CREEPS).length > 0) {
+  if (hasHostileCombatPresence(room)) {
     return true;
   }
 
   if (room.controller?.owner && !room.controller.my) {
     return true;
+  }
+
+  if (room.controller?.reservation && !room.controller.my) {
+    const myUser = Object.values(Game.spawns)[0]?.owner.username || Object.values(Game.creeps)[0]?.owner.username;
+    if (!myUser || room.controller.reservation.username !== myUser) {
+      return true;
+    }
   }
 
   return false;
@@ -208,42 +274,143 @@ function findDynamicNextRoom(
   return nextRoom;
 }
 
-function getNearestRouteRoom(currentRoom: string, routeRooms: string[], targetRoom: string): string {
-  const nonTargetRooms = routeRooms.filter((roomName) => roomName !== targetRoom);
-  const candidates = nonTargetRooms.length > 0 ? nonTargetRooms : routeRooms;
-
-  let bestRoom = candidates[0];
-  let bestDistance = Game.map.getRoomLinearDistance(currentRoom, bestRoom);
-  let bestIndex = routeRooms.indexOf(bestRoom);
-  for (let i = 1; i < candidates.length; i++) {
-    const candidate = candidates[i];
-    const distance = Game.map.getRoomLinearDistance(currentRoom, candidate);
-    const candidateIndex = routeRooms.indexOf(candidate);
-    if (distance < bestDistance || (distance === bestDistance && candidateIndex > bestIndex)) {
-      bestDistance = distance;
-      bestRoom = candidate;
-      bestIndex = candidateIndex;
-    }
+function findStrictRouteNextRoom(
+  currentRoom: string,
+  targetRoom: string,
+  routeRooms: string[],
+  dangerousRooms: string[],
+): string | null {
+  if (routeRooms.length === 0) {
+    return null;
   }
 
-  return bestRoom;
+  const allowedRooms = new Set(routeRooms);
+  const dangerousSet = new Set(dangerousRooms);
+  allowedRooms.add(currentRoom);
+  allowedRooms.add(targetRoom);
+
+  const route = Game.map.findRoute(currentRoom, targetRoom, {
+    routeCallback: (roomName) => {
+      if (!allowedRooms.has(roomName)) {
+        return Infinity;
+      }
+
+      if (roomName !== currentRoom && roomName !== targetRoom && dangerousSet.has(roomName)) {
+        return Infinity;
+      }
+
+      return 1;
+    },
+  });
+
+  if (route === ERR_NO_PATH || route.length === 0) {
+    return null;
+  }
+
+  return route[0].room;
 }
 
-function getNextRouteRoom(currentRoom: string, routeRooms: string[], fallbackRoom: string): string {
+function findOrderedRouteNextRoom(
+  currentRoom: string,
+  targetRoom: string,
+  routeRooms: string[],
+  dangerousRooms: string[],
+): string | null {
   if (routeRooms.length === 0) {
-    return fallbackRoom;
+    return null;
   }
 
-  const currentIndex = routeRooms.indexOf(currentRoom);
-  if (currentIndex >= 0) {
-    for (let i = currentIndex + 1; i < routeRooms.length; i++) {
-      if (routeRooms[i] !== currentRoom) {
-        return routeRooms[i];
+  const currentIndex = routeRooms.lastIndexOf(currentRoom);
+  if (currentIndex < 0) {
+    return null;
+  }
+
+  const nextIndex = currentIndex + 1;
+  if (nextIndex >= routeRooms.length) {
+    return null;
+  }
+
+  const nextRoom = routeRooms[nextIndex];
+  if (!isAdjacentRoom(currentRoom, nextRoom)) {
+    return null;
+  }
+
+  if (nextRoom !== targetRoom && dangerousRooms.includes(nextRoom)) {
+    return null;
+  }
+
+  return nextRoom;
+}
+
+function getForwardPreferredRooms(currentRoom: string, routeRooms: string[], targetRoom: string): string[] {
+  if (routeRooms.length === 0) {
+    return [targetRoom];
+  }
+
+  const currentIndex = routeRooms.lastIndexOf(currentRoom);
+  if (currentIndex < 0) {
+    return routeRooms;
+  }
+
+  const forward = routeRooms.slice(currentIndex + 1);
+  if (forward.length === 0) {
+    return [targetRoom];
+  }
+
+  return forward;
+}
+
+function isAdjacentRoom(fromRoom: string, toRoom: string): boolean {
+  const exits = Game.map.describeExits(fromRoom);
+  if (!exits) {
+    return false;
+  }
+
+  return Object.values(exits).some((roomName) => roomName === toRoom);
+}
+
+function findAdjacentAllowedRoom(
+  currentRoom: string,
+  targetRoom: string,
+  routeRooms: string[],
+  dangerousRooms: string[],
+): string | null {
+  const exits = Game.map.describeExits(currentRoom);
+  if (!exits) {
+    return null;
+  }
+
+  const allowed = new Set(routeRooms);
+  const dangerousSet = new Set(dangerousRooms);
+  const currentIndex = routeRooms.lastIndexOf(currentRoom);
+  allowed.add(targetRoom);
+
+  const candidates = Object.values(exits).filter(
+    (roomName): roomName is string => {
+      if (!roomName || !allowed.has(roomName)) {
+        return false;
       }
-    }
+
+      if (roomName !== targetRoom && dangerousSet.has(roomName)) {
+        return false;
+      }
+
+      if (currentIndex >= 0 && roomName !== targetRoom) {
+        const candidateIndex = routeRooms.lastIndexOf(roomName);
+        if (candidateIndex >= 0 && candidateIndex <= currentIndex) {
+          return false;
+        }
+      }
+
+      return true;
+    },
+  );
+  if (candidates.length === 0) {
+    return null;
   }
 
-  return getNearestRouteRoom(currentRoom, routeRooms, fallbackRoom);
+  candidates.sort((a, b) => Game.map.getRoomLinearDistance(a, targetRoom) - Game.map.getRoomLinearDistance(b, targetRoom));
+  return candidates[0];
 }
 
 export function moveToTargetRoom(
@@ -259,6 +426,7 @@ export function moveToTargetRoom(
 
   const routeRooms = parseEncodedRouteRooms(encodedRouteRooms);
   const dangerousRooms = getDangerousRoomsForTarget(targetRoom);
+  const hasFixedRoute = routeRooms.length > 0;
   const travelState = getTravelState(creep, targetRoom);
   const currentPosKey = getPosKey(creep.pos);
   if (travelState.lastPosKey === currentPosKey && creep.fatigue === 0) {
@@ -268,24 +436,63 @@ export function moveToTargetRoom(
   }
   travelState.lastPosKey = currentPosKey;
 
-  let nextRoom = getNextRouteRoom(creep.room.name, routeRooms, targetRoom);
-  if (travelState.stuckTicks >= 2) {
+  let nextRoom: string;
+  if (hasFixedRoute) {
+    const forwardPreferredRooms = getForwardPreferredRooms(creep.room.name, routeRooms, targetRoom);
+    const orderedNextRoom = findOrderedRouteNextRoom(creep.room.name, targetRoom, routeRooms, dangerousRooms);
+    const strictNextRoom = findStrictRouteNextRoom(creep.room.name, targetRoom, routeRooms, dangerousRooms);
+    nextRoom =
+      orderedNextRoom ??
+      strictNextRoom ??
+      findAdjacentAllowedRoom(creep.room.name, targetRoom, routeRooms, dangerousRooms) ??
+      creep.room.name;
+    if (nextRoom === creep.room.name) {
+      const recoveredNextRoom = findDynamicNextRoom(creep.room.name, targetRoom, forwardPreferredRooms, dangerousRooms);
+      nextRoom = recoveredNextRoom ?? creep.room.name;
+      if (nextRoom === creep.room.name) {
+        updateTravelState(creep, travelState);
+        return ERR_NO_PATH;
+      }
+    }
+
+    if (nextRoom !== targetRoom && dangerousRooms.includes(nextRoom)) {
+      updateTravelState(creep, travelState);
+      return ERR_NO_PATH;
+    }
+  } else {
     const dynamicNextRoom = findDynamicNextRoom(creep.room.name, targetRoom, routeRooms, dangerousRooms);
+    nextRoom = dynamicNextRoom ?? creep.room.name;
+    if (nextRoom === creep.room.name) {
+      updateTravelState(creep, travelState);
+      return ERR_NO_PATH;
+    }
+  }
+
+  if (travelState.stuckTicks >= 2) {
+    const preferredRooms = hasFixedRoute
+      ? getForwardPreferredRooms(creep.room.name, routeRooms, targetRoom)
+      : routeRooms;
+    const dynamicNextRoom = findDynamicNextRoom(creep.room.name, targetRoom, preferredRooms, dangerousRooms);
     if (dynamicNextRoom && dynamicNextRoom !== creep.room.name) {
       nextRoom = dynamicNextRoom;
     }
+  }
+
+  if (nextRoom !== targetRoom && dangerousRooms.includes(nextRoom)) {
+    updateTravelState(creep, travelState);
+    return ERR_NO_PATH;
   }
 
   const moveRange = options.travelRange ?? 1;
   const moveOptions: MoveToTargetOptions = {
     swampCost: options.swampCost,
     plainCost: options.plainCost,
-    reusePath: travelState.stuckTicks >= 2 ? 0 : options.reusePath ?? 10,
+    reusePath: travelState.stuckTicks >= 2 ? 0 : options.reusePath ?? 5,
     maxRooms: options.maxRooms ?? Math.max(routeRooms.length + 1, 16),
   };
 
   let result: ScreepsReturnCode;
-  if (nextRoom !== creep.room.name) {
+  if (nextRoom !== creep.room.name && (!hasFixedRoute || isAdjacentRoom(creep.room.name, nextRoom))) {
     const exitDirection = creep.room.findExitTo(nextRoom);
     if (typeof exitDirection === "number" && exitDirection >= 1 && exitDirection <= 8) {
       let exitPos = creep.pos.findClosestByPath(exitDirection as ExitConstant);
@@ -312,17 +519,11 @@ export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { po
     return OK;
   }
 
-  const path = creep.pos.findPathTo(targetPos, {
-    range: 3,
-    ignoreCreeps: false,
+  return moveToTarget(creep, targetPos, 3, {
     swampCost: 8,
+    reusePath: 5,
+    ignoreCreeps: false,
   });
-
-  if (path.length === 0) {
-    return ERR_NO_PATH;
-  }
-
-  return creep.moveByPath(path);
 }
 
 interface EnergyStoreTargetOptions {
@@ -391,8 +592,11 @@ function getPreferredEnergyPickupCandidates(creep: Creep): EnergyPickupTarget[] 
   const tombstones = creep.room.find(FIND_TOMBSTONES, {
     filter: (tombstone) => tombstone.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
   });
+  const ruins = creep.room.find(FIND_RUINS, {
+    filter: (ruin) => ruin.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
+  });
 
-  const candidates: EnergyPickupTarget[] = [...dropped, ...structureCandidates, ...tombstones];
+  const candidates: EnergyPickupTarget[] = [...dropped, ...structureCandidates, ...tombstones, ...ruins];
   if (candidates.length === 0) {
     return [];
   }
