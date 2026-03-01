@@ -238,6 +238,22 @@ export function stopColonization(targetRoom?: string): StopColonizationResult | 
   };
 }
 
+function formatStopColonizationResult(result: StopColonizationResult | string): string {
+  if (typeof result === "string") {
+    return result;
+  }
+
+  return JSON.stringify(result);
+}
+
+export function stopColonizationRaw(targetRoom?: string): StopColonizationResult | string {
+  return stopColonization(targetRoom);
+}
+
+export function stopColonizationCommand(targetRoom?: string): string {
+  return formatStopColonizationResult(stopColonization(targetRoom));
+}
+
 export function spawnMaxCarrier(roomName: string): SpawnMaxCarrierResult | string {
   const spawn = resolveSpawnByRoom(roomName);
   if (!spawn) {
@@ -277,5 +293,6 @@ export function spawnMaxCarrier(roomName: string): SpawnMaxCarrierResult | strin
 
 export function registerConsoleCommands(): void {
   global.spawnMaxCarrier = spawnMaxCarrier;
-  global.stopColonization = stopColonization;
+  global.stopColonization = stopColonizationCommand;
+  global.stopColonizationRaw = stopColonizationRaw;
 }

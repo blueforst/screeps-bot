@@ -31,7 +31,8 @@ declare global {
         queueTop: string[];
       }
     | string;
-  var stopColonization: (targetRoom?: string) =>
+  var stopColonization: (targetRoom?: string) => string;
+  var stopColonizationRaw: (targetRoom?: string) =>
     | {
         ok: true;
         scope: "all" | "room";
@@ -254,6 +255,11 @@ declare global {
     taskId?: string;
     taskType?: WorkerTaskType;
     taskTargetId?: string;
+    travelState?: {
+      targetRoom: string;
+      lastPosKey?: string;
+      stuckTicks: number;
+    };
   }
 
   interface RoomMemory {
@@ -302,7 +308,8 @@ declare namespace NodeJS {
           queueTop: string[];
         }
       | string;
-    stopColonization: (targetRoom?: string) =>
+    stopColonization: (targetRoom?: string) => string;
+    stopColonizationRaw: (targetRoom?: string) =>
       | {
           ok: true;
           scope: "all" | "room";

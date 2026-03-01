@@ -12,7 +12,7 @@ export const scoutRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: 
       return false;
     }
 
-    moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 10 });
+    moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 10, reusePath: 3 });
     return false;
   },
   target: (): boolean => false,

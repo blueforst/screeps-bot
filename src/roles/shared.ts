@@ -21,6 +21,21 @@ interface MoveToRoomOptions extends MoveToTargetOptions {
   travelRange?: 1 | 3;
 }
 
+interface TravelState {
+  targetRoom: string;
+  lastPosKey?: string;
+  stuckTicks: number;
+}
+
+interface DynamicRouteCacheEntry {
+  nextRoom: string | null;
+  expiresAt: number;
+}
+
+const DYNAMIC_ROUTE_CACHE_TTL = 25;
+const DYNAMIC_ROUTE_CACHE_MAX = 200;
+const dynamicNextRoomCache: Record<string, DynamicRouteCacheEntry> = {};
+
 export type EnergyPickupTarget = Resource | AnyStoreStructure | Tombstone;
 
 export function isDroppedResourceTarget(target: EnergyPickupTarget): target is Resource {
@@ -55,17 +70,159 @@ function parseEncodedRouteRooms(encodedRouteRooms?: string): string[] {
     .filter((roomName) => roomName.length > 0);
 }
 
+function getPosKey(pos: RoomPosition): string {
+  return `${pos.roomName}:${pos.x}:${pos.y}`;
+}
+
+function getTravelState(creep: Creep, targetRoom: string): TravelState {
+  const memoryState = creep.memory.travelState as TravelState | undefined;
+  if (!memoryState || memoryState.targetRoom !== targetRoom) {
+    return {
+      targetRoom,
+      stuckTicks: 0,
+    };
+  }
+
+  return memoryState;
+}
+
+function updateTravelState(creep: Creep, state: TravelState): void {
+  creep.memory.travelState = state;
+}
+
+function getDangerousRoomsForTarget(targetRoom: string): string[] {
+  const dangerousRooms = Memory.data?.colonization?.[targetRoom]?.dangerousRooms;
+  if (!dangerousRooms || dangerousRooms.length === 0) {
+    return [];
+  }
+
+  return dangerousRooms.filter((roomName) => roomName !== targetRoom);
+}
+
+function buildDynamicRouteCacheKey(
+  currentRoom: string,
+  targetRoom: string,
+  preferredRooms: string[],
+  avoidRooms: string[],
+): string {
+  const preferredPart = preferredRooms.join(">");
+  const avoidPart = [...new Set(avoidRooms)].sort().join(">");
+  return `${currentRoom}->${targetRoom}|p:${preferredPart}|a:${avoidPart}`;
+}
+
+function setDynamicRouteCache(cacheKey: string, nextRoom: string | null): void {
+  dynamicNextRoomCache[cacheKey] = {
+    nextRoom,
+    expiresAt: Game.time + DYNAMIC_ROUTE_CACHE_TTL,
+  };
+
+  const keys = Object.keys(dynamicNextRoomCache);
+  if (keys.length <= DYNAMIC_ROUTE_CACHE_MAX) {
+    return;
+  }
+
+  for (const key of keys) {
+    if (dynamicNextRoomCache[key].expiresAt <= Game.time) {
+      delete dynamicNextRoomCache[key];
+    }
+  }
+
+  const remainingKeys = Object.keys(dynamicNextRoomCache);
+  if (remainingKeys.length <= DYNAMIC_ROUTE_CACHE_MAX) {
+    return;
+  }
+
+  const removeCount = remainingKeys.length - DYNAMIC_ROUTE_CACHE_MAX;
+  remainingKeys
+    .sort((a, b) => dynamicNextRoomCache[a].expiresAt - dynamicNextRoomCache[b].expiresAt)
+    .slice(0, removeCount)
+    .forEach((key) => {
+      delete dynamicNextRoomCache[key];
+    });
+}
+
+function isVisibleRoomDangerous(roomName: string): boolean {
+  const room = Game.rooms[roomName];
+  if (!room) {
+    return false;
+  }
+
+  if (room.find(FIND_HOSTILE_CREEPS).length > 0) {
+    return true;
+  }
+
+  if (room.controller?.owner && !room.controller.my) {
+    return true;
+  }
+
+  return false;
+}
+
+function findDynamicNextRoom(
+  currentRoom: string,
+  targetRoom: string,
+  preferredRooms: string[],
+  avoidRooms: string[],
+): string | null {
+  const cacheKey = buildDynamicRouteCacheKey(currentRoom, targetRoom, preferredRooms, avoidRooms);
+  const cached = dynamicNextRoomCache[cacheKey];
+  if (cached && cached.expiresAt > Game.time) {
+    return cached.nextRoom;
+  }
+
+  const preferredSet = new Set(preferredRooms);
+  const avoidSet = new Set(avoidRooms);
+  const route = Game.map.findRoute(currentRoom, targetRoom, {
+    routeCallback: (roomName) => {
+      if (roomName === currentRoom || roomName === targetRoom) {
+        return 1;
+      }
+
+      if (avoidSet.has(roomName)) {
+        return Infinity;
+      }
+
+      if (Game.map.getRoomStatus(roomName).status !== "normal") {
+        return Infinity;
+      }
+
+      if (isVisibleRoomDangerous(roomName)) {
+        return Infinity;
+      }
+
+      if (preferredSet.has(roomName)) {
+        return 1;
+      }
+
+      return 3;
+    },
+  });
+
+  if (route === ERR_NO_PATH || route.length === 0) {
+    setDynamicRouteCache(cacheKey, null);
+    return null;
+  }
+
+  const nextRoom = route[0].room;
+  setDynamicRouteCache(cacheKey, nextRoom);
+  return nextRoom;
+}
+
 function getNearestRouteRoom(currentRoom: string, routeRooms: string[], targetRoom: string): string {
   const nonTargetRooms = routeRooms.filter((roomName) => roomName !== targetRoom);
   const candidates = nonTargetRooms.length > 0 ? nonTargetRooms : routeRooms;
 
   let bestRoom = candidates[0];
   let bestDistance = Game.map.getRoomLinearDistance(currentRoom, bestRoom);
+  let bestIndex = routeRooms.indexOf(bestRoom);
   for (let i = 1; i < candidates.length; i++) {
-    const distance = Game.map.getRoomLinearDistance(currentRoom, candidates[i]);
-    if (distance < bestDistance) {
+    const candidate = candidates[i];
+    const distance = Game.map.getRoomLinearDistance(currentRoom, candidate);
+    const candidateIndex = routeRooms.indexOf(candidate);
+    if (distance < bestDistance || (distance === bestDistance && candidateIndex > bestIndex)) {
       bestDistance = distance;
-      bestRoom = candidates[i];
+      bestRoom = candidate;
+      bestIndex = candidateIndex;
     }
   }
 
@@ -96,30 +253,57 @@ export function moveToTargetRoom(
   options: MoveToRoomOptions = {},
 ): ScreepsReturnCode {
   if (creep.room.name === targetRoom) {
+    delete creep.memory.travelState;
     return OK;
   }
 
   const routeRooms = parseEncodedRouteRooms(encodedRouteRooms);
-  const nextRoom = getNextRouteRoom(creep.room.name, routeRooms, targetRoom);
+  const dangerousRooms = getDangerousRoomsForTarget(targetRoom);
+  const travelState = getTravelState(creep, targetRoom);
+  const currentPosKey = getPosKey(creep.pos);
+  if (travelState.lastPosKey === currentPosKey && creep.fatigue === 0) {
+    travelState.stuckTicks += 1;
+  } else {
+    travelState.stuckTicks = 0;
+  }
+  travelState.lastPosKey = currentPosKey;
+
+  let nextRoom = getNextRouteRoom(creep.room.name, routeRooms, targetRoom);
+  if (travelState.stuckTicks >= 2) {
+    const dynamicNextRoom = findDynamicNextRoom(creep.room.name, targetRoom, routeRooms, dangerousRooms);
+    if (dynamicNextRoom && dynamicNextRoom !== creep.room.name) {
+      nextRoom = dynamicNextRoom;
+    }
+  }
+
   const moveRange = options.travelRange ?? 1;
   const moveOptions: MoveToTargetOptions = {
     swampCost: options.swampCost,
     plainCost: options.plainCost,
-    reusePath: options.reusePath ?? 10,
+    reusePath: travelState.stuckTicks >= 2 ? 0 : options.reusePath ?? 10,
     maxRooms: options.maxRooms ?? Math.max(routeRooms.length + 1, 16),
   };
 
+  let result: ScreepsReturnCode;
   if (nextRoom !== creep.room.name) {
     const exitDirection = creep.room.findExitTo(nextRoom);
     if (typeof exitDirection === "number" && exitDirection >= 1 && exitDirection <= 8) {
-      const exitPos = creep.pos.findClosestByPath(exitDirection as ExitConstant);
+      let exitPos = creep.pos.findClosestByPath(exitDirection as ExitConstant);
+      if (!exitPos) {
+        const exitTiles = creep.room.find(exitDirection as ExitConstant);
+        exitPos = creep.pos.findClosestByRange(exitTiles);
+      }
       if (exitPos) {
-        return moveToTarget(creep, exitPos, 0, moveOptions);
+        result = moveToTarget(creep, exitPos, 0, moveOptions);
+        updateTravelState(creep, travelState);
+        return result;
       }
     }
   }
 
-  return moveToTarget(creep, new RoomPosition(25, 25, nextRoom), moveRange, moveOptions);
+  result = moveToTarget(creep, new RoomPosition(25, 25, nextRoom), moveRange, moveOptions);
+  updateTravelState(creep, travelState);
+  return result;
 }
 
 export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { pos: RoomPosition }): ScreepsReturnCode {
