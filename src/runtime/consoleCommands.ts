@@ -291,8 +291,25 @@ export function spawnMaxCarrier(roomName: string): SpawnMaxCarrierResult | strin
   };
 }
 
+function formatSpawnMaxCarrierResult(result: SpawnMaxCarrierResult | string): string {
+  if (typeof result === "string") {
+    return result;
+  }
+
+  return JSON.stringify(result);
+}
+
+export function spawnMaxCarrierRaw(roomName: string): SpawnMaxCarrierResult | string {
+  return spawnMaxCarrier(roomName);
+}
+
+export function spawnMaxCarrierCommand(roomName: string): string {
+  return formatSpawnMaxCarrierResult(spawnMaxCarrier(roomName));
+}
+
 export function registerConsoleCommands(): void {
-  global.spawnMaxCarrier = spawnMaxCarrier;
+  global.spawnMaxCarrier = spawnMaxCarrierCommand;
+  global.spawnMaxCarrierRaw = spawnMaxCarrierRaw;
   global.stopColonization = stopColonizationCommand;
   global.stopColonizationRaw = stopColonizationRaw;
 }

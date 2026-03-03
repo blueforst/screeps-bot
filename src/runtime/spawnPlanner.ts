@@ -1,4 +1,5 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
+import { spawnMaxCarrierRaw } from "@/runtime/consoleCommands";
 import type { CreepConfig } from "@/types/system";
 
 const runtimeGlobal = global;
@@ -211,6 +212,37 @@ function prioritizeSpawnQueue(spawn: StructureSpawn): void {
     .map((item) => item.configName);
 }
 
+function hasLiveCarrierInRoom(roomName: string): boolean {
+  return Object.values(Game.creeps).some((creep) => creep.memory.role === "carrier" && creep.room.name === roomName);
+}
+
+function hasSpawningCarrierInRoom(roomName: string): boolean {
+  const creepMemory = Memory.creeps || {};
+  return Object.values(Game.spawns).some((spawn) => {
+    if (spawn.room.name !== roomName || !spawn.spawning) {
+      return false;
+    }
+
+    const spawningName = spawn.spawning.name;
+    const configName = creepMemory[spawningName]?.configName;
+    if (!configName) {
+      return false;
+    }
+
+    const config = runtimeGlobal.creepApi.get(configName);
+    return config?.role === "carrier";
+  });
+}
+
+function ensureEmergencyCarrier(spawn: StructureSpawn): void {
+  const roomName = spawn.room.name;
+  if (hasLiveCarrierInRoom(roomName) || hasSpawningCarrierInRoom(roomName)) {
+    return;
+  }
+
+  spawnMaxCarrierRaw(roomName);
+}
+
 export function scheduleSpawnTasks(): void {
   const spawnByRoom = new Map<string, StructureSpawn>();
   Object.values(Game.spawns).forEach((spawn) => {
@@ -218,6 +250,10 @@ export function scheduleSpawnTasks(): void {
       spawnByRoom.set(spawn.room.name, spawn);
     }
   });
+
+  for (const spawn of spawnByRoom.values()) {
+    ensureEmergencyCarrier(spawn);
+  }
 
   const configs = runtimeGlobal.creepApi.list();
   for (const [configName, config] of Object.entries(configs)) {

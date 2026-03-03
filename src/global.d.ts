@@ -31,6 +31,18 @@ declare global {
         queueTop: string[];
       }
     | string;
+  var spawnMaxCarrierRaw: (roomName: string) =>
+    | {
+        ok: true;
+        roomName: string;
+        spawnName: string;
+        configName: string;
+        energyAvailable: number;
+        bodyParts: number;
+        pairCount: number;
+        queueTop: string[];
+      }
+    | string;
   var stopColonization: (targetRoom?: string) => string;
   var stopColonizationRaw: (targetRoom?: string) =>
     | {
@@ -306,6 +318,18 @@ declare namespace NodeJS {
     _: LoDashStatic;
     creepApi: CreepApi;
     spawnMaxCarrier: (roomName: string) =>
+      | {
+          ok: true;
+          roomName: string;
+          spawnName: string;
+          configName: string;
+          energyAvailable: number;
+          bodyParts: number;
+          pairCount: number;
+          queueTop: string[];
+        }
+      | string;
+    spawnMaxCarrierRaw: (roomName: string) =>
       | {
           ok: true;
           roomName: string;
