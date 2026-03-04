@@ -197,6 +197,31 @@ function precomputePostTransferAction(creep: Creep, currentTarget: AnyStoreStruc
   clearPostTransferPlan(creep);
 }
 
+function getPlannedDeliveryTarget(creep: Creep): AnyStoreStructure | null {
+  if (creep.memory.carrierPlanMode !== "deliver") {
+    return null;
+  }
+
+  const plannedTarget = getPlannedTarget(creep);
+  if (!plannedTarget) {
+    clearPostTransferPlan(creep);
+    return null;
+  }
+
+  if (isDroppedResourceTarget(plannedTarget) || isTombstonePickupTarget(plannedTarget) || (plannedTarget as Ruin).ticksToDecay !== undefined) {
+    clearPostTransferPlan(creep);
+    return null;
+  }
+
+  const structureTarget = plannedTarget as AnyStoreStructure;
+  if (structureTarget.store.getFreeCapacity(RESOURCE_ENERGY) <= 0) {
+    clearPostTransferPlan(creep);
+    return null;
+  }
+
+  return structureTarget;
+}
+
 function hasReplacementAliveOrSpawning(creep: Creep): boolean {
   const configName = creep.memory.configName;
   if (!configName) {
@@ -245,7 +270,14 @@ export const carrierRole: RoleFactory = () => ({
       return true;
     }
 
-    const target = getEnergyStoreTarget(creep);
+    let target = getPlannedDeliveryTarget(creep);
+    if (!target) {
+      target = getEnergyStoreTarget(creep);
+      if (target) {
+        setPostTransferPlan(creep, "deliver", target);
+      }
+    }
+
     if (!target) {
       clearPostTransferPlan(creep);
       return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
@@ -258,6 +290,11 @@ export const carrierRole: RoleFactory = () => ({
     const transferCode = creep.transfer(target, RESOURCE_ENERGY);
     if (transferCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, target);
+      return false;
+    }
+
+    if (transferCode === ERR_FULL || transferCode === ERR_INVALID_TARGET) {
+      clearPostTransferPlan(creep);
       return false;
     }
 
