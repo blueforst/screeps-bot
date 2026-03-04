@@ -182,21 +182,6 @@ function getPlannedTarget(creep: Creep): Resource | AnyStoreStructure | Tombston
   return Game.getObjectById(creep.memory.carrierPlanTargetId as Id<AnyStoreStructure | Tombstone | Ruin>);
 }
 
-function precomputePostTransferAction(creep: Creep, currentTarget: AnyStoreStructure): void {
-  const energy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
-  const free = currentTarget.store.getFreeCapacity(RESOURCE_ENERGY);
-
-  if (energy > free) {
-    const nextTarget = getEnergyStoreTarget(creep, { excludeIds: [currentTarget.id] });
-    if (nextTarget) {
-      setPostTransferPlan(creep, "deliver", nextTarget);
-      return;
-    }
-  }
-
-  clearPostTransferPlan(creep);
-}
-
 function getPlannedDeliveryTarget(creep: Creep): AnyStoreStructure | null {
   if (creep.memory.carrierPlanMode !== "deliver") {
     return null;
@@ -283,10 +268,6 @@ export const carrierRole: RoleFactory = () => ({
       return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
     }
 
-    if (creep.pos.getRangeTo(target) <= 2) {
-      precomputePostTransferAction(creep, target);
-    }
-
     const transferCode = creep.transfer(target, RESOURCE_ENERGY);
     if (transferCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, target);
@@ -298,17 +279,22 @@ export const carrierRole: RoleFactory = () => ({
       return false;
     }
 
-    if (transferCode === OK) {
-      const remainingEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
-      if (remainingEnergy > 0) {
-        const plannedTarget = getPlannedTarget(creep);
-        if (plannedTarget) {
-          moveToTarget(creep, plannedTarget);
-        }
-      }
-
+    if (transferCode !== OK) {
       clearPostTransferPlan(creep);
+      return false;
     }
+
+    const remainingEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
+    if (remainingEnergy > 0) {
+      const nextTarget = getEnergyStoreTarget(creep, { excludeIds: [target.id] });
+      if (nextTarget) {
+        setPostTransferPlan(creep, "deliver", nextTarget);
+        moveToTarget(creep, nextTarget);
+        return false;
+      }
+    }
+
+    clearPostTransferPlan(creep);
 
     return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
   },
