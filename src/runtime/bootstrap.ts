@@ -1,8 +1,7 @@
 import { upsertConfig } from "@/runtime/creepApi";
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
+import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
-
-const runtimeGlobal = global;
 type SourceWorkerRole = "harvester" | "miner";
 
 function hasLiveCreepForConfig(configName: string): boolean {
@@ -10,10 +9,11 @@ function hasLiveCreepForConfig(configName: string): boolean {
 }
 
 function cleanupConfigsByPrefix(roomName: string, prefix: string, validConfigNames: Set<string>): void {
-  const configs = runtimeGlobal.creepApi.list(`${roomName}:${prefix}:`);
+  const creepConfigs = getCreepConfigService();
+  const configs = creepConfigs.list(`${roomName}:${prefix}:`);
   for (const configName of Object.keys(configs)) {
     if (!validConfigNames.has(configName) && !hasLiveCreepForConfig(configName)) {
-      runtimeGlobal.creepApi.remove(configName);
+      creepConfigs.remove(configName);
     }
   }
 }

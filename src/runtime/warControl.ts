@@ -1,3 +1,4 @@
+import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
 type WarStatus = "staging" | "clearing" | "done" | "failed";
@@ -19,21 +20,16 @@ const HEALER_COUNT = 1;
 const MAX_STAGING_TICKS = 2500;
 
 function ensureWarStore(): Record<string, WarTask> {
-  Memory.data = Memory.data || {};
-  if (!Memory.data.war) {
-    Memory.data.war = {};
+  const data = getMemoryService().ensureData();
+  if (!data.war) {
+    data.war = {};
   }
 
-  return Memory.data.war;
+  return data.war;
 }
 
 function ensureConfigStore(): Record<string, CreepConfig> {
-  Memory.data = Memory.data || {};
-  if (!Memory.data.creepConfigs) {
-    Memory.data.creepConfigs = {};
-  }
-
-  return Memory.data.creepConfigs;
+  return getMemoryService().getCreepConfigStore();
 }
 
 function getSpawnForRoom(roomName: string): StructureSpawn | null {
@@ -46,7 +42,7 @@ function getConfigName(task: WarTask, role: "meleeAttacker" | "healer", index: n
 
 function getTaskConfigNames(task: WarTask): string[] {
   const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
-  return Object.keys(global.creepApi.list(prefix));
+  return Object.keys(getCreepConfigService().list(prefix));
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {

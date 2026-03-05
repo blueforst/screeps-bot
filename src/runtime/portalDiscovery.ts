@@ -1,3 +1,5 @@
+import { getMemoryService } from "@/runtime/runtimeServices";
+
 const PORTAL_SCAN_INTERVAL = 11;
 const PORTAL_STALE_TTL = 2500;
 
@@ -7,9 +9,11 @@ interface InterShardDestination {
 }
 
 function ensurePortalStore(): NonNullable<Memory["data"]>["interShardPortals"] {
-  Memory.data = Memory.data || {};
-  Memory.data.interShardPortals = Memory.data.interShardPortals || {};
-  return Memory.data.interShardPortals;
+  const data = getMemoryService().ensureData();
+  if (!data.interShardPortals) {
+    data.interShardPortals = {};
+  }
+  return data.interShardPortals;
 }
 
 function isInterShardDestination(

@@ -1,3 +1,5 @@
+import { getMemoryService } from "@/runtime/runtimeServices";
+
 const MAX_CLAIM_SUMMARIES = 24;
 const MAX_ROOM_SUMMARIES = 32;
 
@@ -15,12 +17,12 @@ export interface CrossShardRoomSummary {
 }
 
 function ensureCrossShardRuntimeStore(): NonNullable<Memory["runtime"]>["crossShard"] {
-  Memory.runtime = Memory.runtime || {};
-  Memory.runtime.crossShard = Memory.runtime.crossShard || {};
-  Memory.runtime.crossShard.remotes = Memory.runtime.crossShard.remotes || {};
-  Memory.runtime.crossShard.claims = Memory.runtime.crossShard.claims || {};
-  Memory.runtime.crossShard.rooms = Memory.runtime.crossShard.rooms || {};
-  return Memory.runtime.crossShard;
+  const runtime = getMemoryService().ensureRuntime();
+  runtime.crossShard = runtime.crossShard || {};
+  runtime.crossShard.remotes = runtime.crossShard.remotes || {};
+  runtime.crossShard.claims = runtime.crossShard.claims || {};
+  runtime.crossShard.rooms = runtime.crossShard.rooms || {};
+  return runtime.crossShard;
 }
 
 export function recordCrossShardClaim(roomName: string, creepName: string): void {

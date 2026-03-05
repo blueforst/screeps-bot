@@ -58,6 +58,58 @@ declare global {
         suicidedCreeps: number;
       }
     | string;
+  var startTelemetry: (sampleInterval?: number, segmentId?: number) => string;
+  var startTelemetryRaw: (sampleInterval?: number, segmentId?: number) =>
+    | {
+        ok: true;
+        enabled: boolean;
+        previousEnabled: boolean;
+        sampleInterval: number;
+        segmentId: number;
+      }
+    | string;
+  var stopTelemetry: () => string;
+  var stopTelemetryRaw: () => {
+    ok: true;
+    enabled: boolean;
+    previousEnabled: boolean;
+    sampleInterval: number;
+    segmentId: number;
+  };
+  var statusTelemetry: () => string;
+  var statusTelemetryRaw: () => {
+    ok: true;
+    enabled: boolean;
+    previousEnabled: boolean;
+    sampleInterval: number;
+    segmentId: number;
+  };
+  var startCpuProfiler: (sampleInterval?: number, historyLimit?: number) => string;
+  var startCpuProfilerRaw: (sampleInterval?: number, historyLimit?: number) =>
+    | {
+        ok: true;
+        enabled: boolean;
+        previousEnabled: boolean;
+        sampleInterval: number;
+        historyLimit: number;
+      }
+    | string;
+  var stopCpuProfiler: () => string;
+  var stopCpuProfilerRaw: () => {
+    ok: true;
+    enabled: boolean;
+    previousEnabled: boolean;
+    sampleInterval: number;
+    historyLimit: number;
+  };
+  var statusCpuProfiler: () => string;
+  var statusCpuProfilerRaw: () => {
+    ok: true;
+    enabled: boolean;
+    previousEnabled: boolean;
+    sampleInterval: number;
+    historyLimit: number;
+  };
 
   interface Memory {
     cfg?: {
@@ -82,6 +134,16 @@ declare global {
       };
       crossShard?: {
         enabled?: boolean;
+      };
+      telemetry?: {
+        enabled?: boolean;
+        sampleInterval?: number;
+        segmentId?: number;
+      };
+      cpuProfiler?: {
+        enabled?: boolean;
+        sampleInterval?: number;
+        historyLimit?: number;
       };
     };
     runtime?: {
@@ -251,6 +313,31 @@ declare global {
           }
         >;
       };
+      moduleCpu?: {
+        updatedAt: number;
+        sampleInterval: number;
+        historyLimit: number;
+        latest: {
+          tick: number;
+          shard: string;
+          totalUsed: number;
+          bucket: number;
+          limit: number;
+          tickLimit: number;
+          phases: Record<string, number>;
+          untracked: number;
+        };
+        history: Array<{
+          tick: number;
+          shard: string;
+          totalUsed: number;
+          bucket: number;
+          limit: number;
+          tickLimit: number;
+          phases: Record<string, number>;
+          untracked: number;
+        }>;
+      };
     };
   }
 
@@ -317,6 +404,8 @@ declare namespace NodeJS {
     Memory: Memory;
     _: LoDashStatic;
     creepApi: CreepApi;
+    reportProduction: (roomName?: string) => void;
+    reportProductionGlobal: () => void;
     spawnMaxCarrier: (roomName: string) =>
       | {
           ok: true;
@@ -356,6 +445,58 @@ declare namespace NodeJS {
           suicidedCreeps: number;
         }
       | string;
+    startTelemetry: (sampleInterval?: number, segmentId?: number) => string;
+    startTelemetryRaw: (sampleInterval?: number, segmentId?: number) =>
+      | {
+          ok: true;
+          enabled: boolean;
+          previousEnabled: boolean;
+          sampleInterval: number;
+          segmentId: number;
+        }
+      | string;
+    stopTelemetry: () => string;
+    stopTelemetryRaw: () => {
+      ok: true;
+      enabled: boolean;
+      previousEnabled: boolean;
+      sampleInterval: number;
+      segmentId: number;
+    };
+    statusTelemetry: () => string;
+    statusTelemetryRaw: () => {
+      ok: true;
+      enabled: boolean;
+      previousEnabled: boolean;
+      sampleInterval: number;
+      segmentId: number;
+    };
+    startCpuProfiler: (sampleInterval?: number, historyLimit?: number) => string;
+    startCpuProfilerRaw: (sampleInterval?: number, historyLimit?: number) =>
+      | {
+          ok: true;
+          enabled: boolean;
+          previousEnabled: boolean;
+          sampleInterval: number;
+          historyLimit: number;
+        }
+      | string;
+    stopCpuProfiler: () => string;
+    stopCpuProfilerRaw: () => {
+      ok: true;
+      enabled: boolean;
+      previousEnabled: boolean;
+      sampleInterval: number;
+      historyLimit: number;
+    };
+    statusCpuProfiler: () => string;
+    statusCpuProfilerRaw: () => {
+      ok: true;
+      enabled: boolean;
+      previousEnabled: boolean;
+      sampleInterval: number;
+      historyLimit: number;
+    };
     __screepsMounted?: boolean;
   }
 }

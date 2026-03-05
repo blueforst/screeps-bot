@@ -1,7 +1,6 @@
 import { roleRegistry } from "@/roles";
 import { decodeCrossShardTravelerName } from "@/runtime/crossShardNaming";
-
-const runtimeGlobal = global;
+import { getCreepConfigService } from "@/runtime/runtimeServices";
 
 function tryRestoreRoleFromName(creep: Creep): boolean {
   const traveler = decodeCrossShardTravelerName(creep.name);
@@ -29,9 +28,10 @@ function tryRestoreRoleFromName(creep: Creep): boolean {
 }
 
 function resolveRoleLogic(creep: Creep): ReturnType<(typeof roleRegistry)[keyof typeof roleRegistry]> | null {
+  const creepConfigs = getCreepConfigService();
   const configName = creep.memory.configName;
   if (configName) {
-    const config = runtimeGlobal.creepApi.get(configName);
+    const config = creepConfigs.get(configName);
     if (config) {
       const roleFactory = roleRegistry[config.role];
       if (!roleFactory) {

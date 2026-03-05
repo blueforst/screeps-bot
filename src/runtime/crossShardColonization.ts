@@ -1,5 +1,6 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
 import { encodeCrossShardTravelerName } from "@/runtime/crossShardNaming";
+import { getMemoryService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
 type CrossShardColonizationStatus =
@@ -83,15 +84,15 @@ const BOOTSTRAP_HARVESTER_COUNT = 2;
 const BOOTSTRAP_WORKER_COUNT = 2;
 
 function ensureTaskStore(): Record<string, CrossShardColonizationTask> {
-  Memory.data = Memory.data || {};
-  Memory.data.crossShardColonization = Memory.data.crossShardColonization || {};
-  return Memory.data.crossShardColonization;
+  const data = getMemoryService().ensureData();
+  if (!data.crossShardColonization) {
+    data.crossShardColonization = {};
+  }
+  return data.crossShardColonization;
 }
 
 function ensureConfigStore(): Record<string, CreepConfig> {
-  Memory.data = Memory.data || {};
-  Memory.data.creepConfigs = Memory.data.creepConfigs || {};
-  return Memory.data.creepConfigs;
+  return getMemoryService().getCreepConfigStore();
 }
 
 function getInterShardPortals(): Record<string, InterShardPortalEntry> {

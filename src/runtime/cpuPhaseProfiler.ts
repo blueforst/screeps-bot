@@ -1,0 +1,135 @@
+import {
+  CPU_PROFILER_DEFAULT_HISTORY_LIMIT,
+  CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL,
+  CPU_PROFILER_MAX_HISTORY_LIMIT,
+  CPU_PROFILER_MAX_SAMPLE_INTERVAL,
+  CPU_PROFILER_MIN_HISTORY_LIMIT,
+  CPU_PROFILER_MIN_SAMPLE_INTERVAL,
+} from "@/runtime/cpuProfilerConfig";
+
+interface CpuPhaseSnapshot {
+  tick: number;
+  shard: string;
+  totalUsed: number;
+  bucket: number;
+  limit: number;
+  tickLimit: number;
+  phases: Record<string, number>;
+  untracked: number;
+}
+
+interface TickCpuProfiler {
+  measure<T>(phase: string, fn: () => T): T;
+  flush(): void;
+}
+
+function normalizeSampleInterval(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL;
+  }
+
+  const normalized = Math.floor(value);
+  return Math.max(CPU_PROFILER_MIN_SAMPLE_INTERVAL, Math.min(CPU_PROFILER_MAX_SAMPLE_INTERVAL, normalized));
+}
+
+function normalizeHistoryLimit(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return CPU_PROFILER_DEFAULT_HISTORY_LIMIT;
+  }
+
+  const normalized = Math.floor(value);
+  return Math.max(CPU_PROFILER_MIN_HISTORY_LIMIT, Math.min(CPU_PROFILER_MAX_HISTORY_LIMIT, normalized));
+}
+
+function ensureModuleCpuStore(): NonNullable<NonNullable<Memory["analytics"]>["moduleCpu"]> {
+  Memory.analytics = Memory.analytics || {};
+  Memory.analytics.moduleCpu = Memory.analytics.moduleCpu || {
+    updatedAt: Game.time,
+    sampleInterval: CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL,
+    historyLimit: CPU_PROFILER_DEFAULT_HISTORY_LIMIT,
+    latest: {
+      tick: Game.time,
+      shard: Game.shard.name,
+      totalUsed: 0,
+      bucket: Game.cpu.bucket,
+      limit: Game.cpu.limit,
+      tickLimit: Game.cpu.tickLimit,
+      phases: {},
+      untracked: 0,
+    },
+    history: [],
+  };
+
+  return Memory.analytics.moduleCpu;
+}
+
+function persistSnapshot(snapshot: CpuPhaseSnapshot, sampleInterval: number, historyLimit: number): void {
+  const store = ensureModuleCpuStore();
+  const history = [...store.history, snapshot];
+  while (history.length > historyLimit) {
+    history.shift();
+  }
+
+  store.updatedAt = Game.time;
+  store.sampleInterval = sampleInterval;
+  store.historyLimit = historyLimit;
+  store.latest = snapshot;
+  store.history = history;
+}
+
+function createNoopProfiler(): TickCpuProfiler {
+  return {
+    measure<T>(_phase: string, fn: () => T): T {
+      return fn();
+    },
+    flush(): void {
+      return;
+    },
+  };
+}
+
+export function createTickCpuProfiler(): TickCpuProfiler {
+  const cfg = Memory.cfg?.cpuProfiler;
+  if (!cfg?.enabled) {
+    return createNoopProfiler();
+  }
+
+  const sampleInterval = normalizeSampleInterval(cfg.sampleInterval);
+  const historyLimit = normalizeHistoryLimit(cfg.historyLimit);
+  const loopStartUsed = Game.cpu.getUsed();
+  const phases: Record<string, number> = {};
+
+  return {
+    measure<T>(phase: string, fn: () => T): T {
+      const start = Game.cpu.getUsed();
+      try {
+        return fn();
+      } finally {
+        const delta = Math.max(0, Game.cpu.getUsed() - start);
+        phases[phase] = (phases[phase] || 0) + delta;
+      }
+    },
+
+    flush(): void {
+      if (Game.time % sampleInterval !== 0) {
+        return;
+      }
+
+      const totalUsed = Math.max(0, Game.cpu.getUsed() - loopStartUsed);
+      const tracked = Object.values(phases).reduce((sum, used) => sum + used, 0);
+      const untracked = Math.max(0, totalUsed - tracked);
+      const snapshot: CpuPhaseSnapshot = {
+        tick: Game.time,
+        shard: Game.shard.name,
+        totalUsed,
+        bucket: Game.cpu.bucket,
+        limit: Game.cpu.limit,
+        tickLimit: Game.cpu.tickLimit,
+        phases: { ...phases },
+        untracked,
+      };
+
+      persistSnapshot(snapshot, sampleInterval, historyLimit);
+    },
+  };
+}

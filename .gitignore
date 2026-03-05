@@ -3,3 +3,4 @@ dist/
 .secret.json
 coverage/
 AGENTS.md
+monitor-data/

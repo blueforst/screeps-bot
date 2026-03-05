@@ -1,3 +1,12 @@
+import {
+  CPU_PROFILER_DEFAULT_HISTORY_LIMIT,
+  CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL,
+  CPU_PROFILER_MAX_HISTORY_LIMIT,
+  CPU_PROFILER_MAX_SAMPLE_INTERVAL,
+  CPU_PROFILER_MIN_HISTORY_LIMIT,
+  CPU_PROFILER_MIN_SAMPLE_INTERVAL,
+} from "@/runtime/cpuProfilerConfig";
+import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
 interface SpawnMaxCarrierResult {
@@ -24,13 +33,143 @@ interface StopColonizationResult {
   suicidedCreeps: number;
 }
 
+interface TelemetryControlResult {
+  ok: true;
+  enabled: boolean;
+  previousEnabled: boolean;
+  sampleInterval: number;
+  segmentId: number;
+}
+
+interface CpuProfilerControlResult {
+  ok: true;
+  enabled: boolean;
+  previousEnabled: boolean;
+  sampleInterval: number;
+  historyLimit: number;
+}
+
+const TELEMETRY_DEFAULT_SAMPLE_INTERVAL = 10;
+const TELEMETRY_MIN_SAMPLE_INTERVAL = 5;
+const TELEMETRY_MAX_SAMPLE_INTERVAL = 100;
+const TELEMETRY_DEFAULT_SEGMENT_ID = 90;
+
 function ensureConfigStore(): Record<string, CreepConfig> {
-  Memory.data = Memory.data || {};
-  if (!Memory.data.creepConfigs) {
-    Memory.data.creepConfigs = {};
+  return getMemoryService().getCreepConfigStore();
+}
+
+function ensureTelemetryConfig(): { enabled?: boolean; sampleInterval?: number; segmentId?: number } {
+  Memory.cfg = Memory.cfg || {};
+  if (!Memory.cfg.telemetry) {
+    Memory.cfg.telemetry = {};
   }
 
-  return Memory.data.creepConfigs;
+  return Memory.cfg.telemetry;
+}
+
+function ensureCpuProfilerConfig(): { enabled?: boolean; sampleInterval?: number; historyLimit?: number } {
+  Memory.cfg = Memory.cfg || {};
+  if (!Memory.cfg.cpuProfiler) {
+    Memory.cfg.cpuProfiler = {};
+  }
+
+  return Memory.cfg.cpuProfiler;
+}
+
+function sanitizeTelemetrySampleInterval(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return TELEMETRY_DEFAULT_SAMPLE_INTERVAL;
+  }
+  const normalized = Math.floor(value);
+  return Math.max(TELEMETRY_MIN_SAMPLE_INTERVAL, Math.min(TELEMETRY_MAX_SAMPLE_INTERVAL, normalized));
+}
+
+function sanitizeTelemetrySegmentId(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return TELEMETRY_DEFAULT_SEGMENT_ID;
+  }
+  const normalized = Math.floor(value);
+  return Math.max(0, Math.min(99, normalized));
+}
+
+function sanitizeCpuProfilerSampleInterval(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL;
+  }
+  const normalized = Math.floor(value);
+  return Math.max(CPU_PROFILER_MIN_SAMPLE_INTERVAL, Math.min(CPU_PROFILER_MAX_SAMPLE_INTERVAL, normalized));
+}
+
+function sanitizeCpuProfilerHistoryLimit(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return CPU_PROFILER_DEFAULT_HISTORY_LIMIT;
+  }
+  const normalized = Math.floor(value);
+  return Math.max(CPU_PROFILER_MIN_HISTORY_LIMIT, Math.min(CPU_PROFILER_MAX_HISTORY_LIMIT, normalized));
+}
+
+function resolveTelemetrySampleInterval(next?: number): number | string {
+  if (next === undefined) {
+    return TELEMETRY_DEFAULT_SAMPLE_INTERVAL;
+  }
+  if (typeof next !== "number" || !Number.isFinite(next)) {
+    return `ERR_INVALID_SAMPLE_INTERVAL:${String(next)}`;
+  }
+
+  const normalized = Math.floor(next);
+  if (normalized < TELEMETRY_MIN_SAMPLE_INTERVAL || normalized > TELEMETRY_MAX_SAMPLE_INTERVAL) {
+    return `ERR_SAMPLE_INTERVAL_OUT_OF_RANGE:${normalized}`;
+  }
+
+  return normalized;
+}
+
+function resolveTelemetrySegmentId(next?: number): number | string {
+  if (next === undefined) {
+    return TELEMETRY_DEFAULT_SEGMENT_ID;
+  }
+  if (typeof next !== "number" || !Number.isFinite(next)) {
+    return `ERR_INVALID_SEGMENT_ID:${String(next)}`;
+  }
+
+  const normalized = Math.floor(next);
+  if (normalized < 0 || normalized > 99) {
+    return `ERR_SEGMENT_ID_OUT_OF_RANGE:${normalized}`;
+  }
+
+  return normalized;
+}
+
+function resolveCpuProfilerSampleInterval(next?: number): number | string {
+  if (next === undefined) {
+    return CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL;
+  }
+  if (typeof next !== "number" || !Number.isFinite(next)) {
+    return `ERR_INVALID_CPU_PROFILER_SAMPLE_INTERVAL:${String(next)}`;
+  }
+
+  const normalized = Math.floor(next);
+  if (normalized < CPU_PROFILER_MIN_SAMPLE_INTERVAL || normalized > CPU_PROFILER_MAX_SAMPLE_INTERVAL) {
+    return `ERR_CPU_PROFILER_SAMPLE_INTERVAL_OUT_OF_RANGE:${normalized}`;
+  }
+
+  return normalized;
+}
+
+function resolveCpuProfilerHistoryLimit(next?: number): number | string {
+  if (next === undefined) {
+    return CPU_PROFILER_DEFAULT_HISTORY_LIMIT;
+  }
+  if (typeof next !== "number" || !Number.isFinite(next)) {
+    return `ERR_INVALID_CPU_PROFILER_HISTORY_LIMIT:${String(next)}`;
+  }
+
+  const normalized = Math.floor(next);
+  if (normalized < CPU_PROFILER_MIN_HISTORY_LIMIT || normalized > CPU_PROFILER_MAX_HISTORY_LIMIT) {
+    return `ERR_CPU_PROFILER_HISTORY_LIMIT_OUT_OF_RANGE:${normalized}`;
+  }
+
+  return normalized;
 }
 
 function buildCarrierBodyByEnergy(energyAvailable: number): BodyPartConstant[] {
@@ -55,7 +194,7 @@ function enqueueAtFront(spawn: StructureSpawn, configName: string): void {
 }
 
 function collectConfigNamesByPrefix(prefix: string): string[] {
-  return Object.keys(global.creepApi.list(prefix));
+  return Object.keys(getCreepConfigService().list(prefix));
 }
 
 function removeConfigFromSpawnQueue(configName: string): number {
@@ -307,9 +446,195 @@ export function spawnMaxCarrierCommand(roomName: string): string {
   return formatSpawnMaxCarrierResult(spawnMaxCarrier(roomName));
 }
 
+export function startTelemetry(
+  sampleInterval?: number,
+  segmentId?: number,
+): TelemetryControlResult | string {
+  const cfg = ensureTelemetryConfig();
+  const previousEnabled = cfg.enabled === true;
+
+  const resolvedSampleInterval = resolveTelemetrySampleInterval(sampleInterval);
+  if (typeof resolvedSampleInterval === "string") {
+    return resolvedSampleInterval;
+  }
+  const resolvedSegmentId = resolveTelemetrySegmentId(segmentId);
+  if (typeof resolvedSegmentId === "string") {
+    return resolvedSegmentId;
+  }
+
+  cfg.enabled = true;
+  cfg.sampleInterval = resolvedSampleInterval;
+  cfg.segmentId = resolvedSegmentId;
+
+  return {
+    ok: true,
+    enabled: true,
+    previousEnabled,
+    sampleInterval: resolvedSampleInterval,
+    segmentId: resolvedSegmentId,
+  };
+}
+
+export function stopTelemetryExport(): TelemetryControlResult {
+  const cfg = ensureTelemetryConfig();
+  const previousEnabled = cfg.enabled === true;
+  const sampleInterval = sanitizeTelemetrySampleInterval(cfg.sampleInterval);
+  const segmentId = sanitizeTelemetrySegmentId(cfg.segmentId);
+
+  cfg.enabled = false;
+  cfg.sampleInterval = sampleInterval;
+  cfg.segmentId = segmentId;
+
+  return {
+    ok: true,
+    enabled: false,
+    previousEnabled,
+    sampleInterval,
+    segmentId,
+  };
+}
+
+function formatTelemetryControlResult(result: TelemetryControlResult | string): string {
+  if (typeof result === "string") {
+    return result;
+  }
+
+  return JSON.stringify(result);
+}
+
+export function startTelemetryRaw(sampleInterval?: number, segmentId?: number): TelemetryControlResult | string {
+  return startTelemetry(sampleInterval, segmentId);
+}
+
+export function startTelemetryCommand(sampleInterval?: number, segmentId?: number): string {
+  return formatTelemetryControlResult(startTelemetry(sampleInterval, segmentId));
+}
+
+export function stopTelemetryRaw(): TelemetryControlResult {
+  return stopTelemetryExport();
+}
+
+export function stopTelemetryCommand(): string {
+  return formatTelemetryControlResult(stopTelemetryExport());
+}
+
+export function statusTelemetryRaw(): TelemetryControlResult {
+  const cfg = ensureTelemetryConfig();
+  return {
+    ok: true,
+    enabled: cfg.enabled === true,
+    previousEnabled: cfg.enabled === true,
+    sampleInterval: sanitizeTelemetrySampleInterval(cfg.sampleInterval),
+    segmentId: sanitizeTelemetrySegmentId(cfg.segmentId),
+  };
+}
+
+export function statusTelemetryCommand(): string {
+  return formatTelemetryControlResult(statusTelemetryRaw());
+}
+
+export function startCpuProfiler(
+  sampleInterval?: number,
+  historyLimit?: number,
+): CpuProfilerControlResult | string {
+  const cfg = ensureCpuProfilerConfig();
+  const previousEnabled = cfg.enabled === true;
+
+  const resolvedSampleInterval = resolveCpuProfilerSampleInterval(sampleInterval);
+  if (typeof resolvedSampleInterval === "string") {
+    return resolvedSampleInterval;
+  }
+  const resolvedHistoryLimit = resolveCpuProfilerHistoryLimit(historyLimit);
+  if (typeof resolvedHistoryLimit === "string") {
+    return resolvedHistoryLimit;
+  }
+
+  cfg.enabled = true;
+  cfg.sampleInterval = resolvedSampleInterval;
+  cfg.historyLimit = resolvedHistoryLimit;
+
+  return {
+    ok: true,
+    enabled: true,
+    previousEnabled,
+    sampleInterval: resolvedSampleInterval,
+    historyLimit: resolvedHistoryLimit,
+  };
+}
+
+export function stopCpuProfilerExport(): CpuProfilerControlResult {
+  const cfg = ensureCpuProfilerConfig();
+  const previousEnabled = cfg.enabled === true;
+  const sampleInterval = sanitizeCpuProfilerSampleInterval(cfg.sampleInterval);
+  const historyLimit = sanitizeCpuProfilerHistoryLimit(cfg.historyLimit);
+
+  cfg.enabled = false;
+  cfg.sampleInterval = sampleInterval;
+  cfg.historyLimit = historyLimit;
+
+  return {
+    ok: true,
+    enabled: false,
+    previousEnabled,
+    sampleInterval,
+    historyLimit,
+  };
+}
+
+function formatCpuProfilerControlResult(result: CpuProfilerControlResult | string): string {
+  if (typeof result === "string") {
+    return result;
+  }
+
+  return JSON.stringify(result);
+}
+
+export function startCpuProfilerRaw(sampleInterval?: number, historyLimit?: number): CpuProfilerControlResult | string {
+  return startCpuProfiler(sampleInterval, historyLimit);
+}
+
+export function startCpuProfilerCommand(sampleInterval?: number, historyLimit?: number): string {
+  return formatCpuProfilerControlResult(startCpuProfiler(sampleInterval, historyLimit));
+}
+
+export function stopCpuProfilerRaw(): CpuProfilerControlResult {
+  return stopCpuProfilerExport();
+}
+
+export function stopCpuProfilerCommand(): string {
+  return formatCpuProfilerControlResult(stopCpuProfilerExport());
+}
+
+export function statusCpuProfilerRaw(): CpuProfilerControlResult {
+  const cfg = ensureCpuProfilerConfig();
+  return {
+    ok: true,
+    enabled: cfg.enabled === true,
+    previousEnabled: cfg.enabled === true,
+    sampleInterval: sanitizeCpuProfilerSampleInterval(cfg.sampleInterval),
+    historyLimit: sanitizeCpuProfilerHistoryLimit(cfg.historyLimit),
+  };
+}
+
+export function statusCpuProfilerCommand(): string {
+  return formatCpuProfilerControlResult(statusCpuProfilerRaw());
+}
+
 export function registerConsoleCommands(): void {
   global.spawnMaxCarrier = spawnMaxCarrierCommand;
   global.spawnMaxCarrierRaw = spawnMaxCarrierRaw;
   global.stopColonization = stopColonizationCommand;
   global.stopColonizationRaw = stopColonizationRaw;
+  global.startTelemetry = startTelemetryCommand;
+  global.startTelemetryRaw = startTelemetryRaw;
+  global.stopTelemetry = stopTelemetryCommand;
+  global.stopTelemetryRaw = stopTelemetryRaw;
+  global.statusTelemetry = statusTelemetryCommand;
+  global.statusTelemetryRaw = statusTelemetryRaw;
+  global.startCpuProfiler = startCpuProfilerCommand;
+  global.startCpuProfilerRaw = startCpuProfilerRaw;
+  global.stopCpuProfiler = stopCpuProfilerCommand;
+  global.stopCpuProfilerRaw = stopCpuProfilerRaw;
+  global.statusCpuProfiler = statusCpuProfilerCommand;
+  global.statusCpuProfilerRaw = statusCpuProfilerRaw;
 }

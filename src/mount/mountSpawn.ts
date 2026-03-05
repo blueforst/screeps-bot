@@ -1,7 +1,6 @@
 import { getHarvesterBody, spawnProfiles } from "@/config/spawnProfiles";
+import { getCreepConfigService } from "@/runtime/runtimeServices";
 import type { RoleName } from "@/types/system";
-
-const runtimeGlobal = global;
 
 function isTransientConfigName(configName: string): boolean {
   return configName.includes(":manual:") || configName.includes(":emergency:");
@@ -15,7 +14,7 @@ function ensureQueue(spawn: StructureSpawn): string[] {
 }
 
 function chooseBody(spawn: StructureSpawn, configName: string): BodyPartConstant[] {
-  const config = runtimeGlobal.creepApi.get(configName);
+  const config = getCreepConfigService().get(configName);
   if (config?.body && config.body.length > 0) {
     return config.body;
   }
@@ -49,7 +48,8 @@ export function mountSpawn(): void {
   };
 
   StructureSpawn.prototype.mainSpawn = function mainSpawn(configName: string): boolean {
-    const config = runtimeGlobal.creepApi.get(configName);
+    const creepConfigs = getCreepConfigService();
+    const config = creepConfigs.get(configName);
     if (!config) {
       return true;
     }
@@ -67,7 +67,7 @@ export function mountSpawn(): void {
     });
 
     if (code === OK && isTransientConfigName(configName)) {
-      runtimeGlobal.creepApi.remove(configName);
+      creepConfigs.remove(configName);
     }
 
     return code === OK;

@@ -7,6 +7,7 @@ import { runCrossShardSignals } from "@/runtime/crossShardSignals";
 import { runPixelGenerator } from "@/runtime/pixelGenerator";
 import { runPortalDiscovery } from "@/runtime/portalDiscovery";
 import { registerProductionApi, runProductionMonitor } from "@/runtime/productionMonitor";
+import { runExternalTelemetryExport } from "@/runtime/externalTelemetry";
 import { bootstrapRooms } from "@/runtime/bootstrap";
 import { runCoreDefense } from "@/runtime/coreDefense";
 import { runFlagControl } from "@/runtime/flagControl";
@@ -18,6 +19,7 @@ import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { runTowerControl } from "@/runtime/towerControl";
 import { runWarControl } from "@/runtime/warControl";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
+import { createTickCpuProfiler } from "@/runtime/cpuPhaseProfiler";
 
 mountAll();
 registerGlobalApi();
@@ -39,25 +41,33 @@ export function addNumbers(num1: number, num2: number): number {
 }
 
 function gameLoop(): void {
-  announceDeploy();
-  runPixelGenerator();
-  runProductionMonitor();
-  runMemoryCleanup();
-  runPortalDiscovery();
-  runFlagControl();
-  runCrossShardSignals();
-  runInterShardControl();
-  runWarControl();
-  runRoomPlannerConstruction();
-  runLinkControl();
-  runCoreDefense();
-  runTowerControl();
-  refreshWorkerTasks();
-  bootstrapRooms();
-  scheduleSpawnTasks();
+  const cpuProfiler = createTickCpuProfiler();
 
-  Object.values(Game.spawns).forEach((spawn) => spawn.work());
-  Object.values(Game.creeps).forEach((creep) => creep.work());
+  cpuProfiler.measure("announceDeploy", announceDeploy);
+  cpuProfiler.measure("pixelGenerator", runPixelGenerator);
+  cpuProfiler.measure("productionMonitor", runProductionMonitor);
+  cpuProfiler.measure("externalTelemetryExport", runExternalTelemetryExport);
+  cpuProfiler.measure("memoryCleanup", runMemoryCleanup);
+  cpuProfiler.measure("portalDiscovery", runPortalDiscovery);
+  cpuProfiler.measure("flagControl", runFlagControl);
+  cpuProfiler.measure("crossShardSignals", runCrossShardSignals);
+  cpuProfiler.measure("interShardControl", runInterShardControl);
+  cpuProfiler.measure("warControl", runWarControl);
+  cpuProfiler.measure("roomPlannerConstruction", runRoomPlannerConstruction);
+  cpuProfiler.measure("linkControl", runLinkControl);
+  cpuProfiler.measure("coreDefense", runCoreDefense);
+  cpuProfiler.measure("towerControl", runTowerControl);
+  cpuProfiler.measure("refreshWorkerTasks", refreshWorkerTasks);
+  cpuProfiler.measure("bootstrapRooms", bootstrapRooms);
+  cpuProfiler.measure("scheduleSpawnTasks", scheduleSpawnTasks);
+
+  cpuProfiler.measure("spawnWork", () => {
+    Object.values(Game.spawns).forEach((spawn) => spawn.work());
+  });
+  cpuProfiler.measure("creepWork", () => {
+    Object.values(Game.creeps).forEach((creep) => creep.work());
+  });
+  cpuProfiler.flush();
 }
 
 export const loop = errorMapper(gameLoop);

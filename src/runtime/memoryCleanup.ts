@@ -1,4 +1,5 @@
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
+import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
 
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
@@ -60,6 +61,7 @@ function cleanupDeadCreepMemory(): number {
 
 function cleanupSpawnQueueMemory(): number {
   let trimmed = 0;
+  const creepConfigs = getCreepConfigService();
 
   for (const spawn of Object.values(Game.spawns)) {
     const queue = spawn.memory.spawnList;
@@ -67,7 +69,7 @@ function cleanupSpawnQueueMemory(): number {
       continue;
     }
 
-    const validQueue = queue.filter((configName) => !!global.creepApi.get(configName));
+    const validQueue = queue.filter((configName) => !!creepConfigs.get(configName));
     if (validQueue.length !== queue.length) {
       spawn.memory.spawnList = validQueue;
       trimmed += queue.length - validQueue.length;
@@ -78,14 +80,11 @@ function cleanupSpawnQueueMemory(): number {
 }
 
 function cleanupLegacyConfigMemory(): number {
-  if (!Memory.data?.creepConfigs) {
-    return 0;
-  }
-
+  const configStore = getMemoryService().getCreepConfigStore();
   let removed = 0;
-  for (const [configName, config] of Object.entries(Memory.data.creepConfigs)) {
+  for (const [configName, config] of Object.entries(configStore)) {
     if (!VALID_ROLES.has(config.role)) {
-      delete Memory.data.creepConfigs[configName];
+      delete configStore[configName];
       removed += 1;
     }
   }
@@ -94,10 +93,7 @@ function cleanupLegacyConfigMemory(): number {
 }
 
 function cleanupManagedCreepConfigs(): number {
-  if (!Memory.data?.creepConfigs) {
-    return 0;
-  }
-
+  const configStore = getMemoryService().getCreepConfigStore();
   const expected = new Set<string>();
   const myRooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
   for (const room of myRooms) {
@@ -112,14 +108,14 @@ function cleanupManagedCreepConfigs(): number {
   );
   let removed = 0;
 
-  for (const [configName, config] of Object.entries(Memory.data.creepConfigs)) {
+  for (const [configName, config] of Object.entries(configStore)) {
     if (!VALID_ROLES.has(config.role)) {
       continue;
     }
 
     const hasLiveCreep = activeConfigNames.has(configName);
     if (!expected.has(configName) && !hasLiveCreep) {
-      delete Memory.data.creepConfigs[configName];
+      delete configStore[configName];
       removed += 1;
     }
   }

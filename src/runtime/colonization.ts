@@ -1,5 +1,6 @@
 import { runPlannerForRoom, savePlannerForRoom } from "@/modules/autoplanner";
 import { spawnProfiles } from "@/config/spawnProfiles";
+import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
 import { clearWarRoomTask, isWarRoomClearDone, requestWarRoomClear } from "@/runtime/warControl";
 
 type ColonizationStatus = "claiming" | "clearing" | "waiting_plan" | "bootstrapping" | "managed";
@@ -45,21 +46,16 @@ function hasColonizationSquadProductionCapability(spawn: StructureSpawn): boolea
 }
 
 function ensureColonizationStore(): Record<string, ColonizationTask> {
-  Memory.data = Memory.data || {};
-  if (!Memory.data.colonization) {
-    Memory.data.colonization = {};
+  const data = getMemoryService().ensureData();
+  if (!data.colonization) {
+    data.colonization = {};
   }
 
-  return Memory.data.colonization;
+  return data.colonization;
 }
 
 function ensureConfigStore(): Record<string, import("@/types/system").CreepConfig> {
-  Memory.data = Memory.data || {};
-  if (!Memory.data.creepConfigs) {
-    Memory.data.creepConfigs = {};
-  }
-
-  return Memory.data.creepConfigs;
+  return getMemoryService().getCreepConfigStore();
 }
 
 function getOwnedSpawnRooms(): string[] {
@@ -118,7 +114,7 @@ function getTaskConfigName(
 
 function getTaskConfigNames(task: ColonizationTask): string[] {
   const prefix = `${task.sourceRoom}:colonize:${task.targetRoom}:`;
-  return Object.keys(global.creepApi.list(prefix));
+  return Object.keys(getCreepConfigService().list(prefix));
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {

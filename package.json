@@ -1,6 +1,6 @@
 {
   "name": "screeps",
-  "version": "2026.3.5-1",
+  "version": "2026.3.5-2",
   "description": "Screeps local development workspace",
   "main": "dist/main.js",
   "scripts": {
@@ -8,6 +8,8 @@
     "push": "rollup -c --environment DEST:main",
     "local": "rollup -c --environment DEST:local",
     "watch": "rollup -cw",
+    "monitor:serve": "node scripts/monitor-service.mjs",
+    "monitor:once": "node scripts/monitor-service.mjs --once",
     "test": "jest --config jest.config.cjs",
     "test-c": "jest --config jest.config.cjs --coverage"
   },

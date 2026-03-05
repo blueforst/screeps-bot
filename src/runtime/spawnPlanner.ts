@@ -1,8 +1,7 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
 import { spawnMaxCarrierRaw } from "@/runtime/consoleCommands";
+import { getCreepConfigService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
-
-const runtimeGlobal = global;
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
 
 function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
@@ -85,7 +84,7 @@ function getSourceWorkerWorkPos(config: CreepConfig): RoomPosition | null {
 }
 
 function getSpawnBody(spawn: StructureSpawn, configName: string): BodyPartConstant[] {
-  const config = runtimeGlobal.creepApi.get(configName);
+  const config = getCreepConfigService().get(configName);
   if (!config) {
     return [WORK, MOVE];
   }
@@ -193,9 +192,11 @@ function prioritizeSpawnQueue(spawn: StructureSpawn): void {
     return;
   }
 
+  const creepConfigs = getCreepConfigService();
+
   spawn.memory.spawnList = [...queue]
     .map((configName, index) => {
-      const role = runtimeGlobal.creepApi.get(configName)?.role;
+      const role = creepConfigs.get(configName)?.role;
       return {
         configName,
         index,
@@ -218,6 +219,7 @@ function hasLiveCarrierInRoom(roomName: string): boolean {
 
 function hasSpawningCarrierInRoom(roomName: string): boolean {
   const creepMemory = Memory.creeps || {};
+  const creepConfigs = getCreepConfigService();
   return Object.values(Game.spawns).some((spawn) => {
     if (spawn.room.name !== roomName || !spawn.spawning) {
       return false;
@@ -229,7 +231,7 @@ function hasSpawningCarrierInRoom(roomName: string): boolean {
       return false;
     }
 
-    const config = runtimeGlobal.creepApi.get(configName);
+    const config = creepConfigs.get(configName);
     return config?.role === "carrier";
   });
 }
@@ -255,7 +257,7 @@ export function scheduleSpawnTasks(): void {
     ensureEmergencyCarrier(spawn);
   }
 
-  const configs = runtimeGlobal.creepApi.list();
+  const configs = getCreepConfigService().list();
   for (const [configName, config] of Object.entries(configs)) {
     if (!config.roomName) {
       continue;
