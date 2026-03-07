@@ -40,6 +40,16 @@ export const minerRole: RoleFactory = (sourceId?: string) => ({
       return true;
     }
 
+    const capacity = creep.store.getCapacity(RESOURCE_ENERGY);
+    if (capacity > 0 && usedEnergy < capacity) {
+      return true;
+    }
+
+    const linkFreeCapacity = link.store.getFreeCapacity(RESOURCE_ENERGY);
+    if (linkFreeCapacity <= 0) {
+      return false;
+    }
+
     const transferCode = creep.transfer(link, RESOURCE_ENERGY);
     if (transferCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, link);
@@ -47,7 +57,7 @@ export const minerRole: RoleFactory = (sourceId?: string) => ({
     }
 
     if (transferCode === OK) {
-      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+      return true;
     }
 
     if (transferCode === ERR_FULL) {

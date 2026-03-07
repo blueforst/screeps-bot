@@ -18,6 +18,12 @@ interface CpuPhaseSnapshot {
   untracked: number;
 }
 
+type RuntimeGlobalWithCpuProfiler = typeof global & {
+  __cpuPhaseHistory?: CpuPhaseSnapshot[];
+};
+
+const runtimeGlobal: RuntimeGlobalWithCpuProfiler = global;
+
 interface TickCpuProfiler {
   measure<T>(phase: string, fn: () => T): T;
   flush(): void;
@@ -41,6 +47,18 @@ function normalizeHistoryLimit(value: unknown): number {
   return Math.max(CPU_PROFILER_MIN_HISTORY_LIMIT, Math.min(CPU_PROFILER_MAX_HISTORY_LIMIT, normalized));
 }
 
+function ensureCpuPhaseHistoryStore(): CpuPhaseSnapshot[] {
+  if (!runtimeGlobal.__cpuPhaseHistory) {
+    runtimeGlobal.__cpuPhaseHistory = [];
+  }
+
+  return runtimeGlobal.__cpuPhaseHistory;
+}
+
+export function getCpuPhaseHistory(): CpuPhaseSnapshot[] {
+  return ensureCpuPhaseHistoryStore();
+}
+
 function ensureModuleCpuStore(): NonNullable<NonNullable<Memory["analytics"]>["moduleCpu"]> {
   Memory.analytics = Memory.analytics || {};
   Memory.analytics.moduleCpu = Memory.analytics.moduleCpu || {
@@ -57,7 +75,6 @@ function ensureModuleCpuStore(): NonNullable<NonNullable<Memory["analytics"]>["m
       phases: {},
       untracked: 0,
     },
-    history: [],
   };
 
   return Memory.analytics.moduleCpu;
@@ -65,7 +82,7 @@ function ensureModuleCpuStore(): NonNullable<NonNullable<Memory["analytics"]>["m
 
 function persistSnapshot(snapshot: CpuPhaseSnapshot, sampleInterval: number, historyLimit: number): void {
   const store = ensureModuleCpuStore();
-  const history = [...store.history, snapshot];
+  const history = [...ensureCpuPhaseHistoryStore(), snapshot];
   while (history.length > historyLimit) {
     history.shift();
   }
@@ -74,7 +91,11 @@ function persistSnapshot(snapshot: CpuPhaseSnapshot, sampleInterval: number, his
   store.sampleInterval = sampleInterval;
   store.historyLimit = historyLimit;
   store.latest = snapshot;
-  store.history = history;
+  const storeWithLegacyHistory = store as typeof store & { history?: CpuPhaseSnapshot[] };
+  if ("history" in storeWithLegacyHistory) {
+    delete storeWithLegacyHistory.history;
+  }
+  runtimeGlobal.__cpuPhaseHistory = history;
 }
 
 function createNoopProfiler(): TickCpuProfiler {

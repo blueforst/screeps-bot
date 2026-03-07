@@ -471,12 +471,36 @@ function summarizeModuleCpu(moduleCpu) {
     .sort((left, right) => right[1] - left[1])
     .slice(0, 5)
     .map(([phase, used]) => ({ phase, used }));
+  const historyRaw = Array.isArray(moduleCpu.history) ? moduleCpu.history : [];
+  const history = historyRaw
+    .filter((entry) => entry && typeof entry === "object")
+    .map((entry) => {
+      const phases = entry.phases && typeof entry.phases === "object" ? entry.phases : {};
+      const topHistoryPhases = Object.entries(phases)
+        .filter(([, used]) => typeof used === "number" && Number.isFinite(used))
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 3)
+        .map(([phase, used]) => ({ phase, used }));
+
+      return {
+        tick: typeof entry.tick === "number" ? entry.tick : null,
+        shard: typeof entry.shard === "string" ? entry.shard : null,
+        totalUsed: typeof entry.totalUsed === "number" ? entry.totalUsed : null,
+        bucket: typeof entry.bucket === "number" ? entry.bucket : null,
+        limit: typeof entry.limit === "number" ? entry.limit : null,
+        tickLimit: typeof entry.tickLimit === "number" ? entry.tickLimit : null,
+        untracked: typeof entry.untracked === "number" ? entry.untracked : null,
+        phases,
+        topPhases: topHistoryPhases,
+      };
+    });
 
   return {
     available: true,
     updatedAt: typeof moduleCpu.updatedAt === "number" ? moduleCpu.updatedAt : null,
     sampleInterval: typeof moduleCpu.sampleInterval === "number" ? moduleCpu.sampleInterval : null,
     historyLimit: typeof moduleCpu.historyLimit === "number" ? moduleCpu.historyLimit : null,
+    history,
     latest: latestRaw
       ? {
           tick: typeof latestRaw.tick === "number" ? latestRaw.tick : null,
@@ -714,6 +738,12 @@ function createHttpServer(state) {
       writeJson(res, 200, {
         memoryModuleCpu: state.latest.memory ? state.latest.memory.moduleCpu : null,
         segmentModuleCpu: segmentParsed && segmentParsed.moduleCpu ? segmentParsed.moduleCpu : null,
+        segmentModuleCpuHistory:
+          segmentParsed &&
+          segmentParsed.moduleCpu &&
+          Array.isArray(segmentParsed.moduleCpu.history)
+            ? segmentParsed.moduleCpu.history
+            : [],
         segmentTick: segmentParsed && typeof segmentParsed.tick === "number" ? segmentParsed.tick : null,
         segmentTruncated: !!(segmentParsed && segmentParsed.truncated),
         segmentSchemaVersion: segmentParsed && typeof segmentParsed.version === "number" ? segmentParsed.version : null,

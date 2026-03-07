@@ -1,3 +1,5 @@
+import { getCpuPhaseHistory } from "@/runtime/cpuPhaseProfiler";
+
 const DEFAULT_SAMPLE_INTERVAL = 10;
 const MIN_SAMPLE_INTERVAL = 5;
 const MAX_SAMPLE_INTERVAL = 100;
@@ -86,10 +88,22 @@ interface ExternalTelemetrySnapshot {
     tickLimit: number;
     phases: Record<string, number>;
     untracked: number;
+    history?: Array<{
+      tick: number;
+      shard: string;
+      totalUsed: number;
+      bucket: number;
+      limit: number;
+      tickLimit: number;
+      phases: Record<string, number>;
+      untracked: number;
+    }>;
   };
   rooms: ExternalTelemetryRoomSnapshot[];
   truncated?: boolean;
 }
+
+type ModuleCpuSnapshot = NonNullable<ExternalTelemetrySnapshot["moduleCpu"]>;
 
 function toValidSampleInterval(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -247,6 +261,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
   const spawnsByRoom = collectSpawnTelemetryByRoom();
   const productionRooms = Memory.analytics?.production?.rooms || {};
   const moduleCpuLatest = Memory.analytics?.moduleCpu?.latest;
+  const moduleCpuHistory = getCpuPhaseHistory();
 
   const rooms: ExternalTelemetryRoomSnapshot[] = [];
   let totalWorkers = 0;
@@ -354,9 +369,42 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
           tickLimit: moduleCpuLatest.tickLimit,
           phases: moduleCpuLatest.phases,
           untracked: moduleCpuLatest.untracked,
+          history: moduleCpuHistory.map((entry) => ({
+            tick: entry.tick,
+            shard: entry.shard,
+            totalUsed: entry.totalUsed,
+            bucket: entry.bucket,
+            limit: entry.limit,
+            tickLimit: entry.tickLimit,
+            phases: entry.phases,
+            untracked: entry.untracked,
+          })),
         }
       : undefined,
     rooms,
+  };
+}
+
+function compactPhaseMap(phases: Record<string, number>, limit: number): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(phases)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, limit),
+  );
+}
+
+function compactModuleCpu(moduleCpu: ModuleCpuSnapshot | undefined, historyLimit: number): ModuleCpuSnapshot | undefined {
+  if (!moduleCpu) {
+    return undefined;
+  }
+
+  return {
+    ...moduleCpu,
+    phases: compactPhaseMap(moduleCpu.phases, 8),
+    history: (moduleCpu.history || []).slice(-historyLimit).map((entry) => ({
+      ...entry,
+      phases: compactPhaseMap(entry.phases, 5),
+    })),
   };
 }
 
@@ -378,6 +426,7 @@ function serializeSnapshot(snapshot: ExternalTelemetrySnapshot): string {
   const compactPayload = JSON.stringify({
     ...snapshot,
     truncated: true,
+    moduleCpu: compactModuleCpu(snapshot.moduleCpu, 20),
     rooms: compactRooms,
   });
 
@@ -394,7 +443,7 @@ function serializeSnapshot(snapshot: ExternalTelemetrySnapshot): string {
     cpu: snapshot.cpu,
     gcl: snapshot.gcl,
     totals: snapshot.totals,
-    moduleCpu: snapshot.moduleCpu,
+    moduleCpu: compactModuleCpu(snapshot.moduleCpu, 5),
     rooms: [],
     truncated: true,
   } satisfies ExternalTelemetrySnapshot);

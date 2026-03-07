@@ -327,16 +327,6 @@ declare global {
           phases: Record<string, number>;
           untracked: number;
         };
-        history: Array<{
-          tick: number;
-          shard: string;
-          totalUsed: number;
-          bucket: number;
-          limit: number;
-          tickLimit: number;
-          phases: Record<string, number>;
-          untracked: number;
-        }>;
       };
     };
   }
