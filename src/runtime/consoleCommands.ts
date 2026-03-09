@@ -6,6 +6,11 @@ import {
   CPU_PROFILER_MIN_HISTORY_LIMIT,
   CPU_PROFILER_MIN_SAMPLE_INTERVAL,
 } from "@/runtime/cpuProfilerConfig";
+import {
+  cancelResourceTransferTask,
+  createResourceTransferTask,
+  listResourceTransferTasks,
+} from "@/runtime/resourceControl";
 import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
@@ -47,6 +52,20 @@ interface CpuProfilerControlResult {
   previousEnabled: boolean;
   sampleInterval: number;
   historyLimit: number;
+}
+
+interface SynthesisControlStatusResult {
+  ok: true;
+  enabled: boolean;
+  state:
+    | {
+        updatedAt: number;
+        generatedTaskCount: number;
+        failedTaskCount: number;
+        successfulRunCount: number;
+        lastActions: string[];
+      }
+    | null;
 }
 
 const TELEMETRY_DEFAULT_SAMPLE_INTERVAL = 10;
@@ -620,6 +639,63 @@ export function statusCpuProfilerCommand(): string {
   return formatCpuProfilerControlResult(statusCpuProfilerRaw());
 }
 
+export function statusSynthesisControlRaw(): SynthesisControlStatusResult {
+  const state = Memory.runtime?.synthesisControl;
+  return {
+    ok: true,
+    enabled: Memory.cfg?.synthesisControl?.enabled === true,
+    state: state
+      ? {
+          updatedAt: state.updatedAt,
+          generatedTaskCount: state.generatedTaskCount,
+          failedTaskCount: state.failedTaskCount,
+          successfulRunCount: state.successfulRunCount,
+          lastActions: state.lastActions,
+        }
+      : null,
+  };
+}
+
+export function statusSynthesisControlCommand(): string {
+  return JSON.stringify(statusSynthesisControlRaw());
+}
+
+export function addResourceTransferTaskRaw(
+  fromRoomName: string,
+  toRoomName: string,
+  resource: ResourceConstant,
+  amount: number,
+  reason?: string,
+): ReturnType<typeof createResourceTransferTask> {
+  return createResourceTransferTask(fromRoomName, toRoomName, resource, amount, reason);
+}
+
+export function addResourceTransferTaskCommand(
+  fromRoomName: string,
+  toRoomName: string,
+  resource: ResourceConstant,
+  amount: number,
+  reason?: string,
+): string {
+  return JSON.stringify(addResourceTransferTaskRaw(fromRoomName, toRoomName, resource, amount, reason));
+}
+
+export function cancelResourceTransferTaskRaw(taskId: string): ReturnType<typeof cancelResourceTransferTask> {
+  return cancelResourceTransferTask(taskId);
+}
+
+export function cancelResourceTransferTaskCommand(taskId: string): string {
+  return JSON.stringify(cancelResourceTransferTaskRaw(taskId));
+}
+
+export function listResourceTransferTasksRaw(): ReturnType<typeof listResourceTransferTasks> {
+  return listResourceTransferTasks();
+}
+
+export function listResourceTransferTasksCommand(): string {
+  return JSON.stringify(listResourceTransferTasksRaw());
+}
+
 export function registerConsoleCommands(): void {
   global.spawnMaxCarrier = spawnMaxCarrierCommand;
   global.spawnMaxCarrierRaw = spawnMaxCarrierRaw;
@@ -637,4 +713,12 @@ export function registerConsoleCommands(): void {
   global.stopCpuProfilerRaw = stopCpuProfilerRaw;
   global.statusCpuProfiler = statusCpuProfilerCommand;
   global.statusCpuProfilerRaw = statusCpuProfilerRaw;
+  global.statusSynthesisControl = statusSynthesisControlCommand;
+  global.statusSynthesisControlRaw = statusSynthesisControlRaw;
+  global.addResourceTransferTask = addResourceTransferTaskCommand;
+  global.addResourceTransferTaskRaw = addResourceTransferTaskRaw;
+  global.cancelResourceTransferTask = cancelResourceTransferTaskCommand;
+  global.cancelResourceTransferTaskRaw = cancelResourceTransferTaskRaw;
+  global.listResourceTransferTasks = listResourceTransferTasksCommand;
+  global.listResourceTransferTasksRaw = listResourceTransferTasksRaw;
 }

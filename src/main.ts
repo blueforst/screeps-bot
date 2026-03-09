@@ -7,6 +7,8 @@ import { runCrossShardSignals } from "@/runtime/crossShardSignals";
 import { runPixelGenerator } from "@/runtime/pixelGenerator";
 import { runPortalDiscovery } from "@/runtime/portalDiscovery";
 import { registerProductionApi, runProductionMonitor } from "@/runtime/productionMonitor";
+import { runResourceControl } from "@/runtime/resourceControl";
+import { runSynthesisControl } from "@/runtime/synthesisControl";
 import { runExternalTelemetryExport } from "@/runtime/externalTelemetry";
 import { bootstrapRooms } from "@/runtime/bootstrap";
 import { runCoreDefense } from "@/runtime/coreDefense";
@@ -46,6 +48,8 @@ function gameLoop(): void {
   cpuProfiler.measure("announceDeploy", announceDeploy);
   cpuProfiler.measure("pixelGenerator", runPixelGenerator);
   cpuProfiler.measure("productionMonitor", runProductionMonitor);
+  cpuProfiler.measure("synthesisControl", runSynthesisControl);
+  cpuProfiler.measure("resourceControl", runResourceControl);
   cpuProfiler.measure("externalTelemetryExport", runExternalTelemetryExport);
   cpuProfiler.measure("memoryCleanup", runMemoryCleanup);
   cpuProfiler.measure("portalDiscovery", runPortalDiscovery);

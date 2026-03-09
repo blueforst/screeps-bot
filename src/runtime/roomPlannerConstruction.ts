@@ -203,7 +203,11 @@ function getContainerPlannedPositions(room: Room, layout: PlannedLayout, control
 }
 
 function getCoreRampartPositions(layout: PlannedLayout): { x: number; y: number }[] {
-  return [...(layout[STRUCTURE_SPAWN] ?? []), ...(layout[STRUCTURE_STORAGE] ?? [])];
+  return [
+    ...(layout[STRUCTURE_SPAWN] ?? []),
+    ...(layout[STRUCTURE_STORAGE] ?? []),
+    ...(layout[STRUCTURE_TERMINAL] ?? []),
+  ];
 }
 
 function getPlannedRampartPositions(layout: PlannedLayout): { x: number; y: number }[] {

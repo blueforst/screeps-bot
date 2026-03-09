@@ -1,5 +1,6 @@
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
+import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
 
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
@@ -24,6 +25,8 @@ const INTER_SHARD_REMOTE_TTL = 500;
 const INTER_SHARD_CLAIM_TTL = 5000;
 const INTER_SHARD_ROOM_STATE_TTL = 5000;
 const CROSS_SHARD_COLONIZATION_TTL = 5000;
+const RESOURCE_CONTROL_TASK_TTL = 5000;
+const CARRIER_TASK_BOARD_TTL = 500;
 
 function getOwnedRoomNameSet(): Set<string> {
   return new Set(
@@ -193,6 +196,75 @@ function cleanupTowerEmergencyMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupResourceControlMemory(ownedRooms: Set<string>): number {
+  if (!Memory.runtime?.resourceControl) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const roomName of Object.keys(Memory.runtime.resourceControl.rooms)) {
+    if (!ownedRooms.has(roomName)) {
+      delete Memory.runtime.resourceControl.rooms[roomName];
+      removed += 1;
+    }
+  }
+
+  const synthesisBindings = Memory.runtime.resourceControl.synthesisBindings;
+  if (synthesisBindings) {
+    for (const [key, binding] of Object.entries(synthesisBindings)) {
+      const targetRoomName = key.split(":", 1)[0];
+      const donorRoomName = binding.fromRoomName;
+      const expired = binding.expiresAt < Game.time;
+      if (expired || !ownedRooms.has(targetRoomName) || !ownedRooms.has(donorRoomName)) {
+        delete synthesisBindings[key];
+        removed += 1;
+      }
+    }
+  }
+
+  if (
+    Object.keys(Memory.runtime.resourceControl.rooms).length === 0 &&
+    (!synthesisBindings || Object.keys(synthesisBindings).length === 0)
+  ) {
+    delete Memory.runtime.resourceControl;
+  }
+
+  return removed;
+}
+
+function cleanupSynthesisControlMemory(ownedRooms: Set<string>): number {
+  if (!Memory.runtime?.synthesisControl) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const roomName of Object.keys(Memory.runtime.synthesisControl.rooms)) {
+    if (!ownedRooms.has(roomName)) {
+      delete Memory.runtime.synthesisControl.rooms[roomName];
+      removed += 1;
+    }
+  }
+
+  for (const [key, binding] of Object.entries(Memory.runtime.synthesisControl.bindings)) {
+    const targetRoomName = key.split(":", 1)[0];
+    const donorRoomName = binding.fromRoomName;
+    const expired = binding.expiresAt < Game.time;
+    if (expired || !ownedRooms.has(targetRoomName) || !ownedRooms.has(donorRoomName)) {
+      delete Memory.runtime.synthesisControl.bindings[key];
+      removed += 1;
+    }
+  }
+
+  if (
+    Object.keys(Memory.runtime.synthesisControl.rooms).length === 0 &&
+    Object.keys(Memory.runtime.synthesisControl.bindings).length === 0
+  ) {
+    delete Memory.runtime.synthesisControl;
+  }
+
+  return removed;
+}
+
 function cleanupPickupReservationMemory(ownedRooms: Set<string>): number {
   if (!Memory.rooms) {
     return 0;
@@ -323,6 +395,35 @@ function cleanupCrossShardColonizationMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupResourceControlTaskMemory(ownedRooms: Set<string>): number {
+  const tasks = Memory.data?.resourceControl?.tasks;
+  if (!tasks) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [taskId, task] of Object.entries(tasks)) {
+    const sourceOrTargetLost = !ownedRooms.has(task.fromRoomName) || !ownedRooms.has(task.toRoomName);
+    const terminalStale =
+      (task.status === "done" || task.status === "cancelled" || task.status === "failed") &&
+      Game.time - task.updatedAt > RESOURCE_CONTROL_TASK_TTL;
+    if (sourceOrTargetLost || terminalStale) {
+      delete tasks[taskId];
+      removed += 1;
+    }
+  }
+
+  if (Object.keys(tasks).length === 0 && Memory.data?.resourceControl) {
+    delete Memory.data.resourceControl;
+  }
+
+  return removed;
+}
+
+function cleanupCarrierTaskBoardMemory(ownedRooms: Set<string>): number {
+  return cleanupCarrierTaskBoard(ownedRooms, CARRIER_TASK_BOARD_TTL);
+}
+
 function cleanupEmptyForeignRoomMemory(ownedRooms: Set<string>): number {
   if (!Memory.rooms) {
     return 0;
@@ -358,10 +459,14 @@ export function runMemoryCleanup(): void {
   cleanupRoomPlannerAutoMemory(ownedRooms);
   cleanupLinkNetworkMemory(ownedRooms);
   cleanupTowerEmergencyMemory(ownedRooms);
+  cleanupResourceControlMemory(ownedRooms);
+  cleanupSynthesisControlMemory(ownedRooms);
   cleanupPickupReservationMemory(ownedRooms);
   cleanupWarMemory(ownedRooms);
   cleanupInterShardPortalMemory();
   cleanupCrossShardRuntimeMemory();
   cleanupCrossShardColonizationMemory(ownedRooms);
+  cleanupResourceControlTaskMemory(ownedRooms);
+  cleanupCarrierTaskBoardMemory(ownedRooms);
   cleanupEmptyForeignRoomMemory(ownedRooms);
 }

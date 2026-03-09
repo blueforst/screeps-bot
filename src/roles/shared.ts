@@ -528,10 +528,22 @@ export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { po
 
 interface EnergyStoreTargetOptions {
   excludeIds?: string[];
+  includeTerminal?: boolean;
+  includeStorage?: boolean;
+}
+
+function getRoomTerminalEnergyReserve(room: Room): number {
+  const configured = Memory.cfg?.resourceControl?.rooms?.[room.name]?.terminalEnergyReserve;
+  if (typeof configured === "number" && Number.isFinite(configured)) {
+    return Math.max(0, Math.floor(configured));
+  }
+  return 20_000;
 }
 
 export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOptions = {}): AnyStoreStructure | null {
   const excludeSet = new Set(options.excludeIds || []);
+  const includeTerminal = options.includeTerminal ?? true;
+  const includeStorage = options.includeStorage ?? true;
 
   const spawnAndExtensionTargets = creep.room.find(FIND_STRUCTURES, {
     filter: (structure) => {
@@ -567,7 +579,60 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
     return creep.pos.findClosestByRange(towerTargets) as AnyStoreStructure;
   }
 
-  if (creep.room.storage && !excludeSet.has(creep.room.storage.id)) {
+  const powerSpawnTargets = creep.room.find(FIND_STRUCTURES, {
+    filter: (structure) => {
+      if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_POWER_SPAWN) {
+        return false;
+      }
+
+      const powerSpawn = structure as StructurePowerSpawn;
+      return powerSpawn.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
+    },
+  });
+
+  if (powerSpawnTargets.length > 0) {
+    return creep.pos.findClosestByRange(powerSpawnTargets) as AnyStoreStructure;
+  }
+
+  const factoryTargets = creep.room.find(FIND_STRUCTURES, {
+    filter: (structure) => {
+      if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_FACTORY) {
+        return false;
+      }
+
+      const factory = structure as StructureFactory;
+      return factory.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
+    },
+  });
+
+  if (factoryTargets.length > 0) {
+    return creep.pos.findClosestByRange(factoryTargets) as AnyStoreStructure;
+  }
+
+  const labTargets = creep.room.find(FIND_STRUCTURES, {
+    filter: (structure) => {
+      if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_LAB) {
+        return false;
+      }
+
+      const lab = structure as StructureLab;
+      return lab.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
+    },
+  });
+
+  if (labTargets.length > 0) {
+    return creep.pos.findClosestByRange(labTargets) as AnyStoreStructure;
+  }
+
+  if (includeTerminal && creep.room.terminal && !excludeSet.has(creep.room.terminal.id)) {
+    const terminalReserve = getRoomTerminalEnergyReserve(creep.room);
+    const terminalEnergy = creep.room.terminal.store.getUsedCapacity(RESOURCE_ENERGY);
+    if (creep.room.terminal.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && terminalEnergy < terminalReserve) {
+      return creep.room.terminal;
+    }
+  }
+
+  if (includeStorage && creep.room.storage && !excludeSet.has(creep.room.storage.id)) {
     return creep.room.storage;
   }
 
