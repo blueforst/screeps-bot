@@ -386,11 +386,15 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
 }
 
 function compactPhaseMap(phases: Record<string, number>, limit: number): Record<string, number> {
-  return Object.fromEntries(
-    Object.entries(phases)
-      .sort((left, right) => right[1] - left[1])
-      .slice(0, limit),
-  );
+  const compact: Record<string, number> = {};
+  const sorted = Object.entries(phases)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit);
+  for (const [key, value] of sorted) {
+    compact[key] = value;
+  }
+
+  return compact;
 }
 
 function compactModuleCpu(moduleCpu: ModuleCpuSnapshot | undefined, historyLimit: number): ModuleCpuSnapshot | undefined {
