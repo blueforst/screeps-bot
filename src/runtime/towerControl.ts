@@ -110,13 +110,16 @@ function chooseFocusTarget(towers: StructureTower[], hostiles: Creep[]): Creep |
 function assignSpreadTargets(towers: StructureTower[], hostiles: Creep[]): Map<Id<StructureTower>, Creep> {
   const assignments = new Map<Id<StructureTower>, Creep>();
   const appliedPressure: Record<string, number> = {};
+  const assignedTargetIds = new Set<string>();
 
   const sortedTowers = [...towers].sort((left, right) => left.id.localeCompare(right.id));
   for (const tower of sortedTowers) {
     let best: Creep | null = null;
     let bestScore = Number.NEGATIVE_INFINITY;
+    const candidatePool = hostiles.filter((hostile) => !assignedTargetIds.has(hostile.id));
+    const candidates = candidatePool.length > 0 ? candidatePool : hostiles;
 
-    for (const hostile of hostiles) {
+    for (const hostile of candidates) {
       const range = tower.pos.getRangeTo(hostile.pos);
       const damage = getTowerAttackPowerByRange(range);
       const heal = getIncomingHealPower(hostile, hostiles);
@@ -136,6 +139,7 @@ function assignSpreadTargets(towers: StructureTower[], hostiles: Creep[]): Map<I
     }
 
     assignments.set(tower.id, best);
+    assignedTargetIds.add(best.id);
     appliedPressure[best.id] = (appliedPressure[best.id] || 0) + getTowerAttackPowerByRange(tower.pos.getRangeTo(best.pos));
   }
 
@@ -245,6 +249,7 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[])
   const shouldForceSpread = (state.spreadUntil || 0) >= Game.time;
   const shouldProbeSpread =
     focusTotalNet <= 0 ||
+    (hostiles.length > 1 && focusTotalNet < TOWER_POWER_ATTACK * 0.6) ||
     (state.stalledTicks || 0) >= TOWER_FOCUS_STALL_TICKS ||
     (Game.time % TOWER_SPREAD_PROBE_INTERVAL === 0 && focusTotalNet < TOWER_POWER_ATTACK);
 
