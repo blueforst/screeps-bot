@@ -2,9 +2,18 @@ export interface RoomTickContext {
   room: Room;
   getStructures(): Structure<StructureConstant>[];
   getMyStructures(): Structure<StructureConstant>[];
+  getMyCreeps(): Creep[];
   getConstructionSites(): ConstructionSite[];
+  getSources(): Source[];
+  getMinerals(): Mineral[];
   getHostileCreeps(): Creep[];
+  getHostilePowerCreeps(): PowerCreep[];
+  getHostileStructures(): Structure<StructureConstant>[];
   getTowers(): StructureTower[];
+  getLinks(): StructureLink[];
+  getLabs(): StructureLab[];
+  getRamparts(): StructureRampart[];
+  getContainers(): StructureContainer[];
   getDroppedEnergyResources(): Resource[];
   getEnergyTombstones(): Tombstone[];
   getEnergyRuins(): Ruin[];
@@ -35,9 +44,18 @@ interface TickContextSnapshot {
 function createRoomTickContext(room: Room): RoomTickContext {
   let structures: Structure<StructureConstant>[] | undefined;
   let myStructures: Structure<StructureConstant>[] | undefined;
+  let myCreeps: Creep[] | undefined;
   let constructionSites: ConstructionSite[] | undefined;
+  let sources: Source[] | undefined;
+  let minerals: Mineral[] | undefined;
   let hostileCreeps: Creep[] | undefined;
+  let hostilePowerCreeps: PowerCreep[] | undefined;
+  let hostileStructures: Structure<StructureConstant>[] | undefined;
   let towers: StructureTower[] | undefined;
+  let links: StructureLink[] | undefined;
+  let labs: StructureLab[] | undefined;
+  let ramparts: StructureRampart[] | undefined;
+  let containers: StructureContainer[] | undefined;
   let droppedEnergyResources: Resource[] | undefined;
   let energyTombstones: Tombstone[] | undefined;
   let energyRuins: Ruin[] | undefined;
@@ -56,11 +74,29 @@ function createRoomTickContext(room: Room): RoomTickContext {
       }
       return myStructures;
     },
+    getMyCreeps(): Creep[] {
+      if (!myCreeps) {
+        myCreeps = room.find(FIND_MY_CREEPS);
+      }
+      return myCreeps;
+    },
     getConstructionSites(): ConstructionSite[] {
       if (!constructionSites) {
         constructionSites = room.find(FIND_CONSTRUCTION_SITES);
       }
       return constructionSites;
+    },
+    getSources(): Source[] {
+      if (!sources) {
+        sources = room.find(FIND_SOURCES);
+      }
+      return sources;
+    },
+    getMinerals(): Mineral[] {
+      if (!minerals) {
+        minerals = room.find(FIND_MINERALS);
+      }
+      return minerals;
     },
     getHostileCreeps(): Creep[] {
       if (!hostileCreeps) {
@@ -68,13 +104,67 @@ function createRoomTickContext(room: Room): RoomTickContext {
       }
       return hostileCreeps;
     },
+    getHostilePowerCreeps(): PowerCreep[] {
+      if (!hostilePowerCreeps) {
+        hostilePowerCreeps = room.find(FIND_HOSTILE_POWER_CREEPS);
+      }
+      return hostilePowerCreeps;
+    },
+    getHostileStructures(): Structure<StructureConstant>[] {
+      if (!hostileStructures) {
+        hostileStructures = room.find(FIND_HOSTILE_STRUCTURES) as Structure<StructureConstant>[];
+      }
+      return hostileStructures;
+    },
     getTowers(): StructureTower[] {
       if (!towers) {
-        towers = room.find(FIND_MY_STRUCTURES, {
-          filter: (structure): structure is StructureTower => structure.structureType === STRUCTURE_TOWER,
-        });
+        const myStructures = this.getMyStructures();
+        towers = myStructures.filter(
+          (structure: Structure<StructureConstant>): structure is StructureTower =>
+            structure.structureType === STRUCTURE_TOWER,
+        );
       }
       return towers;
+    },
+    getLinks(): StructureLink[] {
+      if (!links) {
+        const myStructures = this.getMyStructures();
+        links = myStructures.filter(
+          (structure: Structure<StructureConstant>): structure is StructureLink =>
+            structure.structureType === STRUCTURE_LINK,
+        );
+      }
+      return links;
+    },
+    getLabs(): StructureLab[] {
+      if (!labs) {
+        const myStructures = this.getMyStructures();
+        labs = myStructures.filter(
+          (structure: Structure<StructureConstant>): structure is StructureLab =>
+            structure.structureType === STRUCTURE_LAB,
+        );
+      }
+      return labs;
+    },
+    getRamparts(): StructureRampart[] {
+      if (!ramparts) {
+        const myStructures = this.getMyStructures();
+        ramparts = myStructures.filter(
+          (structure: Structure<StructureConstant>): structure is StructureRampart =>
+            structure.structureType === STRUCTURE_RAMPART,
+        );
+      }
+      return ramparts;
+    },
+    getContainers(): StructureContainer[] {
+      if (!containers) {
+        const roomStructures = this.getStructures();
+        containers = roomStructures.filter(
+          (structure: Structure<StructureConstant>): structure is StructureContainer =>
+            structure.structureType === STRUCTURE_CONTAINER,
+        );
+      }
+      return containers;
     },
     getDroppedEnergyResources(): Resource[] {
       if (!droppedEnergyResources) {

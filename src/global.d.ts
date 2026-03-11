@@ -588,6 +588,17 @@ declare global {
       lastPosKey?: string;
       stuckTicks: number;
     };
+    movePathState?: {
+      key: string;
+      path: string;
+      targetRoom: string;
+      targetX: number;
+      targetY: number;
+      range: 0 | 1 | 3;
+      lastPosKey?: string;
+      stuckTicks: number;
+      expiresAt: number;
+    };
   }
 
   interface RoomMemory {
