@@ -34,14 +34,21 @@ function isConfigQueued(spawn: StructureSpawn, configName: string): boolean {
 
 function isConfigSpawning(configName: string): boolean {
   const creepMemory = Memory.creeps || {};
-  return Object.values(Game.spawns).some((spawn) => {
-    if (!spawn.spawning) {
-      return false;
-    }
+  const tickContext = getTickContextService();
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      if (!spawn.spawning) {
+        continue;
+      }
 
-    const spawningName = spawn.spawning.name;
-    return creepMemory[spawningName]?.configName === configName;
-  });
+      const spawningName = spawn.spawning.name;
+      if (creepMemory[spawningName]?.configName === configName) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function getConfigCreeps(configName: string): Creep[] {
@@ -220,20 +227,24 @@ function hasLiveCarrierInRoom(roomName: string): boolean {
 function hasSpawningCarrierInRoom(roomName: string): boolean {
   const creepMemory = Memory.creeps || {};
   const creepConfigs = getCreepConfigService();
-  return Object.values(Game.spawns).some((spawn) => {
-    if (spawn.room.name !== roomName || !spawn.spawning) {
-      return false;
+  for (const spawn of getTickContextService().getSpawnsByRoom(roomName)) {
+    if (!spawn.spawning) {
+      continue;
     }
 
     const spawningName = spawn.spawning.name;
     const configName = creepMemory[spawningName]?.configName;
     if (!configName) {
-      return false;
+      continue;
     }
 
     const config = creepConfigs.get(configName);
-    return config?.role === "carrier";
-  });
+    if (config?.role === "carrier") {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function ensureEmergencyCarrier(spawn: StructureSpawn): void {

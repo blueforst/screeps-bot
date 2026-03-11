@@ -11,7 +11,7 @@ import {
   createResourceTransferTask,
   listResourceTransferTasks,
 } from "@/runtime/resourceControl";
-import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
 interface SpawnMaxCarrierResult {
@@ -203,8 +203,7 @@ function buildCarrierBodyByEnergy(energyAvailable: number): BodyPartConstant[] {
 }
 
 function resolveSpawnByRoom(roomName: string): StructureSpawn | null {
-  const spawn = Object.values(Game.spawns).find((item) => item.room.name === roomName);
-  return spawn || null;
+  return getTickContextService().getPrimarySpawnByRoom(roomName) || null;
 }
 
 function enqueueAtFront(spawn: StructureSpawn, configName: string): void {
@@ -218,16 +217,19 @@ function collectConfigNamesByPrefix(prefix: string): string[] {
 
 function removeConfigFromSpawnQueue(configName: string): number {
   let removed = 0;
-  for (const spawn of Object.values(Game.spawns)) {
-    const queue = spawn.memory.spawnList;
-    if (!queue || queue.length === 0) {
-      continue;
-    }
+  const tickContext = getTickContextService();
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      const queue = spawn.memory.spawnList;
+      if (!queue || queue.length === 0) {
+        continue;
+      }
 
-    const next = queue.filter((name) => name !== configName);
-    if (next.length !== queue.length) {
-      spawn.memory.spawnList = next;
-      removed += queue.length - next.length;
+      const next = queue.filter((name) => name !== configName);
+      if (next.length !== queue.length) {
+        spawn.memory.spawnList = next;
+        removed += queue.length - next.length;
+      }
     }
   }
 
@@ -237,19 +239,22 @@ function removeConfigFromSpawnQueue(configName: string): number {
 function cancelSpawnIfSpawningConfig(configName: string): number {
   const creepMemory = Memory.creeps || {};
   let cancelled = 0;
-  for (const spawn of Object.values(Game.spawns)) {
-    if (!spawn.spawning) {
-      continue;
-    }
+  const tickContext = getTickContextService();
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      if (!spawn.spawning) {
+        continue;
+      }
 
-    const spawningName = spawn.spawning.name;
-    if (creepMemory[spawningName]?.configName !== configName) {
-      continue;
-    }
+      const spawningName = spawn.spawning.name;
+      if (creepMemory[spawningName]?.configName !== configName) {
+        continue;
+      }
 
-    const code = spawn.spawning.cancel();
-    if (code === OK) {
-      cancelled += 1;
+      const code = spawn.spawning.cancel();
+      if (code === OK) {
+        cancelled += 1;
+      }
     }
   }
 
@@ -258,7 +263,7 @@ function cancelSpawnIfSpawningConfig(configName: string): number {
 
 function suicideCreepsByConfig(configName: string): number {
   let suicided = 0;
-  for (const creep of Object.values(Game.creeps)) {
+  for (const creep of getTickContextService().getCreepsByConfigName(configName)) {
     if (creep.memory.configName !== configName) {
       continue;
     }
