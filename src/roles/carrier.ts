@@ -63,14 +63,18 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeSto
   }
 
   return candidates
-    .filter((candidate) => getCarrierPickupAmount(candidate) > 0)
-    .sort((a, b) => {
-      const aDistance = Math.max(1, creep.pos.getRangeTo(a.pos));
-      const bDistance = Math.max(1, creep.pos.getRangeTo(b.pos));
-      const aScore = getCarrierPickupAmount(a) / aDistance;
-      const bScore = getCarrierPickupAmount(b) / bDistance;
-      return bScore - aScore;
-    });
+    .map((candidate) => {
+      const amount = getCarrierPickupAmount(candidate);
+      const distance = Math.max(1, creep.pos.getRangeTo(candidate.pos));
+      return {
+        candidate,
+        amount,
+        score: amount / distance,
+      };
+    })
+    .filter((entry) => entry.amount > 0)
+    .sort((left, right) => right.score - left.score)
+    .map((entry) => entry.candidate);
 }
 
 function isCarrierPickupTarget(
@@ -239,7 +243,7 @@ function hasNewerLiveReplacement(creep: Creep): boolean {
     return false;
   }
 
-  return Object.values(Game.creeps).some(
+  return getTickContextService().getCreepsByConfigName(configName).some(
     (candidate) =>
       candidate.name !== creep.name &&
       candidate.memory.configName === configName &&

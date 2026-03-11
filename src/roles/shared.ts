@@ -29,6 +29,18 @@ interface TravelState {
   stuckTicks: number;
 }
 
+interface MovePathState {
+  key: string;
+  path: string;
+  targetRoom: string;
+  targetX: number;
+  targetY: number;
+  range: 0 | 1 | 3;
+  lastPosKey?: string;
+  stuckTicks: number;
+  expiresAt: number;
+}
+
 interface DynamicRouteCacheEntry {
   nextRoom: string | null;
   expiresAt: number;
@@ -37,6 +49,7 @@ interface DynamicRouteCacheEntry {
 const DYNAMIC_ROUTE_CACHE_TTL = 25;
 const DYNAMIC_ROUTE_CACHE_MAX = 200;
 const dynamicNextRoomCache: Record<string, DynamicRouteCacheEntry> = {};
+const MOVE_PATH_CACHE_TTL = 20;
 
 export type EnergyPickupTarget = Resource | AnyStoreStructure | Tombstone | Ruin;
 
@@ -52,6 +65,74 @@ export function moveToTarget(
 ): ScreepsReturnCode {
   const targetPos = getTargetPos(target);
   const reusePath = options.reusePath ?? 5;
+  const sameRoomTarget = creep.room.name === targetPos.roomName;
+  const movePathKey = `${creep.room.name}:${targetPos.roomName}:${targetPos.x}:${targetPos.y}:r${range}:i${
+    options.ignoreCreeps ? 1 : 0
+  }:s${options.swampCost ?? "d"}:p${options.plainCost ?? "d"}:m${options.maxRooms ?? "d"}`;
+
+  if (sameRoomTarget) {
+    const currentPosKey = getPosKey(creep.pos);
+    const movePathState = creep.memory.movePathState as MovePathState | undefined;
+    const isMatchingState =
+      movePathState &&
+      movePathState.key === movePathKey &&
+      movePathState.targetRoom === targetPos.roomName &&
+      movePathState.targetX === targetPos.x &&
+      movePathState.targetY === targetPos.y &&
+      movePathState.range === range &&
+      movePathState.expiresAt > Game.time;
+
+    if (isMatchingState && movePathState.path) {
+      if (movePathState.lastPosKey === currentPosKey && creep.fatigue === 0) {
+        movePathState.stuckTicks += 1;
+      } else {
+        movePathState.stuckTicks = 0;
+      }
+      movePathState.lastPosKey = currentPosKey;
+
+      if (movePathState.stuckTicks < 2) {
+        const moveByPathCode = creep.moveByPath(movePathState.path);
+        if (moveByPathCode === OK || moveByPathCode === ERR_TIRED) {
+          return moveByPathCode;
+        }
+      }
+
+      delete creep.memory.movePathState;
+    }
+
+    const path = creep.pos.findPathTo(targetPos, {
+      range,
+      swampCost: options.swampCost,
+      plainCost: options.plainCost,
+      ignoreCreeps: options.ignoreCreeps,
+      maxRooms: options.maxRooms,
+    });
+
+    if (path.length > 0) {
+      const serializedPath = Room.serializePath(path);
+      creep.memory.movePathState = {
+        key: movePathKey,
+        path: serializedPath,
+        targetRoom: targetPos.roomName,
+        targetX: targetPos.x,
+        targetY: targetPos.y,
+        range,
+        lastPosKey: currentPosKey,
+        stuckTicks: 0,
+        expiresAt: Game.time + Math.max(MOVE_PATH_CACHE_TTL, reusePath),
+      };
+
+      const moveByPathCode = creep.moveByPath(serializedPath);
+      if (moveByPathCode === OK || moveByPathCode === ERR_TIRED) {
+        return moveByPathCode;
+      }
+
+      delete creep.memory.movePathState;
+    }
+  } else {
+    delete creep.memory.movePathState;
+  }
+
   return creep.moveTo(targetPos, {
     range,
     swampCost: options.swampCost,
@@ -178,27 +259,40 @@ function setDynamicRouteCache(cacheKey: string, nextRoom: string | null): void {
 }
 
 function hasHostileCombatPresence(room: Room): boolean {
-  const hostileCombatCreeps = room.find(FIND_HOSTILE_CREEPS, {
-    filter: (creep) =>
+  const roomContext = getTickContextService().getRoomContext(room);
+  const hostileCombatCreeps = (roomContext?.getHostileCreeps() || []).filter(
+    (creep) =>
       creep.getActiveBodyparts(ATTACK) > 0 ||
       creep.getActiveBodyparts(RANGED_ATTACK) > 0 ||
       creep.getActiveBodyparts(HEAL) > 0,
-  });
+  );
   if (hostileCombatCreeps.length > 0) {
     return true;
   }
 
-  const hostilePowerCreeps = room.find(FIND_HOSTILE_POWER_CREEPS);
+  const hostilePowerCreeps = roomContext?.getHostilePowerCreeps() || [];
   if (hostilePowerCreeps.length > 0) {
     return true;
   }
 
-  const hostileStructures = room.find(FIND_HOSTILE_STRUCTURES, {
-    filter: (structure) =>
+  const hostileStructures = (roomContext?.getHostileStructures() || []).filter(
+    (structure) =>
       structure.structureType !== STRUCTURE_CONTROLLER && structure.structureType !== STRUCTURE_KEEPER_LAIR,
-  });
+  );
 
   return hostileStructures.length > 0;
+}
+
+function updateClosestTarget<T extends { pos: RoomPosition }>(
+  creep: Creep,
+  current: T | null,
+  candidate: T,
+): T {
+  if (!current) {
+    return candidate;
+  }
+
+  return creep.pos.getRangeTo(candidate.pos) < creep.pos.getRangeTo(current.pos) ? candidate : current;
 }
 
 function isVisibleRoomDangerous(roomName: string): boolean {
@@ -548,73 +642,77 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
   const roomContext = getTickContextService().getRoomContext(creep.room);
   const myStructures = roomContext?.getMyStructures() || [];
 
-  const spawnAndExtensionTargets = myStructures.filter((structure) => {
-      if (excludeSet.has(structure.id)) {
-        return false;
+  let bestSpawnOrExtension: AnyStoreStructure | null = null;
+  let bestTower: AnyStoreStructure | null = null;
+  let bestPowerSpawn: AnyStoreStructure | null = null;
+  let bestFactory: AnyStoreStructure | null = null;
+  let bestLab: AnyStoreStructure | null = null;
+
+  for (const structure of myStructures) {
+    if (excludeSet.has(structure.id)) {
+      continue;
+    }
+
+    if (structure.structureType === STRUCTURE_SPAWN || structure.structureType === STRUCTURE_EXTENSION) {
+      const target = structure as StructureSpawn | StructureExtension;
+      if (target.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+        bestSpawnOrExtension = updateClosestTarget(creep, bestSpawnOrExtension, target);
       }
+      continue;
+    }
 
-      if (structure.structureType === STRUCTURE_SPAWN || structure.structureType === STRUCTURE_EXTENSION) {
-        return (structure as StructureSpawn | StructureExtension).store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-      }
-      return false;
-   });
-
-  if (spawnAndExtensionTargets.length > 0) {
-    return creep.pos.findClosestByRange(spawnAndExtensionTargets) as AnyStoreStructure;
-  }
-
-  const towerTargets = myStructures.filter((structure) => {
-      if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_TOWER) {
-        return false;
-      }
-
+    if (structure.structureType === STRUCTURE_TOWER) {
       const tower = structure as StructureTower;
       const used = tower.store.getUsedCapacity(RESOURCE_ENERGY);
       const capacity = tower.store.getCapacity(RESOURCE_ENERGY);
-      return capacity > 0 && tower.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && used <= capacity * 0.6;
-    });
-
-  if (towerTargets.length > 0) {
-    return creep.pos.findClosestByRange(towerTargets) as AnyStoreStructure;
-  }
-
-  const powerSpawnTargets = myStructures.filter((structure) => {
-      if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_POWER_SPAWN) {
-        return false;
+      if (capacity > 0 && tower.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && used <= capacity * 0.6) {
+        bestTower = updateClosestTarget(creep, bestTower, tower);
       }
+      continue;
+    }
 
+    if (structure.structureType === STRUCTURE_POWER_SPAWN) {
       const powerSpawn = structure as StructurePowerSpawn;
-      return powerSpawn.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-    });
-
-  if (powerSpawnTargets.length > 0) {
-    return creep.pos.findClosestByRange(powerSpawnTargets) as AnyStoreStructure;
-  }
-
-  const factoryTargets = myStructures.filter((structure) => {
-      if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_FACTORY) {
-        return false;
+      if (powerSpawn.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+        bestPowerSpawn = updateClosestTarget(creep, bestPowerSpawn, powerSpawn);
       }
+      continue;
+    }
 
+    if (structure.structureType === STRUCTURE_FACTORY) {
       const factory = structure as StructureFactory;
-      return factory.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-    });
+      if (factory.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+        bestFactory = updateClosestTarget(creep, bestFactory, factory);
+      }
+      continue;
+    }
 
-  if (factoryTargets.length > 0) {
-    return creep.pos.findClosestByRange(factoryTargets) as AnyStoreStructure;
+    if (structure.structureType === STRUCTURE_LAB) {
+      const lab = structure as StructureLab;
+      if (lab.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+        bestLab = updateClosestTarget(creep, bestLab, lab);
+      }
+    }
   }
 
-  const labTargets = myStructures.filter((structure) => {
-      if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_LAB) {
-        return false;
-      }
+  if (bestSpawnOrExtension) {
+    return bestSpawnOrExtension;
+  }
 
-      const lab = structure as StructureLab;
-      return lab.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-    });
+  if (bestTower) {
+    return bestTower;
+  }
 
-  if (labTargets.length > 0) {
-    return creep.pos.findClosestByRange(labTargets) as AnyStoreStructure;
+  if (bestPowerSpawn) {
+    return bestPowerSpawn;
+  }
+
+  if (bestFactory) {
+    return bestFactory;
+  }
+
+  if (bestLab) {
+    return bestLab;
   }
 
   if (includeTerminal && creep.room.terminal && !excludeSet.has(creep.room.terminal.id)) {
@@ -656,10 +754,19 @@ function getPreferredEnergyPickupCandidates(creep: Creep): EnergyPickupTarget[] 
   }
 
   const threshold = creep.store.getCapacity(RESOURCE_ENERGY) ?? 0;
-  const richCandidates = candidates.filter((target) => getTargetEnergyAmount(target) >= threshold);
-  const preferred = richCandidates.length > 0 ? richCandidates : candidates;
+  const scored = candidates
+    .map((target) => ({
+      target,
+      amount: getTargetEnergyAmount(target),
+      distance: creep.pos.getRangeTo(target.pos),
+    }))
+    .filter((entry) => entry.amount > 0);
 
-  return preferred.sort((a, b) => creep.pos.getRangeTo(a.pos) - creep.pos.getRangeTo(b.pos));
+  const hasRichCandidate = scored.some((entry) => entry.amount >= threshold);
+  return scored
+    .filter((entry) => !hasRichCandidate || entry.amount >= threshold)
+    .sort((left, right) => left.distance - right.distance)
+    .map((entry) => entry.target);
 }
 
 export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget | null {
