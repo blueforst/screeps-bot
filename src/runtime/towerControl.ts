@@ -1,3 +1,5 @@
+import { getTickContextService } from "@/runtime/runtimeServices";
+
 const TOWER_MIN_REPAIR_ENERGY = 400;
 const TOWER_MIN_EMERGENCY_REPAIR_ENERGY = 200;
 const RAMPART_EMERGENCY_TRIGGER_HITS = 3000;
@@ -278,13 +280,13 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[])
 }
 
 export function runTowerControl(): void {
-  const rooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  const tickContext = getTickContextService();
+  const rooms = tickContext.getMyRooms();
   for (const room of rooms) {
+    const roomContext = tickContext.getRoomContext(room);
     const emergencyRamparts = collectEmergencyRamparts(room);
-    const hostiles = room.find(FIND_HOSTILE_CREEPS);
-    const towers = room.find(FIND_MY_STRUCTURES, {
-      filter: (structure) => structure.structureType === STRUCTURE_TOWER,
-    }) as StructureTower[];
+    const hostiles = roomContext?.getHostileCreeps() || [];
+    const towers = roomContext?.getTowers() || [];
 
     if (runTowerCombat(room, towers, hostiles)) {
       continue;

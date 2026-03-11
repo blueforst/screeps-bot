@@ -1,4 +1,5 @@
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
+import { getTickContextService } from "@/runtime/runtimeServices";
 
 const CLASSIFY_INTERVAL = 11;
 const SOURCE_SENDER_RANGE = 2;
@@ -158,7 +159,7 @@ export function isStorageReceiverLink(link: StructureLink): boolean {
 }
 
 export function runLinkControl(): void {
-  const myRooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  const myRooms = getTickContextService().getMyRooms();
 
   for (const room of myRooms) {
     cleanupLinkedSourceContainers(room);

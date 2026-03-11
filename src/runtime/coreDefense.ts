@@ -1,3 +1,5 @@
+import { getTickContextService } from "@/runtime/runtimeServices";
+
 const CORE_RAMPART_ATTACK_RANGE = 3;
 const NUKE_IGNORE_TIME_TO_LAND = 1;
 const NUKE_DAMAGE_RANGE = 2;
@@ -136,7 +138,7 @@ function evaluateRoomCoreRamparts(room: Room): void {
 }
 
 export function runCoreDefense(): void {
-  const rooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  const rooms = getTickContextService().getMyRooms();
   for (const room of rooms) {
     evaluateRoomCoreRamparts(room);
   }
