@@ -1,5 +1,6 @@
 import type { RoleFactory } from "@/types/system";
 import { moveToTarget } from "@/roles/shared";
+import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { getSourceAdjacentLink } from "@/runtime/sourceLink";
 
 function getSource(sourceId?: string): Source | null {
@@ -17,7 +18,7 @@ export const minerRole: RoleFactory = (sourceId?: string) => ({
       return false;
     }
 
-    const harvestCode = creep.harvest(source);
+    const harvestCode = measureCreepIntent(() => creep.harvest(source));
     if (harvestCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, source);
     }
@@ -50,7 +51,7 @@ export const minerRole: RoleFactory = (sourceId?: string) => ({
       return false;
     }
 
-    const transferCode = creep.transfer(link, RESOURCE_ENERGY);
+    const transferCode = measureCreepIntent(() => creep.transfer(link, RESOURCE_ENERGY));
     if (transferCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, link);
       return false;

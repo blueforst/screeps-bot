@@ -1,5 +1,6 @@
 import type { RoleFactory } from "@/types/system";
 import { moveToTarget } from "@/roles/shared";
+import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 
 export const harvesterRole: RoleFactory = (sourceId?: string) => ({
   source: (creep): boolean => {
@@ -14,12 +15,12 @@ export const harvesterRole: RoleFactory = (sourceId?: string) => ({
     if (containers.length > 0) {
       const container = containers[0] as StructureContainer;
       if (!creep.pos.isEqualTo(container.pos)) {
-        creep.moveTo(container.pos, { range: 0, reusePath: 5, visualizePathStyle: { stroke: "#ffaa00" } });
+        moveToTarget(creep, container.pos, 0, { reusePath: 5 });
         return false;
       }
     }
 
-    const harvestCode = creep.harvest(source);
+    const harvestCode = measureCreepIntent(() => creep.harvest(source));
     if (harvestCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, source);
     }
