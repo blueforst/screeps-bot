@@ -110,6 +110,48 @@ declare global {
     sampleInterval: number;
     historyLimit: number;
   };
+  var cpuMonitor: () => string;
+  var cpuMonitorRaw: () => {
+    ok: true;
+    enabled: boolean;
+    sampleInterval: number;
+    historyLimit: number;
+    historySize: number;
+    latest:
+      | {
+          tick: number;
+          shard: string;
+          totalUsed: number;
+          bucket: number;
+          limit: number;
+          tickLimit: number;
+          phases: Record<string, number>;
+          untracked: number;
+        }
+      | null;
+    recentHistory: Array<{
+      tick: number;
+      shard: string;
+      totalUsed: number;
+      bucket: number;
+      limit: number;
+      tickLimit: number;
+      phases: Record<string, number>;
+      untracked: number;
+    }>;
+    summary:
+      | {
+          ticks: number;
+          avgTotalUsed: number;
+          maxTotalUsed: number;
+          minBucket: number;
+          maxBucket: number;
+          avgBucket: number;
+          avgUntracked: number;
+          avgPhases: Record<string, number>;
+        }
+      | null;
+  };
   var statusSynthesisControl: () => string;
   var statusSynthesisControlRaw: () => {
     ok: true;
@@ -748,6 +790,48 @@ declare namespace NodeJS {
       previousEnabled: boolean;
       sampleInterval: number;
       historyLimit: number;
+    };
+    cpuMonitor: () => string;
+    cpuMonitorRaw: () => {
+      ok: true;
+      enabled: boolean;
+      sampleInterval: number;
+      historyLimit: number;
+      historySize: number;
+      latest:
+        | {
+            tick: number;
+            shard: string;
+            totalUsed: number;
+            bucket: number;
+            limit: number;
+            tickLimit: number;
+            phases: Record<string, number>;
+            untracked: number;
+          }
+        | null;
+      recentHistory: Array<{
+        tick: number;
+        shard: string;
+        totalUsed: number;
+        bucket: number;
+        limit: number;
+        tickLimit: number;
+        phases: Record<string, number>;
+        untracked: number;
+      }>;
+      summary:
+        | {
+            ticks: number;
+            avgTotalUsed: number;
+            maxTotalUsed: number;
+            minBucket: number;
+            maxBucket: number;
+            avgBucket: number;
+            avgUntracked: number;
+            avgPhases: Record<string, number>;
+          }
+        | null;
     };
     statusSynthesisControl: () => string;
     statusSynthesisControlRaw: () => {

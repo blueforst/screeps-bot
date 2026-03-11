@@ -11,6 +11,7 @@ import {
   createResourceTransferTask,
   listResourceTransferTasks,
 } from "@/runtime/resourceControl";
+import { getCpuPhaseHistory } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
@@ -52,6 +53,39 @@ interface CpuProfilerControlResult {
   previousEnabled: boolean;
   sampleInterval: number;
   historyLimit: number;
+}
+
+interface CpuMonitorSnapshot {
+  tick: number;
+  shard: string;
+  totalUsed: number;
+  bucket: number;
+  limit: number;
+  tickLimit: number;
+  phases: Record<string, number>;
+  untracked: number;
+}
+
+interface CpuMonitorSummary {
+  ticks: number;
+  avgTotalUsed: number;
+  maxTotalUsed: number;
+  minBucket: number;
+  maxBucket: number;
+  avgBucket: number;
+  avgUntracked: number;
+  avgPhases: Record<string, number>;
+}
+
+interface CpuMonitorResult {
+  ok: true;
+  enabled: boolean;
+  sampleInterval: number;
+  historyLimit: number;
+  historySize: number;
+  latest: CpuMonitorSnapshot | null;
+  recentHistory: CpuMonitorSnapshot[];
+  summary: CpuMonitorSummary | null;
 }
 
 interface SynthesisControlStatusResult {
@@ -613,6 +647,61 @@ function formatCpuProfilerControlResult(result: CpuProfilerControlResult | strin
   return JSON.stringify(result);
 }
 
+function cloneCpuMonitorSnapshot(snapshot: CpuMonitorSnapshot): CpuMonitorSnapshot {
+  return {
+    tick: snapshot.tick,
+    shard: snapshot.shard,
+    totalUsed: snapshot.totalUsed,
+    bucket: snapshot.bucket,
+    limit: snapshot.limit,
+    tickLimit: snapshot.tickLimit,
+    phases: { ...snapshot.phases },
+    untracked: snapshot.untracked,
+  };
+}
+
+function buildCpuMonitorSummary(history: CpuMonitorSnapshot[]): CpuMonitorSummary | null {
+  if (history.length === 0) {
+    return null;
+  }
+
+  const avgPhases: Record<string, number> = {};
+  let totalUsedSum = 0;
+  let bucketSum = 0;
+  let untrackedSum = 0;
+  let maxTotalUsed = Number.NEGATIVE_INFINITY;
+  let minBucket = Number.POSITIVE_INFINITY;
+  let maxBucket = Number.NEGATIVE_INFINITY;
+
+  for (const entry of history) {
+    totalUsedSum += entry.totalUsed;
+    bucketSum += entry.bucket;
+    untrackedSum += entry.untracked;
+    maxTotalUsed = Math.max(maxTotalUsed, entry.totalUsed);
+    minBucket = Math.min(minBucket, entry.bucket);
+    maxBucket = Math.max(maxBucket, entry.bucket);
+
+    for (const [phase, used] of Object.entries(entry.phases)) {
+      avgPhases[phase] = (avgPhases[phase] || 0) + used;
+    }
+  }
+
+  for (const phase of Object.keys(avgPhases)) {
+    avgPhases[phase] = avgPhases[phase] / history.length;
+  }
+
+  return {
+    ticks: history.length,
+    avgTotalUsed: totalUsedSum / history.length,
+    maxTotalUsed,
+    minBucket,
+    maxBucket,
+    avgBucket: bucketSum / history.length,
+    avgUntracked: untrackedSum / history.length,
+    avgPhases,
+  };
+}
+
 export function startCpuProfilerRaw(sampleInterval?: number, historyLimit?: number): CpuProfilerControlResult | string {
   return startCpuProfiler(sampleInterval, historyLimit);
 }
@@ -642,6 +731,28 @@ export function statusCpuProfilerRaw(): CpuProfilerControlResult {
 
 export function statusCpuProfilerCommand(): string {
   return formatCpuProfilerControlResult(statusCpuProfilerRaw());
+}
+
+export function cpuMonitorRaw(): CpuMonitorResult {
+  const cfg = ensureCpuProfilerConfig();
+  const latest = Memory.analytics?.moduleCpu?.latest || null;
+  const history = getCpuPhaseHistory().map((entry) => cloneCpuMonitorSnapshot(entry));
+  const recentHistory = history.slice(-10);
+
+  return {
+    ok: true,
+    enabled: cfg.enabled === true,
+    sampleInterval: sanitizeCpuProfilerSampleInterval(cfg.sampleInterval),
+    historyLimit: sanitizeCpuProfilerHistoryLimit(cfg.historyLimit),
+    historySize: history.length,
+    latest: latest ? cloneCpuMonitorSnapshot(latest) : null,
+    recentHistory,
+    summary: buildCpuMonitorSummary(recentHistory),
+  };
+}
+
+export function cpuMonitorCommand(): string {
+  return JSON.stringify(cpuMonitorRaw());
 }
 
 export function statusSynthesisControlRaw(): SynthesisControlStatusResult {
@@ -718,6 +829,8 @@ export function registerConsoleCommands(): void {
   global.stopCpuProfilerRaw = stopCpuProfilerRaw;
   global.statusCpuProfiler = statusCpuProfilerCommand;
   global.statusCpuProfilerRaw = statusCpuProfilerRaw;
+  global.cpuMonitor = cpuMonitorCommand;
+  global.cpuMonitorRaw = cpuMonitorRaw;
   global.statusSynthesisControl = statusSynthesisControlCommand;
   global.statusSynthesisControlRaw = statusSynthesisControlRaw;
   global.addResourceTransferTask = addResourceTransferTaskCommand;
