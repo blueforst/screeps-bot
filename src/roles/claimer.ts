@@ -1,5 +1,6 @@
 import type { RoleFactory } from "@/types/system";
 import { getCurrentColonizationRoute, moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 
 export const claimerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: string) => ({
   source: (creep): boolean => {
@@ -25,7 +26,7 @@ export const claimerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?
       return false;
     }
 
-    const code = creep.claimController(controller);
+    const code = measureCreepIntent(() => creep.claimController(controller));
     if (code === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, controller);
     }

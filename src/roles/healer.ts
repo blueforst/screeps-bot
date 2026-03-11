@@ -1,4 +1,5 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
 function getEscortTarget(creep: Creep, targetRoom?: string): Creep | null {
@@ -37,12 +38,12 @@ export const healerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?:
       return false;
     }
 
-    const escortTarget = getEscortTarget(creep, targetRoom);
+    const escortTarget = measureCreepDecision(() => getEscortTarget(creep, targetRoom));
     if (escortTarget) {
       if (escortTarget.hits < escortTarget.hitsMax) {
-        const healCode = creep.heal(escortTarget);
+        const healCode = measureCreepIntent(() => creep.heal(escortTarget));
         if (healCode === ERR_NOT_IN_RANGE) {
-          creep.rangedHeal(escortTarget);
+          measureCreepIntent(() => creep.rangedHeal(escortTarget));
           moveToTarget(creep, escortTarget, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
         }
       } else if (!creep.pos.isNearTo(escortTarget)) {
@@ -51,7 +52,7 @@ export const healerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?:
     }
 
     if (creep.hits < creep.hitsMax) {
-      creep.heal(creep);
+      measureCreepIntent(() => creep.heal(creep));
     }
 
     return false;

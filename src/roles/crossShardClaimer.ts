@@ -1,5 +1,6 @@
 import { moveToTarget } from "@/roles/shared";
 import { moveToCrossShardTarget } from "@/roles/crossShardTravel";
+import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { recordCrossShardClaim } from "@/runtime/crossShardSignals";
 import type { RoleFactory } from "@/types/system";
 
@@ -37,14 +38,14 @@ export const crossShardClaimerRole: RoleFactory = (
       return false;
     }
 
-    const claimCode = creep.claimController(controller);
+    const claimCode = measureCreepIntent(() => creep.claimController(controller));
     if (claimCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
       return false;
     }
 
     if (claimCode === ERR_INVALID_TARGET && controller.reservation && !controller.my) {
-      const attackCode = creep.attackController(controller);
+      const attackCode = measureCreepIntent(() => creep.attackController(controller));
       if (attackCode === ERR_NOT_IN_RANGE) {
         moveToTarget(creep, controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
       }

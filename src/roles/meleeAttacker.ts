@@ -1,4 +1,5 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
 function getHostileCreeps(room: Room): Creep[] {
@@ -64,7 +65,7 @@ export const meleeAttackerRole: RoleFactory = (targetRoom?: string, encodedRoute
       return false;
     }
 
-    const target = findTarget(creep);
+    const target = measureCreepDecision(() => findTarget(creep));
     if (!target) {
       if (targetRoom) {
         moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 3, {
@@ -77,7 +78,7 @@ export const meleeAttackerRole: RoleFactory = (targetRoom?: string, encodedRoute
       return false;
     }
 
-    const code = creep.attack(target);
+    const code = measureCreepIntent(() => creep.attack(target));
     if (code === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, target, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
       return false;
@@ -86,7 +87,7 @@ export const meleeAttackerRole: RoleFactory = (targetRoom?: string, encodedRoute
     if (code === ERR_INVALID_TARGET && (target as Creep | Structure).id) {
       const fallback = creep.pos.findClosestByRange(getHostileStructures(creep.room));
       if (fallback) {
-        const fallbackCode = creep.attack(fallback);
+        const fallbackCode = measureCreepIntent(() => creep.attack(fallback));
         if (fallbackCode === ERR_NOT_IN_RANGE) {
           moveToTarget(creep, fallback, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
         }
