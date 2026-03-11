@@ -44,7 +44,25 @@ function clampAssignees(task: WorkerTask): void {
   if (!Array.isArray(task.assignedCreeps)) {
     task.assignedCreeps = [];
   }
-  task.assignedCreeps = task.assignedCreeps.filter((name) => !!Game.creeps[name]);
+  task.assignedCreeps = task.assignedCreeps.filter((name) => {
+    const creep = Game.creeps[name];
+    return !!creep && creep.memory.taskId === task.id;
+  });
+}
+
+function findTaskStore(taskId: string): Record<string, WorkerTask> | undefined {
+  if (!Memory.rooms) {
+    return undefined;
+  }
+
+  for (const roomMemory of Object.values(Memory.rooms)) {
+    const tasks = roomMemory?.tasks as Record<string, WorkerTask> | undefined;
+    if (tasks?.[taskId]) {
+      return tasks;
+    }
+  }
+
+  return undefined;
 }
 
 function upsertTask(roomName: string, task: WorkerTask): void {
@@ -221,7 +239,7 @@ function getTaskTarget(task: WorkerTask): RoomObject | null {
 }
 
 function releaseTaskInternal(creep: Creep, taskId: string): void {
-  const roomTasks = ensureRoomMemory(creep.room.name).tasks as Record<string, WorkerTask> | undefined;
+  const roomTasks = findTaskStore(taskId);
   const task = roomTasks?.[taskId];
   if (task?.assignedCreeps) {
     task.assignedCreeps = task.assignedCreeps.filter((name) => name !== creep.name);

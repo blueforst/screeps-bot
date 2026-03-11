@@ -1,0 +1,157 @@
+import { assignWorkerTask, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import type { WorkerTask } from "@/types/system";
+
+function createPos(roomName: string): RoomPosition {
+  return {
+    x: 25,
+    y: 25,
+    roomName,
+    getRangeTo: () => 1,
+  } as unknown as RoomPosition;
+}
+
+function createCreep(name: string, roomName: string, taskId?: string): Creep {
+  return {
+    name,
+    room: { name: roomName } as Room,
+    memory: {
+      taskId,
+    } as CreepMemory,
+    pos: {
+      getRangeTo: () => 1,
+    } as unknown as RoomPosition,
+  } as Creep;
+}
+
+function createTask(overrides: Partial<WorkerTask> & Pick<WorkerTask, "id" | "type" | "targetId" | "roomName">): WorkerTask {
+  return {
+    id: overrides.id,
+    type: overrides.type,
+    targetId: overrides.targetId,
+    roomName: overrides.roomName,
+    priority: overrides.priority ?? 300,
+    assignedCreeps: overrides.assignedCreeps ?? [],
+    maxAssignees: overrides.maxAssignees ?? 1,
+    status: overrides.status ?? "active",
+    updatedAt: overrides.updatedAt ?? Game.time,
+    requiredWork: overrides.requiredWork,
+    repairTargetHits: overrides.repairTargetHits,
+    repairMode: overrides.repairMode,
+  };
+}
+
+describe("workerTaskPool", () => {
+  let objects: Record<string, { pos: RoomPosition }>;
+
+  beforeEach(() => {
+    objects = {};
+    const getObjectById = jest.fn((id: string) => objects[id] || null) as unknown as Game["getObjectById"];
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = getObjectById;
+  });
+
+  it("releases the previous task from its actual task store even after the creep changes rooms", () => {
+    const repairTask = createTask({
+      id: "repair:r1",
+      type: "repair",
+      targetId: "r1",
+      roomName: "W1N1",
+      assignedCreeps: ["Worker1"],
+      repairMode: "normal",
+      priority: 320,
+    });
+    Memory.rooms.W1N1 = { tasks: { [repairTask.id]: repairTask } } as RoomMemory;
+    Memory.rooms.W1N2 = { tasks: {} } as RoomMemory;
+
+    const creep = createCreep("Worker1", "W1N2", repairTask.id);
+    Game.creeps[creep.name] = creep;
+
+    releaseWorkerTask(creep);
+
+    expect(repairTask.assignedCreeps).toEqual([]);
+    expect(creep.memory.taskId).toBeUndefined();
+    expect(creep.memory.taskType).toBeUndefined();
+    expect(creep.memory.taskTargetId).toBeUndefined();
+  });
+
+  it("drops stale repair assignees whose current task is upgrade", () => {
+    const repairTask = createTask({
+      id: "repair:r1",
+      type: "repair",
+      targetId: "r1",
+      roomName: "W1N1",
+      assignedCreeps: ["Worker1"],
+      repairMode: "normal",
+      priority: 320,
+    });
+    const upgradeTask = createTask({
+      id: "upgrade:u1",
+      type: "upgrade",
+      targetId: "u1",
+      roomName: "W1N1",
+      assignedCreeps: [],
+      maxAssignees: 2,
+      priority: 300,
+    });
+    Memory.rooms.W1N1 = {
+      tasks: {
+        [repairTask.id]: repairTask,
+        [upgradeTask.id]: upgradeTask,
+      },
+    } as RoomMemory;
+
+    const staleRepairAssignee = createCreep("Worker1", "W1N1", upgradeTask.id);
+    const availableWorker = createCreep("Worker2", "W1N1");
+    Game.creeps[staleRepairAssignee.name] = staleRepairAssignee;
+    Game.creeps[availableWorker.name] = availableWorker;
+
+    objects.r1 = { pos: createPos("W1N1") };
+    objects.u1 = { pos: createPos("W1N1") };
+
+    const assignedTask = assignWorkerTask(availableWorker);
+
+    expect(assignedTask?.id).toBe(repairTask.id);
+    expect(repairTask.assignedCreeps).toEqual(["Worker2"]);
+    expect(upgradeTask.assignedCreeps).toEqual([]);
+  });
+
+  it("keeps valid repair assignees so another worker falls back to upgrade", () => {
+    const repairTask = createTask({
+      id: "repair:r1",
+      type: "repair",
+      targetId: "r1",
+      roomName: "W1N1",
+      assignedCreeps: ["Worker1"],
+      repairMode: "normal",
+      priority: 320,
+    });
+    const upgradeTask = createTask({
+      id: "upgrade:u1",
+      type: "upgrade",
+      targetId: "u1",
+      roomName: "W1N1",
+      assignedCreeps: [],
+      maxAssignees: 2,
+      priority: 300,
+    });
+    Memory.rooms.W1N1 = {
+      tasks: {
+        [repairTask.id]: repairTask,
+        [upgradeTask.id]: upgradeTask,
+      },
+    } as RoomMemory;
+
+    const activeRepairAssignee = createCreep("Worker1", "W1N1", repairTask.id);
+    const availableWorker = createCreep("Worker2", "W1N1");
+    Game.creeps[activeRepairAssignee.name] = activeRepairAssignee;
+    Game.creeps[availableWorker.name] = availableWorker;
+
+    objects.r1 = { pos: createPos("W1N1") };
+    objects.u1 = { pos: createPos("W1N1") };
+
+    const assignedTask = assignWorkerTask(availableWorker);
+
+    expect(assignedTask?.id).toBe(upgradeTask.id);
+    expect(repairTask.assignedCreeps).toEqual(["Worker1"]);
+    expect(upgradeTask.assignedCreeps).toEqual(["Worker2"]);
+  });
+});
