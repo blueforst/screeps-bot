@@ -1,3 +1,5 @@
+import { getTickContextService } from "@/runtime/runtimeServices";
+
 const SAMPLE_INTERVAL = 5;
 const MAX_SAMPLES = 300;
 
@@ -90,33 +92,34 @@ function ensurePersistentStore(): Record<string, { updatedAt: number; signal?: P
 }
 
 function getDroppedEnergy(room: Room): number {
-  const dropped = room.find(FIND_DROPPED_RESOURCES, {
-    filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
-  });
+  const roomContext = getTickContextService().getRoomContext(room);
+  const dropped = roomContext?.getDroppedEnergyResources() || [];
 
   return dropped.reduce((sum, resource) => sum + resource.amount, 0);
 }
 
 function getContainerEnergy(room: Room): number {
-  const containers = room.find(FIND_STRUCTURES, {
-    filter: (structure) =>
+  const roomContext = getTickContextService().getRoomContext(room);
+  const containers = (roomContext?.getStructures() || []).filter(
+    (structure): structure is StructureContainer =>
       structure.structureType === STRUCTURE_CONTAINER &&
       (structure as StructureContainer).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  }) as StructureContainer[];
+  );
 
   return containers.reduce((sum, container) => sum + container.store.getUsedCapacity(RESOURCE_ENERGY), 0);
 }
 
 function getStructureEnergy(room: Room, structureType: StructureConstant): number {
-  const structures = room.find(FIND_STRUCTURES, {
-    filter: (structure) => structure.structureType === structureType,
-  }) as AnyStoreStructure[];
+  const roomContext = getTickContextService().getRoomContext(room);
+  const structures = (roomContext?.getStructures() || []).filter(
+    (structure): structure is AnyStoreStructure => structure.structureType === structureType,
+  );
 
   return structures.reduce((sum, structure) => sum + structure.store.getUsedCapacity(RESOURCE_ENERGY), 0);
 }
 
 function getRoleCount(room: Room, role: "worker" | "carrier" | "harvester"): number {
-  return Object.values(Game.creeps).filter((creep) => creep.room.name === room.name && creep.memory.role === role).length;
+  return getTickContextService().getCreepsByRoom(room.name).filter((creep) => creep.memory.role === role).length;
 }
 
 function createSample(room: Room): ProductionSample {
@@ -137,7 +140,7 @@ function createSample(room: Room): ProductionSample {
     workerCount: getRoleCount(room, "worker"),
     carrierCount: getRoleCount(room, "carrier"),
     harvesterCount: getRoleCount(room, "harvester"),
-    spawnSpawning: Object.values(Game.spawns).filter((spawn) => spawn.room.name === room.name && !!spawn.spawning).length,
+    spawnSpawning: getTickContextService().getSpawnsByRoom(room.name).filter((spawn) => !!spawn.spawning).length,
     controllerLevel: controller ? controller.level : 0,
     controllerProgress: controller ? controller.progress : 0,
   };
@@ -261,7 +264,7 @@ function summarizeWindow(samples: ProductionSample[], windowSize = 30): Producti
 }
 
 function cleanupRoomSamples(): void {
-  const rooms = new Set(Object.values(Game.rooms).filter((room) => room.controller?.my).map((room) => room.name));
+  const rooms = new Set(getTickContextService().getMyRooms().map((room) => room.name));
   const sampleStore = ensureSampleStore();
   const persistentStore = ensurePersistentStore();
 
@@ -293,7 +296,7 @@ export function runProductionMonitor(): void {
     return;
   }
 
-  const rooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  const rooms = getTickContextService().getMyRooms();
   for (const room of rooms) {
     pushSample(room);
   }
