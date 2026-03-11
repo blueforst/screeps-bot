@@ -1,4 +1,5 @@
 import { createRuntimeMemoryService, type RuntimeMemoryService } from "@/runtime/memoryService";
+import { createTickContextService, type TickContextService } from "@/runtime/tickContext";
 import type { CreepApi, CreepConfig, RoleName } from "@/types/system";
 
 export interface CreepConfigService extends CreepApi {
@@ -8,6 +9,7 @@ export interface CreepConfigService extends CreepApi {
 export interface RuntimeServices {
   memory: RuntimeMemoryService;
   creepConfigs: CreepConfigService;
+  tickContext: TickContextService;
 }
 
 type RuntimeGlobalWithServices = typeof global & {
@@ -61,9 +63,11 @@ function createCreepConfigService(memory: RuntimeMemoryService): CreepConfigServ
 function createRuntimeServices(): RuntimeServices {
   const memory = createRuntimeMemoryService();
   const creepConfigs = createCreepConfigService(memory);
+  const tickContext = createTickContextService();
   return {
     memory,
     creepConfigs,
+    tickContext,
   };
 }
 
@@ -84,4 +88,8 @@ export function getCreepConfigService(): CreepConfigService {
 
 export function getMemoryService(): RuntimeMemoryService {
   return getRuntimeServices().memory;
+}
+
+export function getTickContextService(): TickContextService {
+  return getRuntimeServices().tickContext;
 }
