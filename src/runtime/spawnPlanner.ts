@@ -1,5 +1,5 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
-import { spawnMaxCarrierRaw } from "@/runtime/consoleCommands";
+import { spawnMaxCarrierRaw } from "@/runtime/emergencySpawning";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
