@@ -153,6 +153,7 @@ export function refreshWorkerTasks(): void {
 
   const rooms = getTickContextService().getMyRooms();
   for (const room of rooms) {
+    const roomContext = getTickContextService().getRoomContext(room);
     const tasks = ensureRoomTaskStore(room.name);
     const activeAssignedNormalRepairTask = Object.values(tasks).find(
       (task) =>
@@ -165,16 +166,12 @@ export function refreshWorkerTasks(): void {
       task.updatedAt = -1;
     }
 
-    const sites = room.find(FIND_CONSTRUCTION_SITES);
+    const sites = roomContext?.getConstructionSites() || [];
     for (const site of sites) {
       upsertTask(room.name, createBuildTask(site));
     }
 
-    const weakRamparts = room.find(FIND_MY_STRUCTURES, {
-      filter: (structure) =>
-        structure.structureType === STRUCTURE_RAMPART &&
-        (structure as StructureRampart).hits < (structure as StructureRampart).hitsMax,
-    }) as StructureRampart[];
+    const weakRamparts = (roomContext?.getRamparts() || []).filter((rampart) => rampart.hits < rampart.hitsMax);
     const normalRepairCandidates: StructureRampart[] = [];
 
     for (const rampart of weakRamparts) {

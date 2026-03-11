@@ -19,10 +19,9 @@ function ensureLinkRuntimeStore(): Record<string, LinkRoomRuntime> {
 }
 
 function classifyRoomLinks(room: Room): LinkRoomRuntime {
-  const links = room.find(FIND_MY_STRUCTURES, {
-    filter: (structure) => structure.structureType === STRUCTURE_LINK,
-  }) as StructureLink[];
-  const sources = room.find(FIND_SOURCES);
+  const roomContext = getTickContextService().getRoomContext(room);
+  const links = roomContext?.getLinks() || [];
+  const sources = roomContext?.getSources() || [];
   const storagePos = room.storage?.pos;
   const controllerPos = room.controller?.pos;
 

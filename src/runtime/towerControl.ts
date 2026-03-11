@@ -157,10 +157,9 @@ function ensureEmergencyRampartStore(roomName: string): Record<string, number> {
 
 function collectEmergencyRamparts(room: Room): StructureRampart[] {
   const store = ensureEmergencyRampartStore(room.name);
+  const roomContext = getTickContextService().getRoomContext(room);
 
-  const ramparts = room.find(FIND_MY_STRUCTURES, {
-    filter: (structure) => structure.structureType === STRUCTURE_RAMPART,
-  }) as StructureRampart[];
+  const ramparts = roomContext?.getRamparts() || [];
   const rampartById = new Map(ramparts.map((rampart) => [rampart.id, rampart]));
 
   for (const [rampartId] of Object.entries(store)) {
@@ -181,11 +180,13 @@ function collectEmergencyRamparts(room: Room): StructureRampart[] {
     .filter((rampart): rampart is StructureRampart => !!rampart && rampart.hits < RAMPART_EMERGENCY_TARGET_HITS);
 }
 
-function runTowerPeaceFlow(tower: StructureTower, emergencyRamparts: StructureRampart[]): void {
-
-  const wounded = tower.pos.findClosestByRange(FIND_MY_CREEPS, {
-    filter: (creep) => creep.hits < creep.hitsMax,
-  });
+function runTowerPeaceFlow(
+  tower: StructureTower,
+  emergencyRamparts: StructureRampart[],
+  woundedCreeps: Creep[],
+  damagedStructures: Structure<StructureConstant>[],
+): void {
+  const wounded = woundedCreeps.length > 0 ? tower.pos.findClosestByRange(woundedCreeps) : null;
   if (wounded) {
     tower.heal(wounded);
     return;
@@ -203,15 +204,7 @@ function runTowerPeaceFlow(tower: StructureTower, emergencyRamparts: StructureRa
     return;
   }
 
-  const damaged = tower.pos.findClosestByRange(FIND_STRUCTURES, {
-    filter: (structure) => {
-      if (structure.hits >= structure.hitsMax) {
-        return false;
-      }
-
-      return structure.structureType !== STRUCTURE_WALL && structure.structureType !== STRUCTURE_RAMPART;
-    },
-  });
+  const damaged = damagedStructures.length > 0 ? tower.pos.findClosestByRange(damagedStructures) : null;
 
   if (damaged) {
     tower.repair(damaged);
@@ -287,6 +280,13 @@ export function runTowerControl(): void {
     const emergencyRamparts = collectEmergencyRamparts(room);
     const hostiles = roomContext?.getHostileCreeps() || [];
     const towers = roomContext?.getTowers() || [];
+    const woundedCreeps = (roomContext?.getMyCreeps() || []).filter((creep) => creep.hits < creep.hitsMax);
+    const damagedStructures = (roomContext?.getStructures() || []).filter(
+      (structure) =>
+        structure.hits < structure.hitsMax &&
+        structure.structureType !== STRUCTURE_WALL &&
+        structure.structureType !== STRUCTURE_RAMPART,
+    );
 
     if (runTowerCombat(room, towers, hostiles)) {
       continue;
@@ -299,7 +299,7 @@ export function runTowerControl(): void {
     delete state.spreadUntil;
 
     for (const tower of towers) {
-      runTowerPeaceFlow(tower, emergencyRamparts);
+      runTowerPeaceFlow(tower, emergencyRamparts, woundedCreeps, damagedStructures);
     }
   }
 }
