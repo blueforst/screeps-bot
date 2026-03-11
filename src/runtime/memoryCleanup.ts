@@ -1,5 +1,5 @@
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
-import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
 
 const CLEANUP_INTERVAL = 17;
@@ -29,11 +29,7 @@ const RESOURCE_CONTROL_TASK_TTL = 5000;
 const CARRIER_TASK_BOARD_TTL = 500;
 
 function getOwnedRoomNameSet(): Set<string> {
-  return new Set(
-    Object.values(Game.rooms)
-      .filter((room) => room.controller?.my)
-      .map((room) => room.name),
-  );
+  return new Set(getTickContextService().getMyRooms().map((room) => room.name));
 }
 
 function getColonizationTargetRoomNameSet(): Set<string> {
@@ -65,17 +61,20 @@ function cleanupDeadCreepMemory(): number {
 function cleanupSpawnQueueMemory(): number {
   let trimmed = 0;
   const creepConfigs = getCreepConfigService();
+  const tickContext = getTickContextService();
 
-  for (const spawn of Object.values(Game.spawns)) {
-    const queue = spawn.memory.spawnList;
-    if (!queue || queue.length === 0) {
-      continue;
-    }
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      const queue = spawn.memory.spawnList;
+      if (!queue || queue.length === 0) {
+        continue;
+      }
 
-    const validQueue = queue.filter((configName) => !!creepConfigs.get(configName));
-    if (validQueue.length !== queue.length) {
-      spawn.memory.spawnList = validQueue;
-      trimmed += queue.length - validQueue.length;
+      const validQueue = queue.filter((configName) => !!creepConfigs.get(configName));
+      if (validQueue.length !== queue.length) {
+        spawn.memory.spawnList = validQueue;
+        trimmed += queue.length - validQueue.length;
+      }
     }
   }
 
@@ -98,7 +97,7 @@ function cleanupLegacyConfigMemory(): number {
 function cleanupManagedCreepConfigs(): number {
   const configStore = getMemoryService().getCreepConfigStore();
   const expected = new Set<string>();
-  const myRooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  const myRooms = getTickContextService().getMyRooms();
   for (const room of myRooms) {
     for (const name of getExpectedManagedConfigNames(room)) {
       expected.add(name);
