@@ -42,7 +42,7 @@ function twoToOneWorkMoveBody(room: Room): BodyPartConstant[] {
   return clampByCapacity(parts, room);
 }
 
-const FIXED_MINER_BODY: BodyPartConstant[] = [WORK, WORK, WORK, WORK, WORK, MOVE, MOVE];
+const FIXED_MINER_BODY: BodyPartConstant[] = [WORK, WORK, WORK, WORK, WORK, MOVE, MOVE, MOVE];
 const LINK_MINER_BODY: BodyPartConstant[] = [
   WORK,
   WORK,
