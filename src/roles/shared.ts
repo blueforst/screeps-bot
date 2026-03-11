@@ -4,6 +4,7 @@ import {
   releasePickupReservation,
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
+import { measureCreepDecision, measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { isReceiverLink } from "@/runtime/linkControl";
 
@@ -91,7 +92,7 @@ export function moveToTarget(
       movePathState.lastPosKey = currentPosKey;
 
       if (movePathState.stuckTicks < 2) {
-        const moveByPathCode = creep.moveByPath(movePathState.path);
+        const moveByPathCode = measureCreepIntent(() => creep.moveByPath(movePathState.path));
         if (moveByPathCode === OK || moveByPathCode === ERR_TIRED) {
           return moveByPathCode;
         }
@@ -100,13 +101,15 @@ export function moveToTarget(
       delete creep.memory.movePathState;
     }
 
-    const path = creep.pos.findPathTo(targetPos, {
-      range,
-      swampCost: options.swampCost,
-      plainCost: options.plainCost,
-      ignoreCreeps: options.ignoreCreeps,
-      maxRooms: options.maxRooms,
-    });
+    const path = measureCreepPathing(() =>
+      creep.pos.findPathTo(targetPos, {
+        range,
+        swampCost: options.swampCost,
+        plainCost: options.plainCost,
+        ignoreCreeps: options.ignoreCreeps,
+        maxRooms: options.maxRooms,
+      }),
+    );
 
     if (path.length > 0) {
       const serializedPath = Room.serializePath(path);
@@ -122,7 +125,7 @@ export function moveToTarget(
         expiresAt: Game.time + Math.max(MOVE_PATH_CACHE_TTL, reusePath),
       };
 
-      const moveByPathCode = creep.moveByPath(serializedPath);
+      const moveByPathCode = measureCreepIntent(() => creep.moveByPath(serializedPath));
       if (moveByPathCode === OK || moveByPathCode === ERR_TIRED) {
         return moveByPathCode;
       }
@@ -133,15 +136,17 @@ export function moveToTarget(
     delete creep.memory.movePathState;
   }
 
-  return creep.moveTo(targetPos, {
-    range,
-    swampCost: options.swampCost,
-    plainCost: options.plainCost,
-    reusePath,
-    maxRooms: options.maxRooms,
-    ignoreCreeps: options.ignoreCreeps,
-    visualizePathStyle: { stroke: "#ffaa00" },
-  });
+  return measureCreepIntent(() =>
+    creep.moveTo(targetPos, {
+      range,
+      swampCost: options.swampCost,
+      plainCost: options.plainCost,
+      reusePath,
+      maxRooms: options.maxRooms,
+      ignoreCreeps: options.ignoreCreeps,
+      visualizePathStyle: { stroke: "#ffaa00" },
+    }),
+  );
 }
 
 function parseEncodedRouteRooms(encodedRouteRooms?: string): string[] {
@@ -333,31 +338,33 @@ function findDynamicNextRoom(
 
   const preferredSet = new Set(preferredRooms);
   const avoidSet = new Set(avoidRooms);
-  const route = Game.map.findRoute(currentRoom, targetRoom, {
-    routeCallback: (roomName) => {
-      if (roomName === currentRoom || roomName === targetRoom) {
-        return 1;
-      }
+  const route = measureCreepPathing(() =>
+    Game.map.findRoute(currentRoom, targetRoom, {
+      routeCallback: (roomName) => {
+        if (roomName === currentRoom || roomName === targetRoom) {
+          return 1;
+        }
 
-      if (avoidSet.has(roomName)) {
-        return Infinity;
-      }
+        if (avoidSet.has(roomName)) {
+          return Infinity;
+        }
 
-      if (Game.map.getRoomStatus(roomName).status !== "normal") {
-        return Infinity;
-      }
+        if (Game.map.getRoomStatus(roomName).status !== "normal") {
+          return Infinity;
+        }
 
-      if (isVisibleRoomDangerous(roomName)) {
-        return Infinity;
-      }
+        if (isVisibleRoomDangerous(roomName)) {
+          return Infinity;
+        }
 
-      if (preferredSet.has(roomName)) {
-        return 1;
-      }
+        if (preferredSet.has(roomName)) {
+          return 1;
+        }
 
-      return 3;
-    },
-  });
+        return 3;
+      },
+    }),
+  );
 
   if (route === ERR_NO_PATH || route.length === 0) {
     setDynamicRouteCache(cacheKey, null);
@@ -590,10 +597,10 @@ export function moveToTargetRoom(
   if (nextRoom !== creep.room.name && (!hasFixedRoute || isAdjacentRoom(creep.room.name, nextRoom))) {
     const exitDirection = creep.room.findExitTo(nextRoom);
     if (typeof exitDirection === "number" && exitDirection >= 1 && exitDirection <= 8) {
-      let exitPos = creep.pos.findClosestByPath(exitDirection as ExitConstant);
-      if (!exitPos) {
-        const exitTiles = creep.room.find(exitDirection as ExitConstant);
-        exitPos = creep.pos.findClosestByRange(exitTiles);
+        let exitPos = measureCreepPathing(() => creep.pos.findClosestByPath(exitDirection as ExitConstant));
+        if (!exitPos) {
+          const exitTiles = creep.room.find(exitDirection as ExitConstant);
+          exitPos = creep.pos.findClosestByRange(exitTiles);
       }
       if (exitPos) {
         result = moveToTarget(creep, exitPos, 0, moveOptions);
@@ -636,98 +643,100 @@ function getRoomTerminalEnergyReserve(room: Room): number {
 }
 
 export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOptions = {}): AnyStoreStructure | null {
-  const excludeSet = new Set(options.excludeIds || []);
-  const includeTerminal = options.includeTerminal ?? true;
-  const includeStorage = options.includeStorage ?? true;
-  const roomContext = getTickContextService().getRoomContext(creep.room);
-  const myStructures = roomContext?.getMyStructures() || [];
+  return measureCreepDecision(() => {
+    const excludeSet = new Set(options.excludeIds || []);
+    const includeTerminal = options.includeTerminal ?? true;
+    const includeStorage = options.includeStorage ?? true;
+    const roomContext = getTickContextService().getRoomContext(creep.room);
+    const myStructures = roomContext?.getMyStructures() || [];
 
-  let bestSpawnOrExtension: AnyStoreStructure | null = null;
-  let bestTower: AnyStoreStructure | null = null;
-  let bestPowerSpawn: AnyStoreStructure | null = null;
-  let bestFactory: AnyStoreStructure | null = null;
-  let bestLab: AnyStoreStructure | null = null;
+    let bestSpawnOrExtension: AnyStoreStructure | null = null;
+    let bestTower: AnyStoreStructure | null = null;
+    let bestPowerSpawn: AnyStoreStructure | null = null;
+    let bestFactory: AnyStoreStructure | null = null;
+    let bestLab: AnyStoreStructure | null = null;
 
-  for (const structure of myStructures) {
-    if (excludeSet.has(structure.id)) {
-      continue;
-    }
-
-    if (structure.structureType === STRUCTURE_SPAWN || structure.structureType === STRUCTURE_EXTENSION) {
-      const target = structure as StructureSpawn | StructureExtension;
-      if (target.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-        bestSpawnOrExtension = updateClosestTarget(creep, bestSpawnOrExtension, target);
+    for (const structure of myStructures) {
+      if (excludeSet.has(structure.id)) {
+        continue;
       }
-      continue;
-    }
 
-    if (structure.structureType === STRUCTURE_TOWER) {
-      const tower = structure as StructureTower;
-      const used = tower.store.getUsedCapacity(RESOURCE_ENERGY);
-      const capacity = tower.store.getCapacity(RESOURCE_ENERGY);
-      if (capacity > 0 && tower.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && used <= capacity * 0.6) {
-        bestTower = updateClosestTarget(creep, bestTower, tower);
+      if (structure.structureType === STRUCTURE_SPAWN || structure.structureType === STRUCTURE_EXTENSION) {
+        const target = structure as StructureSpawn | StructureExtension;
+        if (target.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+          bestSpawnOrExtension = updateClosestTarget(creep, bestSpawnOrExtension, target);
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (structure.structureType === STRUCTURE_POWER_SPAWN) {
-      const powerSpawn = structure as StructurePowerSpawn;
-      if (powerSpawn.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-        bestPowerSpawn = updateClosestTarget(creep, bestPowerSpawn, powerSpawn);
+      if (structure.structureType === STRUCTURE_TOWER) {
+        const tower = structure as StructureTower;
+        const used = tower.store.getUsedCapacity(RESOURCE_ENERGY);
+        const capacity = tower.store.getCapacity(RESOURCE_ENERGY);
+        if (capacity > 0 && tower.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && used <= capacity * 0.6) {
+          bestTower = updateClosestTarget(creep, bestTower, tower);
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (structure.structureType === STRUCTURE_FACTORY) {
-      const factory = structure as StructureFactory;
-      if (factory.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-        bestFactory = updateClosestTarget(creep, bestFactory, factory);
+      if (structure.structureType === STRUCTURE_POWER_SPAWN) {
+        const powerSpawn = structure as StructurePowerSpawn;
+        if (powerSpawn.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+          bestPowerSpawn = updateClosestTarget(creep, bestPowerSpawn, powerSpawn);
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (structure.structureType === STRUCTURE_LAB) {
-      const lab = structure as StructureLab;
-      if (lab.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-        bestLab = updateClosestTarget(creep, bestLab, lab);
+      if (structure.structureType === STRUCTURE_FACTORY) {
+        const factory = structure as StructureFactory;
+        if (factory.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+          bestFactory = updateClosestTarget(creep, bestFactory, factory);
+        }
+        continue;
+      }
+
+      if (structure.structureType === STRUCTURE_LAB) {
+        const lab = structure as StructureLab;
+        if (lab.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+          bestLab = updateClosestTarget(creep, bestLab, lab);
+        }
       }
     }
-  }
 
-  if (bestSpawnOrExtension) {
-    return bestSpawnOrExtension;
-  }
-
-  if (bestTower) {
-    return bestTower;
-  }
-
-  if (bestPowerSpawn) {
-    return bestPowerSpawn;
-  }
-
-  if (bestFactory) {
-    return bestFactory;
-  }
-
-  if (bestLab) {
-    return bestLab;
-  }
-
-  if (includeTerminal && creep.room.terminal && !excludeSet.has(creep.room.terminal.id)) {
-    const terminalReserve = getRoomTerminalEnergyReserve(creep.room);
-    const terminalEnergy = creep.room.terminal.store.getUsedCapacity(RESOURCE_ENERGY);
-    if (creep.room.terminal.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && terminalEnergy < terminalReserve) {
-      return creep.room.terminal;
+    if (bestSpawnOrExtension) {
+      return bestSpawnOrExtension;
     }
-  }
 
-  if (includeStorage && creep.room.storage && !excludeSet.has(creep.room.storage.id)) {
-    return creep.room.storage;
-  }
+    if (bestTower) {
+      return bestTower;
+    }
 
-  return null;
+    if (bestPowerSpawn) {
+      return bestPowerSpawn;
+    }
+
+    if (bestFactory) {
+      return bestFactory;
+    }
+
+    if (bestLab) {
+      return bestLab;
+    }
+
+    if (includeTerminal && creep.room.terminal && !excludeSet.has(creep.room.terminal.id)) {
+      const terminalReserve = getRoomTerminalEnergyReserve(creep.room);
+      const terminalEnergy = creep.room.terminal.store.getUsedCapacity(RESOURCE_ENERGY);
+      if (creep.room.terminal.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && terminalEnergy < terminalReserve) {
+        return creep.room.terminal;
+      }
+    }
+
+    if (includeStorage && creep.room.storage && !excludeSet.has(creep.room.storage.id)) {
+      return creep.room.storage;
+    }
+
+    return null;
+  });
 }
 
 function getTargetEnergyAmount(target: EnergyPickupTarget): number {
@@ -735,38 +744,40 @@ function getTargetEnergyAmount(target: EnergyPickupTarget): number {
 }
 
 function getPreferredEnergyPickupCandidates(creep: Creep): EnergyPickupTarget[] {
-  const roomContext = getTickContextService().getRoomContext(creep.room);
-  const dropped = roomContext?.getDroppedEnergyResources() || [];
-  const structures = roomContext?.getStructures() || [];
-  const structureCandidates = structures.filter(
-    (structure): structure is AnyStoreStructure =>
-      (structure.structureType === STRUCTURE_CONTAINER ||
-        structure.structureType === STRUCTURE_STORAGE ||
-        (structure.structureType === STRUCTURE_LINK && isReceiverLink(structure as StructureLink))) &&
-      (structure as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  );
-  const tombstones = roomContext?.getEnergyTombstones() || [];
-  const ruins = roomContext?.getEnergyRuins() || [];
+  return measureCreepDecision(() => {
+    const roomContext = getTickContextService().getRoomContext(creep.room);
+    const dropped = roomContext?.getDroppedEnergyResources() || [];
+    const structures = roomContext?.getStructures() || [];
+    const structureCandidates = structures.filter(
+      (structure): structure is AnyStoreStructure =>
+        (structure.structureType === STRUCTURE_CONTAINER ||
+          structure.structureType === STRUCTURE_STORAGE ||
+          (structure.structureType === STRUCTURE_LINK && isReceiverLink(structure as StructureLink))) &&
+        (structure as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
+    );
+    const tombstones = roomContext?.getEnergyTombstones() || [];
+    const ruins = roomContext?.getEnergyRuins() || [];
 
-  const candidates: EnergyPickupTarget[] = [...dropped, ...structureCandidates, ...tombstones, ...ruins];
-  if (candidates.length === 0) {
-    return [];
-  }
+    const candidates: EnergyPickupTarget[] = [...dropped, ...structureCandidates, ...tombstones, ...ruins];
+    if (candidates.length === 0) {
+      return [];
+    }
 
-  const threshold = creep.store.getCapacity(RESOURCE_ENERGY) ?? 0;
-  const scored = candidates
-    .map((target) => ({
-      target,
-      amount: getTargetEnergyAmount(target),
-      distance: creep.pos.getRangeTo(target.pos),
-    }))
-    .filter((entry) => entry.amount > 0);
+    const threshold = creep.store.getCapacity(RESOURCE_ENERGY) ?? 0;
+    const scored = candidates
+      .map((target) => ({
+        target,
+        amount: getTargetEnergyAmount(target),
+        distance: creep.pos.getRangeTo(target.pos),
+      }))
+      .filter((entry) => entry.amount > 0);
 
-  const hasRichCandidate = scored.some((entry) => entry.amount >= threshold);
-  return scored
-    .filter((entry) => !hasRichCandidate || entry.amount >= threshold)
-    .sort((left, right) => left.distance - right.distance)
-    .map((entry) => entry.target);
+    const hasRichCandidate = scored.some((entry) => entry.amount >= threshold);
+    return scored
+      .filter((entry) => !hasRichCandidate || entry.amount >= threshold)
+      .sort((left, right) => left.distance - right.distance)
+      .map((entry) => entry.target);
+  });
 }
 
 export function getPreferredEnergyPickupTarget(creep: Creep): EnergyPickupTarget | null {
@@ -803,7 +814,7 @@ export function pickupEnergyFromPreferredTarget(creep: Creep, moveOptions: MoveT
   }
 
   if (isDroppedResourceTarget(sourceTarget)) {
-    const pickupCode = creep.pickup(sourceTarget);
+    const pickupCode = measureCreepIntent(() => creep.pickup(sourceTarget));
     if (pickupCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, sourceTarget, 1, moveOptions);
       return { picked: false, outOfRange: true };
@@ -821,7 +832,7 @@ export function pickupEnergyFromPreferredTarget(creep: Creep, moveOptions: MoveT
     return { picked: pickupCode === OK, outOfRange: false };
   }
 
-  const withdrawCode = creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+  const withdrawCode = measureCreepIntent(() => creep.withdraw(sourceTarget, RESOURCE_ENERGY));
   if (withdrawCode === ERR_NOT_IN_RANGE) {
     moveToTarget(creep, sourceTarget, 1, moveOptions);
     return { picked: false, outOfRange: true };
