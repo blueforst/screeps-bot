@@ -2,8 +2,8 @@ import type { RoleFactory } from "@/types/system";
 import {
   getEnergyStoreTarget,
   isDroppedResourceTarget,
-  moveToTarget,
-} from "@/roles/shared";
+} from "@/roles/energyTargets";
+import { moveToTarget } from "@/roles/shared";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import {
   getPickupTargetEnergyAmount,

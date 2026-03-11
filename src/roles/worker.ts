@@ -1,5 +1,6 @@
 import type { RoleFactory } from "@/types/system";
-import { moveToRemoteWorkTarget, pickupEnergyFromPreferredTarget } from "@/roles/shared";
+import { pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
+import { moveToRemoteWorkTarget } from "@/roles/shared";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { assignWorkerTask, completeWorkerTaskIfDone, getWorkerTaskTarget, releaseWorkerTask } from "@/runtime/workerTaskPool";
 import { releasePickupReservation } from "@/runtime/energyPickupReservation";
