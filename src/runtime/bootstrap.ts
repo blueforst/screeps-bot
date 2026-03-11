@@ -1,42 +1,48 @@
 import { upsertConfig } from "@/runtime/creepApi";
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
-import { getCreepConfigService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
+import type { TickContextService } from "@/runtime/tickContext";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 type SourceWorkerRole = "harvester" | "miner";
 
-function hasLiveCreepForConfig(configName: string): boolean {
-  return Object.values(Game.creeps).some((creep) => creep.memory.configName === configName);
+function hasLiveCreepForConfig(configName: string, tickContext: TickContextService): boolean {
+  return tickContext.getCreepsByConfigName(configName).length > 0;
 }
 
-function cleanupConfigsByPrefix(roomName: string, prefix: string, validConfigNames: Set<string>): void {
+function cleanupConfigsByPrefix(
+  roomName: string,
+  prefix: string,
+  validConfigNames: Set<string>,
+  tickContext: TickContextService,
+): void {
   const creepConfigs = getCreepConfigService();
   const configs = creepConfigs.list(`${roomName}:${prefix}:`);
   for (const configName of Object.keys(configs)) {
-    if (!validConfigNames.has(configName) && !hasLiveCreepForConfig(configName)) {
+    if (!validConfigNames.has(configName) && !hasLiveCreepForConfig(configName, tickContext)) {
       creepConfigs.remove(configName);
     }
   }
 }
 
-function cleanupSourceConfigs(roomName: string, validConfigNames: Set<string>): void {
-  cleanupConfigsByPrefix(roomName, "harvester", validConfigNames);
-  cleanupConfigsByPrefix(roomName, "miner", validConfigNames);
+function cleanupSourceConfigs(roomName: string, validConfigNames: Set<string>, tickContext: TickContextService): void {
+  cleanupConfigsByPrefix(roomName, "harvester", validConfigNames, tickContext);
+  cleanupConfigsByPrefix(roomName, "miner", validConfigNames, tickContext);
 }
 
-function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>): void {
-  cleanupConfigsByPrefix(roomName, "worker", validConfigNames);
+function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>, tickContext: TickContextService): void {
+  cleanupConfigsByPrefix(roomName, "worker", validConfigNames, tickContext);
 }
 
 function isSourceRoleConfigName(roomName: string, configName: string): boolean {
   return configName.startsWith(`${roomName}:harvester:`) || configName.startsWith(`${roomName}:miner:`);
 }
 
-function cleanupSourceRoleQueueEntries(roomName: string, validConfigNames: Set<string>): void {
-  for (const spawn of Object.values(Game.spawns)) {
-    if (spawn.room.name !== roomName) {
-      continue;
-    }
-
+function cleanupSourceRoleQueueEntries(
+  roomName: string,
+  validConfigNames: Set<string>,
+  tickContext: TickContextService,
+): void {
+  for (const spawn of tickContext.getSpawnsByRoom(roomName)) {
     const queue = spawn.memory.spawnList;
     if (!queue || queue.length === 0) {
       continue;
@@ -53,7 +59,8 @@ function cleanupSourceRoleQueueEntries(roomName: string, validConfigNames: Set<s
 }
 
 export function bootstrapRooms(): void {
-  const myRooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  const tickContext = getTickContextService();
+  const myRooms = tickContext.getMyRooms();
 
   for (const room of myRooms) {
     const expectedConfigNames = new Set(getExpectedManagedConfigNames(room));
@@ -65,8 +72,8 @@ export function bootstrapRooms(): void {
       upsertConfig(configName, role, [source.id], room.name);
     }
 
-    cleanupSourceRoleQueueEntries(room.name, expectedConfigNames);
-    cleanupSourceConfigs(room.name, expectedConfigNames);
+    cleanupSourceRoleQueueEntries(room.name, expectedConfigNames, tickContext);
+    cleanupSourceConfigs(room.name, expectedConfigNames, tickContext);
 
     upsertConfig(`${room.name}:carrier:0`, "carrier", [], room.name);
 
@@ -76,6 +83,6 @@ export function bootstrapRooms(): void {
       }
     }
 
-    cleanupWorkerConfigs(room.name, expectedConfigNames);
+    cleanupWorkerConfigs(room.name, expectedConfigNames, tickContext);
   }
 }

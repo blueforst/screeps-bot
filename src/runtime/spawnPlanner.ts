@@ -1,6 +1,6 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
 import { spawnMaxCarrierRaw } from "@/runtime/consoleCommands";
-import { getCreepConfigService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
 
@@ -45,7 +45,7 @@ function isConfigSpawning(configName: string): boolean {
 }
 
 function getConfigCreeps(configName: string): Creep[] {
-  return Object.values(Game.creeps).filter((creep) => creep.memory.configName === configName);
+  return getTickContextService().getCreepsByConfigName(configName);
 }
 
 function getSourceIdFromConfig(config: CreepConfig): Id<Source> | undefined {
@@ -214,7 +214,7 @@ function prioritizeSpawnQueue(spawn: StructureSpawn): void {
 }
 
 function hasLiveCarrierInRoom(roomName: string): boolean {
-  return Object.values(Game.creeps).some((creep) => creep.memory.role === "carrier" && creep.room.name === roomName);
+  return getTickContextService().getCreepsByRoom(roomName).some((creep) => creep.memory.role === "carrier");
 }
 
 function hasSpawningCarrierInRoom(roomName: string): boolean {
@@ -246,12 +246,14 @@ function ensureEmergencyCarrier(spawn: StructureSpawn): void {
 }
 
 export function scheduleSpawnTasks(): void {
+  const tickContext = getTickContextService();
   const spawnByRoom = new Map<string, StructureSpawn>();
-  Object.values(Game.spawns).forEach((spawn) => {
-    if (!spawnByRoom.has(spawn.room.name)) {
-      spawnByRoom.set(spawn.room.name, spawn);
+  for (const room of tickContext.getMyRooms()) {
+    const spawn = tickContext.getPrimarySpawnByRoom(room.name);
+    if (spawn) {
+      spawnByRoom.set(room.name, spawn);
     }
-  });
+  }
 
   for (const spawn of spawnByRoom.values()) {
     ensureEmergencyCarrier(spawn);

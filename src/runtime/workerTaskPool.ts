@@ -1,4 +1,5 @@
 import type { WorkerTask } from "@/types/system";
+import { getTickContextService } from "@/runtime/runtimeServices";
 
 const TASK_REFRESH_INTERVAL = 3;
 const RAMPART_EMERGENCY_TARGET_HITS = 6000;
@@ -91,7 +92,7 @@ function createUpgradeTask(room: Room): WorkerTask | null {
     return null;
   }
 
-  const liveWorkers = Object.values(Game.creeps).filter((creep) => {
+  const liveWorkers = getTickContextService().getCreepsByRoom(room.name).filter((creep) => {
     const configName = creep.memory.configName;
     return typeof configName === "string" && configName.startsWith(`${room.name}:worker:`);
   }).length;
@@ -150,7 +151,7 @@ export function refreshWorkerTasks(): void {
     return;
   }
 
-  const rooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  const rooms = getTickContextService().getMyRooms();
   for (const room of rooms) {
     const tasks = ensureRoomTaskStore(room.name);
     const activeAssignedNormalRepairTask = Object.values(tasks).find(
