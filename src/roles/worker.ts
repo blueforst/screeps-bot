@@ -1,5 +1,6 @@
 import type { RoleFactory } from "@/types/system";
 import { moveToRemoteWorkTarget, pickupEnergyFromPreferredTarget } from "@/roles/shared";
+import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { assignWorkerTask, completeWorkerTaskIfDone, getWorkerTaskTarget, releaseWorkerTask } from "@/runtime/workerTaskPool";
 import { releasePickupReservation } from "@/runtime/energyPickupReservation";
 
@@ -30,7 +31,7 @@ export const workerRole: RoleFactory = () => ({
     }
 
     if (task.type === "build") {
-      const buildCode = creep.build(target as ConstructionSite);
+      const buildCode = measureCreepIntent(() => creep.build(target as ConstructionSite));
       if (buildCode === ERR_NOT_IN_RANGE) {
         moveToRemoteWorkTarget(creep, target);
       }
@@ -48,7 +49,7 @@ export const workerRole: RoleFactory = () => ({
     }
 
     if (task.type === "upgrade") {
-      const upgradeCode = creep.upgradeController(target as StructureController);
+      const upgradeCode = measureCreepIntent(() => creep.upgradeController(target as StructureController));
       if (upgradeCode === ERR_NOT_IN_RANGE) {
         moveToRemoteWorkTarget(creep, target);
         return false;
@@ -67,7 +68,7 @@ export const workerRole: RoleFactory = () => ({
     }
 
     if (task.type === "repair") {
-      const repairCode = creep.repair(target as StructureRampart);
+      const repairCode = measureCreepIntent(() => creep.repair(target as StructureRampart));
       if (repairCode === ERR_NOT_IN_RANGE) {
         const moveCode = moveToRemoteWorkTarget(creep, target);
         if (moveCode === ERR_NO_PATH) {

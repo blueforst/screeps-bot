@@ -1,4 +1,5 @@
 import type { WorkerTask } from "@/types/system";
+import { measureCreepDecision } from "@/runtime/cpuPhaseProfiler";
 import { getTickContextService } from "@/runtime/runtimeServices";
 
 const TASK_REFRESH_INTERVAL = 3;
@@ -272,67 +273,69 @@ export function releaseWorkerTask(creep: Creep): void {
 }
 
 export function assignWorkerTask(creep: Creep): WorkerTask | null {
-  const roomTasks = ensureRoomMemory(creep.room.name).tasks as Record<string, WorkerTask> | undefined;
-  if (!roomTasks) {
-    releaseWorkerTask(creep);
-    return null;
-  }
+  return measureCreepDecision(() => {
+    const roomTasks = ensureRoomMemory(creep.room.name).tasks as Record<string, WorkerTask> | undefined;
+    if (!roomTasks) {
+      releaseWorkerTask(creep);
+      return null;
+    }
 
-  if (creep.memory.taskId) {
-    const current = roomTasks[creep.memory.taskId];
-    if (current && current.status === "active") {
-      clampAssignees(current);
-      if (!current.assignedCreeps.includes(creep.name)) {
-        current.assignedCreeps.push(creep.name);
+    if (creep.memory.taskId) {
+      const current = roomTasks[creep.memory.taskId];
+      if (current && current.status === "active") {
+        clampAssignees(current);
+        if (!current.assignedCreeps.includes(creep.name)) {
+          current.assignedCreeps.push(creep.name);
+        }
+
+        const currentTarget = getTaskTarget(current);
+        if (currentTarget) {
+          return current;
+        }
       }
 
-      const currentTarget = getTaskTarget(current);
-      if (currentTarget) {
-        return current;
+      releaseWorkerTask(creep);
+    }
+
+    const candidates = Object.values(roomTasks).filter((task) => {
+      if (task.status !== "active") {
+        return false;
+      }
+
+      clampAssignees(task);
+      if (task.assignedCreeps.length >= task.maxAssignees) {
+        return false;
+      }
+
+      return !!getTaskTarget(task);
+    });
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    let best: WorkerTask | null = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+
+    for (const task of candidates) {
+      const score = scoreTask(creep, task);
+      if (score > bestScore) {
+        bestScore = score;
+        best = task;
       }
     }
 
-    releaseWorkerTask(creep);
-  }
-
-  const candidates = Object.values(roomTasks).filter((task) => {
-    if (task.status !== "active") {
-      return false;
+    if (!best) {
+      return null;
     }
 
-    clampAssignees(task);
-    if (task.assignedCreeps.length >= task.maxAssignees) {
-      return false;
-    }
+    best.assignedCreeps.push(creep.name);
+    creep.memory.taskId = best.id;
+    creep.memory.taskType = best.type;
+    creep.memory.taskTargetId = best.targetId;
 
-    return !!getTaskTarget(task);
+    return best;
   });
-
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  let best: WorkerTask | null = null;
-  let bestScore = Number.NEGATIVE_INFINITY;
-
-  for (const task of candidates) {
-    const score = scoreTask(creep, task);
-    if (score > bestScore) {
-      bestScore = score;
-      best = task;
-    }
-  }
-
-  if (!best) {
-    return null;
-  }
-
-  best.assignedCreeps.push(creep.name);
-  creep.memory.taskId = best.id;
-  creep.memory.taskType = best.type;
-  creep.memory.taskTargetId = best.targetId;
-
-  return best;
 }
 
 export function getWorkerTaskTarget(task: WorkerTask): RoomObject | null {
