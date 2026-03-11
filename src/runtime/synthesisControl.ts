@@ -5,7 +5,7 @@ import {
   type CarrierTaskDraft,
   type CarrierTaskStep,
 } from "@/runtime/carrierTaskBoard";
-import { getMemoryService } from "@/runtime/runtimeServices";
+import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 type SynthesisStage = "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
 
@@ -371,8 +371,8 @@ function selectDonor(
   const binding = getActiveBinding(bindings, targetRoom.name, resource);
   const candidates: DonorCandidate[] = [];
 
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller?.my || room.name === targetRoom.name || !room.terminal || room.terminal.cooldown > 0) {
+  for (const room of getTickContextService().getMyRooms()) {
+    if (room.name === targetRoom.name || !room.terminal || room.terminal.cooldown > 0) {
       continue;
     }
     if (donorRoomNames.length > 0 && !donorRoomNames.includes(room.name)) {

@@ -1,6 +1,6 @@
 import { runPlannerForRoom, savePlannerForRoom } from "@/modules/autoplanner";
 import { spawnProfiles } from "@/config/spawnProfiles";
-import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { clearWarRoomTask, isWarRoomClearDone, requestWarRoomClear } from "@/runtime/warControl";
 
 type ColonizationStatus = "claiming" | "clearing" | "waiting_plan" | "bootstrapping" | "managed";
@@ -59,8 +59,10 @@ function ensureConfigStore(): Record<string, import("@/types/system").CreepConfi
 }
 
 function getOwnedSpawnRooms(): string[] {
-  const rooms = Object.values(Game.spawns)
-    .filter((spawn) => spawn.room.controller?.my)
+  const tickContext = getTickContextService();
+  const rooms = tickContext
+    .getMyRooms()
+    .flatMap((room) => tickContext.getSpawnsByRoom(room.name))
     .filter((spawn) => hasColonizationSquadProductionCapability(spawn))
     .map((spawn) => spawn.room.name);
 
@@ -118,12 +120,11 @@ function getTaskConfigNames(task: ColonizationTask): string[] {
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {
-  return Object.values(Game.creeps).filter((creep) => creep.memory.configName === configName);
+  return getTickContextService().getCreepsByConfigName(configName);
 }
 
 function getSpawnForRoom(roomName: string): StructureSpawn | null {
-  const spawn = Object.values(Game.spawns).find((item) => item.room.name === roomName);
-  return spawn || null;
+  return getTickContextService().getPrimarySpawnByRoom(roomName) || null;
 }
 
 function enqueueConfig(spawn: StructureSpawn, configName: string, toFront: boolean): void {
@@ -140,13 +141,20 @@ function enqueueConfig(spawn: StructureSpawn, configName: string, toFront: boole
 
 function isConfigSpawning(configName: string): boolean {
   const creepMemory = Memory.creeps || {};
-  return Object.values(Game.spawns).some((spawn) => {
-    if (!spawn.spawning) {
-      return false;
-    }
+  const tickContext = getTickContextService();
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      if (!spawn.spawning) {
+        continue;
+      }
 
-    return creepMemory[spawn.spawning.name]?.configName === configName;
-  });
+      if (creepMemory[spawn.spawning.name]?.configName === configName) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function upsertConfig(
@@ -868,7 +876,7 @@ function ensureBootstrapWorker(task: ColonizationTask, index: number): void {
 }
 
 function hasOwnedSpawnInTargetRoom(task: ColonizationTask): boolean {
-  return Object.values(Game.spawns).some((spawn) => spawn.room.name === task.targetRoom);
+  return getTickContextService().getSpawnsByRoom(task.targetRoom).length > 0;
 }
 
 function cleanupColonizationConfigs(task: ColonizationTask): boolean {

@@ -1,4 +1,4 @@
-import { getMemoryService } from "@/runtime/runtimeServices";
+import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 type ResourceControlState = "survival" | "balanced" | "export";
 type ResourceThresholdMap = Partial<Record<ResourceConstant, number>>;
@@ -536,7 +536,7 @@ function resolveState(storageEnergy: number, config: ResourceControlRoomConfig):
 }
 
 function collectSnapshots(): ResourceControlSnapshot[] {
-  const rooms = Object.values(Game.rooms).filter((room) => room.controller?.my && room.terminal);
+  const rooms = getTickContextService().getMyRooms().filter((room) => !!room.terminal);
 
   return rooms.map((room) => {
     const config = resolveRoomConfig(room.name);

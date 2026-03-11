@@ -1,4 +1,4 @@
-import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
 type WarStatus = "staging" | "clearing" | "done" | "failed";
@@ -33,7 +33,7 @@ function ensureConfigStore(): Record<string, CreepConfig> {
 }
 
 function getSpawnForRoom(roomName: string): StructureSpawn | null {
-  return Object.values(Game.spawns).find((spawn) => spawn.room.name === roomName) || null;
+  return getTickContextService().getPrimarySpawnByRoom(roomName) || null;
 }
 
 function getConfigName(task: WarTask, role: "meleeAttacker" | "healer", index: number): string {
@@ -46,18 +46,25 @@ function getTaskConfigNames(task: WarTask): string[] {
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {
-  return Object.values(Game.creeps).filter((creep) => creep.memory.configName === configName);
+  return getTickContextService().getCreepsByConfigName(configName);
 }
 
 function isConfigSpawning(configName: string): boolean {
   const creepMemory = Memory.creeps || {};
-  return Object.values(Game.spawns).some((spawn) => {
-    if (!spawn.spawning) {
-      return false;
-    }
+  const tickContext = getTickContextService();
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      if (!spawn.spawning) {
+        continue;
+      }
 
-    return creepMemory[spawn.spawning.name]?.configName === configName;
-  });
+      if (creepMemory[spawn.spawning.name]?.configName === configName) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function enqueueConfig(spawn: StructureSpawn, configName: string, toFront: boolean): void {
