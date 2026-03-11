@@ -702,6 +702,48 @@ function buildCpuMonitorSummary(history: CpuMonitorSnapshot[]): CpuMonitorSummar
   };
 }
 
+function formatCpuMonitorNumber(value: number): string {
+  return Number.isInteger(value) ? `${value}` : value.toFixed(2);
+}
+
+function formatTopCpuPhases(phases: Record<string, number>, limit = 5): string {
+  const entries = Object.entries(phases)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit);
+
+  if (entries.length === 0) {
+    return "none";
+  }
+
+  return entries.map(([name, value]) => `${name}=${value.toFixed(2)}`).join(" ");
+}
+
+function formatCpuMonitorResult(result: CpuMonitorResult): string {
+  const lines = [
+    `[cpu-monitor] enabled=${result.enabled} sampleInterval=${result.sampleInterval} history=${result.historySize}/${result.historyLimit}`,
+  ];
+
+  if (!result.latest) {
+    lines.push("[cpu-monitor] latest=none");
+  } else {
+    lines.push(
+      `[cpu-monitor] latest tick=${result.latest.tick} shard=${result.latest.shard} used=${result.latest.totalUsed.toFixed(2)}/${formatCpuMonitorNumber(result.latest.limit)} bucket=${formatCpuMonitorNumber(result.latest.bucket)} tickLimit=${formatCpuMonitorNumber(result.latest.tickLimit)} untracked=${result.latest.untracked.toFixed(2)}`,
+    );
+    lines.push(`[cpu-monitor] latestPhases ${formatTopCpuPhases(result.latest.phases)}`);
+  }
+
+  if (!result.summary) {
+    lines.push("[cpu-monitor] summary=none");
+  } else {
+    lines.push(
+      `[cpu-monitor] summary ticks=${result.summary.ticks} avgUsed=${result.summary.avgTotalUsed.toFixed(2)} maxUsed=${result.summary.maxTotalUsed.toFixed(2)} avgBucket=${result.summary.avgBucket.toFixed(2)} bucketRange=${formatCpuMonitorNumber(result.summary.minBucket)}-${formatCpuMonitorNumber(result.summary.maxBucket)} avgUntracked=${result.summary.avgUntracked.toFixed(2)}`,
+    );
+    lines.push(`[cpu-monitor] summaryPhases ${formatTopCpuPhases(result.summary.avgPhases)}`);
+  }
+
+  return lines.join("\n");
+}
+
 export function startCpuProfilerRaw(sampleInterval?: number, historyLimit?: number): CpuProfilerControlResult | string {
   return startCpuProfiler(sampleInterval, historyLimit);
 }
@@ -752,7 +794,7 @@ export function cpuMonitorRaw(): CpuMonitorResult {
 }
 
 export function cpuMonitorCommand(): string {
-  return JSON.stringify(cpuMonitorRaw());
+  return formatCpuMonitorResult(cpuMonitorRaw());
 }
 
 export function statusSynthesisControlRaw(): SynthesisControlStatusResult {

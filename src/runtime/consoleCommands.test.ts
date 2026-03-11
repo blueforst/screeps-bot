@@ -14,6 +14,12 @@ describe("cpuMonitor", () => {
     });
   });
 
+  it("returns readable empty output from command wrapper", () => {
+    expect(cpuMonitorCommand()).toBe(
+      "[cpu-monitor] enabled=false sampleInterval=10 history=0/120\n[cpu-monitor] latest=none\n[cpu-monitor] summary=none",
+    );
+  });
+
   it("returns latest snapshot and recent history summary", () => {
     Memory.cfg = {
       cpuProfiler: {
@@ -96,12 +102,75 @@ describe("cpuMonitor", () => {
     expect(result.summary?.avgPhases.creepWork).toBeCloseTo(8);
   });
 
-  it("returns json output from command wrapper", () => {
-    const parsed = JSON.parse(cpuMonitorCommand());
+  it("returns readable output from command wrapper", () => {
+    Memory.cfg = {
+      cpuProfiler: {
+        enabled: true,
+        sampleInterval: 5,
+        historyLimit: 120,
+      },
+    };
 
-    expect(parsed.ok).toBe(true);
-    expect(parsed).toHaveProperty("latest");
-    expect(parsed).toHaveProperty("recentHistory");
-    expect(parsed).toHaveProperty("summary");
+    Memory.analytics = {
+      moduleCpu: {
+        updatedAt: 123,
+        sampleInterval: 5,
+        historyLimit: 120,
+        latest: {
+          tick: 123,
+          shard: "shard3",
+          totalUsed: 17,
+          bucket: 9500,
+          limit: 20,
+          tickLimit: 500,
+          phases: {
+            creepWork: 8,
+            towerControl: 1,
+          },
+          untracked: 2,
+        },
+      },
+    } as Memory["analytics"];
+
+    (global as typeof global & { __cpuPhaseHistory?: Array<ReturnType<typeof cpuMonitorRaw>["latest"]> }).__cpuPhaseHistory = [
+      {
+        tick: 121,
+        shard: "shard3",
+        totalUsed: 15,
+        bucket: 9800,
+        limit: 20,
+        tickLimit: 500,
+        phases: { creepWork: 7, towerControl: 1 },
+        untracked: 1,
+      },
+      {
+        tick: 122,
+        shard: "shard3",
+        totalUsed: 16,
+        bucket: 9600,
+        limit: 20,
+        tickLimit: 500,
+        phases: { creepWork: 8, towerControl: 1 },
+        untracked: 2,
+      },
+      {
+        tick: 123,
+        shard: "shard3",
+        totalUsed: 17,
+        bucket: 9500,
+        limit: 20,
+        tickLimit: 500,
+        phases: { creepWork: 9, towerControl: 1 },
+        untracked: 3,
+      },
+    ];
+
+    expect(cpuMonitorCommand()).toBe(
+        "[cpu-monitor] enabled=true sampleInterval=5 history=3/120\n" +
+        "[cpu-monitor] latest tick=123 shard=shard3 used=17.00/20 bucket=9500 tickLimit=500 untracked=2.00\n" +
+        "[cpu-monitor] latestPhases creepWork=8.00 towerControl=1.00\n" +
+        "[cpu-monitor] summary ticks=3 avgUsed=16.00 maxUsed=17.00 avgBucket=9633.33 bucketRange=9500-9800 avgUntracked=2.00\n" +
+        "[cpu-monitor] summaryPhases creepWork=8.00 towerControl=1.00",
+    );
   });
 });
