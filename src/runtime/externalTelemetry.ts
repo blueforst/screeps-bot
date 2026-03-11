@@ -1,4 +1,5 @@
 import { getCpuPhaseHistory } from "@/runtime/cpuPhaseProfiler";
+import { getTickContextService } from "@/runtime/runtimeServices";
 
 const DEFAULT_SAMPLE_INTERVAL = 10;
 const MIN_SAMPLE_INTERVAL = 5;
@@ -174,33 +175,36 @@ function ensureRoomSpawnTelemetry(
   return next;
 }
 
-function collectCreepTelemetryByRoom(): Record<string, RoomCreepTelemetry> {
+function collectCreepTelemetryByRoom(ownedRooms: Room[]): Record<string, RoomCreepTelemetry> {
   const stats: Record<string, RoomCreepTelemetry> = {};
+  const tickContext = getTickContextService();
 
-  for (const creep of Object.values(Game.creeps)) {
-    const roomStats = ensureRoomCreepTelemetry(stats, creep.room.name);
-    const role = creep.memory.role;
+  for (const room of ownedRooms) {
+    for (const creep of tickContext.getCreepsByRoom(room.name)) {
+      const roomStats = ensureRoomCreepTelemetry(stats, creep.room.name);
+      const role = creep.memory.role;
 
-    if (role === "worker") {
-      roomStats.workerCount += 1;
-      if (!creep.memory.taskId) {
-        roomStats.unassignedWorkers += 1;
+      if (role === "worker") {
+        roomStats.workerCount += 1;
+        if (!creep.memory.taskId) {
+          roomStats.unassignedWorkers += 1;
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (role === "carrier") {
-      roomStats.carrierCount += 1;
-      const stuckTicks = creep.memory.travelState?.stuckTicks;
-      if (typeof stuckTicks === "number" && Number.isFinite(stuckTicks) && stuckTicks >= 0) {
-        roomStats.carrierStuckTotal += stuckTicks;
-        roomStats.carrierStuckCount += 1;
+      if (role === "carrier") {
+        roomStats.carrierCount += 1;
+        const stuckTicks = creep.memory.travelState?.stuckTicks;
+        if (typeof stuckTicks === "number" && Number.isFinite(stuckTicks) && stuckTicks >= 0) {
+          roomStats.carrierStuckTotal += stuckTicks;
+          roomStats.carrierStuckCount += 1;
+        }
+        continue;
       }
-      continue;
-    }
 
-    if (role === "harvester") {
-      roomStats.harvesterCount += 1;
+      if (role === "harvester") {
+        roomStats.harvesterCount += 1;
+      }
     }
   }
 
@@ -236,14 +240,17 @@ function collectTaskTelemetryByRoom(): Record<string, RoomTaskTelemetry> {
   return stats;
 }
 
-function collectSpawnTelemetryByRoom(): Record<string, RoomSpawnTelemetry> {
+function collectSpawnTelemetryByRoom(ownedRooms: Room[]): Record<string, RoomSpawnTelemetry> {
   const stats: Record<string, RoomSpawnTelemetry> = {};
+  const tickContext = getTickContextService();
 
-  for (const spawn of Object.values(Game.spawns)) {
-    const roomStats = ensureRoomSpawnTelemetry(stats, spawn.room.name);
-    roomStats.queueDepth += spawn.memory.spawnList?.length || 0;
-    if (spawn.spawning) {
-      roomStats.spawningCount += 1;
+  for (const room of ownedRooms) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      const roomStats = ensureRoomSpawnTelemetry(stats, spawn.room.name);
+      roomStats.queueDepth += spawn.memory.spawnList?.length || 0;
+      if (spawn.spawning) {
+        roomStats.spawningCount += 1;
+      }
     }
   }
 
@@ -251,14 +258,14 @@ function collectSpawnTelemetryByRoom(): Record<string, RoomSpawnTelemetry> {
 }
 
 function getOwnedRooms(): Room[] {
-  return Object.values(Game.rooms).filter((room) => room.controller?.my);
+  return getTickContextService().getMyRooms();
 }
 
 function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): ExternalTelemetrySnapshot {
   const ownedRooms = getOwnedRooms();
-  const creepsByRoom = collectCreepTelemetryByRoom();
+  const creepsByRoom = collectCreepTelemetryByRoom(ownedRooms);
   const tasksByRoom = collectTaskTelemetryByRoom();
-  const spawnsByRoom = collectSpawnTelemetryByRoom();
+  const spawnsByRoom = collectSpawnTelemetryByRoom(ownedRooms);
   const productionRooms = Memory.analytics?.production?.rooms || {};
   const moduleCpuLatest = Memory.analytics?.moduleCpu?.latest;
   const moduleCpuHistory = getCpuPhaseHistory();
