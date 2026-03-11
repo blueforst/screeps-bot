@@ -4,6 +4,13 @@ import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeS
 import type { CreepConfig } from "@/types/system";
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
 
+interface SpawnPlanningContext {
+  spawnTimeByConfigName: Map<string, number>;
+  sourceWorkerThresholdByKey: Map<string, number>;
+  configCreepsByName: Map<string, Creep[]>;
+  spawningConfigNames: Set<string>;
+}
+
 function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
   if (role === "carrier") {
     return 0;
@@ -32,27 +39,49 @@ function isConfigQueued(spawn: StructureSpawn, configName: string): boolean {
   return spawn.memory.spawnList?.includes(configName) ?? false;
 }
 
-function isConfigSpawning(configName: string): boolean {
-  const creepMemory = Memory.creeps || {};
+function createSpawnPlanningContext(): SpawnPlanningContext {
+  const spawningConfigNames = new Set<string>();
   const tickContext = getTickContextService();
+  const creepMemory = Memory.creeps || {};
+
   for (const room of tickContext.getMyRooms()) {
     for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
       if (!spawn.spawning) {
         continue;
       }
 
-      const spawningName = spawn.spawning.name;
-      if (creepMemory[spawningName]?.configName === configName) {
-        return true;
+      const configName = creepMemory[spawn.spawning.name]?.configName;
+      if (typeof configName === "string") {
+        spawningConfigNames.add(configName);
       }
     }
   }
 
-  return false;
+  return {
+    spawnTimeByConfigName: new Map<string, number>(),
+    sourceWorkerThresholdByKey: new Map<string, number>(),
+    configCreepsByName: new Map<string, Creep[]>(),
+    spawningConfigNames,
+  };
 }
 
-function getConfigCreeps(configName: string): Creep[] {
-  return getTickContextService().getCreepsByConfigName(configName);
+function isConfigSpawning(configName: string, context: SpawnPlanningContext): boolean {
+  return context.spawningConfigNames.has(configName);
+}
+
+function getConfigCreeps(configName: string, context?: SpawnPlanningContext): Creep[] {
+  if (!context) {
+    return getTickContextService().getCreepsByConfigName(configName);
+  }
+
+  const cached = context.configCreepsByName.get(configName);
+  if (cached) {
+    return cached;
+  }
+
+  const creeps = getTickContextService().getCreepsByConfigName(configName);
+  context.configCreepsByName.set(configName, creeps);
+  return creeps;
 }
 
 function getSourceIdFromConfig(config: CreepConfig): Id<Source> | undefined {
@@ -103,26 +132,49 @@ function getSpawnBody(spawn: StructureSpawn, configName: string): BodyPartConsta
   return spawnProfiles[config.role](spawn.room);
 }
 
-function getSpawnTime(spawn: StructureSpawn, configName: string): number {
+function getSpawnTime(spawn: StructureSpawn, configName: string, context?: SpawnPlanningContext): number {
+  if (context) {
+    const cached = context.spawnTimeByConfigName.get(configName);
+    if (cached !== undefined) {
+      return cached;
+    }
+  }
+
   const body = getSpawnBody(spawn, configName);
-  return body.length * CREEP_SPAWN_TIME;
+  const spawnTime = body.length * CREEP_SPAWN_TIME;
+  context?.spawnTimeByConfigName.set(configName, spawnTime);
+  return spawnTime;
 }
 
-function estimateSourceWorkerPreSpawnThreshold(spawn: StructureSpawn, configName: string, config: CreepConfig): number {
+function estimateSourceWorkerPreSpawnThreshold(
+  spawn: StructureSpawn,
+  configName: string,
+  config: CreepConfig,
+  context?: SpawnPlanningContext,
+): number {
   const workPos = getSourceWorkerWorkPos(config);
   if (!workPos) {
     return 0;
   }
 
+  const cacheKey = `${spawn.id}:${configName}:${workPos.roomName}:${workPos.x}:${workPos.y}`;
+  const cached = context?.sourceWorkerThresholdByKey.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   const path = spawn.pos.findPathTo(workPos, { ignoreCreeps: true, swampCost: 2 });
   const commuteTime = path.length;
-  const produceTime = getSpawnTime(spawn, configName);
+  const produceTime = getSpawnTime(spawn, configName, context);
+  const threshold = commuteTime + produceTime;
 
-  return commuteTime + produceTime;
+  context?.sourceWorkerThresholdByKey.set(cacheKey, threshold);
+
+  return threshold;
 }
 
-function shouldPreSpawnCarrier(spawn: StructureSpawn, configName: string): boolean {
-  const creeps = getConfigCreeps(configName);
+function shouldPreSpawnCarrier(spawn: StructureSpawn, configName: string, context?: SpawnPlanningContext): boolean {
+  const creeps = getConfigCreeps(configName, context);
   if (creeps.length === 0) {
     return true;
   }
@@ -131,7 +183,7 @@ function shouldPreSpawnCarrier(spawn: StructureSpawn, configName: string): boole
     return false;
   }
 
-  const threshold = getSpawnTime(spawn, configName) + CARRIER_PRESPAWN_BUFFER_TICKS;
+  const threshold = getSpawnTime(spawn, configName, context) + CARRIER_PRESPAWN_BUFFER_TICKS;
   const soonestDying = creeps.reduce((minCreep, creep) =>
     creep.ticksToLive < minCreep.ticksToLive ? creep : minCreep,
   );
@@ -139,8 +191,13 @@ function shouldPreSpawnCarrier(spawn: StructureSpawn, configName: string): boole
   return soonestDying.ticksToLive <= threshold;
 }
 
-function shouldPreSpawnSourceWorker(spawn: StructureSpawn, configName: string, config: CreepConfig): boolean {
-  const creeps = getConfigCreeps(configName);
+function shouldPreSpawnSourceWorker(
+  spawn: StructureSpawn,
+  configName: string,
+  config: CreepConfig,
+  context?: SpawnPlanningContext,
+): boolean {
+  const creeps = getConfigCreeps(configName, context);
   if (creeps.length === 0) {
     return true;
   }
@@ -149,7 +206,7 @@ function shouldPreSpawnSourceWorker(spawn: StructureSpawn, configName: string, c
     return false;
   }
 
-  const threshold = estimateSourceWorkerPreSpawnThreshold(spawn, configName, config);
+  const threshold = estimateSourceWorkerPreSpawnThreshold(spawn, configName, config, context);
   const soonestDying = creeps.reduce((minCreep, creep) =>
     creep.ticksToLive < minCreep.ticksToLive ? creep : minCreep,
   );
@@ -157,20 +214,25 @@ function shouldPreSpawnSourceWorker(spawn: StructureSpawn, configName: string, c
   return soonestDying.ticksToLive <= threshold;
 }
 
-function shouldQueueConfig(spawn: StructureSpawn, configName: string, config: CreepConfig): boolean {
-  if (isConfigQueued(spawn, configName) || isConfigSpawning(configName)) {
+function shouldQueueConfig(
+  spawn: StructureSpawn,
+  configName: string,
+  config: CreepConfig,
+  context?: SpawnPlanningContext,
+): boolean {
+  if (isConfigQueued(spawn, configName) || isConfigSpawning(configName, context || createSpawnPlanningContext())) {
     return false;
   }
 
   if (config.role === "harvester" || config.role === "miner" || config.role === "colonizerHarvester") {
-    return shouldPreSpawnSourceWorker(spawn, configName, config);
+    return shouldPreSpawnSourceWorker(spawn, configName, config, context);
   }
 
   if (config.role === "carrier") {
-    return shouldPreSpawnCarrier(spawn, configName);
+    return shouldPreSpawnCarrier(spawn, configName, context);
   }
 
-  return getConfigCreeps(configName).length === 0;
+  return getConfigCreeps(configName, context).length === 0;
 }
 
 function queueConfig(spawn: StructureSpawn, configName: string, options?: { toFront?: boolean }): void {
@@ -186,9 +248,14 @@ function queueConfig(spawn: StructureSpawn, configName: string, options?: { toFr
   }
 }
 
-function queueMissingConfig(spawn: StructureSpawn, configName: string, config: CreepConfig): void {
-  if (shouldQueueConfig(spawn, configName, config)) {
-    const shouldInsertCarrierAtFront = config.role === "carrier" && getConfigCreeps(configName).length === 0;
+function queueMissingConfig(
+  spawn: StructureSpawn,
+  configName: string,
+  config: CreepConfig,
+  context: SpawnPlanningContext,
+): void {
+  if (shouldQueueConfig(spawn, configName, config, context)) {
+    const shouldInsertCarrierAtFront = config.role === "carrier" && getConfigCreeps(configName, context).length === 0;
     queueConfig(spawn, configName, { toFront: shouldInsertCarrierAtFront });
   }
 }
@@ -258,6 +325,7 @@ function ensureEmergencyCarrier(spawn: StructureSpawn): void {
 
 export function scheduleSpawnTasks(): void {
   const tickContext = getTickContextService();
+  const planningContext = createSpawnPlanningContext();
   const spawnByRoom = new Map<string, StructureSpawn>();
   for (const room of tickContext.getMyRooms()) {
     const spawn = tickContext.getPrimarySpawnByRoom(room.name);
@@ -281,7 +349,7 @@ export function scheduleSpawnTasks(): void {
       continue;
     }
 
-    queueMissingConfig(spawn, configName, config);
+    queueMissingConfig(spawn, configName, config, planningContext);
   }
 
   for (const spawn of spawnByRoom.values()) {
