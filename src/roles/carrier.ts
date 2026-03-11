@@ -13,7 +13,16 @@ import {
 import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "@/runtime/carrierTaskBoard";
 import { isStorageReceiverLink } from "@/runtime/linkControl";
 
-type CarrierPickupTarget = Resource | StructureContainer | StructureLink | Tombstone | Ruin;
+type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
+
+function isEmergencyResponseCarrier(creep: Creep): boolean {
+  const configName = creep.memory.configName;
+  if (!configName) {
+    return false;
+  }
+
+  return configName.includes(":manual:maxcarrier:") || configName.includes(":emergency:");
+}
 
 function getCarrierPickupAmount(target: CarrierPickupTarget): number {
   return getPickupTargetEnergyAmount(target);
@@ -28,7 +37,7 @@ function isControllerAdjacentLink(link: StructureLink): boolean {
   return !!controllerPos && link.pos.getRangeTo(controllerPos) <= 2;
 }
 
-function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[] {
+function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeStorage?: boolean }): CarrierPickupTarget[] {
   const dropped = creep.room.find(FIND_DROPPED_RESOURCES, {
     filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
   });
@@ -46,8 +55,12 @@ function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[]
   const ruins = creep.room.find(FIND_RUINS, {
     filter: (ruin) => ruin.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
   });
+  const storage =
+    options?.includeStorage && creep.room.storage && creep.room.storage.store.getUsedCapacity(RESOURCE_ENERGY) > 0
+      ? [creep.room.storage]
+      : [];
 
-  const candidates: CarrierPickupTarget[] = [...dropped, ...structures, ...tombstones, ...ruins];
+  const candidates: CarrierPickupTarget[] = [...dropped, ...structures, ...tombstones, ...ruins, ...storage];
   if (candidates.length === 0) {
     return [];
   }
@@ -63,7 +76,10 @@ function getWeightedCarrierPickupCandidates(creep: Creep): CarrierPickupTarget[]
     });
 }
 
-function isCarrierPickupTarget(target: Resource | AnyStoreStructure | Tombstone | Ruin): target is CarrierPickupTarget {
+function isCarrierPickupTarget(
+  target: Resource | AnyStoreStructure | Tombstone | Ruin,
+  options?: { includeStorage?: boolean },
+): target is CarrierPickupTarget {
   if (isDroppedResourceTarget(target)) {
     return true;
   }
@@ -77,6 +93,10 @@ function isCarrierPickupTarget(target: Resource | AnyStoreStructure | Tombstone 
   }
 
   const structureType = (target as Structure).structureType;
+  if (options?.includeStorage && structureType === STRUCTURE_STORAGE) {
+    return true;
+  }
+
   if (structureType === STRUCTURE_CONTAINER) {
     return true;
   }
@@ -89,11 +109,11 @@ function isCarrierPickupTarget(target: Resource | AnyStoreStructure | Tombstone 
   return false;
 }
 
-function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: boolean } {
+function pickupEnergyForCarrier(creep: Creep, options?: { includeStorage?: boolean }): { picked: boolean; outOfRange: boolean } {
   const desiredAmount = creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0;
 
   let sourceTarget = getReservedPickupTarget(creep);
-  if (sourceTarget && !isCarrierPickupTarget(sourceTarget)) {
+  if (sourceTarget && !isCarrierPickupTarget(sourceTarget, options)) {
     releasePickupReservation(creep, sourceTarget.id);
     sourceTarget = null;
   }
@@ -104,7 +124,7 @@ function pickupEnergyForCarrier(creep: Creep): { picked: boolean; outOfRange: bo
   }
 
   if (!sourceTarget) {
-    const candidates = getWeightedCarrierPickupCandidates(creep);
+    const candidates = getWeightedCarrierPickupCandidates(creep, options);
     for (const candidate of candidates) {
       if (reservePickupTarget(creep, candidate, desiredAmount)) {
         sourceTarget = candidate;
@@ -216,28 +236,18 @@ function getPlannedDeliveryTarget(creep: Creep): AnyStoreStructure | null {
   return structureTarget;
 }
 
-function hasReplacementAliveOrSpawning(creep: Creep): boolean {
+function hasNewerLiveReplacement(creep: Creep): boolean {
   const configName = creep.memory.configName;
   if (!configName) {
     return false;
   }
 
-  const liveReplacement = Object.values(Game.creeps).some(
-    (candidate) => candidate.name !== creep.name && candidate.memory.configName === configName,
+  return Object.values(Game.creeps).some(
+    (candidate) =>
+      candidate.name !== creep.name &&
+      candidate.memory.configName === configName &&
+      candidate.ticksToLive > creep.ticksToLive,
   );
-  if (liveReplacement) {
-    return true;
-  }
-
-  const creepMemory = Memory.creeps || {};
-  return Object.values(Game.spawns).some((spawn) => {
-    if (!spawn.spawning) {
-      return false;
-    }
-
-    const spawningName = spawn.spawning.name;
-    return creepMemory[spawningName]?.configName === configName;
-  });
 }
 
 function getSynthesisCarrierTasks(roomName: string): CarrierTask[] {
@@ -438,6 +448,7 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
 export const carrierRole: RoleFactory = () => ({
   source: (creep): boolean => {
     clearPostTransferPlan(creep);
+    const emergencyResponseMode = isEmergencyResponseCarrier(creep);
 
     if (creep.store.getUsedCapacity() > 0) {
       releasePickupReservation(creep);
@@ -452,14 +463,16 @@ export const carrierRole: RoleFactory = () => ({
     if (energyDemandTarget) {
       delete creep.memory.carrierStorageOnlyMode;
 
-      if (creep.store.getUsedCapacity() === 0 && hasReplacementAliveOrSpawning(creep)) {
+      if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep)) {
         releasePickupReservation(creep);
         clearSynthesisCarrierTaskPlan(creep);
         creep.suicide();
         return false;
       }
 
-      pickupEnergyForCarrier(creep);
+      pickupEnergyForCarrier(creep, {
+        includeStorage: emergencyResponseMode,
+      });
       const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
       if (hasEnergy) {
         releasePickupReservation(creep);
@@ -476,7 +489,7 @@ export const carrierRole: RoleFactory = () => ({
       return creep.store.getUsedCapacity() > 0;
     }
 
-    if (creep.store.getUsedCapacity() === 0 && hasReplacementAliveOrSpawning(creep)) {
+    if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep)) {
       releasePickupReservation(creep);
       creep.suicide();
       return false;
@@ -484,7 +497,9 @@ export const carrierRole: RoleFactory = () => ({
 
     creep.memory.carrierStorageOnlyMode = true;
 
-    pickupEnergyForCarrier(creep);
+    pickupEnergyForCarrier(creep, {
+      includeStorage: emergencyResponseMode,
+    });
     const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
     if (hasEnergy) {
       releasePickupReservation(creep);
