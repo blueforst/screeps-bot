@@ -1,4 +1,5 @@
 import { runPlannerForRoom, savePlannerForRoom } from "@/modules/autoplanner";
+import { getTickContextService } from "@/runtime/runtimeServices";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 
 const CONSTRUCTION_PRIORITY: BuildableStructureConstant[] = [
@@ -73,7 +74,7 @@ function getContainerReferencePosition(room: Room): RoomPosition {
     return room.storage.pos;
   }
 
-  const roomSpawn = Object.values(Game.spawns).find((spawn) => spawn.room.name === room.name);
+  const roomSpawn = getTickContextService().getPrimarySpawnByRoom(room.name);
   if (roomSpawn) {
     return roomSpawn.pos;
   }
@@ -238,7 +239,7 @@ function getPrimaryRoomAnchor(room: Room, layout: PlannedLayout): RoomPosition {
     return new RoomPosition(plannedStorage.x, plannedStorage.y, room.name);
   }
 
-  const roomSpawn = Object.values(Game.spawns).find((spawn) => spawn.room.name === room.name);
+  const roomSpawn = getTickContextService().getPrimarySpawnByRoom(room.name);
   if (roomSpawn) {
     return roomSpawn.pos;
   }
@@ -523,7 +524,7 @@ export function runRoomPlannerConstruction(): void {
     return;
   }
 
-  const rooms = Object.values(Game.rooms).filter((room) => room.controller?.my);
+  const rooms = getTickContextService().getMyRooms();
   const configuredMaxNewSitesPerRoom = Memory.cfg?.roomPlannerBuild?.maxNewSitesPerRoom ?? DEFAULT_MAX_NEW_SITES_PER_ROOM;
   const maxNewSitesPerRoom = Math.min(configuredMaxNewSitesPerRoom, MAX_NEW_SITES_PER_RUN);
   let globalRemaining = GLOBAL_SITE_SOFT_CAP - currentGlobalSiteCount;
