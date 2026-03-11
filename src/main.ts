@@ -21,7 +21,7 @@ import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { runTowerControl } from "@/runtime/towerControl";
 import { runWarControl } from "@/runtime/warControl";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
-import { createTickCpuProfiler } from "@/runtime/cpuPhaseProfiler";
+import { createTickCpuProfiler, setActiveTickCpuProfiler } from "@/runtime/cpuPhaseProfiler";
 
 mountAll();
 registerGlobalApi();
@@ -44,6 +44,7 @@ export function addNumbers(num1: number, num2: number): number {
 
 function gameLoop(): void {
   const cpuProfiler = createTickCpuProfiler();
+  setActiveTickCpuProfiler(cpuProfiler);
 
   cpuProfiler.measure("announceDeploy", announceDeploy);
   cpuProfiler.measure("pixelGenerator", runPixelGenerator);

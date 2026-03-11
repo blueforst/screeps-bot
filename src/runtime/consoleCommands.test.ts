@@ -43,6 +43,9 @@ describe("cpuMonitor", () => {
           tickLimit: 500,
           phases: {
             creepWork: 8,
+            "creepWork:intent": 4,
+            "creepWork:decision": 2,
+            "creepWork:pathing": 1.5,
             towerControl: 1,
           },
           untracked: 2,
@@ -58,7 +61,7 @@ describe("cpuMonitor", () => {
         bucket: 9800,
         limit: 20,
         tickLimit: 500,
-        phases: { creepWork: 7, towerControl: 1 },
+        phases: { creepWork: 7, "creepWork:intent": 3, "creepWork:decision": 1, "creepWork:pathing": 1, towerControl: 1 },
         untracked: 1,
       },
       {
@@ -68,7 +71,7 @@ describe("cpuMonitor", () => {
         bucket: 9600,
         limit: 20,
         tickLimit: 500,
-        phases: { creepWork: 8, towerControl: 1 },
+        phases: { creepWork: 8, "creepWork:intent": 4, "creepWork:decision": 2, "creepWork:pathing": 1.5, towerControl: 1 },
         untracked: 2,
       },
       {
@@ -78,7 +81,7 @@ describe("cpuMonitor", () => {
         bucket: 9500,
         limit: 20,
         tickLimit: 500,
-        phases: { creepWork: 9, towerControl: 1 },
+        phases: { creepWork: 9, "creepWork:intent": 5, "creepWork:decision": 3, "creepWork:pathing": 2, towerControl: 1 },
         untracked: 3,
       },
     ];
@@ -100,6 +103,9 @@ describe("cpuMonitor", () => {
     expect(result.summary?.avgBucket).toBeCloseTo(9633.333, 2);
     expect(result.summary?.avgUntracked).toBeCloseTo(2);
     expect(result.summary?.avgPhases.creepWork).toBeCloseTo(8);
+    expect(result.summary?.avgPhases["creepWork:intent"]).toBeCloseTo(4);
+    expect(result.summary?.avgPhases["creepWork:decision"]).toBeCloseTo(2);
+    expect(result.summary?.avgPhases["creepWork:pathing"]).toBeCloseTo(1.5);
   });
 
   it("returns readable output from command wrapper", () => {
@@ -125,6 +131,9 @@ describe("cpuMonitor", () => {
           tickLimit: 500,
           phases: {
             creepWork: 8,
+            "creepWork:intent": 4,
+            "creepWork:decision": 2,
+            "creepWork:pathing": 1.5,
             towerControl: 1,
           },
           untracked: 2,
@@ -140,7 +149,7 @@ describe("cpuMonitor", () => {
         bucket: 9800,
         limit: 20,
         tickLimit: 500,
-        phases: { creepWork: 7, towerControl: 1 },
+        phases: { creepWork: 7, "creepWork:intent": 3, "creepWork:decision": 1, "creepWork:pathing": 1, towerControl: 1 },
         untracked: 1,
       },
       {
@@ -150,7 +159,7 @@ describe("cpuMonitor", () => {
         bucket: 9600,
         limit: 20,
         tickLimit: 500,
-        phases: { creepWork: 8, towerControl: 1 },
+        phases: { creepWork: 8, "creepWork:intent": 4, "creepWork:decision": 2, "creepWork:pathing": 1.5, towerControl: 1 },
         untracked: 2,
       },
       {
@@ -160,7 +169,7 @@ describe("cpuMonitor", () => {
         bucket: 9500,
         limit: 20,
         tickLimit: 500,
-        phases: { creepWork: 9, towerControl: 1 },
+        phases: { creepWork: 9, "creepWork:intent": 5, "creepWork:decision": 3, "creepWork:pathing": 2, towerControl: 1 },
         untracked: 3,
       },
     ];
@@ -168,9 +177,9 @@ describe("cpuMonitor", () => {
     expect(cpuMonitorCommand()).toBe(
         "[cpu-monitor] enabled=true sampleInterval=5 history=3/120\n" +
         "[cpu-monitor] latest tick=123 shard=shard3 used=17.00/20 bucket=9500 tickLimit=500 untracked=2.00\n" +
-        "[cpu-monitor] latestPhases creepWork=8.00 towerControl=1.00\n" +
+        "[cpu-monitor] latestPhases creepWork=8.00 creepWork:intent=4.00 creepWork:decision=2.00 creepWork:pathing=1.50 towerControl=1.00\n" +
         "[cpu-monitor] summary ticks=3 avgUsed=16.00 maxUsed=17.00 avgBucket=9633.33 bucketRange=9500-9800 avgUntracked=2.00\n" +
-        "[cpu-monitor] summaryPhases creepWork=8.00 towerControl=1.00",
+        "[cpu-monitor] summaryPhases creepWork=8.00 creepWork:intent=4.00 creepWork:decision=2.00 creepWork:pathing=1.50 towerControl=1.00",
     );
   });
 });

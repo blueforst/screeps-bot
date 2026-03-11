@@ -1,5 +1,6 @@
 import { roleRegistry } from "@/roles";
 import { decodeCrossShardTravelerName } from "@/runtime/crossShardNaming";
+import { measureCreepDecision } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 
 function tryRestoreRoleFromName(creep: Creep): boolean {
@@ -65,14 +66,14 @@ function resolveRoleLogic(creep: Creep): ReturnType<(typeof roleRegistry)[keyof 
 
 export function mountCreep(): void {
   Creep.prototype.work = function work(): void {
-    const logic = resolveRoleLogic(this);
+    const logic = measureCreepDecision(() => resolveRoleLogic(this));
     if (!logic) {
       this.say("no-config");
       return;
     }
 
     if (!this.memory.ready) {
-      this.memory.ready = logic.prepare ? logic.prepare(this) : true;
+      this.memory.ready = measureCreepDecision(() => (logic.prepare ? logic.prepare(this) : true));
       return;
     }
 

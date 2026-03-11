@@ -24,10 +24,12 @@ type RuntimeGlobalWithCpuProfiler = typeof global & {
 
 const runtimeGlobal: RuntimeGlobalWithCpuProfiler = global;
 
-interface TickCpuProfiler {
+export interface TickCpuProfiler {
   measure<T>(phase: string, fn: () => T): T;
   flush(): void;
 }
+
+let activeTickCpuProfiler: TickCpuProfiler = createNoopProfiler();
 
 function normalizeSampleInterval(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -107,6 +109,26 @@ function createNoopProfiler(): TickCpuProfiler {
       return;
     },
   };
+}
+
+export function setActiveTickCpuProfiler(profiler: TickCpuProfiler): void {
+  activeTickCpuProfiler = profiler;
+}
+
+export function measureCpuPhase<T>(phase: string, fn: () => T): T {
+  return activeTickCpuProfiler.measure(phase, fn);
+}
+
+export function measureCreepDecision<T>(fn: () => T): T {
+  return measureCpuPhase("creepWork:decision", fn);
+}
+
+export function measureCreepPathing<T>(fn: () => T): T {
+  return measureCpuPhase("creepWork:pathing", fn);
+}
+
+export function measureCreepIntent<T>(fn: () => T): T {
+  return measureCpuPhase("creepWork:intent", fn);
 }
 
 export function createTickCpuProfiler(): TickCpuProfiler {
