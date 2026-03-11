@@ -12,6 +12,7 @@ import {
 } from "@/runtime/energyPickupReservation";
 import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "@/runtime/carrierTaskBoard";
 import { isStorageReceiverLink } from "@/runtime/linkControl";
+import { getTickContextService } from "@/runtime/runtimeServices";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
 
@@ -38,23 +39,19 @@ function isControllerAdjacentLink(link: StructureLink): boolean {
 }
 
 function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeStorage?: boolean }): CarrierPickupTarget[] {
-  const dropped = creep.room.find(FIND_DROPPED_RESOURCES, {
-    filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
-  });
-  const structures = creep.room.find(FIND_STRUCTURES, {
-    filter: (structure) =>
+  const roomContext = getTickContextService().getRoomContext(creep.room);
+  const dropped = roomContext?.getDroppedEnergyResources() || [];
+  const allStructures = roomContext?.getStructures() || [];
+  const structures = allStructures.filter(
+    (structure): structure is StructureContainer | StructureLink =>
       (structure.structureType === STRUCTURE_CONTAINER ||
         (structure.structureType === STRUCTURE_LINK &&
           isStorageReceiverLink(structure as StructureLink) &&
           !isControllerAdjacentLink(structure as StructureLink))) &&
       (structure as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  }) as (StructureContainer | StructureLink)[];
-  const tombstones = creep.room.find(FIND_TOMBSTONES, {
-    filter: (tombstone) => tombstone.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  });
-  const ruins = creep.room.find(FIND_RUINS, {
-    filter: (ruin) => ruin.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  });
+  );
+  const tombstones = roomContext?.getEnergyTombstones() || [];
+  const ruins = roomContext?.getEnergyRuins() || [];
   const storage =
     options?.includeStorage && creep.room.storage && creep.room.storage.store.getUsedCapacity(RESOURCE_ENERGY) > 0
       ? [creep.room.storage]

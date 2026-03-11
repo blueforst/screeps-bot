@@ -4,6 +4,7 @@ import {
   releasePickupReservation,
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
+import { getTickContextService } from "@/runtime/runtimeServices";
 import { isReceiverLink } from "@/runtime/linkControl";
 
 function getTargetPos(target: RoomPosition | { pos: RoomPosition }): RoomPosition {
@@ -544,9 +545,10 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
   const excludeSet = new Set(options.excludeIds || []);
   const includeTerminal = options.includeTerminal ?? true;
   const includeStorage = options.includeStorage ?? true;
+  const roomContext = getTickContextService().getRoomContext(creep.room);
+  const myStructures = roomContext?.getMyStructures() || [];
 
-  const spawnAndExtensionTargets = creep.room.find(FIND_STRUCTURES, {
-    filter: (structure) => {
+  const spawnAndExtensionTargets = myStructures.filter((structure) => {
       if (excludeSet.has(structure.id)) {
         return false;
       }
@@ -555,15 +557,13 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
         return (structure as StructureSpawn | StructureExtension).store.getFreeCapacity(RESOURCE_ENERGY) > 0;
       }
       return false;
-    },
-  });
+   });
 
   if (spawnAndExtensionTargets.length > 0) {
     return creep.pos.findClosestByRange(spawnAndExtensionTargets) as AnyStoreStructure;
   }
 
-  const towerTargets = creep.room.find(FIND_STRUCTURES, {
-    filter: (structure) => {
+  const towerTargets = myStructures.filter((structure) => {
       if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_TOWER) {
         return false;
       }
@@ -572,53 +572,46 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       const used = tower.store.getUsedCapacity(RESOURCE_ENERGY);
       const capacity = tower.store.getCapacity(RESOURCE_ENERGY);
       return capacity > 0 && tower.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && used <= capacity * 0.6;
-    },
-  });
+    });
 
   if (towerTargets.length > 0) {
     return creep.pos.findClosestByRange(towerTargets) as AnyStoreStructure;
   }
 
-  const powerSpawnTargets = creep.room.find(FIND_STRUCTURES, {
-    filter: (structure) => {
+  const powerSpawnTargets = myStructures.filter((structure) => {
       if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_POWER_SPAWN) {
         return false;
       }
 
       const powerSpawn = structure as StructurePowerSpawn;
       return powerSpawn.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-    },
-  });
+    });
 
   if (powerSpawnTargets.length > 0) {
     return creep.pos.findClosestByRange(powerSpawnTargets) as AnyStoreStructure;
   }
 
-  const factoryTargets = creep.room.find(FIND_STRUCTURES, {
-    filter: (structure) => {
+  const factoryTargets = myStructures.filter((structure) => {
       if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_FACTORY) {
         return false;
       }
 
       const factory = structure as StructureFactory;
       return factory.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-    },
-  });
+    });
 
   if (factoryTargets.length > 0) {
     return creep.pos.findClosestByRange(factoryTargets) as AnyStoreStructure;
   }
 
-  const labTargets = creep.room.find(FIND_STRUCTURES, {
-    filter: (structure) => {
+  const labTargets = myStructures.filter((structure) => {
       if (excludeSet.has(structure.id) || structure.structureType !== STRUCTURE_LAB) {
         return false;
       }
 
       const lab = structure as StructureLab;
       return lab.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-    },
-  });
+    });
 
   if (labTargets.length > 0) {
     return creep.pos.findClosestByRange(labTargets) as AnyStoreStructure;
@@ -644,22 +637,18 @@ function getTargetEnergyAmount(target: EnergyPickupTarget): number {
 }
 
 function getPreferredEnergyPickupCandidates(creep: Creep): EnergyPickupTarget[] {
-  const dropped = creep.room.find(FIND_DROPPED_RESOURCES, {
-    filter: (resource) => resource.resourceType === RESOURCE_ENERGY,
-  });
-  const structureCandidates = creep.room.find(FIND_STRUCTURES, {
-    filter: (structure) =>
+  const roomContext = getTickContextService().getRoomContext(creep.room);
+  const dropped = roomContext?.getDroppedEnergyResources() || [];
+  const structures = roomContext?.getStructures() || [];
+  const structureCandidates = structures.filter(
+    (structure): structure is AnyStoreStructure =>
       (structure.structureType === STRUCTURE_CONTAINER ||
         structure.structureType === STRUCTURE_STORAGE ||
         (structure.structureType === STRUCTURE_LINK && isReceiverLink(structure as StructureLink))) &&
       (structure as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  }) as AnyStoreStructure[];
-  const tombstones = creep.room.find(FIND_TOMBSTONES, {
-    filter: (tombstone) => tombstone.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  });
-  const ruins = creep.room.find(FIND_RUINS, {
-    filter: (ruin) => ruin.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
-  });
+  );
+  const tombstones = roomContext?.getEnergyTombstones() || [];
+  const ruins = roomContext?.getEnergyRuins() || [];
 
   const candidates: EnergyPickupTarget[] = [...dropped, ...structureCandidates, ...tombstones, ...ruins];
   if (candidates.length === 0) {
