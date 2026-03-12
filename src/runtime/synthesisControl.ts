@@ -68,6 +68,9 @@ interface SynthesisRuntimeState {
   generatedTaskCount: number;
   failedTaskCount: number;
   successfulRunCount: number;
+  autoOhTarget?: number;
+  autoOhCurrent?: number;
+  autoOhProducerRoomName?: string;
   lastActions: string[];
   bindings: SynthesisBindingStore;
   rooms: Record<string, SynthesisRoomRuntimeState>;
@@ -82,6 +85,13 @@ interface DonorCandidate {
   room: Room;
   sendable: number;
   score: number;
+}
+
+interface AutoOhPlanSelection {
+  roomName: string;
+  targetAmount: number;
+  currentAmount: number;
+  plan: SynthesisReactionPlan;
 }
 
 const DEFAULT_SAMPLE_INTERVAL = 10;
@@ -234,6 +244,88 @@ function normalizeConfig(): SynthesisControlConfig {
     defaultBatchSize,
     defaultMaxRunsPerTick,
     rooms,
+  };
+}
+
+function getLogisticsRooms(): Room[] {
+  return getTickContextService()
+    .getMyRooms()
+    .filter((room) => !!room.controller?.my && !!room.terminal);
+}
+
+function roomHasSynthesisLabs(room: Room): boolean {
+  const labs = room.find(FIND_MY_STRUCTURES, {
+    filter: (structure) => structure.structureType === STRUCTURE_LAB,
+  });
+  return labs.length >= 3;
+}
+
+function selectAutoOhProducerRoom(cfg: SynthesisControlConfig, rooms: Room[]): Room | null {
+  const candidates = rooms
+    .filter((room) => (cfg.rooms[room.name] ? cfg.rooms[room.name].enabled : true))
+    .filter((room) => roomHasSynthesisLabs(room))
+    .map((room) => {
+      const mineral = room.find(FIND_MINERALS)[0] || null;
+      return {
+        room,
+        reagentMatch:
+          mineral?.mineralType === RESOURCE_HYDROGEN || mineral?.mineralType === RESOURCE_OXYGEN ? 1 : 0,
+        storageEnergy: room.storage?.store.getUsedCapacity(RESOURCE_ENERGY) || 0,
+      };
+    })
+    .sort((left, right) => {
+      if (left.reagentMatch !== right.reagentMatch) {
+        return right.reagentMatch - left.reagentMatch;
+      }
+      if (left.storageEnergy !== right.storageEnergy) {
+        return right.storageEnergy - left.storageEnergy;
+      }
+      return left.room.name.localeCompare(right.room.name);
+    });
+
+  return candidates[0]?.room || null;
+}
+
+function getAutoOhPlan(cfg: SynthesisControlConfig): AutoOhPlanSelection | null {
+  const logisticsRooms = getLogisticsRooms();
+  const targetAmount = logisticsRooms.length * 2000;
+  if (targetAmount <= 0) {
+    return null;
+  }
+
+  const currentAmount = logisticsRooms.reduce((sum, room) => sum + roomResourceAmount(room, RESOURCE_HYDROXIDE), 0);
+  if (currentAmount >= targetAmount) {
+    return null;
+  }
+
+  const room = selectAutoOhProducerRoom(cfg, logisticsRooms);
+  if (!room) {
+    return null;
+  }
+
+  const roomCurrent = roomResourceAmount(room, RESOURCE_HYDROXIDE);
+  const deficit = Math.max(0, targetAmount - currentAmount);
+  return {
+    roomName: room.name,
+    targetAmount,
+    currentAmount,
+    plan: {
+      product: RESOURCE_HYDROXIDE,
+      targetAmount: roomCurrent + deficit,
+      batchSize: cfg.rooms[room.name]?.batchSize || cfg.defaultBatchSize,
+      donorRoomNames: [],
+    },
+  };
+}
+
+function createAutoManagedRoomConfig(cfg: SynthesisControlConfig): SynthesisRoomConfig {
+  return {
+    enabled: true,
+    batchSize: cfg.defaultBatchSize,
+    maxRunsPerTick: cfg.defaultMaxRunsPerTick,
+    donorRoomNames: [],
+    reagentLabIds: [],
+    reactions: [],
   };
 }
 
@@ -714,11 +806,18 @@ function generateSupplyTask(
   };
 }
 
-function chooseActivePlan(room: Room, roomCfg: SynthesisRoomConfig): SynthesisReactionPlan | null {
+function chooseActivePlan(room: Room, roomCfg: SynthesisRoomConfig, autoPlan?: SynthesisReactionPlan | null): SynthesisReactionPlan | null {
   for (const plan of roomCfg.reactions) {
     const current = roomResourceAmount(room, plan.product);
     if (current < plan.targetAmount) {
       return plan;
+    }
+  }
+
+  if (autoPlan) {
+    const current = roomResourceAmount(room, autoPlan.product);
+    if (current < autoPlan.targetAmount) {
+      return autoPlan;
     }
   }
 
@@ -826,6 +925,7 @@ function handleRoom(
   planningTick: boolean,
   runtime: SynthesisRuntimeState,
   actions: string[],
+  autoPlan?: SynthesisReactionPlan | null,
 ): { generated: number; failed: number; runs: number } {
   let generated = 0;
   let failed = 0;
@@ -874,7 +974,7 @@ function handleRoom(
     return { generated, failed, runs };
   }
 
-  const activePlan = chooseActivePlan(room, roomCfg);
+  const activePlan = chooseActivePlan(room, roomCfg, autoPlan);
   if (!activePlan) {
     replaceCarrierTasksForProducerRoom(SYNTHESIS_CARRIER_TASK_PRODUCER, roomName, []);
     runtime.rooms[roomName] = {
@@ -1036,7 +1136,6 @@ export function runSynthesisControl(): void {
   const runtime = getRuntimeState();
   const cfg = normalizeConfig();
   const actions: string[] = [];
-  const configuredRoomNames = new Set(Object.keys(cfg.rooms));
 
   if (!cfg.enabled) {
     pruneCarrierTasksForProducer(SYNTHESIS_CARRIER_TASK_PRODUCER, new Set());
@@ -1054,12 +1153,28 @@ export function runSynthesisControl(): void {
   }
 
   const planningTick = Game.time % cfg.sampleInterval === 0;
+  const autoOhPlan = getAutoOhPlan(cfg);
+  const roomEntries = new Map(Object.entries(cfg.rooms));
+  if (autoOhPlan && !roomEntries.has(autoOhPlan.roomName)) {
+    roomEntries.set(autoOhPlan.roomName, createAutoManagedRoomConfig(cfg));
+  }
+  const configuredRoomNames = new Set(roomEntries.keys());
   runtime.generatedTaskCount = 0;
   runtime.failedTaskCount = 0;
   runtime.successfulRunCount = 0;
+  runtime.autoOhTarget = autoOhPlan?.targetAmount;
+  runtime.autoOhCurrent = autoOhPlan?.currentAmount;
+  runtime.autoOhProducerRoomName = autoOhPlan?.roomName;
 
-  for (const [roomName, roomCfg] of Object.entries(cfg.rooms)) {
-    const result = handleRoom(roomName, roomCfg, planningTick, runtime, actions);
+  for (const [roomName, roomCfg] of roomEntries.entries()) {
+    const result = handleRoom(
+      roomName,
+      roomCfg,
+      planningTick,
+      runtime,
+      actions,
+      autoOhPlan?.roomName === roomName ? autoOhPlan.plan : null,
+    );
     runtime.generatedTaskCount += result.generated;
     runtime.failedTaskCount += result.failed;
     runtime.successfulRunCount += result.runs;
