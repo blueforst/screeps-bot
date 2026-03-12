@@ -20,10 +20,36 @@ function createSource(id: string, roomName: string, hasLink = false): Source {
   } as Source;
 }
 
+function createMineral(
+  id: string,
+  options: {
+    hasExtractor?: boolean;
+    hasContainer?: boolean;
+    amount?: number;
+  } = {},
+): Mineral {
+  const structures: Structure[] = [];
+  if (options.hasExtractor) {
+    structures.push({ structureType: STRUCTURE_EXTRACTOR } as StructureExtractor);
+  }
+  if (options.hasContainer) {
+    structures.push({ structureType: STRUCTURE_CONTAINER } as StructureContainer);
+  }
+
+  return {
+    id,
+    mineralAmount: options.amount ?? 1000,
+    pos: {
+      findInRange: () => structures,
+    } as unknown as RoomPosition,
+  } as Mineral;
+}
+
 function createRoom(options: {
   name?: string;
   level?: number;
   sources?: Source[];
+  minerals?: Mineral[];
   constructionCount?: number;
   tasks?: RoomMemory["tasks"];
 } = {}): Room {
@@ -32,6 +58,7 @@ function createRoom(options: {
     tasks: options.tasks,
   } as RoomMemory);
   const sources = options.sources ?? [];
+  const minerals = options.minerals ?? [];
   const constructionSites = Array.from({ length: options.constructionCount ?? 0 }, (_, index) => ({
     id: `site-${index}`,
   })) as ConstructionSite[];
@@ -50,6 +77,10 @@ function createRoom(options: {
 
       if (type === FIND_CONSTRUCTION_SITES) {
         return constructionSites;
+      }
+
+      if (type === FIND_MINERALS) {
+        return minerals;
       }
 
       return [];
@@ -75,8 +106,14 @@ describe("bootstrapRooms", () => {
   it("upserts managed configs and removes stale source queue entries", () => {
     const room = createRoom({
       sources: [createSource("source-a", "W1N1"), createSource("source-b", "W1N1", true)],
+      minerals: [createMineral("mineral-a", { hasExtractor: true, hasContainer: true, amount: 2000 })],
     });
-    const spawn = createSpawn(room, ["W1N1:harvester:old", "W1N1:miner:source-b", "manual:keep"]);
+    const spawn = createSpawn(room, [
+      "W1N1:harvester:old",
+      "W1N1:miner:source-b",
+      "W1N1:mineralHarvester:old",
+      "manual:keep",
+    ]);
     Game.rooms[room.name] = room;
     Game.spawns.Spawn1 = spawn;
 
@@ -85,15 +122,21 @@ describe("bootstrapRooms", () => {
     expect(getCreepConfigService().list()).toMatchObject({
       "W1N1:harvester:source-a": { role: "harvester", args: ["source-a"], roomName: "W1N1" },
       "W1N1:miner:source-b": { role: "miner", args: ["source-b"], roomName: "W1N1" },
+      "W1N1:mineralHarvester:mineral-a": {
+        role: "mineralHarvester",
+        args: ["mineral-a"],
+        roomName: "W1N1",
+      },
       "W1N1:carrier:0": { role: "carrier", args: [], roomName: "W1N1" },
       "W1N1:worker:0": { role: "worker", args: [], roomName: "W1N1" },
     });
     expect(spawn.memory.spawnList).toEqual(["W1N1:miner:source-b", "manual:keep"]);
   });
 
-  it("removes stale source and worker configs when no live creep still references them", () => {
+  it("removes stale source, mineral, and worker configs when no live creep still references them", () => {
     const room = createRoom({
       sources: [createSource("source-a", "W1N1")],
+      minerals: [createMineral("mineral-a", { hasExtractor: true, hasContainer: true, amount: 500 })],
     });
     Game.rooms[room.name] = room;
     Game.spawns.Spawn1 = createSpawn(room);
@@ -101,6 +144,16 @@ describe("bootstrapRooms", () => {
       creepConfigs: {
         "W1N1:harvester:source-a": { role: "harvester", args: ["source-a"], roomName: "W1N1" },
         "W1N1:harvester:stale": { role: "harvester", args: ["stale"], roomName: "W1N1" },
+        "W1N1:mineralHarvester:mineral-a": {
+          role: "mineralHarvester",
+          args: ["mineral-a"],
+          roomName: "W1N1",
+        },
+        "W1N1:mineralHarvester:stale": {
+          role: "mineralHarvester",
+          args: ["stale"],
+          roomName: "W1N1",
+        },
         "W1N1:worker:0": { role: "worker", args: [], roomName: "W1N1" },
         "W1N1:worker:9": { role: "worker", args: [], roomName: "W1N1" },
       },
@@ -109,8 +162,10 @@ describe("bootstrapRooms", () => {
     bootstrapRooms();
 
     expect(getCreepConfigService().get("W1N1:harvester:stale")).toBeUndefined();
+    expect(getCreepConfigService().get("W1N1:mineralHarvester:stale")).toBeUndefined();
     expect(getCreepConfigService().get("W1N1:worker:9")).toBeUndefined();
     expect(getCreepConfigService().get("W1N1:harvester:source-a")).toBeDefined();
+    expect(getCreepConfigService().get("W1N1:mineralHarvester:mineral-a")).toBeDefined();
     expect(getCreepConfigService().get("W1N1:worker:0")).toBeDefined();
   });
 

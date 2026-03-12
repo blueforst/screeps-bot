@@ -1,5 +1,5 @@
 import { upsertConfig } from "@/runtime/creepApi";
-import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
+import { getEligibleMineralIds, getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { TickContextService } from "@/runtime/tickContext";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
@@ -27,6 +27,7 @@ function cleanupConfigsByPrefix(
 function cleanupSourceConfigs(roomName: string, validConfigNames: Set<string>, tickContext: TickContextService): void {
   cleanupConfigsByPrefix(roomName, "harvester", validConfigNames, tickContext);
   cleanupConfigsByPrefix(roomName, "miner", validConfigNames, tickContext);
+  cleanupConfigsByPrefix(roomName, "mineralHarvester", validConfigNames, tickContext);
 }
 
 function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>, tickContext: TickContextService): void {
@@ -34,7 +35,11 @@ function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>, t
 }
 
 function isSourceRoleConfigName(roomName: string, configName: string): boolean {
-  return configName.startsWith(`${roomName}:harvester:`) || configName.startsWith(`${roomName}:miner:`);
+  return (
+    configName.startsWith(`${roomName}:harvester:`) ||
+    configName.startsWith(`${roomName}:miner:`) ||
+    configName.startsWith(`${roomName}:mineralHarvester:`)
+  );
 }
 
 function cleanupSourceRoleQueueEntries(
@@ -70,6 +75,11 @@ export function bootstrapRooms(): void {
       const role: SourceWorkerRole = hasSourceAdjacentLink(source) ? "miner" : "harvester";
       const configName = `${room.name}:${role}:${source.id}`;
       upsertConfig(configName, role, [source.id], room.name);
+    }
+
+    for (const mineralId of getEligibleMineralIds(room)) {
+      const configName = `${room.name}:mineralHarvester:${mineralId}`;
+      upsertConfig(configName, "mineralHarvester", [mineralId], room.name);
     }
 
     cleanupSourceRoleQueueEntries(room.name, expectedConfigNames, tickContext);
