@@ -10,6 +10,31 @@ function createSource(id: string, roomName: string, hasLink = false): Source {
   } as Source;
 }
 
+function createMineral(
+  id: string,
+  options: {
+    hasExtractor?: boolean;
+    hasContainer?: boolean;
+    amount?: number;
+  } = {},
+): Mineral {
+  const structures: Structure[] = [];
+  if (options.hasExtractor) {
+    structures.push({ structureType: STRUCTURE_EXTRACTOR } as StructureExtractor);
+  }
+  if (options.hasContainer) {
+    structures.push({ structureType: STRUCTURE_CONTAINER } as StructureContainer);
+  }
+
+  return {
+    id,
+    mineralAmount: options.amount ?? 1000,
+    pos: {
+      findInRange: () => structures,
+    } as unknown as RoomPosition,
+  } as Mineral;
+}
+
 function createRoom(options: {
   name?: string;
   level?: number;
@@ -17,6 +42,7 @@ function createRoom(options: {
   tasks?: RoomMemory["tasks"];
   sources?: Source[];
   workerConstructionTier?: RoomMemory["workerConstructionTier"];
+  minerals?: Mineral[];
 } = {}): Room {
   const name = options.name ?? "W1N1";
   const memory = (Memory.rooms[name] = {
@@ -24,6 +50,7 @@ function createRoom(options: {
     tasks: options.tasks,
   } as RoomMemory);
   const sources = options.sources ?? [];
+  const minerals = options.minerals ?? [];
   const constructionSites = Array.from({ length: options.constructionCount ?? 0 }, (_, index) => ({
     id: `site-${index}`,
   })) as ConstructionSite[];
@@ -41,6 +68,10 @@ function createRoom(options: {
 
       if (type === FIND_CONSTRUCTION_SITES) {
         return constructionSites;
+      }
+
+      if (type === FIND_MINERALS) {
+        return minerals;
       }
 
       return [];
@@ -144,11 +175,17 @@ describe("roomWorkforce", () => {
     const room = createRoom({
       level: 5,
       sources: [createSource("source-a", "W1N1"), createSource("source-b", "W1N1", true)],
+      minerals: [
+        createMineral("mineral-ok", { hasExtractor: true, hasContainer: true, amount: 4000 }),
+        createMineral("mineral-no-container", { hasExtractor: true, hasContainer: false, amount: 4000 }),
+        createMineral("mineral-empty", { hasExtractor: true, hasContainer: true, amount: 0 }),
+      ],
     });
 
     expect(getExpectedManagedConfigNames(room)).toEqual([
       "W1N1:harvester:source-a",
       "W1N1:miner:source-b",
+      "W1N1:mineralHarvester:mineral-ok",
       "W1N1:carrier:0",
       "W1N1:worker:0",
     ]);

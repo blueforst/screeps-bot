@@ -5,6 +5,24 @@ const DEFAULT_WORKER_BASE = 1;
 
 type SourceWorkerRole = "harvester" | "miner";
 
+function isMineralEligibleForHarvest(mineral: Mineral): boolean {
+  if (mineral.mineralAmount <= 0) {
+    return false;
+  }
+
+  const structures = mineral.pos.findInRange(FIND_STRUCTURES, 1);
+  const hasExtractor = structures.some((structure) => structure.structureType === STRUCTURE_EXTRACTOR);
+  const hasContainer = structures.some((structure) => structure.structureType === STRUCTURE_CONTAINER);
+  return hasExtractor && hasContainer;
+}
+
+export function getEligibleMineralIds(room: Room): string[] {
+  return room
+    .find(FIND_MINERALS)
+    .filter((mineral) => isMineralEligibleForHarvest(mineral))
+    .map((mineral) => mineral.id);
+}
+
 function clamp(value: number, minValue: number, maxValue: number): number {
   return Math.max(minValue, Math.min(maxValue, value));
 }
@@ -85,6 +103,11 @@ export function getExpectedManagedConfigNames(room: Room): string[] {
   for (const source of sources) {
     const role: SourceWorkerRole = hasSourceAdjacentLink(source) ? "miner" : "harvester";
     names.push(`${room.name}:${role}:${source.id}`);
+  }
+
+  const mineralIds = getEligibleMineralIds(room);
+  for (const mineralId of mineralIds) {
+    names.push(`${room.name}:mineralHarvester:${mineralId}`);
   }
 
   names.push(`${room.name}:carrier:0`);
