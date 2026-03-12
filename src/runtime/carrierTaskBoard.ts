@@ -1,4 +1,4 @@
-export type CarrierTaskType = "lab_supply" | "lab_cleanup" | "mineral_haul";
+export type CarrierTaskType = "lab_supply" | "lab_cleanup" | "mineral_haul" | "terminal_feed";
 
 export interface CarrierTaskStep {
   id: string;

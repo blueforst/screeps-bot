@@ -202,4 +202,51 @@ describe("carrierRole mineral hauling", () => {
     expect((creep.transfer as jest.Mock)).toHaveBeenCalledWith(terminal, RESOURCE_KEANIUM);
     expect(done).toBe(true);
   });
+
+  it("picks terminal feed board tasks when cross-room preload is pending", () => {
+    const room = createRoom("W1N3");
+    const storage = {
+      id: "storage-feed-1",
+      pos: { x: 12, y: 12, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_UTRIUM ? 1500 : 0),
+      },
+    } as unknown as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) {
+        return storage;
+      }
+      if (id === terminal.id) {
+        return terminal;
+      }
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [
+      {
+        id: "terminal-feed-task",
+        type: "terminal_feed",
+        priority: 80,
+        steps: [
+          {
+            id: "step-feed-1",
+            resource: RESOURCE_UTRIUM,
+            fromKind: "storage",
+            toKind: "terminal",
+            fromId: storage.id,
+            toId: terminal.id,
+            amount: 1500,
+          },
+        ],
+      },
+    ]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM);
+    expect(switched).toBe(false);
+    expect(creep.memory.synthesisCarrierTaskId).toBe("terminal-feed-task");
+  });
 });

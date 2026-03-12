@@ -1,3 +1,4 @@
+import { pruneCarrierTasksForProducer, replaceCarrierTasksForProducerRoom, type CarrierTaskDraft } from "@/runtime/carrierTaskBoard";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 type ResourceControlState = "survival" | "balanced" | "export";
@@ -112,6 +113,8 @@ const MAX_SYNTHESIS_MAX_GENERATED_PER_RUN = 10;
 const SYNTHESIS_BINDING_LEASE_TICKS = 200;
 const SYNTHESIS_BINDING_STICKY_BONUS = 5;
 const SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO = 1.2;
+const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";
+const RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY = 80;
 
 let taskIdSequence = 0;
 let taskIdSequenceTick = -1;
@@ -820,6 +823,70 @@ function executeTransferTasks(
   return actions;
 }
 
+function createTerminalFeedTask(room: ResourceControlSnapshot, resource: ResourceConstant, amount: number): CarrierTaskDraft | null {
+  if (resource === RESOURCE_ENERGY || !room.storage || amount <= 0) {
+    return null;
+  }
+
+  const terminalAmount = room.terminal.store.getUsedCapacity(resource);
+  const storageAmount = room.storage.store.getUsedCapacity(resource);
+  const terminalFree = room.terminal.store.getFreeCapacity(resource);
+  const targetStock = Math.min(room.transferBatchSize, amount);
+  const missing = Math.min(storageAmount, terminalFree, Math.max(0, targetStock - terminalAmount));
+  if (missing <= 0) {
+    return null;
+  }
+
+  return {
+    id: `resourceControl:terminal_feed:${room.roomName}:${resource}`,
+    type: "terminal_feed",
+    priority: RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY,
+    steps: [
+      {
+        id: `${resource}:${room.storage.id}->${room.terminal.id}`,
+        resource,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: room.storage.id,
+        toId: room.terminal.id,
+        amount: missing,
+      },
+    ],
+  };
+}
+
+function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[]): string[] {
+  const pendingByRoom = new Map<string, Map<ResourceConstant, number>>();
+  for (const task of Object.values(ensureTaskStore())) {
+    if (task.status !== "pending" || task.resource === RESOURCE_ENERGY) {
+      continue;
+    }
+
+    const roomPending = pendingByRoom.get(task.fromRoomName) || new Map<ResourceConstant, number>();
+    roomPending.set(task.resource, (roomPending.get(task.resource) || 0) + task.remainingAmount);
+    pendingByRoom.set(task.fromRoomName, roomPending);
+  }
+
+  const validRoomNames = new Set(snapshots.map((snapshot) => snapshot.roomName));
+  const actions: string[] = [];
+  for (const snapshot of snapshots) {
+    const roomPending = pendingByRoom.get(snapshot.roomName);
+    const drafts = roomPending
+      ? Array.from(roomPending.entries())
+          .map(([resource, amount]) => createTerminalFeedTask(snapshot, resource, amount))
+          .filter((draft): draft is CarrierTaskDraft => !!draft)
+      : [];
+
+    replaceCarrierTasksForProducerRoom(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, snapshot.roomName, drafts);
+    if (drafts.length > 0) {
+      actions.push(`terminal-feed:${snapshot.roomName}:count=${drafts.length}`);
+    }
+  }
+
+  pruneCarrierTasksForProducer(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, validRoomNames);
+  return actions;
+}
+
 function getOutgoingPendingAmount(roomName: string, resource: ResourceConstant): number {
   let total = 0;
   for (const task of Object.values(ensureTaskStore())) {
@@ -1369,6 +1436,7 @@ export function runResourceControl(): void {
   const terminalBusy = new Set<string>();
   const actions = applyInternalBalancing(snapshots, terminalBusy);
   const taskActions = executeTransferTasks(snapshots, terminalBusy, resolveTaskMaxPerRun());
+  const preloadActions = syncTerminalFeedTasks(snapshots);
   const marketActions = applyMarketOps(snapshots, resolveMarketConfig());
-  persistResourceControlState(snapshots, [...actions, ...taskActions], marketActions);
+  persistResourceControlState(snapshots, [...actions, ...taskActions, ...preloadActions], marketActions);
 }
