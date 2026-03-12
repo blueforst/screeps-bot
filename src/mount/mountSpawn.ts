@@ -1,4 +1,5 @@
 import { getHarvesterBody, spawnProfiles } from "@/config/spawnProfiles";
+import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import type { RoleName } from "@/types/system";
 
@@ -66,8 +67,11 @@ export function mountSpawn(): void {
       },
     });
 
-    if (code === OK && isTransientConfigName(configName)) {
-      creepConfigs.remove(configName);
+    if (code === OK) {
+      recordFixedCpuAction("spawnWork");
+      if (isTransientConfigName(configName)) {
+        creepConfigs.remove(configName);
+      }
     }
 
     return code === OK;
