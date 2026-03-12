@@ -20,6 +20,10 @@ function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
     return 1;
   }
 
+  if (role === "mineralHarvester") {
+    return 1;
+  }
+
   if (role === "meleeAttacker" || role === "healer") {
     return 2;
   }
@@ -98,7 +102,33 @@ function getSourceIdFromConfig(config: CreepConfig): Id<Source> | undefined {
   return undefined;
 }
 
+function getMineralIdFromConfig(config: CreepConfig): Id<Mineral> | undefined {
+  if (config.role !== "mineralHarvester") {
+    return undefined;
+  }
+
+  const mineralId = config.args[0];
+  return mineralId ? (mineralId as Id<Mineral>) : undefined;
+}
+
 function getSourceWorkerWorkPos(config: CreepConfig): RoomPosition | null {
+  const mineralId = getMineralIdFromConfig(config);
+  if (mineralId) {
+    const mineral = Game.getObjectById(mineralId);
+    if (!mineral) {
+      return null;
+    }
+
+    const containers = mineral.pos.findInRange(FIND_STRUCTURES, 1, {
+      filter: (structure) => structure.structureType === STRUCTURE_CONTAINER,
+    });
+    if (containers.length > 0) {
+      return containers[0].pos;
+    }
+
+    return mineral.pos;
+  }
+
   const sourceId = getSourceIdFromConfig(config);
   if (!sourceId) {
     return null;
@@ -224,7 +254,12 @@ function shouldQueueConfig(
     return false;
   }
 
-  if (config.role === "harvester" || config.role === "miner" || config.role === "colonizerHarvester") {
+  if (
+    config.role === "harvester" ||
+    config.role === "miner" ||
+    config.role === "mineralHarvester" ||
+    config.role === "colonizerHarvester"
+  ) {
     return shouldPreSpawnSourceWorker(spawn, configName, config, context);
   }
 
