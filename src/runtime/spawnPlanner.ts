@@ -2,7 +2,9 @@ import { spawnProfiles } from "@/config/spawnProfiles";
 import { spawnMaxCarrierRaw } from "@/runtime/emergencySpawning";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
+
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
+const SOURCE_WORKER_COMMUTE_CACHE_TTL = 1000;
 
 interface SpawnPlanningContext {
   spawnTimeByConfigName: Map<string, number>;
@@ -67,6 +69,45 @@ function createSpawnPlanningContext(): SpawnPlanningContext {
     configCreepsByName: new Map<string, Creep[]>(),
     spawningConfigNames,
   };
+}
+
+function ensureSpawnPlannerRuntimeStore(): NonNullable<NonNullable<Memory["runtime"]>["spawnPlanner"]> {
+  Memory.runtime = Memory.runtime || {};
+  Memory.runtime.spawnPlanner = Memory.runtime.spawnPlanner || {
+    sourceWorkerCommutes: {},
+  };
+
+  return Memory.runtime.spawnPlanner;
+}
+
+function getCachedSourceWorkerCommute(cacheKey: string): number | undefined {
+  const cache = Memory.runtime?.spawnPlanner?.sourceWorkerCommutes?.[cacheKey];
+  if (!cache) {
+    return undefined;
+  }
+
+  if (Game.time - cache.updatedAt > SOURCE_WORKER_COMMUTE_CACHE_TTL) {
+    delete Memory.runtime?.spawnPlanner?.sourceWorkerCommutes?.[cacheKey];
+    return undefined;
+  }
+
+  return cache.commute;
+}
+
+function setCachedSourceWorkerCommute(cacheKey: string, commute: number): void {
+  const store = ensureSpawnPlannerRuntimeStore();
+  store.sourceWorkerCommutes[cacheKey] = {
+    commute,
+    updatedAt: Game.time,
+  };
+}
+
+function getRoomCenterAnchor(spawn: StructureSpawn): RoomPosition {
+  return spawn.room.storage?.pos || spawn.pos;
+}
+
+function getAnchorSpawnBuffer(anchor: RoomPosition, spawn: StructureSpawn): number {
+  return Math.max(Math.abs(anchor.x - spawn.pos.x), Math.abs(anchor.y - spawn.pos.y));
 }
 
 function isConfigSpawning(configName: string, context: SpawnPlanningContext): boolean {
@@ -187,18 +228,28 @@ function estimateSourceWorkerPreSpawnThreshold(
     return 0;
   }
 
-  const cacheKey = `${spawn.id}:${configName}:${workPos.roomName}:${workPos.x}:${workPos.y}`;
+  const anchor = getRoomCenterAnchor(spawn);
+  const anchorBuffer = getAnchorSpawnBuffer(anchor, spawn);
+  const cacheKey = `${spawn.room.name}:${anchor.roomName}:${anchor.x}:${anchor.y}:${workPos.roomName}:${workPos.x}:${workPos.y}`;
   const cached = context?.sourceWorkerThresholdByKey.get(cacheKey);
   if (cached !== undefined) {
     return cached;
   }
 
-  const path = spawn.pos.findPathTo(workPos, { ignoreCreeps: true, swampCost: 2 });
-  const commuteTime = path.length;
+  const persistedCommute = getCachedSourceWorkerCommute(cacheKey);
+  if (persistedCommute !== undefined) {
+    const threshold = persistedCommute + anchorBuffer + getSpawnTime(spawn, configName, context);
+    context?.sourceWorkerThresholdByKey.set(cacheKey, threshold);
+    return threshold;
+  }
+
+  const path = anchor.findPathTo(workPos, { ignoreCreeps: true, swampCost: 2 });
+  const commuteTime = path.length + anchorBuffer;
   const produceTime = getSpawnTime(spawn, configName, context);
   const threshold = commuteTime + produceTime;
 
   context?.sourceWorkerThresholdByKey.set(cacheKey, threshold);
+  setCachedSourceWorkerCommute(cacheKey, commuteTime - anchorBuffer);
 
   return threshold;
 }

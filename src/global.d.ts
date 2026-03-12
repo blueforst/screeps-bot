@@ -326,6 +326,15 @@ declare global {
     };
     runtime?: {
       lastDeployTag?: string;
+      spawnPlanner?: {
+        sourceWorkerCommutes: Record<
+          string,
+          {
+            commute: number;
+            updatedAt: number;
+          }
+        >;
+      };
       roomPlannerAuto?: Record<string, number>;
       linkNetwork?: Record<
         string,
