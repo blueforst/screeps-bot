@@ -126,6 +126,7 @@ declare global {
           limit: number;
           tickLimit: number;
           phases: Record<string, number>;
+          fixedActionCounts: Record<string, number>;
           untracked: number;
         }
       | null;
@@ -598,6 +599,7 @@ declare global {
           limit: number;
           tickLimit: number;
           phases: Record<string, number>;
+          fixedActionCounts: Record<string, number>;
           untracked: number;
         };
       };
@@ -810,6 +812,7 @@ declare namespace NodeJS {
             limit: number;
             tickLimit: number;
             phases: Record<string, number>;
+            fixedActionCounts: Record<string, number>;
             untracked: number;
           }
         | null;
@@ -821,6 +824,7 @@ declare namespace NodeJS {
         limit: number;
         tickLimit: number;
         phases: Record<string, number>;
+        fixedActionCounts: Record<string, number>;
         untracked: number;
       }>;
       summary:
@@ -832,7 +836,8 @@ declare namespace NodeJS {
             maxBucket: number;
             avgBucket: number;
             avgUntracked: number;
-            avgPhases: Record<string, number>;
+          avgPhases: Record<string, number>;
+          avgFixedActionCounts: Record<string, number>;
           }
         | null;
     };

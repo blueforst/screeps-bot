@@ -15,6 +15,7 @@ interface CpuPhaseSnapshot {
   limit: number;
   tickLimit: number;
   phases: Record<string, number>;
+  fixedActionCounts: Record<string, number>;
   untracked: number;
 }
 
@@ -26,6 +27,7 @@ const runtimeGlobal: RuntimeGlobalWithCpuProfiler = global;
 
 export interface TickCpuProfiler {
   measure<T>(phase: string, fn: () => T): T;
+  recordFixedAction(phase: string, count?: number): void;
   flush(): void;
 }
 
@@ -75,6 +77,7 @@ function ensureModuleCpuStore(): NonNullable<NonNullable<Memory["analytics"]>["m
       limit: Game.cpu.limit,
       tickLimit: Game.cpu.tickLimit,
       phases: {},
+      fixedActionCounts: {},
       untracked: 0,
     },
   };
@@ -105,6 +108,9 @@ function createNoopProfiler(): TickCpuProfiler {
     measure<T>(_phase: string, fn: () => T): T {
       return fn();
     },
+    recordFixedAction(_phase: string, _count = 1): void {
+      return;
+    },
     flush(): void {
       return;
     },
@@ -128,7 +134,20 @@ export function measureCreepPathing<T>(fn: () => T): T {
 }
 
 export function measureCreepIntent<T>(fn: () => T): T {
-  return measureCpuPhase("creepWork:intent", fn);
+  return measureCpuPhase("creepWork:intent", () => {
+    const result = fn();
+    if (result === OK) {
+      activeTickCpuProfiler.recordFixedAction("creepWork");
+    }
+    return result;
+  });
+}
+
+export function recordFixedCpuAction(phase: string, count = 1): void {
+  if (count <= 0) {
+    return;
+  }
+  activeTickCpuProfiler.recordFixedAction(phase, count);
 }
 
 export function createTickCpuProfiler(): TickCpuProfiler {
@@ -141,6 +160,7 @@ export function createTickCpuProfiler(): TickCpuProfiler {
   const historyLimit = normalizeHistoryLimit(cfg.historyLimit);
   const loopStartUsed = Game.cpu.getUsed();
   const phases: Record<string, number> = {};
+  const fixedActionCounts: Record<string, number> = {};
 
   return {
     measure<T>(phase: string, fn: () => T): T {
@@ -151,6 +171,10 @@ export function createTickCpuProfiler(): TickCpuProfiler {
         const delta = Math.max(0, Game.cpu.getUsed() - start);
         phases[phase] = (phases[phase] || 0) + delta;
       }
+    },
+
+    recordFixedAction(phase: string, count = 1): void {
+      fixedActionCounts[phase] = (fixedActionCounts[phase] || 0) + count;
     },
 
     flush(): void {
@@ -169,6 +193,7 @@ export function createTickCpuProfiler(): TickCpuProfiler {
         limit: Game.cpu.limit,
         tickLimit: Game.cpu.tickLimit,
         phases: { ...phases },
+        fixedActionCounts: { ...fixedActionCounts },
         untracked,
       };
 
