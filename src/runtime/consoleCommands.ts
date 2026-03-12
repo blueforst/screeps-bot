@@ -57,6 +57,7 @@ interface CpuMonitorSnapshot {
   limit: number;
   tickLimit: number;
   phases: Record<string, number>;
+  fixedActionCounts: Record<string, number>;
   untracked: number;
 }
 
@@ -69,7 +70,16 @@ interface CpuMonitorSummary {
   avgBucket: number;
   avgUntracked: number;
   avgPhases: Record<string, number>;
+  avgFixedActionCounts: Record<string, number>;
 }
+
+interface CpuMonitorPhaseTotals {
+  raw: number;
+  logic: number;
+  fixed: number;
+}
+
+const CPU_FIXED_ACTION_COST = 0.2;
 
 interface CpuMonitorResult {
   ok: true;
@@ -597,6 +607,7 @@ function cloneCpuMonitorSnapshot(snapshot: CpuMonitorSnapshot): CpuMonitorSnapsh
     limit: snapshot.limit,
     tickLimit: snapshot.tickLimit,
     phases: { ...snapshot.phases },
+    fixedActionCounts: { ...snapshot.fixedActionCounts },
     untracked: snapshot.untracked,
   };
 }
@@ -607,6 +618,7 @@ function buildCpuMonitorSummary(history: CpuMonitorSnapshot[]): CpuMonitorSummar
   }
 
   const avgPhases: Record<string, number> = {};
+  const avgFixedActionCounts: Record<string, number> = {};
   let totalUsedSum = 0;
   let bucketSum = 0;
   let untrackedSum = 0;
@@ -625,10 +637,18 @@ function buildCpuMonitorSummary(history: CpuMonitorSnapshot[]): CpuMonitorSummar
     for (const [phase, used] of Object.entries(entry.phases)) {
       avgPhases[phase] = (avgPhases[phase] || 0) + used;
     }
+
+    for (const [phase, count] of Object.entries(entry.fixedActionCounts)) {
+      avgFixedActionCounts[phase] = (avgFixedActionCounts[phase] || 0) + count;
+    }
   }
 
   for (const phase of Object.keys(avgPhases)) {
     avgPhases[phase] = avgPhases[phase] / history.length;
+  }
+
+  for (const phase of Object.keys(avgFixedActionCounts)) {
+    avgFixedActionCounts[phase] = avgFixedActionCounts[phase] / history.length;
   }
 
   return {
@@ -640,6 +660,7 @@ function buildCpuMonitorSummary(history: CpuMonitorSnapshot[]): CpuMonitorSummar
     avgBucket: bucketSum / history.length,
     avgUntracked: untrackedSum / history.length,
     avgPhases,
+    avgFixedActionCounts,
   };
 }
 
@@ -647,16 +668,44 @@ function formatCpuMonitorNumber(value: number): string {
   return Number.isInteger(value) ? `${value}` : value.toFixed(2);
 }
 
-function formatTopCpuPhases(phases: Record<string, number>, limit = 5): string {
-  const entries = Object.entries(phases)
-    .sort((left, right) => right[1] - left[1])
+function buildTopLevelPhaseTotals(
+  phases: Record<string, number>,
+  fixedActionCounts: Record<string, number>,
+): Array<[string, CpuMonitorPhaseTotals]> {
+  const topLevelPhaseNames = new Set(
+    Object.keys(phases).filter((phase) => !phase.includes(":")),
+  );
+
+  for (const phase of Object.keys(fixedActionCounts)) {
+    topLevelPhaseNames.add(phase);
+  }
+
+  return [...topLevelPhaseNames].map((phase) => {
+    const raw = phases[phase] || 0;
+    const fixed = (fixedActionCounts[phase] || 0) * CPU_FIXED_ACTION_COST;
+    const logic = Math.max(0, raw - fixed);
+    return [phase, { raw, logic, fixed }];
+  });
+}
+
+function formatTopCpuPhases(phases: Record<string, number>, fixedActionCounts: Record<string, number>, limit = 5): string {
+  const entries = buildTopLevelPhaseTotals(phases, fixedActionCounts)
+    .sort((left, right) => right[1].raw - left[1].raw)
     .slice(0, limit);
 
   if (entries.length === 0) {
     return "none";
   }
 
-  return entries.map(([name, value]) => `${name}=${value.toFixed(2)}`).join(" ");
+  return entries
+    .map(([name, totals]) => {
+      if (totals.fixed > 0) {
+        return `${name}=raw:${totals.raw.toFixed(2)},logic:${totals.logic.toFixed(2)},fixed:${totals.fixed.toFixed(2)}`;
+      }
+
+      return `${name}=logic:${totals.logic.toFixed(2)}`;
+    })
+    .join(" ");
 }
 
 function formatCpuMonitorResult(result: CpuMonitorResult): string {
@@ -670,7 +719,7 @@ function formatCpuMonitorResult(result: CpuMonitorResult): string {
     lines.push(
       `[cpu-monitor] latest tick=${result.latest.tick} shard=${result.latest.shard} used=${result.latest.totalUsed.toFixed(2)}/${formatCpuMonitorNumber(result.latest.limit)} bucket=${formatCpuMonitorNumber(result.latest.bucket)} tickLimit=${formatCpuMonitorNumber(result.latest.tickLimit)} untracked=${result.latest.untracked.toFixed(2)}`,
     );
-    lines.push(`[cpu-monitor] latestPhases ${formatTopCpuPhases(result.latest.phases)}`);
+    lines.push(`[cpu-monitor] latestPhases ${formatTopCpuPhases(result.latest.phases, result.latest.fixedActionCounts)}`);
   }
 
   if (!result.summary) {
@@ -679,7 +728,9 @@ function formatCpuMonitorResult(result: CpuMonitorResult): string {
     lines.push(
       `[cpu-monitor] summary ticks=${result.summary.ticks} avgUsed=${result.summary.avgTotalUsed.toFixed(2)} maxUsed=${result.summary.maxTotalUsed.toFixed(2)} avgBucket=${result.summary.avgBucket.toFixed(2)} bucketRange=${formatCpuMonitorNumber(result.summary.minBucket)}-${formatCpuMonitorNumber(result.summary.maxBucket)} avgUntracked=${result.summary.avgUntracked.toFixed(2)}`,
     );
-    lines.push(`[cpu-monitor] summaryPhases ${formatTopCpuPhases(result.summary.avgPhases)}`);
+    lines.push(
+      `[cpu-monitor] summaryPhases ${formatTopCpuPhases(result.summary.avgPhases, result.summary.avgFixedActionCounts)}`,
+    );
   }
 
   return lines.join("\n");
