@@ -139,6 +139,7 @@ function healerBody(room: Room): BodyPartConstant[] {
 
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => getHarvesterBody(room),
+  mineralHarvester: twoToOneWorkMoveBody,
   miner: () => [...LINK_MINER_BODY],
   carrier: carryMoveBody,
   worker: oneOneOneBody,

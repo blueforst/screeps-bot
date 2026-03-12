@@ -9,12 +9,14 @@ import { harvesterRole } from "@/roles/harvester";
 import { healerRole } from "@/roles/healer";
 import { meleeAttackerRole } from "@/roles/meleeAttacker";
 import { minerRole } from "@/roles/miner";
+import { mineralHarvesterRole } from "@/roles/mineralHarvester";
 import { scoutRole } from "@/roles/scout";
 import { workerRole } from "@/roles/worker";
 import type { RoleFactory, RoleName } from "@/types/system";
 
 export const roleRegistry: Record<RoleName, RoleFactory> = {
   harvester: harvesterRole,
+  mineralHarvester: mineralHarvesterRole,
   miner: minerRole,
   carrier: carrierRole,
   worker: workerRole,
