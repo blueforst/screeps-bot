@@ -651,12 +651,12 @@ declare global {
         id: string;
         producer: string;
         roomName: string;
-        type: "lab_supply" | "lab_cleanup";
+        type: "lab_supply" | "lab_cleanup" | "mineral_haul";
         priority: number;
         steps: Array<{
           id: string;
           resource: ResourceConstant;
-          fromKind: "lab" | "terminal" | "storage";
+          fromKind: "lab" | "terminal" | "storage" | "container";
           toKind: "lab" | "terminal" | "storage";
           fromId: string;
           toId: string;
