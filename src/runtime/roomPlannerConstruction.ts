@@ -203,6 +203,28 @@ function getContainerPlannedPositions(room: Room, layout: PlannedLayout, control
   return result;
 }
 
+function getAutoExtractorCandidates(room: Room): { x: number; y: number }[] {
+  return room.find(FIND_MINERALS).map((mineral) => ({ x: mineral.pos.x, y: mineral.pos.y }));
+}
+
+function getExtractorPlannedPositions(room: Room, layout: PlannedLayout): { x: number; y: number }[] {
+  const merged = [...(layout[STRUCTURE_EXTRACTOR] ?? []), ...getAutoExtractorCandidates(room)];
+  const seen = new Set<string>();
+  const result: { x: number; y: number }[] = [];
+
+  for (const pos of merged) {
+    const key = `${pos.x}:${pos.y}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(pos);
+  }
+
+  return result;
+}
+
 function getCoreRampartPositions(layout: PlannedLayout): { x: number; y: number }[] {
   return [
     ...(layout[STRUCTURE_SPAWN] ?? []),
@@ -578,9 +600,11 @@ export function runRoomPlannerConstruction(): void {
       const plannedPositions =
         structureType === STRUCTURE_CONTAINER
           ? getContainerPlannedPositions(room, layout, controllerLevel)
+          : structureType === STRUCTURE_EXTRACTOR
+            ? getExtractorPlannedPositions(room, layout)
           : structureType === STRUCTURE_LINK
             ? getSortedLinkPlannedPositions(room, layout)
-          : structureType === STRUCTURE_LAB
+            : structureType === STRUCTURE_LAB
             ? getSortedLabPlannedPositions(layout)
            : structureType === STRUCTURE_RAMPART
              ? getPlannedRampartPositions(layout)
