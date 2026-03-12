@@ -412,6 +412,9 @@ declare global {
         generatedTaskCount: number;
         failedTaskCount: number;
         successfulRunCount: number;
+        autoOhTarget?: number;
+        autoOhCurrent?: number;
+        autoOhProducerRoomName?: string;
         lastActions: string[];
         bindings: Record<
           string,
@@ -651,7 +654,7 @@ declare global {
         id: string;
         producer: string;
         roomName: string;
-        type: "lab_supply" | "lab_cleanup" | "mineral_haul";
+        type: "lab_supply" | "lab_cleanup" | "mineral_haul" | "terminal_feed";
         priority: number;
         steps: Array<{
           id: string;
