@@ -1,4 +1,5 @@
 import { pruneCarrierTasksForProducer, replaceCarrierTasksForProducerRoom, type CarrierTaskDraft } from "@/runtime/carrierTaskBoard";
+import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 type ResourceControlState = "survival" | "balanced" | "export";
@@ -713,6 +714,7 @@ function applyInternalBalancing(snapshots: ResourceControlSnapshot[], terminalBu
         actions.push(`send-failed:${donor.roomName}->${receiver.roomName}:code=${code}`);
         continue;
       }
+      recordFixedCpuAction("resourceControl");
 
       const transferCost = applyPostSendDelta(donor, receiver, RESOURCE_ENERGY, amount);
 
@@ -806,6 +808,7 @@ function executeTransferTasks(
       actions.push(`task-send-failed:${task.id}:code=${code}`);
       continue;
     }
+    recordFixedCpuAction("resourceControl");
 
     const transferCost = applyPostSendDelta(donor, receiver, task.resource, amount);
     task.remainingAmount = Math.max(0, task.remainingAmount - amount);

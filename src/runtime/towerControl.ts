@@ -1,3 +1,4 @@
+import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import { getTickContextService } from "@/runtime/runtimeServices";
 
 const TOWER_MIN_REPAIR_ENERGY = 400;
@@ -211,14 +212,20 @@ function runTowerPeaceFlow(
 ): void {
   const wounded = woundedCreeps.length > 0 ? tower.pos.findClosestByRange(woundedCreeps) : null;
   if (wounded) {
-    tower.heal(wounded);
+    const code = tower.heal(wounded);
+    if (code === OK) {
+      recordFixedCpuAction("towerControl");
+    }
     return;
   }
 
   if (emergencyRamparts.length > 0 && tower.store.getUsedCapacity(RESOURCE_ENERGY) >= TOWER_MIN_EMERGENCY_REPAIR_ENERGY) {
     const emergencyRampart = tower.pos.findClosestByRange(emergencyRamparts);
     if (emergencyRampart) {
-      tower.repair(emergencyRampart);
+      const code = tower.repair(emergencyRampart);
+      if (code === OK) {
+        recordFixedCpuAction("towerControl");
+      }
       return;
     }
   }
@@ -230,7 +237,10 @@ function runTowerPeaceFlow(
   const damaged = damagedStructures.length > 0 ? tower.pos.findClosestByRange(damagedStructures) : null;
 
   if (damaged) {
-    tower.repair(damaged);
+    const code = tower.repair(damaged);
+    if (code === OK) {
+      recordFixedCpuAction("towerControl");
+    }
   }
 }
 
@@ -247,7 +257,10 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[])
     for (const tower of towers) {
       const target = spreadAssignments.get(tower.id);
       if (target) {
-        tower.attack(target);
+        const code = tower.attack(target);
+        if (code === OK) {
+          recordFixedCpuAction("towerControl");
+        }
       }
     }
     return true;
@@ -284,12 +297,18 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[])
     for (const tower of towers) {
       const target = spreadAssignments.get(tower.id);
       if (target) {
-        tower.attack(target);
+        const code = tower.attack(target);
+        if (code === OK) {
+          recordFixedCpuAction("towerControl");
+        }
       }
     }
   } else {
     for (const tower of towers) {
-      tower.attack(focusTarget);
+      const code = tower.attack(focusTarget);
+      if (code === OK) {
+        recordFixedCpuAction("towerControl");
+      }
     }
   }
 

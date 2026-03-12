@@ -1,4 +1,5 @@
 import { createResourceTransferTask, runSynthesisTaskPlanning } from "@/runtime/resourceControl";
+import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import {
   pruneCarrierTasksForProducer,
   replaceCarrierTasksForProducerRoom,
@@ -1092,6 +1093,7 @@ function handleRoom(
 
       const code = lab.runReaction(orderedReagentLabs[0], orderedReagentLabs[1]);
       if (code === OK) {
+        recordFixedCpuAction("synthesisControl");
         roomRuns += 1;
       } else if (code === ERR_NOT_ENOUGH_RESOURCES || code === ERR_INVALID_ARGS) {
         stage = hasContamination ? "unloading" : "loading";

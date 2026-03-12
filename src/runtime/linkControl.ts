@@ -1,4 +1,5 @@
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
+import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import { getTickContextService } from "@/runtime/runtimeServices";
 
 const CLASSIFY_INTERVAL = 11;
@@ -189,7 +190,10 @@ export function runLinkControl(): void {
         continue;
       }
 
-      sender.transferEnergy(target);
+      const code = sender.transferEnergy(target);
+      if (code === OK) {
+        recordFixedCpuAction("linkControl");
+      }
     }
   }
 }
