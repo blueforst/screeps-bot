@@ -342,6 +342,15 @@ function getSortedLinkPlannedPositions(room: Room, layout: PlannedLayout): { x: 
   return ordered.map((entry) => entry.pos);
 }
 
+function getSortedLabPlannedPositions(layout: PlannedLayout): { x: number; y: number }[] {
+  const planned = layout[STRUCTURE_LAB] ?? [];
+  if (planned.length <= 2) {
+    return planned;
+  }
+
+  return [...planned.slice(-2), ...planned.slice(0, -2)];
+}
+
 function isComplete(room: Room, structureType: BuildableStructureConstant, targetCount: number): boolean {
   if (targetCount <= 0) {
     return true;
@@ -571,9 +580,11 @@ export function runRoomPlannerConstruction(): void {
           ? getContainerPlannedPositions(room, layout, controllerLevel)
           : structureType === STRUCTURE_LINK
             ? getSortedLinkPlannedPositions(room, layout)
-          : structureType === STRUCTURE_RAMPART
-            ? getPlannedRampartPositions(layout)
-          : (layout[structureType] ?? []);
+          : structureType === STRUCTURE_LAB
+            ? getSortedLabPlannedPositions(layout)
+           : structureType === STRUCTURE_RAMPART
+             ? getPlannedRampartPositions(layout)
+           : (layout[structureType] ?? []);
       if (plannedPositions.length === 0) {
         continue;
       }
