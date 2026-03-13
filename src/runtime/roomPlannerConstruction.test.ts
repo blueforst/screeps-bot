@@ -263,6 +263,21 @@ describe("runRoomPlannerConstruction lab ordering", () => {
       { x: labPositions[1].x, y: labPositions[1].y, structureType: STRUCTURE_LAB },
     ]);
   });
+
+  it("lets planned links win over conflicting container positions", () => {
+    const room = createRoom({ name: "W1N5" });
+    room.__structures.push(createStructure(room, STRUCTURE_SPAWN, 9, 9));
+    Game.rooms[room.name] = room;
+
+    setRoomPlannerLayout(room.name, {
+      [STRUCTURE_LINK]: [{ x: 12, y: 12 }],
+      [STRUCTURE_CONTAINER]: [{ x: 12, y: 12 }],
+    });
+
+    runRoomPlannerConstruction();
+
+    expect(room.__siteAttempts).toEqual([{ x: 12, y: 12, structureType: STRUCTURE_LINK }]);
+  });
 });
 
 describe("runRoomPlannerConstruction extractor auto-placement", () => {

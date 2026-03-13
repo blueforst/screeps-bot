@@ -25,6 +25,7 @@ const DEFAULT_MAX_NEW_SITES_PER_ROOM = 2;
 const MAX_NEW_SITES_PER_RUN = 2;
 const GLOBAL_SITE_SOFT_CAP = 95;
 const MINERAL_CONTAINER_MIN_RCL = 6;
+const CONTROLLER_LINK_RANGE = 3;
 
 type PlannedLayout = { [structureType: string]: { x: number; y: number }[] };
 type TargetOverrideMap = Partial<Record<BuildableStructureConstant, number>>;
@@ -179,6 +180,7 @@ function getAutoSourceContainerCandidates(room: Room): { x: number; y: number }[
 
 function getContainerPlannedPositions(room: Room, layout: PlannedLayout, controllerLevel: number): { x: number; y: number }[] {
   const merged = [...(layout[STRUCTURE_CONTAINER] ?? []), ...getAutoSourceContainerCandidates(room)];
+  const plannedLinkPositions = new Set((layout[STRUCTURE_LINK] ?? []).map((pos) => `${pos.x}:${pos.y}`));
   const seen = new Set<string>();
   const result: { x: number; y: number }[] = [];
 
@@ -188,6 +190,10 @@ function getContainerPlannedPositions(room: Room, layout: PlannedLayout, control
       continue;
     }
     seen.add(key);
+
+    if (plannedLinkPositions.has(key)) {
+      continue;
+    }
 
     if (shouldSkipSourceContainerPlacement(room, pos.x, pos.y)) {
       continue;
@@ -324,7 +330,7 @@ function getSortedLinkPlannedPositions(room: Room, layout: PlannedLayout): { x: 
       };
     }
 
-    if (controllerPos && linkPos.getRangeTo(controllerPos) <= 2) {
+    if (controllerPos && linkPos.getRangeTo(controllerPos) <= CONTROLLER_LINK_RANGE) {
       return {
         pos,
         priority: LINK_PRIORITY_CONTROLLER,
@@ -466,13 +472,23 @@ function countSites(room: Room, structureType: BuildableStructureConstant): numb
 function hasStructureOrSiteAt(room: Room, x: number, y: number, structureType: BuildableStructureConstant): boolean {
   const position = new RoomPosition(x, y, room.name);
 
+  const blocksPlannedStructure = (existingType: StructureConstant): boolean => {
+    if (existingType === structureType) {
+      return true;
+    }
+
+    const plannedIsOverlay = structureType === STRUCTURE_ROAD || structureType === STRUCTURE_RAMPART;
+    const existingIsOverlay = existingType === STRUCTURE_ROAD || existingType === STRUCTURE_RAMPART;
+    return !plannedIsOverlay && !existingIsOverlay;
+  };
+
   const structures = position.lookFor(LOOK_STRUCTURES);
-  if (structures.some((structure) => structure.structureType === structureType)) {
+  if (structures.some((structure) => blocksPlannedStructure(structure.structureType))) {
     return true;
   }
 
   const sites = position.lookFor(LOOK_CONSTRUCTION_SITES);
-  return sites.some((site) => site.structureType === structureType);
+  return sites.some((site) => blocksPlannedStructure(site.structureType));
 }
 
 function tryPlaceSite(room: Room, structureType: BuildableStructureConstant, x: number, y: number): number {
