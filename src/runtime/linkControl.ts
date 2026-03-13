@@ -4,7 +4,8 @@ import { getTickContextService } from "@/runtime/runtimeServices";
 
 const CLASSIFY_INTERVAL = 11;
 const SOURCE_SENDER_RANGE = 2;
-const RECEIVER_RANGE = 2;
+const STORAGE_RECEIVER_RANGE = 2;
+const CONTROLLER_RECEIVER_RANGE = 3;
 const RECEIVER_FILL_THRESHOLD = 0.5;
 
 interface LinkRoomRuntime {
@@ -31,8 +32,8 @@ function classifyRoomLinks(room: Room): LinkRoomRuntime {
 
   for (const link of links) {
     const nearReceiver =
-      (!!storagePos && link.pos.getRangeTo(storagePos) <= RECEIVER_RANGE) ||
-      (!!controllerPos && link.pos.getRangeTo(controllerPos) <= RECEIVER_RANGE);
+      (!!storagePos && link.pos.getRangeTo(storagePos) <= STORAGE_RECEIVER_RANGE) ||
+      (!!controllerPos && link.pos.getRangeTo(controllerPos) <= CONTROLLER_RECEIVER_RANGE);
 
     if (nearReceiver) {
       receiverIds.push(link.id);
@@ -68,14 +69,14 @@ function isReceiverByPosition(link: StructureLink): boolean {
   const storagePos = link.room.storage?.pos;
   const controllerPos = link.room.controller?.pos;
   return (
-    (!!storagePos && link.pos.getRangeTo(storagePos) <= RECEIVER_RANGE) ||
-    (!!controllerPos && link.pos.getRangeTo(controllerPos) <= RECEIVER_RANGE)
+    (!!storagePos && link.pos.getRangeTo(storagePos) <= STORAGE_RECEIVER_RANGE) ||
+    (!!controllerPos && link.pos.getRangeTo(controllerPos) <= CONTROLLER_RECEIVER_RANGE)
   );
 }
 
 function isStorageReceiverByPosition(link: StructureLink): boolean {
   const storagePos = link.room.storage?.pos;
-  return !!storagePos && link.pos.getRangeTo(storagePos) <= RECEIVER_RANGE;
+  return !!storagePos && link.pos.getRangeTo(storagePos) <= STORAGE_RECEIVER_RANGE;
 }
 
 function isLinkUnderfilled(link: StructureLink): boolean {
@@ -90,7 +91,7 @@ function isLinkUnderfilled(link: StructureLink): boolean {
 
 function isControllerReceiver(link: StructureLink): boolean {
   const controllerPos = link.room.controller?.pos;
-  return !!controllerPos && link.pos.getRangeTo(controllerPos) <= RECEIVER_RANGE;
+  return !!controllerPos && link.pos.getRangeTo(controllerPos) <= CONTROLLER_RECEIVER_RANGE;
 }
 
 function chooseReceiverTarget(sender: StructureLink, receiverLinks: StructureLink[]): StructureLink | null {
