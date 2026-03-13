@@ -196,8 +196,10 @@ export function pickupEnergyFromPreferredTarget(
 
   let sourceTarget = getReservedPickupTarget(creep) as EnergyPickupTarget | null;
   if (sourceTarget && !reservePickupTarget(creep, sourceTarget, desiredAmount)) {
-    releasePickupReservation(creep, sourceTarget.id);
-    sourceTarget = null;
+    if (getTargetEnergyAmount(sourceTarget) <= 0) {
+      releasePickupReservation(creep, sourceTarget.id);
+      sourceTarget = null;
+    }
   }
 
   if (!sourceTarget) {

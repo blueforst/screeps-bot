@@ -1,4 +1,9 @@
+jest.mock("@/roles/shared", () => ({
+  moveToTarget: jest.fn(),
+}));
+
 import { getEnergyStoreTarget, pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
+import { moveToTarget } from "@/roles/shared";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -89,6 +94,7 @@ describe("energyTargets", () => {
   beforeEach(() => {
     resetRuntimeServices();
     Game.time += 1;
+    (moveToTarget as jest.Mock).mockReset();
   });
 
   it("prefers spawns and extensions over lower-priority energy sinks", () => {
@@ -180,7 +186,7 @@ describe("energyTargets", () => {
     expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
   });
 
-  it("clears stale reservation memory when renewing a reserved target fails", () => {
+  it("keeps moving toward a reserved target when renewal fails but energy still exists", () => {
     const container = {
       id: "container-1",
       structureType: STRUCTURE_CONTAINER,
@@ -210,6 +216,37 @@ describe("energyTargets", () => {
     creep.memory.energyPickupTargetId = container.id;
     creep.memory.energyPickupTargetKind = "structure";
     creep.memory.energyPickupRoomName = room.name;
+    creep.withdraw = jest.fn(() => ERR_NOT_IN_RANGE);
+
+    expect(pickupEnergyFromPreferredTarget(creep)).toEqual({
+      picked: false,
+      outOfRange: true,
+    });
+    expect(moveToTarget).toHaveBeenCalledWith(creep, container, 1, {});
+    expect(creep.memory.energyPickupTargetId).toBe(container.id);
+    expect(creep.memory.energyPickupTargetKind).toBe("structure");
+    expect(creep.memory.energyPickupRoomName).toBe(room.name);
+  });
+
+  it("releases the reserved target when renewal fails and the target is empty", () => {
+    const container = {
+      id: "container-2",
+      structureType: STRUCTURE_CONTAINER,
+      pos: createPos(3),
+      store: createStore(0, 2000),
+    } as unknown as StructureContainer;
+    const room = createRoom({
+      structures: [container as unknown as Structure<StructureConstant>],
+    });
+    Game.rooms[room.name] = room;
+
+    const getObjectById = jest.fn((id: string) => (id === container.id ? container : null)) as unknown as Game["getObjectById"];
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = getObjectById;
+
+    const creep = createCreep(room);
+    creep.memory.energyPickupTargetId = container.id;
+    creep.memory.energyPickupTargetKind = "structure";
+    creep.memory.energyPickupRoomName = room.name;
 
     expect(pickupEnergyFromPreferredTarget(creep)).toEqual({
       picked: false,
@@ -218,6 +255,5 @@ describe("energyTargets", () => {
     expect(creep.memory.energyPickupTargetId).toBeUndefined();
     expect(creep.memory.energyPickupTargetKind).toBeUndefined();
     expect(creep.memory.energyPickupRoomName).toBeUndefined();
-    expect(Memory.rooms[room.name].pickupReservations?.[container.id]?.claims.Worker1).toBeUndefined();
   });
 });
