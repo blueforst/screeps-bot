@@ -21,6 +21,7 @@ interface EnergyStoreTargetOptions {
   excludeIds?: string[];
   includeTerminal?: boolean;
   includeStorage?: boolean;
+  roomName?: string;
 }
 
 export type EnergyPickupTarget = Resource | AnyStoreStructure | Tombstone | Ruin;
@@ -51,7 +52,9 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
     const excludeSet = new Set(options.excludeIds || []);
     const includeTerminal = options.includeTerminal ?? true;
     const includeStorage = options.includeStorage ?? true;
-    const roomContext = getTickContextService().getRoomContext(creep.room);
+    const roomName = options.roomName ?? creep.room.name;
+    const roomContext = getTickContextService().getRoomContext(roomName);
+    const targetRoom = Game.rooms[roomName] || (creep.room.name === roomName ? creep.room : null);
     const myStructures = roomContext?.getMyStructures() || [];
 
     let bestSpawnOrExtension: AnyStoreStructure | null = null;
@@ -127,12 +130,12 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       return bestLab;
     }
 
-    if (includeStorage && creep.room.storage && !excludeSet.has(creep.room.storage.id)) {
-      return creep.room.storage;
+    if (includeStorage && targetRoom?.storage && !excludeSet.has(targetRoom.storage.id)) {
+      return targetRoom.storage;
     }
 
-    if (includeTerminal && creep.room.terminal && !excludeSet.has(creep.room.terminal.id)) {
-      return creep.room.terminal;
+    if (includeTerminal && targetRoom?.terminal && !excludeSet.has(targetRoom.terminal.id)) {
+      return targetRoom.terminal;
     }
 
     return null;

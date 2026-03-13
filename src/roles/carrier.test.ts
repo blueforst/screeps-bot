@@ -1,5 +1,6 @@
 import { carrierRole } from "@/roles/carrier";
 import { replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { getCreepConfigService } from "@/runtime/runtimeServices";
 
 jest.mock("@/roles/energyTargets", () => ({
   getEnergyStoreTarget: jest.fn(),
@@ -53,7 +54,7 @@ function createCreep(room: Room): Creep {
 }
 
 function createRoom(name = "W1N1"): Room {
-  return {
+  const room = {
     name,
     controller: { my: true, level: 6 } as StructureController,
     find: () => [],
@@ -61,6 +62,7 @@ function createRoom(name = "W1N1"): Room {
       id: `${name}-terminal`,
       structureType: STRUCTURE_TERMINAL,
       store: {
+        getUsedCapacity: () => 0,
         getFreeCapacity: () => 10000,
       },
     } as unknown as StructureTerminal,
@@ -68,10 +70,14 @@ function createRoom(name = "W1N1"): Room {
       id: `${name}-storage`,
       structureType: STRUCTURE_STORAGE,
       store: {
+        getUsedCapacity: () => 0,
         getFreeCapacity: () => 10000,
       },
     } as unknown as StructureStorage,
   } as unknown as Room;
+
+  Game.rooms[name] = room;
+  return room;
 }
 
 describe("carrierRole mineral hauling", () => {
@@ -429,6 +435,205 @@ describe("carrierRole mineral hauling", () => {
     const done = carrierRole().target(creep);
 
     expect((creep.transfer as jest.Mock)).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(done).toBe(true);
+  });
+
+  it("keeps synthesis task lookup bound to the assigned room", () => {
+    const assignedRoom = createRoom("W2N1");
+    const transitRoom = createRoom("W2N2");
+    const terminal = {
+      id: "terminal-energy-home",
+      pos: { x: 15, y: 15, roomName: assignedRoom.name },
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 12000 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    const storage = assignedRoom.storage as StructureStorage;
+    const configName = `${assignedRoom.name}:manual:maxcarrier:test`;
+    const creep = {
+      ...createCreep(transitRoom),
+      memory: {
+        configName,
+      },
+    } as unknown as Creep;
+
+    getCreepConfigService().upsert(configName, "carrier", [], assignedRoom.name);
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) {
+        return terminal;
+      }
+      if (id === storage.id) {
+        return storage;
+      }
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", assignedRoom.name, [
+      {
+        id: "terminal-offload-home",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [
+          {
+            id: "step-offload-home",
+            resource: RESOURCE_ENERGY,
+            fromKind: "terminal",
+            toKind: "storage",
+            fromId: terminal.id,
+            toId: storage.id,
+            amount: 12000,
+          },
+        ],
+      },
+    ]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    expect(creep.memory.synthesisCarrierTaskId).toBe("terminal-offload-home");
+    expect(switched).toBe(false);
+  });
+
+  it("delivers assigned board-task energy to the assigned room target even when currently elsewhere", () => {
+    const assignedRoom = createRoom("W2N3");
+    const transitRoom = createRoom("W2N4");
+    const storage = assignedRoom.storage as StructureStorage;
+    const configName = `${assignedRoom.name}:manual:maxcarrier:test`;
+    let remaining = 200;
+    const store = {
+      [RESOURCE_ENERGY]: 200,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) {
+          return remaining;
+        }
+        return resource === RESOURCE_ENERGY ? remaining : 0;
+      },
+      getFreeCapacity: () => 600,
+    };
+    const creep = {
+      ...createCreep(transitRoom),
+      memory: {
+        configName,
+        synthesisCarrierTaskId: "terminal-offload-home",
+      },
+      store,
+      transfer: jest.fn(() => {
+        remaining = 0;
+        delete store[RESOURCE_ENERGY];
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    getCreepConfigService().upsert(configName, "carrier", [], assignedRoom.name);
+    getEnergyStoreTarget.mockReturnValue(null);
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", assignedRoom.name, [
+      {
+        id: "terminal-offload-home",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [
+          {
+            id: "step-offload-home",
+            resource: RESOURCE_ENERGY,
+            fromKind: "terminal",
+            toKind: "storage",
+            fromId: "terminal-energy-home-2",
+            toId: storage.id,
+            amount: 12000,
+          },
+        ],
+      },
+    ]);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) {
+        return storage;
+      }
+      return null;
+    }) as Game["getObjectById"];
+
+    const done = carrierRole().target(creep);
+
+    expect((creep.transfer as jest.Mock)).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(done).toBe(true);
+  });
+
+  it("uses the assigned room storage in storage-only mode", () => {
+    const assignedRoom = createRoom("W2N5");
+    const transitRoom = createRoom("W2N6");
+    const storage = assignedRoom.storage as StructureStorage;
+    const configName = `${assignedRoom.name}:carrier:0`;
+    let remaining = 200;
+    const store = {
+      [RESOURCE_ENERGY]: 200,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) {
+          return remaining;
+        }
+        return resource === RESOURCE_ENERGY ? remaining : 0;
+      },
+      getFreeCapacity: () => 600,
+    };
+    const creep = {
+      ...createCreep(transitRoom),
+      memory: {
+        configName,
+        carrierStorageOnlyMode: true,
+      },
+      store,
+      transfer: jest.fn(() => {
+        remaining = 0;
+        delete store[RESOURCE_ENERGY];
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    getCreepConfigService().upsert(configName, "carrier", [], assignedRoom.name);
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    const done = carrierRole().target(creep);
+
+    expect((creep.transfer as jest.Mock)).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(done).toBe(true);
+  });
+
+  it("queries generic delivery targets from the assigned room", () => {
+    const assignedRoom = createRoom("W2N7");
+    const transitRoom = createRoom("W2N8");
+    const configName = `${assignedRoom.name}:carrier:1`;
+    let remaining = 200;
+    const store = {
+      [RESOURCE_ENERGY]: 200,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) {
+          return remaining;
+        }
+        return resource === RESOURCE_ENERGY ? remaining : 0;
+      },
+      getFreeCapacity: () => 600,
+    };
+    const target = assignedRoom.storage as StructureStorage;
+    const creep = {
+      ...createCreep(transitRoom),
+      memory: {
+        configName,
+      },
+      store,
+      transfer: jest.fn(() => {
+        remaining = 0;
+        delete store[RESOURCE_ENERGY];
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    getCreepConfigService().upsert(configName, "carrier", [], assignedRoom.name);
+    getEnergyStoreTarget.mockReturnValue(target);
+
+    const done = carrierRole().target(creep);
+
+    expect(getEnergyStoreTarget).toHaveBeenCalledWith(creep, { roomName: assignedRoom.name });
+    expect((creep.transfer as jest.Mock)).toHaveBeenCalledWith(target, RESOURCE_ENERGY);
     expect(done).toBe(true);
   });
 });

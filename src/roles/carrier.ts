@@ -13,7 +13,7 @@ import {
 } from "@/runtime/energyPickupReservation";
 import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "@/runtime/carrierTaskBoard";
 import { isStorageReceiverLink } from "@/runtime/linkControl";
-import { getTickContextService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
 
@@ -254,6 +254,20 @@ function hasNewerLiveReplacement(creep: Creep): boolean {
   );
 }
 
+function getAssignedCarrierRoomName(creep: Creep): string {
+  const configName = creep.memory.configName;
+  if (!configName) {
+    return creep.room.name;
+  }
+
+  return getCreepConfigService().get(configName)?.roomName || creep.room.name;
+}
+
+function getAssignedCarrierRoom(creep: Creep): Room | null {
+  const assignedRoomName = getAssignedCarrierRoomName(creep);
+  return Game.rooms[assignedRoomName] || (creep.room.name === assignedRoomName ? creep.room : null);
+}
+
 function getSynthesisCarrierTasks(roomName: string): CarrierTask[] {
   return listCarrierTasksByRoom(roomName);
 }
@@ -268,7 +282,7 @@ function getAssignedSynthesisCarrierTask(creep: Creep): CarrierTask | null {
     return null;
   }
 
-  return getSynthesisCarrierTasks(creep.room.name).find((item) => item.id === taskId) || null;
+  return getSynthesisCarrierTasks(getAssignedCarrierRoomName(creep)).find((item) => item.id === taskId) || null;
 }
 
 function resolveTaskStructure(id: string): AnyStoreStructure | null {
@@ -334,7 +348,7 @@ function assignSynthesisCarrierTask(creep: Creep): { task: CarrierTask; step: Ca
       }
     }
 
-    const candidates = getSynthesisCarrierTasks(creep.room.name)
+    const candidates = getSynthesisCarrierTasks(getAssignedCarrierRoomName(creep))
       .filter((task) => isCarrierTaskRunnable(task))
       .map((task) => ({
         task,
@@ -418,11 +432,12 @@ function getFirstCarriedResource(creep: Creep): ResourceConstant | null {
 }
 
 function getSynthesisCleanupDeliveryTarget(creep: Creep, resource: ResourceConstant): AnyStoreStructure | null {
-  if (creep.room.terminal && creep.room.terminal.store.getFreeCapacity(resource) > 0) {
-    return creep.room.terminal;
+  const assignedRoom = getAssignedCarrierRoom(creep);
+  if (assignedRoom?.terminal && assignedRoom.terminal.store.getFreeCapacity(resource) > 0) {
+    return assignedRoom.terminal;
   }
-  if (creep.room.storage && creep.room.storage.store.getFreeCapacity(resource) > 0) {
-    return creep.room.storage;
+  if (assignedRoom?.storage && assignedRoom.storage.store.getFreeCapacity(resource) > 0) {
+    return assignedRoom.storage;
   }
 
   return null;
@@ -481,6 +496,7 @@ export const carrierRole: RoleFactory = () => ({
     const energyDemandTarget = getEnergyStoreTarget(creep, {
       includeTerminal: false,
       includeStorage: false,
+      roomName: getAssignedCarrierRoomName(creep),
     });
 
     if (energyDemandTarget) {
@@ -541,7 +557,8 @@ export const carrierRole: RoleFactory = () => ({
     }
 
     if (creep.memory.carrierStorageOnlyMode) {
-      const storageTarget = creep.room.storage || creep.room.terminal;
+      const assignedRoom = getAssignedCarrierRoom(creep);
+      const storageTarget = assignedRoom?.storage || assignedRoom?.terminal;
       if (!storageTarget) {
         return false;
       }
@@ -566,7 +583,7 @@ export const carrierRole: RoleFactory = () => ({
 
     let target = getPlannedDeliveryTarget(creep);
     if (!target) {
-      target = getEnergyStoreTarget(creep);
+      target = getEnergyStoreTarget(creep, { roomName: getAssignedCarrierRoomName(creep) });
       if (target) {
         setPostTransferPlan(creep, "deliver", target);
       }
@@ -595,7 +612,10 @@ export const carrierRole: RoleFactory = () => ({
 
     const remainingEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
     if (remainingEnergy > 0) {
-      const nextTarget = getEnergyStoreTarget(creep, { excludeIds: [target.id] });
+      const nextTarget = getEnergyStoreTarget(creep, {
+        excludeIds: [target.id],
+        roomName: getAssignedCarrierRoomName(creep),
+      });
       if (nextTarget) {
         setPostTransferPlan(creep, "deliver", nextTarget);
         moveToTarget(creep, nextTarget);
