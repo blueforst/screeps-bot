@@ -858,14 +858,18 @@ function createTerminalFeedTask(room: ResourceControlSnapshot, resource: Resourc
   };
 }
 
-function createTerminalOffloadTask(room: ResourceControlSnapshot, resource: ResourceConstant, amount: number): CarrierTaskDraft | null {
+function createTerminalOffloadTask(
+  room: ResourceControlSnapshot,
+  resource: ResourceConstant,
+  amount: number,
+  availableAmount = room.terminal.store.getUsedCapacity(resource),
+): CarrierTaskDraft | null {
   if (!room.storage || amount <= 0) {
     return null;
   }
 
-  const terminalAmount = room.terminal.store.getUsedCapacity(resource);
   const storageFree = room.storage.store.getFreeCapacity(resource);
-  const movable = Math.min(terminalAmount, storageFree, amount);
+  const movable = Math.min(availableAmount, storageFree, amount);
   if (movable <= 0) {
     return null;
   }
@@ -933,12 +937,13 @@ function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: Reso
     return null;
   }
 
-  const terminalEnergy = room.terminal.store.getUsedCapacity(RESOURCE_ENERGY);
+  const terminalEnergy = room.terminalEnergy;
   if (room.storageEnergy < room.energyTarget && terminalEnergy > 0) {
     return createTerminalOffloadTask(
       room,
       RESOURCE_ENERGY,
       Math.min(room.transferBatchSize, room.energyTarget - room.storageEnergy),
+      terminalEnergy,
     );
   }
 
