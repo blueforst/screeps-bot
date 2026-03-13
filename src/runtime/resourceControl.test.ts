@@ -227,7 +227,64 @@ describe("runResourceControl terminal feed tasks", () => {
         steps: [
           {
             resource: RESOURCE_ENERGY,
-            amount: 25000,
+            amount: 18000,
+          },
+        ],
+      },
+    });
+  });
+
+  it("includes transfer fee budget when staging terminal energy for pending sends", () => {
+    const donor = createRoom({
+      name: "W8N1",
+      storageResources: { [RESOURCE_ENERGY]: 260000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+    });
+    const receiver = createRoom({ name: "W8N2" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 5000);
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_ENERGY, 10000, "test");
+
+    runResourceControl();
+
+    expect(Memory.rooms?.[donor.name]?.carrierTasks).toMatchObject({
+      [`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]: {
+        type: "terminal_feed",
+        steps: [
+          {
+            resource: RESOURCE_ENERGY,
+            amount: 30000,
+          },
+        ],
+      },
+    });
+  });
+
+  it("includes fee budget in export staging for auto-balance receivers", () => {
+    const donor = createRoom({
+      name: "W8N3",
+      storageResources: { [RESOURCE_ENERGY]: 300000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+    });
+    const receiver = createRoom({
+      name: "W8N4",
+      storageResources: { [RESOURCE_ENERGY]: 100000 },
+      terminalResources: {},
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 5000);
+
+    runResourceControl();
+
+    expect(Memory.rooms?.[donor.name]?.carrierTasks).toMatchObject({
+      [`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]: {
+        type: "terminal_feed",
+        steps: [
+          {
+            resource: RESOURCE_ENERGY,
+            amount: 30000,
           },
         ],
       },
