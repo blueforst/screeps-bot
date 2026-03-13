@@ -287,6 +287,10 @@ function followStoredRoomPath(
 }
 
 function getNextStoredPathStep(creep: Creep, steps: MovePathState["steps"]): RoomPosition | null {
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return null;
+  }
+
   let currentStepMatched = false;
 
   for (const step of steps) {

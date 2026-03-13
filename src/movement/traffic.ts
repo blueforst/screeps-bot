@@ -128,7 +128,11 @@ function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: Roo
   }
 
   const blockerMovePathState = blocker.memory.movePathState as MovePathState | undefined;
-  if (blockerMovePathState?.expiresAt && blockerMovePathState.expiresAt > Game.time) {
+  if (
+    blockerMovePathState?.expiresAt &&
+    blockerMovePathState.expiresAt > Game.time &&
+    Array.isArray(blockerMovePathState.steps)
+  ) {
     blockerMovePathState.steps = [{ x: previousPos.x, y: previousPos.y }, ...blockerMovePathState.steps];
     blockerMovePathState.lastPosKey = getPosKey(yieldPos);
   } else {

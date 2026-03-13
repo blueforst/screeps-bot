@@ -203,6 +203,64 @@ describe("moveToTarget yielding", () => {
     expect(blocker.memory.movePathState?.steps[1]).toEqual({ x: 12, y: 10 });
   });
 
+  it("drops a legacy cached path state without steps and repaths safely", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N2A", creeps);
+    const creep = createCreep("worker-legacy", "worker", 10, 10, room);
+    creeps.push(creep);
+    Game.creeps[creep.name] = creep;
+    creep.memory.movePathState = {
+      key: `${room.name}:${room.name}:12:10:r1:i0:sd:pd:md`,
+      path: "33",
+      targetRoom: room.name,
+      targetX: 12,
+      targetY: 10,
+      range: 1,
+      stuckTicks: 0,
+      expiresAt: Game.time + 5,
+    } as CreepMemory["movePathState"];
+    (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    const result = moveToTarget(creep, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(result).toBe(OK);
+    expect(creep.move).toHaveBeenCalledWith(RIGHT);
+    expect((creep.memory.movePathState?.steps || [])[0]).toEqual({ x: 11, y: 10 });
+  });
+
+  it("drops a legacy blocker path state without steps when yielding", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N2B", creeps);
+    const pusher = createCreep("worker-legacy-push", "worker", 10, 10, room);
+    const blocker = createCreep("scout-legacy-push", "scout", 11, 10, room);
+    blocker.memory.movePathState = {
+      key: "legacy",
+      path: "3",
+      targetRoom: room.name,
+      targetX: 12,
+      targetY: 10,
+      range: 1,
+      stuckTicks: 0,
+      expiresAt: Game.time + 5,
+    } as CreepMemory["movePathState"];
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(result).toBe(OK);
+    expect(blocker.move).toHaveBeenCalled();
+    expect(blocker.memory.movePathState).toBeUndefined();
+  });
+
   it("does not move again on the same tick after being pushed", () => {
     const room = createRoom("W1N3");
     const creep = createCreep("carrier-2", "carrier", 10, 10, room);
