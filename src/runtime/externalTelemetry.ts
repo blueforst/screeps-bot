@@ -51,6 +51,17 @@ interface ExternalTelemetryRoomSnapshot {
     upgradeRate: number;
     spawnBusy: number;
   };
+  movement?: {
+    pathRequests: number;
+    pathCacheHits: number;
+    pathRepaths: number;
+    yieldPushes: number;
+    travelRequests: number;
+    travelFallbacks: number;
+    travelRepaths: number;
+    exitRecoveries: number;
+    stateClears: number;
+  };
 }
 
 interface ExternalTelemetrySnapshot {
@@ -79,6 +90,17 @@ interface ExternalTelemetrySnapshot {
     taskQueueDepth: number;
     spawnQueueDepth: number;
     activeSpawns: number;
+    movement?: {
+      pathRequests: number;
+      pathCacheHits: number;
+      pathRepaths: number;
+      yieldPushes: number;
+      travelRequests: number;
+      travelFallbacks: number;
+      travelRepaths: number;
+      exitRecoveries: number;
+      stateClears: number;
+    };
   };
   moduleCpu?: {
     tick: number;
@@ -269,6 +291,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
   const productionRooms = Memory.analytics?.production?.rooms || {};
   const moduleCpuLatest = Memory.analytics?.moduleCpu?.latest;
   const moduleCpuHistory = getCpuPhaseHistory();
+  const movementAnalytics = Memory.analytics?.movement;
 
   const rooms: ExternalTelemetryRoomSnapshot[] = [];
   let totalWorkers = 0;
@@ -308,6 +331,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
     const avgCarrierStuckTicks =
       creepStats.carrierStuckCount > 0 ? creepStats.carrierStuckTotal / creepStats.carrierStuckCount : 0;
     const productionRoom = productionRooms[roomName];
+    const movementRoom = movementAnalytics?.rooms[roomName];
 
     totalWorkers += creepStats.workerCount;
     totalCarriers += creepStats.carrierCount;
@@ -336,6 +360,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
       spawnSpawning: spawnStats.spawningCount,
       productionUpdatedAt: productionRoom?.updatedAt,
       productionSignal: productionRoom?.signal,
+      movement: movementRoom,
     });
   }
 
@@ -365,6 +390,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
       taskQueueDepth: totalTaskQueueDepth,
       spawnQueueDepth: totalSpawnQueueDepth,
       activeSpawns: totalActiveSpawns,
+      movement: movementAnalytics?.totals,
     },
     moduleCpu: moduleCpuLatest
       ? {

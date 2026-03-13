@@ -1,4 +1,5 @@
 import { roleRegistry } from "@/roles";
+import { clearMovementState } from "@/roles/shared";
 import { decodeCrossShardTravelerName } from "@/runtime/crossShardNaming";
 import { measureCreepDecision } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
@@ -68,6 +69,7 @@ export function mountCreep(): void {
   Creep.prototype.work = function work(): void {
     const logic = measureCreepDecision(() => resolveRoleLogic(this));
     if (!logic) {
+      clearMovementState(this);
       this.say("no-config");
       return;
     }
@@ -89,6 +91,7 @@ export function mountCreep(): void {
     }
 
     if (shouldSwitch) {
+      clearMovementState(this);
       this.memory.working = !isWorking;
 
       const switchedToWorking = this.memory.working === true;
