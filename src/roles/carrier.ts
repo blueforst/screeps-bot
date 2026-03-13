@@ -407,6 +407,16 @@ function getFirstNonEnergyResource(creep: Creep): ResourceConstant | null {
   return null;
 }
 
+function getFirstCarriedResource(creep: Creep): ResourceConstant | null {
+  for (const resource of Object.keys(creep.store) as ResourceConstant[]) {
+    if (creep.store.getUsedCapacity(resource) > 0) {
+      return resource;
+    }
+  }
+
+  return null;
+}
+
 function getSynthesisCleanupDeliveryTarget(creep: Creep, resource: ResourceConstant): AnyStoreStructure | null {
   if (creep.room.terminal && creep.room.terminal.store.getFreeCapacity(resource) > 0) {
     return creep.room.terminal;
@@ -419,21 +429,28 @@ function getSynthesisCleanupDeliveryTarget(creep: Creep, resource: ResourceConst
 }
 
 function deliverSynthesisCarrierResource(creep: Creep): boolean {
-  const resource = getFirstNonEnergyResource(creep);
+  const assigned = getAssignedSynthesisCarrierTask(creep);
+  const assignedStep = measureCreepDecision(() => (assigned ? selectDeliveryStep(assigned, creep) : null));
+  const assignedResource = assignedStep?.resource;
+  const fallbackResource = getFirstNonEnergyResource(creep);
+  const resource = assignedResource || fallbackResource;
   if (!resource) {
     clearSynthesisCarrierTaskPlan(creep);
     return false;
   }
 
-  const assigned = getAssignedSynthesisCarrierTask(creep);
-  const assignedStep = measureCreepDecision(() => (assigned ? selectDeliveryStep(assigned, creep) : null));
   const assignedTarget = assignedStep ? resolveTaskStructure(assignedStep.toId) : null;
-  const target =
-    assignedTarget && assignedTarget.store.getFreeCapacity(resource) > 0
-      ? assignedTarget
+  const target = assignedTarget && assignedTarget.store.getFreeCapacity(resource) > 0
+    ? assignedTarget
+    : assignedResource
+      ? null
       : getSynthesisCleanupDeliveryTarget(creep, resource);
   if (!target) {
-    return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+    if (creep.store.getUsedCapacity() === 0) {
+      clearSynthesisCarrierTaskPlan(creep);
+      return false;
+    }
+    return false;
   }
 
   const code = measureCreepIntent(() => creep.transfer(target, resource));
@@ -445,7 +462,7 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
     return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
   }
 
-  if (!getFirstNonEnergyResource(creep)) {
+  if (!getFirstCarriedResource(creep)) {
     clearSynthesisCarrierTaskPlan(creep);
   }
   return true;
