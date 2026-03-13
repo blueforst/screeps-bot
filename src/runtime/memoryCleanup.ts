@@ -271,10 +271,6 @@ function cleanupPickupReservationMemory(ownedRooms: Set<string>): number {
 
   let removed = 0;
   for (const [roomName, roomMemory] of Object.entries(Memory.rooms)) {
-    if (!ownedRooms.has(roomName)) {
-      continue;
-    }
-
     const reservations = roomMemory.pickupReservations;
     if (!reservations) {
       continue;
@@ -291,6 +287,10 @@ function cleanupPickupReservationMemory(ownedRooms: Set<string>): number {
       if (Object.keys(reservation.claims).length === 0) {
         delete reservations[targetId];
       }
+    }
+
+    if (Object.keys(reservations).length === 0) {
+      delete roomMemory.pickupReservations;
     }
   }
 
