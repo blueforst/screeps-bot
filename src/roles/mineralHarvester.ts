@@ -30,6 +30,10 @@ export const mineralHarvesterRole: RoleFactory = (mineralId?: string) => ({
       return false;
     }
 
+    if (container.store.getFreeCapacity(mineral.mineralType) <= 0) {
+      return false;
+    }
+
     if (!creep.pos.isEqualTo(container.pos)) {
       moveToTarget(creep, container.pos, 0, { reusePath: 5 });
       return false;
