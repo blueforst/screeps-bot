@@ -237,6 +237,36 @@ describe("runResourceControl terminal feed tasks", () => {
     expect(Memory.rooms?.[donor.name]?.carrierTasks?.[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
   });
 
+  it("does not offload terminal energy reserved for a pending send while the terminal is on cooldown", () => {
+    const donor = createRoom({
+      name: "W7N2C",
+      storageResources: { [RESOURCE_ENERGY]: 150000 },
+      terminalResources: { [RESOURCE_ENERGY]: 10000 },
+    });
+    donor.terminal!.cooldown = 1;
+    const receiver = createRoom({ name: "W7N2D" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: false,
+        },
+        rooms: {
+          [donor.name]: {
+            terminalEnergyReserve: 0,
+          },
+        },
+      },
+    };
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_ENERGY, 10000, "test");
+
+    runResourceControl();
+
+    expect(Memory.rooms?.[donor.name]?.carrierTasks?.[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
   it("stages terminal energy for pending energy sends only after storage is healthy", () => {
     const donor = createRoom({
       name: "W7N3",

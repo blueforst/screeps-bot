@@ -932,18 +932,30 @@ function getEnergySendFeeBudget(room: ResourceControlSnapshot, snapshots: Resour
   return Game.market.calcTransactionCost(amount, room.roomName, receiver.roomName);
 }
 
+function getReservedTerminalEnergyForPendingSends(
+  room: ResourceControlSnapshot,
+  snapshots: ResourceControlSnapshot[],
+): number {
+  const stagedEnergy = getPlannedEnergySendBatch(room);
+  const feeBudget = getEnergySendFeeBudget(room, snapshots, stagedEnergy);
+  return stagedEnergy + feeBudget;
+}
+
 function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: ResourceControlSnapshot[]): CarrierTaskDraft | null {
   if (!room.storage) {
     return null;
   }
 
   const terminalEnergy = room.terminalEnergy;
-  if (room.storageEnergy < room.energyTarget && terminalEnergy > 0) {
+  const reservedTerminalEnergy = getReservedTerminalEnergyForPendingSends(room, snapshots);
+  const offloadableTerminalEnergy = Math.max(0, terminalEnergy - reservedTerminalEnergy);
+
+  if (room.storageEnergy < room.energyTarget && offloadableTerminalEnergy > 0) {
     return createTerminalOffloadTask(
       room,
       RESOURCE_ENERGY,
       Math.min(room.transferBatchSize, room.energyTarget - room.storageEnergy),
-      terminalEnergy,
+      offloadableTerminalEnergy,
     );
   }
 
@@ -952,7 +964,7 @@ function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: Reso
   }
 
   const stagedEnergy = getPlannedEnergySendBatch(room);
-  const feeBudget = getEnergySendFeeBudget(room, snapshots, stagedEnergy);
+  const feeBudget = reservedTerminalEnergy - stagedEnergy;
   const desiredTerminalEnergy = room.terminalEnergyReserve + stagedEnergy + feeBudget;
   return createTerminalFeedTask(room, RESOURCE_ENERGY, desiredTerminalEnergy);
 }
