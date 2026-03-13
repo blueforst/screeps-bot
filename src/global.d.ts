@@ -665,7 +665,7 @@ declare global {
         id: string;
         producer: string;
         roomName: string;
-        type: "lab_supply" | "lab_cleanup" | "mineral_haul" | "terminal_feed";
+        type: "lab_supply" | "lab_cleanup" | "mineral_haul" | "terminal_feed" | "terminal_offload";
         priority: number;
         steps: Array<{
           id: string;
