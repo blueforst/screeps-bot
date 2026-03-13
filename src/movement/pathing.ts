@@ -17,6 +17,7 @@ export function clearMovementState(creep: Creep): void {
   delete creep.memory.movePathState;
   delete creep.memory.travelState;
   delete creep.memory.movementPushedAt;
+  delete creep.memory._move;
 }
 
 export function moveToTarget(
@@ -289,24 +290,40 @@ function getNextStoredPathStep(creep: Creep, steps: MovePathState["steps"]): Roo
     return null;
   }
 
-  let currentStepMatched = false;
-
-  for (const step of steps) {
-    if (currentStepMatched) {
-      return new RoomPosition(step.x, step.y, creep.room.name);
-    }
-
-    if (creep.pos.x === step.x && creep.pos.y === step.y) {
-      currentStepMatched = true;
-      continue;
-    }
-
-    if (creep.pos.getRangeTo(step.x, step.y) === 1) {
-      return new RoomPosition(step.x, step.y, creep.room.name);
-    }
+  const exactIndex = steps.findIndex((step) => creep.pos.x === step.x && creep.pos.y === step.y);
+  if (exactIndex >= 0) {
+    const nextStep = steps[exactIndex + 1];
+    return nextStep ? new RoomPosition(nextStep.x, nextStep.y, creep.room.name) : null;
   }
 
-  return null;
+  let bestIndex = -1;
+  let bestRange = Infinity;
+
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
+    const range = creep.pos.getRangeTo(step.x, step.y);
+    if (range >= bestRange) {
+      continue;
+    }
+    bestRange = range;
+    bestIndex = index;
+  }
+
+  if (bestIndex < 0) {
+    return null;
+  }
+
+  const candidate = steps[bestIndex];
+  if (bestRange <= 1) {
+    return new RoomPosition(candidate.x, candidate.y, creep.room.name);
+  }
+
+  const nextStep = steps[bestIndex + 1];
+  if (!nextStep) {
+    return new RoomPosition(candidate.x, candidate.y, creep.room.name);
+  }
+
+  return new RoomPosition(nextStep.x, nextStep.y, creep.room.name);
 }
 
 function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): ScreepsReturnCode {

@@ -688,6 +688,16 @@ declare global {
       expiresAt: number;
     };
     movementPushedAt?: number;
+    _move?: {
+      dest?: {
+        x: number;
+        y: number;
+        room: string;
+      };
+      path?: string;
+      time?: number;
+      room?: string;
+    };
   }
 
   interface RoomMemory {

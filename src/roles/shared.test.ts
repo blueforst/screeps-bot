@@ -203,6 +203,35 @@ describe("moveToTarget yielding", () => {
     expect(blocker.memory.movePathState?.steps[1]).toEqual({ x: 12, y: 10 });
   });
 
+  it("continues forward on a cached path instead of stepping back to the previous tile", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N2C", creeps);
+    const creep = createCreep("worker-forward", "worker", 11, 10, room);
+    creeps.push(creep);
+    Game.creeps[creep.name] = creep;
+    creep.memory.movePathState = {
+      key: `${room.name}:${room.name}:13:10:r1:i0:sd:pd:md`,
+      path: "333",
+      steps: [
+        { x: 11, y: 10 },
+        { x: 12, y: 10 },
+        { x: 13, y: 10 },
+      ],
+      targetRoom: room.name,
+      targetX: 13,
+      targetY: 10,
+      range: 1,
+      lastPosKey: `${room.name}:10:10`,
+      stuckTicks: 0,
+      expiresAt: Game.time + 5,
+    };
+
+    const result = moveToTarget(creep, { pos: new MockRoomPosition(13, 10, room.name) as unknown as RoomPosition });
+
+    expect(result).toBe(OK);
+    expect(creep.move).toHaveBeenCalledWith(RIGHT);
+  });
+
   it("drops a legacy cached path state without steps and repaths safely", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N2A", creeps);
@@ -634,12 +663,14 @@ describe("clearMovementState", () => {
     };
     creep.memory.travelState = { targetRoom: "W8N9", stuckTicks: 1 };
     creep.memory.movementPushedAt = Game.time;
+    creep.memory._move = { dest: { x: 12, y: 10, room: room.name }, path: "33", time: Game.time };
 
     clearMovementState(creep);
 
     expect(creep.memory.movePathState).toBeUndefined();
     expect(creep.memory.travelState).toBeUndefined();
     expect(creep.memory.movementPushedAt).toBeUndefined();
+    expect(creep.memory._move).toBeUndefined();
   });
 
   it("records state clear metrics", () => {
