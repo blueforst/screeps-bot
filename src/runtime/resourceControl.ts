@@ -116,6 +116,7 @@ const SYNTHESIS_BINDING_STICKY_BONUS = 5;
 const SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO = 1.2;
 const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";
 const RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY = 80;
+const RESOURCE_CONTROL_TERMINAL_OFFLOAD_PRIORITY = 90;
 
 let taskIdSequence = 0;
 let taskIdSequenceTick = -1;
@@ -826,15 +827,14 @@ function executeTransferTasks(
   return actions;
 }
 
-function createTerminalFeedTask(room: ResourceControlSnapshot, resource: ResourceConstant, amount: number): CarrierTaskDraft | null {
-  if (resource === RESOURCE_ENERGY || !room.storage || amount <= 0) {
+function createTerminalFeedTask(room: ResourceControlSnapshot, resource: ResourceConstant, targetStock: number): CarrierTaskDraft | null {
+  if (!room.storage || targetStock <= 0) {
     return null;
   }
 
   const terminalAmount = room.terminal.store.getUsedCapacity(resource);
   const storageAmount = room.storage.store.getUsedCapacity(resource);
   const terminalFree = room.terminal.store.getFreeCapacity(resource);
-  const targetStock = Math.min(room.transferBatchSize, amount);
   const missing = Math.min(storageAmount, terminalFree, Math.max(0, targetStock - terminalAmount));
   if (missing <= 0) {
     return null;
@@ -858,6 +858,60 @@ function createTerminalFeedTask(room: ResourceControlSnapshot, resource: Resourc
   };
 }
 
+function createTerminalOffloadTask(room: ResourceControlSnapshot, resource: ResourceConstant, amount: number): CarrierTaskDraft | null {
+  if (!room.storage || amount <= 0) {
+    return null;
+  }
+
+  const terminalAmount = room.terminal.store.getUsedCapacity(resource);
+  const storageFree = room.storage.store.getFreeCapacity(resource);
+  const movable = Math.min(terminalAmount, storageFree, amount);
+  if (movable <= 0) {
+    return null;
+  }
+
+  return {
+    id: `resourceControl:terminal_offload:${room.roomName}:${resource}`,
+    type: "terminal_offload",
+    priority: RESOURCE_CONTROL_TERMINAL_OFFLOAD_PRIORITY,
+    steps: [
+      {
+        id: `${resource}:${room.terminal.id}->${room.storage.id}`,
+        resource,
+        fromKind: "terminal",
+        toKind: "storage",
+        fromId: room.terminal.id,
+        toId: room.storage.id,
+        amount: movable,
+      },
+    ],
+  };
+}
+
+function createEnergyTerminalTask(room: ResourceControlSnapshot): CarrierTaskDraft | null {
+  if (!room.storage) {
+    return null;
+  }
+
+  const terminalEnergy = room.terminal.store.getUsedCapacity(RESOURCE_ENERGY);
+  if (room.storageEnergy < room.energyTarget && terminalEnergy > 0) {
+    return createTerminalOffloadTask(
+      room,
+      RESOURCE_ENERGY,
+      Math.min(room.transferBatchSize, room.energyTarget - room.storageEnergy),
+    );
+  }
+
+  if (room.storageEnergy < room.energyTarget) {
+    return null;
+  }
+
+  const outgoingEnergy = getOutgoingPendingAmount(room.roomName, RESOURCE_ENERGY);
+  const stagedEnergy = outgoingEnergy > 0 || room.state === "export" ? Math.min(room.transferBatchSize, Math.max(outgoingEnergy, room.transferBatchSize)) : 0;
+  const desiredTerminalEnergy = room.terminalEnergyReserve + stagedEnergy;
+  return createTerminalFeedTask(room, RESOURCE_ENERGY, desiredTerminalEnergy);
+}
+
 function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[]): string[] {
   const pendingByRoom = new Map<string, Map<ResourceConstant, number>>();
   for (const task of Object.values(ensureTaskStore())) {
@@ -873,16 +927,24 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[]): string[] {
   const validRoomNames = new Set(snapshots.map((snapshot) => snapshot.roomName));
   const actions: string[] = [];
   for (const snapshot of snapshots) {
+    const drafts: CarrierTaskDraft[] = [];
+    const energyDraft = createEnergyTerminalTask(snapshot);
+    if (energyDraft) {
+      drafts.push(energyDraft);
+    }
+
     const roomPending = pendingByRoom.get(snapshot.roomName);
-    const drafts = roomPending
-      ? Array.from(roomPending.entries())
-          .map(([resource, amount]) => createTerminalFeedTask(snapshot, resource, amount))
-          .filter((draft): draft is CarrierTaskDraft => !!draft)
-      : [];
+    if (roomPending) {
+      drafts.push(
+        ...Array.from(roomPending.entries())
+          .map(([resource, amount]) => createTerminalFeedTask(snapshot, resource, Math.min(snapshot.transferBatchSize, amount)))
+          .filter((draft): draft is CarrierTaskDraft => !!draft),
+      );
+    }
 
     replaceCarrierTasksForProducerRoom(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, snapshot.roomName, drafts);
     if (drafts.length > 0) {
-      actions.push(`terminal-feed:${snapshot.roomName}:count=${drafts.length}`);
+      actions.push(`terminal-logistics:${snapshot.roomName}:count=${drafts.length}`);
     }
   }
 

@@ -33,6 +33,7 @@ function createRoom(options: {
           }
           return storageResources[resource] || 0;
         },
+        getFreeCapacity: () => 1_000_000,
       },
     } as unknown as StructureStorage,
     terminal: {
@@ -47,7 +48,12 @@ function createRoom(options: {
           }
           return terminalResources[resource] || 0;
         },
-        getFreeCapacity: () => 10000,
+        getFreeCapacity: (resource?: ResourceConstant) => {
+          const used = resource
+            ? terminalResources[resource] || 0
+            : Object.values(terminalResources).reduce((sum, value) => sum + (value || 0), 0);
+          return 300000 - used;
+        },
       },
     } as unknown as StructureTerminal,
     find(type: FindConstant, opts?: { filter?: (structure: Structure) => boolean }) {
@@ -149,5 +155,82 @@ describe("runResourceControl terminal feed tasks", () => {
     runResourceControl();
 
     expect(Memory.rooms?.[donor.name]?.carrierTasks).toBeUndefined();
+  });
+
+  it("creates a storage-to-terminal energy task to maintain terminal reserve from storage", () => {
+    const room = createRoom({
+      name: "W7N1",
+      storageResources: { [RESOURCE_ENERGY]: 240000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(Memory.rooms?.[room.name]?.carrierTasks).toMatchObject({
+      [`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]: {
+        type: "terminal_feed",
+        steps: [
+          {
+            resource: RESOURCE_ENERGY,
+            fromKind: "storage",
+            toKind: "terminal",
+            amount: 15000,
+          },
+        ],
+      },
+    });
+  });
+
+  it("creates a terminal-to-storage energy offload task when storage is below target", () => {
+    const room = createRoom({
+      name: "W7N2",
+      storageResources: { [RESOURCE_ENERGY]: 150000 },
+      terminalResources: { [RESOURCE_ENERGY]: 12000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(Memory.rooms?.[room.name]?.carrierTasks).toMatchObject({
+      [`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]: {
+        type: "terminal_offload",
+        steps: [
+          {
+            resource: RESOURCE_ENERGY,
+            fromKind: "terminal",
+            toKind: "storage",
+            amount: 10000,
+          },
+        ],
+      },
+    });
+    expect(Memory.rooms?.[room.name]?.carrierTasks?.[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+  it("stages terminal energy for pending energy sends only after storage is healthy", () => {
+    const donor = createRoom({
+      name: "W7N3",
+      storageResources: { [RESOURCE_ENERGY]: 260000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+    });
+    const receiver = createRoom({ name: "W7N4" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_ENERGY, 3000, "test");
+
+    runResourceControl();
+
+    expect(Memory.rooms?.[donor.name]?.carrierTasks).toMatchObject({
+      [`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]: {
+        type: "terminal_feed",
+        steps: [
+          {
+            resource: RESOURCE_ENERGY,
+            amount: 25000,
+          },
+        ],
+      },
+    });
   });
 });
