@@ -250,6 +250,81 @@ describe("carrierRole mineral hauling", () => {
     expect(creep.memory.synthesisCarrierTaskId).toBe("terminal-feed-task");
   });
 
+  it("prefers mineral hauling over terminal feed when both board tasks are available", () => {
+    const room = createRoom("W1N3A");
+    const storage = {
+      id: "storage-feed-2",
+      pos: { x: 12, y: 12, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 1500 : 0),
+      },
+    } as unknown as StructureStorage;
+    const container = {
+      id: "container-mineral-1",
+      pos: { x: 8, y: 8, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_KEANIUM ? 900 : 0),
+      },
+    } as unknown as StructureContainer;
+    const terminal = room.terminal as StructureTerminal;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) {
+        return storage;
+      }
+      if (id === container.id) {
+        return container;
+      }
+      if (id === terminal.id) {
+        return terminal;
+      }
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [
+      {
+        id: "terminal-feed-task",
+        type: "terminal_feed",
+        priority: 80,
+        steps: [
+          {
+            id: "step-feed-2",
+            resource: RESOURCE_ENERGY,
+            fromKind: "storage",
+            toKind: "terminal",
+            fromId: storage.id,
+            toId: terminal.id,
+            amount: 1500,
+          },
+        ],
+      },
+    ]);
+    replaceCarrierTasksForProducerRoom("mineralExtraction", room.name, [
+      {
+        id: "mineral-task",
+        type: "mineral_haul",
+        priority: 85,
+        steps: [
+          {
+            id: "step-mineral-1",
+            resource: RESOURCE_KEANIUM,
+            fromKind: "container",
+            toKind: "terminal",
+            fromId: container.id,
+            toId: terminal.id,
+            amount: 900,
+          },
+        ],
+      },
+    ]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM);
+    expect(switched).toBe(false);
+    expect(creep.memory.synthesisCarrierTaskId).toBe("mineral-task");
+  });
+
   it("picks terminal offload board tasks for energy only when no room energy demand exists", () => {
     const room = createRoom("W1N4");
     const terminal = {

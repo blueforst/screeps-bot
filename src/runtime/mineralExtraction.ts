@@ -9,7 +9,7 @@ import { getTickContextService } from "@/runtime/runtimeServices";
 const MINERAL_EXTRACTION_CARRIER_TASK_PRODUCER = "mineralExtraction";
 const MINERAL_EXTRACTION_SAMPLE_INTERVAL = 10;
 const MINERAL_HAUL_THRESHOLD = 700;
-const MINERAL_HAUL_PRIORITY = 25;
+const MINERAL_HAUL_PRIORITY = 85;
 
 function getAdjacentMineralContainer(mineral: Mineral): StructureContainer | null {
   const containers = mineral.pos.findInRange(FIND_STRUCTURES, 1, {
