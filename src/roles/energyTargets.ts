@@ -46,14 +46,6 @@ function updateClosestTarget<T extends { pos: RoomPosition }>(
   return creep.pos.getRangeTo(candidate.pos) < creep.pos.getRangeTo(current.pos) ? candidate : current;
 }
 
-function getRoomTerminalEnergyReserve(room: Room): number {
-  const configured = Memory.cfg?.resourceControl?.rooms?.[room.name]?.terminalEnergyReserve;
-  if (typeof configured === "number" && Number.isFinite(configured)) {
-    return Math.max(0, Math.floor(configured));
-  }
-  return 20_000;
-}
-
 export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOptions = {}): AnyStoreStructure | null {
   return measureCreepDecision(() => {
     const excludeSet = new Set(options.excludeIds || []);
@@ -135,16 +127,12 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       return bestLab;
     }
 
-    if (includeTerminal && creep.room.terminal && !excludeSet.has(creep.room.terminal.id)) {
-      const terminalReserve = getRoomTerminalEnergyReserve(creep.room);
-      const terminalEnergy = creep.room.terminal.store.getUsedCapacity(RESOURCE_ENERGY);
-      if (creep.room.terminal.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && terminalEnergy < terminalReserve) {
-        return creep.room.terminal;
-      }
-    }
-
     if (includeStorage && creep.room.storage && !excludeSet.has(creep.room.storage.id)) {
       return creep.room.storage;
+    }
+
+    if (includeTerminal && creep.room.terminal && !excludeSet.has(creep.room.terminal.id)) {
+      return creep.room.terminal;
     }
 
     return null;

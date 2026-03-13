@@ -136,7 +136,7 @@ describe("energyTargets", () => {
     expect(creep.pickup).toHaveBeenCalledWith(dropped);
   });
 
-  it("falls back to terminal before storage when terminal is below reserve", () => {
+  it("falls back to storage even when terminal is below reserve", () => {
     const terminal = {
       id: "terminal-1",
       pos: createPos(4),
@@ -155,7 +155,7 @@ describe("energyTargets", () => {
     Game.rooms[room.name] = room;
     const creep = createCreep(room);
 
-    expect(getEnergyStoreTarget(creep)?.id).toBe(terminal.id);
+    expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
   });
 
   it("falls back to storage when terminal reserve is already satisfied", () => {
