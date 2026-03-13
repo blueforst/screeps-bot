@@ -2,7 +2,7 @@ import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfi
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPosKey, getTargetPos, isExitTile } from "@/movement/common";
-import { applyTileReservationsToMatrix, isTileReserved, releaseTileReservation, reserveNextTile } from "@/movement/reservations";
+import { isTileReserved, releaseTileReservation, reserveNextTile } from "@/movement/reservations";
 import { findMyCreepAt, moveOffExit, pushBlockingCreep, shouldYieldToPusher } from "@/movement/traffic";
 import type { MovePathState, MoveToTargetOptions, RoomCostMatrixCacheEntry } from "@/movement/types";
 
@@ -171,8 +171,6 @@ function buildRoomCostMatrix(
   if (options.ignoreCreeps) {
     return roomMatrix;
   }
-
-  applyTileReservationsToMatrix(roomName, roomMatrix, creep.name);
 
   for (const otherCreep of roomContext.getMyCreeps()) {
     if (otherCreep.name === creep.name) {

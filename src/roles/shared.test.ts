@@ -301,6 +301,32 @@ describe("moveToTarget yielding", () => {
     expect(second.move).not.toHaveBeenCalled();
   });
 
+  it("does not treat transient tile reservations as pathfinding obstacles", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N5B", creeps);
+    const first = createCreep("worker-path-1", "worker", 10, 10, room);
+    const second = createCreep("worker-path-2", "worker", 10, 11, room);
+    creeps.push(first, second);
+    Game.creeps[first.name] = first;
+    Game.creeps[second.name] = second;
+
+    (first.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    let reservedTileCost = -1;
+    (second.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn((_target, opts: { costCallback?: Function }) => {
+      const matrix = opts.costCallback?.(room.name, new MockCostMatrix() as unknown as CostMatrix) as unknown as MockCostMatrix;
+      reservedTileCost = matrix.get(11, 10);
+      return [{ x: 11, y: 10, dx: 1, dy: -1, direction: TOP_RIGHT }];
+    });
+
+    moveToTarget(first, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+    moveToTarget(second, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(reservedTileCost).toBe(0);
+  });
+
   it("pushes a chain of blockers to open a corridor", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N6", creeps);
