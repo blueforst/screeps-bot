@@ -570,6 +570,34 @@ declare global {
       >;
     };
     analytics?: {
+      movement?: {
+        updatedAt: number;
+        totals: {
+          pathRequests: number;
+          pathCacheHits: number;
+          pathRepaths: number;
+          yieldPushes: number;
+          travelRequests: number;
+          travelFallbacks: number;
+          travelRepaths: number;
+          exitRecoveries: number;
+          stateClears: number;
+        };
+        rooms: Record<
+          string,
+          {
+            pathRequests: number;
+            pathCacheHits: number;
+            pathRepaths: number;
+            yieldPushes: number;
+            travelRequests: number;
+            travelFallbacks: number;
+            travelRepaths: number;
+            exitRecoveries: number;
+            stateClears: number;
+          }
+        >;
+      };
       production?: {
         rooms?: Record<
           string,
@@ -647,6 +675,10 @@ declare global {
     movePathState?: {
       key: string;
       path: string;
+      steps: Array<{
+        x: number;
+        y: number;
+      }>;
       targetRoom: string;
       targetX: number;
       targetY: number;
@@ -655,6 +687,7 @@ declare global {
       stuckTicks: number;
       expiresAt: number;
     };
+    movementPushedAt?: number;
   }
 
   interface RoomMemory {

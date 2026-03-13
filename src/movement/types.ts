@@ -1,0 +1,47 @@
+export interface StoredPathStep {
+  x: number;
+  y: number;
+}
+
+export interface MoveToTargetOptions {
+  swampCost?: number;
+  plainCost?: number;
+  reusePath?: number;
+  maxRooms?: number;
+  ignoreCreeps?: boolean;
+}
+
+export interface MoveToRoomOptions extends MoveToTargetOptions {
+  travelRange?: 1 | 3;
+}
+
+export type MovementOptions = MoveToRoomOptions;
+
+export interface TravelState {
+  targetRoom: string;
+  lastPosKey?: string;
+  stuckTicks: number;
+}
+
+export interface MovePathState {
+  key: string;
+  path: string;
+  steps: StoredPathStep[];
+  targetRoom: string;
+  targetX: number;
+  targetY: number;
+  range: 0 | 1 | 3;
+  lastPosKey?: string;
+  stuckTicks: number;
+  expiresAt: number;
+}
+
+export interface DynamicRouteCacheEntry {
+  nextRoom: string | null;
+  expiresAt: number;
+}
+
+export interface RoomCostMatrixCacheEntry {
+  tick: number;
+  matrix: CostMatrix;
+}
