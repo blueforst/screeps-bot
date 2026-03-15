@@ -254,7 +254,8 @@ function followStoredRoomPath(
   const blockingCreep = findMyCreepAt(nextPos, creep.name);
   if (blockingCreep) {
     const blockerPathState = blockingCreep.memory.movePathState as MovePathState | undefined;
-    const blockerWillMoveNaturally = !!blockerPathState && blockerPathState.expiresAt > Game.time;
+    const blockerIsStationaryWorker = !!blockingCreep.memory.workAnchor;
+    const blockerWillMoveNaturally = !blockerIsStationaryWorker && !!blockerPathState && blockerPathState.expiresAt > Game.time;
 
     if (blockerWillMoveNaturally) {
       // Blocker is actively moving — submit our move and let the engine resolve it naturally.
