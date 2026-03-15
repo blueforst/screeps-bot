@@ -33,9 +33,7 @@ export const workerRole: RoleFactory = () => ({
 
     if (task.type === "build") {
       const buildCode = measureCreepIntent(() => creep.build(target as ConstructionSite));
-      if (buildCode === ERR_NOT_IN_RANGE) {
-        moveToRemoteWorkTarget(creep, target);
-      }
+      moveToRemoteWorkTarget(creep, target);
 
       if (buildCode === ERR_INVALID_TARGET || completeWorkerTaskIfDone(task)) {
         releaseWorkerTask(creep);
@@ -51,8 +49,8 @@ export const workerRole: RoleFactory = () => ({
 
     if (task.type === "upgrade") {
       const upgradeCode = measureCreepIntent(() => creep.upgradeController(target as StructureController));
+      moveToRemoteWorkTarget(creep, target);
       if (upgradeCode === ERR_NOT_IN_RANGE) {
-        moveToRemoteWorkTarget(creep, target);
         return false;
       }
 
@@ -70,9 +68,9 @@ export const workerRole: RoleFactory = () => ({
 
     if (task.type === "repair") {
       const repairCode = measureCreepIntent(() => creep.repair(target as StructureRampart));
+      const repairMoveCode = moveToRemoteWorkTarget(creep, target);
       if (repairCode === ERR_NOT_IN_RANGE) {
-        const moveCode = moveToRemoteWorkTarget(creep, target);
-        if (moveCode === ERR_NO_PATH) {
+        if (repairMoveCode === ERR_NO_PATH) {
           releaseWorkerTask(creep);
         }
         return false;
