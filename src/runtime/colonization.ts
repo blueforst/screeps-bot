@@ -916,13 +916,18 @@ function processTask(task: ColonizationTask): void {
   ensurePlanReady(task);
 
   if (hasOwnedSpawnInTargetRoom(task)) {
-    task.status = "managed";
-    const cleaned = cleanupColonizationConfigs(task);
-    if (cleaned) {
-      const store = ensureColonizationStore();
-      delete store[task.targetRoom];
+    const targetRoomRcl = Game.rooms[task.targetRoom]?.controller?.level ?? 0;
+    if (targetRoomRcl >= 3) {
+      task.status = "managed";
+      const cleaned = cleanupColonizationConfigs(task);
+      if (cleaned) {
+        const store = ensureColonizationStore();
+        delete store[task.targetRoom];
+        Game.flags[task.flagName]?.remove();
+        console.log(`[colonization] complete: ${task.targetRoom} rcl≥3, flag removed`);
+      }
+      return;
     }
-    return;
   }
 
   const targetRoom = Game.rooms[task.targetRoom];
@@ -1053,6 +1058,13 @@ function upsertColonizationTask(flag: Flag): boolean {
     updatedAt: now,
   };
 
+  if (!existing) {
+    const task = store[targetRoom];
+    console.log(
+      `[colonization] started: flag=${flag.name} target=${targetRoom} source=${task.sourceRoom} status=${task.status}`,
+    );
+  }
+
   return true;
 }
 
@@ -1065,25 +1077,17 @@ export function runColonizationByFlag(): void {
   const flags = getColonizationFlags();
   for (const flag of flags) {
     const scheduled = upsertColonizationTask(flag);
-    if (!scheduled) {
-      console.log(`[colonization] flag ignored: ${flag.name} room=${flag.pos.roomName} reason=no_source_room`);
-      continue;
+    if (!scheduled && Game.time % 100 === 0) {
+      console.log(`[colonization] flag pending: ${flag.name} room=${flag.pos.roomName} reason=no_source_room`);
     }
-
-    flag.remove();
-    const task = Memory.data?.colonization?.[flag.pos.roomName];
-    if (task) {
-      console.log(
-        `[colonization] flag accepted: ${flag.name} target=${task.targetRoom} source=${task.sourceRoom} status=${task.status}`,
-      );
-      continue;
-    }
-
-    console.log(`[colonization] flag accepted: ${flag.name} target=${flag.pos.roomName}`);
   }
 
   const store = ensureColonizationStore();
   for (const task of Object.values(store)) {
+    if (!Game.flags[task.flagName]) {
+      abandonColonization(task, "flag removed by player");
+      continue;
+    }
     processTask(task);
     task.updatedAt = Game.time;
   }

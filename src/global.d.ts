@@ -527,6 +527,7 @@ declare global {
           targetRoom: string;
           sourceRoom: string;
           status: "bootstrapping" | "managed";
+          flagName: string;
           routeRooms?: string[];
           createdAt: number;
           updatedAt: number;

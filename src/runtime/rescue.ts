@@ -6,6 +6,7 @@ interface RescueTask {
   targetRoom: string;
   sourceRoom: string;
   status: RescueStatus;
+  flagName: string;
   routeRooms?: string[];
   createdAt: number;
   updatedAt: number;
@@ -194,14 +195,18 @@ function computeRoute(task: RescueTask): string[] | null {
 
 function processRescueTask(task: RescueTask): void {
   if (hasOwnedSpawnInTargetRoom(task)) {
-    task.status = "managed";
-    const cleaned = cleanupRescueConfigs(task);
-    if (cleaned) {
-      const store = ensureRescueStore();
-      delete store[task.targetRoom];
-      console.log(`[rescue] complete: ${task.targetRoom} spawn rebuilt, rescue squad recalled`);
+    const targetRoomRcl = Game.rooms[task.targetRoom]?.controller?.level ?? 0;
+    if (targetRoomRcl >= 3) {
+      task.status = "managed";
+      const cleaned = cleanupRescueConfigs(task);
+      if (cleaned) {
+        const store = ensureRescueStore();
+        delete store[task.targetRoom];
+        Game.flags[task.flagName]?.remove();
+        console.log(`[rescue] complete: ${task.targetRoom} spawn rebuilt, rescue squad recalled`);
+      }
+      return;
     }
-    return;
   }
 
   // Ensure route is computed once
@@ -239,6 +244,7 @@ function upsertRescueTask(flag: Flag): boolean {
 
   if (getTickContextService().getSpawnsByRoom(targetRoom).length > 0) {
     console.log(`[rescue] flag ignored: ${flag.name} target=${targetRoom} reason=spawn_exists`);
+    flag.remove();
     return true;
   }
 
@@ -254,10 +260,15 @@ function upsertRescueTask(flag: Flag): boolean {
     targetRoom,
     sourceRoom,
     status: existing?.status ?? "bootstrapping",
+    flagName: flag.name,
     routeRooms: existing?.routeRooms,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
+
+  if (!existing) {
+    console.log(`[rescue] started: flag=${flag.name} target=${targetRoom} source=${sourceRoom}`);
+  }
 
   return true;
 }
@@ -270,20 +281,19 @@ export function runRescueByFlag(): void {
   const flags = getRescueFlags();
   for (const flag of flags) {
     const scheduled = upsertRescueTask(flag);
-    if (!scheduled) {
-      console.log(`[rescue] flag ignored: ${flag.name} room=${flag.pos.roomName} reason=no_source_room`);
-      continue;
-    }
-
-    flag.remove();
-    const task = Memory.data?.rescue?.[flag.pos.roomName];
-    if (task) {
-      console.log(`[rescue] started: target=${task.targetRoom} source=${task.sourceRoom}`);
+    if (!scheduled && Game.time % 100 === 0) {
+      console.log(`[rescue] flag pending: ${flag.name} room=${flag.pos.roomName} reason=no_source_room`);
     }
   }
 
   const store = ensureRescueStore();
   for (const task of Object.values(store)) {
+    if (!Game.flags[task.flagName]) {
+      cleanupRescueConfigs(task);
+      delete store[task.targetRoom];
+      console.log(`[rescue] cancelled: ${task.targetRoom} flag removed by player`);
+      continue;
+    }
     processRescueTask(task);
     task.updatedAt = Game.time;
   }

@@ -1,6 +1,8 @@
 import { upsertConfig } from "@/runtime/creepApi";
+import { isColonizationBootstrapRoom } from "@/runtime/colonization";
 import { getEligibleMineralIds, getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 import { isRoomInReserveMode } from "@/runtime/roomReserve";
+import { isRescueRoom } from "@/runtime/rescue";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { TickContextService } from "@/runtime/tickContext";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
@@ -71,11 +73,17 @@ export function bootstrapRooms(): void {
   for (const room of myRooms) {
     const expectedConfigNames = new Set(getExpectedManagedConfigNames(room));
     const sources = room.find(FIND_SOURCES);
+    const isSupportedRoom = isColonizationBootstrapRoom(room.name) || isRescueRoom(room.name);
 
     for (const source of sources) {
       const role: SourceWorkerRole = hasSourceAdjacentLink(source) ? "miner" : "harvester";
       const configName = `${room.name}:${role}:${source.id}`;
-      upsertConfig(configName, role, [source.id], room.name);
+      if (isSupportedRoom) {
+        // Mother room is providing harvesters; remove from expected set so stale local configs get cleaned up
+        expectedConfigNames.delete(configName);
+      } else {
+        upsertConfig(configName, role, [source.id], room.name);
+      }
     }
 
     for (const mineralId of getEligibleMineralIds(room)) {
