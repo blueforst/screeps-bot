@@ -13,6 +13,7 @@ import {
 } from "@/runtime/energyPickupReservation";
 import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "@/runtime/carrierTaskBoard";
 import { isStorageReceiverLink } from "@/runtime/linkControl";
+import { getProtoStorageContainer } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
@@ -558,7 +559,9 @@ export const carrierRole: RoleFactory = () => ({
 
     if (creep.memory.carrierStorageOnlyMode) {
       const assignedRoom = getAssignedCarrierRoom(creep);
-      const storageTarget = assignedRoom?.storage || assignedRoom?.terminal;
+      const protoContainer = assignedRoom ? getProtoStorageContainer(assignedRoom) : null;
+      const protoTarget = protoContainer && protoContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ? protoContainer : null;
+      const storageTarget = assignedRoom?.storage || assignedRoom?.terminal || protoTarget;
       if (!storageTarget) {
         return false;
       }

@@ -517,6 +517,57 @@ function shouldSkipSourceContainerPlacement(room: Room, x: number, y: number): b
   return !!source && hasSourceAdjacentLink(source);
 }
 
+function destroyContainerAt(room: Room, pos: { x: number; y: number }): void {
+  const position = new RoomPosition(pos.x, pos.y, room.name);
+  const containers = position.lookFor(LOOK_STRUCTURES).filter(
+    (s) => s.structureType === STRUCTURE_CONTAINER,
+  ) as StructureContainer[];
+  for (const container of containers) {
+    container.destroy();
+  }
+}
+
+export function getProtoStorageContainer(room: Room): StructureContainer | null {
+  if (room.storage) return null;
+
+  const layout = Memory.data?.roomPlanner?.[room.name]?.layout;
+  if (!layout) return null;
+
+  const pos = layout[STRUCTURE_STORAGE]?.[0];
+  if (!pos) return null;
+
+  const position = new RoomPosition(pos.x, pos.y, room.name);
+  const containers = position.lookFor(LOOK_STRUCTURES).filter(
+    (s) => s.structureType === STRUCTURE_CONTAINER,
+  ) as StructureContainer[];
+
+  return containers.length > 0 ? containers[0] : null;
+}
+
+function runProtoStorageManagement(room: Room, layout: PlannedLayout, controllerLevel: number): void {
+  const storagePos = layout[STRUCTURE_STORAGE]?.[0];
+  if (!storagePos) return;
+
+  // Remove if real storage exists or we've reached the RCL where storage can be built (RCL4)
+  if (room.storage || canBuildAtControllerLevel(STRUCTURE_STORAGE, controllerLevel)) {
+    destroyContainerAt(room, storagePos);
+    return;
+  }
+
+  // Don't place if container already exists or is under construction
+  if (hasStructureOrSiteAt(room, storagePos.x, storagePos.y, STRUCTURE_CONTAINER)) return;
+
+  // Only place after RCL2 extensions are complete
+  if (controllerLevel < 2) return;
+  const extTarget = Math.min(5, getPlannedCount(layout, STRUCTURE_EXTENSION), getAllowedCount(STRUCTURE_EXTENSION, 2));
+  if (!isComplete(room, STRUCTURE_EXTENSION, extTarget)) return;
+
+  const code = room.createConstructionSite(storagePos.x, storagePos.y, STRUCTURE_CONTAINER);
+  if (code === OK) {
+    console.log(`[roomPlanner] ${room.name} placed proto-storage container at (${storagePos.x}, ${storagePos.y})`);
+  }
+}
+
 function queueMissingPlannedRamparts(
   room: Room,
   layout: PlannedLayout,
@@ -597,6 +648,16 @@ export function getPlannedSourceContainerPos(source: Source): RoomPosition | nul
     }
   }
 
+  // Layout exists but auto-source container positions haven't been persisted yet
+  // (happens within the first 100-tick window after layout generation).
+  // Fall back to computing the position on the fly so harvesters go to a stable work pos.
+  const allCandidates = getAutoSourceContainerCandidates(source.room);
+  for (const pos of allCandidates) {
+    if (Math.abs(pos.x - source.pos.x) <= 1 && Math.abs(pos.y - source.pos.y) <= 1) {
+      return new RoomPosition(pos.x, pos.y, source.room.name);
+    }
+  }
+
   return null;
 }
 
@@ -656,6 +717,8 @@ export function runRoomPlannerConstruction(): void {
         Memory.data!.roomPlanner![room.name].layout = layout;
       }
     }
+    runProtoStorageManagement(room, layout, controllerLevel);
+
     const { allowedTypes, targetOverrides } = getBuildPolicy(room, layout, controllerLevel);
 
     if (allowedTypes.size === 0) {
