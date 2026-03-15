@@ -1,7 +1,7 @@
 import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
-import { getPosKey, getTargetPos, isExitTile } from "@/movement/common";
+import { getPosKey, getTargetPos, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
 import { isTileReserved, releaseTileReservation, reserveNextTile } from "@/movement/reservations";
 import { findMyCreepAt, moveOffExit, pushBlockingCreep, shouldYieldToPusher } from "@/movement/traffic";
 import type { MovePathState, MoveToTargetOptions, RoomCostMatrixCacheEntry } from "@/movement/types";
@@ -108,7 +108,7 @@ export function moveToTarget(
         range,
         lastPosKey: currentPosKey,
         stuckTicks: 0,
-        expiresAt: Game.time + Math.max(MOVE_PATH_CACHE_TTL, reusePath),
+        expiresAt: reusePath === 0 ? Game.time : Game.time + Math.max(MOVE_PATH_CACHE_TTL, reusePath),
       };
 
       const followPathCode = followStoredRoomPath(creep, creep.memory.movePathState, targetPos, range);
@@ -227,29 +227,6 @@ function getCachedRoomBaseCostMatrix(
   return baseMatrix.clone();
 }
 
-function isWalkableStructure(structure: Structure<StructureConstant>): boolean {
-  switch (structure.structureType) {
-    case STRUCTURE_ROAD:
-    case STRUCTURE_CONTAINER:
-    case STRUCTURE_PORTAL:
-      return true;
-    case STRUCTURE_RAMPART: {
-      const rampart = structure as StructureRampart;
-      return rampart.my || rampart.isPublic;
-    }
-    default:
-      return false;
-  }
-}
-
-function isWalkableConstructionSite(site: ConstructionSite): boolean {
-  return (
-    site.structureType === STRUCTURE_ROAD ||
-    site.structureType === STRUCTURE_CONTAINER ||
-    site.structureType === STRUCTURE_RAMPART
-  );
-}
-
 function followStoredRoomPath(
   creep: Creep,
   movePathState: MovePathState,
@@ -263,10 +240,13 @@ function followStoredRoomPath(
   const nextPos = getNextStoredPathStep(creep, movePathState.steps);
   if (!nextPos) {
     releaseTileReservation(creep);
+    delete creep.memory.movePathState;
     return ERR_NO_PATH;
   }
 
   if (isTileReserved(nextPos, creep.name)) {
+    releaseTileReservation(creep);
+    delete creep.memory.movePathState;
     return ERR_BUSY;
   }
 
@@ -277,12 +257,24 @@ function followStoredRoomPath(
       if (swapMoveCode === OK || swapMoveCode === ERR_TIRED) {
         return swapMoveCode;
       }
+      if (swapMoveCode === ERR_BUSY) {
+        releaseTileReservation(creep);
+        delete creep.memory.movePathState;
+      }
+      return swapMoveCode;
     }
 
+    releaseTileReservation(creep);
+    delete creep.memory.movePathState;
     return ERR_BUSY;
   }
 
-  return moveToAdjacentPosition(creep, nextPos);
+  const moveCode = moveToAdjacentPosition(creep, nextPos);
+  if (moveCode === ERR_BUSY) {
+    releaseTileReservation(creep);
+    delete creep.memory.movePathState;
+  }
+  return moveCode;
 }
 
 function getNextStoredPathStep(creep: Creep, steps: MovePathState["steps"]): RoomPosition | null {

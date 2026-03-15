@@ -1,6 +1,7 @@
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
+import { releaseTileReservation } from "@/movement/reservations";
 
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
@@ -50,6 +51,7 @@ function cleanupDeadCreepMemory(): number {
 
   for (const creepName of Object.keys(Memory.creeps)) {
     if (!Game.creeps[creepName]) {
+      releaseTileReservation(creepName);
       delete Memory.creeps[creepName];
       removed += 1;
     }

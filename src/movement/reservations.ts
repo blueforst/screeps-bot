@@ -71,16 +71,6 @@ export function isTileReserved(pos: RoomPosition, excludeCreepName?: string): bo
   return current.creepName !== excludeCreepName;
 }
 
-export function applyTileReservationsToMatrix(roomName: string, matrix: CostMatrix, excludeCreepName?: string): void {
-  pruneExpiredReservations();
-  for (const reservation of tileReservationsByPos.values()) {
-    if (reservation.roomName !== roomName || reservation.creepName === excludeCreepName) {
-      continue;
-    }
-    matrix.set(reservation.x, reservation.y, 0xfe);
-  }
-}
-
 export function clearTileReservationsForTest(): void {
   tileReservationsByPos.clear();
   tileReservationByCreep.clear();

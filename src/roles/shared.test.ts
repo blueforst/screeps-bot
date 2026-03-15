@@ -167,7 +167,7 @@ describe("moveToTarget yielding", () => {
     expect(blocker.memory.movementPushedAt).toBe(Game.time);
   });
 
-  it("prepends the blocker's previous tile so it can resume its path after yielding", () => {
+  it("clears the blocker's cached path after yielding so it can repath cleanly", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N2", creeps);
     const pusher = createCreep("worker-2", "worker", 10, 10, room);
@@ -199,8 +199,7 @@ describe("moveToTarget yielding", () => {
 
     moveToTarget(pusher, { pos: target });
 
-    expect(blocker.memory.movePathState?.steps[0]).toEqual({ x: 11, y: 10 });
-    expect(blocker.memory.movePathState?.steps[1]).toEqual({ x: 12, y: 10 });
+    expect(blocker.memory.movePathState).toBeUndefined();
   });
 
   it("continues forward on a cached path instead of stepping back to the previous tile", () => {
@@ -328,6 +327,45 @@ describe("moveToTarget yielding", () => {
     expect(firstResult).toBe(OK);
     expect(secondResult).toBe(ERR_BUSY);
     expect(second.move).not.toHaveBeenCalled();
+    expect(second.memory.movePathState).toBeUndefined();
+  });
+
+  it("drops a blocked cached path and repaths on the next tick", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N5C", creeps);
+    const first = createCreep("worker-busy-1", "worker", 10, 10, room);
+    const second = createCreep("worker-busy-2", "worker", 10, 11, room);
+    creeps.push(first, second);
+    Game.creeps[first.name] = first;
+    Game.creeps[second.name] = second;
+
+    (first.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+    const secondFindPathTo = jest
+      .fn()
+      .mockReturnValueOnce([{ x: 11, y: 10, dx: 1, dy: -1, direction: TOP_RIGHT }])
+      .mockReturnValueOnce([{ x: 10, y: 10, dx: 0, dy: -1, direction: TOP }]);
+    (second.pos as unknown as { findPathTo: jest.Mock }).findPathTo = secondFindPathTo;
+
+    moveToTarget(first, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+    const firstBusyResult = moveToTarget(second, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(firstBusyResult).toBe(ERR_BUSY);
+    expect(second.memory.movePathState).toBeUndefined();
+
+    Game.time += 1;
+    clearTileReservationsForTest();
+    (first.pos as unknown as RoomPosition).x = 11;
+    (first.pos as unknown as RoomPosition).y = 10;
+    (second.pos as unknown as RoomPosition).x = 10;
+    (second.pos as unknown as RoomPosition).y = 11;
+
+    const repathResult = moveToTarget(second, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(repathResult).toBe(OK);
+    expect(secondFindPathTo).toHaveBeenCalledTimes(2);
+    expect(second.move).toHaveBeenLastCalledWith(TOP);
   });
 
   it("does not treat transient tile reservations as pathfinding obstacles", () => {
@@ -354,6 +392,79 @@ describe("moveToTarget yielding", () => {
     moveToTarget(second, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
 
     expect(reservedTileCost).toBe(0);
+  });
+
+  it("with ignoreCreeps enabled, paths through a blocker and resolves the conflict via yield", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N5D", creeps);
+    const pusher = createCreep("worker-ignore-1", "worker", 10, 10, room);
+    const blocker = createCreep("scout-ignore-1", "scout", 11, 10, room);
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+
+    let blockerTileCost = -1;
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn((_target, opts: { costCallback?: Function }) => {
+      const matrix = opts.costCallback?.(room.name, new MockCostMatrix() as unknown as CostMatrix) as unknown as MockCostMatrix;
+      blockerTileCost = matrix.get(11, 10);
+      return [
+        { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+        { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      ];
+    });
+
+    const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition }, 1, {
+      ignoreCreeps: true,
+    });
+
+    expect(result).toBe(OK);
+    expect(blockerTileCost).toBe(0);
+    expect(blocker.move).toHaveBeenCalled();
+    expect(pusher.move).toHaveBeenCalledWith(RIGHT);
+  });
+
+  it("with ignoreCreeps enabled, drops a blocked cached path and repaths on the next tick", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N5E", creeps);
+    const first = createCreep("worker-ignore-busy-1", "worker", 10, 10, room);
+    const second = createCreep("worker-ignore-busy-2", "worker", 10, 11, room);
+    creeps.push(first, second);
+    Game.creeps[first.name] = first;
+    Game.creeps[second.name] = second;
+
+    (first.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+    const secondFindPathTo = jest
+      .fn()
+      .mockReturnValueOnce([{ x: 11, y: 10, dx: 1, dy: -1, direction: TOP_RIGHT }])
+      .mockReturnValueOnce([{ x: 10, y: 10, dx: 0, dy: -1, direction: TOP }]);
+    (second.pos as unknown as { findPathTo: jest.Mock }).findPathTo = secondFindPathTo;
+
+    moveToTarget(first, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition }, 1, {
+      ignoreCreeps: true,
+    });
+    const firstBusyResult = moveToTarget(second, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition }, 1, {
+      ignoreCreeps: true,
+    });
+
+    expect(firstBusyResult).toBe(ERR_BUSY);
+    expect(second.memory.movePathState).toBeUndefined();
+
+    Game.time += 1;
+    clearTileReservationsForTest();
+    (first.pos as unknown as RoomPosition).x = 11;
+    (first.pos as unknown as RoomPosition).y = 10;
+    (second.pos as unknown as RoomPosition).x = 10;
+    (second.pos as unknown as RoomPosition).y = 11;
+
+    const repathResult = moveToTarget(second, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition }, 1, {
+      ignoreCreeps: true,
+    });
+
+    expect(repathResult).toBe(OK);
+    expect(secondFindPathTo).toHaveBeenCalledTimes(2);
+    expect(second.move).toHaveBeenLastCalledWith(TOP);
   });
 
   it("pushes a chain of blockers to open a corridor", () => {
@@ -491,6 +602,37 @@ describe("moveToTarget yielding", () => {
     }
 
     expect(getRoomBaseCostMatrixCacheSizeForTest()).toBeLessThanOrEqual(100);
+  });
+
+  it("does not reuse cached room paths when reusePath is zero", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W4N1", creeps);
+    const creep = createCreep("worker-no-reuse", "worker", 10, 10, room);
+    creeps.push(creep);
+    Game.creeps[creep.name] = creep;
+
+    const findPathTo = jest
+      .fn()
+      .mockReturnValueOnce([{ x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT }])
+      .mockReturnValueOnce([{ x: 10, y: 11, dx: 0, dy: 1, direction: BOTTOM }]);
+    (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = findPathTo;
+
+    const target = new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition;
+
+    const firstResult = moveToTarget(creep, { pos: target }, 1, { reusePath: 0 });
+
+    expect(firstResult).toBe(OK);
+    expect(creep.move).toHaveBeenCalledWith(RIGHT);
+
+    Game.time += 1;
+    (creep.pos as unknown as RoomPosition).x = 10;
+    (creep.pos as unknown as RoomPosition).y = 10;
+
+    const secondResult = moveToTarget(creep, { pos: target }, 1, { reusePath: 0 });
+
+    expect(secondResult).toBe(OK);
+    expect(findPathTo).toHaveBeenCalledTimes(2);
+    expect(creep.move).toHaveBeenLastCalledWith(BOTTOM);
   });
 });
 

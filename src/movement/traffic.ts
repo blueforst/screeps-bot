@@ -1,7 +1,7 @@
 import { recordMovementMetric } from "@/movement/metrics";
 import { isTileReserved, reserveNextTile } from "@/movement/reservations";
 import { getTickContextService } from "@/runtime/runtimeServices";
-import { getPosKey, getPositionAtDirection, isExitTile } from "@/movement/common";
+import { getPositionAtDirection, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
 import type { MovePathState } from "@/movement/types";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 
@@ -25,29 +25,6 @@ const MOVE_PRIORITY_BY_ROLE = {
 const DEFAULT_MOVE_PRIORITY = 10;
 const ALL_DIRECTIONS: DirectionConstant[] = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
 const MAX_CHAIN_YIELD_DEPTH = 3;
-
-function isWalkableStructure(structure: Structure<StructureConstant>): boolean {
-  switch (structure.structureType) {
-    case STRUCTURE_ROAD:
-    case STRUCTURE_CONTAINER:
-    case STRUCTURE_PORTAL:
-      return true;
-    case STRUCTURE_RAMPART: {
-      const rampart = structure as StructureRampart;
-      return rampart.my || rampart.isPublic;
-    }
-    default:
-      return false;
-  }
-}
-
-function isWalkableConstructionSite(site: ConstructionSite): boolean {
-  return (
-    site.structureType === STRUCTURE_ROAD ||
-    site.structureType === STRUCTURE_CONTAINER ||
-    site.structureType === STRUCTURE_RAMPART
-  );
-}
 
 export function findMyCreepAt(pos: RoomPosition, excludeName?: string): Creep | null {
   const roomContext = getTickContextService().getRoomContext(pos.roomName);
@@ -116,7 +93,6 @@ function pushBlockingCreepChain(
 }
 
 function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: RoomPosition): boolean {
-  const previousPos = new RoomPosition(blocker.pos.x, blocker.pos.y, blocker.pos.roomName);
   if (!reserveNextTile(blocker, yieldPos)) {
     return false;
   }
@@ -127,18 +103,7 @@ function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: Roo
     return false;
   }
 
-  const blockerMovePathState = blocker.memory.movePathState as MovePathState | undefined;
-  if (
-    blockerMovePathState?.expiresAt &&
-    blockerMovePathState.expiresAt > Game.time &&
-    Array.isArray(blockerMovePathState.steps)
-  ) {
-    blockerMovePathState.steps = [{ x: previousPos.x, y: previousPos.y }, ...blockerMovePathState.steps];
-    blockerMovePathState.lastPosKey = getPosKey(yieldPos);
-  } else {
-    delete blocker.memory.movePathState;
-  }
-
+  delete blocker.memory.movePathState;
   blocker.memory.movementPushedAt = Game.time;
   recordMovementMetric("yieldPushes", pusher.room.name);
   return true;
@@ -179,25 +144,6 @@ export function isYieldTileWalkable(pos: RoomPosition, blocker: Creep, pusher: C
   if (!roomContext) {
     return false;
   }
-
-  for (const structure of roomContext.getStructures()) {
-    if (structure.pos.x !== pos.x || structure.pos.y !== pos.y) {
-      continue;
-    }
-    if (!isWalkableStructure(structure)) {
-      return false;
-    }
-  }
-
-  for (const site of roomContext.getConstructionSites()) {
-    if (site.pos.x !== pos.x || site.pos.y !== pos.y) {
-      continue;
-    }
-    if (site.my && !isWalkableConstructionSite(site)) {
-      return false;
-    }
-  }
-
   for (const otherCreep of roomContext.getMyCreeps()) {
     if (otherCreep.name === blocker.name) {
       continue;

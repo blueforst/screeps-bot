@@ -42,3 +42,26 @@ export function parseEncodedRouteRooms(encodedRouteRooms?: string): string[] {
     .map((roomName) => roomName.trim())
     .filter((roomName) => roomName.length > 0);
 }
+
+export function isWalkableStructure(structure: Structure<StructureConstant>): boolean {
+  switch (structure.structureType) {
+    case STRUCTURE_ROAD:
+    case STRUCTURE_CONTAINER:
+    case STRUCTURE_PORTAL:
+      return true;
+    case STRUCTURE_RAMPART: {
+      const rampart = structure as StructureRampart;
+      return rampart.my || rampart.isPublic;
+    }
+    default:
+      return false;
+  }
+}
+
+export function isWalkableConstructionSite(site: ConstructionSite): boolean {
+  return (
+    site.structureType === STRUCTURE_ROAD ||
+    site.structureType === STRUCTURE_CONTAINER ||
+    site.structureType === STRUCTURE_RAMPART
+  );
+}
