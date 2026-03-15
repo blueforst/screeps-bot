@@ -27,12 +27,15 @@ function ensureConfigStore(): Record<string, import("@/types/system").CreepConfi
 
 function getOwnedSpawnRooms(): string[] {
   const tickContext = getTickContextService();
-  const rooms = tickContext
-    .getMyRooms()
-    .flatMap((room) => tickContext.getSpawnsByRoom(room.name))
-    .filter((spawn) => spawn.isActive() && spawn.room.energyCapacityAvailable >= 300)
-    .map((spawn) => spawn.room.name);
-  return [...new Set(rooms)];
+  const roomNames = new Set<string>();
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      if (spawn.isActive() && spawn.room.energyCapacityAvailable >= 300) {
+        roomNames.add(spawn.room.name);
+      }
+    }
+  }
+  return [...roomNames];
 }
 
 function selectSourceRoom(targetRoom: string, preferredRoom?: string): string | null {
