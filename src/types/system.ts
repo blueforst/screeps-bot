@@ -10,6 +10,7 @@ export type RoleName =
   | "colonizerWorker"
   | "meleeAttacker"
   | "healer"
+  | "homeDefender"
   | "crossShardClaimer"
   | "crossShardColonizerHarvester"
   | "crossShardColonizerWorker";

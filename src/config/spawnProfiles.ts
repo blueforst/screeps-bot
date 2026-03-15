@@ -113,6 +113,18 @@ function carryMoveBody(room: Room): BodyPartConstant[] {
   return clampByCapacity(parts, room);
 }
 
+function homeDefenderBody(room: Room): BodyPartConstant[] {
+  const unitCost = BODYPART_COST[ATTACK] + BODYPART_COST[MOVE];
+  const unitCount = Math.max(1, Math.min(25, Math.floor(room.energyCapacityAvailable / unitCost)));
+  const parts: BodyPartConstant[] = [];
+
+  for (let i = 0; i < unitCount; i++) {
+    parts.push(ATTACK, MOVE);
+  }
+
+  return clampByCapacity(parts, room);
+}
+
 function meleeAttackBody(room: Room): BodyPartConstant[] {
   const unitCost = BODYPART_COST[TOUGH] + BODYPART_COST[ATTACK] + BODYPART_COST[MOVE] * 2;
   const unitCount = Math.max(1, Math.min(10, Math.floor(room.energyCapacityAvailable / unitCost)));
@@ -149,6 +161,7 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   colonizerWorker: oneOneOneBody,
   meleeAttacker: meleeAttackBody,
   healer: healerBody,
+  homeDefender: homeDefenderBody,
   crossShardClaimer: () => [CLAIM, MOVE],
   crossShardColonizerHarvester: () => [...COLONIZER_HARVESTER_BODY],
   crossShardColonizerWorker: oneOneOneBody,
