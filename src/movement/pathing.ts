@@ -3,8 +3,8 @@ import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPosKey, getTargetPos, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
 import { isTileReserved, releaseTileReservation, reserveNextTile } from "@/movement/reservations";
-import { findMyCreepAt, moveOffExit, pushBlockingCreep, shouldYieldToPusher } from "@/movement/traffic";
-import type { MovePathState, MoveToTargetOptions, RoomCostMatrixCacheEntry } from "@/movement/types";
+import { findMyCreepAt, isCreepMovingTowards, moveOffExit, pushBlockingCreep, shouldYieldToPusher } from "@/movement/traffic";
+import type { MovePathState, MoveToTargetOptions, RoomCostMatrixCacheEntry, WorkAnchor } from "@/movement/types";
 
 const MOVE_PATH_CACHE_TTL = 20;
 const roomBaseCostMatrixCache = new Map<string, RoomCostMatrixCacheEntry>();
@@ -17,6 +17,7 @@ export function clearMovementState(creep: Creep): void {
   delete creep.memory.movePathState;
   delete creep.memory.travelState;
   delete creep.memory.movementPushedAt;
+  delete creep.memory.workAnchor;
   delete creep.memory._move;
 }
 
@@ -48,9 +49,10 @@ export function moveToTarget(
   }
 
   const reusePath = options.reusePath ?? 5;
+  const ignoreCreeps = options.ignoreCreeps ?? true;
   const sameRoomTarget = creep.room.name === targetPos.roomName;
   const movePathKey = `${creep.room.name}:${targetPos.roomName}:${targetPos.x}:${targetPos.y}:r${range}:i${
-    options.ignoreCreeps ? 1 : 0
+    ignoreCreeps ? 1 : 0
   }:s${options.swampCost ?? "d"}:p${options.plainCost ?? "d"}:m${options.maxRooms ?? "d"}`;
 
   if (sameRoomTarget) {
@@ -89,7 +91,7 @@ export function moveToTarget(
         range,
         swampCost: options.swampCost,
         plainCost: options.plainCost,
-        ignoreCreeps: options.ignoreCreeps,
+        ignoreCreeps,
         maxRooms: options.maxRooms,
         costCallback: (roomName, matrix) => buildRoomCostMatrix(creep, roomName, matrix, options),
       }),
@@ -129,7 +131,7 @@ export function moveToTarget(
       plainCost: options.plainCost,
       reusePath,
       maxRooms: options.maxRooms,
-      ignoreCreeps: options.ignoreCreeps,
+      ignoreCreeps,
       visualizePathStyle: { stroke: "#ffaa00" },
     }),
   );
@@ -138,13 +140,15 @@ export function moveToTarget(
 export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { pos: RoomPosition }): ScreepsReturnCode {
   const targetPos = getTargetPos(target);
   if (creep.pos.getRangeTo(targetPos) <= 3) {
+    creep.memory.workAnchor = { x: targetPos.x, y: targetPos.y, roomName: targetPos.roomName, range: 3 } satisfies WorkAnchor;
     return OK;
   }
 
+  delete creep.memory.workAnchor;
   return moveToTarget(creep, targetPos, 3, {
     swampCost: 8,
     reusePath: 5,
-    ignoreCreeps: false,
+    ignoreCreeps: true,
   });
 }
 
@@ -169,7 +173,7 @@ function buildRoomCostMatrix(
 
   const roomMatrix = getCachedRoomBaseCostMatrix(creep.room, roomContext, matrix, options);
 
-  if (options.ignoreCreeps) {
+  if (options.ignoreCreeps ?? true) {
     return roomMatrix;
   }
 
@@ -252,6 +256,10 @@ function followStoredRoomPath(
 
   const blockingCreep = findMyCreepAt(nextPos, creep.name);
   if (blockingCreep) {
+    if (isCreepMovingTowards(blockingCreep, creep.pos)) {
+      return moveToAdjacentPosition(creep, nextPos);
+    }
+
     if (shouldYieldToPusher(creep, blockingCreep) && pushBlockingCreep(creep, blockingCreep)) {
       const swapMoveCode = moveToAdjacentPosition(creep, nextPos);
       if (swapMoveCode === OK || swapMoveCode === ERR_TIRED) {

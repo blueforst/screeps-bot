@@ -706,6 +706,12 @@ declare global {
       expiresAt: number;
     };
     movementPushedAt?: number;
+    workAnchor?: {
+      x: number;
+      y: number;
+      roomName: string;
+      range: number;
+    };
     _move?: {
       dest?: {
         x: number;

@@ -41,6 +41,39 @@ function getMovePriority(creep: Creep): number {
   return MOVE_PRIORITY_BY_ROLE[role] ?? DEFAULT_MOVE_PRIORITY;
 }
 
+export function isCreepMovingTowards(creep: Creep, pos: RoomPosition): boolean {
+  if (creep.memory.movementPushedAt === Game.time) {
+    return false;
+  }
+  const pathState = creep.memory.movePathState as MovePathState | undefined;
+  if (!pathState?.steps?.length) {
+    return false;
+  }
+
+  const steps = pathState.steps;
+  const exactIndex = steps.findIndex((step) => creep.pos.x === step.x && creep.pos.y === step.y);
+
+  let nextStep: { x: number; y: number } | undefined;
+  if (exactIndex >= 0) {
+    nextStep = steps[exactIndex + 1];
+  } else {
+    let bestIndex = -1;
+    let bestRange = Infinity;
+    for (let i = 0; i < steps.length; i++) {
+      const range = Math.max(Math.abs(creep.pos.x - steps[i].x), Math.abs(creep.pos.y - steps[i].y));
+      if (range < bestRange) {
+        bestRange = range;
+        bestIndex = i;
+      }
+    }
+    if (bestIndex >= 0 && bestRange <= 1) {
+      nextStep = steps[bestIndex + 1] ?? steps[bestIndex];
+    }
+  }
+
+  return nextStep?.x === pos.x && nextStep?.y === pos.y;
+}
+
 export function shouldYieldToPusher(pusher: Creep, blocker: Creep): boolean {
   const pusherPriority = getMovePriority(pusher);
   const blockerPriority = getMovePriority(blocker);
@@ -76,6 +109,14 @@ function pushBlockingCreepChain(
 
     const occupyingCreep = findMyCreepAt(candidate, blocker.name);
     if (occupyingCreep) {
+      // If the candidate is the pusher's own tile, this is a position swap — allow it directly.
+      if (occupyingCreep.name === pusher.name) {
+        if (moveBlockerToYieldPosition(pusher, blocker, candidate)) {
+          return true;
+        }
+        continue;
+      }
+
       if (!shouldYieldToPusher(blocker, occupyingCreep)) {
         continue;
       }
@@ -211,6 +252,17 @@ function scoreYieldPosition(pos: RoomPosition, blocker: Creep, pusher: Creep): n
     score -= 2;
   } else {
     score += 1;
+  }
+
+  const workAnchor = blocker.memory.workAnchor;
+  if (workAnchor && workAnchor.roomName === pos.roomName) {
+    const anchorPos = new RoomPosition(workAnchor.x, workAnchor.y, workAnchor.roomName);
+    const distToAnchor = pos.getRangeTo(anchorPos);
+    if (distToAnchor <= workAnchor.range) {
+      score += 15;
+    }
+    score -= distToAnchor;
+    return score;
   }
 
   const blockerMovePathState = blocker.memory.movePathState as MovePathState | undefined;

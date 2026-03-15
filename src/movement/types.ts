@@ -45,3 +45,10 @@ export interface RoomCostMatrixCacheEntry {
   tick: number;
   matrix: CostMatrix;
 }
+
+export interface WorkAnchor {
+  x: number;
+  y: number;
+  roomName: string;
+  range: number;
+}
