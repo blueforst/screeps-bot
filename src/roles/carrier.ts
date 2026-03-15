@@ -13,7 +13,7 @@ import {
 } from "@/runtime/energyPickupReservation";
 import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "@/runtime/carrierTaskBoard";
 import { isStorageReceiverLink } from "@/runtime/linkControl";
-import { getProtoStorageContainer } from "@/runtime/roomPlannerConstruction";
+import { getPlannedStoragePos, getProtoStorageContainer } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
@@ -40,10 +40,18 @@ function isControllerAdjacentLink(link: StructureLink): boolean {
   return !!controllerPos && link.pos.getRangeTo(controllerPos) <= 2;
 }
 
+function isDroppedAtPlannedStoragePos(resource: Resource): boolean {
+  const room = resource.room;
+  if (room.storage) return false;
+  if ((room.controller?.level ?? 0) > 2) return false;
+  const plannedPos = getPlannedStoragePos(room);
+  return !!plannedPos && resource.pos.isEqualTo(plannedPos);
+}
+
 function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeStorage?: boolean }): CarrierPickupTarget[] {
   return measureCreepDecision(() => {
     const roomContext = getTickContextService().getRoomContext(creep.room);
-    const dropped = roomContext?.getDroppedEnergyResources() || [];
+    const dropped = (roomContext?.getDroppedEnergyResources() || []).filter(r => !isDroppedAtPlannedStoragePos(r));
     const allStructures = roomContext?.getStructures() || [];
     const structures = allStructures.filter(
       (structure): structure is StructureContainer | StructureLink =>
@@ -86,7 +94,7 @@ function isCarrierPickupTarget(
   options?: { includeStorage?: boolean },
 ): target is CarrierPickupTarget {
   if (isDroppedResourceTarget(target)) {
-    return true;
+    return !isDroppedAtPlannedStoragePos(target);
   }
 
   if ((target as Tombstone).deathTime !== undefined) {
@@ -563,6 +571,24 @@ export const carrierRole: RoleFactory = () => ({
       const protoTarget = protoContainer && protoContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ? protoContainer : null;
       const storageTarget = assignedRoom?.storage || assignedRoom?.terminal || protoTarget;
       if (!storageTarget) {
+        // RCL 1/2: container not yet built — drop on the ground at the planned storage position
+        const controllerLevel = assignedRoom?.controller?.level ?? 0;
+        if (controllerLevel <= 2 && assignedRoom) {
+          const plannedPos = getPlannedStoragePos(assignedRoom);
+          if (plannedPos) {
+            if (creep.pos.getRangeTo(plannedPos) === 0) {
+              measureCreepIntent(() => creep.drop(RESOURCE_ENERGY));
+              if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
+                delete creep.memory.carrierStorageOnlyMode;
+                clearPostTransferPlan(creep);
+                return true;
+              }
+              return false;
+            }
+            moveToTarget(creep, plannedPos, 0);
+            return false;
+          }
+        }
         return false;
       }
 

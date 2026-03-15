@@ -562,6 +562,15 @@ function destroyContainerAt(room: Room, pos: { x: number; y: number }): void {
   }
 }
 
+export function getPlannedStoragePos(room: Room): RoomPosition | null {
+  if (room.storage) return null;
+  const layout = Memory.data?.roomPlanner?.[room.name]?.layout;
+  if (!layout) return null;
+  const pos = layout[STRUCTURE_STORAGE]?.[0];
+  if (!pos) return null;
+  return new RoomPosition(pos.x, pos.y, room.name);
+}
+
 export function getProtoStorageContainer(room: Room): StructureContainer | null {
   if (room.storage) return null;
 
