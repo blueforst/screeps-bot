@@ -4,6 +4,7 @@ import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPosKey, getTargetPos, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
 import { isTileReserved, releaseTileReservation, reserveNextTile } from "@/movement/reservations";
 import { findMyCreepAt, isCreepMovingTowards, moveOffExit, pushBlockingCreep, shouldYieldToPusher } from "@/movement/traffic";
+import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
 import type { MovePathState, MoveToTargetOptions, RoomCostMatrixCacheEntry, WorkAnchor } from "@/movement/types";
 
 const MOVE_PATH_CACHE_TTL = 20;
@@ -220,6 +221,12 @@ function getCachedRoomBaseCostMatrix(
   for (const site of roomContext.getConstructionSites()) {
     if (site.my && !isWalkableConstructionSite(site)) {
       baseMatrix.set(site.pos.x, site.pos.y, 0xff);
+    }
+  }
+
+  for (const pos of getSourceContainerPositionsForRoom(room.name)) {
+    if (baseMatrix.get(pos.x, pos.y) < 0xfe) {
+      baseMatrix.set(pos.x, pos.y, 0xfe);
     }
   }
 

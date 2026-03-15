@@ -105,81 +105,97 @@ function getExistingSourceContainerPosition(source: Source): { x: number; y: num
   return null;
 }
 
-function chooseSourceContainerPosition(source: Source, referencePos: RoomPosition): { x: number; y: number } | null {
+function getValidSourceContainerPositions(
+  source: Source,
+  reserved: Set<string>,
+): { x: number; y: number }[] {
   const terrain = source.room.getTerrain();
-  let bestPos: { x: number; y: number } | null = null;
-  let bestScore = Number.POSITIVE_INFINITY;
+  const result: { x: number; y: number }[] = [];
 
   for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
     for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-      if (x === source.pos.x && y === source.pos.y) {
-        continue;
-      }
-
-      if (x < 1 || x > 48 || y < 1 || y > 48) {
-        continue;
-      }
-
-      if (terrain.get(x, y) === TERRAIN_MASK_WALL) {
-        continue;
-      }
+      if (x === source.pos.x && y === source.pos.y) continue;
+      if (x < 1 || x > 48 || y < 1 || y > 48) continue;
+      if (terrain.get(x, y) === TERRAIN_MASK_WALL) continue;
+      if (reserved.has(`${x}:${y}`)) continue;
 
       const position = new RoomPosition(x, y, source.room.name);
       const structures = position.lookFor(LOOK_STRUCTURES);
       if (
         structures.some(
-          (structure) =>
-            structure.structureType !== STRUCTURE_CONTAINER &&
-            structure.structureType !== STRUCTURE_ROAD &&
-            structure.structureType !== STRUCTURE_RAMPART,
+          (s) =>
+            s.structureType !== STRUCTURE_CONTAINER &&
+            s.structureType !== STRUCTURE_ROAD &&
+            s.structureType !== STRUCTURE_RAMPART,
         )
       ) {
         continue;
       }
 
       const sites = position.lookFor(LOOK_CONSTRUCTION_SITES);
-      if (sites.some((site) => site.structureType !== STRUCTURE_CONTAINER)) {
-        continue;
-      }
+      if (sites.some((site) => site.structureType !== STRUCTURE_CONTAINER)) continue;
 
-      const score = position.getRangeTo(referencePos);
-      if (score < bestScore) {
-        bestScore = score;
-        bestPos = { x, y };
-      }
+      result.push({ x, y });
     }
   }
 
-  return bestPos;
+  return result;
 }
 
-function getAutoSourceContainerCandidates(room: Room): { x: number; y: number }[] {
+function getAutoSourceContainerCandidates(
+  room: Room,
+  reserved: Set<string> = new Set(),
+): { x: number; y: number }[] {
   const referencePos = getContainerReferencePosition(room);
-  const sources = room.find(FIND_SOURCES);
   const candidates: { x: number; y: number }[] = [];
 
-  for (const source of sources) {
-    if (hasSourceAdjacentLink(source)) {
-      continue;
-    }
+  // Separate sources: those with existing containers (already placed/in-progress)
+  // vs those that still need a position assigned.
+  const needsAssignment: Source[] = [];
+  for (const source of room.find(FIND_SOURCES)) {
+    if (hasSourceAdjacentLink(source)) continue;
 
     const existingPos = getExistingSourceContainerPosition(source);
     if (existingPos) {
       candidates.push(existingPos);
-      continue;
+      reserved.add(`${existingPos.x}:${existingPos.y}`);
+    } else {
+      needsAssignment.push(source);
     }
+  }
 
-    const chosenPos = chooseSourceContainerPosition(source, referencePos);
-    if (chosenPos) {
-      candidates.push(chosenPos);
-    }
+  // Most-constrained-first: each round, pick the source with the fewest remaining
+  // valid positions so it gets first choice. This prevents a source with many options
+  // from accidentally occupying the only tile available to a tightly-enclosed source.
+  while (needsAssignment.length > 0) {
+    const withOptions = needsAssignment.map((source) => ({
+      source,
+      options: getValidSourceContainerPositions(source, reserved),
+    }));
+
+    withOptions.sort((a, b) => a.options.length - b.options.length);
+
+    const { source, options } = withOptions[0];
+    needsAssignment.splice(needsAssignment.indexOf(source), 1);
+
+    if (options.length === 0) continue;
+
+    const best = options.reduce((a, b) => {
+      const scoreA = new RoomPosition(a.x, a.y, room.name).getRangeTo(referencePos);
+      const scoreB = new RoomPosition(b.x, b.y, room.name).getRangeTo(referencePos);
+      return scoreA <= scoreB ? a : b;
+    });
+
+    candidates.push(best);
+    reserved.add(`${best.x}:${best.y}`);
   }
 
   return candidates;
 }
 
 function getContainerPlannedPositions(room: Room, layout: PlannedLayout, controllerLevel: number): { x: number; y: number }[] {
-  const merged = [...(layout[STRUCTURE_CONTAINER] ?? []), ...getAutoSourceContainerCandidates(room)];
+  const reservedByLayout = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((p) => `${p.x}:${p.y}`));
+  const merged = [...(layout[STRUCTURE_CONTAINER] ?? []), ...getAutoSourceContainerCandidates(room, reservedByLayout)];
   const plannedLinkPositions = new Set((layout[STRUCTURE_LINK] ?? []).map((pos) => `${pos.x}:${pos.y}`));
   const seen = new Set<string>();
   const result: { x: number; y: number }[] = [];
@@ -557,6 +573,33 @@ function queueMissingPlannedRamparts(
   return { roomAdded: added, globalRemaining };
 }
 
+export function getSourceContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
+  const layout = Memory.data?.roomPlanner?.[roomName]?.layout;
+  if (!layout) return [];
+
+  const room = Game.rooms[roomName];
+  if (!room) return [];
+
+  const sources = room.find(FIND_SOURCES);
+  return (layout[STRUCTURE_CONTAINER] ?? []).filter((pos) =>
+    sources.some((s) => Math.abs(pos.x - s.pos.x) <= 1 && Math.abs(pos.y - s.pos.y) <= 1),
+  );
+}
+
+export function getPlannedSourceContainerPos(source: Source): RoomPosition | null {
+  const layout = Memory.data?.roomPlanner?.[source.room.name]?.layout;
+  if (!layout) return null;
+
+  const planned = layout[STRUCTURE_CONTAINER] ?? [];
+  for (const pos of planned) {
+    if (Math.abs(pos.x - source.pos.x) <= 1 && Math.abs(pos.y - source.pos.y) <= 1) {
+      return new RoomPosition(pos.x, pos.y, source.room.name);
+    }
+  }
+
+  return null;
+}
+
 export function runRoomPlannerConstruction(): void {
   if (Memory.cfg?.roomPlannerBuild?.enabled === false) {
     return;
@@ -600,6 +643,19 @@ export function runRoomPlannerConstruction(): void {
 
     const controllerLevel = room.controller?.level ?? 0;
     const layout = roomPlan.layout;
+
+    // Persist auto-detected source container positions into the layout so they
+    // are stable and inspectable, instead of being recomputed every 100 ticks.
+    // Pass existing layout positions as reserved so two sources never pick the same tile.
+    const existingKeys = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((p) => `${p.x}:${p.y}`));
+    const autoSourceContainers = getAutoSourceContainerCandidates(room, new Set(existingKeys));
+    if (autoSourceContainers.length > 0) {
+      const newEntries = autoSourceContainers.filter((p) => !existingKeys.has(`${p.x}:${p.y}`));
+      if (newEntries.length > 0) {
+        layout[STRUCTURE_CONTAINER] = [...(layout[STRUCTURE_CONTAINER] ?? []), ...newEntries];
+        Memory.data!.roomPlanner![room.name].layout = layout;
+      }
+    }
     const { allowedTypes, targetOverrides } = getBuildPolicy(room, layout, controllerLevel);
 
     if (allowedTypes.size === 0) {

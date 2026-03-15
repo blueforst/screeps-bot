@@ -1,5 +1,6 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
 import { spawnMaxCarrierRaw } from "@/runtime/emergencySpawning";
+import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
@@ -187,7 +188,7 @@ function getSourceWorkerWorkPos(config: CreepConfig): RoomPosition | null {
     return containers[0].pos;
   }
 
-  return source.pos;
+  return getPlannedSourceContainerPos(source) ?? source.pos;
 }
 
 function getSpawnBody(spawn: StructureSpawn, configName: string): BodyPartConstant[] {

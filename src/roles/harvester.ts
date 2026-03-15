@@ -1,6 +1,7 @@
 import type { RoleFactory } from "@/types/system";
 import { moveToTarget } from "@/roles/shared";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction";
 
 export const harvesterRole: RoleFactory = (sourceId?: string) => ({
   source: (creep): boolean => {
@@ -12,10 +13,14 @@ export const harvesterRole: RoleFactory = (sourceId?: string) => ({
     const containers = source.pos.findInRange(FIND_STRUCTURES, 1, {
       filter: (structure) => structure.structureType === STRUCTURE_CONTAINER,
     });
-    if (containers.length > 0) {
-      const container = containers[0] as StructureContainer;
-      if (!creep.pos.isEqualTo(container.pos)) {
-        moveToTarget(creep, container.pos, 0, { reusePath: 5 });
+    const workPos: RoomPosition | null =
+      containers.length > 0
+        ? (containers[0] as StructureContainer).pos
+        : getPlannedSourceContainerPos(source);
+
+    if (workPos) {
+      if (!creep.pos.isEqualTo(workPos)) {
+        moveToTarget(creep, workPos, 0, { reusePath: 5 });
         return false;
       }
     }
