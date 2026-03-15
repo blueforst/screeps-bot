@@ -1,3 +1,4 @@
+import { spawnProfiles } from "@/config/spawnProfiles";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 type RescueStatus = "bootstrapping" | "managed";
@@ -13,6 +14,18 @@ interface RescueTask {
 }
 
 const RESCUE_WORKER_COUNT = 3;
+
+function getBodyCost(body: BodyPartConstant[]): number {
+  return body.reduce((sum, part) => sum + BODYPART_COST[part], 0);
+}
+
+function hasRescueProductionCapability(spawn: StructureSpawn): boolean {
+  const minimumRequiredEnergyCapacity = Math.max(
+    getBodyCost(spawnProfiles.colonizerHarvester(spawn.room)),
+    getBodyCost([WORK, CARRY, MOVE]),
+  );
+  return spawn.isActive() && spawn.room.energyCapacityAvailable >= minimumRequiredEnergyCapacity;
+}
 
 function ensureRescueStore(): Record<string, RescueTask> {
   const data = getMemoryService().ensureData();
@@ -31,7 +44,7 @@ function getOwnedSpawnRooms(): string[] {
   const roomNames = new Set<string>();
   for (const room of tickContext.getMyRooms()) {
     for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
-      if (spawn.isActive() && spawn.room.energyCapacityAvailable >= 300) {
+      if (hasRescueProductionCapability(spawn)) {
         roomNames.add(spawn.room.name);
       }
     }
