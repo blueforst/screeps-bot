@@ -620,6 +620,9 @@ export const carrierRole: RoleFactory = () => ({
 
     if (!target) {
       clearPostTransferPlan(creep);
+      if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0) {
+        creep.memory.carrierStorageOnlyMode = true;
+      }
       return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
     }
 
@@ -653,7 +656,9 @@ export const carrierRole: RoleFactory = () => ({
     }
 
     clearPostTransferPlan(creep);
-    delete creep.memory.carrierStorageOnlyMode;
+    if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0) {
+      creep.memory.carrierStorageOnlyMode = true;
+    }
 
     return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
   },

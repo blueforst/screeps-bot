@@ -1,6 +1,5 @@
 export type { MovementOptions, MoveToRoomOptions, MoveToTargetOptions } from "@/movement/types";
 export { clearMovementAnalyticsForTest, getMovementAnalyticsForTest } from "@/movement/metrics";
-export { clearTileReservationsForTest } from "@/movement/reservations";
 export {
   clearMovementState,
   clearRoomBaseCostMatrixCacheForTest,

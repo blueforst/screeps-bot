@@ -1,5 +1,4 @@
 import { runMemoryCleanup } from "@/runtime/memoryCleanup";
-import { clearTileReservationsForTest, reserveNextTile } from "@/movement/reservations";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -24,7 +23,6 @@ function createOwnedRoom(name: string): Room {
 describe("runMemoryCleanup", () => {
   beforeEach(() => {
     resetRuntimeServices();
-    clearTileReservationsForTest();
     Game.time = 17;
     Game.rooms = {
       W1N1: createOwnedRoom("W1N1"),
@@ -55,17 +53,5 @@ describe("runMemoryCleanup", () => {
     runMemoryCleanup();
 
     expect(Memory.rooms?.W2N2).toBeUndefined();
-  });
-
-  it("releases tile reservations for dead creeps", () => {
-    Memory.creeps = {
-      DeadCarrier: {} as CreepMemory,
-    };
-
-    reserveNextTile({ name: "DeadCarrier" } as Creep, { x: 10, y: 10, roomName: "W1N1" } as RoomPosition);
-
-    runMemoryCleanup();
-
-    expect(reserveNextTile({ name: "LiveCarrier" } as Creep, { x: 10, y: 10, roomName: "W1N1" } as RoomPosition)).toBe(true);
   });
 });

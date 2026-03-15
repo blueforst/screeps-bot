@@ -1,145 +1,39 @@
 import { recordMovementMetric } from "@/movement/metrics";
-import { isTileReserved, reserveNextTile } from "@/movement/reservations";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPositionAtDirection, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
-import type { MovePathState } from "@/movement/types";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 
-const MOVE_PRIORITY_BY_ROLE = {
-  miner: 1,
-  harvester: 2,
-  mineralHarvester: 2,
-  carrier: 4,
-  worker: 5,
-  claimer: 3,
-  colonizerHarvester: 4,
-  colonizerWorker: 5,
-  crossShardClaimer: 3,
-  crossShardColonizerHarvester: 4,
-  crossShardColonizerWorker: 5,
-  meleeAttacker: 3,
-  healer: 3,
-  scout: 8,
-} as const;
-
-const DEFAULT_MOVE_PRIORITY = 10;
 const ALL_DIRECTIONS: DirectionConstant[] = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
-const MAX_CHAIN_YIELD_DEPTH = 3;
+
+// ─── Lookup helpers ───────────────────────────────────────────────────────────
 
 export function findMyCreepAt(pos: RoomPosition, excludeName?: string): Creep | null {
   const roomContext = getTickContextService().getRoomContext(pos.roomName);
   const myCreeps = roomContext?.getMyCreeps() || [];
-  return myCreeps.find((creep) => creep.name !== excludeName && creep.pos.x === pos.x && creep.pos.y === pos.y) || null;
+  return myCreeps.find((c) => c.name !== excludeName && c.pos.x === pos.x && c.pos.y === pos.y) || null;
 }
 
-function getMovePriority(creep: Creep): number {
-  const role = creep.memory.role;
-  if (!role) {
-    return DEFAULT_MOVE_PRIORITY;
-  }
+// ─── Push ─────────────────────────────────────────────────────────────────────
 
-  return MOVE_PRIORITY_BY_ROLE[role] ?? DEFAULT_MOVE_PRIORITY;
-}
-
-export function isCreepMovingTowards(creep: Creep, pos: RoomPosition): boolean {
-  if (creep.memory.movementPushedAt === Game.time) {
-    return false;
-  }
-  const pathState = creep.memory.movePathState as MovePathState | undefined;
-  if (!pathState?.steps?.length) {
-    return false;
-  }
-
-  const steps = pathState.steps;
-  const exactIndex = steps.findIndex((step) => creep.pos.x === step.x && creep.pos.y === step.y);
-
-  let nextStep: { x: number; y: number } | undefined;
-  if (exactIndex >= 0) {
-    nextStep = steps[exactIndex + 1];
-  } else {
-    let bestIndex = -1;
-    let bestRange = Infinity;
-    for (let i = 0; i < steps.length; i++) {
-      const range = Math.max(Math.abs(creep.pos.x - steps[i].x), Math.abs(creep.pos.y - steps[i].y));
-      if (range < bestRange) {
-        bestRange = range;
-        bestIndex = i;
-      }
-    }
-    if (bestIndex >= 0 && bestRange <= 1) {
-      nextStep = steps[bestIndex + 1] ?? steps[bestIndex];
-    }
-  }
-
-  return nextStep?.x === pos.x && nextStep?.y === pos.y;
-}
-
-export function shouldYieldToPusher(pusher: Creep, blocker: Creep): boolean {
-  const pusherPriority = getMovePriority(pusher);
-  const blockerPriority = getMovePriority(blocker);
-
-  if (pusherPriority < blockerPriority) {
-    return true;
-  }
-
-  const blockerPathState = blocker.memory.movePathState as MovePathState | undefined;
-  return !blockerPathState || blockerPathState.expiresAt <= Game.time;
-}
-
+/**
+ * Pushes a stationary blocker to a nearby free tile.
+ * Returns true if the blocker was successfully moved.
+ */
 export function pushBlockingCreep(pusher: Creep, blocker: Creep): boolean {
-  return pushBlockingCreepChain(pusher, blocker, new Set([pusher.name]), 0);
-}
-
-function pushBlockingCreepChain(
-  pusher: Creep,
-  blocker: Creep,
-  visited: Set<string>,
-  depth: number,
-): boolean {
-  if (depth >= MAX_CHAIN_YIELD_DEPTH || visited.has(blocker.name)) {
-    return false;
-  }
-
-  visited.add(blocker.name);
-  const candidates = getYieldCandidatePositions(pusher, blocker);
-  for (const candidate of candidates) {
-    if (isTileReserved(candidate, blocker.name)) {
+  for (const candidate of getYieldCandidatePositions(pusher, blocker)) {
+    const occupant = findMyCreepAt(candidate, blocker.name);
+    if (occupant && occupant.name !== pusher.name) {
       continue;
     }
-
-    const occupyingCreep = findMyCreepAt(candidate, blocker.name);
-    if (occupyingCreep) {
-      // If the candidate is the pusher's own tile, this is a position swap — allow it directly.
-      if (occupyingCreep.name === pusher.name) {
-        if (moveBlockerToYieldPosition(pusher, blocker, candidate)) {
-          return true;
-        }
-        continue;
-      }
-
-      if (!shouldYieldToPusher(blocker, occupyingCreep)) {
-        continue;
-      }
-      if (!pushBlockingCreepChain(blocker, occupyingCreep, visited, depth + 1)) {
-        continue;
-      }
-    }
-
     if (moveBlockerToYieldPosition(pusher, blocker, candidate)) {
       return true;
     }
   }
-
   return false;
 }
 
 function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: RoomPosition): boolean {
-  if (!reserveNextTile(blocker, yieldPos)) {
-    return false;
-  }
-
-  const direction = blocker.pos.getDirectionTo(yieldPos);
-  const moveCode = measureCreepIntent(() => blocker.move(direction));
+  const moveCode = measureCreepIntent(() => blocker.move(blocker.pos.getDirectionTo(yieldPos)));
   if (moveCode !== OK && moveCode !== ERR_TIRED) {
     return false;
   }
@@ -150,95 +44,31 @@ function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: Roo
   return true;
 }
 
+// ─── Yield position selection ─────────────────────────────────────────────────
+
 function getYieldCandidatePositions(pusher: Creep, blocker: Creep): RoomPosition[] {
   const candidates: Array<{ pos: RoomPosition; score: number }> = [];
 
   for (const direction of ALL_DIRECTIONS) {
     const pos = getPositionAtDirection(blocker.pos, direction);
-    if (!pos || !isStaticYieldTileWalkable(pos, blocker)) {
+    if (!pos || !isYieldTileWalkable(pos, blocker)) {
       continue;
     }
-
     let score = scoreYieldPosition(pos, blocker, pusher);
-    if (findMyCreepAt(pos, blocker.name)) {
+    const occupant = findMyCreepAt(pos, blocker.name);
+    if (occupant && occupant.name !== pusher.name) {
       score -= 15;
-    }
-    if (isTileReserved(pos, blocker.name)) {
-      score -= 25;
     }
     candidates.push({ pos, score });
   }
 
-  return candidates.sort((left, right) => right.score - left.score).map((entry) => entry.pos);
-}
-
-export function isYieldTileWalkable(pos: RoomPosition, blocker: Creep, pusher: Creep): boolean {
-  if (!isStaticYieldTileWalkable(pos, blocker)) {
-    return false;
-  }
-
-  if (isTileReserved(pos, blocker.name)) {
-    return false;
-  }
-
-  const roomContext = getTickContextService().getRoomContext(blocker.room);
-  if (!roomContext) {
-    return false;
-  }
-  for (const otherCreep of roomContext.getMyCreeps()) {
-    if (otherCreep.name === blocker.name) {
-      continue;
-    }
-    if (otherCreep.name === pusher.name && otherCreep.pos.x === pos.x && otherCreep.pos.y === pos.y) {
-      continue;
-    }
-    if (otherCreep.pos.x === pos.x && otherCreep.pos.y === pos.y) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function isStaticYieldTileWalkable(pos: RoomPosition, blocker: Creep): boolean {
-  if (pos.roomName !== blocker.room.name) {
-    return false;
-  }
-
-  const terrain = Game.map.getRoomTerrain(pos.roomName).get(pos.x, pos.y);
-  if (terrain === TERRAIN_MASK_WALL) {
-    return false;
-  }
-
-  const roomContext = getTickContextService().getRoomContext(blocker.room);
-  if (!roomContext) {
-    return false;
-  }
-
-  for (const structure of roomContext.getStructures()) {
-    if (structure.pos.x !== pos.x || structure.pos.y !== pos.y) {
-      continue;
-    }
-    if (!isWalkableStructure(structure)) {
-      return false;
-    }
-  }
-
-  for (const site of roomContext.getConstructionSites()) {
-    if (site.pos.x !== pos.x || site.pos.y !== pos.y) {
-      continue;
-    }
-    if (site.my && !isWalkableConstructionSite(site)) {
-      return false;
-    }
-  }
-
-  return true;
+  return candidates.sort((a, b) => b.score - a.score).map((e) => e.pos);
 }
 
 function scoreYieldPosition(pos: RoomPosition, blocker: Creep, pusher: Creep): number {
   let score = 0;
 
+  // Swap: blocker moves onto pusher's tile while pusher moves into blocker's.
   if (pos.x === pusher.pos.x && pos.y === pusher.pos.y) {
     score += 20;
   }
@@ -248,49 +78,67 @@ function scoreYieldPosition(pos: RoomPosition, blocker: Creep, pusher: Creep): n
   }
 
   const terrain = Game.map.getRoomTerrain(pos.roomName).get(pos.x, pos.y);
-  if (terrain === TERRAIN_MASK_SWAMP) {
-    score -= 2;
-  } else {
-    score += 1;
-  }
+  score += terrain === TERRAIN_MASK_SWAMP ? -2 : 1;
 
+  // Stationary creeps with a work anchor should stay close to it.
   const workAnchor = blocker.memory.workAnchor;
   if (workAnchor && workAnchor.roomName === pos.roomName) {
     const anchorPos = new RoomPosition(workAnchor.x, workAnchor.y, workAnchor.roomName);
-    const distToAnchor = pos.getRangeTo(anchorPos);
-    if (distToAnchor <= workAnchor.range) {
-      score += 15;
+    const dist = pos.getRangeTo(anchorPos);
+    if (dist <= workAnchor.range) {
+      // Strongly prefer staying within work range — this dominates swap and terrain bonuses.
+      score += 30;
+    } else {
+      score -= dist;
     }
-    score -= distToAnchor;
-    return score;
-  }
-
-  const blockerMovePathState = blocker.memory.movePathState as MovePathState | undefined;
-  if (blockerMovePathState && blockerMovePathState.targetRoom === pos.roomName) {
-    const blockerTarget = new RoomPosition(
-      blockerMovePathState.targetX,
-      blockerMovePathState.targetY,
-      blockerMovePathState.targetRoom,
-    );
-    const blockerRange = blockerMovePathState.range;
-    if (pos.getRangeTo(blockerTarget) <= blockerRange) {
-      score += 10;
-    }
-    score -= pos.getRangeTo(blockerTarget);
   }
 
   return score;
 }
 
+function isYieldTileWalkable(pos: RoomPosition, blocker: Creep): boolean {
+  if (pos.roomName !== blocker.room.name) {
+    return false;
+  }
+  if (Game.map.getRoomTerrain(pos.roomName).get(pos.x, pos.y) === TERRAIN_MASK_WALL) {
+    return false;
+  }
+
+  const roomContext = getTickContextService().getRoomContext(blocker.room);
+  if (!roomContext) {
+    return false;
+  }
+
+  for (const structure of roomContext.getStructures()) {
+    if (structure.pos.x === pos.x && structure.pos.y === pos.y && !isWalkableStructure(structure)) {
+      return false;
+    }
+  }
+
+  for (const site of roomContext.getConstructionSites()) {
+    if (site.pos.x === pos.x && site.pos.y === pos.y && site.my && !isWalkableConstructionSite(site)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// ─── Exit recovery ────────────────────────────────────────────────────────────
+
 export function moveOffExit(creep: Creep, avoidSwamp = true): ScreepsReturnCode {
   let swampDirection: DirectionConstant | undefined;
+
   for (const direction of [TOP, RIGHT, BOTTOM, LEFT, TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT, TOP_LEFT] as DirectionConstant[]) {
-    const position = getPositionAtDirection(creep.pos, direction);
-    if (!position || isExitTile(position) || !isYieldTileWalkable(position, creep, creep)) {
+    const pos = getPositionAtDirection(creep.pos, direction);
+    if (!pos || isExitTile(pos) || !isYieldTileWalkable(pos, creep)) {
+      continue;
+    }
+    if (findMyCreepAt(pos, creep.name)) {
       continue;
     }
 
-    const terrain = Game.map.getRoomTerrain(position.roomName).get(position.x, position.y);
+    const terrain = Game.map.getRoomTerrain(pos.roomName).get(pos.x, pos.y);
     if (avoidSwamp && terrain === TERRAIN_MASK_SWAMP) {
       swampDirection = direction;
       continue;

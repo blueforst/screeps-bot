@@ -2,8 +2,7 @@ import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfi
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPosKey, getTargetPos, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
-import { isTileReserved, releaseTileReservation, reserveNextTile } from "@/movement/reservations";
-import { findMyCreepAt, isCreepMovingTowards, moveOffExit, pushBlockingCreep, shouldYieldToPusher } from "@/movement/traffic";
+import { findMyCreepAt, moveOffExit, pushBlockingCreep } from "@/movement/traffic";
 import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
 import type { MovePathState, MoveToTargetOptions, RoomCostMatrixCacheEntry, WorkAnchor } from "@/movement/types";
 
@@ -14,7 +13,6 @@ const ROOM_BASE_COST_MATRIX_CACHE_MAX = 100;
 
 export function clearMovementState(creep: Creep): void {
   recordMovementMetric("stateClears", creep.room.name);
-  releaseTileReservation(creep);
   delete creep.memory.movePathState;
   delete creep.memory.travelState;
   delete creep.memory.movementPushedAt;
@@ -36,7 +34,6 @@ export function moveToTarget(
 
   const targetPos = getTargetPos(target);
   if (creep.pos.getRangeTo(targetPos) <= range) {
-    releaseTileReservation(creep);
     delete creep.memory.movePathState;
     return OK;
   }
@@ -250,46 +247,30 @@ function followStoredRoomPath(
 
   const nextPos = getNextStoredPathStep(creep, movePathState.steps);
   if (!nextPos) {
-    releaseTileReservation(creep);
     delete creep.memory.movePathState;
     return ERR_NO_PATH;
   }
 
-  if (isTileReserved(nextPos, creep.name)) {
-    releaseTileReservation(creep);
-    delete creep.memory.movePathState;
-    return ERR_BUSY;
-  }
-
   const blockingCreep = findMyCreepAt(nextPos, creep.name);
   if (blockingCreep) {
-    if (isCreepMovingTowards(blockingCreep, creep.pos)) {
+    const blockerPathState = blockingCreep.memory.movePathState as MovePathState | undefined;
+    const blockerWillMoveNaturally = !!blockerPathState && blockerPathState.expiresAt > Game.time;
+
+    if (blockerWillMoveNaturally) {
+      // Blocker is actively moving — submit our move and let the engine resolve it naturally.
       return moveToAdjacentPosition(creep, nextPos);
     }
 
-    if (shouldYieldToPusher(creep, blockingCreep) && pushBlockingCreep(creep, blockingCreep)) {
-      const swapMoveCode = moveToAdjacentPosition(creep, nextPos);
-      if (swapMoveCode === OK || swapMoveCode === ERR_TIRED) {
-        return swapMoveCode;
-      }
-      if (swapMoveCode === ERR_BUSY) {
-        releaseTileReservation(creep);
-        delete creep.memory.movePathState;
-      }
-      return swapMoveCode;
+    // Blocker is stationary — push it to a nearby free tile.
+    if (pushBlockingCreep(creep, blockingCreep)) {
+      return moveToAdjacentPosition(creep, nextPos);
     }
 
-    releaseTileReservation(creep);
     delete creep.memory.movePathState;
     return ERR_BUSY;
   }
 
-  const moveCode = moveToAdjacentPosition(creep, nextPos);
-  if (moveCode === ERR_BUSY) {
-    releaseTileReservation(creep);
-    delete creep.memory.movePathState;
-  }
-  return moveCode;
+  return moveToAdjacentPosition(creep, nextPos);
 }
 
 function getNextStoredPathStep(creep: Creep, steps: MovePathState["steps"]): RoomPosition | null {
@@ -336,10 +317,6 @@ function getNextStoredPathStep(creep: Creep, steps: MovePathState["steps"]): Roo
 function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): ScreepsReturnCode {
   if (creep.pos.getRangeTo(nextPos) > 1) {
     return ERR_NO_PATH;
-  }
-
-  if (!reserveNextTile(creep, nextPos)) {
-    return ERR_BUSY;
   }
 
   const direction = creep.pos.getDirectionTo(nextPos);

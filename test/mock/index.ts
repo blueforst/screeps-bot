@@ -3,6 +3,7 @@ import type { LoDashStatic } from "lodash";
 
 class GameMock {
   public creeps: Record<string, Creep> = {};
+  public flags: Record<string, Flag> = {};
   public rooms: Record<string, Room> = {};
   public spawns: Record<string, StructureSpawn> = {};
   public time = 1;
