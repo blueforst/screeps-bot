@@ -244,17 +244,36 @@ function runTowerPeaceFlow(
   }
 }
 
-function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[]): boolean {
+function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[], woundedCreeps: Creep[]): boolean {
   if (hostiles.length <= 0 || towers.length <= 0) {
     return false;
   }
 
+  const attackTowers: StructureTower[] = [];
+  for (const tower of towers) {
+    if (woundedCreeps.length > 0) {
+      const target = tower.pos.findClosestByRange(woundedCreeps);
+      if (target) {
+        const code = tower.heal(target);
+        if (code === OK) {
+          recordFixedCpuAction("towerControl");
+        }
+        continue;
+      }
+    }
+    attackTowers.push(tower);
+  }
+
+  if (attackTowers.length === 0) {
+    return true;
+  }
+
   const state = ensureTowerCombatRoomState(room.name);
-  const analysis = createTowerCombatAnalysis(towers, hostiles);
+  const analysis = createTowerCombatAnalysis(attackTowers, hostiles);
   const focusTarget = chooseFocusTarget(hostiles, analysis);
   if (!focusTarget) {
-    const spreadAssignments = assignSpreadTargets(towers, hostiles, analysis);
-    for (const tower of towers) {
+    const spreadAssignments = assignSpreadTargets(attackTowers, hostiles, analysis);
+    for (const tower of attackTowers) {
       const target = spreadAssignments.get(tower.id);
       if (target) {
         const code = tower.attack(target);
@@ -293,8 +312,8 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[])
 
   const useSpread = shouldForceSpread || shouldProbeSpread;
   if (useSpread) {
-    const spreadAssignments = assignSpreadTargets(towers, hostiles, analysis);
-    for (const tower of towers) {
+    const spreadAssignments = assignSpreadTargets(attackTowers, hostiles, analysis);
+    for (const tower of attackTowers) {
       const target = spreadAssignments.get(tower.id);
       if (target) {
         const code = tower.attack(target);
@@ -304,7 +323,7 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[])
       }
     }
   } else {
-    for (const tower of towers) {
+    for (const tower of attackTowers) {
       const code = tower.attack(focusTarget);
       if (code === OK) {
         recordFixedCpuAction("towerControl");
@@ -333,7 +352,7 @@ export function runTowerControl(): void {
         structure.structureType !== STRUCTURE_RAMPART,
     );
 
-    if (runTowerCombat(room, towers, hostiles)) {
+    if (runTowerCombat(room, towers, hostiles, woundedCreeps)) {
       continue;
     }
 
