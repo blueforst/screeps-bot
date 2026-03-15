@@ -142,12 +142,22 @@ function getValidSourceContainerPositions(
   return result;
 }
 
-function getAutoSourceContainerCandidates(
+// Per-tick cache: room name → (source id → position)
+let _autoSourceMapTick = -1;
+const _autoSourceMapCache = new Map<string, Map<Id<Source>, { x: number; y: number }>>();
+
+/**
+ * Run the MCF algorithm and return a definitive source-id → container-position mapping.
+ * Using a map keyed by source ID prevents the "adjacent to both sources" ambiguity where
+ * a position that's within range 1 of two different sources would otherwise be returned
+ * for both when searching by adjacency alone.
+ */
+function buildAutoSourceContainerMapping(
   room: Room,
   reserved: Set<string> = new Set(),
-): { x: number; y: number }[] {
+): Map<Id<Source>, { x: number; y: number }> {
   const referencePos = getContainerReferencePosition(room);
-  const candidates: { x: number; y: number }[] = [];
+  const result = new Map<Id<Source>, { x: number; y: number }>();
 
   // Separate sources: those with existing containers (already placed/in-progress)
   // vs those that still need a position assigned.
@@ -157,8 +167,14 @@ function getAutoSourceContainerCandidates(
 
     const existingPos = getExistingSourceContainerPosition(source);
     if (existingPos) {
-      candidates.push(existingPos);
-      reserved.add(`${existingPos.x}:${existingPos.y}`);
+      const key = `${existingPos.x}:${existingPos.y}`;
+      if (!reserved.has(key)) {
+        result.set(source.id, existingPos);
+        reserved.add(key);
+      } else {
+        // Two sources adjacent to the same container; this source needs a fresh position.
+        needsAssignment.push(source);
+      }
     } else {
       needsAssignment.push(source);
     }
@@ -186,11 +202,30 @@ function getAutoSourceContainerCandidates(
       return scoreA <= scoreB ? a : b;
     });
 
-    candidates.push(best);
+    result.set(source.id, best);
     reserved.add(`${best.x}:${best.y}`);
   }
 
-  return candidates;
+  return result;
+}
+
+function getAutoSourceContainerMappingCached(room: Room): Map<Id<Source>, { x: number; y: number }> {
+  if (Game.time !== _autoSourceMapTick) {
+    _autoSourceMapCache.clear();
+    _autoSourceMapTick = Game.time;
+  }
+  if (!_autoSourceMapCache.has(room.name)) {
+    _autoSourceMapCache.set(room.name, buildAutoSourceContainerMapping(room));
+  }
+  return _autoSourceMapCache.get(room.name)!;
+}
+
+function getAutoSourceContainerCandidates(
+  room: Room,
+  reserved: Set<string> = new Set(),
+): { x: number; y: number }[] {
+  const mapping = buildAutoSourceContainerMapping(room, reserved);
+  return Array.from(mapping.values());
 }
 
 function getContainerPlannedPositions(room: Room, layout: PlannedLayout, controllerLevel: number): { x: number; y: number }[] {
@@ -638,27 +673,14 @@ export function getSourceContainerPositionsForRoom(roomName: string): { x: numbe
 }
 
 export function getPlannedSourceContainerPos(source: Source): RoomPosition | null {
-  const layout = Memory.data?.roomPlanner?.[source.room.name]?.layout;
-  if (!layout) return null;
+  if (!Memory.data?.roomPlanner?.[source.room.name]?.layout) return null;
 
-  const planned = layout[STRUCTURE_CONTAINER] ?? [];
-  for (const pos of planned) {
-    if (Math.abs(pos.x - source.pos.x) <= 1 && Math.abs(pos.y - source.pos.y) <= 1) {
-      return new RoomPosition(pos.x, pos.y, source.room.name);
-    }
-  }
-
-  // Layout exists but auto-source container positions haven't been persisted yet
-  // (happens within the first 100-tick window after layout generation).
-  // Fall back to computing the position on the fly so harvesters go to a stable work pos.
-  const allCandidates = getAutoSourceContainerCandidates(source.room);
-  for (const pos of allCandidates) {
-    if (Math.abs(pos.x - source.pos.x) <= 1 && Math.abs(pos.y - source.pos.y) <= 1) {
-      return new RoomPosition(pos.x, pos.y, source.room.name);
-    }
-  }
-
-  return null;
+  // Use the MCF mapping keyed by source ID.  This avoids the ambiguity that arises when
+  // two sources are close together and one source's container tile is within range 1 of
+  // both sources — a simple adjacency scan would incorrectly return the wrong source's
+  // position. The cached mapping runs at most once per room per tick.
+  const pos = getAutoSourceContainerMappingCached(source.room).get(source.id);
+  return pos ? new RoomPosition(pos.x, pos.y, source.room.name) : null;
 }
 
 export function runRoomPlannerConstruction(): void {
