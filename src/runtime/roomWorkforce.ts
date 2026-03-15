@@ -1,4 +1,5 @@
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
+import { isRoomInReserveMode } from "@/runtime/roomReserve";
 
 const DEFAULT_WORKER_MAX = 8;
 const DEFAULT_WORKER_BASE = 1;
@@ -112,9 +113,11 @@ export function getExpectedManagedConfigNames(room: Room): string[] {
 
   names.push(`${room.name}:carrier:0`);
 
-  const workerCount = getDesiredWorkerCount(room);
-  for (let i = 0; i < workerCount; i++) {
-    names.push(`${room.name}:worker:${i}`);
+  if (!isRoomInReserveMode(room.name)) {
+    const workerCount = getDesiredWorkerCount(room);
+    for (let i = 0; i < workerCount; i++) {
+      names.push(`${room.name}:worker:${i}`);
+    }
   }
 
   return names;

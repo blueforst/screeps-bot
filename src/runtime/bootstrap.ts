@@ -1,5 +1,6 @@
 import { upsertConfig } from "@/runtime/creepApi";
 import { getEligibleMineralIds, getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
+import { isRoomInReserveMode } from "@/runtime/roomReserve";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { TickContextService } from "@/runtime/tickContext";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
@@ -94,5 +95,16 @@ export function bootstrapRooms(): void {
     }
 
     cleanupWorkerConfigs(room.name, expectedConfigNames, tickContext);
+
+    // In reserve mode, orphan any lingering worker configs that still have live creeps
+    // so spawn planner does not prespawn replacements.
+    if (isRoomInReserveMode(room.name)) {
+      const creepConfigs = getCreepConfigService();
+      for (const config of Object.values(creepConfigs.list(`${room.name}:worker:`))) {
+        if (config.roomName) {
+          delete config.roomName;
+        }
+      }
+    }
   }
 }

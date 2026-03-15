@@ -521,6 +521,17 @@ declare global {
           savedAt: number;
         };
       };
+      rescue?: Record<
+        string,
+        {
+          targetRoom: string;
+          sourceRoom: string;
+          status: "bootstrapping" | "managed";
+          routeRooms?: string[];
+          createdAt: number;
+          updatedAt: number;
+        }
+      >;
       crossShardColonization?: Record<
         string,
         {
