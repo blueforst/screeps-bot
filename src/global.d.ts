@@ -282,6 +282,12 @@ declare global {
           }
         >;
       };
+      homeDefense?: {
+        boostTarget?: number;
+        maxBoostBuyPrice?: number;
+        maxBoostDealEnergyCostRatio?: number;
+        rooms?: Record<string, { boostLabId?: string }>;
+      };
       resourceControl?: {
         enabled?: boolean;
         sampleInterval?: number;

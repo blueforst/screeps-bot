@@ -73,29 +73,10 @@ const COLONIZER_HARVESTER_BODY: BodyPartConstant[] = [
   MOVE,
 ];
 
-function hasContainerNearSource(sourceId?: string): boolean {
-  if (!sourceId) {
-    return false;
-  }
-
-  const source = Game.getObjectById(sourceId as Id<Source>);
-  if (!source) {
-    return false;
-  }
-
-  const containers = source.pos.findInRange(FIND_STRUCTURES, 1, {
-    filter: (structure) => structure.structureType === STRUCTURE_CONTAINER,
-  });
-
-  return containers.length > 0;
-}
-
-export function getHarvesterBody(room: Room, sourceId?: string): BodyPartConstant[] {
-  if (hasContainerNearSource(sourceId)) {
-    const fixedBodyCost = FIXED_MINER_BODY.reduce((sum, part) => sum + BODYPART_COST[part], 0);
-    if (room.energyCapacityAvailable >= fixedBodyCost) {
-      return [...FIXED_MINER_BODY];
-    }
+export function getHarvesterBody(room: Room): BodyPartConstant[] {
+  const fixedBodyCost = FIXED_MINER_BODY.reduce((sum, part) => sum + BODYPART_COST[part], 0);
+  if (room.energyCapacityAvailable >= fixedBodyCost) {
+    return [...FIXED_MINER_BODY];
   }
 
   return twoToOneWorkMoveBody(room);

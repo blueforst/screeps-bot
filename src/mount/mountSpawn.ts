@@ -25,7 +25,7 @@ function chooseBody(spawn: StructureSpawn, configName: string): BodyPartConstant
   }
 
   if (config.role === "harvester") {
-    return getHarvesterBody(spawn.room, config.args[0]);
+    return getHarvesterBody(spawn.room);
   }
 
   return spawnProfiles[config.role](spawn.room);

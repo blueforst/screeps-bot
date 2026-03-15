@@ -244,6 +244,29 @@ function runTowerPeaceFlow(
   }
 }
 
+function isAllHostilesImmune(analysis: TowerCombatAnalysis, hostiles: Creep[]): boolean {
+  return hostiles.every(
+    (hostile) =>
+      (analysis.totalTowerAttackByHostileId.get(hostile.id) || 0) <=
+      (analysis.incomingHealByHostileId.get(hostile.id) || 0),
+  );
+}
+
+function isDefenderOnRampart(room: Room): boolean {
+  const defenders = room.find(FIND_MY_CREEPS, {
+    filter: (creep) => creep.memory.role === "homeDefender",
+  });
+
+  for (const defender of defenders) {
+    const onRampart = defender.pos
+      .lookFor(LOOK_STRUCTURES)
+      .some((s) => s.structureType === STRUCTURE_RAMPART && (s as StructureRampart).my);
+    if (onRampart) return true;
+  }
+
+  return false;
+}
+
 function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[], woundedCreeps: Creep[]): boolean {
   if (hostiles.length <= 0 || towers.length <= 0) {
     return false;
@@ -270,6 +293,14 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[],
 
   const state = ensureTowerCombatRoomState(room.name);
   const analysis = createTowerCombatAnalysis(attackTowers, hostiles);
+
+  if (isAllHostilesImmune(analysis, hostiles) && !isDefenderOnRampart(room)) {
+    delete state.focusTargetId;
+    delete state.lastFocusHits;
+    delete state.stalledTicks;
+    delete state.spreadUntil;
+    return true;
+  }
   const focusTarget = chooseFocusTarget(hostiles, analysis);
   if (!focusTarget) {
     const spreadAssignments = assignSpreadTargets(attackTowers, hostiles, analysis);

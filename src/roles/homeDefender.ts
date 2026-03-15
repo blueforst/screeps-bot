@@ -1,8 +1,22 @@
 import { getSafeZone } from "@/runtime/safeZone";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { DEFENSE_BOOST_COMPOUND } from "@/runtime/boostControl";
 import type { RoleFactory } from "@/types/system";
 
 const DANGEROUS_BODY_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, WORK];
+
+function isAttackBoosted(creep: Creep): boolean {
+  return creep.body.some((part) => part.type === ATTACK && !!part.boost);
+}
+
+function findBoostLab(room: Room): StructureLab | null {
+  const labs = room.find(FIND_MY_STRUCTURES, {
+    filter: (s): s is StructureLab =>
+      s.structureType === STRUCTURE_LAB &&
+      (s as StructureLab).store.getUsedCapacity(DEFENSE_BOOST_COMPOUND) >= LAB_BOOST_MINERAL,
+  });
+  return labs[0] ?? null;
+}
 
 function getPlayerHostiles(room: Room): Creep[] {
   return room.find(FIND_HOSTILE_CREEPS, {
@@ -49,11 +63,37 @@ export const homeDefenderRole: RoleFactory = (roomName: string) => ({
       return false;
     }
 
-    const hostiles = measureCreepDecision(() => getPlayerHostiles(creep.room));
-    if (hostiles.length === 0) return false;
-
     const safeZone = getSafeZone(roomName);
     if (safeZone.size === 0) return false;
+
+    // Boost phase: seek lab before engaging if boost compound is available
+    if (!isAttackBoosted(creep)) {
+      const lab = measureCreepDecision(() => findBoostLab(creep.room));
+      if (lab) {
+        if (!creep.pos.isNearTo(lab)) {
+          creep.moveTo(lab, {
+            costCallback: (_name: string, matrix: CostMatrix) => {
+              for (let x = 0; x < 50; x++) {
+                for (let y = 0; y < 50; y++) {
+                  if (!safeZone.has(x * 50 + y)) {
+                    matrix.set(x, y, 255);
+                  }
+                }
+              }
+              return matrix;
+            },
+            reusePath: 3,
+            maxRooms: 1,
+          });
+        } else {
+          measureCreepIntent(() => lab.boostCreep(creep));
+        }
+        return false;
+      }
+    }
+
+    const hostiles = measureCreepDecision(() => getPlayerHostiles(creep.room));
+    if (hostiles.length === 0) return false;
 
     const ramparts = measureCreepDecision(() => getRampartsInSafeZone(creep.room, safeZone));
     if (ramparts.length === 0) return false;

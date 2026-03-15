@@ -1,5 +1,6 @@
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { getSafeZone } from "@/runtime/safeZone";
+import { buyBoostIfNeeded, clearBoostLabTasks, shouldBoostDefender, syncBoostLabTask } from "@/runtime/boostControl";
 
 const DANGEROUS_BODY_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, WORK];
 const DEFENDER_COUNT = 1;
@@ -82,8 +83,15 @@ export function runHomeDefense(): void {
     const playerHostiles = getPlayerHostiles(room);
     if (playerHostiles.length > 0) {
       ensureDefenders(room);
+      if (shouldBoostDefender(room, playerHostiles)) {
+        buyBoostIfNeeded(room);
+        syncBoostLabTask(room);
+      } else {
+        clearBoostLabTasks(room.name);
+      }
     } else {
       removeDefenders(room.name);
+      clearBoostLabTasks(room.name);
     }
   }
 }
