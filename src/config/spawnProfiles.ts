@@ -146,4 +146,5 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   crossShardClaimer: () => [CLAIM, MOVE],
   crossShardColonizerHarvester: () => [...COLONIZER_HARVESTER_BODY],
   crossShardColonizerWorker: oneOneOneBody,
+  flagScout: () => [MOVE],
 };

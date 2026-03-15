@@ -13,7 +13,8 @@ export type RoleName =
   | "homeDefender"
   | "crossShardClaimer"
   | "crossShardColonizerHarvester"
-  | "crossShardColonizerWorker";
+  | "crossShardColonizerWorker"
+  | "flagScout";
 export type WorkerTaskType = "build" | "upgrade" | "repair";
 
 export interface CreepConfig {
