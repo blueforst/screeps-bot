@@ -16,7 +16,7 @@ describe("cpuMonitor", () => {
 
   it("returns readable empty output from command wrapper", () => {
     expect(cpuMonitorCommand()).toBe(
-      "[cpu-monitor] enabled=false sampleInterval=10 history=0/120\n[cpu-monitor] latest=none\n[cpu-monitor] summary=none",
+      "[cpu-monitor] enabled=false  interval=10  history=0/120\n[cpu-monitor] latest=none\n[cpu-monitor] summary=none",
     );
   });
 
@@ -192,11 +192,13 @@ describe("cpuMonitor", () => {
     ];
 
     expect(cpuMonitorCommand()).toBe(
-        "[cpu-monitor] enabled=true sampleInterval=5 history=3/120\n" +
-        "[cpu-monitor] latest tick=123 shard=shard3 used=17.00/20 bucket=9500 tickLimit=500 untracked=2.00\n" +
-        "[cpu-monitor] latestPhases creepWork=raw:8.00,logic:7.20,fixed:0.80 towerControl=raw:1.00,logic:0.80,fixed:0.20\n" +
-        "[cpu-monitor] summary ticks=3 avgUsed=16.00 maxUsed=17.00 avgBucket=9633.33 bucketRange=9500-9800 avgUntracked=2.00\n" +
-        "[cpu-monitor] summaryPhases creepWork=raw:8.00,logic:7.20,fixed:0.80 towerControl=raw:1.00,logic:0.80,fixed:0.20",
+      "[cpu-monitor] enabled=true  interval=5  history=3/120\n" +
+      "[cpu-monitor] latest  t=123  shard=shard3  used=17.00/20  bucket=9500  tickLimit=500  untracked=2.00\n" +
+      "[cpu-monitor]   creepWork  8.00  (7.20 + 0.80 fixed)\n" +
+      "[cpu-monitor]   towerControl  1.00  (0.80 + 0.20 fixed)\n" +
+      "[cpu-monitor] avg(3)  avg=16.00  max=17.00  bucket=9500-9800  untracked=2.00\n" +
+      "[cpu-monitor]   creepWork  8.00  (7.20 + 0.80 fixed)\n" +
+      "[cpu-monitor]   towerControl  1.00  (0.80 + 0.20 fixed)",
     );
   });
 });

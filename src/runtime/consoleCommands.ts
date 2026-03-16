@@ -688,49 +688,40 @@ function buildTopLevelPhaseTotals(
   });
 }
 
-function formatTopCpuPhases(phases: Record<string, number>, fixedActionCounts: Record<string, number>, limit = 5): string {
+function formatTopCpuPhases(phases: Record<string, number>, fixedActionCounts: Record<string, number>, limit = 5): string[] {
   const entries = buildTopLevelPhaseTotals(phases, fixedActionCounts)
     .sort((left, right) => right[1].raw - left[1].raw)
     .slice(0, limit);
 
-  if (entries.length === 0) {
-    return "none";
-  }
-
-  return entries
-    .map(([name, totals]) => {
-      if (totals.fixed > 0) {
-        return `${name}=raw:${totals.raw.toFixed(2)},logic:${totals.logic.toFixed(2)},fixed:${totals.fixed.toFixed(2)}`;
-      }
-
-      return `${name}=logic:${totals.logic.toFixed(2)}`;
-    })
-    .join(" ");
+  return entries.map(([name, totals]) => {
+    if (totals.fixed > 0) {
+      return `[cpu-monitor]   ${name}  ${totals.raw.toFixed(2)}  (${totals.logic.toFixed(2)} + ${totals.fixed.toFixed(2)} fixed)`;
+    }
+    return `[cpu-monitor]   ${name}  ${totals.logic.toFixed(2)}`;
+  });
 }
 
 function formatCpuMonitorResult(result: CpuMonitorResult): string {
   const lines = [
-    `[cpu-monitor] enabled=${result.enabled} sampleInterval=${result.sampleInterval} history=${result.historySize}/${result.historyLimit}`,
+    `[cpu-monitor] enabled=${result.enabled}  interval=${result.sampleInterval}  history=${result.historySize}/${result.historyLimit}`,
   ];
 
   if (!result.latest) {
     lines.push("[cpu-monitor] latest=none");
   } else {
     lines.push(
-      `[cpu-monitor] latest tick=${result.latest.tick} shard=${result.latest.shard} used=${result.latest.totalUsed.toFixed(2)}/${formatCpuMonitorNumber(result.latest.limit)} bucket=${formatCpuMonitorNumber(result.latest.bucket)} tickLimit=${formatCpuMonitorNumber(result.latest.tickLimit)} untracked=${result.latest.untracked.toFixed(2)}`,
+      `[cpu-monitor] latest  t=${result.latest.tick}  shard=${result.latest.shard}  used=${result.latest.totalUsed.toFixed(2)}/${formatCpuMonitorNumber(result.latest.limit)}  bucket=${formatCpuMonitorNumber(result.latest.bucket)}  tickLimit=${formatCpuMonitorNumber(result.latest.tickLimit)}  untracked=${result.latest.untracked.toFixed(2)}`,
     );
-    lines.push(`[cpu-monitor] latestPhases ${formatTopCpuPhases(result.latest.phases, result.latest.fixedActionCounts)}`);
+    lines.push(...formatTopCpuPhases(result.latest.phases, result.latest.fixedActionCounts));
   }
 
   if (!result.summary) {
     lines.push("[cpu-monitor] summary=none");
   } else {
     lines.push(
-      `[cpu-monitor] summary ticks=${result.summary.ticks} avgUsed=${result.summary.avgTotalUsed.toFixed(2)} maxUsed=${result.summary.maxTotalUsed.toFixed(2)} avgBucket=${result.summary.avgBucket.toFixed(2)} bucketRange=${formatCpuMonitorNumber(result.summary.minBucket)}-${formatCpuMonitorNumber(result.summary.maxBucket)} avgUntracked=${result.summary.avgUntracked.toFixed(2)}`,
+      `[cpu-monitor] avg(${result.summary.ticks})  avg=${result.summary.avgTotalUsed.toFixed(2)}  max=${result.summary.maxTotalUsed.toFixed(2)}  bucket=${formatCpuMonitorNumber(result.summary.minBucket)}-${formatCpuMonitorNumber(result.summary.maxBucket)}  untracked=${result.summary.avgUntracked.toFixed(2)}`,
     );
-    lines.push(
-      `[cpu-monitor] summaryPhases ${formatTopCpuPhases(result.summary.avgPhases, result.summary.avgFixedActionCounts)}`,
-    );
+    lines.push(...formatTopCpuPhases(result.summary.avgPhases, result.summary.avgFixedActionCounts));
   }
 
   return lines.join("\n");

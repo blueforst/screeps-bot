@@ -402,7 +402,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
           tickLimit: moduleCpuLatest.tickLimit,
           phases: moduleCpuLatest.phases,
           untracked: moduleCpuLatest.untracked,
-          history: moduleCpuHistory.map((entry) => ({
+          history: moduleCpuHistory.slice(-20).map((entry) => ({
             tick: entry.tick,
             shard: entry.shard,
             totalUsed: entry.totalUsed,
