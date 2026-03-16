@@ -111,7 +111,10 @@ export function getExpectedManagedConfigNames(room: Room): string[] {
     names.push(`${room.name}:mineralHarvester:${mineralId}`);
   }
 
-  names.push(`${room.name}:carrier:0`);
+  const carrierCount = (room.controller?.level ?? 0) <= 2 ? 2 : 1;
+  for (let i = 0; i < carrierCount; i++) {
+    names.push(`${room.name}:carrier:${i}`);
+  }
 
   if (!isRoomInReserveMode(room.name)) {
     const workerCount = getDesiredWorkerCount(room);

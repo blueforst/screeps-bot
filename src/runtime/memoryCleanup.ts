@@ -58,6 +58,23 @@ function cleanupDeadCreepMemory(): number {
   return removed;
 }
 
+function cleanupDeadSpawnMemory(): number {
+  if (!Memory.spawns) {
+    return 0;
+  }
+
+  let removed = 0;
+
+  for (const spawnName of Object.keys(Memory.spawns)) {
+    if (!Game.spawns[spawnName]) {
+      delete Memory.spawns[spawnName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
 function cleanupSpawnQueueMemory(): number {
   let trimmed = 0;
   const creepConfigs = getCreepConfigService();
@@ -423,7 +440,47 @@ function cleanupCarrierTaskBoardMemory(ownedRooms: Set<string>): number {
   return cleanupCarrierTaskBoard(ownedRooms, CARRIER_TASK_BOARD_TTL);
 }
 
-function cleanupEmptyForeignRoomMemory(ownedRooms: Set<string>): number {
+function cleanupTowerCombatMemory(ownedRooms: Set<string>): number {
+  if (!Memory.runtime?.towerCombat) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const roomName of Object.keys(Memory.runtime.towerCombat)) {
+    if (!ownedRooms.has(roomName)) {
+      delete Memory.runtime.towerCombat[roomName];
+      removed += 1;
+    }
+  }
+
+  if (Object.keys(Memory.runtime.towerCombat).length === 0) {
+    delete Memory.runtime.towerCombat;
+  }
+
+  return removed;
+}
+
+function cleanupWorkerDynamicMemory(ownedRooms: Set<string>): number {
+  if (!Memory.runtime?.workerDynamic) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const roomName of Object.keys(Memory.runtime.workerDynamic)) {
+    if (!ownedRooms.has(roomName)) {
+      delete Memory.runtime.workerDynamic[roomName];
+      removed += 1;
+    }
+  }
+
+  if (Object.keys(Memory.runtime.workerDynamic).length === 0) {
+    delete Memory.runtime.workerDynamic;
+  }
+
+  return removed;
+}
+
+function cleanupNonOwnedRoomMemory(ownedRooms: Set<string>): number {
   if (!Memory.rooms) {
     return 0;
   }
@@ -434,7 +491,12 @@ function cleanupEmptyForeignRoomMemory(ownedRooms: Set<string>): number {
       continue;
     }
 
-    if (Object.keys(roomMemory || {}).length === 0) {
+    delete roomMemory.tasks;
+    delete roomMemory.carrierTasks;
+    delete roomMemory.workerConstructionTier;
+    delete roomMemory.coreRampartHits;
+
+    if (Object.keys(roomMemory).length === 0) {
       delete Memory.rooms[roomName];
       removed += 1;
     }
@@ -449,6 +511,7 @@ export function runMemoryCleanup(): void {
   }
 
   cleanupDeadCreepMemory();
+  cleanupDeadSpawnMemory();
   cleanupSpawnQueueMemory();
   cleanupLegacyConfigMemory();
   cleanupManagedCreepConfigs();
@@ -467,5 +530,7 @@ export function runMemoryCleanup(): void {
   cleanupCrossShardColonizationMemory(ownedRooms);
   cleanupResourceControlTaskMemory(ownedRooms);
   cleanupCarrierTaskBoardMemory(ownedRooms);
-  cleanupEmptyForeignRoomMemory(ownedRooms);
+  cleanupTowerCombatMemory(ownedRooms);
+  cleanupWorkerDynamicMemory(ownedRooms);
+  cleanupNonOwnedRoomMemory(ownedRooms);
 }

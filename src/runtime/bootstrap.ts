@@ -37,6 +37,10 @@ function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>, t
   cleanupConfigsByPrefix(roomName, "worker", validConfigNames, tickContext);
 }
 
+function cleanupCarrierConfigs(roomName: string, validConfigNames: Set<string>, tickContext: TickContextService): void {
+  cleanupConfigsByPrefix(roomName, "carrier", validConfigNames, tickContext);
+}
+
 function isSourceRoleConfigName(roomName: string, configName: string): boolean {
   return (
     configName.startsWith(`${roomName}:harvester:`) ||
@@ -94,7 +98,12 @@ export function bootstrapRooms(): void {
     cleanupSourceRoleQueueEntries(room.name, expectedConfigNames, tickContext);
     cleanupSourceConfigs(room.name, expectedConfigNames, tickContext);
 
-    upsertConfig(`${room.name}:carrier:0`, "carrier", [], room.name);
+    for (const configName of expectedConfigNames) {
+      if (configName.startsWith(`${room.name}:carrier:`)) {
+        upsertConfig(configName, "carrier", [], room.name);
+      }
+    }
+    cleanupCarrierConfigs(room.name, expectedConfigNames, tickContext);
 
     for (const configName of expectedConfigNames) {
       if (configName.startsWith(`${room.name}:worker:`)) {

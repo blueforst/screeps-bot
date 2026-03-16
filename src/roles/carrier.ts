@@ -524,7 +524,8 @@ export const carrierRole: RoleFactory = () => ({
     if (energyDemandTarget) {
       delete creep.memory.carrierStorageOnlyMode;
 
-      if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep)) {
+      if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep) &&
+          (getAssignedCarrierRoom(creep)?.controller?.level ?? 0) > 2) {
         releasePickupReservation(creep);
         clearSynthesisCarrierTaskPlan(creep);
         creep.suicide();
@@ -550,7 +551,8 @@ export const carrierRole: RoleFactory = () => ({
       return creep.store.getUsedCapacity() > 0;
     }
 
-    if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep)) {
+    if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep) &&
+        (getAssignedCarrierRoom(creep)?.controller?.level ?? 0) > 2) {
       releasePickupReservation(creep);
       creep.suicide();
       return false;
