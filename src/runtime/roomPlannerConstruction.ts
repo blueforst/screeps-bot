@@ -30,6 +30,8 @@ const CONTROLLER_LINK_RANGE = 3;
 type PlannedLayout = { [structureType: string]: { x: number; y: number }[] };
 type TargetOverrideMap = Partial<Record<BuildableStructureConstant, number>>;
 
+const LAYOUT_WORK_POS = 'work_pos';
+
 const LINK_PRIORITY_STORAGE = 0;
 const LINK_PRIORITY_SOURCE = 1;
 const LINK_PRIORITY_OTHER = 2;
@@ -70,194 +72,16 @@ function shouldDelayMineralContainerPlacement(room: Room, x: number, y: number, 
   return controllerLevel < MINERAL_CONTAINER_MIN_RCL && isMineralAdjacentPosition(room, x, y);
 }
 
-function getContainerReferencePosition(room: Room): RoomPosition {
-  if (room.storage) {
-    return room.storage.pos;
-  }
-
-  const roomSpawn = getTickContextService().getPrimarySpawnByRoom(room.name);
-  if (roomSpawn) {
-    return roomSpawn.pos;
-  }
-
-  if (room.controller) {
-    return room.controller.pos;
-  }
-
-  return new RoomPosition(25, 25, room.name);
-}
-
-function getExistingSourceContainerPosition(source: Source): { x: number; y: number } | null {
-  const containers = source.pos.findInRange(FIND_STRUCTURES, 1, {
-    filter: (structure) => structure.structureType === STRUCTURE_CONTAINER,
-  }) as StructureContainer[];
-  if (containers.length > 0) {
-    return { x: containers[0].pos.x, y: containers[0].pos.y };
-  }
-
-  const sites = source.pos.findInRange(FIND_CONSTRUCTION_SITES, 1, {
-    filter: (site) => site.structureType === STRUCTURE_CONTAINER,
-  });
-  if (sites.length > 0) {
-    return { x: sites[0].pos.x, y: sites[0].pos.y };
-  }
-
-  return null;
-}
-
-function getValidSourceContainerPositions(
-  source: Source,
-  reserved: Set<string>,
-): { x: number; y: number }[] {
-  const terrain = source.room.getTerrain();
-  const result: { x: number; y: number }[] = [];
-
-  for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-    for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-      if (x === source.pos.x && y === source.pos.y) continue;
-      if (x < 1 || x > 48 || y < 1 || y > 48) continue;
-      if (terrain.get(x, y) === TERRAIN_MASK_WALL) continue;
-      if (reserved.has(`${x}:${y}`)) continue;
-
-      const position = new RoomPosition(x, y, source.room.name);
-      const structures = position.lookFor(LOOK_STRUCTURES);
-      if (
-        structures.some(
-          (s) =>
-            s.structureType !== STRUCTURE_CONTAINER &&
-            s.structureType !== STRUCTURE_ROAD &&
-            s.structureType !== STRUCTURE_RAMPART,
-        )
-      ) {
-        continue;
-      }
-
-      const sites = position.lookFor(LOOK_CONSTRUCTION_SITES);
-      if (sites.some((site) => site.structureType !== STRUCTURE_CONTAINER)) continue;
-
-      result.push({ x, y });
-    }
-  }
-
-  return result;
-}
-
-// Per-tick cache: room name → (source id → position)
-let _autoSourceMapTick = -1;
-const _autoSourceMapCache = new Map<string, Map<Id<Source>, { x: number; y: number }>>();
-
-/**
- * Run the MCF algorithm and return a definitive source-id → container-position mapping.
- * Using a map keyed by source ID prevents the "adjacent to both sources" ambiguity where
- * a position that's within range 1 of two different sources would otherwise be returned
- * for both when searching by adjacency alone.
- */
-function buildAutoSourceContainerMapping(
-  room: Room,
-  reserved: Set<string> = new Set(),
-): Map<Id<Source>, { x: number; y: number }> {
-  const referencePos = getContainerReferencePosition(room);
-  const result = new Map<Id<Source>, { x: number; y: number }>();
-
-  // Separate sources: those with existing containers (already placed/in-progress)
-  // vs those that still need a position assigned.
-  const needsAssignment: Source[] = [];
-  for (const source of room.find(FIND_SOURCES)) {
-    if (hasSourceAdjacentLink(source)) continue;
-
-    const existingPos = getExistingSourceContainerPosition(source);
-    if (existingPos) {
-      const key = `${existingPos.x}:${existingPos.y}`;
-      if (!reserved.has(key)) {
-        result.set(source.id, existingPos);
-        reserved.add(key);
-      } else {
-        // Two sources adjacent to the same container; this source needs a fresh position.
-        needsAssignment.push(source);
-      }
-    } else {
-      needsAssignment.push(source);
-    }
-  }
-
-  // Most-constrained-first: each round, pick the source with the fewest remaining
-  // valid positions so it gets first choice. This prevents a source with many options
-  // from accidentally occupying the only tile available to a tightly-enclosed source.
-  while (needsAssignment.length > 0) {
-    const withOptions = needsAssignment.map((source) => ({
-      source,
-      options: getValidSourceContainerPositions(source, reserved),
-    }));
-
-    withOptions.sort((a, b) => a.options.length - b.options.length);
-
-    const { source, options } = withOptions[0];
-    needsAssignment.splice(needsAssignment.indexOf(source), 1);
-
-    if (options.length === 0) continue;
-
-    const best = options.reduce((a, b) => {
-      const scoreA = new RoomPosition(a.x, a.y, room.name).getRangeTo(referencePos);
-      const scoreB = new RoomPosition(b.x, b.y, room.name).getRangeTo(referencePos);
-      return scoreA <= scoreB ? a : b;
-    });
-
-    result.set(source.id, best);
-    reserved.add(`${best.x}:${best.y}`);
-  }
-
-  return result;
-}
-
-function getAutoSourceContainerMappingCached(room: Room): Map<Id<Source>, { x: number; y: number }> {
-  if (Game.time !== _autoSourceMapTick) {
-    _autoSourceMapCache.clear();
-    _autoSourceMapTick = Game.time;
-  }
-  if (!_autoSourceMapCache.has(room.name)) {
-    _autoSourceMapCache.set(room.name, buildAutoSourceContainerMapping(room));
-  }
-  return _autoSourceMapCache.get(room.name)!;
-}
-
-function getAutoSourceContainerCandidates(
-  room: Room,
-  reserved: Set<string> = new Set(),
-): { x: number; y: number }[] {
-  const mapping = buildAutoSourceContainerMapping(room, reserved);
-  return Array.from(mapping.values());
-}
 
 function getContainerPlannedPositions(room: Room, layout: PlannedLayout, controllerLevel: number): { x: number; y: number }[] {
-  const reservedByLayout = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((p) => `${p.x}:${p.y}`));
-  const merged = [...(layout[STRUCTURE_CONTAINER] ?? []), ...getAutoSourceContainerCandidates(room, reservedByLayout)];
   const plannedLinkPositions = new Set((layout[STRUCTURE_LINK] ?? []).map((pos) => `${pos.x}:${pos.y}`));
-  const seen = new Set<string>();
-  const result: { x: number; y: number }[] = [];
-
-  for (const pos of merged) {
+  return (layout[STRUCTURE_CONTAINER] ?? []).filter((pos) => {
     const key = `${pos.x}:${pos.y}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-
-    if (plannedLinkPositions.has(key)) {
-      continue;
-    }
-
-    if (shouldSkipSourceContainerPlacement(room, pos.x, pos.y)) {
-      continue;
-    }
-
-    if (shouldDelayMineralContainerPlacement(room, pos.x, pos.y, controllerLevel)) {
-      continue;
-    }
-
-    result.push(pos);
-  }
-
-  return result;
+    if (plannedLinkPositions.has(key)) return false;
+    if (shouldSkipSourceContainerPlacement(room, pos.x, pos.y)) return false;
+    if (shouldDelayMineralContainerPlacement(room, pos.x, pos.y, controllerLevel)) return false;
+    return true;
+  });
 }
 
 function getAutoExtractorCandidates(room: Room): { x: number; y: number }[] {
@@ -683,6 +507,53 @@ function runProtoControllerLinkContainerManagement(room: Room, layout: PlannedLa
   }
 }
 
+/** Called once when a room plan is saved.  Places a temporary container at each
+ *  source work position that has a planned link but no planned container.  The
+ *  container gives harvesters a stable work tile until the link is built. */
+export function placeProtoSourceContainersForRoom(roomName: string): void {
+  const room = Game.rooms[roomName];
+  if (!room) return;
+  const layout = Memory.data?.roomPlanner?.[roomName]?.layout;
+  if (!layout) return;
+
+  const workPositions: { x: number; y: number }[] = layout[LAYOUT_WORK_POS] ?? [];
+  const layoutContainerKeys = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((c) => `${c.x}:${c.y}`));
+
+  for (const source of room.find(FIND_SOURCES)) {
+    const workPos = workPositions.find(
+      (wp) => Math.abs(wp.x - source.pos.x) <= 1 && Math.abs(wp.y - source.pos.y) <= 1,
+    );
+    if (!workPos) continue;
+    if (layoutContainerKeys.has(`${workPos.x}:${workPos.y}`)) continue;
+    if (hasSourceAdjacentLink(source) || hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_LINK)) continue;
+    if (hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_CONTAINER)) continue;
+
+    const code = room.createConstructionSite(workPos.x, workPos.y, STRUCTURE_CONTAINER);
+    if (code === OK) {
+      console.log(`[roomPlanner] ${roomName} placed proto-source container at (${workPos.x}, ${workPos.y})`);
+    }
+  }
+}
+
+/** Runs in the periodic construction loop.  Destroys the proto-source container
+ *  once its link has been built (or is under construction). */
+function runProtoSourceContainerTeardown(room: Room, layout: PlannedLayout): void {
+  const workPositions: { x: number; y: number }[] = layout[LAYOUT_WORK_POS] ?? [];
+  const layoutContainerKeys = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((c) => `${c.x}:${c.y}`));
+
+  for (const source of room.find(FIND_SOURCES)) {
+    const workPos = workPositions.find(
+      (wp) => Math.abs(wp.x - source.pos.x) <= 1 && Math.abs(wp.y - source.pos.y) <= 1,
+    );
+    if (!workPos) continue;
+    if (layoutContainerKeys.has(`${workPos.x}:${workPos.y}`)) continue;
+
+    if (hasSourceAdjacentLink(source) || hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_LINK)) {
+      destroyContainerAt(room, workPos);
+    }
+  }
+}
+
 function queueMissingPlannedRamparts(
   room: Room,
   layout: PlannedLayout,
@@ -742,25 +613,41 @@ function queueMissingPlannedRamparts(
 export function getSourceContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
   const layout = Memory.data?.roomPlanner?.[roomName]?.layout;
   if (!layout) return [];
-
   const room = Game.rooms[roomName];
   if (!room) return [];
-
   const sources = room.find(FIND_SOURCES);
-  return (layout[STRUCTURE_CONTAINER] ?? []).filter((pos) =>
+
+  // Containers explicitly planned (no link at source).
+  const fromContainers = (layout[STRUCTURE_CONTAINER] ?? []).filter((pos) =>
     sources.some((s) => Math.abs(pos.x - s.pos.x) <= 1 && Math.abs(pos.y - s.pos.y) <= 1),
   );
+
+  // Work positions for sources that have a planned link (proto container lives here).
+  const containerKeys = new Set(fromContainers.map((p) => `${p.x}:${p.y}`));
+  const fromWorkPos = (layout[LAYOUT_WORK_POS] ?? []).filter((wp) => {
+    if (containerKeys.has(`${wp.x}:${wp.y}`)) return false;
+    return sources.some((s) => Math.abs(wp.x - s.pos.x) <= 1 && Math.abs(wp.y - s.pos.y) <= 1);
+  });
+
+  return [...fromContainers, ...fromWorkPos];
 }
 
 export function getPlannedSourceContainerPos(source: Source): RoomPosition | null {
-  if (!Memory.data?.roomPlanner?.[source.room.name]?.layout) return null;
+  const layout = Memory.data?.roomPlanner?.[source.room.name]?.layout;
+  if (!layout) return null;
 
-  // Use the MCF mapping keyed by source ID.  This avoids the ambiguity that arises when
-  // two sources are close together and one source's container tile is within range 1 of
-  // both sources — a simple adjacency scan would incorrectly return the wrong source's
-  // position. The cached mapping runs at most once per room per tick.
-  const pos = getAutoSourceContainerMappingCached(source.room).get(source.id);
-  return pos ? new RoomPosition(pos.x, pos.y, source.room.name) : null;
+  // Container explicitly in layout (autoplanner chose no link for this source).
+  const containerPos = (layout[STRUCTURE_CONTAINER] ?? []).find(
+    (c) => Math.abs(c.x - source.pos.x) <= 1 && Math.abs(c.y - source.pos.y) <= 1,
+  );
+  if (containerPos) return new RoomPosition(containerPos.x, containerPos.y, source.room.name);
+
+  // Source has a planned link — the autoplanner recorded a work_pos instead.
+  // A proto container is placed there until the link is built.
+  const workPos = (layout[LAYOUT_WORK_POS] ?? []).find(
+    (wp) => Math.abs(wp.x - source.pos.x) <= 1 && Math.abs(wp.y - source.pos.y) <= 1,
+  );
+  return workPos ? new RoomPosition(workPos.x, workPos.y, source.room.name) : null;
 }
 
 export function runRoomPlannerConstruction(): void {
@@ -795,6 +682,7 @@ export function runRoomPlannerConstruction(): void {
         const saved = savePlannerForRoom(room.name);
         if (saved) {
           roomPlan = Memory.data?.roomPlanner?.[room.name];
+          placeProtoSourceContainersForRoom(room.name);
           console.log(`[roomPlanner] ${room.name} regenerated missing layout`);
         }
       }
@@ -807,18 +695,7 @@ export function runRoomPlannerConstruction(): void {
     const controllerLevel = room.controller?.level ?? 0;
     const layout = roomPlan.layout;
 
-    // Persist auto-detected source container positions into the layout so they
-    // are stable and inspectable, instead of being recomputed every 100 ticks.
-    // Pass existing layout positions as reserved so two sources never pick the same tile.
-    const existingKeys = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((p) => `${p.x}:${p.y}`));
-    const autoSourceContainers = getAutoSourceContainerCandidates(room, new Set(existingKeys));
-    if (autoSourceContainers.length > 0) {
-      const newEntries = autoSourceContainers.filter((p) => !existingKeys.has(`${p.x}:${p.y}`));
-      if (newEntries.length > 0) {
-        layout[STRUCTURE_CONTAINER] = [...(layout[STRUCTURE_CONTAINER] ?? []), ...newEntries];
-        Memory.data!.roomPlanner![room.name].layout = layout;
-      }
-    }
+    runProtoSourceContainerTeardown(room, layout);
     runProtoStorageManagement(room, layout, controllerLevel);
     runProtoControllerLinkContainerManagement(room, layout, controllerLevel);
 

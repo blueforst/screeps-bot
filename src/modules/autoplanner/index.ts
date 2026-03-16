@@ -56,14 +56,6 @@ export function runAutoPlannerByFlag(): void {
     }
   }
 
-  const saveFlag = Game.flags.SP;
-  if (saveFlag) {
-    const roomName = saveFlag.pos.roomName;
-    if (plannerModule.savePlanToMemory(roomName)) {
-      saveFlag.remove();
-    }
-  }
-
   Object.values(Game.flags)
     .filter((flag) => flag.name === "VP" || flag.name.startsWith("VP_"))
     .forEach((flag) => {
