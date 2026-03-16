@@ -13,7 +13,7 @@ import {
 } from "@/runtime/energyPickupReservation";
 import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "@/runtime/carrierTaskBoard";
 import { isStorageReceiverLink } from "@/runtime/linkControl";
-import { getPlannedStoragePos, getProtoStorageContainer } from "@/runtime/roomPlannerConstruction";
+import { getPlannedStoragePos, getPlannedControllerLinkPos, getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
@@ -53,6 +53,11 @@ function isProtoStorageContainer(structure: StructureContainer): boolean {
   return !!plannedPos && structure.pos.isEqualTo(plannedPos);
 }
 
+function isProtoControllerLinkContainer(structure: StructureContainer): boolean {
+  const plannedPos = getPlannedControllerLinkPos(structure.room);
+  return !!plannedPos && structure.pos.isEqualTo(plannedPos);
+}
+
 function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeStorage?: boolean }): CarrierPickupTarget[] {
   return measureCreepDecision(() => {
     const roomContext = getTickContextService().getRoomContext(creep.room);
@@ -61,7 +66,8 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeSto
     const structures = allStructures.filter(
       (structure): structure is StructureContainer | StructureLink =>
         ((structure.structureType === STRUCTURE_CONTAINER &&
-            !isProtoStorageContainer(structure as StructureContainer)) ||
+            !isProtoStorageContainer(structure as StructureContainer) &&
+            !isProtoControllerLinkContainer(structure as StructureContainer)) ||
           (structure.structureType === STRUCTURE_LINK &&
             isStorageReceiverLink(structure as StructureLink) &&
             !isControllerAdjacentLink(structure as StructureLink))) &&
@@ -117,7 +123,8 @@ function isCarrierPickupTarget(
   }
 
   if (structureType === STRUCTURE_CONTAINER) {
-    return !isProtoStorageContainer(target as StructureContainer);
+    return !isProtoStorageContainer(target as StructureContainer) &&
+      !isProtoControllerLinkContainer(target as StructureContainer);
   }
 
   if (structureType === STRUCTURE_LINK) {
@@ -575,45 +582,59 @@ export const carrierRole: RoleFactory = () => ({
       const assignedRoom = getAssignedCarrierRoom(creep);
       const protoContainer = assignedRoom ? getProtoStorageContainer(assignedRoom) : null;
       const protoTarget = protoContainer && protoContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ? protoContainer : null;
-      const storageTarget = assignedRoom?.storage || assignedRoom?.terminal || protoTarget;
+      const protoLinkContainer = assignedRoom ? getProtoControllerLinkContainer(assignedRoom) : null;
+      const protoLinkTarget = protoLinkContainer && protoLinkContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ? protoLinkContainer : null;
+      const storageStruct = assignedRoom?.storage;
+      const terminalStruct = assignedRoom?.terminal;
+      const storageTarget =
+        (storageStruct && storageStruct.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ? storageStruct : null) ||
+        (terminalStruct && terminalStruct.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ? terminalStruct : null) ||
+        protoTarget ||
+        protoLinkTarget;
+
       if (!storageTarget) {
-        // RCL 1/2: container not yet built — drop on the ground at the planned storage position
-        const controllerLevel = assignedRoom?.controller?.level ?? 0;
-        if (controllerLevel <= 2 && assignedRoom) {
-          const plannedPos = getPlannedStoragePos(assignedRoom);
-          if (plannedPos) {
-            if (creep.pos.getRangeTo(plannedPos) === 0) {
-              measureCreepIntent(() => creep.drop(RESOURCE_ENERGY));
-              if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
-                delete creep.memory.carrierStorageOnlyMode;
-                clearPostTransferPlan(creep);
-                return true;
+        const hasAnyProtoContainer = !!protoContainer || !!protoLinkContainer;
+        if (!storageStruct && !terminalStruct && !hasAnyProtoContainer) {
+          // No storage and no proto-container built yet — drop at planned storage position
+          if (assignedRoom) {
+            const plannedPos = getPlannedStoragePos(assignedRoom);
+            if (plannedPos) {
+              if (creep.pos.getRangeTo(plannedPos) === 0) {
+                measureCreepIntent(() => creep.drop(RESOURCE_ENERGY));
+                if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
+                  delete creep.memory.carrierStorageOnlyMode;
+                  clearPostTransferPlan(creep);
+                  return true;
+                }
+                return false;
               }
+              moveToTarget(creep, plannedPos, 0);
               return false;
             }
-            moveToTarget(creep, plannedPos, 0);
-            return false;
           }
+          return false;
         }
-        return false;
-      }
-
-      const code = measureCreepIntent(() => creep.transfer(storageTarget, RESOURCE_ENERGY));
-      if (code === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, storageTarget);
-        return false;
-      }
-      if (code !== OK) {
-        return false;
-      }
-
-      if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
+        // Storage/container exists but is full — clear mode and fall through to find a demand target
         delete creep.memory.carrierStorageOnlyMode;
         clearPostTransferPlan(creep);
-        return true;
-      }
+      } else {
+        const code = measureCreepIntent(() => creep.transfer(storageTarget, RESOURCE_ENERGY));
+        if (code === ERR_NOT_IN_RANGE) {
+          moveToTarget(creep, storageTarget);
+          return false;
+        }
+        if (code !== OK) {
+          return false;
+        }
 
-      return false;
+        if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
+          delete creep.memory.carrierStorageOnlyMode;
+          clearPostTransferPlan(creep);
+          return true;
+        }
+
+        return false;
+      }
     }
 
     let target = getPlannedDeliveryTarget(creep);

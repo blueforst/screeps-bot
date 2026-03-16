@@ -588,6 +588,49 @@ export function getProtoStorageContainer(room: Room): StructureContainer | null 
   return containers.length > 0 ? containers[0] : null;
 }
 
+function getControllerLinkPosFromLayout(room: Room, layout: PlannedLayout): { x: number; y: number } | null {
+  const controllerPos = room.controller?.pos;
+  if (!controllerPos) return null;
+  for (const pos of layout[STRUCTURE_LINK] ?? []) {
+    if (new RoomPosition(pos.x, pos.y, room.name).getRangeTo(controllerPos) <= CONTROLLER_LINK_RANGE) {
+      return pos;
+    }
+  }
+  return null;
+}
+
+function isControllerLinkNearStorage(controllerLinkPos: { x: number; y: number }, layout: PlannedLayout, roomName: string): boolean {
+  const storagePlannedPos = layout[STRUCTURE_STORAGE]?.[0];
+  if (!storagePlannedPos) return false;
+  const storageRoomPos = new RoomPosition(storagePlannedPos.x, storagePlannedPos.y, roomName);
+  const controllerRoomPos = new RoomPosition(controllerLinkPos.x, controllerLinkPos.y, roomName);
+  return storageRoomPos.getRangeTo(controllerRoomPos) <= 5;
+}
+
+export function getPlannedControllerLinkPos(room: Room): RoomPosition | null {
+  if (room.storage) return null;
+  const layout = Memory.data?.roomPlanner?.[room.name]?.layout;
+  if (!layout) return null;
+  const pos = getControllerLinkPosFromLayout(room, layout);
+  if (!pos) return null;
+  if (isControllerLinkNearStorage(pos, layout, room.name)) return null;
+  return new RoomPosition(pos.x, pos.y, room.name);
+}
+
+export function getProtoControllerLinkContainer(room: Room): StructureContainer | null {
+  if (room.storage) return null;
+  const layout = Memory.data?.roomPlanner?.[room.name]?.layout;
+  if (!layout) return null;
+  const pos = getControllerLinkPosFromLayout(room, layout);
+  if (!pos) return null;
+  if (isControllerLinkNearStorage(pos, layout, room.name)) return null;
+  const position = new RoomPosition(pos.x, pos.y, room.name);
+  const containers = position.lookFor(LOOK_STRUCTURES).filter(
+    (s) => s.structureType === STRUCTURE_CONTAINER,
+  ) as StructureContainer[];
+  return containers.length > 0 ? containers[0] : null;
+}
+
 function runProtoStorageManagement(room: Room, layout: PlannedLayout, controllerLevel: number): void {
   const storagePos = layout[STRUCTURE_STORAGE]?.[0];
   if (!storagePos) return;
@@ -609,6 +652,34 @@ function runProtoStorageManagement(room: Room, layout: PlannedLayout, controller
   const code = room.createConstructionSite(storagePos.x, storagePos.y, STRUCTURE_CONTAINER);
   if (code === OK) {
     console.log(`[roomPlanner] ${room.name} placed proto-storage container at (${storagePos.x}, ${storagePos.y})`);
+  }
+}
+
+function runProtoControllerLinkContainerManagement(room: Room, layout: PlannedLayout, controllerLevel: number): void {
+  const pos = getControllerLinkPosFromLayout(room, layout);
+  if (!pos) return;
+
+  // If within range 5 of storage position, skip — shared with proto-storage container
+  if (isControllerLinkNearStorage(pos, layout, room.name)) return;
+
+  // Remove when real storage exists, RCL4 is reached, or a link is already being built there
+  if (room.storage || canBuildAtControllerLevel(STRUCTURE_STORAGE, controllerLevel) ||
+      hasStructureOrSiteAt(room, pos.x, pos.y, STRUCTURE_LINK)) {
+    destroyContainerAt(room, pos);
+    return;
+  }
+
+  // Don't place if container already exists or is under construction
+  if (hasStructureOrSiteAt(room, pos.x, pos.y, STRUCTURE_CONTAINER)) return;
+
+  // Only place after RCL2 extensions are complete (same timing as proto-storage container)
+  if (controllerLevel < 2) return;
+  const extTarget = Math.min(5, getPlannedCount(layout, STRUCTURE_EXTENSION), getAllowedCount(STRUCTURE_EXTENSION, 2));
+  if (!isComplete(room, STRUCTURE_EXTENSION, extTarget)) return;
+
+  const code = room.createConstructionSite(pos.x, pos.y, STRUCTURE_CONTAINER);
+  if (code === OK) {
+    console.log(`[roomPlanner] ${room.name} placed proto-controller-link container at (${pos.x}, ${pos.y})`);
   }
 }
 
@@ -749,6 +820,7 @@ export function runRoomPlannerConstruction(): void {
       }
     }
     runProtoStorageManagement(room, layout, controllerLevel);
+    runProtoControllerLinkContainerManagement(room, layout, controllerLevel);
 
     const { allowedTypes, targetOverrides } = getBuildPolicy(room, layout, controllerLevel);
 
