@@ -37,8 +37,14 @@ function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>, t
   cleanupConfigsByPrefix(roomName, "worker", validConfigNames, tickContext);
 }
 
-function cleanupCarrierConfigs(roomName: string, validConfigNames: Set<string>, tickContext: TickContextService): void {
-  cleanupConfigsByPrefix(roomName, "carrier", validConfigNames, tickContext);
+function cleanupCarrierConfigs(roomName: string, validConfigNames: Set<string>): void {
+  const creepConfigs = getCreepConfigService();
+  const configs = creepConfigs.list(`${roomName}:carrier:`);
+  for (const configName of Object.keys(configs)) {
+    if (!validConfigNames.has(configName)) {
+      creepConfigs.remove(configName);
+    }
+  }
 }
 
 function isSourceRoleConfigName(roomName: string, configName: string): boolean {
@@ -103,7 +109,7 @@ export function bootstrapRooms(): void {
         upsertConfig(configName, "carrier", [], room.name);
       }
     }
-    cleanupCarrierConfigs(room.name, expectedConfigNames, tickContext);
+    cleanupCarrierConfigs(room.name, expectedConfigNames);
 
     for (const configName of expectedConfigNames) {
       if (configName.startsWith(`${room.name}:worker:`)) {
