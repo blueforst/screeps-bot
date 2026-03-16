@@ -1,5 +1,5 @@
 import { runAutoPlannerByFlag, savePlannerForRoom } from "@/modules/autoplanner";
-import { placeProtoSourceContainersForRoom } from "@/runtime/roomPlannerConstruction";
+import { runProtoSourceContainerManagement } from "@/runtime/roomPlannerConstruction";
 import { runColonizationByFlag } from "@/runtime/colonization";
 import { runCrossShardColonizationByFlag } from "@/runtime/crossShardColonization";
 import { runRescueByFlag } from "@/runtime/rescue";
@@ -10,7 +10,7 @@ function runSavePlannerByFlag(): void {
   if (!saveFlag) return;
   const roomName = saveFlag.pos.roomName;
   if (savePlannerForRoom(roomName)) {
-    placeProtoSourceContainersForRoom(roomName);
+    runProtoSourceContainerManagement(roomName);
     saveFlag.remove();
   }
 }

@@ -459,8 +459,8 @@ function runProtoStorageManagement(room: Room, layout: PlannedLayout, controller
   const storagePos = layout[STRUCTURE_STORAGE]?.[0];
   if (!storagePos) return;
 
-  // Remove if real storage exists or we've reached the RCL where storage can be built (RCL4)
-  if (room.storage || canBuildAtControllerLevel(STRUCTURE_STORAGE, controllerLevel)) {
+  // Destroy before storage construction begins (RCL4), so the tile is free for the storage site.
+  if (canBuildAtControllerLevel(STRUCTURE_STORAGE, controllerLevel)) {
     destroyContainerAt(room, storagePos);
     return;
   }
@@ -507,10 +507,14 @@ function runProtoControllerLinkContainerManagement(room: Room, layout: PlannedLa
   }
 }
 
-/** Called once when a room plan is saved.  Places a temporary container at each
- *  source work position that has a planned link but no planned container.  The
- *  container gives harvesters a stable work tile until the link is built. */
-export function placeProtoSourceContainersForRoom(roomName: string): void {
+/** Manages proto-source containers: places a temporary container at each source
+ *  work position that has a planned link but no planned container, and destroys
+ *  it once the link is built.  Placement is gated on the first tower being
+ *  complete so workers prioritise the tower over source containers.
+ *
+ *  Called both from the periodic construction loop and immediately after a plan
+ *  is saved (for rooms where the tower is already built). */
+export function runProtoSourceContainerManagement(roomName: string): void {
   const room = Game.rooms[roomName];
   if (!room) return;
   const layout = Memory.data?.roomPlanner?.[roomName]?.layout;
@@ -518,28 +522,7 @@ export function placeProtoSourceContainersForRoom(roomName: string): void {
 
   const workPositions: { x: number; y: number }[] = layout[LAYOUT_WORK_POS] ?? [];
   const layoutContainerKeys = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((c) => `${c.x}:${c.y}`));
-
-  for (const source of room.find(FIND_SOURCES)) {
-    const workPos = workPositions.find(
-      (wp) => Math.abs(wp.x - source.pos.x) <= 1 && Math.abs(wp.y - source.pos.y) <= 1,
-    );
-    if (!workPos) continue;
-    if (layoutContainerKeys.has(`${workPos.x}:${workPos.y}`)) continue;
-    if (hasSourceAdjacentLink(source) || hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_LINK)) continue;
-    if (hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_CONTAINER)) continue;
-
-    const code = room.createConstructionSite(workPos.x, workPos.y, STRUCTURE_CONTAINER);
-    if (code === OK) {
-      console.log(`[roomPlanner] ${roomName} placed proto-source container at (${workPos.x}, ${workPos.y})`);
-    }
-  }
-}
-
-/** Runs in the periodic construction loop.  Destroys the proto-source container
- *  once its link has been built (or is under construction). */
-function runProtoSourceContainerTeardown(room: Room, layout: PlannedLayout): void {
-  const workPositions: { x: number; y: number }[] = layout[LAYOUT_WORK_POS] ?? [];
-  const layoutContainerKeys = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((c) => `${c.x}:${c.y}`));
+  const towerReady = countExisting(room, STRUCTURE_TOWER) > 0;
 
   for (const source of room.find(FIND_SOURCES)) {
     const workPos = workPositions.find(
@@ -550,6 +533,11 @@ function runProtoSourceContainerTeardown(room: Room, layout: PlannedLayout): voi
 
     if (hasSourceAdjacentLink(source) || hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_LINK)) {
       destroyContainerAt(room, workPos);
+    } else if (towerReady && !hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_CONTAINER)) {
+      const code = room.createConstructionSite(workPos.x, workPos.y, STRUCTURE_CONTAINER);
+      if (code === OK) {
+        console.log(`[roomPlanner] ${roomName} placed proto-source container at (${workPos.x}, ${workPos.y})`);
+      }
     }
   }
 }
@@ -682,7 +670,7 @@ export function runRoomPlannerConstruction(): void {
         const saved = savePlannerForRoom(room.name);
         if (saved) {
           roomPlan = Memory.data?.roomPlanner?.[room.name];
-          placeProtoSourceContainersForRoom(room.name);
+          runProtoSourceContainerManagement(room.name);
           console.log(`[roomPlanner] ${room.name} regenerated missing layout`);
         }
       }
@@ -695,7 +683,7 @@ export function runRoomPlannerConstruction(): void {
     const controllerLevel = room.controller?.level ?? 0;
     const layout = roomPlan.layout;
 
-    runProtoSourceContainerTeardown(room, layout);
+    runProtoSourceContainerManagement(room.name);
     runProtoStorageManagement(room, layout, controllerLevel);
     runProtoControllerLinkContainerManagement(room, layout, controllerLevel);
 

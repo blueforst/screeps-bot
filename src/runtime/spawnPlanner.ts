@@ -410,6 +410,32 @@ function ensureEmergencyCarrier(spawn: StructureSpawn): void {
   spawnMaxCarrierRaw(roomName);
 }
 
+/**
+ * RCL1 with zero creeps in the room: only queue one harvester and skip
+ * everything else (carrier, workers, etc.) so the very first creep to
+ * land is always a harvester, not a carrier.
+ */
+function tryQueueInitialHarvester(
+  spawn: StructureSpawn,
+  configs: Record<string, CreepConfig>,
+  context: SpawnPlanningContext,
+): boolean {
+  const room = spawn.room;
+  if ((room.controller?.level ?? 0) !== 1) return false;
+  if (getTickContextService().getCreepsByRoom(room.name).length > 0) return false;
+
+  const harvesterEntry = Object.entries(configs).find(
+    ([, cfg]) => cfg.roomName === room.name && cfg.role === "harvester",
+  );
+  if (!harvesterEntry) return false;
+
+  const [configName, config] = harvesterEntry;
+  if (!isConfigQueued(spawn, configName)) {
+    queueMissingConfig(spawn, configName, config, context);
+  }
+  return true;
+}
+
 export function scheduleSpawnTasks(): void {
   const tickContext = getTickContextService();
   const planningContext = createSpawnPlanningContext();
@@ -421,13 +447,28 @@ export function scheduleSpawnTasks(): void {
     }
   }
 
-  for (const spawn of spawnByRoom.values()) {
-    ensureEmergencyCarrier(spawn);
+  const configs = getCreepConfigService().list();
+
+  // RCL1 rooms with no creeps get exactly one harvester queued; skip all other logic.
+  const initialHarvesterRooms = new Set<string>();
+  for (const [roomName, spawn] of spawnByRoom) {
+    if (tryQueueInitialHarvester(spawn, configs, planningContext)) {
+      initialHarvesterRooms.add(roomName);
+    }
   }
 
-  const configs = getCreepConfigService().list();
+  for (const spawn of spawnByRoom.values()) {
+    if (!initialHarvesterRooms.has(spawn.room.name)) {
+      ensureEmergencyCarrier(spawn);
+    }
+  }
+
   for (const [configName, config] of Object.entries(configs)) {
     if (!config.roomName) {
+      continue;
+    }
+
+    if (initialHarvesterRooms.has(config.roomName)) {
       continue;
     }
 
