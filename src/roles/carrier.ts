@@ -48,6 +48,11 @@ function isDroppedAtPlannedStoragePos(resource: Resource): boolean {
   return !!plannedPos && resource.pos.isEqualTo(plannedPos);
 }
 
+function isProtoStorageContainer(structure: StructureContainer): boolean {
+  const plannedPos = getPlannedStoragePos(structure.room);
+  return !!plannedPos && structure.pos.isEqualTo(plannedPos);
+}
+
 function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeStorage?: boolean }): CarrierPickupTarget[] {
   return measureCreepDecision(() => {
     const roomContext = getTickContextService().getRoomContext(creep.room);
@@ -55,7 +60,8 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeSto
     const allStructures = roomContext?.getStructures() || [];
     const structures = allStructures.filter(
       (structure): structure is StructureContainer | StructureLink =>
-        (structure.structureType === STRUCTURE_CONTAINER ||
+        ((structure.structureType === STRUCTURE_CONTAINER &&
+            !isProtoStorageContainer(structure as StructureContainer)) ||
           (structure.structureType === STRUCTURE_LINK &&
             isStorageReceiverLink(structure as StructureLink) &&
             !isControllerAdjacentLink(structure as StructureLink))) &&
@@ -111,7 +117,7 @@ function isCarrierPickupTarget(
   }
 
   if (structureType === STRUCTURE_CONTAINER) {
-    return true;
+    return !isProtoStorageContainer(target as StructureContainer);
   }
 
   if (structureType === STRUCTURE_LINK) {
