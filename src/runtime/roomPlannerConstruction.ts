@@ -384,6 +384,12 @@ function destroyContainerAt(room: Room, pos: { x: number; y: number }): void {
   for (const container of containers) {
     container.destroy();
   }
+  const sites = position.lookFor(LOOK_CONSTRUCTION_SITES).filter(
+    (s) => s.structureType === STRUCTURE_CONTAINER,
+  );
+  for (const site of sites) {
+    site.remove();
+  }
 }
 
 export function getPlannedStoragePos(room: Room): RoomPosition | null {
@@ -523,6 +529,7 @@ export function runProtoSourceContainerManagement(roomName: string): void {
   const workPositions: { x: number; y: number }[] = layout[LAYOUT_WORK_POS] ?? [];
   const layoutContainerKeys = new Set((layout[STRUCTURE_CONTAINER] ?? []).map((c) => `${c.x}:${c.y}`));
   const towerReady = countExisting(room, STRUCTURE_TOWER) > 0;
+  const controllerLevel = room.controller?.level ?? 0;
 
   for (const source of room.find(FIND_SOURCES)) {
     const workPos = workPositions.find(
@@ -531,7 +538,12 @@ export function runProtoSourceContainerManagement(roomName: string): void {
     if (!workPos) continue;
     if (layoutContainerKeys.has(`${workPos.x}:${workPos.y}`)) continue;
 
-    if (hasSourceAdjacentLink(source) || hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_LINK)) {
+    // Destroy proto-container when the link is built, or when RCL has reached the point
+    // where source links can be built (clearing the tile so the construction planner can
+    // place the link site).  Do NOT use hasStructureOrSiteAt(…, STRUCTURE_LINK) here —
+    // that check returns true for any non-overlay structure including the container itself,
+    // which would cause the proto-container to be destroyed immediately after construction.
+    if (hasSourceAdjacentLink(source) || canBuildAtControllerLevel(STRUCTURE_LINK, controllerLevel)) {
       destroyContainerAt(room, workPos);
     } else if (towerReady && !hasStructureOrSiteAt(room, workPos.x, workPos.y, STRUCTURE_CONTAINER)) {
       const code = room.createConstructionSite(workPos.x, workPos.y, STRUCTURE_CONTAINER);
