@@ -775,15 +775,11 @@ function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abando
 
     const targetRoom = Game.rooms[task.targetRoom];
     if (targetRoom) {
-      const myUsername = getMyUsername();
-      const hasHostileReservation =
-        !!targetRoom.controller?.reservation &&
-        (!myUsername || targetRoom.controller.reservation.username !== myUsername);
       const hasInvaderCore =
         targetRoom.find(FIND_HOSTILE_STRUCTURES, {
           filter: (structure) => structure.structureType === STRUCTURE_INVADER_CORE,
         }).length > 0;
-      task.mode = hasHostileReservation || hasInvaderCore ? "npcStronghold" : "normal";
+      task.mode = hasInvaderCore ? "npcStronghold" : "normal";
       task.scoutedAt = Game.time;
     }
 
