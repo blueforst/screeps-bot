@@ -18,6 +18,11 @@ import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeS
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
 
+interface CarrierPickupOptions {
+  includeStorage?: boolean;
+  includeProtoStorage?: boolean;
+}
+
 function isEmergencyResponseCarrier(creep: Creep): boolean {
   const configName = creep.memory.configName;
   if (!configName) {
@@ -58,7 +63,7 @@ function isProtoControllerLinkContainer(structure: StructureContainer): boolean 
   return !!plannedPos && structure.pos.isEqualTo(plannedPos);
 }
 
-function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeStorage?: boolean }): CarrierPickupTarget[] {
+function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPickupOptions): CarrierPickupTarget[] {
   return measureCreepDecision(() => {
     const roomContext = getTickContextService().getRoomContext(creep.room);
     const dropped = (roomContext?.getDroppedEnergyResources() || []).filter(r => !isDroppedAtPlannedStoragePos(r));
@@ -66,7 +71,7 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeSto
     const structures = allStructures.filter(
       (structure): structure is StructureContainer | StructureLink =>
         ((structure.structureType === STRUCTURE_CONTAINER &&
-            !isProtoStorageContainer(structure as StructureContainer) &&
+            (options?.includeProtoStorage || !isProtoStorageContainer(structure as StructureContainer)) &&
             !isProtoControllerLinkContainer(structure as StructureContainer)) ||
           (structure.structureType === STRUCTURE_LINK &&
             isStorageReceiverLink(structure as StructureLink) &&
@@ -103,7 +108,7 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: { includeSto
 
 function isCarrierPickupTarget(
   target: Resource | AnyStoreStructure | Tombstone | Ruin,
-  options?: { includeStorage?: boolean },
+  options?: CarrierPickupOptions,
 ): target is CarrierPickupTarget {
   if (isDroppedResourceTarget(target)) {
     return !isDroppedAtPlannedStoragePos(target);
@@ -123,7 +128,7 @@ function isCarrierPickupTarget(
   }
 
   if (structureType === STRUCTURE_CONTAINER) {
-    return !isProtoStorageContainer(target as StructureContainer) &&
+    return (options?.includeProtoStorage || !isProtoStorageContainer(target as StructureContainer)) &&
       !isProtoControllerLinkContainer(target as StructureContainer);
   }
 
@@ -135,7 +140,7 @@ function isCarrierPickupTarget(
   return false;
 }
 
-function pickupEnergyForCarrier(creep: Creep, options?: { includeStorage?: boolean }): { picked: boolean; outOfRange: boolean } {
+function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): { picked: boolean; outOfRange: boolean } {
   const desiredAmount = creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0;
 
   let sourceTarget = getReservedPickupTarget(creep);
@@ -205,6 +210,10 @@ function pickupEnergyForCarrier(creep: Creep, options?: { includeStorage?: boole
   }
 
   return { picked: withdrawCode === OK, outOfRange: false };
+}
+
+function isSpawnOrExtensionTarget(target: AnyStoreStructure | null): boolean {
+  return !!target && (target.structureType === STRUCTURE_SPAWN || target.structureType === STRUCTURE_EXTENSION);
 }
 
 function setPostTransferPlan(
@@ -523,6 +532,7 @@ export const carrierRole: RoleFactory = () => ({
 
     if (energyDemandTarget) {
       delete creep.memory.carrierStorageOnlyMode;
+      const includeProtoStorage = isSpawnOrExtensionTarget(energyDemandTarget);
 
       if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep) &&
           (getAssignedCarrierRoom(creep)?.controller?.level ?? 0) > 2) {
@@ -534,6 +544,7 @@ export const carrierRole: RoleFactory = () => ({
 
       pickupEnergyForCarrier(creep, {
         includeStorage: emergencyResponseMode,
+        includeProtoStorage,
       });
       const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
       if (hasEnergy) {

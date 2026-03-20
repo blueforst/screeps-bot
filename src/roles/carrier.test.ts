@@ -18,8 +18,31 @@ jest.mock("@/roles/shared", () => ({
   moveToTarget: jest.fn(),
 }));
 
+jest.mock("@/runtime/roomPlannerConstruction", () => ({
+  getPlannedStoragePos: jest.fn(() => null),
+  getPlannedControllerLinkPos: jest.fn(() => null),
+  getProtoStorageContainer: jest.fn(() => null),
+  getProtoControllerLinkContainer: jest.fn(() => null),
+}));
+
 const { getEnergyStoreTarget } = jest.requireMock("@/roles/energyTargets") as {
   getEnergyStoreTarget: jest.Mock;
+};
+
+const {
+  getReservedPickupTarget,
+  reservePickupTarget,
+} = jest.requireMock("@/runtime/energyPickupReservation") as {
+  getReservedPickupTarget: jest.Mock;
+  reservePickupTarget: jest.Mock;
+};
+
+const {
+  getProtoStorageContainer,
+  getProtoControllerLinkContainer,
+} = jest.requireMock("@/runtime/roomPlannerConstruction") as {
+  getProtoStorageContainer: jest.Mock;
+  getProtoControllerLinkContainer: jest.Mock;
 };
 
 type RuntimeGlobal = typeof global & {
@@ -53,27 +76,27 @@ function createCreep(room: Room): Creep {
   } as unknown as Creep;
 }
 
-function createRoom(name = "W1N1"): Room {
+function createRoom(name = "W1N1", options: { level?: number; storage?: StructureStorage | null; terminal?: StructureTerminal | null } = {}): Room {
   const room = {
     name,
-    controller: { my: true, level: 6 } as StructureController,
+    controller: { my: true, level: options.level ?? 6 } as StructureController,
     find: () => [],
-    terminal: {
+    terminal: options.terminal === undefined ? {
       id: `${name}-terminal`,
       structureType: STRUCTURE_TERMINAL,
       store: {
         getUsedCapacity: () => 0,
         getFreeCapacity: () => 10000,
       },
-    } as unknown as StructureTerminal,
-    storage: {
+    } as unknown as StructureTerminal : options.terminal,
+    storage: options.storage === undefined ? {
       id: `${name}-storage`,
       structureType: STRUCTURE_STORAGE,
       store: {
         getUsedCapacity: () => 0,
         getFreeCapacity: () => 10000,
       },
-    } as unknown as StructureStorage,
+    } as unknown as StructureStorage : options.storage,
   } as unknown as Room;
 
   Game.rooms[name] = room;
@@ -86,6 +109,14 @@ describe("carrierRole mineral hauling", () => {
     Game.time += 1;
     Memory.rooms = {};
     getEnergyStoreTarget.mockReset();
+    getReservedPickupTarget.mockReset();
+    getReservedPickupTarget.mockReturnValue(null);
+    reservePickupTarget.mockReset();
+    reservePickupTarget.mockReturnValue(false);
+    getProtoStorageContainer.mockReset();
+    getProtoStorageContainer.mockReturnValue(null);
+    getProtoControllerLinkContainer.mockReset();
+    getProtoControllerLinkContainer.mockReturnValue(null);
   });
 
   it("picks mineral board tasks when there is no energy demand target", () => {
@@ -148,6 +179,94 @@ describe("carrierRole mineral hauling", () => {
 
     expect(creep.withdraw).not.toHaveBeenCalled();
     expect(creep.memory.synthesisCarrierTaskId).toBeUndefined();
+    expect(switched).toBe(false);
+  });
+
+  it("fills proto storage container before proto controller container in storage-only mode", () => {
+    const room = createRoom("W1N0A", { level: 3, storage: null, terminal: null });
+    const protoStorage = {
+      id: "proto-storage-1",
+      structureType: STRUCTURE_CONTAINER,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: { getFreeCapacity: () => 500 },
+    } as unknown as StructureContainer;
+    const protoController = {
+      id: "proto-controller-1",
+      structureType: STRUCTURE_CONTAINER,
+      pos: { x: 12, y: 12, roomName: room.name },
+      store: { getFreeCapacity: () => 500 },
+    } as unknown as StructureContainer;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "W1N0A:carrier:0", carrierStorageOnlyMode: true },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === undefined || resource === RESOURCE_ENERGY ? 100 : 0),
+        getFreeCapacity: () => 700,
+      },
+    } as unknown as Creep;
+    getProtoStorageContainer.mockReturnValue(protoStorage);
+    getProtoControllerLinkContainer.mockReturnValue(protoController);
+
+    const done = carrierRole().target?.(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(protoStorage, RESOURCE_ENERGY);
+    expect(creep.transfer).not.toHaveBeenCalledWith(protoController, RESOURCE_ENERGY);
+    expect(done).toBe(false);
+  });
+
+  it("can withdraw from proto storage container when spawn or extension demand exists", () => {
+    const room = createRoom("W1N0B", { level: 3, storage: null, terminal: null });
+    const protoStorage = {
+      id: "proto-storage-2",
+      structureType: STRUCTURE_CONTAINER,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: { getUsedCapacity: () => 300, getFreeCapacity: () => 1700 },
+    } as unknown as StructureContainer;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "W1N0B:carrier:0" },
+    } as unknown as Creep;
+    getProtoStorageContainer.mockReturnValue(protoStorage);
+    getEnergyStoreTarget.mockReturnValue({
+      id: "spawn-1",
+      structureType: STRUCTURE_SPAWN,
+      store: { getFreeCapacity: () => 300 },
+      pos: { x: 5, y: 5, roomName: room.name },
+    });
+    getReservedPickupTarget.mockReturnValue(protoStorage);
+    reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === protoStorage.id);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(protoStorage, RESOURCE_ENERGY);
+    expect(switched).toBe(false);
+  });
+
+  it("does not withdraw from proto storage container when only tower demand exists", () => {
+    const room = createRoom("W1N0C", { level: 3, storage: null, terminal: null });
+    const protoStorage = {
+      id: "proto-storage-3",
+      structureType: STRUCTURE_CONTAINER,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: { getUsedCapacity: () => 300, getFreeCapacity: () => 1700 },
+    } as unknown as StructureContainer;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "W1N0C:carrier:0" },
+    } as unknown as Creep;
+    getProtoStorageContainer.mockReturnValue(protoStorage);
+    getEnergyStoreTarget.mockReturnValue({
+      id: "tower-1",
+      structureType: STRUCTURE_TOWER,
+      store: { getFreeCapacity: () => 300 },
+      pos: { x: 5, y: 5, roomName: room.name },
+    });
+    getReservedPickupTarget.mockReturnValue(protoStorage);
+    reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id !== protoStorage.id);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(protoStorage, RESOURCE_ENERGY);
     expect(switched).toBe(false);
   });
 
