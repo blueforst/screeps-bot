@@ -1,5 +1,13 @@
 import { getEnergyStoreTarget, pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 
+jest.mock("@/runtime/roomPlannerConstruction", () => ({
+  getProtoStorageContainer: jest.fn(() => null),
+}));
+
+const { getProtoStorageContainer } = jest.requireMock("@/runtime/roomPlannerConstruction") as {
+  getProtoStorageContainer: jest.Mock;
+};
+
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
 };
@@ -36,7 +44,8 @@ function createRoom(options: {
   terminal?: StructureTerminal | null;
 } = {}): Room {
   const name = options.name ?? "W1N1";
-  const memory = (Memory.rooms[name] = {} as RoomMemory);
+  const memory = {} as RoomMemory;
+  Memory.rooms[name] = memory;
 
   return {
     name,
@@ -89,6 +98,8 @@ describe("energyTargets", () => {
   beforeEach(() => {
     resetRuntimeServices();
     Game.time += 1;
+    getProtoStorageContainer.mockReset();
+    getProtoStorageContainer.mockReturnValue(null);
   });
 
   it("prefers spawns and extensions over lower-priority energy sinks", () => {
@@ -219,5 +230,33 @@ describe("energyTargets", () => {
     expect(creep.memory.energyPickupTargetKind).toBeUndefined();
     expect(creep.memory.energyPickupRoomName).toBeUndefined();
     expect(Memory.rooms[room.name].pickupReservations?.[container.id]?.claims.Worker1).toBeUndefined();
+  });
+
+  it("skips proto storage containers when workers choose pickup targets", () => {
+    const protoStorage = {
+      id: "proto-storage-1",
+      structureType: STRUCTURE_CONTAINER,
+      pos: createPos(3),
+      store: createStore(200, 2000),
+    } as unknown as StructureContainer;
+    const normalContainer = {
+      id: "container-2",
+      structureType: STRUCTURE_CONTAINER,
+      pos: createPos(5),
+      store: createStore(200, 2000),
+    } as unknown as StructureContainer;
+    const room = createRoom({
+      structures: [protoStorage as unknown as Structure<StructureConstant>, normalContainer as unknown as Structure<StructureConstant>],
+    });
+    Game.rooms[room.name] = room;
+    getProtoStorageContainer.mockReturnValue(protoStorage);
+    const creep = createCreep(room);
+
+    expect(pickupEnergyFromPreferredTarget(creep)).toEqual({
+      picked: true,
+      outOfRange: false,
+    });
+    expect(creep.withdraw).toHaveBeenCalledWith(normalContainer, RESOURCE_ENERGY);
+    expect(creep.withdraw).not.toHaveBeenCalledWith(protoStorage, RESOURCE_ENERGY);
   });
 });

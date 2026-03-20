@@ -6,6 +6,7 @@ import {
 } from "@/runtime/energyPickupReservation";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { isReceiverLink } from "@/runtime/linkControl";
+import { getProtoStorageContainer } from "@/runtime/roomPlannerConstruction";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { moveToTarget } from "@/roles/shared";
 
@@ -151,11 +152,13 @@ function getPreferredEnergyPickupCandidates(creep: Creep): EnergyPickupTarget[] 
     const roomContext = getTickContextService().getRoomContext(creep.room);
     const dropped = roomContext?.getDroppedEnergyResources() || [];
     const structures = roomContext?.getStructures() || [];
+    const protoStorageContainer = getProtoStorageContainer(creep.room);
     const structureCandidates = structures.filter(
       (structure): structure is AnyStoreStructure =>
         (structure.structureType === STRUCTURE_CONTAINER ||
           structure.structureType === STRUCTURE_STORAGE ||
           (structure.structureType === STRUCTURE_LINK && isReceiverLink(structure as StructureLink))) &&
+        structure.id !== protoStorageContainer?.id &&
         (structure as AnyStoreStructure).store.getUsedCapacity(RESOURCE_ENERGY) > 0,
     );
     const tombstones = roomContext?.getEnergyTombstones() || [];
