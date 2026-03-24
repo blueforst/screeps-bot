@@ -28,14 +28,14 @@ export const claimerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?
 
     const code = measureCreepIntent(() => creep.claimController(controller));
     if (code === ERR_NOT_IN_RANGE) {
-      moveToTarget(creep, controller);
+      moveToTarget(creep, controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
       return false;
     }
 
     if (code === ERR_INVALID_TARGET && controller.reservation && !controller.my) {
       const attackCode = measureCreepIntent(() => creep.attackController(controller));
       if (attackCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, controller);
+        moveToTarget(creep, controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
       }
     }
 
