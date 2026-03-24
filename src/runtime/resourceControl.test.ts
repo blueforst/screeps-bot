@@ -17,9 +17,23 @@ function createRoom(options: {
   name: string;
   storageResources?: Partial<Record<ResourceConstant, number>>;
   terminalResources?: Partial<Record<ResourceConstant, number>>;
+  nativeMineralType?: MineralConstant;
+  hasExtractor?: boolean;
 }): Room {
   const storageResources = options.storageResources ?? {};
   const terminalResources = options.terminalResources ?? {};
+  const nativeMineral = options.nativeMineralType
+    ? ({
+        id: `${options.name}-mineral`,
+        mineralType: options.nativeMineralType,
+      } as Mineral)
+    : null;
+  const extractor = nativeMineral && options.hasExtractor !== false
+    ? ({
+        id: `${options.name}-extractor`,
+        structureType: STRUCTURE_EXTRACTOR,
+      } as StructureExtractor)
+    : null;
   return {
     name: options.name,
     controller: { my: true, level: 8 } as StructureController,
@@ -58,10 +72,10 @@ function createRoom(options: {
     } as unknown as StructureTerminal,
     find(type: FindConstant, opts?: { filter?: (structure: Structure) => boolean }) {
       if (type === FIND_MINERALS) {
-        return [];
+        return nativeMineral ? [nativeMineral] : [];
       }
       if (type === FIND_STRUCTURES) {
-        const structures: Structure[] = [];
+        const structures: Structure[] = extractor ? [extractor] : [];
         return opts?.filter ? structures.filter((structure) => opts.filter?.(structure)) : structures;
       }
       return [];
@@ -348,5 +362,92 @@ describe("runResourceControl terminal feed tasks", () => {
         ],
       },
     });
+  });
+
+  it("stages native minerals above the 5000 threshold into the terminal before selling", () => {
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: true,
+        },
+      },
+    };
+    const room = createRoom({
+      name: "W9N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200000,
+        [RESOURCE_KEANIUM]: 6500,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 20000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => []);
+
+    runResourceControl();
+
+    expect(Memory.rooms?.[room.name]?.carrierTasks).toMatchObject({
+      [`resourceControl:terminal_feed:${room.name}:${RESOURCE_KEANIUM}`]: {
+        type: "terminal_feed",
+        steps: [
+          {
+            resource: RESOURCE_KEANIUM,
+            fromKind: "storage",
+            toKind: "terminal",
+            amount: 1500,
+          },
+        ],
+      },
+    });
+  });
+
+  it("sells native minerals above the 5000 threshold even before the room reaches export state", () => {
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: true,
+        },
+      },
+    };
+    const room = createRoom({
+      name: "W9N2",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200000,
+        [RESOURCE_KEANIUM]: 5000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_KEANIUM]: 1500,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_KEANIUM) {
+        return [
+          {
+            id: "buy-order-1",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_KEANIUM,
+            price: 0.8,
+            amount: 1500,
+            roomName: "W8N8",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("buy-order-1", 1500, room.name);
+    expect(Memory.runtime?.resourceControl?.lastMarketActions).toContain(
+      `market-sell:${room.name}:${RESOURCE_KEANIUM}=1500:price=0.800:cost=200`,
+    );
   });
 });

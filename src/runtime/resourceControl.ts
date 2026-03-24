@@ -22,6 +22,7 @@ interface ResourceControlRoomConfig {
 interface ResourceControlMarketConfig {
   enabled: boolean;
   emergencyBuyEnabled: boolean;
+  nativeMineralAutoSellThreshold: number;
   maxDealsPerRun: number;
   minDealAmount: number;
   maxDealAmount: number;
@@ -151,6 +152,7 @@ const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
 const DEFAULT_MARKET_CONFIG: ResourceControlMarketConfig = {
   enabled: true,
   emergencyBuyEnabled: true,
+  nativeMineralAutoSellThreshold: 5_000,
   maxDealsPerRun: 1,
   minDealAmount: 1_000,
   maxDealAmount: 10_000,
@@ -283,6 +285,12 @@ function normalizeMarketConfig(value: unknown): ResourceControlMarketConfig {
   return {
     enabled: normalizeBoolean(raw.enabled, DEFAULT_MARKET_CONFIG.enabled),
     emergencyBuyEnabled: normalizeBoolean(raw.emergencyBuyEnabled, DEFAULT_MARKET_CONFIG.emergencyBuyEnabled),
+    nativeMineralAutoSellThreshold: normalizeNumber(
+      raw.nativeMineralAutoSellThreshold,
+      DEFAULT_MARKET_CONFIG.nativeMineralAutoSellThreshold,
+      0,
+      1_000_000,
+    ),
     maxDealsPerRun: normalizeNumber(raw.maxDealsPerRun, DEFAULT_MARKET_CONFIG.maxDealsPerRun, 1, 5),
     minDealAmount: normalizeNumber(raw.minDealAmount, DEFAULT_MARKET_CONFIG.minDealAmount, 100, 20_000),
     maxDealAmount: normalizeNumber(raw.maxDealAmount, DEFAULT_MARKET_CONFIG.maxDealAmount, 500, 50_000),
@@ -932,6 +940,42 @@ function getEnergySendFeeBudget(room: ResourceControlSnapshot, snapshots: Resour
   return Game.market.calcTransactionCost(amount, room.roomName, receiver.roomName);
 }
 
+function getNativeMineralAutoSellSurplus(
+  room: ResourceControlSnapshot,
+  nativeMineralAutoSellThreshold: number,
+): number {
+  if (!room.canMineNative || !room.nativeMineralType) {
+    return 0;
+  }
+
+  return Math.max(0, getStock(room, room.nativeMineralType) - nativeMineralAutoSellThreshold);
+}
+
+function getNativeMineralAutoSellTerminalTarget(
+  room: ResourceControlSnapshot,
+  marketCfg: ResourceControlMarketConfig,
+): number {
+  if (!marketCfg.enabled) {
+    return 0;
+  }
+
+  const surplus = getNativeMineralAutoSellSurplus(room, marketCfg.nativeMineralAutoSellThreshold);
+  if (surplus < marketCfg.minDealAmount) {
+    return 0;
+  }
+
+  const target = Math.min(surplus, marketCfg.maxDealAmount);
+  return target >= marketCfg.minDealAmount ? target : 0;
+}
+
+function getSellResourcesForRoom(room: ResourceControlSnapshot, marketCfg: ResourceControlMarketConfig): ResourceConstant[] {
+  if (!room.canMineNative || !room.nativeMineralType) {
+    return marketCfg.sellResources;
+  }
+
+  return [room.nativeMineralType, ...marketCfg.sellResources.filter((resource) => resource !== room.nativeMineralType)];
+}
+
 function getReservedTerminalEnergyForPendingSends(
   room: ResourceControlSnapshot,
   snapshots: ResourceControlSnapshot[],
@@ -969,7 +1013,7 @@ function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: Reso
   return createTerminalFeedTask(room, RESOURCE_ENERGY, desiredTerminalEnergy);
 }
 
-function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[]): string[] {
+function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: ResourceControlMarketConfig): string[] {
   const pendingByRoom = new Map<string, Map<ResourceConstant, number>>();
   for (const task of Object.values(ensureTaskStore())) {
     if (task.status !== "pending" || task.resource === RESOURCE_ENERGY) {
@@ -990,14 +1034,29 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[]): string[] {
       drafts.push(energyDraft);
     }
 
+    const desiredFeedByResource = new Map<ResourceConstant, number>();
     const roomPending = pendingByRoom.get(snapshot.roomName);
     if (roomPending) {
-      drafts.push(
-        ...Array.from(roomPending.entries())
-          .map(([resource, amount]) => createTerminalFeedTask(snapshot, resource, Math.min(snapshot.transferBatchSize, amount)))
-          .filter((draft): draft is CarrierTaskDraft => !!draft),
-      );
+      for (const [resource, amount] of roomPending.entries()) {
+        desiredFeedByResource.set(resource, Math.min(snapshot.transferBatchSize, amount));
+      }
     }
+
+    if (snapshot.nativeMineralType) {
+      const target = getNativeMineralAutoSellTerminalTarget(snapshot, marketCfg);
+      if (target > 0) {
+        desiredFeedByResource.set(
+          snapshot.nativeMineralType,
+          Math.max(desiredFeedByResource.get(snapshot.nativeMineralType) || 0, target),
+        );
+      }
+    }
+
+    drafts.push(
+      ...Array.from(desiredFeedByResource.entries())
+        .map(([resource, target]) => createTerminalFeedTask(snapshot, resource, target))
+        .filter((draft): draft is CarrierTaskDraft => !!draft),
+    );
 
     replaceCarrierTasksForProducerRoom(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, snapshot.roomName, drafts);
     if (drafts.length > 0) {
@@ -1258,7 +1317,12 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
   let dealsDone = 0;
 
   const exportRooms = snapshots
-    .filter((snapshot) => snapshot.state === "export" && snapshot.terminal.cooldown === 0)
+    .filter((snapshot) => snapshot.terminal.cooldown === 0)
+    .filter(
+      (snapshot) =>
+        snapshot.state === "export" ||
+        getNativeMineralAutoSellSurplus(snapshot, marketCfg.nativeMineralAutoSellThreshold) >= marketCfg.minDealAmount,
+    )
     .sort((left, right) => right.storageEnergy - left.storageEnergy);
 
   for (const room of exportRooms) {
@@ -1266,10 +1330,18 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
       break;
     }
 
-    for (const resource of marketCfg.sellResources) {
+    for (const resource of getSellResourcesForRoom(room, marketCfg)) {
+      const isNativeAutoSell = room.canMineNative && room.nativeMineralType === resource;
+      if (room.state !== "export" && !isNativeAutoSell) {
+        continue;
+      }
+
       const total = getStock(room, resource);
       const exportStart = resource === RESOURCE_ENERGY ? room.energyExportStart : room.mineralExportStart[resource] || 0;
-      const surplus = Math.max(0, total - exportStart);
+      const sellThreshold = isNativeAutoSell
+        ? Math.min(exportStart, marketCfg.nativeMineralAutoSellThreshold)
+        : exportStart;
+      const surplus = Math.max(0, total - sellThreshold);
       if (surplus < marketCfg.minDealAmount) {
         continue;
       }
@@ -1555,10 +1627,12 @@ export function runResourceControl(): void {
     return;
   }
 
+  const marketConfig = resolveMarketConfig();
+
   const terminalBusy = new Set<string>();
   const actions = applyInternalBalancing(snapshots, terminalBusy);
   const taskActions = executeTransferTasks(snapshots, terminalBusy, resolveTaskMaxPerRun());
-  const preloadActions = syncTerminalFeedTasks(snapshots);
-  const marketActions = applyMarketOps(snapshots, resolveMarketConfig());
+  const preloadActions = syncTerminalFeedTasks(snapshots, marketConfig);
+  const marketActions = applyMarketOps(snapshots, marketConfig);
   persistResourceControlState(snapshots, [...actions, ...taskActions, ...preloadActions], marketActions);
 }
