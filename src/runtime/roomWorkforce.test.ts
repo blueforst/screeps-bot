@@ -45,10 +45,11 @@ function createRoom(options: {
   minerals?: Mineral[];
 } = {}): Room {
   const name = options.name ?? "W1N1";
-  const memory = (Memory.rooms[name] = {
+  const memory = {
     workerConstructionTier: options.workerConstructionTier,
     tasks: options.tasks,
-  } as RoomMemory);
+  } as RoomMemory;
+  Memory.rooms[name] = memory;
   const sources = options.sources ?? [];
   const minerals = options.minerals ?? [];
   const constructionSites = Array.from({ length: options.constructionCount ?? 0 }, (_, index) => ({
@@ -188,6 +189,26 @@ describe("roomWorkforce", () => {
       "W1N1:mineralHarvester:mineral-ok",
       "W1N1:carrier:0",
       "W1N1:worker:0",
+    ]);
+  });
+
+  it("keeps two carriers at rcl3 before reducing to one at rcl4", () => {
+    const rcl3Room = createRoom({ name: "W1N3", level: 3, sources: [createSource("source-a", "W1N3")] });
+    const rcl4Room = createRoom({ name: "W1N4", level: 4, sources: [createSource("source-a", "W1N4")] });
+
+    expect(getExpectedManagedConfigNames(rcl3Room)).toEqual([
+      "W1N3:harvester:source-a",
+      "W1N3:carrier:0",
+      "W1N3:carrier:1",
+      "W1N3:worker:0",
+      "W1N3:worker:1",
+      "W1N3:worker:2",
+    ]);
+
+    expect(getExpectedManagedConfigNames(rcl4Room)).toEqual([
+      "W1N4:harvester:source-a",
+      "W1N4:carrier:0",
+      "W1N4:worker:0",
     ]);
   });
 });
