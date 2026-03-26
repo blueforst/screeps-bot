@@ -6,7 +6,7 @@ import {
 } from "@/runtime/energyPickupReservation";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { isReceiverLink } from "@/runtime/linkControl";
-import { getProtoStorageContainer } from "@/runtime/roomPlannerConstruction";
+import { getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { moveToTarget } from "@/roles/shared";
 
@@ -137,6 +137,12 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
 
     if (includeTerminal && targetRoom?.terminal && !excludeSet.has(targetRoom.terminal.id)) {
       return targetRoom.terminal;
+    }
+
+    const protoControllerContainer = targetRoom ? getProtoControllerLinkContainer(targetRoom) : null;
+    if (protoControllerContainer && !excludeSet.has(protoControllerContainer.id) &&
+        protoControllerContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+      return protoControllerContainer;
     }
 
     return null;

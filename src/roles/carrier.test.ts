@@ -214,6 +214,38 @@ describe("carrierRole mineral hauling", () => {
     expect(done).toBe(false);
   });
 
+  it("falls back to the proto controller container when proto storage is full in storage-only mode", () => {
+    const room = createRoom("W1N0AA", { level: 3, storage: null, terminal: null });
+    const protoStorage = {
+      id: "proto-storage-full-1",
+      structureType: STRUCTURE_CONTAINER,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: { getFreeCapacity: () => 0 },
+    } as unknown as StructureContainer;
+    const protoController = {
+      id: "proto-controller-2",
+      structureType: STRUCTURE_CONTAINER,
+      pos: { x: 12, y: 12, roomName: room.name },
+      store: { getFreeCapacity: () => 500 },
+    } as unknown as StructureContainer;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "W1N0AA:carrier:0", carrierStorageOnlyMode: true },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === undefined || resource === RESOURCE_ENERGY ? 100 : 0),
+        getFreeCapacity: () => 700,
+      },
+    } as unknown as Creep;
+    getProtoStorageContainer.mockReturnValue(protoStorage);
+    getProtoControllerLinkContainer.mockReturnValue(protoController);
+
+    const done = carrierRole().target?.(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(protoController, RESOURCE_ENERGY);
+    expect(creep.transfer).not.toHaveBeenCalledWith(protoStorage, RESOURCE_ENERGY);
+    expect(done).toBe(false);
+  });
+
   it("can withdraw from proto storage container when spawn or extension demand exists", () => {
     const room = createRoom("W1N0B", { level: 3, storage: null, terminal: null });
     const protoStorage = {

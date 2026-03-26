@@ -2,10 +2,12 @@ import { getEnergyStoreTarget, pickupEnergyFromPreferredTarget } from "@/roles/e
 
 jest.mock("@/runtime/roomPlannerConstruction", () => ({
   getProtoStorageContainer: jest.fn(() => null),
+  getProtoControllerLinkContainer: jest.fn(() => null),
 }));
 
-const { getProtoStorageContainer } = jest.requireMock("@/runtime/roomPlannerConstruction") as {
+const { getProtoStorageContainer, getProtoControllerLinkContainer } = jest.requireMock("@/runtime/roomPlannerConstruction") as {
   getProtoStorageContainer: jest.Mock;
+  getProtoControllerLinkContainer: jest.Mock;
 };
 
 type RuntimeGlobal = typeof global & {
@@ -100,6 +102,8 @@ describe("energyTargets", () => {
     Game.time += 1;
     getProtoStorageContainer.mockReset();
     getProtoStorageContainer.mockReturnValue(null);
+    getProtoControllerLinkContainer.mockReset();
+    getProtoControllerLinkContainer.mockReturnValue(null);
   });
 
   it("prefers spawns and extensions over lower-priority energy sinks", () => {
@@ -189,6 +193,25 @@ describe("energyTargets", () => {
     const creep = createCreep(room);
 
     expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
+  });
+
+  it("falls back to the proto controller container when storage targets are unavailable", () => {
+    const protoController = {
+      id: "proto-controller-1",
+      structureType: STRUCTURE_CONTAINER,
+      pos: createPos(8),
+      store: createStore(200, 2000),
+    } as unknown as StructureContainer;
+    const room = createRoom({
+      storage: null,
+      terminal: null,
+      myStructures: [],
+    });
+    Game.rooms[room.name] = room;
+    getProtoControllerLinkContainer.mockReturnValue(protoController);
+    const creep = createCreep(room);
+
+    expect(getEnergyStoreTarget(creep)?.id).toBe(protoController.id);
   });
 
   it("clears stale reservation memory when renewing a reserved target fails", () => {
