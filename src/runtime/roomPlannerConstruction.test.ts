@@ -12,12 +12,14 @@ type MockSite = ConstructionSite & {
 };
 
 type MockStructure = Structure<StructureConstant> & {
+  my: boolean;
   pos: { x: number; y: number; roomName: string };
 };
 
 type MockRoom = Room & {
   __structures: MockStructure[];
   __sites: MockSite[];
+  __sources: Source[];
   __minerals: Mineral[];
   __siteAttempts: Array<{ x: number; y: number; structureType: BuildableStructureConstant }>;
 };
@@ -46,7 +48,15 @@ class MockRoomPosition {
     return [];
   }
 
-  public findInRange(type: FindConstant, range: number): Array<Source | Mineral> {
+  public getRangeTo(target: { x: number; y: number }): number {
+    return Math.max(Math.abs(target.x - this.x), Math.abs(target.y - this.y));
+  }
+
+  public findInRange(
+    type: FindConstant,
+    range: number,
+    opts?: { filter?: (value: any) => boolean },
+  ): Array<Source | Mineral | Structure<StructureConstant> | ConstructionSite> {
     const room = Game.rooms[this.roomName] as MockRoom | undefined;
     if (!room) {
       return [];
@@ -56,11 +66,25 @@ class MockRoomPosition {
       Math.max(Math.abs(x - this.x), Math.abs(y - this.y)) <= range;
 
     if (type === FIND_SOURCES) {
-      return room.find(FIND_SOURCES).filter((source) => isWithinRange(source.pos.x, source.pos.y));
+      const results = room.find(FIND_SOURCES).filter((source) => isWithinRange(source.pos.x, source.pos.y));
+      return opts?.filter ? results.filter((value) => opts.filter?.(value)) : results;
     }
 
     if (type === FIND_MINERALS) {
-      return room.find(FIND_MINERALS).filter((mineral) => isWithinRange(mineral.pos.x, mineral.pos.y));
+      const results = room.find(FIND_MINERALS).filter((mineral) => isWithinRange(mineral.pos.x, mineral.pos.y));
+      return opts?.filter ? results.filter((value) => opts.filter?.(value)) : results;
+    }
+
+    if (type === FIND_MY_STRUCTURES) {
+      const results = room.__structures.filter(
+        (structure) => structure.my && isWithinRange(structure.pos.x, structure.pos.y),
+      );
+      return opts?.filter ? results.filter((value) => opts.filter?.(value)) : results;
+    }
+
+    if (type === FIND_CONSTRUCTION_SITES) {
+      const results = room.__sites.filter((site) => isWithinRange(site.pos.x, site.pos.y));
+      return opts?.filter ? results.filter((value) => opts.filter?.(value)) : results;
     }
 
     return [];
@@ -78,18 +102,27 @@ function createStructure(
   y: number,
 ): MockStructure {
   return {
+    destroy: jest.fn(() => OK),
     structureType,
     my: true,
-    pos: { x, y, roomName: room.name },
+    pos: new MockRoomPosition(x, y, room.name),
     room,
   } as unknown as MockStructure;
+}
+
+function createSource(room: Room, x: number, y: number): Source {
+  return {
+    id: `source:${room.name}:${x}:${y}`,
+    room,
+    pos: new MockRoomPosition(x, y, room.name) as RoomPosition,
+  } as Source;
 }
 
 function createMineral(room: Room, x: number, y: number): Mineral {
   return {
     id: `mineral:${room.name}:${x}:${y}`,
     room,
-    pos: { x, y, roomName: room.name } as RoomPosition,
+    pos: new MockRoomPosition(x, y, room.name) as RoomPosition,
   } as Mineral;
 }
 
@@ -102,20 +135,23 @@ function createPlannedSite(
   return {
     id: `existing:${structureType}:${x}:${y}`,
     my: true,
+    remove: jest.fn(() => OK),
     structureType,
-    pos: { x, y, roomName: room.name },
+    pos: new MockRoomPosition(x, y, room.name),
     room,
-  } as MockSite;
+  } as unknown as MockSite;
 }
 
 function createRoom(options: {
   name?: string;
   level?: number;
   structures?: MockStructure[];
+  sources?: Source[];
   minerals?: Mineral[];
 } = {}): MockRoom {
   const name = options.name ?? "W1N1";
   const structures = [...(options.structures ?? [])];
+  const sources = [...(options.sources ?? [])];
   const minerals = [...(options.minerals ?? [])];
   const sites: MockSite[] = [];
   const siteAttempts: Array<{ x: number; y: number; structureType: BuildableStructureConstant }> = [];
@@ -125,9 +161,11 @@ function createRoom(options: {
     controller: {
       my: true,
       level: options.level ?? 6,
+      pos: new MockRoomPosition(25, 25, name),
     } as StructureController,
     __structures: structures,
     __sites: sites,
+    __sources: sources,
     __minerals: minerals,
     __siteAttempts: siteAttempts,
     find(type: FindConstant, opts?: { filter?: (value: any) => boolean }) {
@@ -138,7 +176,7 @@ function createRoom(options: {
       } else if (type === FIND_CONSTRUCTION_SITES) {
         results = this.__sites;
       } else if (type === FIND_SOURCES) {
-        results = [];
+        results = this.__sources;
       } else if (type === FIND_MINERALS) {
         results = this.__minerals;
       }
@@ -155,10 +193,11 @@ function createRoom(options: {
       const site = {
         id: `${structureType}:${x}:${y}:${this.__sites.length}`,
         my: true,
+        remove: jest.fn(() => OK),
         structureType,
-        pos: { x, y, roomName: this.name },
+        pos: new MockRoomPosition(x, y, this.name),
         room: this,
-      } as MockSite;
+      } as unknown as MockSite;
 
       this.__sites.push(site);
       (Game.constructionSites as Record<string, ConstructionSite>)[site.id] = site;
@@ -168,12 +207,13 @@ function createRoom(options: {
 
   room.__structures = structures;
   room.__sites = sites;
+  room.__sources = sources;
   room.__minerals = minerals;
   room.__siteAttempts = siteAttempts;
   return room;
 }
 
-function setRoomPlannerLayout(roomName: string, layout: Partial<Record<BuildableStructureConstant, PlannedPos[]>>): void {
+function setRoomPlannerLayout(roomName: string, layout: Partial<Record<string, PlannedPos[]>>): void {
   const clonedLayout = Object.fromEntries(
     Object.entries(layout).map(([structureType, positions]) => [
       structureType,
@@ -337,5 +377,62 @@ describe("runRoomPlannerConstruction extractor auto-placement", () => {
     runRoomPlannerConstruction();
 
     expect(Memory.data?.roomPlanner?.[room.name]?.layout[STRUCTURE_EXTRACTOR]).toEqual(savedBefore);
+  });
+});
+
+describe("runRoomPlannerConstruction proto container transitions", () => {
+  beforeAll(() => {
+    (global as RuntimeGlobal).RoomPosition = MockRoomPosition;
+  });
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time = 100;
+    Game.constructionSites = {} as Game["constructionSites"];
+    Memory.cfg = {
+      roomPlannerBuild: {
+        enabled: true,
+      },
+    };
+  });
+
+  it("does not treat a proto controller container as an existing link on the same tile", () => {
+    const room = createRoom({ name: "W2N1", level: 3 });
+    room.__structures.push(createStructure(room, STRUCTURE_SPAWN, 10, 10));
+    const controllerContainer = createStructure(room, STRUCTURE_CONTAINER, 25, 22) as MockStructure & {
+      destroy: jest.Mock;
+    };
+    room.__structures.push(controllerContainer);
+    Game.rooms[room.name] = room;
+
+    setRoomPlannerLayout(room.name, {
+      [STRUCTURE_STORAGE]: [{ x: 10, y: 10 }],
+      [STRUCTURE_LINK]: [{ x: 25, y: 22 }],
+    });
+
+    runRoomPlannerConstruction();
+
+    expect(controllerContainer.destroy).not.toHaveBeenCalled();
+  });
+
+  it("keeps proto source containers until a source link actually exists", () => {
+    const room = createRoom({ name: "W2N2", level: 5 });
+    room.__sources.push(createSource(room, 20, 20));
+    room.__structures.push(createStructure(room, STRUCTURE_SPAWN, 10, 10));
+    room.__structures.push(createStructure(room, STRUCTURE_TOWER, 11, 10));
+    const sourceContainer = createStructure(room, STRUCTURE_CONTAINER, 19, 20) as MockStructure & {
+      destroy: jest.Mock;
+    };
+    room.__structures.push(sourceContainer);
+    Game.rooms[room.name] = room;
+
+    setRoomPlannerLayout(room.name, {
+      [STRUCTURE_LINK]: [{ x: 18, y: 20 }],
+      work_pos: [{ x: 19, y: 20 }],
+    });
+
+    runRoomPlannerConstruction();
+
+    expect(sourceContainer.destroy).not.toHaveBeenCalled();
   });
 });
