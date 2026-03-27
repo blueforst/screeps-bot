@@ -1,4 +1,11 @@
-import { createResourceTransferTask, runSynthesisTaskPlanning } from "@/runtime/resourceControl";
+import {
+  countPendingIncomingResourceTransferTasksByRoom,
+  countPendingOutgoingResourceTransferTasksByRoom,
+  createResourceTransferTask,
+  getIncomingResourceTransferAmount,
+  getOutgoingResourceTransferAmount,
+} from "@/runtime/logistics/resourceTransferTasks";
+import { runSynthesisTaskPlanningCompatibility } from "@/runtime/synthesisCompatibilityPlanning";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import {
   pruneCarrierTasksForProducer,
@@ -393,39 +400,6 @@ function getResourceReserve(roomName: string, resource: ResourceConstant): numbe
   return typeof floor === "number" && Number.isFinite(floor) ? Math.max(0, Math.floor(floor)) : 0;
 }
 
-function getPendingIncomingAmount(roomName: string, resource: ResourceConstant): number {
-  const tasks = Memory.data?.resourceControl?.tasks || {};
-  let total = 0;
-  for (const task of Object.values(tasks)) {
-    if (task.status === "pending" && task.toRoomName === roomName && task.resource === resource) {
-      total += task.remainingAmount;
-    }
-  }
-  return total;
-}
-
-function getPendingOutgoingAmount(roomName: string, resource: ResourceConstant): number {
-  const tasks = Memory.data?.resourceControl?.tasks || {};
-  let total = 0;
-  for (const task of Object.values(tasks)) {
-    if (task.status === "pending" && task.fromRoomName === roomName && task.resource === resource) {
-      total += task.remainingAmount;
-    }
-  }
-  return total;
-}
-
-function getPendingOutgoingCount(roomName: string): number {
-  const tasks = Memory.data?.resourceControl?.tasks || {};
-  let count = 0;
-  for (const task of Object.values(tasks)) {
-    if (task.status === "pending" && task.fromRoomName === roomName) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
 function getBindingKey(targetRoomName: string, resource: ResourceConstant): string {
   return `${targetRoomName}:${resource}`;
 }
@@ -474,7 +448,7 @@ function selectDonor(
 
     const total = roomResourceAmount(room, resource);
     const reserve = getResourceReserve(room.name, resource);
-    const outgoing = getPendingOutgoingAmount(room.name, resource);
+    const outgoing = getOutgoingResourceTransferAmount(room.name, resource);
     const exportable = Math.max(0, total - reserve - outgoing);
     if (exportable <= 0) {
       continue;
@@ -489,7 +463,7 @@ function selectDonor(
     const scoreAmount = Math.max(1, Math.min(amount, sendable));
     const transferCost = Game.market.calcTransactionCost(scoreAmount, room.name, targetRoom.name);
     const transferCostRatio = transferCost / scoreAmount;
-    const queuePenalty = getPendingOutgoingCount(room.name) * 0.6;
+    const queuePenalty = countPendingOutgoingResourceTransferTasksByRoom(room.name) * 0.6;
     const stickyBonus = binding?.fromRoomName === room.name ? SYNTHESIS_BINDING_STICKY_BONUS : 0;
     const score = sendable / scoreAmount - transferCostRatio * 6 - queuePenalty + stickyBonus;
     candidates.push({ room, sendable, score });
@@ -834,15 +808,7 @@ function mergeDonorPriority(roomCfg: SynthesisRoomConfig, reactionPlan: Synthesi
 }
 
 function countPendingToRoom(roomName: string): number {
-  const tasks = Memory.data?.resourceControl?.tasks || {};
-  let count = 0;
-  for (const task of Object.values(tasks)) {
-    if (task.status === "pending" && task.toRoomName === roomName) {
-      count += 1;
-    }
-  }
-
-  return count;
+  return countPendingIncomingResourceTransferTasksByRoom(roomName);
 }
 
 function maybeGenerateSupplyTasks(
@@ -874,7 +840,7 @@ function maybeGenerateSupplyTasks(
       return sum + lab.store.getUsedCapacity(reagent);
     }, 0);
     const current = roomTransferableAmount(room, reagent) + bufferedInLabs;
-    const incoming = getPendingIncomingAmount(room.name, reagent);
+    const incoming = getIncomingResourceTransferAmount(room.name, reagent);
     const deficit = Math.max(0, needAmount - current - incoming);
     if (deficit <= 0) {
       continue;
@@ -1141,7 +1107,7 @@ export function runSynthesisControl(): void {
 
   if (!cfg.enabled) {
     pruneCarrierTasksForProducer(SYNTHESIS_CARRIER_TASK_PRODUCER, new Set());
-    const compatibilityActions = runSynthesisTaskPlanning();
+    const compatibilityActions = runSynthesisTaskPlanningCompatibility();
     if (!compatibilityActions) {
       return;
     }

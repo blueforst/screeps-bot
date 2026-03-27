@@ -1,5 +1,6 @@
 import { replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
-import { createResourceTransferTask, runResourceControl } from "@/runtime/resourceControl";
+import { createResourceTransferTask } from "@/runtime/logistics/resourceTransferTasks";
+import { runResourceControl } from "@/runtime/resourceControl";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;

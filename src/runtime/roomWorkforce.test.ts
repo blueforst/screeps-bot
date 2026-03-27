@@ -192,9 +192,10 @@ describe("roomWorkforce", () => {
     ]);
   });
 
-  it("keeps two carriers at rcl3 before reducing to one at rcl4", () => {
+  it("keeps two carriers through rcl4 before reducing to one at rcl5", () => {
     const rcl3Room = createRoom({ name: "W1N3", level: 3, sources: [createSource("source-a", "W1N3")] });
     const rcl4Room = createRoom({ name: "W1N4", level: 4, sources: [createSource("source-a", "W1N4")] });
+    const rcl5Room = createRoom({ name: "W1N5", level: 5, sources: [createSource("source-a", "W1N5")] });
 
     expect(getExpectedManagedConfigNames(rcl3Room)).toEqual([
       "W1N3:harvester:source-a",
@@ -208,7 +209,14 @@ describe("roomWorkforce", () => {
     expect(getExpectedManagedConfigNames(rcl4Room)).toEqual([
       "W1N4:harvester:source-a",
       "W1N4:carrier:0",
+      "W1N4:carrier:1",
       "W1N4:worker:0",
+    ]);
+
+    expect(getExpectedManagedConfigNames(rcl5Room)).toEqual([
+      "W1N5:harvester:source-a",
+      "W1N5:carrier:0",
+      "W1N5:worker:0",
     ]);
   });
 });

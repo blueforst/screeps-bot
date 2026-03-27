@@ -1,6 +1,7 @@
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
+import { cleanupResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
@@ -412,28 +413,7 @@ function cleanupCrossShardColonizationMemory(ownedRooms: Set<string>): number {
 }
 
 function cleanupResourceControlTaskMemory(ownedRooms: Set<string>): number {
-  const tasks = Memory.data?.resourceControl?.tasks;
-  if (!tasks) {
-    return 0;
-  }
-
-  let removed = 0;
-  for (const [taskId, task] of Object.entries(tasks)) {
-    const sourceOrTargetLost = !ownedRooms.has(task.fromRoomName) || !ownedRooms.has(task.toRoomName);
-    const terminalStale =
-      (task.status === "done" || task.status === "cancelled" || task.status === "failed") &&
-      Game.time - task.updatedAt > RESOURCE_CONTROL_TASK_TTL;
-    if (sourceOrTargetLost || terminalStale) {
-      delete tasks[taskId];
-      removed += 1;
-    }
-  }
-
-  if (Object.keys(tasks).length === 0 && Memory.data?.resourceControl) {
-    delete Memory.data.resourceControl;
-  }
-
-  return removed;
+  return cleanupResourceTransferTaskStore(ownedRooms, RESOURCE_CONTROL_TASK_TTL);
 }
 
 function cleanupCarrierTaskBoardMemory(ownedRooms: Set<string>): number {

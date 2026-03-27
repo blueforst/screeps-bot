@@ -1,5 +1,13 @@
 import { pruneCarrierTasksForProducer, replaceCarrierTasksForProducerRoom, type CarrierTaskDraft } from "@/runtime/carrierTaskBoard";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
+import {
+  countPendingOutgoingResourceTransferTasksByRoom,
+  createResourceTransferTask,
+  ensureResourceTransferTaskStore,
+  getIncomingResourceTransferAmount,
+  getOutgoingResourceTransferAmount,
+  getResourceTransferTaskListSorted,
+} from "@/runtime/logistics/resourceTransferTasks";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 type ResourceControlState = "survival" | "balanced" | "export";
@@ -33,17 +41,6 @@ interface ResourceControlMarketConfig {
   buyResources: ResourceConstant[];
 }
 
-interface ResourceControlSynthesisRoomConfig {
-  demands: ResourceThresholdMap;
-  donorRoomNames?: string[];
-}
-
-interface ResourceControlSynthesisConfig {
-  enabled: boolean;
-  maxGeneratedPerRun: number;
-  rooms: Record<string, ResourceControlSynthesisRoomConfig>;
-}
-
 interface SynthesisProducerBinding {
   fromRoomName: string;
   updatedAt: number;
@@ -52,7 +49,7 @@ interface SynthesisProducerBinding {
 
 type SynthesisBindingStore = Record<string, SynthesisProducerBinding>;
 
-interface ResourceControlSnapshot {
+export interface ResourceControlSnapshot {
   roomName: string;
   state: ResourceControlState;
   storageEnergy: number;
@@ -71,56 +68,15 @@ interface ResourceControlSnapshot {
   terminal: StructureTerminal;
 }
 
-type ResourceTransferTaskStatus = "pending" | "done" | "cancelled" | "failed";
-
-interface ResourceTransferTask {
-  id: string;
-  resource: ResourceConstant;
-  fromRoomName: string;
-  toRoomName: string;
-  amount: number;
-  remainingAmount: number;
-  status: ResourceTransferTaskStatus;
-  createdAt: number;
-  updatedAt: number;
-  reason?: string;
-  lastError?: string;
-}
-
-interface CreateResourceTransferTaskResult {
-  ok: true;
-  task: ResourceTransferTask;
-}
-
-interface CancelResourceTransferTaskResult {
-  ok: true;
-  taskId: string;
-  previousStatus: ResourceTransferTaskStatus;
-}
-
-interface ListResourceTransferTasksResult {
-  ok: true;
-  tasks: ResourceTransferTask[];
-}
-
 const DEFAULT_INTERVAL = 10;
 const MIN_INTERVAL = 5;
 const MAX_INTERVAL = 100;
 const DEFAULT_TASK_MAX_PER_RUN = 1;
 const MIN_TASK_MAX_PER_RUN = 1;
 const MAX_TASK_MAX_PER_RUN = 5;
-const DEFAULT_SYNTHESIS_MAX_GENERATED_PER_RUN = 2;
-const MIN_SYNTHESIS_MAX_GENERATED_PER_RUN = 0;
-const MAX_SYNTHESIS_MAX_GENERATED_PER_RUN = 10;
-const SYNTHESIS_BINDING_LEASE_TICKS = 200;
-const SYNTHESIS_BINDING_STICKY_BONUS = 5;
-const SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO = 1.2;
 const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";
 const RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY = 80;
 const RESOURCE_CONTROL_TERMINAL_OFFLOAD_PRIORITY = 90;
-
-let taskIdSequence = 0;
-let taskIdSequenceTick = -1;
 
 const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
   energyFloor: 120_000,
@@ -163,12 +119,6 @@ const DEFAULT_MARKET_CONFIG: ResourceControlMarketConfig = {
   },
   sellResources: DEFAULT_MARKET_SELL_RESOURCES,
   buyResources: BASE_MINERALS,
-};
-
-const DEFAULT_SYNTHESIS_CONFIG: ResourceControlSynthesisConfig = {
-  enabled: false,
-  maxGeneratedPerRun: DEFAULT_SYNTHESIS_MAX_GENERATED_PER_RUN,
-  rooms: {},
 };
 
 function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -305,40 +255,6 @@ function normalizeMarketConfig(value: unknown): ResourceControlMarketConfig {
   };
 }
 
-function normalizeSynthesisConfig(value: unknown): ResourceControlSynthesisConfig {
-  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const roomsRaw = raw.rooms && typeof raw.rooms === "object" ? (raw.rooms as Record<string, unknown>) : {};
-  const rooms: Record<string, ResourceControlSynthesisRoomConfig> = {};
-
-  for (const [roomName, roomCfg] of Object.entries(roomsRaw)) {
-    if (!roomCfg || typeof roomCfg !== "object") {
-      continue;
-    }
-
-    const roomRecord = roomCfg as Record<string, unknown>;
-    const demands = normalizeResourceThresholdMap(roomRecord.demands, {}, 0, 1_000_000);
-    if (Object.keys(demands).length === 0) {
-      continue;
-    }
-
-    rooms[roomName] = {
-      demands,
-      donorRoomNames: normalizeRoomNameList(roomRecord.donorRoomNames),
-    };
-  }
-
-  return {
-    enabled: normalizeBoolean(raw.enabled, DEFAULT_SYNTHESIS_CONFIG.enabled),
-    maxGeneratedPerRun: normalizeNumber(
-      raw.maxGeneratedPerRun,
-      DEFAULT_SYNTHESIS_CONFIG.maxGeneratedPerRun,
-      MIN_SYNTHESIS_MAX_GENERATED_PER_RUN,
-      MAX_SYNTHESIS_MAX_GENERATED_PER_RUN,
-    ),
-    rooms,
-  };
-}
-
 function resolveRoomConfig(roomName: string): ResourceControlRoomConfig {
   const cfg = Memory.cfg?.resourceControl;
   const roomConfigRaw = cfg?.rooms ? cfg.rooms[roomName] : undefined;
@@ -354,188 +270,8 @@ function resolveTaskMaxPerRun(): number {
   return normalizeTaskMaxPerRun(Memory.cfg?.resourceControl?.taskMaxPerRun);
 }
 
-function resolveSynthesisConfig(): ResourceControlSynthesisConfig {
-  return normalizeSynthesisConfig(Memory.cfg?.resourceControl?.synthesis);
-}
-
-function getBindingKey(targetRoomName: string, resource: ResourceConstant): string {
-  return `${targetRoomName}:${resource}`;
-}
-
-function getSynthesisBindings(): SynthesisBindingStore {
-  return Memory.runtime?.resourceControl?.synthesisBindings || {};
-}
-
-function getActiveSynthesisBinding(
-  bindings: SynthesisBindingStore,
-  targetRoomName: string,
-  resource: ResourceConstant,
-): SynthesisProducerBinding | null {
-  const key = getBindingKey(targetRoomName, resource);
-  const binding = bindings[key];
-  if (!binding) {
-    return null;
-  }
-
-  if (binding.expiresAt < Game.time) {
-    delete bindings[key];
-    return null;
-  }
-
-  return binding;
-}
-
-function setSynthesisBinding(
-  bindings: SynthesisBindingStore,
-  targetRoomName: string,
-  resource: ResourceConstant,
-  fromRoomName: string,
-): void {
-  const key = getBindingKey(targetRoomName, resource);
-  bindings[key] = {
-    fromRoomName,
-    updatedAt: Game.time,
-    expiresAt: Game.time + SYNTHESIS_BINDING_LEASE_TICKS,
-  };
-}
-
-function ensureTaskStore(): Record<string, ResourceTransferTask> {
-  const data = getMemoryService().ensureData();
-  data.resourceControl = data.resourceControl || { tasks: {} };
-  data.resourceControl.tasks = data.resourceControl.tasks || {};
-  return data.resourceControl.tasks;
-}
-
-function getTaskListSorted(): ResourceTransferTask[] {
-  return Object.values(ensureTaskStore()).sort((left, right) => left.createdAt - right.createdAt);
-}
-
-function createTaskId(resource: ResourceConstant, fromRoomName: string, toRoomName: string): string {
-  if (taskIdSequenceTick !== Game.time) {
-    taskIdSequenceTick = Game.time;
-    taskIdSequence = 0;
-  }
-
-  taskIdSequence += 1;
-  return `${Game.time}:${taskIdSequence}:${resource}:${fromRoomName}->${toRoomName}`;
-}
-
-function normalizeTaskReason(reason?: string): string | undefined {
-  if (!reason) {
-    return undefined;
-  }
-
-  const trimmed = reason.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function findMergeablePendingTask(
-  tasks: Record<string, ResourceTransferTask>,
-  fromRoomName: string,
-  toRoomName: string,
-  resource: ResourceConstant,
-  reason?: string,
-): ResourceTransferTask | null {
-  for (const task of Object.values(tasks)) {
-    if (
-      task.status === "pending" &&
-      task.fromRoomName === fromRoomName &&
-      task.toRoomName === toRoomName &&
-      task.resource === resource &&
-      task.reason === reason
-    ) {
-      return task;
-    }
-  }
-
-  return null;
-}
-
-export function createResourceTransferTask(
-  fromRoomName: string,
-  toRoomName: string,
-  resource: ResourceConstant,
-  amount: number,
-  reason?: string,
-): CreateResourceTransferTaskResult | string {
-  if (!fromRoomName || !toRoomName) {
-    return "ERR_INVALID_ROOM";
-  }
-  if (fromRoomName === toRoomName) {
-    return "ERR_SAME_ROOM";
-  }
-  if (typeof resource !== "string" || resource.length === 0) {
-    return "ERR_INVALID_RESOURCE";
-  }
-  if (!RESOURCES_ALL.includes(resource as ResourceConstant)) {
-    return "ERR_INVALID_RESOURCE";
-  }
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return "ERR_INVALID_AMOUNT";
-  }
-
-  const normalizedAmount = Math.floor(amount);
-  if (normalizedAmount <= 0) {
-    return "ERR_INVALID_AMOUNT";
-  }
-  const normalizedReason = normalizeTaskReason(reason);
-  const store = ensureTaskStore();
-  const mergeTarget = findMergeablePendingTask(store, fromRoomName, toRoomName, resource, normalizedReason);
-  if (mergeTarget) {
-    mergeTarget.amount += normalizedAmount;
-    mergeTarget.remainingAmount += normalizedAmount;
-    mergeTarget.updatedAt = Game.time;
-    mergeTarget.lastError = undefined;
-    return {
-      ok: true,
-      task: mergeTarget,
-    };
-  }
-
-  const task: ResourceTransferTask = {
-    id: createTaskId(resource, fromRoomName, toRoomName),
-    resource,
-    fromRoomName,
-    toRoomName,
-    amount: normalizedAmount,
-    remainingAmount: normalizedAmount,
-    status: "pending",
-    createdAt: Game.time,
-    updatedAt: Game.time,
-    reason: normalizedReason,
-  };
-
-  store[task.id] = task;
-  return {
-    ok: true,
-    task,
-  };
-}
-
-export function cancelResourceTransferTask(taskId: string): CancelResourceTransferTaskResult | string {
-  const store = ensureTaskStore();
-  const task = store[taskId];
-  if (!task) {
-    return `ERR_TASK_NOT_FOUND:${taskId}`;
-  }
-
-  const previousStatus = task.status;
-  task.status = "cancelled";
-  task.updatedAt = Game.time;
-  task.lastError = "cancelled_by_command";
-
-  return {
-    ok: true,
-    taskId,
-    previousStatus,
-  };
-}
-
-export function listResourceTransferTasks(): ListResourceTransferTasksResult {
-  return {
-    ok: true,
-    tasks: getTaskListSorted(),
-  };
+export function getResourceControlSampleInterval(): number {
+  return normalizeInterval(Memory.cfg?.resourceControl?.sampleInterval);
 }
 
 function resolveState(storageEnergy: number, config: ResourceControlRoomConfig): ResourceControlState {
@@ -548,7 +284,7 @@ function resolveState(storageEnergy: number, config: ResourceControlRoomConfig):
   return "balanced";
 }
 
-function collectSnapshots(): ResourceControlSnapshot[] {
+export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
   const rooms = getTickContextService().getMyRooms().filter((room) => !!room.terminal);
 
   return rooms.map((room) => {
@@ -585,7 +321,7 @@ function getStock(snapshot: ResourceControlSnapshot, resource: ResourceConstant)
   return (snapshot.storage?.store.getUsedCapacity(resource) || 0) + snapshot.terminal.store.getUsedCapacity(resource);
 }
 
-function getRoomStock(room: Room, resource: ResourceConstant): number {
+export function getResourceControlRoomStock(room: Room, resource: ResourceConstant): number {
   let total = 0;
   if (room.storage) {
     total += room.storage.store.getUsedCapacity(resource);
@@ -751,7 +487,7 @@ function executeTransferTasks(
   );
   let executed = 0;
 
-  for (const task of getTaskListSorted()) {
+    for (const task of getResourceTransferTaskListSorted()) {
     if (executed >= maxPerRun) {
       break;
     }
@@ -901,7 +637,7 @@ function createTerminalOffloadTask(
 }
 
 function getPlannedEnergySendBatch(room: ResourceControlSnapshot): number {
-  const outgoingEnergy = getOutgoingPendingAmount(room.roomName, RESOURCE_ENERGY);
+  const outgoingEnergy = getOutgoingResourceTransferAmount(room.roomName, RESOURCE_ENERGY);
   if (outgoingEnergy > 0) {
     return Math.min(room.transferBatchSize, outgoingEnergy);
   }
@@ -918,7 +654,7 @@ function getEnergySendFeeBudget(room: ResourceControlSnapshot, snapshots: Resour
     return 0;
   }
 
-  const pendingEnergyTask = getTaskListSorted().find(
+  const pendingEnergyTask = getResourceTransferTaskListSorted().find(
     (task) => task.status === "pending" && task.fromRoomName === room.roomName && task.resource === RESOURCE_ENERGY,
   );
   if (pendingEnergyTask) {
@@ -1015,7 +751,7 @@ function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: Reso
 
 function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: ResourceControlMarketConfig): string[] {
   const pendingByRoom = new Map<string, Map<ResourceConstant, number>>();
-  for (const task of Object.values(ensureTaskStore())) {
+  for (const task of Object.values(ensureResourceTransferTaskStore())) {
     if (task.status !== "pending" || task.resource === RESOURCE_ENERGY) {
       continue;
     }
@@ -1068,27 +804,7 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: 
   return actions;
 }
 
-function getOutgoingPendingAmount(roomName: string, resource: ResourceConstant): number {
-  let total = 0;
-  for (const task of Object.values(ensureTaskStore())) {
-    if (task.status === "pending" && task.fromRoomName === roomName && task.resource === resource) {
-      total += task.remainingAmount;
-    }
-  }
-  return total;
-}
-
-function getIncomingPendingAmount(roomName: string, resource: ResourceConstant): number {
-  let total = 0;
-  for (const task of Object.values(ensureTaskStore())) {
-    if (task.status === "pending" && task.toRoomName === roomName && task.resource === resource) {
-      total += task.remainingAmount;
-    }
-  }
-  return total;
-}
-
-function getDonorAvailable(snapshot: ResourceControlSnapshot, resource: ResourceConstant): number {
+export function getResourceControlDonorAvailable(snapshot: ResourceControlSnapshot, resource: ResourceConstant): number {
   const total = getStock(snapshot, resource);
   if (resource === RESOURCE_ENERGY) {
     return Math.max(0, total - snapshot.energyTarget);
@@ -1096,161 +812,6 @@ function getDonorAvailable(snapshot: ResourceControlSnapshot, resource: Resource
 
   const floor = snapshot.mineralFloor[resource] || 0;
   return Math.max(0, total - floor);
-}
-
-function countPendingOutgoingTaskByRoom(roomName: string): number {
-  let count = 0;
-  for (const task of Object.values(ensureTaskStore())) {
-    if (task.status === "pending" && task.fromRoomName === roomName) {
-      count += 1;
-    }
-  }
-
-  return count;
-}
-
-function scoreDonorCandidate(
-  donor: ResourceControlSnapshot,
-  targetRoomName: string,
-  resource: ResourceConstant,
-  amount: number,
-  currentBinding: SynthesisProducerBinding | null,
-): number {
-  const available = getDonorAvailable(donor, resource);
-  const stockScore = Math.min(30, available / Math.max(1, amount));
-  const transferCost = Game.market.calcTransactionCost(amount, donor.roomName, targetRoomName);
-  const transferCostRatio = amount > 0 ? transferCost / amount : Infinity;
-  const costPenalty = transferCostRatio * 8;
-  const pendingPenalty = countPendingOutgoingTaskByRoom(donor.roomName) * 1.2;
-  const stickyBonus = currentBinding?.fromRoomName === donor.roomName ? SYNTHESIS_BINDING_STICKY_BONUS : 0;
-
-  return stockScore - costPenalty - pendingPenalty + stickyBonus;
-}
-
-function generateSynthesisTransferTasks(snapshots: ResourceControlSnapshot[]): { actions: string[]; bindings: SynthesisBindingStore } {
-  if (Memory.cfg?.synthesisControl?.enabled === true) {
-    return {
-      actions: [],
-      bindings: getSynthesisBindings(),
-    };
-  }
-
-  const synthesisCfg = resolveSynthesisConfig();
-  if (!synthesisCfg.enabled || synthesisCfg.maxGeneratedPerRun <= 0) {
-    return { actions: [], bindings: getSynthesisBindings() };
-  }
-
-  const actions: string[] = [];
-  const bindings = getSynthesisBindings();
-  let created = 0;
-
-  for (const [targetRoomName, targetCfg] of Object.entries(synthesisCfg.rooms)) {
-    if (created >= synthesisCfg.maxGeneratedPerRun) {
-      break;
-    }
-
-    const targetRoom = Game.rooms[targetRoomName];
-    if (!targetRoom?.controller?.my || !targetRoom.terminal) {
-      continue;
-    }
-
-    for (const [resourceName, demandTarget] of Object.entries(targetCfg.demands)) {
-      if (created >= synthesisCfg.maxGeneratedPerRun) {
-        break;
-      }
-
-      const resource = resourceName as ResourceConstant;
-      const targetAmount = Math.max(0, Math.floor(demandTarget || 0));
-      if (targetAmount <= 0) {
-        continue;
-      }
-
-      const current = getRoomStock(targetRoom, resource);
-      const incoming = getIncomingPendingAmount(targetRoomName, resource);
-      const deficit = Math.max(0, targetAmount - current - incoming);
-      if (deficit <= 0) {
-        continue;
-      }
-
-      const donorCandidates = snapshots
-        .filter((snapshot) => snapshot.roomName !== targetRoomName)
-        .filter((snapshot) => snapshot.terminal.cooldown === 0)
-        .filter((snapshot) =>
-          targetCfg.donorRoomNames && targetCfg.donorRoomNames.length > 0
-            ? targetCfg.donorRoomNames.includes(snapshot.roomName)
-            : true,
-        )
-        .map((snapshot) => {
-          const outgoing = getOutgoingPendingAmount(snapshot.roomName, resource);
-          const available = Math.max(0, getDonorAvailable(snapshot, resource) - outgoing);
-          return {
-            snapshot,
-            available,
-          };
-        })
-        .filter((entry) => entry.available >= snapshotMinAmount(entry.snapshot))
-        .sort((left, right) => right.available - left.available);
-
-      if (donorCandidates.length === 0) {
-        continue;
-      }
-
-      const binding = getActiveSynthesisBinding(bindings, targetRoomName, resource);
-      const scored = donorCandidates
-        .map((entry) => {
-          const amountForScore = Math.min(deficit, entry.available, entry.snapshot.transferBatchSize);
-          return {
-            entry,
-            amountForScore,
-            score: scoreDonorCandidate(entry.snapshot, targetRoomName, resource, amountForScore, binding),
-          };
-        })
-        .filter((item) => item.amountForScore >= snapshotMinAmount(item.entry.snapshot))
-        .sort((left, right) => right.score - left.score);
-      if (scored.length === 0) {
-        continue;
-      }
-
-      const best = scored[0];
-      let selected = best;
-      if (binding) {
-        const bound = scored.find((item) => item.entry.snapshot.roomName === binding.fromRoomName);
-        if (bound && best.score < bound.score * SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO) {
-          selected = bound;
-        }
-      }
-
-      const donor = selected.entry.snapshot;
-      const suggested = Math.min(deficit, selected.entry.available, donor.transferBatchSize);
-      const amount = Math.max(0, Math.floor(suggested));
-      if (amount < snapshotMinAmount(donor)) {
-        continue;
-      }
-
-      const result = createResourceTransferTask(
-        donor.roomName,
-        targetRoomName,
-        resource,
-        amount,
-        `auto:synthesis:${targetRoomName}:${resource}`,
-      );
-      if (typeof result === "string") {
-        actions.push(`task-generate-failed:${targetRoomName}:${resource}:${result}`);
-        continue;
-      }
-
-      setSynthesisBinding(bindings, targetRoomName, resource, donor.roomName);
-
-      created += 1;
-      actions.push(`task-generated:${result.task.id}:${resource}=${amount}:${donor.roomName}->${targetRoomName}`);
-    }
-  }
-
-  return { actions, bindings };
-}
-
-function snapshotMinAmount(snapshot: ResourceControlSnapshot): number {
-  return snapshot.transferMinAmount;
 }
 
 function shouldSkipMarketBuyForResource(snapshot: ResourceControlSnapshot, resource: ResourceConstant): boolean {
@@ -1582,35 +1143,6 @@ function persistResourceControlState(
   };
 }
 
-export function runSynthesisTaskPlanning(): string[] | null {
-  const cfg = Memory.cfg?.resourceControl;
-  if (cfg?.enabled === false) {
-    return null;
-  }
-
-  const interval = normalizeInterval(cfg?.sampleInterval);
-  if (Game.time % interval !== 0) {
-    return null;
-  }
-
-  const snapshots = collectSnapshots();
-  if (snapshots.length === 0) {
-    return null;
-  }
-
-  const autoTaskResult = generateSynthesisTransferTasks(snapshots);
-  const runtime = getMemoryService().ensureRuntime();
-  runtime.resourceControl = runtime.resourceControl || {
-    updatedAt: Game.time,
-    rooms: {},
-    lastActions: [],
-    lastMarketActions: [],
-    synthesisBindings: {},
-  };
-  runtime.resourceControl.synthesisBindings = autoTaskResult.bindings;
-  return autoTaskResult.actions;
-}
-
 export function runResourceControl(): void {
   const cfg = Memory.cfg?.resourceControl;
   if (cfg?.enabled === false) {
@@ -1622,7 +1154,7 @@ export function runResourceControl(): void {
     return;
   }
 
-  const snapshots = collectSnapshots();
+  const snapshots = collectResourceControlSnapshots();
   if (snapshots.length === 0) {
     return;
   }

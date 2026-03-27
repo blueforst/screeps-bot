@@ -1,4 +1,4 @@
-import { cpuMonitorCommand, cpuMonitorRaw } from "@/runtime/consoleCommands";
+import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand } from "@/runtime/consoleCommands";
 
 describe("cpuMonitor", () => {
   it("returns empty monitor data when no cpu snapshot exists", () => {
@@ -199,6 +199,24 @@ describe("cpuMonitor", () => {
       "[cpu-monitor] avg(3)  avg=16.00  max=17.00  bucket=9500-9800  untracked=2.00\n" +
       "[cpu-monitor]   creepWork  8.00  (7.20 + 0.80 fixed)\n" +
       "[cpu-monitor]   towerControl  1.00  (0.80 + 0.20 fixed)",
+    );
+  });
+});
+
+describe("telemetry commands", () => {
+  beforeEach(() => {
+    Memory.cfg = {};
+  });
+
+  it("returns stable JSON wrappers for telemetry control", () => {
+    expect(startTelemetryCommand()).toBe(
+      JSON.stringify({ ok: true, enabled: true, previousEnabled: false, sampleInterval: 10, segmentId: 90 }),
+    );
+    expect(statusTelemetryCommand()).toBe(
+      JSON.stringify({ ok: true, enabled: true, previousEnabled: true, sampleInterval: 10, segmentId: 90 }),
+    );
+    expect(stopTelemetryCommand()).toBe(
+      JSON.stringify({ ok: true, enabled: false, previousEnabled: true, sampleInterval: 10, segmentId: 90 }),
     );
   });
 });

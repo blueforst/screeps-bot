@@ -111,7 +111,7 @@ export function getExpectedManagedConfigNames(room: Room): string[] {
     names.push(`${room.name}:mineralHarvester:${mineralId}`);
   }
 
-  const carrierCount = (room.controller?.level ?? 0) <= 3 ? 2 : 1;
+  const carrierCount = (room.controller?.level ?? 0) <= 4 ? 2 : 1;
   for (let i = 0; i < carrierCount; i++) {
     names.push(`${room.name}:carrier:${i}`);
   }
