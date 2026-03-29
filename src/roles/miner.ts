@@ -1,6 +1,7 @@
 import type { RoleFactory } from "@/types/system";
 import { moveToTarget } from "@/roles/shared";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction";
 import { getSourceAdjacentLink } from "@/runtime/sourceLink";
 
 function getSource(sourceId?: string): Source | null {
@@ -16,6 +17,25 @@ export const minerRole: RoleFactory = (sourceId?: string) => ({
     const source = getSource(sourceId);
     if (!source) {
       return false;
+    }
+
+    const workPos: RoomPosition | null =
+      getPlannedSourceContainerPos(source) ??
+      (
+        source.pos.findInRange(FIND_STRUCTURES, 1, {
+          filter: (s) => s.structureType === STRUCTURE_CONTAINER,
+        }) as StructureContainer[]
+      )[0]?.pos ??
+      null;
+
+    if (workPos) {
+      if (!creep.pos.isEqualTo(workPos)) {
+        const occupants = workPos.lookFor(LOOK_CREEPS);
+        if (!occupants.some((c) => (c as Creep).my)) {
+          moveToTarget(creep, workPos, 0, { reusePath: 5 });
+          return false;
+        }
+      }
     }
 
     const harvestCode = measureCreepIntent(() => creep.harvest(source));
