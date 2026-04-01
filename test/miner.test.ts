@@ -33,6 +33,10 @@ class MockPos {
     return this.x === other.x && this.y === other.y;
   }
 
+  inRangeTo(target: MockPos, range: number): boolean {
+    return Math.max(Math.abs(this.x - target.x), Math.abs(this.y - target.y)) <= range;
+  }
+
   lookFor(type: string): unknown[] {
     return this._lookFor[type] ?? [];
   }
@@ -121,7 +125,7 @@ describe("minerRole – work position alignment with harvester", () => {
     expect(creep.harvest).toHaveBeenCalledWith(source);
   });
 
-  test("occupied workPos: creep out of harvest range moves toward source, not workPos", () => {
+  test("occupied workPos: creep out of harvest range moves toward workPos (range 1)", () => {
     workPos.setLookFor(LOOK_CREEPS, [{ my: true }]);
 
     const creep = makeCreep(5, 5, ROOM);
@@ -130,8 +134,9 @@ describe("minerRole – work position alignment with harvester", () => {
     const role = minerRole(SOURCE_ID);
     role.source(creep as unknown as Creep);
 
-    expect(moveToTarget).toHaveBeenCalledWith(creep, source);
-    expect(moveToTarget).not.toHaveBeenCalledWith(creep, workPos, 0, expect.anything());
+    // Moves toward workPos with range 1 instead of toward source
+    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 1, { reusePath: 5 });
+    expect(moveToTarget).not.toHaveBeenCalledWith(creep, source);
   });
 
   test("unoccupied workPos: creep moves to workPos as normal", () => {

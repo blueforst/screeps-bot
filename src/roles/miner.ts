@@ -31,8 +31,13 @@ export const minerRole: RoleFactory = (sourceId?: string) => ({
     if (workPos) {
       if (!creep.pos.isEqualTo(workPos)) {
         const occupants = workPos.lookFor(LOOK_CREEPS);
-        if (!occupants.some((c) => (c as Creep).my)) {
+        const isOccupiedByAlly = occupants.some((c) => (c as Creep).my);
+        if (!isOccupiedByAlly) {
           moveToTarget(creep, workPos, 0, { reusePath: 5 });
+          return false;
+        }
+        if (!creep.pos.inRangeTo(workPos, 1)) {
+          moveToTarget(creep, workPos, 1, { reusePath: 5 });
           return false;
         }
       }
