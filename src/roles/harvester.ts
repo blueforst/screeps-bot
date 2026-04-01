@@ -27,14 +27,19 @@ export const harvesterRole: RoleFactory = (sourceId?: string) => ({
 
     if (workPos) {
       if (!creep.pos.isEqualTo(workPos)) {
-        // Do not fight for workPos when another friendly creep (e.g. the expiring
-        // harvester during pre-spawn overlap) is already standing on it.  Fall
-        // through to harvest in place or move toward the source instead.
         const occupants = workPos.lookFor(LOOK_CREEPS);
-        if (!occupants.some((c) => (c as Creep).my)) {
+        const isOccupiedByAlly = occupants.some((c) => (c as Creep).my);
+        if (!isOccupiedByAlly) {
           moveToTarget(creep, workPos, 0, { reusePath: 5 });
           return false;
         }
+        // WorkPos occupied by a friendly creep (pre-spawn overlap).  Move to
+        // an adjacent tile so we are ready to step in the moment it frees up.
+        if (!creep.pos.inRangeTo(workPos, 1)) {
+          moveToTarget(creep, workPos, 1, { reusePath: 5 });
+          return false;
+        }
+        // Already adjacent — fall through to harvest in place while waiting.
       }
     }
 
