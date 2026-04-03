@@ -588,7 +588,7 @@ export const carrierRole: RoleFactory = () => ({
 
     if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
       clearPostTransferPlan(creep);
-      return true;
+      return creep.store.getUsedCapacity() === 0;
     }
 
     if (creep.memory.carrierStorageOnlyMode) {
