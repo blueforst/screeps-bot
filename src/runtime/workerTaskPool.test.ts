@@ -1,4 +1,5 @@
 import { assignWorkerTask, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import { getCreepConfigService } from "@/runtime/runtimeServices";
 import type { WorkerTask } from "@/types/system";
 
 function createPos(roomName: string): RoomPosition {
@@ -10,11 +11,12 @@ function createPos(roomName: string): RoomPosition {
   } as unknown as RoomPosition;
 }
 
-function createCreep(name: string, roomName: string, taskId?: string): Creep {
+function createCreep(name: string, roomName: string, taskId?: string, configName?: string): Creep {
   return {
     name,
     room: { name: roomName } as Room,
     memory: {
+      configName,
       taskId,
     } as CreepMemory,
     pos: {
@@ -153,5 +155,41 @@ describe("workerTaskPool", () => {
     expect(assignedTask?.id).toBe(upgradeTask.id);
     expect(repairTask.assignedCreeps).toEqual(["Worker1"]);
     expect(upgradeTask.assignedCreeps).toEqual(["Worker2"]);
+  });
+
+  it("assigns tasks from the config-assigned room instead of the physical room", () => {
+    const homeRepairTask = createTask({
+      id: "repair:r1",
+      type: "repair",
+      targetId: "r1",
+      roomName: "W1N1",
+      repairMode: "normal",
+      priority: 320,
+    });
+    const foreignUpgradeTask = createTask({
+      id: "upgrade:u2",
+      type: "upgrade",
+      targetId: "u2",
+      roomName: "W1N2",
+      maxAssignees: 2,
+      priority: 300,
+    });
+    Memory.rooms.W1N1 = { tasks: { [homeRepairTask.id]: homeRepairTask } } as RoomMemory;
+    Memory.rooms.W1N2 = { tasks: { [foreignUpgradeTask.id]: foreignUpgradeTask } } as RoomMemory;
+
+    const configName = "W1N1:worker:0";
+    getCreepConfigService().upsert(configName, "worker", [], "W1N1");
+
+    const creep = createCreep("Worker1", "W1N2", undefined, configName);
+    Game.creeps[creep.name] = creep;
+
+    objects.r1 = { pos: createPos("W1N1") };
+    objects.u2 = { pos: createPos("W1N2") };
+
+    const assignedTask = assignWorkerTask(creep);
+
+    expect(assignedTask?.id).toBe(homeRepairTask.id);
+    expect(homeRepairTask.assignedCreeps).toEqual(["Worker1"]);
+    expect(foreignUpgradeTask.assignedCreeps).toEqual([]);
   });
 });

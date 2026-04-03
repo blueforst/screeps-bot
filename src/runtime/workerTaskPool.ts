@@ -1,6 +1,6 @@
 import type { WorkerTask } from "@/types/system";
 import { measureCreepDecision } from "@/runtime/cpuPhaseProfiler";
-import { getTickContextService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 
 const TASK_REFRESH_INTERVAL = 3;
 const RAMPART_EMERGENCY_TARGET_HITS = 6000;
@@ -26,6 +26,15 @@ function ensureRoomTaskStore(roomName: string): Record<string, WorkerTask> {
   }
 
   return roomMemory.tasks as Record<string, WorkerTask>;
+}
+
+function getAssignedWorkerRoomName(creep: Creep): string {
+  const configName = creep.memory.configName;
+  if (!configName) {
+    return creep.room.name;
+  }
+
+  return getCreepConfigService().get(configName)?.roomName || creep.room.name;
 }
 
 function getBuildPriority(structureType: BuildableStructureConstant | StructureConstant): number {
@@ -274,7 +283,7 @@ export function releaseWorkerTask(creep: Creep): void {
 
 export function assignWorkerTask(creep: Creep): WorkerTask | null {
   return measureCreepDecision(() => {
-    const roomTasks = ensureRoomMemory(creep.room.name).tasks as Record<string, WorkerTask> | undefined;
+    const roomTasks = ensureRoomMemory(getAssignedWorkerRoomName(creep)).tasks as Record<string, WorkerTask> | undefined;
     if (!roomTasks) {
       releaseWorkerTask(creep);
       return null;
