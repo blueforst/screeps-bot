@@ -21,6 +21,18 @@ interface MovementMetricBucket {
   stateClears: number;
 }
 
+export interface MovementAnalyticsSnapshot {
+  updatedAt: number;
+  totals: MovementMetricBucket;
+  rooms: Record<string, MovementMetricBucket>;
+}
+
+type RuntimeGlobalWithMovementAnalytics = typeof global & {
+  __movementAnalytics?: MovementAnalyticsSnapshot;
+};
+
+const runtimeGlobal: RuntimeGlobalWithMovementAnalytics = global;
+
 function createEmptyBucket(): MovementMetricBucket {
   return {
     pathRequests: 0,
@@ -35,14 +47,16 @@ function createEmptyBucket(): MovementMetricBucket {
   };
 }
 
-function ensureMovementAnalytics(): NonNullable<NonNullable<Memory["analytics"]>["movement"]> {
-  Memory.analytics = Memory.analytics || {};
-  Memory.analytics.movement = Memory.analytics.movement || {
-    updatedAt: Game.time,
-    totals: createEmptyBucket(),
-    rooms: {},
-  };
-  return Memory.analytics.movement;
+function ensureMovementAnalytics(): MovementAnalyticsSnapshot {
+  if (!runtimeGlobal.__movementAnalytics) {
+    runtimeGlobal.__movementAnalytics = {
+      updatedAt: Game.time,
+      totals: createEmptyBucket(),
+      rooms: {},
+    };
+  }
+
+  return runtimeGlobal.__movementAnalytics;
 }
 
 function ensureRoomBucket(roomName: string): MovementMetricBucket {
@@ -73,13 +87,14 @@ export function recordMovementMetric(metric: MovementMetricName, roomName?: stri
   roomBucket[metric] += count;
 }
 
-export function getMovementAnalyticsForTest(): NonNullable<NonNullable<Memory["analytics"]>["movement"]> {
+export function getMovementAnalyticsForTest(): MovementAnalyticsSnapshot {
   return ensureMovementAnalytics();
 }
 
+export function getMovementAnalytics(): MovementAnalyticsSnapshot | undefined {
+  return runtimeGlobal.__movementAnalytics;
+}
+
 export function clearMovementAnalyticsForTest(): void {
-  if (!Memory.analytics) {
-    return;
-  }
-  delete Memory.analytics.movement;
+  delete runtimeGlobal.__movementAnalytics;
 }

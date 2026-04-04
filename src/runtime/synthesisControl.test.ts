@@ -147,4 +147,5 @@ describe("runSynthesisControl auto OH planning", () => {
     expect(Memory.runtime?.synthesisControl?.autoOhProducerRoomName).toBeUndefined();
     expect(Memory.runtime?.synthesisControl?.rooms).toEqual({});
   });
+
 });

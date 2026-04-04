@@ -1,4 +1,4 @@
-import { replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
 import { createResourceTransferTask } from "@/runtime/logistics/resourceTransferTasks";
 import { runResourceControl } from "@/runtime/resourceControl";
 
@@ -86,6 +86,7 @@ function createRoom(options: {
 
 describe("runResourceControl terminal feed tasks", () => {
   beforeEach(() => {
+    clearCarrierTaskBoardForTest();
     resetRuntimeServices();
     Game.time = 10;
     Memory.cfg = {
@@ -116,7 +117,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[donor.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(donor.name)).toMatchObject({
       [`resourceControl:terminal_feed:${donor.name}:${RESOURCE_KEANIUM}`]: {
         type: "terminal_feed",
         steps: [
@@ -140,7 +141,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[donor.name]?.carrierTasks).toBeUndefined();
+    expect(getCarrierTasksByRoom(donor.name)).toEqual({});
   });
 
   it("clears stale terminal feed tasks when no pending transfer remains", () => {
@@ -169,7 +170,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[donor.name]?.carrierTasks).toBeUndefined();
+    expect(getCarrierTasksByRoom(donor.name)).toEqual({});
   });
 
   it("creates a storage-to-terminal energy task to maintain terminal reserve from storage", () => {
@@ -182,7 +183,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[room.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(room.name)).toMatchObject({
       [`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]: {
         type: "terminal_feed",
         steps: [
@@ -207,7 +208,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[room.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(room.name)).toMatchObject({
       [`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]: {
         type: "terminal_offload",
         steps: [
@@ -220,7 +221,7 @@ describe("runResourceControl terminal feed tasks", () => {
         ],
       },
     });
-    expect(Memory.rooms?.[room.name]?.carrierTasks?.[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+    expect(getCarrierTasksByRoom(room.name)[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
   });
 
   it("does not keep a terminal offload task after a full emergency energy send drains the terminal snapshot", () => {
@@ -249,7 +250,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[donor.name]?.carrierTasks?.[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+    expect(getCarrierTasksByRoom(donor.name)[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
   });
 
   it("does not offload terminal energy reserved for a pending send while the terminal is on cooldown", () => {
@@ -279,7 +280,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[donor.name]?.carrierTasks?.[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+    expect(getCarrierTasksByRoom(donor.name)[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
   });
 
   it("stages terminal energy for pending energy sends only after storage is healthy", () => {
@@ -295,7 +296,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[donor.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(donor.name)).toMatchObject({
       [`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]: {
         type: "terminal_feed",
         steps: [
@@ -322,7 +323,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[donor.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(donor.name)).toMatchObject({
       [`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]: {
         type: "terminal_feed",
         steps: [
@@ -352,7 +353,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[donor.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(donor.name)).toMatchObject({
       [`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]: {
         type: "terminal_feed",
         steps: [
@@ -390,7 +391,7 @@ describe("runResourceControl terminal feed tasks", () => {
 
     runResourceControl();
 
-    expect(Memory.rooms?.[room.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(room.name)).toMatchObject({
       [`resourceControl:terminal_feed:${room.name}:${RESOURCE_KEANIUM}`]: {
         type: "terminal_feed",
         steps: [
@@ -678,4 +679,5 @@ describe("runResourceControl terminal feed tasks", () => {
       `market-buy:${room.name}:${RESOURCE_HYDROGEN}=3000:price=0.450:cost=150`,
     );
   });
+
 });

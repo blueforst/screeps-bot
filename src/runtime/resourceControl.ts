@@ -1,4 +1,5 @@
 import { pruneCarrierTasksForProducer, replaceCarrierTasksForProducerRoom, type CarrierTaskDraft } from "@/runtime/carrierTaskBoard";
+import { limitActionLog } from "@/runtime/actionLog";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import {
   countPendingOutgoingResourceTransferTasksByRoom,
@@ -1171,8 +1172,8 @@ function persistResourceControlState(
         }
       >,
     ),
-    lastActions: actions,
-    lastMarketActions: marketActions,
+    lastActions: limitActionLog(actions),
+    lastMarketActions: limitActionLog(marketActions),
     synthesisBindings: synthesisBindings || previousBindings || {},
   };
 }

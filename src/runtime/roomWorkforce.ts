@@ -1,5 +1,6 @@
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 import { isRoomInReserveMode } from "@/runtime/roomReserve";
+import { getWorkerTasksByRoom } from "@/runtime/workerTaskPool";
 
 const DEFAULT_WORKER_MAX = 8;
 const DEFAULT_WORKER_BASE = 1;
@@ -29,8 +30,8 @@ function clamp(value: number, minValue: number, maxValue: number): number {
 }
 
 function hasNormalRepairTask(room: Room): boolean {
-  const tasks = room.memory.tasks;
-  if (!tasks) {
+  const tasks = getWorkerTasksByRoom(room.name);
+  if (Object.keys(tasks).length === 0) {
     return false;
   }
 

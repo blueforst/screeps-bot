@@ -1,4 +1,5 @@
 import { getDesiredWorkerCount, getExpectedManagedConfigNames, getWorkerCap } from "@/runtime/roomWorkforce";
+import { clearWorkerTaskBoardForTest } from "@/runtime/workerTaskPool";
 
 function createSource(id: string, roomName: string, hasLink = false): Source {
   return {
@@ -81,6 +82,10 @@ function createRoom(options: {
 }
 
 describe("roomWorkforce", () => {
+  beforeEach(() => {
+    clearWorkerTaskBoardForTest();
+  });
+
   it("clamps worker cap to the supported range", () => {
     expect(getWorkerCap()).toBe(8);
 

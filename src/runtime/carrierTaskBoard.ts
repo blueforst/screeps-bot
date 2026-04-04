@@ -28,19 +28,65 @@ export interface CarrierTaskDraft {
   steps: CarrierTaskStep[];
 }
 
-function ensureRoomTaskStore(roomName: string): Record<string, CarrierTask> {
-  Memory.rooms = Memory.rooms || {};
-  Memory.rooms[roomName] = Memory.rooms[roomName] || {};
-  Memory.rooms[roomName].carrierTasks = Memory.rooms[roomName].carrierTasks || {};
-  return Memory.rooms[roomName].carrierTasks;
+type CarrierTaskBoardStore = Record<string, Record<string, CarrierTask>>;
+
+type RuntimeGlobalWithCarrierTasks = typeof global & {
+  __carrierTaskBoard?: CarrierTaskBoardStore;
+};
+
+const runtimeGlobal: RuntimeGlobalWithCarrierTasks = global;
+
+function ensureCarrierTaskBoard(): CarrierTaskBoardStore {
+  if (!runtimeGlobal.__carrierTaskBoard) {
+    runtimeGlobal.__carrierTaskBoard = {};
+  }
+
+  return runtimeGlobal.__carrierTaskBoard;
 }
 
-function getRoomTaskStore(roomName: string): Record<string, CarrierTask> {
-  return Memory.rooms?.[roomName]?.carrierTasks || {};
+function ensureRoomTaskStore(roomName: string): Record<string, CarrierTask> {
+  const board = ensureCarrierTaskBoard();
+  const existing = board[roomName];
+  if (existing) {
+    return existing;
+  }
+
+  const legacyTasks = Memory.rooms?.[roomName]?.carrierTasks;
+  if (legacyTasks) {
+    board[roomName] = legacyTasks;
+    delete Memory.rooms[roomName].carrierTasks;
+    if (Object.keys(Memory.rooms[roomName]).length === 0) {
+      delete Memory.rooms[roomName];
+    }
+    return board[roomName];
+  }
+
+  board[roomName] = {};
+  return board[roomName];
+}
+
+export function getCarrierTasksByRoom(roomName: string): Record<string, CarrierTask> {
+  const board = ensureCarrierTaskBoard();
+  if (board[roomName]) {
+    return board[roomName];
+  }
+
+  const legacyTasks = Memory.rooms?.[roomName]?.carrierTasks;
+  if (!legacyTasks) {
+    return {};
+  }
+
+  board[roomName] = legacyTasks;
+  delete Memory.rooms[roomName].carrierTasks;
+  if (Object.keys(Memory.rooms[roomName]).length === 0) {
+    delete Memory.rooms[roomName];
+  }
+
+  return board[roomName];
 }
 
 function cleanupRoomTaskStoreIfEmpty(roomName: string): void {
-  const tasks = Memory.rooms?.[roomName]?.carrierTasks;
+  const tasks = ensureCarrierTaskBoard()[roomName];
   if (!tasks) {
     return;
   }
@@ -49,11 +95,11 @@ function cleanupRoomTaskStoreIfEmpty(roomName: string): void {
     return;
   }
 
-  delete Memory.rooms[roomName].carrierTasks;
+  delete ensureCarrierTaskBoard()[roomName];
 }
 
 export function listCarrierTasksByRoom(roomName: string): CarrierTask[] {
-  const tasks = Object.values(getRoomTaskStore(roomName))
+  const tasks = Object.values(getCarrierTasksByRoom(roomName))
     .sort((left, right) => {
       if (left.priority !== right.priority) {
         return right.priority - left.priority;
@@ -68,7 +114,7 @@ export function replaceCarrierTasksForProducerRoom(
   roomName: string,
   drafts: CarrierTaskDraft[],
 ): void {
-  const hasExistingForRoom = Object.values(getRoomTaskStore(roomName)).some((task) => task.producer === producer);
+  const hasExistingForRoom = Object.values(getCarrierTasksByRoom(roomName)).some((task) => task.producer === producer);
   if (drafts.length === 0 && !hasExistingForRoom) {
     return;
   }
@@ -114,16 +160,8 @@ export function replaceCarrierTasksForProducerRoom(
 }
 
 export function pruneCarrierTasksForProducer(producer: string, validRoomNames: Set<string>): number {
-  if (!Memory.rooms) {
-    return 0;
-  }
-
   let removed = 0;
-  for (const [roomName, roomMemory] of Object.entries(Memory.rooms)) {
-    const tasks = roomMemory.carrierTasks;
-    if (!tasks) {
-      continue;
-    }
+  for (const [roomName, tasks] of Object.entries(ensureCarrierTaskBoard())) {
 
     const roomInvalid = !validRoomNames.has(roomName);
     for (const [taskId, task] of Object.entries(tasks)) {
@@ -145,16 +183,8 @@ export function pruneCarrierTasksForProducer(producer: string, validRoomNames: S
 }
 
 export function cleanupCarrierTaskBoard(ownedRooms: Set<string>, ttl: number): number {
-  if (!Memory.rooms) {
-    return 0;
-  }
-
   let removed = 0;
-  for (const [roomName, roomMemory] of Object.entries(Memory.rooms)) {
-    const tasks = roomMemory.carrierTasks;
-    if (!tasks) {
-      continue;
-    }
+  for (const [roomName, tasks] of Object.entries(ensureCarrierTaskBoard())) {
 
     const roomLost = !ownedRooms.has(roomName);
     for (const [taskId, task] of Object.entries(tasks)) {
@@ -172,4 +202,8 @@ export function cleanupCarrierTaskBoard(ownedRooms: Set<string>, ttl: number): n
   }
 
   return removed;
+}
+
+export function clearCarrierTaskBoardForTest(): void {
+  delete runtimeGlobal.__carrierTaskBoard;
 }

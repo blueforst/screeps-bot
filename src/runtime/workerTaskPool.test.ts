@@ -1,4 +1,5 @@
-import { assignWorkerTask, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import { assignWorkerTask, clearWorkerTaskBoardForTest, releaseWorkerTask } from "@/runtime/workerTaskPool";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import type { WorkerTask } from "@/types/system";
 
@@ -17,7 +18,6 @@ function createCreep(name: string, roomName: string, taskId?: string, configName
     room: { name: roomName } as Room,
     memory: {
       configName,
-      taskId,
     } as CreepMemory,
     pos: {
       getRangeTo: () => 1,
@@ -46,6 +46,8 @@ describe("workerTaskPool", () => {
   let objects: Record<string, { pos: RoomPosition }>;
 
   beforeEach(() => {
+    clearCreepAssignmentStateForTest();
+    clearWorkerTaskBoardForTest();
     objects = {};
     const getObjectById = jest.fn((id: string) => objects[id] || null) as unknown as Game["getObjectById"];
     (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = getObjectById;
@@ -65,14 +67,13 @@ describe("workerTaskPool", () => {
     Memory.rooms.W1N2 = { tasks: {} } as RoomMemory;
 
     const creep = createCreep("Worker1", "W1N2", repairTask.id);
+    ensureCreepAssignmentState(creep.name).taskId = repairTask.id;
     Game.creeps[creep.name] = creep;
 
     releaseWorkerTask(creep);
 
     expect(repairTask.assignedCreeps).toEqual([]);
-    expect(creep.memory.taskId).toBeUndefined();
-    expect(creep.memory.taskType).toBeUndefined();
-    expect(creep.memory.taskTargetId).toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)?.taskId).toBeUndefined();
   });
 
   it("drops stale repair assignees whose current task is upgrade", () => {
@@ -102,6 +103,7 @@ describe("workerTaskPool", () => {
     } as RoomMemory;
 
     const staleRepairAssignee = createCreep("Worker1", "W1N1", upgradeTask.id);
+    ensureCreepAssignmentState(staleRepairAssignee.name).taskId = upgradeTask.id;
     const availableWorker = createCreep("Worker2", "W1N1");
     Game.creeps[staleRepairAssignee.name] = staleRepairAssignee;
     Game.creeps[availableWorker.name] = availableWorker;
@@ -143,6 +145,7 @@ describe("workerTaskPool", () => {
     } as RoomMemory;
 
     const activeRepairAssignee = createCreep("Worker1", "W1N1", repairTask.id);
+    ensureCreepAssignmentState(activeRepairAssignee.name).taskId = repairTask.id;
     const availableWorker = createCreep("Worker2", "W1N1");
     Game.creeps[activeRepairAssignee.name] = activeRepairAssignee;
     Game.creeps[availableWorker.name] = availableWorker;

@@ -342,7 +342,6 @@ declare global {
           }
         >;
       };
-      roomPlannerAuto?: Record<string, number>;
       linkNetwork?: Record<
         string,
         {
@@ -359,14 +358,6 @@ declare global {
           lastFocusHits?: number;
           stalledTicks?: number;
           spreadUntil?: number;
-        }
-      >;
-      workerDynamic?: Record<
-        string,
-        {
-          lastLooseEnergy: number;
-          trend: number;
-          lastTick: number;
         }
       >;
       crossShard?: {
@@ -589,34 +580,6 @@ declare global {
       >;
     };
     analytics?: {
-      movement?: {
-        updatedAt: number;
-        totals: {
-          pathRequests: number;
-          pathCacheHits: number;
-          pathRepaths: number;
-          yieldPushes: number;
-          travelRequests: number;
-          travelFallbacks: number;
-          travelRepaths: number;
-          exitRecoveries: number;
-          stateClears: number;
-        };
-        rooms: Record<
-          string,
-          {
-            pathRequests: number;
-            pathCacheHits: number;
-            pathRepaths: number;
-            yieldPushes: number;
-            travelRequests: number;
-            travelFallbacks: number;
-            travelRepaths: number;
-            exitRecoveries: number;
-            stateClears: number;
-          }
-        >;
-      };
       production?: {
         rooms?: Record<
           string,
@@ -668,16 +631,6 @@ declare global {
     configName?: string;
     working?: boolean;
     ready?: boolean;
-    carrierPlanMode?: "pickup" | "deliver";
-    carrierPlanTargetId?: string;
-    carrierPlanTargetKind?: "resource" | "structure";
-    carrierStorageOnlyMode?: boolean;
-    energyPickupTargetId?: string;
-    energyPickupTargetKind?: "resource" | "structure";
-    energyPickupRoomName?: string;
-    taskId?: string;
-    taskType?: WorkerTaskType;
-    taskTargetId?: string;
     colonizationLastHits?: number;
     colonizationLastSeenAt?: number;
     colonizationLastRoomName?: string;
@@ -685,34 +638,6 @@ declare global {
     colonizationLastHadHostileCreepAttack?: boolean;
     colonizationDeathHandled?: boolean;
     scoutVisitedRooms?: string[];
-    synthesisCarrierTaskId?: string;
-    travelState?: {
-      targetRoom: string;
-      lastPosKey?: string;
-      stuckTicks: number;
-    };
-    movePathState?: {
-      key: string;
-      path: string;
-      steps: Array<{
-        x: number;
-        y: number;
-      }>;
-      targetRoom: string;
-      targetX: number;
-      targetY: number;
-      range: 0 | 1 | 3;
-      lastPosKey?: string;
-      stuckTicks: number;
-      expiresAt: number;
-    };
-    movementPushedAt?: number;
-    workAnchor?: {
-      x: number;
-      y: number;
-      roomName: string;
-      range: number;
-    };
     _move?: {
       dest?: {
         x: number;

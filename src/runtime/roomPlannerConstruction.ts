@@ -788,9 +788,6 @@ export function runRoomPlannerConstruction(): void {
     }
 
     if (newSites > 0) {
-      Memory.runtime = Memory.runtime || {};
-      Memory.runtime.roomPlannerAuto = Memory.runtime.roomPlannerAuto || {};
-      Memory.runtime.roomPlannerAuto[room.name] = Game.time;
       console.log(`[roomPlanner] ${room.name} queued ${newSites} construction site(s)`);
     }
 
@@ -805,9 +802,6 @@ export function runRoomPlannerConstruction(): void {
     if (rampartQueued.roomAdded > 0) {
       globalRemaining = rampartQueued.globalRemaining;
       runRemaining = Math.max(0, runRemaining - rampartQueued.roomAdded);
-      Memory.runtime = Memory.runtime || {};
-      Memory.runtime.roomPlannerAuto = Memory.runtime.roomPlannerAuto || {};
-      Memory.runtime.roomPlannerAuto[room.name] = Game.time;
       console.log(`[roomPlanner] ${room.name} queued ${rampartQueued.roomAdded} rampart site(s)`);
     }
   }

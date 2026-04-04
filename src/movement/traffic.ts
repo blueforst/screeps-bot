@@ -1,3 +1,4 @@
+import { ensureCreepMovementState, getCreepMovementState } from "@/movement/creepState";
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPositionAtDirection, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
@@ -38,8 +39,9 @@ function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: Roo
     return false;
   }
 
-  delete blocker.memory.movePathState;
-  blocker.memory.movementPushedAt = Game.time;
+  const blockerState = ensureCreepMovementState(blocker.name);
+  delete blockerState.movePathState;
+  blockerState.movementPushedAt = Game.time;
   recordMovementMetric("yieldPushes", pusher.room.name);
   return true;
 }
@@ -81,7 +83,7 @@ function scoreYieldPosition(pos: RoomPosition, blocker: Creep, pusher: Creep): n
   score += terrain === TERRAIN_MASK_SWAMP ? -2 : 1;
 
   // Stationary creeps with a work anchor should stay close to it.
-  const workAnchor = blocker.memory.workAnchor;
+  const workAnchor = getCreepMovementState(blocker.name)?.workAnchor;
   if (workAnchor && workAnchor.roomName === pos.roomName) {
     const anchorPos = new RoomPosition(workAnchor.x, workAnchor.y, workAnchor.roomName);
     const dist = pos.getRangeTo(anchorPos);

@@ -1,4 +1,5 @@
 import { getEnergyStoreTarget, pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
+import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 
 jest.mock("@/runtime/roomPlannerConstruction", () => ({
   getProtoStorageContainer: jest.fn(() => null),
@@ -98,6 +99,7 @@ function createCreep(room: Room): Creep {
 
 describe("energyTargets", () => {
   beforeEach(() => {
+    clearCreepAssignmentStateForTest();
     resetRuntimeServices();
     Game.time += 1;
     getProtoStorageContainer.mockReset();
@@ -241,17 +243,18 @@ describe("energyTargets", () => {
     (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = getObjectById;
 
     const creep = createCreep(room);
-    creep.memory.energyPickupTargetId = container.id;
-    creep.memory.energyPickupTargetKind = "structure";
-    creep.memory.energyPickupRoomName = room.name;
+    const assignmentState = ensureCreepAssignmentState(creep.name);
+    assignmentState.energyPickupTargetId = container.id;
+    assignmentState.energyPickupTargetKind = "structure";
+    assignmentState.energyPickupRoomName = room.name;
 
     expect(pickupEnergyFromPreferredTarget(creep)).toEqual({
       picked: false,
       outOfRange: false,
     });
-    expect(creep.memory.energyPickupTargetId).toBeUndefined();
-    expect(creep.memory.energyPickupTargetKind).toBeUndefined();
-    expect(creep.memory.energyPickupRoomName).toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)?.energyPickupTargetId).toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)?.energyPickupTargetKind).toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)?.energyPickupRoomName).toBeUndefined();
     expect(Memory.rooms[room.name].pickupReservations?.[container.id]?.claims.Worker1).toBeUndefined();
   });
 

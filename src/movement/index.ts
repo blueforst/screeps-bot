@@ -1,5 +1,6 @@
 export type { MovementOptions, MoveToRoomOptions, MoveToTargetOptions } from "@/movement/types";
-export { clearMovementAnalyticsForTest, getMovementAnalyticsForTest } from "@/movement/metrics";
+export { clearMovementAnalyticsForTest, getMovementAnalytics, getMovementAnalyticsForTest } from "@/movement/metrics";
+export { clearCreepMovementStateForTest, getCreepMovementState, ensureCreepMovementState } from "@/movement/creepState";
 export {
   clearMovementState,
   clearRoomBaseCostMatrixCacheForTest,

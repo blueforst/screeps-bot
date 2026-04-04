@@ -1,3 +1,4 @@
+import { clearMovementAnalyticsForTest, getMovementAnalyticsForTest } from "@/movement";
 import { runExternalTelemetryExport } from "@/runtime/externalTelemetry";
 
 describe("runExternalTelemetryExport movement metrics", () => {
@@ -10,35 +11,31 @@ describe("runExternalTelemetryExport movement metrics", () => {
         segmentId: 42,
       },
     };
-    Memory.analytics = {
-      movement: {
-        updatedAt: Game.time,
-        totals: {
-          pathRequests: 4,
-          pathCacheHits: 2,
-          pathRepaths: 1,
-          yieldPushes: 1,
-          travelRequests: 3,
-          travelFallbacks: 1,
-          travelRepaths: 1,
-          exitRecoveries: 1,
-          stateClears: 2,
-        },
-        rooms: {
-          W1N1: {
-            pathRequests: 4,
-            pathCacheHits: 2,
-            pathRepaths: 1,
-            yieldPushes: 1,
-            travelRequests: 3,
-            travelFallbacks: 1,
-            travelRepaths: 1,
-            exitRecoveries: 1,
-            stateClears: 2,
-          },
-        },
-      },
-    } as Memory["analytics"];
+    clearMovementAnalyticsForTest();
+    const movement = getMovementAnalyticsForTest();
+    movement.updatedAt = Game.time;
+    Object.assign(movement.totals, {
+      pathRequests: 4,
+      pathCacheHits: 2,
+      pathRepaths: 1,
+      yieldPushes: 1,
+      travelRequests: 3,
+      travelFallbacks: 1,
+      travelRepaths: 1,
+      exitRecoveries: 1,
+      stateClears: 2,
+    });
+    movement.rooms.W1N1 = {
+      pathRequests: 4,
+      pathCacheHits: 2,
+      pathRepaths: 1,
+      yieldPushes: 1,
+      travelRequests: 3,
+      travelFallbacks: 1,
+      travelRepaths: 1,
+      exitRecoveries: 1,
+      stateClears: 2,
+    };
     Game.rooms = {
       W1N1: {
         name: "W1N1",

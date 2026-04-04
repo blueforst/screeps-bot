@@ -1,4 +1,5 @@
 import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
+import { clearCreepMovementState, ensureCreepMovementState, getCreepMovementState } from "@/movement/creepState";
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPosKey, getTargetPos, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
@@ -13,10 +14,7 @@ const ROOM_BASE_COST_MATRIX_CACHE_MAX = 100;
 
 export function clearMovementState(creep: Creep): void {
   recordMovementMetric("stateClears", creep.room.name);
-  delete creep.memory.movePathState;
-  delete creep.memory.travelState;
-  delete creep.memory.movementPushedAt;
-  delete creep.memory.workAnchor;
+  clearCreepMovementState(creep.name);
   delete creep.memory._move;
 }
 
@@ -28,13 +26,15 @@ export function moveToTarget(
 ): ScreepsReturnCode {
   recordMovementMetric("pathRequests", creep.room.name);
 
-  if (creep.memory.movementPushedAt === Game.time) {
+  const movementState = ensureCreepMovementState(creep.name);
+
+  if (movementState.movementPushedAt === Game.time) {
     return OK;
   }
 
   const targetPos = getTargetPos(target);
   if (creep.pos.getRangeTo(targetPos) <= range) {
-    delete creep.memory.movePathState;
+    delete movementState.movePathState;
     return OK;
   }
 
@@ -55,7 +55,7 @@ export function moveToTarget(
 
   if (sameRoomTarget) {
     const currentPosKey = getPosKey(creep.pos);
-    const movePathState = creep.memory.movePathState as MovePathState | undefined;
+    const movePathState = movementState.movePathState;
     const isMatchingState =
       movePathState &&
       movePathState.key === movePathKey &&
@@ -79,7 +79,7 @@ export function moveToTarget(
         return cachedMoveCode;
       }
 
-      delete creep.memory.movePathState;
+      delete movementState.movePathState;
     }
 
     recordMovementMetric("pathRepaths", creep.room.name);
@@ -98,7 +98,7 @@ export function moveToTarget(
     if (path.length > 0) {
       const serializedPath = Room.serializePath(path);
       const steps = path.map((step) => ({ x: step.x, y: step.y }));
-      creep.memory.movePathState = {
+      movementState.movePathState = {
         key: movePathKey,
         path: serializedPath,
         steps,
@@ -111,15 +111,15 @@ export function moveToTarget(
         expiresAt: reusePath === 0 ? Game.time : Game.time + Math.max(MOVE_PATH_CACHE_TTL, reusePath),
       };
 
-      const followPathCode = followStoredRoomPath(creep, creep.memory.movePathState, targetPos, range);
+      const followPathCode = followStoredRoomPath(creep, movementState.movePathState, targetPos, range);
       if (followPathCode === OK || followPathCode === ERR_TIRED || followPathCode === ERR_BUSY) {
         return followPathCode;
       }
 
-      delete creep.memory.movePathState;
+      delete movementState.movePathState;
     }
   } else {
-    delete creep.memory.movePathState;
+    delete movementState.movePathState;
   }
 
   return measureCreepIntent(() =>
@@ -137,12 +137,13 @@ export function moveToTarget(
 
 export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { pos: RoomPosition }): ScreepsReturnCode {
   const targetPos = getTargetPos(target);
+  const movementState = ensureCreepMovementState(creep.name);
   if (creep.pos.getRangeTo(targetPos) <= 3) {
-    creep.memory.workAnchor = { x: targetPos.x, y: targetPos.y, roomName: targetPos.roomName, range: 3 } satisfies WorkAnchor;
+    movementState.workAnchor = { x: targetPos.x, y: targetPos.y, roomName: targetPos.roomName, range: 3 } satisfies WorkAnchor;
     return OK;
   }
 
-  delete creep.memory.workAnchor;
+  delete movementState.workAnchor;
   return moveToTarget(creep, targetPos, 3, {
     swampCost: 8,
     reusePath: 5,
@@ -247,14 +248,15 @@ function followStoredRoomPath(
 
   const nextPos = getNextStoredPathStep(creep, movePathState.steps);
   if (!nextPos) {
-    delete creep.memory.movePathState;
+    delete ensureCreepMovementState(creep.name).movePathState;
     return ERR_NO_PATH;
   }
 
   const blockingCreep = findMyCreepAt(nextPos, creep.name);
   if (blockingCreep) {
-    const blockerPathState = blockingCreep.memory.movePathState as MovePathState | undefined;
-    const blockerIsStationaryWorker = !!blockingCreep.memory.workAnchor;
+    const blockerState = getCreepMovementState(blockingCreep.name);
+    const blockerPathState = blockerState?.movePathState;
+    const blockerIsStationaryWorker = !!blockerState?.workAnchor;
     const blockerWillMoveNaturally = !blockerIsStationaryWorker && !!blockerPathState && blockerPathState.expiresAt > Game.time;
 
     if (blockerWillMoveNaturally) {
@@ -267,7 +269,7 @@ function followStoredRoomPath(
       return moveToAdjacentPosition(creep, nextPos);
     }
 
-    delete creep.memory.movePathState;
+    delete ensureCreepMovementState(creep.name).movePathState;
     return ERR_BUSY;
   }
 

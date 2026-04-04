@@ -1,5 +1,5 @@
 import { runMineralExtraction } from "@/runtime/mineralExtraction";
-import { replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -98,6 +98,7 @@ function createRoom(options: {
 
 describe("runMineralExtraction", () => {
   beforeEach(() => {
+    clearCarrierTaskBoardForTest();
     resetRuntimeServices();
     Game.time = 10;
     Memory.rooms = {};
@@ -111,7 +112,7 @@ describe("runMineralExtraction", () => {
 
     runMineralExtraction();
 
-    expect(Memory.rooms?.[room.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(room.name)).toMatchObject({
       [`mineral:mineral_haul:${room.name}:${mineral.id}`]: {
         type: "mineral_haul",
         priority: 85,
@@ -135,7 +136,7 @@ describe("runMineralExtraction", () => {
 
     runMineralExtraction();
 
-    expect(Memory.rooms?.[room.name]?.carrierTasks).toBeUndefined();
+    expect(getCarrierTasksByRoom(room.name)).toEqual({});
   });
 
   it("clears existing mineral tasks when stock falls back to threshold", () => {
@@ -164,7 +165,7 @@ describe("runMineralExtraction", () => {
 
     runMineralExtraction();
 
-    expect(Memory.rooms?.[room.name]?.carrierTasks).toBeUndefined();
+    expect(getCarrierTasksByRoom(room.name)).toEqual({});
   });
 
   it("falls back to storage when terminal cannot accept the mineral", () => {
@@ -175,7 +176,7 @@ describe("runMineralExtraction", () => {
 
     runMineralExtraction();
 
-    expect(Memory.rooms?.[room.name]?.carrierTasks).toMatchObject({
+    expect(getCarrierTasksByRoom(room.name)).toMatchObject({
       [`mineral:mineral_haul:${room.name}:${mineral.id}`]: {
         steps: [
           {

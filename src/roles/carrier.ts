@@ -5,6 +5,7 @@ import {
 } from "@/roles/energyTargets";
 import { moveToTarget } from "@/roles/shared";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { ensureCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import {
   getPickupTargetEnergyAmount,
   getReservedPickupTarget,
@@ -221,33 +222,36 @@ function setPostTransferPlan(
   mode: "pickup" | "deliver",
   target: Resource | AnyStoreStructure | Tombstone | Ruin,
 ): void {
-  creep.memory.carrierPlanMode = mode;
-  creep.memory.carrierPlanTargetId = target.id;
-  creep.memory.carrierPlanTargetKind = isDroppedResourceTarget(target)
+  const assignmentState = ensureCreepAssignmentState(creep.name);
+  assignmentState.carrierPlanMode = mode;
+  assignmentState.carrierPlanTargetId = target.id;
+  assignmentState.carrierPlanTargetKind = isDroppedResourceTarget(target)
     ? "resource"
     : "structure";
 }
 
 function clearPostTransferPlan(creep: Creep): void {
-  delete creep.memory.carrierPlanMode;
-  delete creep.memory.carrierPlanTargetId;
-  delete creep.memory.carrierPlanTargetKind;
+  const assignmentState = ensureCreepAssignmentState(creep.name);
+  delete assignmentState.carrierPlanMode;
+  delete assignmentState.carrierPlanTargetId;
+  delete assignmentState.carrierPlanTargetKind;
 }
 
 function getPlannedTarget(creep: Creep): Resource | AnyStoreStructure | Tombstone | Ruin | null {
-  if (!creep.memory.carrierPlanTargetId || !creep.memory.carrierPlanTargetKind) {
+  const assignmentState = ensureCreepAssignmentState(creep.name);
+  if (!assignmentState.carrierPlanTargetId || !assignmentState.carrierPlanTargetKind) {
     return null;
   }
 
-  if (creep.memory.carrierPlanTargetKind === "resource") {
-    return Game.getObjectById(creep.memory.carrierPlanTargetId as Id<Resource>);
+  if (assignmentState.carrierPlanTargetKind === "resource") {
+    return Game.getObjectById(assignmentState.carrierPlanTargetId as Id<Resource>);
   }
 
-  return Game.getObjectById(creep.memory.carrierPlanTargetId as Id<AnyStoreStructure | Tombstone | Ruin>);
+  return Game.getObjectById(assignmentState.carrierPlanTargetId as Id<AnyStoreStructure | Tombstone | Ruin>);
 }
 
 function getPlannedDeliveryTarget(creep: Creep): AnyStoreStructure | null {
-  if (creep.memory.carrierPlanMode !== "deliver") {
+  if (ensureCreepAssignmentState(creep.name).carrierPlanMode !== "deliver") {
     return null;
   }
 
@@ -304,11 +308,11 @@ function getSynthesisCarrierTasks(roomName: string): CarrierTask[] {
 }
 
 function clearSynthesisCarrierTaskPlan(creep: Creep): void {
-  delete creep.memory.synthesisCarrierTaskId;
+  delete ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
 }
 
 function getAssignedSynthesisCarrierTask(creep: Creep): CarrierTask | null {
-  const taskId = creep.memory.synthesisCarrierTaskId;
+  const taskId = ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
   if (!taskId) {
     return null;
   }
@@ -402,7 +406,7 @@ function assignSynthesisCarrierTask(creep: Creep): { task: CarrierTask; step: Ca
       return null;
     }
 
-    creep.memory.synthesisCarrierTaskId = candidates[0].task.id;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = candidates[0].task.id;
     return candidates[0];
   });
 }
@@ -531,7 +535,7 @@ export const carrierRole: RoleFactory = () => ({
     });
 
     if (energyDemandTarget) {
-      delete creep.memory.carrierStorageOnlyMode;
+      delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
       const includeProtoStorage = isSpawnOrExtensionTarget(energyDemandTarget);
 
       if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep) &&
@@ -555,7 +559,7 @@ export const carrierRole: RoleFactory = () => ({
 
     const carrierTaskPickup = pickupSynthesisCarrierResource(creep);
     if (carrierTaskPickup.picked || carrierTaskPickup.outOfRange) {
-      delete creep.memory.carrierStorageOnlyMode;
+      delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
       if (carrierTaskPickup.picked) {
         releasePickupReservation(creep);
       }
@@ -569,7 +573,7 @@ export const carrierRole: RoleFactory = () => ({
       return false;
     }
 
-    creep.memory.carrierStorageOnlyMode = true;
+    ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
 
     pickupEnergyForCarrier(creep, {
       includeStorage: emergencyResponseMode,
@@ -591,7 +595,7 @@ export const carrierRole: RoleFactory = () => ({
       return creep.store.getUsedCapacity() === 0;
     }
 
-    if (creep.memory.carrierStorageOnlyMode) {
+    if (ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode) {
       const assignedRoom = getAssignedCarrierRoom(creep);
       const protoContainer = assignedRoom ? getProtoStorageContainer(assignedRoom) : null;
       const protoTarget = protoContainer && protoContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ? protoContainer : null;
@@ -615,7 +619,7 @@ export const carrierRole: RoleFactory = () => ({
               if (creep.pos.getRangeTo(plannedPos) === 0) {
                 measureCreepIntent(() => creep.drop(RESOURCE_ENERGY));
                 if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
-                  delete creep.memory.carrierStorageOnlyMode;
+                  delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
                   clearPostTransferPlan(creep);
                   return true;
                 }
@@ -628,7 +632,7 @@ export const carrierRole: RoleFactory = () => ({
           return false;
         }
         // Storage/container exists but is full — clear mode and fall through to find a demand target
-        delete creep.memory.carrierStorageOnlyMode;
+        delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
         clearPostTransferPlan(creep);
       } else {
         const code = measureCreepIntent(() => creep.transfer(storageTarget, RESOURCE_ENERGY));
@@ -641,7 +645,7 @@ export const carrierRole: RoleFactory = () => ({
         }
 
         if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
-          delete creep.memory.carrierStorageOnlyMode;
+          delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
           clearPostTransferPlan(creep);
           return true;
         }
@@ -661,7 +665,7 @@ export const carrierRole: RoleFactory = () => ({
     if (!target) {
       clearPostTransferPlan(creep);
       if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0) {
-        creep.memory.carrierStorageOnlyMode = true;
+        ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
       }
       return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
     }
@@ -697,7 +701,7 @@ export const carrierRole: RoleFactory = () => ({
 
     clearPostTransferPlan(creep);
     if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0) {
-      creep.memory.carrierStorageOnlyMode = true;
+      ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
     }
 
     return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;

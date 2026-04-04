@@ -1,5 +1,8 @@
 import { getCpuPhaseHistory } from "@/runtime/cpuPhaseProfiler";
 import { getTickContextService } from "@/runtime/runtimeServices";
+import { getCreepMovementState, getMovementAnalytics } from "@/movement";
+import { getAssignedWorkerTaskId } from "@/runtime/workerTaskPool";
+import { getWorkerTasksByRoom } from "@/runtime/workerTaskPool";
 
 const DEFAULT_SAMPLE_INTERVAL = 10;
 const MIN_SAMPLE_INTERVAL = 5;
@@ -208,7 +211,7 @@ function collectCreepTelemetryByRoom(ownedRooms: Room[]): Record<string, RoomCre
 
       if (role === "worker") {
         roomStats.workerCount += 1;
-        if (!creep.memory.taskId) {
+        if (!getAssignedWorkerTaskId(creep.name)) {
           roomStats.unassignedWorkers += 1;
         }
         continue;
@@ -216,7 +219,7 @@ function collectCreepTelemetryByRoom(ownedRooms: Room[]): Record<string, RoomCre
 
       if (role === "carrier") {
         roomStats.carrierCount += 1;
-        const stuckTicks = creep.memory.travelState?.stuckTicks;
+        const stuckTicks = getCreepMovementState(creep.name)?.travelState?.stuckTicks;
         if (typeof stuckTicks === "number" && Number.isFinite(stuckTicks) && stuckTicks >= 0) {
           roomStats.carrierStuckTotal += stuckTicks;
           roomStats.carrierStuckCount += 1;
@@ -235,11 +238,10 @@ function collectCreepTelemetryByRoom(ownedRooms: Room[]): Record<string, RoomCre
 
 function collectTaskTelemetryByRoom(): Record<string, RoomTaskTelemetry> {
   const stats: Record<string, RoomTaskTelemetry> = {};
-  const memoryRooms = Memory.rooms || {};
 
-  for (const [roomName, roomMemory] of Object.entries(memoryRooms)) {
-    const tasks = roomMemory.tasks;
-    if (!tasks) {
+  for (const roomName of Object.keys(Game.rooms)) {
+    const tasks = getWorkerTasksByRoom(roomName);
+    if (Object.keys(tasks).length === 0) {
       continue;
     }
 
@@ -291,7 +293,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
   const productionRooms = Memory.analytics?.production?.rooms || {};
   const moduleCpuLatest = Memory.analytics?.moduleCpu?.latest;
   const moduleCpuHistory = getCpuPhaseHistory();
-  const movementAnalytics = Memory.analytics?.movement;
+  const movementAnalytics = getMovementAnalytics();
 
   const rooms: ExternalTelemetryRoomSnapshot[] = [];
   let totalWorkers = 0;

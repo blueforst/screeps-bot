@@ -5,6 +5,7 @@ import {
   getIncomingResourceTransferAmount,
   getOutgoingResourceTransferAmount,
 } from "@/runtime/logistics/resourceTransferTasks";
+import { limitActionLog } from "@/runtime/actionLog";
 import { runSynthesisTaskPlanningCompatibility } from "@/runtime/synthesisCompatibilityPlanning";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import {
@@ -1116,7 +1117,7 @@ export function runSynthesisControl(): void {
     runtime.generatedTaskCount = compatibilityActions.filter((action) => action.startsWith("task-generated:")).length;
     runtime.failedTaskCount = compatibilityActions.filter((action) => action.startsWith("task-generate-failed:")).length;
     runtime.successfulRunCount = 0;
-    runtime.lastActions = compatibilityActions;
+    runtime.lastActions = limitActionLog(compatibilityActions);
     return;
   }
 
@@ -1150,5 +1151,5 @@ export function runSynthesisControl(): void {
   pruneCarrierTasksForProducer(SYNTHESIS_CARRIER_TASK_PRODUCER, configuredRoomNames);
 
   runtime.updatedAt = Game.time;
-  runtime.lastActions = actions;
+  runtime.lastActions = limitActionLog(actions);
 }

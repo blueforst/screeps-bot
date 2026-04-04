@@ -1,3 +1,5 @@
+import { ensureCreepAssignmentState } from "@/runtime/creepAssignmentState";
+
 const RESERVATION_TTL = 12;
 
 type PickupTargetKind = "resource" | "structure";
@@ -80,13 +82,15 @@ function clearTargetEntryIfEmpty(roomName: string, targetId: string): void {
 }
 
 export function clearPickupReservationTargetMemory(creep: Creep): void {
-  delete creep.memory.energyPickupTargetId;
-  delete creep.memory.energyPickupTargetKind;
-  delete creep.memory.energyPickupRoomName;
+  const assignmentState = ensureCreepAssignmentState(creep.name);
+  delete assignmentState.energyPickupTargetId;
+  delete assignmentState.energyPickupTargetKind;
+  delete assignmentState.energyPickupRoomName;
 }
 
 export function releasePickupReservation(creep: Creep, targetId?: string): void {
-  const roomName = creep.memory.energyPickupRoomName || creep.room.name;
+  const assignmentState = ensureCreepAssignmentState(creep.name);
+  const roomName = assignmentState.energyPickupRoomName || creep.room.name;
   const roomStore = Memory.rooms?.[roomName]?.pickupReservations as
     | Record<string, PickupTargetReservation>
     | undefined;
@@ -111,9 +115,10 @@ export function releasePickupReservation(creep: Creep, targetId?: string): void 
 }
 
 function setReservedTargetMemory(creep: Creep, target: PickupTarget): void {
-  creep.memory.energyPickupTargetId = target.id;
-  creep.memory.energyPickupTargetKind = getTargetKind(target);
-  creep.memory.energyPickupRoomName = target.pos.roomName;
+  const assignmentState = ensureCreepAssignmentState(creep.name);
+  assignmentState.energyPickupTargetId = target.id;
+  assignmentState.energyPickupTargetKind = getTargetKind(target);
+  assignmentState.energyPickupRoomName = target.pos.roomName;
 }
 
 export function reservePickupTarget(creep: Creep, target: PickupTarget, desiredAmount: number): boolean {
@@ -153,8 +158,9 @@ export function reservePickupTarget(creep: Creep, target: PickupTarget, desiredA
 }
 
 export function getReservedPickupTarget(creep: Creep): PickupTarget | null {
-  const targetId = creep.memory.energyPickupTargetId;
-  const targetKind = creep.memory.energyPickupTargetKind;
+  const assignmentState = ensureCreepAssignmentState(creep.name);
+  const targetId = assignmentState.energyPickupTargetId;
+  const targetKind = assignmentState.energyPickupTargetKind;
   if (!targetId || !targetKind) {
     return null;
   }

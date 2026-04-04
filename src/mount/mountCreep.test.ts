@@ -1,5 +1,6 @@
 import { mountCreep } from "@/mount/mountCreep";
-import { replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { clearCarrierTaskBoardForTest, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState } from "@/runtime/creepAssignmentState";
 
 jest.mock("@/roles/shared", () => ({
   clearMovementState: jest.fn(),
@@ -72,6 +73,8 @@ function createRoom(name = "W1N1", options: { storage?: StructureStorage | null;
 
 describe("mountCreep carrier switching", () => {
   beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    clearCreepAssignmentStateForTest();
     resetRuntimeServices();
     installCreepPrototype();
     mountCreep();
@@ -124,7 +127,6 @@ describe("mountCreep carrier switching", () => {
         working: true,
         role: "carrier",
         roleArgs: [],
-        synthesisCarrierTaskId: "lab-cleanup-task",
       },
       pos: {
         getRangeTo: () => 1,
@@ -143,6 +145,7 @@ describe("mountCreep carrier switching", () => {
       transfer: jest.fn(() => ERR_FULL),
       withdraw: jest.fn(() => ERR_NOT_ENOUGH_RESOURCES),
     } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "lab-cleanup-task";
     Object.setPrototypeOf(creep, Creep.prototype);
     Game.creeps[creep.name] = creep;
 

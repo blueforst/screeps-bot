@@ -1,5 +1,6 @@
 import { carrierRole } from "@/roles/carrier";
-import { replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { clearCarrierTaskBoardForTest, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 
 jest.mock("@/roles/energyTargets", () => ({
@@ -105,6 +106,8 @@ function createRoom(name = "W1N1", options: { level?: number; storage?: Structur
 
 describe("carrierRole mineral hauling", () => {
   beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    clearCreepAssignmentStateForTest();
     resetRuntimeServices();
     Game.time += 1;
     Memory.rooms = {};
@@ -163,7 +166,7 @@ describe("carrierRole mineral hauling", () => {
 
     expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM);
     expect(switched).toBe(false);
-    expect(creep.memory.synthesisCarrierTaskId).toBe("mineral-task");
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("mineral-task");
   });
 
   it("keeps mineral hauling behind active energy demand", () => {
@@ -178,7 +181,7 @@ describe("carrierRole mineral hauling", () => {
     const switched = carrierRole().source?.(creep);
 
     expect(creep.withdraw).not.toHaveBeenCalled();
-    expect(creep.memory.synthesisCarrierTaskId).toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBeUndefined();
     expect(switched).toBe(false);
   });
 
@@ -198,12 +201,13 @@ describe("carrierRole mineral hauling", () => {
     } as unknown as StructureContainer;
     const creep = {
       ...createCreep(room),
-      memory: { configName: "W1N0A:carrier:0", carrierStorageOnlyMode: true },
+      memory: { configName: "W1N0A:carrier:0" },
       store: {
         getUsedCapacity: (resource?: ResourceConstant) => (resource === undefined || resource === RESOURCE_ENERGY ? 100 : 0),
         getFreeCapacity: () => 700,
       },
     } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
     getProtoStorageContainer.mockReturnValue(protoStorage);
     getProtoControllerLinkContainer.mockReturnValue(protoController);
 
@@ -230,12 +234,13 @@ describe("carrierRole mineral hauling", () => {
     } as unknown as StructureContainer;
     const creep = {
       ...createCreep(room),
-      memory: { configName: "W1N0AA:carrier:0", carrierStorageOnlyMode: true },
+      memory: { configName: "W1N0AA:carrier:0" },
       store: {
         getUsedCapacity: (resource?: ResourceConstant) => (resource === undefined || resource === RESOURCE_ENERGY ? 100 : 0),
         getFreeCapacity: () => 700,
       },
     } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
     getProtoStorageContainer.mockReturnValue(protoStorage);
     getProtoControllerLinkContainer.mockReturnValue(protoController);
 
@@ -318,9 +323,7 @@ describe("carrierRole mineral hauling", () => {
     };
     const creep = {
       ...createCreep(room),
-      memory: {
-        synthesisCarrierTaskId: "mineral-task",
-      },
+      memory: {},
       store,
       transfer: jest.fn(() => {
         remaining = 0;
@@ -328,6 +331,7 @@ describe("carrierRole mineral hauling", () => {
         return OK;
       }),
     } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "mineral-task";
     getEnergyStoreTarget.mockReturnValue(null);
     replaceCarrierTasksForProducerRoom("test", room.name, [
       {
@@ -404,7 +408,7 @@ describe("carrierRole mineral hauling", () => {
 
     expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM);
     expect(switched).toBe(false);
-    expect(creep.memory.synthesisCarrierTaskId).toBe("terminal-feed-task");
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-feed-task");
   });
 
   it("prefers mineral hauling over terminal feed when both board tasks are available", () => {
@@ -479,7 +483,7 @@ describe("carrierRole mineral hauling", () => {
 
     expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM);
     expect(switched).toBe(false);
-    expect(creep.memory.synthesisCarrierTaskId).toBe("mineral-task");
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("mineral-task");
   });
 
   it("picks terminal offload board tasks for energy only when no room energy demand exists", () => {
@@ -528,7 +532,7 @@ describe("carrierRole mineral hauling", () => {
 
     expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
     expect(switched).toBe(false);
-    expect(creep.memory.synthesisCarrierTaskId).toBe("terminal-offload-task");
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-task");
   });
 
   it("delivers board-task energy to the assigned storage target", () => {
@@ -547,9 +551,7 @@ describe("carrierRole mineral hauling", () => {
     };
     const creep = {
       ...createCreep(room),
-      memory: {
-        synthesisCarrierTaskId: "terminal-offload-task",
-      },
+      memory: {},
       store,
       transfer: jest.fn(() => {
         remaining = 0;
@@ -557,6 +559,7 @@ describe("carrierRole mineral hauling", () => {
         return OK;
       }),
     } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "terminal-offload-task";
     getEnergyStoreTarget.mockReturnValue(null);
     replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [
       {
@@ -643,7 +646,7 @@ describe("carrierRole mineral hauling", () => {
     const switched = carrierRole().source?.(creep);
 
     expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
-    expect(creep.memory.synthesisCarrierTaskId).toBe("terminal-offload-home");
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-home");
     expect(switched).toBe(false);
   });
 
@@ -667,7 +670,6 @@ describe("carrierRole mineral hauling", () => {
       ...createCreep(transitRoom),
       memory: {
         configName,
-        synthesisCarrierTaskId: "terminal-offload-home",
       },
       store,
       transfer: jest.fn(() => {
@@ -676,6 +678,7 @@ describe("carrierRole mineral hauling", () => {
         return OK;
       }),
     } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "terminal-offload-home";
 
     getCreepConfigService().upsert(configName, "carrier", [], assignedRoom.name);
     getEnergyStoreTarget.mockReturnValue(null);
@@ -730,7 +733,6 @@ describe("carrierRole mineral hauling", () => {
       ...createCreep(transitRoom),
       memory: {
         configName,
-        carrierStorageOnlyMode: true,
       },
       store,
       transfer: jest.fn(() => {
@@ -739,6 +741,7 @@ describe("carrierRole mineral hauling", () => {
         return OK;
       }),
     } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
 
     getCreepConfigService().upsert(configName, "carrier", [], assignedRoom.name);
     getEnergyStoreTarget.mockReturnValue(null);

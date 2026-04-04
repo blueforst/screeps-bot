@@ -1,7 +1,10 @@
 import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
+import { pruneDeadCreepMovementState } from "@/movement/creepState";
+import { cleanupLegacyCreepAssignmentMemory, pruneDeadCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
 import { cleanupResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import { cleanupWorkerTaskBoard } from "@/runtime/workerTaskPool";
 
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
@@ -20,7 +23,6 @@ const VALID_ROLES = new Set([
   "crossShardColonizerWorker",
 ]);
 const ROOM_PLANNER_TTL = 50000;
-const ROOM_PLANNER_AUTO_TTL = 20000;
 const INTER_SHARD_PORTAL_TTL = 10000;
 const INTER_SHARD_REMOTE_TTL = 500;
 const INTER_SHARD_CLAIM_TTL = 5000;
@@ -52,6 +54,41 @@ function cleanupDeadCreepMemory(): number {
   for (const creepName of Object.keys(Memory.creeps)) {
     if (!Game.creeps[creepName]) {
       delete Memory.creeps[creepName];
+      removed += 1;
+    }
+  }
+
+  return removed;
+}
+
+function cleanupLegacyCreepMovementMemory(): number {
+  if (!Memory.creeps) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const creepMemory of Object.values(Memory.creeps)) {
+    const legacy = creepMemory as CreepMemory & {
+      movePathState?: unknown;
+      travelState?: unknown;
+      movementPushedAt?: unknown;
+      workAnchor?: unknown;
+    };
+
+    if (legacy.movePathState !== undefined) {
+      delete legacy.movePathState;
+      removed += 1;
+    }
+    if (legacy.travelState !== undefined) {
+      delete legacy.travelState;
+      removed += 1;
+    }
+    if (legacy.movementPushedAt !== undefined) {
+      delete legacy.movementPushedAt;
+      removed += 1;
+    }
+    if (legacy.workAnchor !== undefined) {
+      delete legacy.workAnchor;
       removed += 1;
     }
   }
@@ -155,25 +192,6 @@ function cleanupRoomPlannerMemory(ownedRooms: Set<string>, colonizationTargets: 
 
     if (staleByRoom || staleByTime) {
       delete Memory.data.roomPlanner[roomName];
-      removed += 1;
-    }
-  }
-
-  return removed;
-}
-
-function cleanupRoomPlannerAutoMemory(ownedRooms: Set<string>): number {
-  if (!Memory.runtime?.roomPlannerAuto) {
-    return 0;
-  }
-
-  let removed = 0;
-  for (const [roomName, touchedAt] of Object.entries(Memory.runtime.roomPlannerAuto)) {
-    const staleByRoom = !ownedRooms.has(roomName);
-    const staleByTime = Game.time - touchedAt > ROOM_PLANNER_AUTO_TTL;
-
-    if (staleByRoom || staleByTime) {
-      delete Memory.runtime.roomPlannerAuto[roomName];
       removed += 1;
     }
   }
@@ -412,12 +430,30 @@ function cleanupCrossShardColonizationMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupLegacyAnalyticsMemory(): number {
+  const analytics = Memory.analytics as NonNullable<Memory["analytics"]> & { movement?: unknown };
+  if (!analytics?.movement) {
+    return 0;
+  }
+
+  delete analytics.movement;
+  if (Object.keys(analytics).length === 0) {
+    delete Memory.analytics;
+  }
+
+  return 1;
+}
+
 function cleanupResourceControlTaskMemory(ownedRooms: Set<string>): number {
   return cleanupResourceTransferTaskStore(ownedRooms, RESOURCE_CONTROL_TASK_TTL);
 }
 
 function cleanupCarrierTaskBoardMemory(ownedRooms: Set<string>): number {
   return cleanupCarrierTaskBoard(ownedRooms, CARRIER_TASK_BOARD_TTL);
+}
+
+function cleanupWorkerTaskBoardMemory(ownedRooms: Set<string>): number {
+  return cleanupWorkerTaskBoard(ownedRooms);
 }
 
 function cleanupTowerCombatMemory(ownedRooms: Set<string>): number {
@@ -435,26 +471,6 @@ function cleanupTowerCombatMemory(ownedRooms: Set<string>): number {
 
   if (Object.keys(Memory.runtime.towerCombat).length === 0) {
     delete Memory.runtime.towerCombat;
-  }
-
-  return removed;
-}
-
-function cleanupWorkerDynamicMemory(ownedRooms: Set<string>): number {
-  if (!Memory.runtime?.workerDynamic) {
-    return 0;
-  }
-
-  let removed = 0;
-  for (const roomName of Object.keys(Memory.runtime.workerDynamic)) {
-    if (!ownedRooms.has(roomName)) {
-      delete Memory.runtime.workerDynamic[roomName];
-      removed += 1;
-    }
-  }
-
-  if (Object.keys(Memory.runtime.workerDynamic).length === 0) {
-    delete Memory.runtime.workerDynamic;
   }
 
   return removed;
@@ -491,6 +507,10 @@ export function runMemoryCleanup(): void {
   }
 
   cleanupDeadCreepMemory();
+  pruneDeadCreepAssignmentState();
+  pruneDeadCreepMovementState();
+  cleanupLegacyCreepAssignmentMemory();
+  cleanupLegacyCreepMovementMemory();
   cleanupDeadSpawnMemory();
   cleanupSpawnQueueMemory();
   cleanupLegacyConfigMemory();
@@ -498,7 +518,6 @@ export function runMemoryCleanup(): void {
   const ownedRooms = getOwnedRoomNameSet();
   const colonizationTargets = getColonizationTargetRoomNameSet();
   cleanupRoomPlannerMemory(ownedRooms, colonizationTargets);
-  cleanupRoomPlannerAutoMemory(ownedRooms);
   cleanupLinkNetworkMemory(ownedRooms);
   cleanupTowerEmergencyMemory(ownedRooms);
   cleanupResourceControlMemory(ownedRooms);
@@ -508,9 +527,10 @@ export function runMemoryCleanup(): void {
   cleanupInterShardPortalMemory();
   cleanupCrossShardRuntimeMemory();
   cleanupCrossShardColonizationMemory(ownedRooms);
+  cleanupLegacyAnalyticsMemory();
   cleanupResourceControlTaskMemory(ownedRooms);
+  cleanupWorkerTaskBoardMemory(ownedRooms);
   cleanupCarrierTaskBoardMemory(ownedRooms);
   cleanupTowerCombatMemory(ownedRooms);
-  cleanupWorkerDynamicMemory(ownedRooms);
   cleanupNonOwnedRoomMemory(ownedRooms);
 }

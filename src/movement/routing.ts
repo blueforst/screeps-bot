@@ -1,4 +1,5 @@
 import { measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
+import { ensureCreepMovementState } from "@/movement/creepState";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPosKey, parseEncodedRouteRooms } from "@/movement/common";
 import { recordMovementMetric } from "@/movement/metrics";
@@ -50,7 +51,7 @@ export function moveToTargetRoom(
   recordMovementMetric("travelRequests", creep.room.name);
 
   if (creep.room.name === targetRoom) {
-    delete creep.memory.travelState;
+    delete ensureCreepMovementState(creep.name).travelState;
     return OK;
   }
 
@@ -146,7 +147,7 @@ export function moveToTargetRoom(
 }
 
 function getTravelState(creep: Creep, targetRoom: string): TravelState {
-  const memoryState = creep.memory.travelState as TravelState | undefined;
+  const memoryState = ensureCreepMovementState(creep.name).travelState;
   if (!memoryState || memoryState.targetRoom !== targetRoom) {
     return { targetRoom, stuckTicks: 0 };
   }
@@ -154,7 +155,7 @@ function getTravelState(creep: Creep, targetRoom: string): TravelState {
 }
 
 function updateTravelState(creep: Creep, state: TravelState): void {
-  creep.memory.travelState = state;
+  ensureCreepMovementState(creep.name).travelState = state;
 }
 
 function getDangerousRoomsForTarget(targetRoom: string): string[] {

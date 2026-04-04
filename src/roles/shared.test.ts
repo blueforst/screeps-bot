@@ -7,6 +7,7 @@ import {
   moveToTargetRoom,
   moveToTarget,
 } from "@/roles/shared";
+import { clearCreepMovementStateForTest, ensureCreepMovementState, getCreepMovementState } from "@/movement";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -129,6 +130,7 @@ function createCreep(name: string, role: CreepMemory["role"], x: number, y: numb
 describe("moveToTarget yielding", () => {
   beforeEach(() => {
     resetRuntimeServices();
+    clearCreepMovementStateForTest();
     clearMovementAnalyticsForTest();
     clearRoomBaseCostMatrixCacheForTest();
     Game.time += 1;
@@ -162,7 +164,7 @@ describe("moveToTarget yielding", () => {
     expect(result).toBe(OK);
     expect(blocker.move).toHaveBeenCalled();
     expect(pusher.move).toHaveBeenCalledWith(RIGHT);
-    expect(blocker.memory.movementPushedAt).toBe(Game.time);
+    expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
   });
 
   it("continues forward on a cached path instead of stepping back to the previous tile", () => {
@@ -171,7 +173,7 @@ describe("moveToTarget yielding", () => {
     const creep = createCreep("worker-forward", "worker", 11, 10, room);
     creeps.push(creep);
     Game.creeps[creep.name] = creep;
-    creep.memory.movePathState = {
+    ensureCreepMovementState(creep.name).movePathState = {
       key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md`,
       path: "333",
       steps: [
@@ -200,7 +202,7 @@ describe("moveToTarget yielding", () => {
     const creep = createCreep("worker-legacy", "worker", 10, 10, room);
     creeps.push(creep);
     Game.creeps[creep.name] = creep;
-    creep.memory.movePathState = {
+    ensureCreepMovementState(creep.name).movePathState = {
       key: `${room.name}:${room.name}:12:10:r1:i0:sd:pd:md`,
       path: "33",
       targetRoom: room.name,
@@ -209,7 +211,7 @@ describe("moveToTarget yielding", () => {
       range: 1,
       stuckTicks: 0,
       expiresAt: Game.time + 5,
-    } as CreepMemory["movePathState"];
+    } as unknown as import("@/movement/types").MovePathState;
     (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
       { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
       { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
@@ -219,13 +221,13 @@ describe("moveToTarget yielding", () => {
 
     expect(result).toBe(OK);
     expect(creep.move).toHaveBeenCalledWith(RIGHT);
-    expect((creep.memory.movePathState?.steps || [])[0]).toEqual({ x: 11, y: 10 });
+    expect((getCreepMovementState(creep.name)?.movePathState?.steps || [])[0]).toEqual({ x: 11, y: 10 });
   });
 
   it("does not move again on the same tick after being pushed", () => {
     const room = createRoom("W1N3");
     const creep = createCreep("carrier-2", "carrier", 10, 10, room);
-    creep.memory.movementPushedAt = Game.time;
+    ensureCreepMovementState(creep.name).movementPushedAt = Game.time;
     (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
       { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
     ]);
@@ -400,12 +402,12 @@ describe("moveToTargetRoom", () => {
   it("returns ok immediately when already in the target room", () => {
     const room = createRoom("W9N9");
     const creep = createCreep("scout-same", "scout", 10, 10, room);
-    creep.memory.travelState = { targetRoom: "W8N8", stuckTicks: 3 };
+    ensureCreepMovementState(creep.name).travelState = { targetRoom: "W8N8", stuckTicks: 3 };
 
     const result = moveToTargetRoom(creep, room.name);
 
     expect(result).toBe(OK);
-    expect(creep.memory.travelState).toBeUndefined();
+    expect(getCreepMovementState(creep.name)?.travelState).toBeUndefined();
   });
 
   it("follows the next ordered room from a fixed route", () => {
@@ -440,7 +442,7 @@ describe("moveToTargetRoom", () => {
 
     expect(result).toBe(OK);
     expect(creep.move).toHaveBeenCalledWith(RIGHT);
-    expect(creep.memory.travelState?.targetRoom).toBe("W1N3");
+    expect(getCreepMovementState(creep.name)?.travelState?.targetRoom).toBe("W1N3");
   });
 
   it("falls back to dynamic routing when fixed-route progression fails", () => {
@@ -518,7 +520,7 @@ describe("moveToTargetRoom", () => {
       return ERR_NO_PATH;
     });
 
-    creep.memory.travelState = {
+    ensureCreepMovementState(creep.name).travelState = {
       targetRoom: "W3N3",
       stuckTicks: 1,
       lastPosKey: "W3N1:10:10",
@@ -529,15 +531,19 @@ describe("moveToTargetRoom", () => {
     expect(result).toBe(OK);
     expect(Game.map.findRoute).toHaveBeenCalled();
     expect(creep.move).toHaveBeenCalledWith(TOP);
-    expect(creep.memory.travelState?.stuckTicks).toBe(2);
+    expect(getCreepMovementState(creep.name)?.travelState?.stuckTicks).toBe(2);
   });
 });
 
 describe("clearMovementState", () => {
+  beforeEach(() => {
+    clearMovementAnalyticsForTest();
+  });
+
   it("clears cached path, travel, and pushed flags together", () => {
     const room = createRoom("W8N8");
     const creep = createCreep("carrier-clear", "carrier", 10, 10, room);
-    creep.memory.movePathState = {
+      ensureCreepMovementState(creep.name).movePathState = {
       key: "path",
       path: "3",
       steps: [{ x: 11, y: 10 }],
@@ -548,15 +554,15 @@ describe("clearMovementState", () => {
       stuckTicks: 0,
       expiresAt: Game.time + 1,
     };
-    creep.memory.travelState = { targetRoom: "W8N9", stuckTicks: 1 };
-    creep.memory.movementPushedAt = Game.time;
+    ensureCreepMovementState(creep.name).travelState = { targetRoom: "W8N9", stuckTicks: 1 };
+    ensureCreepMovementState(creep.name).movementPushedAt = Game.time;
     creep.memory._move = { dest: { x: 12, y: 10, room: room.name }, path: "33", time: Game.time };
 
     clearMovementState(creep);
 
-    expect(creep.memory.movePathState).toBeUndefined();
-    expect(creep.memory.travelState).toBeUndefined();
-    expect(creep.memory.movementPushedAt).toBeUndefined();
+    expect(getCreepMovementState(creep.name)?.movePathState).toBeUndefined();
+    expect(getCreepMovementState(creep.name)?.travelState).toBeUndefined();
+    expect(getCreepMovementState(creep.name)?.movementPushedAt).toBeUndefined();
     expect(creep.memory._move).toBeUndefined();
   });
 
@@ -650,7 +656,7 @@ describe("movement analytics", () => {
         }
         return ERR_NO_PATH;
       });
-    creep.memory.travelState = {
+    ensureCreepMovementState(creep.name).travelState = {
       targetRoom: "W6N3",
       stuckTicks: 1,
       lastPosKey: `${room.name}:10:10`,
