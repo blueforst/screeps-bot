@@ -451,4 +451,231 @@ describe("runResourceControl terminal feed tasks", () => {
       `market-sell:${room.name}:${RESOURCE_KEANIUM}=1500:price=0.800:cost=200`,
     );
   });
+
+  it("does not auto-sell energy even if sellResources includes energy", () => {
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: true,
+          sellResources: [RESOURCE_ENERGY, RESOURCE_KEANIUM],
+        },
+        rooms: {
+          W9N2E: {
+            energyExportStart: 250000,
+          },
+        },
+      },
+    };
+    const room = createRoom({
+      name: "W9N2E",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30000,
+      },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_ENERGY) {
+        return [
+          {
+            id: "buy-order-energy-1",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_ENERGY,
+            price: 0.2,
+            amount: 10000,
+            roomName: "W8N8",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(Memory.runtime?.resourceControl?.lastMarketActions).toEqual([]);
+  });
+
+  it("does not buy base minerals just to refill mineralFloor when no synthesis demand exists", () => {
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: true,
+          maxBuyPrice: {
+            [RESOURCE_HYDROGEN]: 1,
+          },
+        },
+        rooms: {
+          W9N3: {
+            mineralFloor: {
+              [RESOURCE_HYDROGEN]: 5000,
+            },
+          },
+        },
+      },
+    };
+    const room = createRoom({
+      name: "W9N3",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+      },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_SELL && filter.resourceType === RESOURCE_HYDROGEN) {
+        return [
+          {
+            id: "sell-order-h-1",
+            type: ORDER_SELL,
+            resourceType: RESOURCE_HYDROGEN,
+            price: 0.5,
+            amount: 5000,
+            roomName: "W8N8",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(Memory.runtime?.resourceControl?.lastMarketActions).toEqual([]);
+  });
+
+  it("buys base minerals when synthesis demand is below target", () => {
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: true,
+          maxBuyPrice: {
+            [RESOURCE_HYDROGEN]: 1,
+          },
+        },
+        synthesis: {
+          enabled: true,
+          rooms: {
+            W9N4: {
+              demands: {
+                [RESOURCE_HYDROGEN]: 5000,
+              },
+            },
+          },
+        },
+      },
+    };
+    const room = createRoom({
+      name: "W9N4",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+      },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_SELL && filter.resourceType === RESOURCE_HYDROGEN) {
+        return [
+          {
+            id: "sell-order-h-2",
+            type: ORDER_SELL,
+            resourceType: RESOURCE_HYDROGEN,
+            price: 0.5,
+            amount: 5000,
+            roomName: "W8N8",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("sell-order-h-2", 5000, room.name);
+    expect(Memory.runtime?.resourceControl?.lastMarketActions).toContain(
+      `market-buy:${room.name}:${RESOURCE_HYDROGEN}=5000:price=0.500:cost=200`,
+    );
+  });
+
+  it("buys base minerals when active synthesis runtime state reports missing reagents", () => {
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: true,
+          maxBuyPrice: {
+            [RESOURCE_HYDROGEN]: 1,
+          },
+        },
+      },
+    };
+    Memory.runtime = {
+      synthesisControl: {
+        updatedAt: Game.time,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          W9N5: {
+            stage: "acquiring",
+            reagentLabIds: [],
+            productLabIds: [],
+            successfulRuns: 0,
+            pendingTasks: 0,
+            missing: {
+              [RESOURCE_HYDROGEN]: 3000,
+            },
+            lastTransitionAt: Game.time,
+          },
+        },
+      },
+    };
+    const room = createRoom({
+      name: "W9N5",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+      },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 150);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_SELL && filter.resourceType === RESOURCE_HYDROGEN) {
+        return [
+          {
+            id: "sell-order-h-3",
+            type: ORDER_SELL,
+            resourceType: RESOURCE_HYDROGEN,
+            price: 0.45,
+            amount: 3000,
+            roomName: "W8N8",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("sell-order-h-3", 3000, room.name);
+    expect(Memory.runtime?.resourceControl?.lastMarketActions).toContain(
+      `market-buy:${room.name}:${RESOURCE_HYDROGEN}=3000:price=0.450:cost=150`,
+    );
+  });
 });

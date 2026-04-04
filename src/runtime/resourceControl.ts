@@ -14,7 +14,7 @@ type ResourceControlState = "survival" | "balanced" | "export";
 type ResourceThresholdMap = Partial<Record<ResourceConstant, number>>;
 
 const BASE_MINERALS: ResourceConstant[] = [RESOURCE_HYDROGEN, RESOURCE_OXYGEN, RESOURCE_UTRIUM, RESOURCE_LEMERGIUM, RESOURCE_KEANIUM, RESOURCE_ZYNTHIUM, RESOURCE_CATALYST];
-const DEFAULT_MARKET_SELL_RESOURCES: ResourceConstant[] = [RESOURCE_ENERGY, ...BASE_MINERALS];
+const DEFAULT_MARKET_SELL_RESOURCES: ResourceConstant[] = [...BASE_MINERALS];
 
 interface ResourceControlRoomConfig {
   energyFloor: number;
@@ -264,6 +264,24 @@ function resolveRoomConfig(roomName: string): ResourceControlRoomConfig {
 function resolveMarketConfig(): ResourceControlMarketConfig {
   const cfg = Memory.cfg?.resourceControl;
   return normalizeMarketConfig(cfg?.market);
+}
+
+function getSynthesisDemandTarget(roomName: string, resource: ResourceConstant): number {
+  const value = Memory.cfg?.resourceControl?.synthesis?.rooms?.[roomName]?.demands?.[resource];
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor(value));
+}
+
+function getActiveSynthesisMissing(roomName: string, resource: ResourceConstant): number {
+  const value = Memory.runtime?.synthesisControl?.rooms?.[roomName]?.missing?.[resource];
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor(value));
 }
 
 function resolveTaskMaxPerRun(): number {
@@ -705,11 +723,12 @@ function getNativeMineralAutoSellTerminalTarget(
 }
 
 function getSellResourcesForRoom(room: ResourceControlSnapshot, marketCfg: ResourceControlMarketConfig): ResourceConstant[] {
+  const sellResources = marketCfg.sellResources.filter((resource) => resource !== RESOURCE_ENERGY);
   if (!room.canMineNative || !room.nativeMineralType) {
-    return marketCfg.sellResources;
+    return sellResources;
   }
 
-  return [room.nativeMineralType, ...marketCfg.sellResources.filter((resource) => resource !== room.nativeMineralType)];
+  return [room.nativeMineralType, ...sellResources.filter((resource) => resource !== room.nativeMineralType)];
 }
 
 function getReservedTerminalEnergyForPendingSends(
@@ -820,6 +839,27 @@ function shouldSkipMarketBuyForResource(snapshot: ResourceControlSnapshot, resou
   }
 
   return snapshot.canMineNative && snapshot.nativeMineralType === resource;
+}
+
+function getMarketBuyDemandDeficit(snapshot: ResourceControlSnapshot, resource: ResourceConstant): number {
+  if (resource === RESOURCE_ENERGY) {
+    return 0;
+  }
+
+  const activeMissing = getActiveSynthesisMissing(snapshot.roomName, resource);
+  if (activeMissing > 0) {
+    return activeMissing;
+  }
+
+  const demandTarget = getSynthesisDemandTarget(snapshot.roomName, resource);
+  if (demandTarget <= 0) {
+    return 0;
+  }
+
+  const room = Game.rooms[snapshot.roomName];
+  const current = room?.controller?.my ? getResourceControlRoomStock(room, resource) : getStock(snapshot, resource);
+  const incoming = getIncomingResourceTransferAmount(snapshot.roomName, resource);
+  return Math.max(0, demandTarget - current - incoming);
 }
 
 function findBestBuyOrder(
@@ -1037,13 +1077,7 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
         continue;
       }
 
-      const floor = room.mineralFloor[resource] || 0;
-      if (floor <= 0) {
-        continue;
-      }
-
-      const current = getStock(room, resource);
-      const deficit = Math.max(0, floor - current);
+      const deficit = getMarketBuyDemandDeficit(room, resource);
       if (deficit < marketCfg.minDealAmount) {
         continue;
       }
