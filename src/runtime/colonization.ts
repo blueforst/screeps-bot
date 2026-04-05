@@ -30,6 +30,15 @@ const BOOTSTRAP_WORKER_COUNT = 2;
 const MAX_SAFE_ROUTE_LENGTH = 500;
 const TEMP_DANGEROUS_ROOM_TTL = 1000;
 
+let safeRouteCacheTick = -1;
+const safeRouteCache = new Map<string, string[] | null>();
+let routeLengthCacheTick = -1;
+const routeLengthCache = new Map<string, number>();
+let roomStatusCacheTick = -1;
+const roomStatusCache = new Map<string, boolean>();
+let visibleDangerCacheTick = -1;
+const visibleDangerCache = new Map<string, boolean>();
+
 function getBodyCost(body: BodyPartConstant[]): number {
   return body.reduce((sum, part) => sum + BODYPART_COST[part], 0);
 }
@@ -458,7 +467,7 @@ function updateDangerousRoomsFromSquadDamage(task: ColonizationTask): void {
   }
 }
 
-function estimateRouteLength(task: ColonizationTask, routeRooms: string[]): number {
+function estimateRouteLengthInner(task: ColonizationTask, routeRooms: string[]): number {
   const allowedRooms = new Set(routeRooms);
   if (!allowedRooms.has(task.sourceRoom) || !allowedRooms.has(task.targetRoom)) {
     return Infinity;
@@ -493,7 +502,57 @@ function estimateRouteLength(task: ColonizationTask, routeRooms: string[]): numb
   return search.path.length;
 }
 
-function findSafeRoute(task: ColonizationTask): string[] | null {
+function estimateRouteLength(task: ColonizationTask, routeRooms: string[]): number {
+  if (routeLengthCacheTick !== Game.time) {
+    routeLengthCache.clear();
+    routeLengthCacheTick = Game.time;
+  }
+
+  const cacheKey = `${task.sourceRoom}->${task.targetRoom}:${routeRooms.join("|")}`;
+  const cached = routeLengthCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = estimateRouteLengthInner(task, routeRooms);
+  routeLengthCache.set(cacheKey, result);
+  return result;
+}
+
+function isRoomStatusNormal(roomName: string): boolean {
+  if (roomStatusCacheTick !== Game.time) {
+    roomStatusCache.clear();
+    roomStatusCacheTick = Game.time;
+  }
+
+  const cached = roomStatusCache.get(roomName);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = Game.map.getRoomStatus(roomName).status === "normal";
+  roomStatusCache.set(roomName, result);
+  return result;
+}
+
+function isDangerousVisibleRoomCached(roomName: string, myUsername: string | null): boolean {
+  if (visibleDangerCacheTick !== Game.time) {
+    visibleDangerCache.clear();
+    visibleDangerCacheTick = Game.time;
+  }
+
+  const cacheKey = `${myUsername ?? ""}:${roomName}`;
+  const cached = visibleDangerCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = isDangerousVisibleRoom(roomName, myUsername);
+  visibleDangerCache.set(cacheKey, result);
+  return result;
+}
+
+function findSafeRouteInner(task: ColonizationTask): string[] | null {
   const myUsername = getMyUsername();
   const dangerousRooms = new Set(task.dangerousRooms ?? []);
   const route = Game.map.findRoute(task.sourceRoom, task.targetRoom, {
@@ -506,11 +565,11 @@ function findSafeRoute(task: ColonizationTask): string[] | null {
         return Infinity;
       }
 
-      if (Game.map.getRoomStatus(roomName).status !== "normal") {
+      if (!isRoomStatusNormal(roomName)) {
         return Infinity;
       }
 
-      if (isDangerousVisibleRoom(roomName, myUsername)) {
+      if (isDangerousVisibleRoomCached(roomName, myUsername)) {
         return Infinity;
       }
 
@@ -543,6 +602,24 @@ function findSafeRoute(task: ColonizationTask): string[] | null {
   }
 
   return routeRooms;
+}
+
+function findSafeRoute(task: ColonizationTask): string[] | null {
+  if (safeRouteCacheTick !== Game.time) {
+    safeRouteCache.clear();
+    safeRouteCacheTick = Game.time;
+  }
+
+  const dangerousRooms = [...(task.dangerousRooms ?? [])].sort();
+  const cacheKey = `${task.sourceRoom}->${task.targetRoom}:${dangerousRooms.join("|")}`;
+  const cached = safeRouteCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = findSafeRouteInner(task);
+  safeRouteCache.set(cacheKey, result);
+  return result;
 }
 
 function isAdjacentRoomByName(fromRoom: string, toRoom: string): boolean {

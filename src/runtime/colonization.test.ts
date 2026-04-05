@@ -80,7 +80,7 @@ function createSpawn(room: Room): StructureSpawn {
   } as unknown as StructureSpawn;
 }
 
-function createScout(sourceRoom: string, targetRoom: Room): Creep {
+function createScout(sourceRoom: string, targetRoom: Room, name = "scout1"): Creep {
   const configName = `${sourceRoom}:colonize:${targetRoom.name}:scout:0`;
   const memory = {
     role: "scout",
@@ -88,10 +88,10 @@ function createScout(sourceRoom: string, targetRoom: Room): Creep {
     scoutVisitedRooms: [sourceRoom, targetRoom.name],
   } as CreepMemory;
 
-  Memory.creeps.scout1 = memory;
+  Memory.creeps[name] = memory;
 
   return {
-    name: "scout1",
+    name,
     room: targetRoom,
     owner: {
       username: "me",
@@ -195,4 +195,43 @@ describe("runColonizationByFlag", () => {
     expect(Memory.data?.colonization?.W1N2?.status).toBe("waiting_plan");
     expect(getCreepConfigService().get("W1N1:colonize:W1N2:claimer:0")).toBeUndefined();
   });
+
+  it("reuses a failed safe-route lookup within the same tick", () => {
+    const sourceRoom = createSourceRoom("W1N1");
+    const spawn = createSpawn(sourceRoom);
+
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    Game.spawns.Spawn1 = spawn;
+    Game.flags.CL = {
+      name: "CL",
+      pos: {
+        roomName: "W1N2",
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+
+    (Game.map.findRoute as jest.Mock).mockReturnValue(ERR_NO_PATH);
+    Memory.data = {
+      colonization: {
+        W1N2: {
+          targetRoom: "W1N2",
+          sourceRoom: "W1N1",
+          status: "claiming",
+          flagName: "CL",
+          planReady: false,
+          claimCompleted: false,
+          scoutSafe: false,
+          scoutRouteRooms: ["W1N1", "W9N9", "W1N2"],
+          dangerousRooms: [],
+          createdAt: Game.time,
+          updatedAt: Game.time,
+        },
+      },
+    } as Memory["data"];
+
+    runColonizationByFlag();
+
+    expect(Game.map.findRoute).toHaveBeenCalledTimes(1);
+  });
+
 });
