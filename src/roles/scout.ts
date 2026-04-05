@@ -1,5 +1,5 @@
 import type { RoleFactory } from "@/types/system";
-import { getCurrentScoutRoute, moveToTargetRoom } from "@/roles/shared";
+import { getCurrentScoutRoute, moveToTarget, moveToTargetRoom } from "@/roles/shared";
 
 function recordVisitedRoom(creep: Creep): void {
   const route = creep.memory.scoutVisitedRooms || [];
@@ -41,7 +41,17 @@ export const scoutRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: 
     }
 
     const activeRoute = getCurrentScoutRoute(targetRoom, encodedRouteRooms);
-    moveToTargetRoom(creep, targetRoom, activeRoute || undefined, { plainCost: 2, swampCost: 10, reusePath: 5 });
+    if (activeRoute) {
+      moveToTargetRoom(creep, targetRoom, activeRoute, { plainCost: 2, swampCost: 10, reusePath: 5 });
+      return false;
+    }
+
+    moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 3, {
+      plainCost: 2,
+      swampCost: 10,
+      reusePath: 5,
+      maxRooms: 32,
+    });
 
     return false;
   },
