@@ -197,9 +197,35 @@ describe("energyTargets", () => {
     expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
   });
 
-  it("falls back to the proto controller container when storage targets are unavailable", () => {
+  it("prefers the proto storage container before the proto controller container", () => {
+    const protoStorage = {
+      id: "proto-storage-1",
+      structureType: STRUCTURE_CONTAINER,
+      pos: createPos(7),
+      store: createStore(200, 2000),
+    } as unknown as StructureContainer;
     const protoController = {
       id: "proto-controller-1",
+      structureType: STRUCTURE_CONTAINER,
+      pos: createPos(8),
+      store: createStore(200, 2000),
+    } as unknown as StructureContainer;
+    const room = createRoom({
+      storage: null,
+      terminal: null,
+      myStructures: [],
+    });
+    Game.rooms[room.name] = room;
+    getProtoStorageContainer.mockReturnValue(protoStorage);
+    getProtoControllerLinkContainer.mockReturnValue(protoController);
+    const creep = createCreep(room);
+
+    expect(getEnergyStoreTarget(creep)?.id).toBe(protoStorage.id);
+  });
+
+  it("falls back to the proto controller container when storage targets are unavailable", () => {
+    const protoController = {
+      id: "proto-controller-2",
       structureType: STRUCTURE_CONTAINER,
       pos: createPos(8),
       store: createStore(200, 2000),

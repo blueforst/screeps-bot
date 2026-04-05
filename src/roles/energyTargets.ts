@@ -139,6 +139,12 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       return targetRoom.terminal;
     }
 
+    const protoStorageContainer = targetRoom ? getProtoStorageContainer(targetRoom) : null;
+    if (protoStorageContainer && !excludeSet.has(protoStorageContainer.id) &&
+        protoStorageContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+      return protoStorageContainer;
+    }
+
     const protoControllerContainer = targetRoom ? getProtoControllerLinkContainer(targetRoom) : null;
     if (protoControllerContainer && !excludeSet.has(protoControllerContainer.id) &&
         protoControllerContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
