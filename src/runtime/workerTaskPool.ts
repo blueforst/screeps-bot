@@ -70,7 +70,12 @@ function getAssignedWorkerRoomName(creep: Creep): string {
     return creep.room.name;
   }
 
-  return getCreepConfigService().get(configName)?.roomName || creep.room.name;
+   const config = getCreepConfigService().get(configName);
+   if (config?.role === "colonizerWorker" || config?.role === "crossShardColonizerWorker") {
+     return creep.room.name;
+   }
+
+   return config?.roomName || creep.room.name;
 }
 
 function getBuildPriority(structureType: BuildableStructureConstant | StructureConstant): number {

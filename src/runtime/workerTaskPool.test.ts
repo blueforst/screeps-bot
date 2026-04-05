@@ -12,7 +12,7 @@ function createPos(roomName: string): RoomPosition {
   } as unknown as RoomPosition;
 }
 
-function createCreep(name: string, roomName: string, taskId?: string, configName?: string): Creep {
+function createCreep(name: string, roomName: string, configName?: string): Creep {
   return {
     name,
     room: { name: roomName } as Room,
@@ -66,7 +66,7 @@ describe("workerTaskPool", () => {
     Memory.rooms.W1N1 = { tasks: { [repairTask.id]: repairTask } } as RoomMemory;
     Memory.rooms.W1N2 = { tasks: {} } as RoomMemory;
 
-    const creep = createCreep("Worker1", "W1N2", repairTask.id);
+    const creep = createCreep("Worker1", "W1N2");
     ensureCreepAssignmentState(creep.name).taskId = repairTask.id;
     Game.creeps[creep.name] = creep;
 
@@ -102,7 +102,7 @@ describe("workerTaskPool", () => {
       },
     } as RoomMemory;
 
-    const staleRepairAssignee = createCreep("Worker1", "W1N1", upgradeTask.id);
+    const staleRepairAssignee = createCreep("Worker1", "W1N1");
     ensureCreepAssignmentState(staleRepairAssignee.name).taskId = upgradeTask.id;
     const availableWorker = createCreep("Worker2", "W1N1");
     Game.creeps[staleRepairAssignee.name] = staleRepairAssignee;
@@ -144,7 +144,7 @@ describe("workerTaskPool", () => {
       },
     } as RoomMemory;
 
-    const activeRepairAssignee = createCreep("Worker1", "W1N1", repairTask.id);
+    const activeRepairAssignee = createCreep("Worker1", "W1N1");
     ensureCreepAssignmentState(activeRepairAssignee.name).taskId = repairTask.id;
     const availableWorker = createCreep("Worker2", "W1N1");
     Game.creeps[activeRepairAssignee.name] = activeRepairAssignee;
@@ -183,7 +183,7 @@ describe("workerTaskPool", () => {
     const configName = "W1N1:worker:0";
     getCreepConfigService().upsert(configName, "worker", [], "W1N1");
 
-    const creep = createCreep("Worker1", "W1N2", undefined, configName);
+    const creep = createCreep("Worker1", "W1N2", configName);
     Game.creeps[creep.name] = creep;
 
     objects.r1 = { pos: createPos("W1N1") };
@@ -194,5 +194,41 @@ describe("workerTaskPool", () => {
     expect(assignedTask?.id).toBe(homeRepairTask.id);
     expect(homeRepairTask.assignedCreeps).toEqual(["Worker1"]);
     expect(foreignUpgradeTask.assignedCreeps).toEqual([]);
+  });
+
+  it("assigns colonizer workers to tasks in their current room instead of the source spawn room", () => {
+    const sourceRepairTask = createTask({
+      id: "repair:source",
+      type: "repair",
+      targetId: "source-target",
+      roomName: "W1N1",
+      repairMode: "normal",
+      priority: 320,
+    });
+    const targetUpgradeTask = createTask({
+      id: "upgrade:target",
+      type: "upgrade",
+      targetId: "target-controller",
+      roomName: "W1N2",
+      maxAssignees: 2,
+      priority: 300,
+    });
+    Memory.rooms.W1N1 = { tasks: { [sourceRepairTask.id]: sourceRepairTask } } as RoomMemory;
+    Memory.rooms.W1N2 = { tasks: { [targetUpgradeTask.id]: targetUpgradeTask } } as RoomMemory;
+
+    const configName = "W1N1:colonize:W1N2:worker:0";
+    getCreepConfigService().upsert(configName, "colonizerWorker", ["W1N2", "W1N1|W1N2"], "W1N1");
+
+    const creep = createCreep("ColonizerWorker1", "W1N2", configName);
+    Game.creeps[creep.name] = creep;
+
+    objects["source-target"] = { pos: createPos("W1N1") };
+    objects["target-controller"] = { pos: createPos("W1N2") };
+
+    const assignedTask = assignWorkerTask(creep);
+
+    expect(assignedTask?.id).toBe(targetUpgradeTask.id);
+    expect(sourceRepairTask.assignedCreeps).toEqual([]);
+    expect(targetUpgradeTask.assignedCreeps).toEqual(["ColonizerWorker1"]);
   });
 });
