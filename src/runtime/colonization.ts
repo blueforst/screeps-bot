@@ -808,14 +808,10 @@ function requestScoutRescan(task: ColonizationTask, reason: string): void {
 }
 
 function ensureScout(task: ColonizationTask): void {
-  if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
-    return;
-  }
-
   const configName = getTaskConfigName(task, "scout", "0");
   upsertConfig(configName, {
     role: "scout",
-    args: [task.targetRoom, task.scoutRouteRooms.join("|")],
+    args: [task.targetRoom, task.scoutRouteRooms?.join("|") || ""],
     roomName: task.sourceRoom,
     body: SCOUT_BODY,
   });

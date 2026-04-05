@@ -285,6 +285,33 @@ describe("runColonizationByFlag", () => {
     expect(Game.map.findRoute).toHaveBeenCalledTimes(1);
   });
 
+  it("creates and queues a scout even before a fixed safe route is found", () => {
+    const sourceRoom = createSourceRoom("W1N1");
+    const spawn = createSpawn(sourceRoom);
+
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    Game.spawns.Spawn1 = spawn;
+    Game.flags.CL = {
+      name: "CL",
+      pos: {
+        roomName: "W1N2",
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+
+    (Game.map.findRoute as jest.Mock).mockReturnValue(ERR_NO_PATH);
+
+    runColonizationByFlag();
+
+    expect(getCreepConfigService().get("W1N1:colonize:W1N2:scout:0")).toMatchObject({
+      role: "scout",
+      roomName: "W1N1",
+      args: ["W1N2", ""],
+      body: [MOVE],
+    });
+    expect(spawn.memory.spawnList).toContain("W1N1:colonize:W1N2:scout:0");
+  });
+
   it("throttles repeated planner retries when plan generation fails", () => {
     const sourceRoom = createSourceRoom("W1N1");
     const targetRoom = createTargetRoom("W1N2");
