@@ -13,6 +13,10 @@ import { runColonizationByFlag } from "@/runtime/colonization";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { requestWarRoomClear } from "@/runtime/warControl";
 
+const { runPlannerForRoom } = jest.requireMock("@/modules/autoplanner") as {
+  runPlannerForRoom: jest.Mock;
+};
+
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
 };
@@ -232,6 +236,90 @@ describe("runColonizationByFlag", () => {
     runColonizationByFlag();
 
     expect(Game.map.findRoute).toHaveBeenCalledTimes(1);
+  });
+
+  it("throttles repeated failed safe-route retries across ticks while target stays unseen", () => {
+    const sourceRoom = createSourceRoom("W1N1");
+    const spawn = createSpawn(sourceRoom);
+
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    Game.spawns.Spawn1 = spawn;
+    Game.flags.CL = {
+      name: "CL",
+      pos: {
+        roomName: "W1N2",
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+
+    (Game.map.findRoute as jest.Mock).mockReturnValue(ERR_NO_PATH);
+    Memory.data = {
+      colonization: {
+        W1N2: {
+          targetRoom: "W1N2",
+          sourceRoom: "W1N1",
+          status: "claiming",
+          flagName: "CL",
+          planReady: false,
+          claimCompleted: false,
+          scoutSafe: false,
+          scoutRouteRooms: ["W1N1", "W9N9", "W1N2"],
+          dangerousRooms: [],
+          safeRouteRetryAt: Game.time + 10,
+          safeRouteRetryKey: "W1N1->W1N2:",
+          createdAt: Game.time,
+          updatedAt: Game.time,
+        },
+      },
+    } as Memory["data"];
+
+    runColonizationByFlag();
+    expect(Game.map.findRoute).not.toHaveBeenCalled();
+
+    Game.time += 9;
+    runColonizationByFlag();
+    expect(Game.map.findRoute).not.toHaveBeenCalled();
+
+    Game.time += 1;
+    runColonizationByFlag();
+    expect(Game.map.findRoute).toHaveBeenCalledTimes(1);
+  });
+
+  it("throttles repeated planner retries when plan generation fails", () => {
+    const sourceRoom = createSourceRoom("W1N1");
+    const targetRoom = createTargetRoom("W1N2");
+    const spawn = createSpawn(sourceRoom);
+    const scout = createScout(sourceRoom.name, targetRoom);
+
+    targetRoom.controller = {
+      my: true,
+      level: 1,
+    } as StructureController;
+
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    Game.rooms[targetRoom.name] = targetRoom;
+    Game.spawns.Spawn1 = spawn;
+    Game.creeps[scout.name] = scout;
+    Game.flags.CL = {
+      name: "CL",
+      pos: {
+        roomName: targetRoom.name,
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+
+    runPlannerForRoom.mockReturnValue(false);
+
+    runColonizationByFlag();
+    expect(runPlannerForRoom).toHaveBeenCalledTimes(1);
+
+    Game.time += 1;
+    runColonizationByFlag();
+    expect(runPlannerForRoom).toHaveBeenCalledTimes(1);
+
+    Game.time += 49;
+    runColonizationByFlag();
+    expect(runPlannerForRoom).toHaveBeenCalledTimes(2);
   });
 
 });

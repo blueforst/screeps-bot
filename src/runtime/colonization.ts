@@ -20,6 +20,9 @@ interface ColonizationTask {
   permanentDangerousRooms?: string[];
   mode?: ColonizationMode;
   scoutedAt?: number;
+  planRetryAt?: number;
+  safeRouteRetryAt?: number;
+  safeRouteRetryKey?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -29,6 +32,8 @@ const SCOUT_BODY: BodyPartConstant[] = [MOVE];
 const BOOTSTRAP_WORKER_COUNT = 2;
 const MAX_SAFE_ROUTE_LENGTH = 500;
 const TEMP_DANGEROUS_ROOM_TTL = 1000;
+const PLAN_RETRY_INTERVAL = 50;
+const SAFE_ROUTE_RETRY_INTERVAL = 10;
 
 let safeRouteCacheTick = -1;
 const safeRouteCache = new Map<string, string[] | null>();
@@ -622,6 +627,33 @@ function findSafeRoute(task: ColonizationTask): string[] | null {
   return result;
 }
 
+function getSafeRouteRetryKey(task: ColonizationTask): string {
+  const dangerousRooms = [...(task.dangerousRooms ?? [])].sort();
+  return `${task.sourceRoom}->${task.targetRoom}:${dangerousRooms.join("|")}`;
+}
+
+function clearSafeRouteRetry(task: ColonizationTask): void {
+  delete task.safeRouteRetryAt;
+  delete task.safeRouteRetryKey;
+}
+
+function tryFindSafeRoute(task: ColonizationTask): string[] | null {
+  const retryKey = getSafeRouteRetryKey(task);
+  if (task.safeRouteRetryKey === retryKey && (task.safeRouteRetryAt ?? 0) > Game.time) {
+    return null;
+  }
+
+  const route = findSafeRoute(task);
+  if (route) {
+    clearSafeRouteRetry(task);
+    return route;
+  }
+
+  task.safeRouteRetryKey = retryKey;
+  task.safeRouteRetryAt = Game.time + SAFE_ROUTE_RETRY_INTERVAL;
+  return null;
+}
+
 function isAdjacentRoomByName(fromRoom: string, toRoom: string): boolean {
   const exits = Game.map.describeExits(fromRoom);
   if (!exits) {
@@ -819,12 +851,13 @@ function abandonColonization(task: ColonizationTask, reason: string): void {
 
 function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abandon" {
   if (task.scoutSafe) {
+    clearSafeRouteRetry(task);
     return "safe";
   }
 
   if (task.scoutRouteRooms && task.scoutRouteRooms.length > 0) {
     if (!isScoutRouteShapeValid(task) || isScoutRouteInterruptedByDanger(task)) {
-      const recoveredRoute = findSafeRoute(task);
+      const recoveredRoute = tryFindSafeRoute(task);
       if (recoveredRoute) {
         task.scoutRouteRooms = recoveredRoute;
       } else {
@@ -841,10 +874,11 @@ function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abando
     const observedRoute = getObservedScoutRoute(task, scoutsInTarget);
     if (observedRoute) {
       task.scoutRouteRooms = observedRoute;
+      clearSafeRouteRetry(task);
     }
 
     if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
-      const recoveredRoute = findSafeRoute(task);
+      const recoveredRoute = tryFindSafeRoute(task);
       if (recoveredRoute) {
         task.scoutRouteRooms = recoveredRoute;
       }
@@ -861,13 +895,14 @@ function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abando
     }
 
     task.scoutSafe = true;
+    clearSafeRouteRetry(task);
     removeQueuedConfig(task, scoutConfigName);
     removeConfigWhenIdle(scoutConfigName);
     return "safe";
   }
 
   if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
-    const safeRoute = findSafeRoute(task);
+    const safeRoute = tryFindSafeRoute(task);
     if (safeRoute) {
       task.scoutRouteRooms = safeRoute;
     }
@@ -885,6 +920,7 @@ function hasSavedPlanWithSpawn(roomName: string): boolean {
 function ensurePlanReady(task: ColonizationTask): void {
   if (hasSavedPlanWithSpawn(task.targetRoom)) {
     task.planReady = true;
+    delete task.planRetryAt;
     return;
   }
 
@@ -895,15 +931,24 @@ function ensurePlanReady(task: ColonizationTask): void {
     return;
   }
 
+  if ((task.planRetryAt ?? 0) > Game.time) {
+    return;
+  }
+
   const planned = runPlannerForRoom(task.targetRoom);
   if (!planned) {
+    task.planRetryAt = Game.time + PLAN_RETRY_INTERVAL;
     return;
   }
 
   const saved = savePlannerForRoom(task.targetRoom);
   if (saved && hasSavedPlanWithSpawn(task.targetRoom)) {
     task.planReady = true;
+    delete task.planRetryAt;
+    return;
   }
+
+  task.planRetryAt = Game.time + PLAN_RETRY_INTERVAL;
 }
 
 function ensureClaimer(task: ColonizationTask): void {
@@ -1058,7 +1103,7 @@ function processTask(task: ColonizationTask): void {
     removeConfigWhenIdle(scoutConfigName);
 
     if (!task.scoutRouteRooms || task.scoutRouteRooms.length === 0) {
-      const recoveredRoute = findSafeRoute(task);
+      const recoveredRoute = tryFindSafeRoute(task);
       if (!recoveredRoute) {
         task.scoutSafe = false;
         return;
@@ -1127,6 +1172,9 @@ function upsertColonizationTask(flag: Flag): boolean {
     permanentDangerousRooms: existing?.permanentDangerousRooms,
     mode: existing?.mode,
     scoutedAt: existing?.scoutedAt,
+    planRetryAt: existing?.planRetryAt,
+    safeRouteRetryAt: existing?.safeRouteRetryAt,
+    safeRouteRetryKey: existing?.safeRouteRetryKey,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
