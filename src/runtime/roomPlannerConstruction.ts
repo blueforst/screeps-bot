@@ -435,21 +435,12 @@ function getControllerLinkPosFromLayout(room: Room, layout: PlannedLayout): { x:
   return null;
 }
 
-function isControllerLinkNearStorage(controllerLinkPos: { x: number; y: number }, layout: PlannedLayout, roomName: string): boolean {
-  const storagePlannedPos = layout[STRUCTURE_STORAGE]?.[0];
-  if (!storagePlannedPos) return false;
-  const storageRoomPos = new RoomPosition(storagePlannedPos.x, storagePlannedPos.y, roomName);
-  const controllerRoomPos = new RoomPosition(controllerLinkPos.x, controllerLinkPos.y, roomName);
-  return storageRoomPos.getRangeTo(controllerRoomPos) <= 5;
-}
-
 export function getPlannedControllerLinkPos(room: Room): RoomPosition | null {
   if (room.storage) return null;
   const layout = Memory.data?.roomPlanner?.[room.name]?.layout;
   if (!layout) return null;
   const pos = getControllerLinkPosFromLayout(room, layout);
   if (!pos) return null;
-  if (isControllerLinkNearStorage(pos, layout, room.name)) return null;
   return new RoomPosition(pos.x, pos.y, room.name);
 }
 
@@ -459,7 +450,6 @@ export function getProtoControllerLinkContainer(room: Room): StructureContainer 
   if (!layout) return null;
   const pos = getControllerLinkPosFromLayout(room, layout);
   if (!pos) return null;
-  if (isControllerLinkNearStorage(pos, layout, room.name)) return null;
   const position = new RoomPosition(pos.x, pos.y, room.name);
   const containers = position.lookFor(LOOK_STRUCTURES).filter(
     (s) => s.structureType === STRUCTURE_CONTAINER,
@@ -495,10 +485,6 @@ function runProtoControllerLinkContainerManagement(room: Room, layout: PlannedLa
   const pos = getControllerLinkPosFromLayout(room, layout);
   if (!pos) return;
 
-  // If within range 5 of storage position, skip — shared with proto-storage container
-  if (isControllerLinkNearStorage(pos, layout, room.name)) return;
-
-  // Remove when real storage exists, RCL4 is reached, or a link is already being built there
   if (room.storage || canBuildAtControllerLevel(STRUCTURE_STORAGE, controllerLevel) ||
       hasExactStructureOrSiteAt(room, pos.x, pos.y, STRUCTURE_LINK)) {
     destroyContainerAt(room, pos);

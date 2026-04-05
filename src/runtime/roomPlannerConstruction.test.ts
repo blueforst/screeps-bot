@@ -435,4 +435,34 @@ describe("runRoomPlannerConstruction proto container transitions", () => {
 
     expect(sourceContainer.destroy).not.toHaveBeenCalled();
   });
+
+  it("places a proto controller container after rcl2 extensions even when storage is nearby", () => {
+    const room = createRoom({ name: "W2N3", level: 2 });
+    room.__structures.push(createStructure(room, STRUCTURE_SPAWN, 10, 10));
+    room.__structures.push(createStructure(room, STRUCTURE_EXTENSION, 11, 10));
+    room.__structures.push(createStructure(room, STRUCTURE_EXTENSION, 12, 10));
+    room.__structures.push(createStructure(room, STRUCTURE_EXTENSION, 13, 10));
+    room.__structures.push(createStructure(room, STRUCTURE_EXTENSION, 14, 10));
+    room.__structures.push(createStructure(room, STRUCTURE_EXTENSION, 15, 10));
+    Game.rooms[room.name] = room;
+
+    setRoomPlannerLayout(room.name, {
+      [STRUCTURE_STORAGE]: [{ x: 23, y: 23 }],
+      [STRUCTURE_LINK]: [{ x: 25, y: 22 }],
+      [STRUCTURE_EXTENSION]: [
+        { x: 11, y: 10 },
+        { x: 12, y: 10 },
+        { x: 13, y: 10 },
+        { x: 14, y: 10 },
+        { x: 15, y: 10 },
+      ],
+    });
+
+    runRoomPlannerConstruction();
+
+    expect(room.__siteAttempts).toEqual(expect.arrayContaining([
+      { x: 23, y: 23, structureType: STRUCTURE_CONTAINER },
+      { x: 25, y: 22, structureType: STRUCTURE_CONTAINER },
+    ]));
+  });
 });
