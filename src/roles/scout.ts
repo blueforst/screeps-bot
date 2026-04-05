@@ -41,11 +41,7 @@ export const scoutRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: 
     }
 
     const activeRoute = getCurrentScoutRoute(targetRoom, encodedRouteRooms);
-    if (!activeRoute) {
-      return false;
-    }
-
-    moveToTargetRoom(creep, targetRoom, activeRoute, { plainCost: 2, swampCost: 10, reusePath: 5 });
+    moveToTargetRoom(creep, targetRoom, activeRoute || undefined, { plainCost: 2, swampCost: 10, reusePath: 5 });
 
     return false;
   },
