@@ -610,28 +610,6 @@ export const carrierRole: RoleFactory = () => ({
         protoLinkTarget;
 
       if (!storageTarget) {
-        const hasAnyProtoContainer = !!protoContainer || !!protoLinkContainer;
-        if (!storageStruct && !terminalStruct && !hasAnyProtoContainer) {
-          // No storage and no proto-container built yet — drop at planned storage position
-          if (assignedRoom) {
-            const plannedPos = getPlannedStoragePos(assignedRoom);
-            if (plannedPos) {
-              if (creep.pos.getRangeTo(plannedPos) === 0) {
-                measureCreepIntent(() => creep.drop(RESOURCE_ENERGY));
-                if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
-                  delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
-                  clearPostTransferPlan(creep);
-                  return true;
-                }
-                return false;
-              }
-              moveToTarget(creep, plannedPos, 0);
-              return false;
-            }
-          }
-          return false;
-        }
-        // Storage/container exists but is full — clear mode and fall through to find a demand target
         delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
         clearPostTransferPlan(creep);
       } else {

@@ -39,9 +39,17 @@ const {
 };
 
 const {
+  moveToTarget,
+} = jest.requireMock("@/roles/shared") as {
+  moveToTarget: jest.Mock;
+};
+
+const {
+  getPlannedStoragePos,
   getProtoStorageContainer,
   getProtoControllerLinkContainer,
 } = jest.requireMock("@/runtime/roomPlannerConstruction") as {
+  getPlannedStoragePos: jest.Mock;
   getProtoStorageContainer: jest.Mock;
   getProtoControllerLinkContainer: jest.Mock;
 };
@@ -116,6 +124,9 @@ describe("carrierRole mineral hauling", () => {
     getReservedPickupTarget.mockReturnValue(null);
     reservePickupTarget.mockReset();
     reservePickupTarget.mockReturnValue(false);
+    moveToTarget.mockReset();
+    getPlannedStoragePos.mockReset();
+    getPlannedStoragePos.mockReturnValue(null);
     getProtoStorageContainer.mockReset();
     getProtoStorageContainer.mockReturnValue(null);
     getProtoControllerLinkContainer.mockReset();
@@ -249,6 +260,64 @@ describe("carrierRole mineral hauling", () => {
     expect(creep.transfer).toHaveBeenCalledWith(protoController, RESOURCE_ENERGY);
     expect(creep.transfer).not.toHaveBeenCalledWith(protoStorage, RESOURCE_ENERGY);
     expect(done).toBe(false);
+  });
+
+  it("does not walk to planned storage position to drop energy when no storage infrastructure exists", () => {
+    const room = createRoom("W1N0AB", { level: 3, storage: null, terminal: null });
+    const plannedPos = { x: 20, y: 20, roomName: room.name } as RoomPosition;
+    let remaining = 100;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "W1N0AB:carrier:0" },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === undefined || resource === RESOURCE_ENERGY ? remaining : 0),
+        getFreeCapacity: () => 700,
+      },
+      drop: jest.fn(() => {
+        remaining = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
+    getPlannedStoragePos.mockReturnValue(plannedPos);
+
+    const done = carrierRole().target?.(creep);
+
+    expect(moveToTarget).not.toHaveBeenCalled();
+    expect(creep.drop).not.toHaveBeenCalled();
+    expect(done).toBe(false);
+  });
+
+  it("delivers to generic demand targets during the pre-storage gap", () => {
+    const room = createRoom("W1N0AC", { level: 3, storage: null, terminal: null });
+    const target = {
+      id: "spawn-gap-1",
+      structureType: STRUCTURE_SPAWN,
+      pos: { x: 5, y: 5, roomName: room.name },
+      store: { getFreeCapacity: () => 300 },
+    } as unknown as StructureSpawn;
+    let remaining = 100;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "W1N0AC:carrier:0" },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === undefined || resource === RESOURCE_ENERGY ? remaining : 0),
+        getFreeCapacity: () => 700,
+      },
+      transfer: jest.fn(() => {
+        remaining = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
+    getEnergyStoreTarget.mockReturnValue(target);
+
+    const done = carrierRole().target?.(creep);
+
+    expect(getEnergyStoreTarget).toHaveBeenCalledWith(creep, { roomName: room.name });
+    expect(creep.transfer).toHaveBeenCalledWith(target, RESOURCE_ENERGY);
+    expect(getCreepAssignmentState(creep.name)?.carrierStorageOnlyMode).toBeUndefined();
+    expect(done).toBe(true);
   });
 
   it("can withdraw from proto storage container when spawn or extension demand exists", () => {
