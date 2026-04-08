@@ -6,6 +6,7 @@ import {
   CPU_PROFILER_MIN_HISTORY_LIMIT,
   CPU_PROFILER_MIN_SAMPLE_INTERVAL,
 } from "@/runtime/cpuProfilerConfig";
+import { getMemoryService } from "@/runtime/runtimeServices";
 
 interface CpuPhaseSnapshot {
   tick: number;
@@ -64,8 +65,8 @@ export function getCpuPhaseHistory(): CpuPhaseSnapshot[] {
 }
 
 function ensureModuleCpuStore(): NonNullable<NonNullable<Memory["analytics"]>["moduleCpu"]> {
-  Memory.analytics = Memory.analytics || {};
-  Memory.analytics.moduleCpu = Memory.analytics.moduleCpu || {
+  const analytics = getMemoryService().ensureAnalytics();
+  analytics.moduleCpu = analytics.moduleCpu || {
     updatedAt: Game.time,
     sampleInterval: CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL,
     historyLimit: CPU_PROFILER_DEFAULT_HISTORY_LIMIT,
@@ -82,7 +83,7 @@ function ensureModuleCpuStore(): NonNullable<NonNullable<Memory["analytics"]>["m
     },
   };
 
-  return Memory.analytics.moduleCpu;
+  return analytics.moduleCpu;
 }
 
 function persistSnapshot(snapshot: CpuPhaseSnapshot, sampleInterval: number, historyLimit: number): void {

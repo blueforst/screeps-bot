@@ -1,4 +1,4 @@
-import { getTickContextService } from "@/runtime/runtimeServices";
+import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 const SAMPLE_INTERVAL = 5;
 const MAX_SAMPLES = 300;
@@ -81,14 +81,14 @@ function ensureSampleStore(): ProductionSampleStore {
 }
 
 function ensurePersistentStore(): Record<string, { updatedAt: number; signal?: ProductionSignal; latest?: RoomProductionSnapshot }> {
-  Memory.analytics = Memory.analytics || {};
-  Memory.analytics.production = Memory.analytics.production || {};
+  const analytics = getMemoryService().ensureAnalytics();
+  analytics.production = analytics.production || {};
 
-  if (!Memory.analytics.production.rooms) {
-    Memory.analytics.production.rooms = {};
+  if (!analytics.production.rooms) {
+    analytics.production.rooms = {};
   }
 
-  return Memory.analytics.production.rooms;
+  return analytics.production.rooms;
 }
 
 function getDroppedEnergy(room: Room): number {
