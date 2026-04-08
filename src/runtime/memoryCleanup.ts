@@ -9,6 +9,7 @@ import { cleanupWorkerTaskBoard } from "@/runtime/workerTaskPool";
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
   "harvester",
+  "mineralHarvester",
   "miner",
   "carrier",
   "worker",
@@ -18,9 +19,11 @@ const VALID_ROLES = new Set([
   "colonizerWorker",
   "meleeAttacker",
   "healer",
+  "homeDefender",
   "crossShardClaimer",
   "crossShardColonizerHarvester",
   "crossShardColonizerWorker",
+  "flagScout",
 ]);
 const ROOM_PLANNER_TTL = 50000;
 const INTER_SHARD_PORTAL_TTL = 10000;

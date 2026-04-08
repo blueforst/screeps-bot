@@ -20,6 +20,15 @@ function createOwnedRoom(name: string): Room {
   } as unknown as Room;
 }
 
+function createManagedCreep(configName: string, role: CreepMemory["role"]): Creep {
+  return {
+    memory: {
+      configName,
+      role,
+    } as CreepMemory,
+  } as unknown as Creep;
+}
+
 describe("runMemoryCleanup", () => {
   beforeEach(() => {
     resetRuntimeServices();
@@ -53,5 +62,28 @@ describe("runMemoryCleanup", () => {
     runMemoryCleanup();
 
     expect(Memory.rooms?.W2N2).toBeUndefined();
+  });
+
+  it("keeps supported non-legacy creep configs for active specialized roles", () => {
+    Memory.data = {
+      creepConfigs: {
+        mineralConfig: { role: "mineralHarvester", args: [] },
+        defenderConfig: { role: "homeDefender", args: [] },
+        scoutConfig: { role: "flagScout", args: [] },
+      },
+    };
+    Game.creeps = {
+      MineralHarvester1: createManagedCreep("mineralConfig", "mineralHarvester"),
+      HomeDefender1: createManagedCreep("defenderConfig", "homeDefender"),
+      FlagScout1: createManagedCreep("scoutConfig", "flagScout"),
+    };
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs).toMatchObject({
+      mineralConfig: { role: "mineralHarvester" },
+      defenderConfig: { role: "homeDefender" },
+      scoutConfig: { role: "flagScout" },
+    });
   });
 });
