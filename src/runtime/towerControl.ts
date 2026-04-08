@@ -1,5 +1,5 @@
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
-import { getTickContextService } from "@/runtime/runtimeServices";
+import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 const TOWER_MIN_REPAIR_ENERGY = 400;
 const TOWER_MIN_EMERGENCY_REPAIR_ENERGY = 200;
@@ -24,10 +24,10 @@ interface TowerCombatAnalysis {
 }
 
 function ensureTowerCombatRoomState(roomName: string): TowerCombatRoomState {
-  Memory.runtime = Memory.runtime || {};
-  Memory.runtime.towerCombat = Memory.runtime.towerCombat || {};
-  Memory.runtime.towerCombat[roomName] = Memory.runtime.towerCombat[roomName] || {};
-  return Memory.runtime.towerCombat[roomName];
+  const runtime = getMemoryService().ensureRuntime();
+  runtime.towerCombat = runtime.towerCombat || {};
+  runtime.towerCombat[roomName] = runtime.towerCombat[roomName] || {};
+  return runtime.towerCombat[roomName];
 }
 
 function getTowerAttackPowerByRange(range: number): number {
@@ -173,10 +173,10 @@ function assignSpreadTargets(
 }
 
 function ensureEmergencyRampartStore(roomName: string): Record<string, number> {
-  Memory.runtime = Memory.runtime || {};
-  Memory.runtime.towerEmergencyRamparts = Memory.runtime.towerEmergencyRamparts || {};
-  Memory.runtime.towerEmergencyRamparts[roomName] = Memory.runtime.towerEmergencyRamparts[roomName] || {};
-  return Memory.runtime.towerEmergencyRamparts[roomName];
+  const runtime = getMemoryService().ensureRuntime();
+  runtime.towerEmergencyRamparts = runtime.towerEmergencyRamparts || {};
+  runtime.towerEmergencyRamparts[roomName] = runtime.towerEmergencyRamparts[roomName] || {};
+  return runtime.towerEmergencyRamparts[roomName];
 }
 
 function collectEmergencyRamparts(room: Room): StructureRampart[] {

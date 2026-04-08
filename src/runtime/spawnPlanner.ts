@@ -1,7 +1,7 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
 import { spawnMaxCarrierRaw } from "@/runtime/emergencySpawning";
 import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction";
-import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
@@ -73,12 +73,12 @@ function createSpawnPlanningContext(): SpawnPlanningContext {
 }
 
 function ensureSpawnPlannerRuntimeStore(): NonNullable<NonNullable<Memory["runtime"]>["spawnPlanner"]> {
-  Memory.runtime = Memory.runtime || {};
-  Memory.runtime.spawnPlanner = Memory.runtime.spawnPlanner || {
+  const runtime = getMemoryService().ensureRuntime();
+  runtime.spawnPlanner = runtime.spawnPlanner || {
     sourceWorkerCommutes: {},
   };
 
-  return Memory.runtime.spawnPlanner;
+  return runtime.spawnPlanner;
 }
 
 function getCachedSourceWorkerCommute(cacheKey: string): number | undefined {

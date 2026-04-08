@@ -1,6 +1,6 @@
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
-import { getTickContextService } from "@/runtime/runtimeServices";
+import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 const CLASSIFY_INTERVAL = 11;
 const SOURCE_SENDER_RANGE = 2;
@@ -15,9 +15,9 @@ interface LinkRoomRuntime {
 }
 
 function ensureLinkRuntimeStore(): Record<string, LinkRoomRuntime> {
-  Memory.runtime = Memory.runtime || {};
-  Memory.runtime.linkNetwork = Memory.runtime.linkNetwork || {};
-  return Memory.runtime.linkNetwork;
+  const runtime = getMemoryService().ensureRuntime();
+  runtime.linkNetwork = runtime.linkNetwork || {};
+  return runtime.linkNetwork;
 }
 
 function classifyRoomLinks(room: Room): LinkRoomRuntime {
