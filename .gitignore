@@ -4,3 +4,6 @@ dist/
 coverage/
 AGENTS.md
 monitor-data/
+graphify-out/
+.graphify*
+.DS_Store
