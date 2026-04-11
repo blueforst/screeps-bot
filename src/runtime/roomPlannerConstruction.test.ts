@@ -52,6 +52,29 @@ class MockRoomPosition {
     return Math.max(Math.abs(target.x - this.x), Math.abs(target.y - this.y));
   }
 
+  public findClosestByRange<T extends { pos: { x: number; y: number } }>(targets: T[]): T | null {
+    let best: T | null = null;
+    let bestRange = Number.POSITIVE_INFINITY;
+
+    for (const target of targets) {
+      const range = this.getRangeTo(target.pos);
+      if (range < bestRange) {
+        best = target;
+        bestRange = range;
+      }
+    }
+
+    return best;
+  }
+
+  public findPathTo(target: { x: number; y: number }): Array<{ x: number; y: number }> {
+    const steps = Math.max(Math.abs(target.x - this.x), Math.abs(target.y - this.y));
+    return Array.from({ length: steps }, (_, index) => ({
+      x: this.x + Math.sign(target.x - this.x) * (index + 1),
+      y: this.y + Math.sign(target.y - this.y) * (index + 1),
+    }));
+  }
+
   public findInRange(
     type: FindConstant,
     range: number,
@@ -464,5 +487,56 @@ describe("runRoomPlannerConstruction proto container transitions", () => {
       { x: 23, y: 23, structureType: STRUCTURE_CONTAINER },
       { x: 25, y: 22, structureType: STRUCTURE_CONTAINER },
     ]));
+  });
+});
+
+describe("runRoomPlannerConstruction link ordering", () => {
+  beforeAll(() => {
+    (global as RuntimeGlobal).RoomPosition = MockRoomPosition;
+  });
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time = 100;
+    Game.constructionSites = {} as Game["constructionSites"];
+    Memory.cfg = {
+      roomPlannerBuild: {
+        enabled: true,
+      },
+    };
+  });
+
+  it("keeps overlapping storage and controller links in their intended roles", () => {
+    const room = createRoom({ name: "W3N1", level: 8 });
+    room.__structures.push(createStructure(room, STRUCTURE_SPAWN, 10, 10));
+    room.storage = createStructure(room, STRUCTURE_STORAGE, 20, 20) as unknown as StructureStorage;
+    room.__structures.push(room.storage as unknown as MockStructure);
+    room.controller.pos = new MockRoomPosition(20, 23, room.name) as RoomPosition;
+
+    const farSource = createSource(room, 30, 30);
+    const nearSource = createSource(room, 24, 20);
+    room.__sources.push(farSource, nearSource);
+    Game.rooms[room.name] = room;
+
+    const storageLink = { x: 18, y: 20 };
+    const controllerLink = { x: 22, y: 21 };
+    const nearSourceLink = { x: 24, y: 19 };
+    const farSourceLink = { x: 29, y: 30 };
+
+    setRoomPlannerLayout(room.name, {
+      [STRUCTURE_STORAGE]: [{ x: 20, y: 20 }],
+      [STRUCTURE_LINK]: [storageLink, controllerLink, nearSourceLink, farSourceLink],
+    });
+
+    runRoomPlannerConstruction();
+    Game.time = 200;
+    runRoomPlannerConstruction();
+
+    expect(room.__siteAttempts).toEqual([
+      { ...storageLink, structureType: STRUCTURE_LINK },
+      { ...farSourceLink, structureType: STRUCTURE_LINK },
+      { ...nearSourceLink, structureType: STRUCTURE_LINK },
+      { ...controllerLink, structureType: STRUCTURE_LINK },
+    ]);
   });
 });

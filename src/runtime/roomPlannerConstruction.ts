@@ -44,6 +44,29 @@ interface PlannedLinkOrder {
   referenceDistance: number;
 }
 
+function getPlannedPosKey(pos: { x: number; y: number }): string {
+  return `${pos.x}:${pos.y}`;
+}
+
+function findFirstPlannedLinkKey(
+  planned: { x: number; y: number }[],
+  predicate: (pos: { x: number; y: number }) => boolean,
+  excludedKeys: Set<string>,
+): string | null {
+  for (const pos of planned) {
+    const key = getPlannedPosKey(pos);
+    if (excludedKeys.has(key)) {
+      continue;
+    }
+
+    if (predicate(pos)) {
+      return key;
+    }
+  }
+
+  return null;
+}
+
 function canBuildAtControllerLevel(structureType: BuildableStructureConstant, level: number): boolean {
   const maxByLevel = CONTROLLER_STRUCTURES[structureType];
   return maxByLevel[level] > 0;
@@ -180,16 +203,46 @@ function getSortedLinkPlannedPositions(room: Room, layout: PlannedLayout): { x: 
   const controllerPos = room.controller?.pos || null;
   const anchor = getPrimaryRoomAnchor(room, layout);
   const sources = room.find(FIND_SOURCES);
+  const reservedRoleKeys = new Set<string>();
+
+  const storageLinkKey = storageAnchor
+    ? findFirstPlannedLinkKey(
+        planned,
+        (pos) => new RoomPosition(pos.x, pos.y, room.name).getRangeTo(storageAnchor) <= 2,
+        reservedRoleKeys,
+      )
+    : null;
+  if (storageLinkKey) {
+    reservedRoleKeys.add(storageLinkKey);
+  }
+
+  const controllerLinkKey = controllerPos
+    ? findFirstPlannedLinkKey(
+        planned,
+        (pos) => new RoomPosition(pos.x, pos.y, room.name).getRangeTo(controllerPos) <= CONTROLLER_LINK_RANGE,
+        reservedRoleKeys,
+      )
+    : null;
 
   const ordered: PlannedLinkOrder[] = planned.map((pos) => {
     const linkPos = new RoomPosition(pos.x, pos.y, room.name);
+    const linkKey = getPlannedPosKey(pos);
     const referenceDistance = anchor.getRangeTo(linkPos);
 
-    if (storageAnchor && linkPos.getRangeTo(storageAnchor) <= 2) {
+    if (storageLinkKey && linkKey === storageLinkKey) {
       return {
         pos,
         priority: LINK_PRIORITY_STORAGE,
         commuteDistance: Number.POSITIVE_INFINITY,
+        referenceDistance,
+      };
+    }
+
+    if (controllerLinkKey && linkKey === controllerLinkKey) {
+      return {
+        pos,
+        priority: LINK_PRIORITY_CONTROLLER,
+        commuteDistance: 0,
         referenceDistance,
       };
     }
@@ -201,15 +254,6 @@ function getSortedLinkPlannedPositions(room: Room, layout: PlannedLayout): { x: 
         pos,
         priority: LINK_PRIORITY_SOURCE,
         commuteDistance: getPathDistance(anchor, nearestSource.pos),
-        referenceDistance,
-      };
-    }
-
-    if (controllerPos && linkPos.getRangeTo(controllerPos) <= CONTROLLER_LINK_RANGE) {
-      return {
-        pos,
-        priority: LINK_PRIORITY_CONTROLLER,
-        commuteDistance: 0,
         referenceDistance,
       };
     }
