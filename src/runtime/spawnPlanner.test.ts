@@ -365,3 +365,39 @@ describe("spawnPlanner managed mineral harvester queueing", () => {
     );
   });
 });
+
+describe("spawnPlanner source-role cutover queueing", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  it("skips orphaned stale harvester configs after a source switches to miner", () => {
+    const room = createRoom("W1N5");
+    room.controller.level = 5;
+    room.energyCapacityAvailable = 1200;
+    const spawn = createSpawn(room);
+    const minerConfigName = "W1N5:miner:source-a";
+    const harvesterConfigName = "W1N5:harvester:source-a";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Memory.data = {
+      creepConfigs: {
+        [harvesterConfigName]: {
+          role: "harvester",
+          args: ["source-a"],
+        },
+        [minerConfigName]: {
+          role: "miner",
+          args: ["source-a"],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(minerConfigName);
+    expect(spawn.memory.spawnList).not.toContain(harvesterConfigName);
+  });
+});
