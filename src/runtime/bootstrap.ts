@@ -76,6 +76,15 @@ function cleanupSourceRoleQueueEntries(
   }
 }
 
+function orphanDeprecatedSourceConfig(configName: string): void {
+  const config = getCreepConfigService().get(configName);
+  if (!config) {
+    return;
+  }
+
+  delete config.roomName;
+}
+
 export function bootstrapRooms(): void {
   const tickContext = getTickContextService();
   const myRooms = tickContext.getMyRooms();
@@ -93,6 +102,9 @@ export function bootstrapRooms(): void {
         expectedConfigNames.delete(configName);
       } else {
         upsertConfig(configName, role, [source.id], room.name);
+        if (role === "miner") {
+          orphanDeprecatedSourceConfig(`${room.name}:harvester:${source.id}`);
+        }
       }
     }
 
