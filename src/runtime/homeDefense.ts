@@ -1,6 +1,7 @@
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { getSafeZone } from "@/runtime/safeZone";
 import { buyBoostIfNeeded, clearBoostLabTasks, shouldBoostDefender, syncBoostLabTask } from "@/runtime/boostControl";
+import { canTowersHandleHostiles } from "@/runtime/towerControl";
 
 const DANGEROUS_BODY_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, WORK];
 const DEFENDER_COUNT = 1;
@@ -73,6 +74,23 @@ function removeDefenders(roomName: string): void {
   }
 }
 
+function stopQueuedDefenderSpawning(roomName: string): void {
+  const configStore = getCreepConfigService();
+  const spawn = getPrimarySpawn(roomName);
+
+  for (let i = 0; i < DEFENDER_COUNT; i++) {
+    const configName = getConfigName(roomName, i);
+
+    if (spawn?.memory.spawnList) {
+      spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+    }
+
+    if (!isLiveOrSpawning(configName)) {
+      configStore.remove(configName);
+    }
+  }
+}
+
 export function runHomeDefense(): void {
   const tickContext = getTickContextService();
 
@@ -82,12 +100,17 @@ export function runHomeDefense(): void {
 
     const playerHostiles = getPlayerHostiles(room);
     if (playerHostiles.length > 0) {
-      ensureDefenders(room);
-      if (shouldBoostDefender(room, playerHostiles)) {
-        buyBoostIfNeeded(room);
-        syncBoostLabTask(room);
-      } else {
+      if (canTowersHandleHostiles(room, playerHostiles)) {
+        stopQueuedDefenderSpawning(room.name);
         clearBoostLabTasks(room.name);
+      } else {
+        ensureDefenders(room);
+        if (shouldBoostDefender(room, playerHostiles)) {
+          buyBoostIfNeeded(room);
+          syncBoostLabTask(room);
+        } else {
+          clearBoostLabTasks(room.name);
+        }
       }
     } else {
       removeDefenders(room.name);
