@@ -252,6 +252,26 @@ function isAllHostilesImmune(analysis: TowerCombatAnalysis, hostiles: Creep[]): 
   );
 }
 
+export function canTowersHandleHostiles(room: Room, hostiles: Creep[]): boolean {
+  if (hostiles.length === 0) {
+    return true;
+  }
+
+  const towers = (getTickContextService().getRoomContext(room)?.getTowers() || []).filter(
+    (tower) => tower.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
+  );
+  if (towers.length === 0) {
+    return false;
+  }
+
+  const analysis = createTowerCombatAnalysis(towers, hostiles);
+  return hostiles.every(
+    (hostile) =>
+      (analysis.totalTowerAttackByHostileId.get(hostile.id) || 0) >
+      (analysis.incomingHealByHostileId.get(hostile.id) || 0),
+  );
+}
+
 function isDefenderOnRampart(room: Room): boolean {
   const defenders = room.find(FIND_MY_CREEPS, {
     filter: (creep) => creep.memory.role === "homeDefender",
