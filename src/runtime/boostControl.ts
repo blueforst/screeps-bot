@@ -1,6 +1,7 @@
 import { replaceCarrierTasksForProducerRoom, type CarrierTaskDraft } from "@/runtime/carrierTaskBoard";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import { getTickContextService } from "@/runtime/runtimeServices";
+import { calcEffectiveDamage } from "@/runtime/towerControl";
 
 export const DEFENSE_BOOST_COMPOUND = RESOURCE_CATALYZED_UTRIUM_ACID;
 
@@ -82,7 +83,7 @@ export function shouldBoostDefender(room: Room, hostiles: Creep[]): boolean {
   for (const hostile of hostiles) {
     const towerDamage = towers.reduce((sum, t) => sum + calcTowerAttackAtRange(t.pos.getRangeTo(hostile.pos)), 0);
     const heal = calcIncomingHeal(hostiles, hostile);
-    if (towerDamage + rawAttack > heal) return false;
+    if (calcEffectiveDamage(hostile, towerDamage + rawAttack) > heal) return false;
   }
 
   return true;

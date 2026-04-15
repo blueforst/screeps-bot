@@ -80,6 +80,42 @@ function getCreepHealPowerAtRange(creep: Creep, rangeToTarget: number): number {
   return creep.body.reduce((sum, part) => sum + getHealPartPower(part, ranged), 0);
 }
 
+/**
+ * Simulates the Screeps engine's _applyDamage algorithm.
+ * Damage flows through body parts left-to-right; boosted TOUGH parts
+ * absorb raw damage at a reduced rate (e.g. XGHO2 => damageRatio 0.3).
+ */
+export function calcEffectiveDamage(creep: Creep, rawDamage: number): number {
+  if (rawDamage <= 0) return 0;
+
+  if (!creep.body.some((p) => !!p.boost)) {
+    return rawDamage;
+  }
+
+  let damageReduce = 0;
+  let damageEffective = rawDamage;
+
+  for (const part of creep.body) {
+    if (damageEffective <= 0) break;
+
+    let damageRatio = 1;
+    if (part.boost && part.hits > 0) {
+      const typeBoosts = (BOOSTS as Record<string, Record<string, { damage?: number } | undefined>>)?.[part.type];
+      const entry = typeBoosts?.[part.boost];
+      if (entry?.damage !== undefined) {
+        damageRatio = entry.damage;
+      }
+    }
+
+    const bodyPartHitsEffective = part.hits / damageRatio;
+    const absorbed = Math.min(bodyPartHitsEffective, damageEffective);
+    damageReduce += absorbed * (1 - damageRatio);
+    damageEffective -= absorbed;
+  }
+
+  return rawDamage - Math.round(damageReduce);
+}
+
 function createTowerCombatAnalysis(towers: StructureTower[], hostiles: Creep[]): TowerCombatAnalysis {
   const totalTowerAttackByHostileId = new Map<Id<Creep>, number>();
   const incomingHealByHostileId = new Map<Id<Creep>, number>();
@@ -93,6 +129,21 @@ function createTowerCombatAnalysis(towers: StructureTower[], hostiles: Creep[]):
       totalTowerAttackByHostileId.set(hostile.id, (totalTowerAttackByHostileId.get(hostile.id) || 0) + damage);
     }
     towerAttackByTowerId.set(tower.id, damageByHostileId);
+  }
+
+  for (const hostile of hostiles) {
+    const rawTotal = totalTowerAttackByHostileId.get(hostile.id) || 0;
+    const effectiveTotal = calcEffectiveDamage(hostile, rawTotal);
+    totalTowerAttackByHostileId.set(hostile.id, effectiveTotal);
+
+    const effectiveRatio = rawTotal > 0 ? effectiveTotal / rawTotal : 1;
+    for (const tower of towers) {
+      const towerDamage = towerAttackByTowerId.get(tower.id);
+      const rawDamage = towerDamage?.get(hostile.id);
+      if (rawDamage !== undefined) {
+        towerDamage!.set(hostile.id, Math.round(rawDamage * effectiveRatio));
+      }
+    }
   }
 
   for (const target of hostiles) {
