@@ -2,6 +2,7 @@ import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfi
 import { clearCreepMovementState, ensureCreepMovementState, getCreepMovementState } from "@/movement/creepState";
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
+import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 import { getPosKey, getTargetPos, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
 import { findMyCreepAt, moveOffExit, pushBlockingCreep } from "@/movement/traffic";
 import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
@@ -36,6 +37,11 @@ export function moveToTarget(
   if (creep.pos.getRangeTo(targetPos) <= range) {
     delete movementState.movePathState;
     return OK;
+  }
+
+  if (shouldRestrictToSafeZone(creep) && !isPositionAllowedForCreep(creep, targetPos)) {
+    delete movementState.movePathState;
+    return ERR_NO_PATH;
   }
 
   if (sameRoomNonEdgeMoveNeedsExitRecovery(creep, targetPos)) {
