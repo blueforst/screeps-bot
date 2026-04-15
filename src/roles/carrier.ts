@@ -16,6 +16,7 @@ import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "
 import { isStorageReceiverLink } from "@/runtime/linkControl";
 import { getPlannedStoragePos, getPlannedControllerLinkPos, getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
+import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
 
@@ -91,7 +92,15 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPicku
       return [];
     }
 
-    return candidates
+    const filteredCandidates = shouldRestrictToSafeZone(creep)
+      ? candidates.filter((candidate) => isPositionAllowedForCreep(creep, candidate.pos))
+      : candidates;
+
+    if (filteredCandidates.length === 0) {
+      return [];
+    }
+
+    return filteredCandidates
       .map((candidate) => {
         const amount = getCarrierPickupAmount(candidate);
         const distance = Math.max(1, creep.pos.getRangeTo(candidate.pos));
@@ -146,6 +155,11 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
 
   let sourceTarget = getReservedPickupTarget(creep);
   if (sourceTarget && !isCarrierPickupTarget(sourceTarget, options)) {
+    releasePickupReservation(creep, sourceTarget.id);
+    sourceTarget = null;
+  }
+
+  if (sourceTarget && shouldRestrictToSafeZone(creep) && !isPositionAllowedForCreep(creep, sourceTarget.pos)) {
     releasePickupReservation(creep, sourceTarget.id);
     sourceTarget = null;
   }

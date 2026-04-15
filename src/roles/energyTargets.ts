@@ -9,6 +9,7 @@ import { isReceiverLink } from "@/runtime/linkControl";
 import { getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { moveToTarget } from "@/roles/shared";
+import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 
 interface MoveToTargetOptions {
   swampCost?: number;
@@ -66,6 +67,10 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
 
     for (const structure of myStructures) {
       if (excludeSet.has(structure.id)) {
+        continue;
+      }
+
+      if (shouldRestrictToSafeZone(creep) && !isPositionAllowedForCreep(creep, structure.pos)) {
         continue;
       }
 
@@ -131,22 +136,26 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       return bestLab;
     }
 
-    if (includeStorage && targetRoom?.storage && !excludeSet.has(targetRoom.storage.id)) {
+    if (includeStorage && targetRoom?.storage && !excludeSet.has(targetRoom.storage.id) &&
+      (!shouldRestrictToSafeZone(creep) || isPositionAllowedForCreep(creep, targetRoom.storage.pos))) {
       return targetRoom.storage;
     }
 
-    if (includeTerminal && targetRoom?.terminal && !excludeSet.has(targetRoom.terminal.id)) {
+    if (includeTerminal && targetRoom?.terminal && !excludeSet.has(targetRoom.terminal.id) &&
+      (!shouldRestrictToSafeZone(creep) || isPositionAllowedForCreep(creep, targetRoom.terminal.pos))) {
       return targetRoom.terminal;
     }
 
     const protoStorageContainer = targetRoom ? getProtoStorageContainer(targetRoom) : null;
     if (protoStorageContainer && !excludeSet.has(protoStorageContainer.id) &&
+        (!shouldRestrictToSafeZone(creep) || isPositionAllowedForCreep(creep, protoStorageContainer.pos)) &&
         protoStorageContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
       return protoStorageContainer;
     }
 
     const protoControllerContainer = targetRoom ? getProtoControllerLinkContainer(targetRoom) : null;
     if (protoControllerContainer && !excludeSet.has(protoControllerContainer.id) &&
+        (!shouldRestrictToSafeZone(creep) || isPositionAllowedForCreep(creep, protoControllerContainer.pos)) &&
         protoControllerContainer.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
       return protoControllerContainer;
     }
@@ -181,8 +190,12 @@ function getPreferredEnergyPickupCandidates(creep: Creep): EnergyPickupTarget[] 
       return [];
     }
 
+    const filtered = shouldRestrictToSafeZone(creep)
+      ? candidates.filter((target) => isPositionAllowedForCreep(creep, target.pos))
+      : candidates;
+
     const threshold = creep.store.getCapacity(RESOURCE_ENERGY) ?? 0;
-    const scored = candidates
+    const scored = filtered
       .map((target) => ({
         target,
         amount: getTargetEnergyAmount(target),
@@ -210,6 +223,11 @@ export function pickupEnergyFromPreferredTarget(
   const desiredAmount = creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0;
 
   let sourceTarget = getReservedPickupTarget(creep) as EnergyPickupTarget | null;
+  if (sourceTarget && shouldRestrictToSafeZone(creep) && !isPositionAllowedForCreep(creep, sourceTarget.pos)) {
+    releasePickupReservation(creep, sourceTarget.id);
+    sourceTarget = null;
+  }
+
   if (sourceTarget && !reservePickupTarget(creep, sourceTarget, desiredAmount)) {
     releasePickupReservation(creep, sourceTarget.id);
     sourceTarget = null;

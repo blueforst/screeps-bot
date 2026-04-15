@@ -1,5 +1,16 @@
+jest.mock("@/runtime/defenseMode", () => ({
+  isDefenseMode: jest.fn(() => false),
+  isOffensiveWarCreep: jest.fn(() => false),
+}));
+
+jest.mock("@/runtime/safeZone", () => ({
+  getSafeZone: jest.fn(() => new Set()),
+}));
+
 import { getEnergyStoreTarget, pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import { isDefenseMode } from "@/runtime/defenseMode";
+import { getSafeZone } from "@/runtime/safeZone";
 
 jest.mock("@/runtime/roomPlannerConstruction", () => ({
   getProtoStorageContainer: jest.fn(() => null),
@@ -102,6 +113,8 @@ describe("energyTargets", () => {
     clearCreepAssignmentStateForTest();
     resetRuntimeServices();
     Game.time += 1;
+    (isDefenseMode as jest.Mock).mockReturnValue(false);
+    (getSafeZone as jest.Mock).mockReturnValue(new Set());
     getProtoStorageContainer.mockReset();
     getProtoStorageContainer.mockReturnValue(null);
     getProtoControllerLinkContainer.mockReset();
@@ -151,6 +164,37 @@ describe("energyTargets", () => {
       outOfRange: false,
     });
     expect(creep.pickup).toHaveBeenCalledWith(dropped);
+  });
+
+  it("ignores pickup targets outside the safe zone during defense mode", () => {
+    const outsideDrop = {
+      id: "drop-outside",
+      amount: 100,
+      resourceType: RESOURCE_ENERGY,
+      pos: { x: 3, y: 25, roomName: "W1N1" },
+    } as Resource;
+    const insideDrop = {
+      id: "drop-inside",
+      amount: 100,
+      resourceType: RESOURCE_ENERGY,
+      pos: { x: 24, y: 25, roomName: "W1N1" },
+    } as Resource;
+    const room = createRoom({
+      dropped: [outsideDrop, insideDrop],
+      structures: [],
+      tombstones: [],
+      ruins: [],
+    });
+    Game.rooms[room.name] = room;
+    const creep = createCreep(room);
+    creep.memory.configName = "W1N1:worker:0";
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+    (getSafeZone as jest.Mock).mockReturnValue(new Set([24 * 50 + 25]));
+
+    pickupEnergyFromPreferredTarget(creep);
+
+    expect(creep.pickup).toHaveBeenCalledWith(insideDrop);
+    expect(creep.pickup).not.toHaveBeenCalledWith(outsideDrop);
   });
 
   it("falls back to storage even when terminal is below reserve", () => {
