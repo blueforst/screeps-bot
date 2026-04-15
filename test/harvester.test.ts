@@ -151,4 +151,13 @@ describe("harvesterRole – pre-spawn overlap (two harvesters for same source)",
     role.source(creep as unknown as Creep);
     expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5 });
   });
+
+  test("existing harvester still pursues its work position even if defense policy later stops replacements", () => {
+    const creep = makeCreep(5, 5, ROOM);
+
+    const role = harvesterRole(SOURCE_ID);
+    role.source(creep as unknown as Creep);
+
+    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5 });
+  });
 });
