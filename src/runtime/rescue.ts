@@ -1,5 +1,6 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import { isDefenseMode } from "@/runtime/defenseMode";
 
 type RescueStatus = "bootstrapping" | "managed";
 
@@ -45,6 +46,9 @@ function getOwnedSpawnRooms(): string[] {
   for (const room of tickContext.getMyRooms()) {
     for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
       if (hasRescueProductionCapability(spawn)) {
+        if (isDefenseMode(spawn.room.name)) {
+          continue;
+        }
         roomNames.add(spawn.room.name);
       }
     }
@@ -207,6 +211,8 @@ function computeRoute(task: RescueTask): string[] | null {
 }
 
 function processRescueTask(task: RescueTask): void {
+  if (isDefenseMode(task.sourceRoom)) return;
+
   if (hasOwnedSpawnInTargetRoom(task)) {
     const targetRoomRcl = Game.rooms[task.targetRoom]?.controller?.level ?? 0;
     if (targetRoomRcl >= 3) {
@@ -287,7 +293,8 @@ function upsertRescueTask(flag: Flag): boolean {
 }
 
 export function isRescueRoom(roomName: string): boolean {
-  return !!Memory.data?.rescue?.[roomName];
+  const task = Memory.data?.rescue?.[roomName];
+  return !!task && !isDefenseMode(task.sourceRoom);
 }
 
 export function runRescueByFlag(): void {
@@ -307,6 +314,13 @@ export function runRescueByFlag(): void {
       console.log(`[rescue] cancelled: ${task.targetRoom} flag removed by player`);
       continue;
     }
+
+    if (isDefenseMode(task.sourceRoom)) {
+      cleanupRescueConfigs(task);
+      task.updatedAt = Game.time;
+      continue;
+    }
+
     processRescueTask(task);
     task.updatedAt = Game.time;
   }

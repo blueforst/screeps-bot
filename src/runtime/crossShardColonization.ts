@@ -2,6 +2,7 @@ import { spawnProfiles } from "@/config/spawnProfiles";
 import { encodeCrossShardTravelerName } from "@/runtime/crossShardNaming";
 import { getMemoryService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
+import { isDefenseMode } from "@/runtime/defenseMode";
 
 type CrossShardColonizationStatus =
   | "planning"
@@ -117,6 +118,7 @@ function hasColonizationSquadProductionCapability(spawn: StructureSpawn): boolea
 function getOwnedSpawnRooms(): string[] {
   const rooms = Object.values(Game.spawns)
     .filter((spawn) => spawn.room.controller?.my)
+    .filter((spawn) => !isDefenseMode(spawn.room.name))
     .filter((spawn) => hasColonizationSquadProductionCapability(spawn))
     .map((spawn) => spawn.room.name);
 
@@ -467,6 +469,10 @@ function processTask(task: CrossShardColonizationTask): void {
     return;
   }
 
+  if (task.sourceRoom && isDefenseMode(task.sourceRoom)) {
+    return;
+  }
+
   if (task.targetShard === Game.shard.name) {
     task.status = "failed";
     task.reason = "target shard equals current shard";
@@ -593,6 +599,12 @@ export function runCrossShardColonizationByFlag(): void {
 
   const store = ensureTaskStore();
   for (const task of Object.values(store)) {
+    if (task.sourceRoom && isDefenseMode(task.sourceRoom)) {
+      cleanupTaskConfigs(task);
+      task.updatedAt = Game.time;
+      continue;
+    }
+
     processTask(task);
     task.updatedAt = Game.time;
   }
