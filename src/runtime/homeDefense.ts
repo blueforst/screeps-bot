@@ -2,18 +2,9 @@ import { getCreepConfigService, getMemoryService, getTickContextService } from "
 import { getSafeZone } from "@/runtime/safeZone";
 import { buyBoostIfNeeded, clearBoostLabTasks, shouldBoostDefender, syncBoostLabTask } from "@/runtime/boostControl";
 import { canTowersHandleHostiles } from "@/runtime/towerControl";
+import { getPlayerHostiles } from "@/runtime/defenseMode";
 
-const DANGEROUS_BODY_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, WORK];
 const DEFENDER_COUNT = 1;
-
-function getPlayerHostiles(room: Room): Creep[] {
-  return room.find(FIND_HOSTILE_CREEPS, {
-    filter: (creep) =>
-      creep.owner.username !== "Source Keeper" &&
-      (creep.owner.username !== "Invader" || creep.getActiveBodyparts(WORK) > 0) &&
-      DANGEROUS_BODY_PARTS.some((part) => creep.getActiveBodyparts(part) > 0),
-  });
-}
 
 function getConfigName(roomName: string, index: number): string {
   return `${roomName}:homeDefense:defender:${index}`;

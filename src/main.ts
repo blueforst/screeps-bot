@@ -14,6 +14,7 @@ import { runExternalTelemetryExport } from "@/runtime/externalTelemetry";
 import { bootstrapRooms } from "@/runtime/bootstrap";
 import { runCoreDefense } from "@/runtime/coreDefense";
 import { runHomeDefense } from "@/runtime/homeDefense";
+import { runDefenseMode } from "@/runtime/defenseMode";
 import { runFlagControl } from "@/runtime/flagControl";
 import { runLinkControl } from "@/runtime/linkControl";
 import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
@@ -65,6 +66,7 @@ function gameLoop(): void {
   cpuProfiler.measure("roomPlannerConstruction", runRoomPlannerConstruction);
   cpuProfiler.measure("linkControl", runLinkControl);
   cpuProfiler.measure("coreDefense", runCoreDefense);
+  cpuProfiler.measure("defenseMode", runDefenseMode);
   cpuProfiler.measure("homeDefense", runHomeDefense);
   cpuProfiler.measure("towerControl", runTowerControl);
   cpuProfiler.measure("refreshWorkerTasks", refreshWorkerTasks);
