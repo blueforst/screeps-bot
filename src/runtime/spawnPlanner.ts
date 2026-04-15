@@ -1,7 +1,10 @@
 import { spawnProfiles } from "@/config/spawnProfiles";
+import { isDefenseMode } from "@/runtime/defenseMode";
 import { spawnMaxCarrierRaw } from "@/runtime/emergencySpawning";
 import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import { getSafeZone } from "@/runtime/safeZone";
+import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
 import type { CreepConfig } from "@/types/system";
 
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
@@ -306,6 +309,10 @@ function shouldQueueConfig(
     return false;
   }
 
+  if (config.roomName && shouldSkipConfigInDefenseMode(config)) {
+    return false;
+  }
+
   if (
     config.role === "harvester" ||
     config.role === "miner" ||
@@ -320,6 +327,46 @@ function shouldQueueConfig(
   }
 
   return getConfigCreeps(configName, context).length === 0;
+}
+
+function isOutboundNonWarRole(role: CreepConfig["role"]): boolean {
+  return role === "colonizerHarvester" ||
+    role === "colonizerWorker" ||
+    role === "crossShardColonizerHarvester" ||
+    role === "crossShardColonizerWorker" ||
+    role === "crossShardClaimer" ||
+    role === "claimer" ||
+    role === "scout";
+}
+
+function isWorkPositionOutsideSafeZone(roomName: string, workPos: RoomPosition | null): boolean {
+  if (!workPos) {
+    return false;
+  }
+
+  const safeZone = getSafeZone(roomName);
+  if (safeZone.size === 0) {
+    return false;
+  }
+
+  return workPos.roomName !== roomName || !isInsideSafeZone(workPos, safeZone);
+}
+
+function shouldSkipConfigInDefenseMode(config: CreepConfig): boolean {
+  const roomName = config.roomName;
+  if (!roomName || !isDefenseMode(roomName)) {
+    return false;
+  }
+
+  if (isOutboundNonWarRole(config.role)) {
+    return true;
+  }
+
+  if (config.role === "harvester" || config.role === "miner" || config.role === "mineralHarvester") {
+    return isWorkPositionOutsideSafeZone(roomName, getSourceWorkerWorkPos(config));
+  }
+
+  return false;
 }
 
 function queueConfig(spawn: StructureSpawn, configName: string, options?: { toFront?: boolean }): void {

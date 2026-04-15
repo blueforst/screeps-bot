@@ -1,5 +1,15 @@
+jest.mock("@/runtime/defenseMode", () => ({
+  isDefenseMode: jest.fn(() => false),
+}));
+
+jest.mock("@/runtime/safeZone", () => ({
+  getSafeZone: jest.fn(() => new Set()),
+}));
+
 import { spawnMaxCarrierRaw } from "@/runtime/consoleCommands";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
+import { isDefenseMode } from "@/runtime/defenseMode";
+import { getSafeZone } from "@/runtime/safeZone";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -65,6 +75,18 @@ function createMineral(
   } as Mineral;
 }
 
+function createSource(id: string, x = 10, y = 10, roomName = "W1N1"): Source {
+  return {
+    id,
+    pos: {
+      x,
+      y,
+      roomName,
+      findInRange: jest.fn(() => []),
+    } as unknown as RoomPosition,
+  } as Source;
+}
+
 function createSpawn(room: Room, pathLength = 2): StructureSpawn {
   const findPathTo = jest.fn(() =>
     Array.from({ length: pathLength }, (_, index) => ({
@@ -108,6 +130,12 @@ function createSpawn(room: Room, pathLength = 2): StructureSpawn {
     },
   } as unknown as StructureSpawn;
 }
+
+beforeEach(() => {
+  (isDefenseMode as jest.Mock).mockReturnValue(false);
+  (getSafeZone as jest.Mock).mockReturnValue(new Set());
+  (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn(() => null) as Game["getObjectById"];
+});
 
 describe("spawnPlanner emergency carrier flow", () => {
   beforeEach(() => {
@@ -244,6 +272,43 @@ describe("spawnPlanner managed mineral harvester queueing", () => {
     scheduleSpawnTasks();
 
     expect(spawn.memory.spawnList).not.toContain(mineralConfigName);
+  });
+
+  it("skips harvester queueing when defense mode is active and the work position is outside the safe zone", () => {
+    const room = createRoom("W2N2");
+    const spawn = createSpawn(room);
+    const source = createSource("source-1", 20, 20, room.name);
+    const configName = `${room.name}:harvester:${source.id}`;
+
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.carrierX = {
+      name: "carrierX",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "harvester",
+          args: [source.id],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === source.id) {
+        return source;
+      }
+
+      return null;
+    }) as Game["getObjectById"];
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+    (getSafeZone as jest.Mock).mockReturnValue(new Set([10 * 50 + 10]));
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configName);
   });
 
   it("reuses persisted source worker thresholds across ticks until cache expiry", () => {
