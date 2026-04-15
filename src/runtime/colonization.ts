@@ -2,6 +2,7 @@ import { runPlannerForRoom, savePlannerForRoom } from "@/modules/autoplanner";
 import { spawnProfiles } from "@/config/spawnProfiles";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { clearWarRoomTask, isWarRoomClearDone, requestWarRoomClear } from "@/runtime/warControl";
+import { isDefenseMode } from "@/runtime/defenseMode";
 
 type ColonizationStatus = "claiming" | "clearing" | "waiting_plan" | "bootstrapping" | "managed";
 type ColonizationMode = "normal" | "npcStronghold";
@@ -78,6 +79,9 @@ function getOwnedSpawnRooms(): string[] {
   for (const room of tickContext.getMyRooms()) {
     for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
       if (hasColonizationSquadProductionCapability(spawn)) {
+        if (isDefenseMode(spawn.room.name)) {
+          continue;
+        }
         roomNames.add(spawn.room.name);
       }
     }
@@ -1026,6 +1030,8 @@ function cleanupColonizationConfigs(task: ColonizationTask): boolean {
 }
 
 function processTask(task: ColonizationTask): void {
+  if (isDefenseMode(task.sourceRoom)) return;
+
   updateDangerousRoomsFromSquadDamage(task);
   ensurePlanReady(task);
 
@@ -1187,7 +1193,7 @@ function upsertColonizationTask(flag: Flag): boolean {
 
 export function isColonizationBootstrapRoom(roomName: string): boolean {
   const task = Memory.data?.colonization?.[roomName];
-  return task?.status === "bootstrapping";
+  return task?.status === "bootstrapping" && !isDefenseMode(task.sourceRoom);
 }
 
 export function runColonizationByFlag(): void {
@@ -1205,6 +1211,16 @@ export function runColonizationByFlag(): void {
       abandonColonization(task, "flag removed by player");
       continue;
     }
+
+    if (isDefenseMode(task.sourceRoom)) {
+      cleanupColonizationConfigs(task);
+      if (task.status === "clearing") {
+        clearWarRoomTask(task.targetRoom);
+      }
+      task.updatedAt = Game.time;
+      continue;
+    }
+
     processTask(task);
     task.updatedAt = Game.time;
   }

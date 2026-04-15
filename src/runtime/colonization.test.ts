@@ -9,7 +9,12 @@ jest.mock("@/runtime/warControl", () => ({
   requestWarRoomClear: jest.fn(),
 }));
 
+jest.mock("@/runtime/defenseMode", () => ({
+  isDefenseMode: jest.fn(() => false),
+}));
+
 import { runColonizationByFlag } from "@/runtime/colonization";
+import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { requestWarRoomClear } from "@/runtime/warControl";
 
@@ -110,6 +115,7 @@ describe("runColonizationByFlag", () => {
     resetRuntimeServices();
     Game.time += 1;
     Memory.data = undefined;
+    (isDefenseMode as jest.Mock).mockReturnValue(false);
 
     Object.assign(Game, {
       map: {
@@ -283,6 +289,26 @@ describe("runColonizationByFlag", () => {
     Game.time += 1;
     runColonizationByFlag();
     expect(Game.map.findRoute).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not assign a source room that is currently in defense mode", () => {
+    const sourceRoom = createSourceRoom("W1N1");
+    const spawn = createSpawn(sourceRoom);
+
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    Game.spawns.Spawn1 = spawn;
+    Game.flags.CL = {
+      name: "CL",
+      pos: {
+        roomName: "W1N2",
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+    (isDefenseMode as jest.Mock).mockImplementation((roomName: string) => roomName === sourceRoom.name);
+
+    runColonizationByFlag();
+
+    expect(Memory.data?.colonization).toEqual({});
   });
 
   it("creates and queues a scout even before a fixed safe route is found", () => {
