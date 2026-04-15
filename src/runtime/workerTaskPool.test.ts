@@ -1,6 +1,16 @@
+jest.mock("@/runtime/defenseMode", () => ({
+  isDefenseMode: jest.fn(() => false),
+}));
+
+jest.mock("@/runtime/safeZone", () => ({
+  getSafeZone: jest.fn(() => new Set()),
+}));
+
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { assignWorkerTask, clearWorkerTaskBoardForTest, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
+import { getSafeZone } from "@/runtime/safeZone";
 import type { WorkerTask } from "@/types/system";
 
 function createPos(roomName: string): RoomPosition {
@@ -48,6 +58,8 @@ describe("workerTaskPool", () => {
   beforeEach(() => {
     clearCreepAssignmentStateForTest();
     clearWorkerTaskBoardForTest();
+    (isDefenseMode as jest.Mock).mockReturnValue(false);
+    (getSafeZone as jest.Mock).mockReturnValue(new Set());
     objects = {};
     const getObjectById = jest.fn((id: string) => objects[id] || null) as unknown as Game["getObjectById"];
     (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = getObjectById;
@@ -230,5 +242,45 @@ describe("workerTaskPool", () => {
     expect(assignedTask?.id).toBe(targetUpgradeTask.id);
     expect(sourceRepairTask.assignedCreeps).toEqual([]);
     expect(targetUpgradeTask.assignedCreeps).toEqual(["ColonizerWorker1"]);
+  });
+
+  it("skips tasks outside the safe zone while the assigned room is in defense mode", () => {
+    const safeTask = createTask({
+      id: "repair:safe",
+      type: "repair",
+      targetId: "safe-target",
+      roomName: "W1N1",
+      repairMode: "normal",
+      priority: 320,
+    });
+    const unsafeTask = createTask({
+      id: "upgrade:unsafe",
+      type: "upgrade",
+      targetId: "unsafe-target",
+      roomName: "W1N1",
+      maxAssignees: 2,
+      priority: 500,
+    });
+    Memory.rooms.W1N1 = {
+      tasks: {
+        [safeTask.id]: safeTask,
+        [unsafeTask.id]: unsafeTask,
+      },
+    } as RoomMemory;
+
+    const configName = "W1N1:worker:0";
+    getCreepConfigService().upsert(configName, "worker", [], "W1N1");
+    const creep = createCreep("Worker1", "W1N1", configName);
+    Game.creeps[creep.name] = creep;
+
+    objects["safe-target"] = { pos: { x: 10, y: 10, roomName: "W1N1", getRangeTo: () => 1 } as unknown as RoomPosition };
+    objects["unsafe-target"] = { pos: { x: 40, y: 40, roomName: "W1N1", getRangeTo: () => 1 } as unknown as RoomPosition };
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+    (getSafeZone as jest.Mock).mockReturnValue(new Set([10 * 50 + 10]));
+
+    const assignedTask = assignWorkerTask(creep);
+
+    expect(assignedTask?.id).toBe(safeTask.id);
+    expect(unsafeTask.assignedCreeps).toEqual([]);
   });
 });

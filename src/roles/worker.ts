@@ -2,7 +2,7 @@ import type { RoleFactory } from "@/types/system";
 import { pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 import { moveToRemoteWorkTarget } from "@/roles/shared";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
-import { assignWorkerTask, completeWorkerTaskIfDone, getWorkerTaskTarget, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import { assignWorkerTask, completeWorkerTaskIfDone, getWorkerTaskTarget, isWorkerTaskSafeForCreep, releaseWorkerTask } from "@/runtime/workerTaskPool";
 import { releasePickupReservation } from "@/runtime/energyPickupReservation";
 
 export const workerRole: RoleFactory = () => ({
@@ -27,6 +27,11 @@ export const workerRole: RoleFactory = () => ({
 
     const target = getWorkerTaskTarget(task);
     if (!target) {
+      releaseWorkerTask(creep);
+      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+    }
+
+    if (!isWorkerTaskSafeForCreep(creep, task)) {
       releaseWorkerTask(creep);
       return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
     }

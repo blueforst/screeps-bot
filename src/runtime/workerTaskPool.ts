@@ -2,6 +2,9 @@ import type { WorkerTask } from "@/types/system";
 import { ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { measureCreepDecision } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
+import { isDefenseMode } from "@/runtime/defenseMode";
+import { getSafeZone } from "@/runtime/safeZone";
+import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
 
 const TASK_REFRESH_INTERVAL = 3;
 const RAMPART_EMERGENCY_TARGET_HITS = 6000;
@@ -324,6 +327,25 @@ function scoreTask(creep: Creep, task: WorkerTask): number {
   return task.priority * 1000 - distance * 15 - assignedPenalty;
 }
 
+export function isWorkerTaskSafeForCreep(creep: Creep, task: WorkerTask): boolean {
+  const assignedRoomName = getAssignedWorkerRoomName(creep);
+  if (!isDefenseMode(assignedRoomName)) {
+    return true;
+  }
+
+  const safeZone = getSafeZone(assignedRoomName);
+  if (safeZone.size === 0) {
+    return true;
+  }
+
+  const target = getTaskTarget(task);
+  if (!target) {
+    return false;
+  }
+
+  return target.pos.roomName === assignedRoomName && isInsideSafeZone(target.pos, safeZone);
+}
+
 export function releaseWorkerTask(creep: Creep): void {
   const taskId = ensureCreepAssignmentState(creep.name).taskId;
   if (!taskId) {
@@ -335,24 +357,31 @@ export function releaseWorkerTask(creep: Creep): void {
 
 export function assignWorkerTask(creep: Creep): WorkerTask | null {
   return measureCreepDecision(() => {
-    const roomTasks = getWorkerTasksByRoom(getAssignedWorkerRoomName(creep));
+    const assignedRoomName = getAssignedWorkerRoomName(creep);
+    const roomTasks = getWorkerTasksByRoom(assignedRoomName);
     if (Object.keys(roomTasks).length === 0) {
       releaseWorkerTask(creep);
       return null;
     }
 
+    const inDefenseMode = isDefenseMode(assignedRoomName);
+    const safeZone = inDefenseMode ? getSafeZone(assignedRoomName) : null;
+
     const assignmentState = ensureCreepAssignmentState(creep.name);
     if (assignmentState.taskId) {
       const current = roomTasks[assignmentState.taskId];
       if (current && current.status === "active") {
-        clampAssignees(current);
-        if (!current.assignedCreeps.includes(creep.name)) {
-          current.assignedCreeps.push(creep.name);
-        }
-
         const currentTarget = getTaskTarget(current);
-        if (currentTarget) {
-          return current;
+        if (inDefenseMode && safeZone && safeZone.size > 0 && currentTarget && !isInsideSafeZone(currentTarget.pos, safeZone)) {
+          releaseWorkerTask(creep);
+        } else {
+          clampAssignees(current);
+          if (!current.assignedCreeps.includes(creep.name)) {
+            current.assignedCreeps.push(creep.name);
+          }
+          if (currentTarget) {
+            return current;
+          }
         }
       }
 
@@ -369,7 +398,16 @@ export function assignWorkerTask(creep: Creep): WorkerTask | null {
         return false;
       }
 
-      return !!getTaskTarget(task);
+      const target = getTaskTarget(task);
+      if (!target) {
+        return false;
+      }
+
+      if (inDefenseMode && safeZone && safeZone.size > 0 && !isInsideSafeZone(target.pos, safeZone)) {
+        return false;
+      }
+
+      return true;
     });
 
     if (candidates.length === 0) {
