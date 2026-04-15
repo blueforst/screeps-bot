@@ -365,7 +365,7 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[],
   const state = ensureTowerCombatRoomState(room.name);
   const analysis = createTowerCombatAnalysis(attackTowers, hostiles);
 
-  if (isAllHostilesImmune(analysis, hostiles) && !isDefenderOnRampart(room)) {
+  if (isAllHostilesImmune(analysis, hostiles)) {
     delete state.focusTargetId;
     delete state.lastFocusHits;
     delete state.stalledTicks;
