@@ -8,7 +8,6 @@ const RAMPART_EMERGENCY_TARGET_HITS = 6000;
 const TOWER_FOCUS_STALL_HITS_DELTA = 40;
 const TOWER_FOCUS_STALL_TICKS = 2;
 const TOWER_SPREAD_PROBE_DURATION = 3;
-const TOWER_SPREAD_PROBE_INTERVAL = 7;
 
 interface TowerCombatRoomState {
   focusTargetId?: string;
@@ -402,11 +401,7 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[],
   }
 
   const shouldForceSpread = (state.spreadUntil || 0) >= Game.time;
-  const shouldProbeSpread =
-    focusTotalNet <= 0 ||
-    (hostiles.length > 1 && focusTotalNet < TOWER_POWER_ATTACK * 0.6) ||
-    (state.stalledTicks || 0) >= TOWER_FOCUS_STALL_TICKS ||
-    (Game.time % TOWER_SPREAD_PROBE_INTERVAL === 0 && focusTotalNet < TOWER_POWER_ATTACK);
+  const shouldProbeSpread = focusTotalNet <= 0 || (state.stalledTicks || 0) >= TOWER_FOCUS_STALL_TICKS;
 
   if (shouldProbeSpread) {
     state.spreadUntil = Game.time + TOWER_SPREAD_PROBE_DURATION;
