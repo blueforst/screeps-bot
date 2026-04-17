@@ -479,6 +479,26 @@ function cleanupTowerCombatMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupDefenseCoordinationMemory(ownedRooms: Set<string>): number {
+  if (!Memory.runtime?.defenseCoordination) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const roomName of Object.keys(Memory.runtime.defenseCoordination)) {
+    if (!ownedRooms.has(roomName)) {
+      delete Memory.runtime.defenseCoordination[roomName];
+      removed += 1;
+    }
+  }
+
+  if (Object.keys(Memory.runtime.defenseCoordination).length === 0) {
+    delete Memory.runtime.defenseCoordination;
+  }
+
+  return removed;
+}
+
 function cleanupNonOwnedRoomMemory(ownedRooms: Set<string>): number {
   if (!Memory.rooms) {
     return 0;
@@ -535,5 +555,6 @@ export function runMemoryCleanup(): void {
   cleanupWorkerTaskBoardMemory(ownedRooms);
   cleanupCarrierTaskBoardMemory(ownedRooms);
   cleanupTowerCombatMemory(ownedRooms);
+  cleanupDefenseCoordinationMemory(ownedRooms);
   cleanupNonOwnedRoomMemory(ownedRooms);
 }

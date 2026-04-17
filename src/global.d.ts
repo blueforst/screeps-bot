@@ -284,6 +284,7 @@ declare global {
       };
       homeDefense?: {
         boostTarget?: number;
+        maxDefenders?: number;
         maxBoostBuyPrice?: number;
         maxBoostDealEnergyCostRatio?: number;
         rooms?: Record<string, { boostLabId?: string }>;
@@ -358,6 +359,20 @@ declare global {
           lastFocusHits?: number;
           stalledTicks?: number;
           spreadUntil?: number;
+        }
+      >;
+      defenseCoordination?: Record<
+        string,
+        {
+          fronts: Array<{
+            id: string;
+            hostileIds: string[];
+            centroid: { x: number; y: number };
+            threatScore: number;
+          }>; 
+          towerFocusFrontId?: string;
+          defenderAssignments?: Record<string, string>;
+          defenderRoles?: Record<string, "primary" | "secondary">;
         }
       >;
       crossShard?: {
