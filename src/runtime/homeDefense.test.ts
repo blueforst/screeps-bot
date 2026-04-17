@@ -10,6 +10,7 @@ jest.mock("@/runtime/boostControl", () => ({
 }));
 
 import { runHomeDefense } from "@/runtime/homeDefense";
+import { getRoomDefenseCoordination } from "@/runtime/defenseCoordination";
 import { buyBoostIfNeeded, clearBoostLabTasks, shouldBoostDefender, syncBoostLabTask } from "@/runtime/boostControl";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 
@@ -179,10 +180,82 @@ describe("runHomeDefense", () => {
     expect(spawn.memory.spawnList).toEqual([configName]);
     expect(getCreepConfigService().get(configName)).toMatchObject({
       role: "homeDefender",
-      args: [roomName],
+      args: [roomName, "0"],
       roomName,
     });
     expect(shouldBoostDefender).toHaveBeenCalledWith(room, [hostile]);
     expect(clearBoostLabTasks).toHaveBeenCalledWith(roomName);
+  });
+
+  it("queues multiple defenders for multiple hostile fronts", () => {
+    const roomName = "W2N1";
+    const hostileA = createHostile(roomName, 10, 10);
+    const hostileB = createHostile(roomName, 40, 40);
+    const room = createRoom(roomName, {
+      towers: [createTower(roomName, 25, 25, 500)],
+      hostiles: [hostileA, hostileB],
+    });
+    const spawn = createSpawn(room);
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+
+    runHomeDefense();
+
+    expect(spawn.memory.spawnList).toEqual([
+      `${roomName}:homeDefense:defender:0`,
+      `${roomName}:homeDefense:defender:1`,
+    ]);
+    expect(getCreepConfigService().get(`${roomName}:homeDefense:defender:0`)).toMatchObject({
+      args: [roomName, "0"],
+    });
+    expect(getCreepConfigService().get(`${roomName}:homeDefense:defender:1`)).toMatchObject({
+      args: [roomName, "1"],
+    });
+    expect(getRoomDefenseCoordination(roomName)).toMatchObject({
+      fronts: expect.arrayContaining([
+        expect.objectContaining({ hostileIds: [hostileA.id] }),
+        expect.objectContaining({ hostileIds: [hostileB.id] }),
+      ]),
+      defenderAssignments: {
+        "0": "front:0",
+        "1": "front:1",
+      },
+      defenderRoles: {
+        "0": "primary",
+        "1": "primary",
+      },
+    });
+  });
+
+  it("assigns primary and secondary roles when one front needs multiple defenders", () => {
+    const roomName = "W2N2";
+    const room = createRoom(roomName, {
+      towers: [createTower(roomName, 25, 25, 0)],
+      hostiles: [
+        createHostile(roomName, 10, 10),
+        createHostile(roomName, 12, 10),
+        createHostile(roomName, 14, 10),
+      ],
+    });
+    const spawn = createSpawn(room);
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+
+    runHomeDefense();
+
+    expect(spawn.memory.spawnList).toEqual([
+      `${roomName}:homeDefense:defender:0`,
+      `${roomName}:homeDefense:defender:1`,
+    ]);
+    expect(getRoomDefenseCoordination(roomName)).toMatchObject({
+      defenderAssignments: {
+        "0": "front:0",
+        "1": "front:0",
+      },
+      defenderRoles: {
+        "0": "primary",
+        "1": "secondary",
+      },
+    });
   });
 });

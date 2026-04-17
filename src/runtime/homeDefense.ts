@@ -3,8 +3,10 @@ import { getSafeZone } from "@/runtime/safeZone";
 import { buyBoostIfNeeded, clearBoostLabTasks, shouldBoostDefender, syncBoostLabTask } from "@/runtime/boostControl";
 import { canTowersHandleHostiles } from "@/runtime/towerControl";
 import { getPlayerHostiles } from "@/runtime/defenseMode";
+import { assignDefenderSlot, clearDefenseCoordination, setDefenderRole, writeDefenseFronts } from "@/runtime/defenseCoordination";
+import { buildDefenseFronts } from "@/runtime/defenseFronts";
 
-const DEFENDER_COUNT = 1;
+const DEFAULT_MAX_DEFENDERS = 3;
 
 function getConfigName(roomName: string, index: number): string {
   return `${roomName}:homeDefense:defender:${index}`;
@@ -29,16 +31,34 @@ function isLiveOrSpawning(configName: string): boolean {
   return false;
 }
 
-function ensureDefenders(room: Room): void {
+function getMaxDefenders(): number {
+  const configured = Memory.cfg?.homeDefense?.maxDefenders;
+  return typeof configured === "number" && configured > 0 ? Math.floor(configured) : DEFAULT_MAX_DEFENDERS;
+}
+
+function calcDesiredDefenderCount(room: Room, hostiles: Creep[], frontCount: number): number {
+  if (hostiles.length === 0 || frontCount === 0) {
+    return 0;
+  }
+
+  if (frontCount === 1) {
+    const towersHandleAll = canTowersHandleHostiles(room, hostiles);
+    return towersHandleAll ? 0 : Math.min(getMaxDefenders(), Math.max(1, Math.ceil(hostiles.length / 2)));
+  }
+
+  return Math.min(getMaxDefenders(), frontCount);
+}
+
+function ensureDefenders(room: Room, desiredCount: number): void {
   const configStore = getMemoryService().getCreepConfigStore();
   const spawn = getPrimarySpawn(room.name);
   if (!spawn) return;
 
-  for (let i = 0; i < DEFENDER_COUNT; i++) {
+  for (let i = 0; i < desiredCount; i++) {
     const configName = getConfigName(room.name, i);
     configStore[configName] = {
       role: "homeDefender",
-      args: [room.name],
+      args: [room.name, String(i)],
       roomName: room.name,
     };
 
@@ -51,11 +71,11 @@ function ensureDefenders(room: Room): void {
   }
 }
 
-function removeDefenders(roomName: string): void {
+function removeDefendersAbove(roomName: string, startIndex: number): void {
   const configStore = getCreepConfigService();
   const spawn = getPrimarySpawn(roomName);
 
-  for (let i = 0; i < DEFENDER_COUNT; i++) {
+  for (let i = startIndex; i < getMaxDefenders(); i++) {
     const configName = getConfigName(roomName, i);
     configStore.remove(configName);
 
@@ -65,11 +85,11 @@ function removeDefenders(roomName: string): void {
   }
 }
 
-function stopQueuedDefenderSpawning(roomName: string): void {
+function stopQueuedDefenderSpawning(roomName: string, desiredCount: number): void {
   const configStore = getCreepConfigService();
   const spawn = getPrimarySpawn(roomName);
 
-  for (let i = 0; i < DEFENDER_COUNT; i++) {
+  for (let i = desiredCount; i < getMaxDefenders(); i++) {
     const configName = getConfigName(roomName, i);
 
     if (spawn?.memory.spawnList) {
@@ -82,20 +102,55 @@ function stopQueuedDefenderSpawning(roomName: string): void {
   }
 }
 
+function syncDefenderAssignments(roomName: string, desiredCount: number, frontCount: number): void {
+  const slotsByFront = new Map<string, string[]>();
+
+  for (let i = 0; i < getMaxDefenders(); i++) {
+    const slot = String(i);
+    const assignedFrontId = i < desiredCount && frontCount > 0 ? `front:${i % frontCount}` : undefined;
+    assignDefenderSlot(roomName, slot, assignedFrontId);
+
+    if (!assignedFrontId) {
+      setDefenderRole(roomName, slot, undefined);
+      continue;
+    }
+
+    const slots = slotsByFront.get(assignedFrontId) || [];
+    slots.push(slot);
+    slotsByFront.set(assignedFrontId, slots);
+  }
+
+  for (const slots of slotsByFront.values()) {
+    setDefenderRole(roomName, slots[0], "primary");
+    for (let i = 1; i < slots.length; i++) {
+      setDefenderRole(roomName, slots[i], "secondary");
+    }
+  }
+}
+
 export function runHomeDefense(): void {
   const tickContext = getTickContextService();
 
   for (const room of tickContext.getMyRooms()) {
     const safeZone = getSafeZone(room.name);
-    if (safeZone.size === 0) continue;
+    if (safeZone.size === 0) {
+      clearDefenseCoordination(room.name);
+      continue;
+    }
 
     const playerHostiles = getPlayerHostiles(room);
+    const fronts = buildDefenseFronts(playerHostiles);
     if (playerHostiles.length > 0) {
-      if (canTowersHandleHostiles(room, playerHostiles)) {
-        stopQueuedDefenderSpawning(room.name);
+      writeDefenseFronts(room.name, fronts);
+      const desiredCount = calcDesiredDefenderCount(room, playerHostiles, fronts.length);
+      syncDefenderAssignments(room.name, desiredCount, fronts.length);
+
+      if (desiredCount === 0) {
+        stopQueuedDefenderSpawning(room.name, 0);
         clearBoostLabTasks(room.name);
       } else {
-        ensureDefenders(room);
+        ensureDefenders(room, desiredCount);
+        stopQueuedDefenderSpawning(room.name, desiredCount);
         if (shouldBoostDefender(room, playerHostiles)) {
           buyBoostIfNeeded(room);
           syncBoostLabTask(room);
@@ -104,7 +159,8 @@ export function runHomeDefense(): void {
         }
       }
     } else {
-      removeDefenders(room.name);
+      removeDefendersAbove(room.name, 0);
+      clearDefenseCoordination(room.name);
       clearBoostLabTasks(room.name);
     }
   }
