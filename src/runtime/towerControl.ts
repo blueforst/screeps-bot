@@ -1,5 +1,9 @@
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
+import { getRoomDefenseCoordination, getTowerFocusFront, setTowerFocusFront } from "@/runtime/defenseCoordination";
+import { chooseBoundaryBurstEngagement, chooseInsideBurstTarget } from "@/runtime/hostilePriorities";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import { getSafeZone } from "@/runtime/safeZone";
+import { getBoundaryRamparts } from "@/runtime/safeZoneHelpers";
 
 const TOWER_MIN_REPAIR_ENERGY = 400;
 const TOWER_MIN_EMERGENCY_REPAIR_ENERGY = 200;
@@ -337,6 +341,48 @@ function isDefenderOnRampart(room: Room): boolean {
   return false;
 }
 
+function getHomeDefenders(room: Room): Creep[] {
+  return room.find(FIND_MY_CREEPS, {
+    filter: (creep) => creep.memory.role === "homeDefender",
+  });
+}
+
+function getParticipatingDefenderBurstDamage(room: Room, target: Creep): number {
+  return getHomeDefenders(room)
+    .filter((creep) => creep.pos.getRangeTo(target.pos) <= 1)
+    .reduce((sum, creep) => sum + creep.getActiveBodyparts(ATTACK) * ATTACK_POWER, 0);
+}
+
+function chooseCoordinatedBurstTarget(
+  room: Room,
+  hostiles: Creep[],
+  analysis: TowerCombatAnalysis,
+): Creep | null {
+  if (!isDefenderOnRampart(room)) {
+    return null;
+  }
+
+  const safeZone = getSafeZone(room.name);
+  if (safeZone.size === 0) {
+    return null;
+  }
+
+  const insideHostiles = hostiles.filter((hostile) => safeZone.has(hostile.pos.x * 50 + hostile.pos.y));
+  const preferredTarget = insideHostiles.length > 0
+    ? chooseInsideBurstTarget(insideHostiles)
+    : chooseBoundaryBurstEngagement(hostiles, getBoundaryRamparts(room, safeZone))?.hostile || null;
+
+  if (!preferredTarget) {
+    return null;
+  }
+
+  const totalTowerDamage = analysis.totalTowerAttackByHostileId.get(preferredTarget.id) || 0;
+  const incomingHeal = analysis.incomingHealByHostileId.get(preferredTarget.id) || 0;
+  const combinedBurst = totalTowerDamage + getParticipatingDefenderBurstDamage(room, preferredTarget);
+
+  return combinedBurst > incomingHeal ? preferredTarget : null;
+}
+
 function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[], woundedCreeps: Creep[]): boolean {
   if (hostiles.length <= 0 || towers.length <= 0) {
     return false;
@@ -361,19 +407,30 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[],
     return true;
   }
 
-  const state = ensureTowerCombatRoomState(room.name);
-  const analysis = createTowerCombatAnalysis(attackTowers, hostiles);
+  const coordinatedFront = getTowerFocusFront(room.name);
+  const defaultFront = getRoomDefenseCoordination(room.name)?.fronts[0];
+  const activeFront = coordinatedFront || defaultFront || null;
+  const coordinatedHostiles = activeFront
+    ? hostiles.filter((hostile) => activeFront.hostileIds.includes(hostile.id))
+    : hostiles;
+  const combatHostiles = coordinatedHostiles.length > 0 ? coordinatedHostiles : hostiles;
+  setTowerFocusFront(room.name, activeFront?.id);
 
-  if (isAllHostilesImmune(analysis, hostiles)) {
+  const state = ensureTowerCombatRoomState(room.name);
+  const analysis = createTowerCombatAnalysis(attackTowers, combatHostiles);
+  const coordinatedBurstTarget = chooseCoordinatedBurstTarget(room, combatHostiles, analysis);
+
+  if (!coordinatedBurstTarget && isAllHostilesImmune(analysis, combatHostiles)) {
     delete state.focusTargetId;
     delete state.lastFocusHits;
     delete state.stalledTicks;
     delete state.spreadUntil;
     return true;
   }
-  const focusTarget = chooseFocusTarget(hostiles, analysis);
+
+  const focusTarget = coordinatedBurstTarget || chooseFocusTarget(combatHostiles, analysis);
   if (!focusTarget) {
-    const spreadAssignments = assignSpreadTargets(attackTowers, hostiles, analysis);
+    const spreadAssignments = assignSpreadTargets(attackTowers, combatHostiles, analysis);
     for (const tower of attackTowers) {
       const target = spreadAssignments.get(tower.id);
       if (target) {
@@ -409,7 +466,7 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[],
 
   const useSpread = shouldForceSpread || shouldProbeSpread;
   if (useSpread) {
-    const spreadAssignments = assignSpreadTargets(attackTowers, hostiles, analysis);
+    const spreadAssignments = assignSpreadTargets(attackTowers, combatHostiles, analysis);
     for (const tower of attackTowers) {
       const target = spreadAssignments.get(tower.id);
       if (target) {
@@ -453,6 +510,7 @@ export function runTowerControl(): void {
       continue;
     }
 
+    setTowerFocusFront(room.name, undefined);
     const state = ensureTowerCombatRoomState(room.name);
     delete state.focusTargetId;
     delete state.lastFocusHits;

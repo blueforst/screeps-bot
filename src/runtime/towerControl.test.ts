@@ -1,4 +1,6 @@
 import { runTowerControl } from "@/runtime/towerControl";
+import { writeDefenseFronts } from "@/runtime/defenseCoordination";
+import type { DefenseFront } from "@/runtime/defenseFronts";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -225,5 +227,207 @@ describe("runTowerControl", () => {
 
     expect(towerA.attack).toHaveBeenCalledWith(focusTarget);
     expect(towerB.attack).toHaveBeenCalledWith(otherTarget);
+  });
+
+  it("focuses tower fire on the coordinated front", () => {
+    const roomName = "W9N9";
+    const frontHostile = createHostile(roomName, "front-hostile", 11, 10, {
+      body: createBody(ATTACK, 2),
+      hits: 200,
+    });
+    const offFrontHostile = createHostile(roomName, "off-front-hostile", 40, 40, {
+      body: createBody(ATTACK, 1),
+      hits: 100,
+    });
+    const towerA = createTower(roomName, "tower-a", 10, 10);
+    const towerB = createTower(roomName, "tower-b", 12, 10);
+    const room = createRoom(roomName, {
+      towers: [towerA, towerB],
+      hostiles: [frontHostile, offFrontHostile],
+    });
+    Game.rooms[room.name] = room;
+
+    const fronts: DefenseFront[] = [
+      {
+        id: "front:0",
+        hostiles: [frontHostile],
+        hostileIds: [frontHostile.id],
+        centroid: { x: frontHostile.pos.x, y: frontHostile.pos.y },
+        threatScore: 10,
+      },
+      {
+        id: "front:1",
+        hostiles: [offFrontHostile],
+        hostileIds: [offFrontHostile.id],
+        centroid: { x: offFrontHostile.pos.x, y: offFrontHostile.pos.y },
+        threatScore: 2,
+      },
+    ];
+    writeDefenseFronts(roomName, fronts);
+
+    runTowerControl();
+
+    expect(towerA.attack).toHaveBeenCalledWith(frontHostile);
+    expect(towerB.attack).toHaveBeenCalledWith(frontHostile);
+    expect(towerA.attack).not.toHaveBeenCalledWith(offFrontHostile);
+    expect(towerB.attack).not.toHaveBeenCalledWith(offFrontHostile);
+  });
+
+  it("bursts the same front-line target as a rampart defender when that burst is effective", () => {
+    const roomName = "W9N8";
+    const healer = createHostile(roomName, "healer", 18, 10, {
+      body: createBody(HEAL, 2),
+      hits: 200,
+    });
+    const dismantler = createHostile(roomName, "dismantler", 11, 10, {
+      body: createBody(WORK, 2),
+      hits: 200,
+    });
+    const towerA = createTower(roomName, "tower-a", 10, 10);
+    const towerB = createTower(roomName, "tower-b", 13, 10);
+    const defender = {
+      memory: { role: "homeDefender" },
+      getActiveBodyparts: jest.fn((part: BodyPartConstant) => (part === ATTACK ? 10 : 0)),
+      pos: {
+        getRangeTo: jest.fn((target: { pos?: { x: number; y: number }; x?: number; y?: number }) => {
+          const targetPos = "pos" in target && target.pos ? target.pos : target;
+          return Math.max(Math.abs(10 - (targetPos.x ?? 0)), Math.abs(10 - (targetPos.y ?? 0)));
+        }),
+        lookFor: jest.fn(() => [{ structureType: STRUCTURE_RAMPART, my: true }]),
+      },
+      hits: 100,
+      hitsMax: 100,
+    } as unknown as Creep;
+    const room = createRoom(roomName, {
+      towers: [towerA, towerB],
+      hostiles: [healer, dismantler],
+      myCreeps: [defender],
+    });
+    Game.rooms[room.name] = room;
+
+    writeDefenseFronts(roomName, [
+      {
+        id: "front:0",
+        hostiles: [healer, dismantler],
+        hostileIds: [healer.id, dismantler.id],
+        centroid: { x: 12, y: 10 },
+        threatScore: 20,
+      },
+    ]);
+
+    runTowerControl();
+
+    expect(towerA.attack).toHaveBeenCalledWith(dismantler);
+    expect(towerB.attack).toHaveBeenCalledWith(dismantler);
+  });
+
+  it("avoids forcing coordinated burst onto a target when no defender is actually in position to join it", () => {
+    const roomName = "W9N7";
+    const protectedDismantler = createHostile(roomName, "protected-dismantler", 11, 10, {
+      body: createBody(WORK, 2),
+      hits: 200,
+    });
+    const exposedAttacker = createHostile(roomName, "exposed-attacker", 15, 10, {
+      body: createBody(ATTACK, 2),
+      hits: 200,
+    });
+    const healerA = createHostile(roomName, "healer-a", 12, 10, {
+      body: createBody(HEAL, 30),
+      hits: 3000,
+    });
+    const healerB = createHostile(roomName, "healer-b", 12, 11, {
+      body: createBody(HEAL, 30),
+      hits: 3000,
+    });
+    const towerA = createTower(roomName, "tower-a", 48, 48);
+    const towerB = createTower(roomName, "tower-b", 47, 48);
+    const defender = {
+      memory: { role: "homeDefender" },
+      getActiveBodyparts: jest.fn((part: BodyPartConstant) => (part === ATTACK ? 5 : 0)),
+      pos: {
+        getRangeTo: jest.fn((target: { pos?: { x: number; y: number }; x?: number; y?: number }) => {
+          const targetPos = "pos" in target && target.pos ? target.pos : target;
+          return Math.max(Math.abs(20 - (targetPos.x ?? 0)), Math.abs(10 - (targetPos.y ?? 0)));
+        }),
+        lookFor: jest.fn(() => [{ structureType: STRUCTURE_RAMPART, my: true }]),
+      },
+      hits: 100,
+      hitsMax: 100,
+    } as unknown as Creep;
+    const room = createRoom(roomName, {
+      towers: [towerA, towerB],
+      hostiles: [protectedDismantler, exposedAttacker, healerA, healerB],
+      myCreeps: [defender],
+    });
+    Game.rooms[room.name] = room;
+
+    writeDefenseFronts(roomName, [
+      {
+        id: "front:0",
+        hostiles: [protectedDismantler, exposedAttacker, healerA, healerB],
+        hostileIds: [protectedDismantler.id, exposedAttacker.id, healerA.id, healerB.id],
+        centroid: { x: 13, y: 10 },
+        threatScore: 20,
+      },
+    ]);
+
+    runTowerControl();
+
+    expect(towerA.attack).not.toHaveBeenCalledWith(protectedDismantler);
+    expect(towerB.attack).not.toHaveBeenCalledWith(protectedDismantler);
+    expect(towerA.attack).toHaveBeenCalledWith(exposedAttacker);
+    expect(towerB.attack).toHaveBeenCalledWith(exposedAttacker);
+  });
+
+  it("still performs a coordinated burst when towers alone are immune but defender burst makes it viable", () => {
+    const roomName = "W9N6";
+    const protectedDismantler = createHostile(roomName, "protected-dismantler", 11, 10, {
+      body: createBody(WORK, 2),
+      hits: 200,
+    });
+    const healerA = createHostile(roomName, "healer-a", 12, 10, {
+      body: createBody(HEAL, 10),
+      hits: 1000,
+    });
+    const healerB = createHostile(roomName, "healer-b", 12, 11, {
+      body: createBody(HEAL, 10),
+      hits: 1000,
+    });
+    const towerA = createTower(roomName, "tower-a", 48, 48);
+    const towerB = createTower(roomName, "tower-b", 47, 48);
+    const defender = {
+      memory: { role: "homeDefender" },
+      getActiveBodyparts: jest.fn((part: BodyPartConstant) => (part === ATTACK ? 10 : 0)),
+      pos: {
+        getRangeTo: jest.fn((target: { pos?: { x: number; y: number }; x?: number; y?: number }) => {
+          const targetPos = "pos" in target && target.pos ? target.pos : target;
+          return Math.max(Math.abs(10 - (targetPos.x ?? 0)), Math.abs(10 - (targetPos.y ?? 0)));
+        }),
+        lookFor: jest.fn(() => [{ structureType: STRUCTURE_RAMPART, my: true }]),
+      },
+      hits: 100,
+      hitsMax: 100,
+    } as unknown as Creep;
+    const room = createRoom(roomName, {
+      towers: [towerA, towerB],
+      hostiles: [protectedDismantler, healerA, healerB],
+      myCreeps: [defender],
+    });
+    Game.rooms[room.name] = room;
+
+    writeDefenseFronts(roomName, [
+      {
+        id: "front:0",
+        hostiles: [protectedDismantler, healerA, healerB],
+        hostileIds: [protectedDismantler.id, healerA.id, healerB.id],
+        centroid: { x: 12, y: 10 },
+        threatScore: 20,
+      },
+    ]);
+
+    runTowerControl();
+
+    expect(towerA.attack).toHaveBeenCalledWith(protectedDismantler);
+    expect(towerB.attack).toHaveBeenCalledWith(protectedDismantler);
   });
 });
