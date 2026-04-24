@@ -1,6 +1,6 @@
 import type { RoleFactory } from "@/types/system";
 import { pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
-import { moveToRemoteWorkTarget } from "@/roles/shared";
+import { moveToRemoteWorkTarget, moveToTarget } from "@/roles/shared";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { assignWorkerTask, completeWorkerTaskIfDone, getWorkerTaskTarget, isWorkerTaskSafeForCreep, releaseWorkerTask } from "@/runtime/workerTaskPool";
 import { releasePickupReservation } from "@/runtime/energyPickupReservation";
@@ -91,6 +91,28 @@ export const workerRole: RoleFactory = () => ({
       }
 
       return shouldSwitchToSource;
+    }
+
+    if (task.type === "dismantle") {
+      const dismantleCode = measureCreepIntent(() => creep.dismantle(target as Structure<StructureConstant>));
+      const dismantleMoveCode = moveToTarget(creep, target.pos, 1, {
+        swampCost: 8,
+        reusePath: 5,
+        ignoreCreeps: true,
+      });
+
+      if (dismantleCode === ERR_NOT_IN_RANGE) {
+        if (dismantleMoveCode === ERR_NO_PATH) {
+          releaseWorkerTask(creep);
+        }
+        return false;
+      }
+
+      if (dismantleCode === ERR_INVALID_TARGET || completeWorkerTaskIfDone(task)) {
+        releaseWorkerTask(creep);
+      }
+
+      return false;
     }
 
     releaseWorkerTask(creep);
