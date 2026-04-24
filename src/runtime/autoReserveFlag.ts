@@ -1,0 +1,46 @@
+const RESERVE_FLAG_CREATE_ENERGY = 50_000;
+const RESERVE_FLAG_CLEAR_ENERGY = 80_000;
+
+function getAutoReserveFlagName(roomName: string): string {
+  return `RESERVE_${roomName}`;
+}
+
+function isAtPosition(flag: Flag, pos: RoomPosition): boolean {
+  return flag.pos.roomName === pos.roomName && flag.pos.x === pos.x && flag.pos.y === pos.y;
+}
+
+function shouldManageRoom(room: Room): room is Room & { storage: StructureStorage } {
+  return !!room.controller?.my && room.controller.level >= 4 && !!room.storage;
+}
+
+export function runAutoReserveFlags(): void {
+  for (const room of Object.values(Game.rooms)) {
+    if (!shouldManageRoom(room)) {
+      continue;
+    }
+
+    const flagName = getAutoReserveFlagName(room.name);
+    const flag = Game.flags[flagName];
+    const storageEnergy = room.storage.store.getUsedCapacity(RESOURCE_ENERGY);
+
+    if (storageEnergy < RESERVE_FLAG_CREATE_ENERGY) {
+      if (flag) {
+        if (!isAtPosition(flag, room.storage.pos)) {
+          flag.setPosition(room.storage.pos);
+        }
+        continue;
+      }
+
+      const createdFlagName = room.createFlag(room.storage.pos, flagName);
+      if (createdFlagName === flagName) {
+        console.log(`[reserve] ${room.name} entered reserve mode at ${storageEnergy} energy`);
+      }
+      continue;
+    }
+
+    if (flag && storageEnergy >= RESERVE_FLAG_CLEAR_ENERGY) {
+      flag.remove();
+      console.log(`[reserve] ${room.name} cleared reserve mode at ${storageEnergy} energy`);
+    }
+  }
+}
