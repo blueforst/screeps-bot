@@ -118,8 +118,8 @@ function getPreferredSourceFromFlagName(flagName: string): string | undefined {
     return undefined;
   }
 
-  const suffix = flagName.slice(3).trim();
-  return suffix.length > 0 ? suffix : undefined;
+  const match = /^CL_([WE]\d+[NS]\d+)/.exec(flagName.trim());
+  return match?.[1];
 }
 
 function getColonizationFlags(): Flag[] {

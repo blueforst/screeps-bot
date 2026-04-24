@@ -173,6 +173,99 @@ describe("runColonizationByFlag", () => {
     expect(Memory.data?.colonization?.W1N2?.status).toBe("claiming");
   });
 
+  it("preserves exact preferred source room flags", () => {
+    const sourceRoomA = createSourceRoom("W1N1");
+    const sourceRoomB = createSourceRoom("W3N3");
+    const targetRoom = createTargetRoom("W1N2");
+    const spawnA = createSpawn(sourceRoomA);
+    const spawnB = createSpawn(sourceRoomB);
+    const scout = createScout(sourceRoomB.name, targetRoom);
+
+    Game.rooms[sourceRoomA.name] = sourceRoomA;
+    Game.rooms[sourceRoomB.name] = sourceRoomB;
+    Game.rooms[targetRoom.name] = targetRoom;
+    Game.spawns.Spawn1 = spawnA;
+    Game.spawns.Spawn2 = spawnB;
+    Game.creeps[scout.name] = scout;
+    Game.flags.CL_W3N3 = {
+      name: "CL_W3N3",
+      pos: {
+        roomName: targetRoom.name,
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+
+    runColonizationByFlag();
+
+    expect(getCreepConfigService().get("W3N3:colonize:W1N2:claimer:0")).toMatchObject({
+      role: "claimer",
+      roomName: "W3N3",
+      args: ["W1N2", "W3N3|W1N2"],
+    });
+  });
+
+  it("supports wildcard-style colonization flag suffixes for shared source rooms", () => {
+    const sourceRoomA = createSourceRoom("W1N1");
+    const sourceRoomB = createSourceRoom("W3N3");
+    const targetRoom = createTargetRoom("W1N2");
+    const spawnA = createSpawn(sourceRoomA);
+    const spawnB = createSpawn(sourceRoomB);
+    const scout = createScout(sourceRoomB.name, targetRoom);
+
+    Game.rooms[sourceRoomA.name] = sourceRoomA;
+    Game.rooms[sourceRoomB.name] = sourceRoomB;
+    Game.rooms[targetRoom.name] = targetRoom;
+    Game.spawns.Spawn1 = spawnA;
+    Game.spawns.Spawn2 = spawnB;
+    Game.creeps[scout.name] = scout;
+    Game.flags.CL_W3N3_batch1 = {
+      name: "CL_W3N3_batch1",
+      pos: {
+        roomName: targetRoom.name,
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+
+    runColonizationByFlag();
+
+    expect(getCreepConfigService().get("W3N3:colonize:W1N2:claimer:0")).toMatchObject({
+      role: "claimer",
+      roomName: "W3N3",
+      args: ["W1N2", "W3N3|W1N2"],
+    });
+  });
+
+  it("accepts attached suffixes after the preferred source room prefix", () => {
+    const sourceRoomA = createSourceRoom("W1N1");
+    const sourceRoomB = createSourceRoom("W3N3");
+    const targetRoom = createTargetRoom("W1N2");
+    const spawnA = createSpawn(sourceRoomA);
+    const spawnB = createSpawn(sourceRoomB);
+    const scout = createScout(sourceRoomB.name, targetRoom);
+
+    Game.rooms[sourceRoomA.name] = sourceRoomA;
+    Game.rooms[sourceRoomB.name] = sourceRoomB;
+    Game.rooms[targetRoom.name] = targetRoom;
+    Game.spawns.Spawn1 = spawnA;
+    Game.spawns.Spawn2 = spawnB;
+    Game.creeps[scout.name] = scout;
+    Game.flags.CL_W3N3shared = {
+      name: "CL_W3N3shared",
+      pos: {
+        roomName: targetRoom.name,
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+
+    runColonizationByFlag();
+
+    expect(getCreepConfigService().get("W3N3:colonize:W1N2:claimer:0")).toMatchObject({
+      role: "claimer",
+      roomName: "W3N3",
+      args: ["W1N2", "W3N3|W1N2"],
+    });
+  });
+
   it("marks the task claimed on a later tick after reservation clearing succeeds", () => {
     const sourceRoom = createSourceRoom("W1N1");
     const targetRoom = createTargetRoom("W1N2");
