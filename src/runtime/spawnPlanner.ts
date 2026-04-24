@@ -402,23 +402,32 @@ function prioritizeSpawnQueue(spawn: StructureSpawn): void {
 
   const creepConfigs = getCreepConfigService();
 
-  spawn.memory.spawnList = [...queue]
-    .map((configName, index) => {
-      const role = creepConfigs.get(configName)?.role;
-      return {
-        configName,
-        index,
-        priority: getSpawnRolePriority(role),
-      };
-    })
-    .sort((a, b) => {
-      if (a.priority !== b.priority) {
-        return a.priority - b.priority;
-      }
+  let previousPriority = getSpawnRolePriority(creepConfigs.get(queue[0])?.role);
+  for (let index = 1; index < queue.length; index++) {
+    const priority = getSpawnRolePriority(creepConfigs.get(queue[index])?.role);
+    if (priority < previousPriority) {
+      spawn.memory.spawnList = [...queue]
+        .map((configName, queueIndex) => {
+          const role = creepConfigs.get(configName)?.role;
+          return {
+            configName,
+            index: queueIndex,
+            priority: getSpawnRolePriority(role),
+          };
+        })
+        .sort((a, b) => {
+          if (a.priority !== b.priority) {
+            return a.priority - b.priority;
+          }
 
-      return a.index - b.index;
-    })
-    .map((item) => item.configName);
+          return a.index - b.index;
+        })
+        .map((item) => item.configName);
+      return;
+    }
+
+    previousPriority = priority;
+  }
 }
 
 function hasLiveCarrierInRoom(roomName: string): boolean {
