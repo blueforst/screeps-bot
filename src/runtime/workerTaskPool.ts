@@ -9,6 +9,13 @@ import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
 const TASK_REFRESH_INTERVAL = 3;
 const RAMPART_EMERGENCY_TARGET_HITS = 6000;
 const RAMPART_NORMAL_REPAIR_PRIORITY = 320;
+const DISMANTLE_ILLEGAL_STRUCTURE_PRIORITY = 280;
+
+type PlannedLayout = { [structureType: string]: { x: number; y: number }[] };
+type StructureWithOptionalOwner = Structure<StructureConstant> & {
+  my?: boolean;
+  owner?: { username: string };
+};
 
 type WorkerTaskBoardStore = Record<string, Record<string, WorkerTask>>;
 
@@ -219,6 +226,92 @@ function createRampartRepairTask(rampart: StructureRampart): WorkerTask {
   };
 }
 
+function createDismantleTask(structure: Structure<StructureConstant>): WorkerTask {
+  return {
+    id: `dismantle:${structure.id}`,
+    type: "dismantle",
+    targetId: structure.id,
+    roomName: structure.room.name,
+    priority: DISMANTLE_ILLEGAL_STRUCTURE_PRIORITY,
+    requiredWork: structure.hits,
+    assignedCreeps: [],
+    maxAssignees: 1,
+    status: "active",
+    updatedAt: Game.time,
+  };
+}
+
+function getPlannedPositionKey(structureType: string, x: number, y: number): string {
+  return `${structureType}:${x}:${y}`;
+}
+
+function getPlannedStructurePositionKeys(layout: PlannedLayout): Set<string> {
+  const planned = new Set<string>();
+  for (const [structureType, positions] of Object.entries(layout)) {
+    for (const pos of positions) {
+      planned.add(getPlannedPositionKey(structureType, pos.x, pos.y));
+    }
+  }
+
+  return planned;
+}
+
+function ensureIllegalStructureCleanupMemory(): { rooms: Record<string, { completedAt: number; layoutSavedAt: number }> } {
+  Memory.runtime = Memory.runtime || {};
+  if (!Memory.runtime.illegalStructureCleanup) {
+    Memory.runtime.illegalStructureCleanup = { rooms: {} };
+  }
+
+  return Memory.runtime.illegalStructureCleanup;
+}
+
+function isIllegalStructureCleanupComplete(roomName: string, layoutSavedAt: number): boolean {
+  return Memory.runtime?.illegalStructureCleanup?.rooms?.[roomName]?.layoutSavedAt === layoutSavedAt;
+}
+
+function markIllegalStructureCleanupComplete(roomName: string, layoutSavedAt: number): void {
+  ensureIllegalStructureCleanupMemory().rooms[roomName] = {
+    completedAt: Game.time,
+    layoutSavedAt,
+  };
+}
+
+function isDismantleCandidate(structure: StructureWithOptionalOwner, plannedPositions: Set<string>): boolean {
+  if (structure.my === true || structure.owner !== undefined) {
+    return false;
+  }
+
+  if (structure.structureType === STRUCTURE_CONTROLLER) {
+    return false;
+  }
+
+  return !plannedPositions.has(getPlannedPositionKey(structure.structureType, structure.pos.x, structure.pos.y));
+}
+
+function refreshIllegalStructureDismantleTasks(room: Room): void {
+  const roomContext = getTickContextService().getRoomContext(room);
+  const layoutData = Memory.data?.roomPlanner?.[room.name];
+  if (!roomContext || !layoutData || roomContext.getTowers().length === 0) {
+    return;
+  }
+
+  if (isIllegalStructureCleanupComplete(room.name, layoutData.savedAt)) {
+    return;
+  }
+
+  const plannedPositions = getPlannedStructurePositionKeys(layoutData.layout);
+  const candidates = roomContext.getStructures().filter((structure) => isDismantleCandidate(structure, plannedPositions));
+
+  if (candidates.length === 0) {
+    markIllegalStructureCleanupComplete(room.name, layoutData.savedAt);
+    return;
+  }
+
+  for (const structure of candidates) {
+    upsertTask(room.name, createDismantleTask(structure));
+  }
+}
+
 function cleanupStaleTasks(roomName: string): void {
   const tasks = ensureRoomTaskStore(roomName);
   for (const [taskId, task] of Object.entries(tasks)) {
@@ -280,6 +373,8 @@ export function refreshWorkerTasks(): void {
 
       upsertTask(room.name, createRampartRepairTask(selectedNormalRampart));
     }
+    refreshIllegalStructureDismantleTasks(room);
+
     const upgradeTask = createUpgradeTask(room);
     if (upgradeTask) {
       upsertTask(room.name, upgradeTask);
@@ -300,6 +395,10 @@ function getTaskTarget(task: WorkerTask): RoomObject | null {
 
   if (task.type === "repair") {
     return Game.getObjectById(task.targetId as Id<StructureRampart>);
+  }
+
+  if (task.type === "dismantle") {
+    return Game.getObjectById(task.targetId as Id<Structure<StructureConstant>>);
   }
 
   return null;
@@ -459,6 +558,10 @@ export function completeWorkerTaskIfDone(task: WorkerTask): boolean {
 
     const targetHits = task.repairTargetHits ?? RAMPART_EMERGENCY_TARGET_HITS;
     return rampart.hits >= targetHits;
+  }
+
+  if (task.type === "dismantle") {
+    return !Game.getObjectById(task.targetId as Id<Structure<StructureConstant>>);
   }
 
   return false;

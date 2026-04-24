@@ -7,7 +7,7 @@ jest.mock("@/runtime/safeZone", () => ({
 }));
 
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
-import { assignWorkerTask, clearWorkerTaskBoardForTest, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import { assignWorkerTask, clearWorkerTaskBoardForTest, getWorkerTasksByRoom, refreshWorkerTasks, releaseWorkerTask } from "@/runtime/workerTaskPool";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { getSafeZone } from "@/runtime/safeZone";
@@ -33,6 +33,49 @@ function createCreep(name: string, roomName: string, configName?: string): Creep
       getRangeTo: () => 1,
     } as unknown as RoomPosition,
   } as Creep;
+}
+
+function createRoomForRefresh(structures: Structure<StructureConstant>[], towers: StructureTower[] = []): Room {
+  return {
+    name: "W1N1",
+    controller: {
+      id: "controller1" as Id<StructureController>,
+      my: true,
+      level: 3,
+      pos: createPos("W1N1"),
+    } as StructureController,
+    find: jest.fn((type: FindConstant) => {
+      if (type === FIND_MY_STRUCTURES) {
+        return towers;
+      }
+      if (type === FIND_STRUCTURES) {
+        return structures;
+      }
+      if (type === FIND_CONSTRUCTION_SITES || type === FIND_MY_CREEPS) {
+        return [];
+      }
+      return [];
+    }),
+  } as unknown as Room;
+}
+
+function createStructure(
+  id: string,
+  structureType: StructureConstant,
+  x: number,
+  y: number,
+  overrides: Record<string, unknown> = {},
+): Structure<StructureConstant> {
+  const room = { name: "W1N1" } as Room;
+  return {
+    id: id as Id<Structure<StructureConstant>>,
+    structureType,
+    room,
+    pos: { x, y, roomName: "W1N1", getRangeTo: () => 1 } as unknown as RoomPosition,
+    hits: 5000,
+    hitsMax: 5000,
+    ...overrides,
+  } as unknown as Structure<StructureConstant>;
 }
 
 function createTask(overrides: Partial<WorkerTask> & Pick<WorkerTask, "id" | "type" | "targetId" | "roomName">): WorkerTask {
@@ -64,6 +107,11 @@ describe("workerTaskPool", () => {
     const getObjectById = jest.fn((id: string) => objects[id] || null) as unknown as Game["getObjectById"];
     (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = getObjectById;
   });
+
+  function getIllegalStructureCleanupMemory(): { rooms?: Record<string, { completedAt: number; layoutSavedAt: number }> } | undefined {
+    return (Memory.runtime as { illegalStructureCleanup?: { rooms?: Record<string, { completedAt: number; layoutSavedAt: number }> } } | undefined)
+      ?.illegalStructureCleanup;
+  }
 
   it("releases the previous task from its actual task store even after the creep changes rooms", () => {
     const repairTask = createTask({
@@ -282,5 +330,124 @@ describe("workerTaskPool", () => {
 
     expect(assignedTask?.id).toBe(safeTask.id);
     expect(unsafeTask.assignedCreeps).toEqual([]);
+  });
+
+  it("creates a dismantle task for a non-owned structure outside the saved room plan after tower is built", () => {
+    Game.time = 3;
+    const tower = createStructure("tower1", STRUCTURE_TOWER, 20, 20, { my: true }) as StructureTower;
+    const plannedExtension = createStructure("plannedExt", STRUCTURE_EXTENSION, 10, 10, { my: false });
+    const illegalExtension = createStructure("illegalExt", STRUCTURE_EXTENSION, 11, 10, { my: false });
+    const room = createRoomForRefresh([tower, plannedExtension, illegalExtension], [tower]);
+    Game.rooms.W1N1 = room;
+    Memory.data = {
+      roomPlanner: {
+        W1N1: {
+          layout: {
+            [STRUCTURE_EXTENSION]: [{ x: 10, y: 10 }],
+            [STRUCTURE_TOWER]: [{ x: 20, y: 20 }],
+          },
+          timestamp: "2026-04-24T00:00:00.000Z",
+          savedAt: 42,
+        },
+      },
+    };
+
+    refreshWorkerTasks();
+
+    const tasks = getWorkerTasksByRoom("W1N1");
+    expect(tasks["dismantle:illegalExt"]).toMatchObject({
+      type: "dismantle",
+      targetId: "illegalExt",
+      roomName: "W1N1",
+      maxAssignees: 1,
+      status: "active",
+    });
+    expect(tasks["dismantle:plannedExt"]).toBeUndefined();
+    expect(getIllegalStructureCleanupMemory()?.rooms?.W1N1).toBeUndefined();
+  });
+
+  it("marks a planned room as illegal-structure cleaned after tower is built and no dismantle targets remain", () => {
+    Game.time = 6;
+    const tower = createStructure("tower1", STRUCTURE_TOWER, 20, 20, { my: true }) as StructureTower;
+    const room = createRoomForRefresh([tower], [tower]);
+    Game.rooms.W1N1 = room;
+    Memory.data = {
+      roomPlanner: {
+        W1N1: {
+          layout: {
+            [STRUCTURE_TOWER]: [{ x: 20, y: 20 }],
+          },
+          timestamp: "2026-04-24T00:00:00.000Z",
+          savedAt: 42,
+        },
+      },
+    };
+
+    refreshWorkerTasks();
+
+    expect(getIllegalStructureCleanupMemory()?.rooms?.W1N1).toMatchObject({
+      completedAt: 6,
+      layoutSavedAt: 42,
+    });
+  });
+
+  it("does not create dismantle tasks for owned structures even when they are outside the saved room plan", () => {
+    Game.time = 9;
+    const tower = createStructure("tower1", STRUCTURE_TOWER, 20, 20, { my: true, owner: { username: "me" } }) as StructureTower;
+    const ownedOffPlanExtension = createStructure("ownedExt", STRUCTURE_EXTENSION, 11, 10, {
+      my: true,
+      owner: { username: "me" },
+    });
+    const room = createRoomForRefresh([tower, ownedOffPlanExtension], [tower]);
+    Game.rooms.W1N1 = room;
+    Memory.data = {
+      roomPlanner: {
+        W1N1: {
+          layout: {
+            [STRUCTURE_TOWER]: [{ x: 20, y: 20 }],
+          },
+          timestamp: "2026-04-24T00:00:00.000Z",
+          savedAt: 42,
+        },
+      },
+    };
+
+    refreshWorkerTasks();
+
+    const tasks = getWorkerTasksByRoom("W1N1");
+    expect(tasks["dismantle:ownedExt"]).toBeUndefined();
+    expect(getIllegalStructureCleanupMemory()?.rooms?.W1N1).toMatchObject({
+      completedAt: 9,
+      layoutSavedAt: 42,
+    });
+  });
+
+  it("creates a dismantle task for a neutral road with the wrong type on a planned position", () => {
+    Game.time = 12;
+    const tower = createStructure("tower1", STRUCTURE_TOWER, 20, 20, { my: true, owner: { username: "me" } }) as StructureTower;
+    const legacyRoad = createStructure("legacyRoad", STRUCTURE_ROAD, 10, 10, { my: false });
+    const room = createRoomForRefresh([tower, legacyRoad], [tower]);
+    Game.rooms.W1N1 = room;
+    Memory.data = {
+      roomPlanner: {
+        W1N1: {
+          layout: {
+            [STRUCTURE_EXTENSION]: [{ x: 10, y: 10 }],
+            [STRUCTURE_TOWER]: [{ x: 20, y: 20 }],
+          },
+          timestamp: "2026-04-24T00:00:00.000Z",
+          savedAt: 42,
+        },
+      },
+    };
+
+    refreshWorkerTasks();
+
+    const tasks = getWorkerTasksByRoom("W1N1");
+    expect(tasks["dismantle:legacyRoad"]).toMatchObject({
+      type: "dismantle",
+      targetId: "legacyRoad",
+      roomName: "W1N1",
+    });
   });
 });

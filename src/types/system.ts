@@ -15,7 +15,7 @@ export type RoleName =
   | "crossShardColonizerHarvester"
   | "crossShardColonizerWorker"
   | "flagScout";
-export type WorkerTaskType = "build" | "upgrade" | "repair";
+export type WorkerTaskType = "build" | "upgrade" | "repair" | "dismantle";
 
 export interface CreepConfig {
   role: RoleName;

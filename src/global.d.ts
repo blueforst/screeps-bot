@@ -361,6 +361,15 @@ declare global {
           spreadUntil?: number;
         }
       >;
+      illegalStructureCleanup?: {
+        rooms: Record<
+          string,
+          {
+            completedAt: number;
+            layoutSavedAt: number;
+          }
+        >;
+      };
       defenseCoordination?: Record<
         string,
         {
