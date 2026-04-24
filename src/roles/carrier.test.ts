@@ -30,6 +30,10 @@ const { getEnergyStoreTarget } = jest.requireMock("@/roles/energyTargets") as {
   getEnergyStoreTarget: jest.Mock;
 };
 
+const { isDroppedResourceTarget } = jest.requireMock("@/roles/energyTargets") as {
+  isDroppedResourceTarget: jest.Mock;
+};
+
 const {
   getReservedPickupTarget,
   reservePickupTarget,
@@ -120,6 +124,8 @@ describe("carrierRole mineral hauling", () => {
     Game.time += 1;
     Memory.rooms = {};
     getEnergyStoreTarget.mockReset();
+    isDroppedResourceTarget.mockReset();
+    isDroppedResourceTarget.mockReturnValue(false);
     getReservedPickupTarget.mockReset();
     getReservedPickupTarget.mockReturnValue(null);
     reservePickupTarget.mockReset();
@@ -332,13 +338,13 @@ describe("carrierRole mineral hauling", () => {
     expect(done).toBe(true);
   });
 
-  it("does not drop at planned storage position after the proto storage site exists", () => {
+  it("does not drop at planned storage position after a construction site exists", () => {
     const room = createRoom("W1N0AE", { level: 3, storage: null, terminal: null });
     const plannedPos = {
       x: 20,
       y: 20,
       roomName: room.name,
-      lookFor: jest.fn(() => [{ structureType: STRUCTURE_CONTAINER }]),
+      lookFor: jest.fn(() => [{ structureType: STRUCTURE_STORAGE }]),
     } as unknown as RoomPosition;
     let remaining = 100;
     const creep = {
@@ -365,6 +371,42 @@ describe("carrierRole mineral hauling", () => {
     expect(moveToTarget).not.toHaveBeenCalled();
     expect(creep.drop).not.toHaveBeenCalled();
     expect(done).toBe(false);
+  });
+
+  it("does not pick up dropped energy from planned storage before storage exists at rcl3", () => {
+    const room = createRoom("W1N0AF", { level: 3, storage: null, terminal: null });
+    const plannedPos = {
+      x: 20,
+      y: 20,
+      roomName: room.name,
+      isEqualTo: () => true,
+    } as unknown as RoomPosition;
+    const dropped = {
+      id: "dropped-storage-energy-1",
+      amount: 100,
+      resourceType: RESOURCE_ENERGY,
+      room,
+      pos: plannedPos,
+    } as unknown as Resource;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "W1N0AF:carrier:0" },
+      pickup: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue({
+      id: "spawn-1",
+      structureType: STRUCTURE_SPAWN,
+      store: { getFreeCapacity: () => 300 },
+      pos: { x: 5, y: 5, roomName: room.name },
+    });
+    getReservedPickupTarget.mockReturnValue(dropped);
+    getPlannedStoragePos.mockReturnValue(plannedPos);
+    isDroppedResourceTarget.mockReturnValue(true);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.pickup).not.toHaveBeenCalled();
+    expect(switched).toBe(false);
   });
 
   it("delivers to generic demand targets during the pre-storage gap", () => {

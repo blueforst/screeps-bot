@@ -50,7 +50,6 @@ function isControllerAdjacentLink(link: StructureLink): boolean {
 function isDroppedAtPlannedStoragePos(resource: Resource): boolean {
   const room = resource.room;
   if (room.storage) return false;
-  if ((room.controller?.level ?? 0) > 2) return false;
   const plannedPos = getPlannedStoragePos(room);
   return !!plannedPos && resource.pos.isEqualTo(plannedPos);
 }
@@ -65,8 +64,8 @@ function isProtoControllerLinkContainer(structure: StructureContainer): boolean 
   return !!plannedPos && structure.pos.isEqualTo(plannedPos);
 }
 
-function hasConstructionSiteAt(pos: RoomPosition, structureType: BuildableStructureConstant): boolean {
-  return pos.lookFor(LOOK_CONSTRUCTION_SITES).some((site) => site.structureType === structureType);
+function hasConstructionSiteAt(pos: RoomPosition): boolean {
+  return pos.lookFor(LOOK_CONSTRUCTION_SITES).length > 0;
 }
 
 function deliverToPlannedStoragePosition(creep: Creep): boolean {
@@ -76,7 +75,7 @@ function deliverToPlannedStoragePosition(creep: Creep): boolean {
   }
 
   const plannedPos = getPlannedStoragePos(assignedRoom);
-  if (!plannedPos || hasConstructionSiteAt(plannedPos, STRUCTURE_CONTAINER)) {
+  if (!plannedPos || hasConstructionSiteAt(plannedPos)) {
     return false;
   }
 
