@@ -65,6 +65,30 @@ function isProtoControllerLinkContainer(structure: StructureContainer): boolean 
   return !!plannedPos && structure.pos.isEqualTo(plannedPos);
 }
 
+function hasConstructionSiteAt(pos: RoomPosition, structureType: BuildableStructureConstant): boolean {
+  return pos.lookFor(LOOK_CONSTRUCTION_SITES).some((site) => site.structureType === structureType);
+}
+
+function deliverToPlannedStoragePosition(creep: Creep): boolean {
+  const assignedRoom = getAssignedCarrierRoom(creep);
+  if (!assignedRoom) {
+    return false;
+  }
+
+  const plannedPos = getPlannedStoragePos(assignedRoom);
+  if (!plannedPos || hasConstructionSiteAt(plannedPos, STRUCTURE_CONTAINER)) {
+    return false;
+  }
+
+  if (!creep.pos.isEqualTo(plannedPos)) {
+    moveToTarget(creep, plannedPos, 0);
+    return true;
+  }
+
+  const dropCode = measureCreepIntent(() => creep.drop(RESOURCE_ENERGY));
+  return dropCode === OK || creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+}
+
 function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPickupOptions): CarrierPickupTarget[] {
   return measureCreepDecision(() => {
     const roomContext = getTickContextService().getRoomContext(creep.room);
@@ -656,6 +680,9 @@ export const carrierRole: RoleFactory = () => ({
 
     if (!target) {
       clearPostTransferPlan(creep);
+      if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0 && deliverToPlannedStoragePosition(creep)) {
+        return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+      }
       if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0) {
         ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
       }
