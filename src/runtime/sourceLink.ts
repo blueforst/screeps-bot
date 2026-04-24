@@ -1,9 +1,38 @@
+import { getTickContextService } from "@/runtime/runtimeServices";
+
 const SOURCE_LINK_RANGE = 2;
 
+let sourceLinkCacheTick = -1;
+const sourceAdjacentLinksBySourceId = new Map<Id<Source>, { source: Source; links: StructureLink[] }>();
+
+function resetSourceLinkCacheForTick(): void {
+  if (sourceLinkCacheTick === Game.time) {
+    return;
+  }
+
+  sourceAdjacentLinksBySourceId.clear();
+  sourceLinkCacheTick = Game.time;
+}
+
 export function getSourceAdjacentLinks(source: Source): StructureLink[] {
-  return source.pos.findInRange(FIND_MY_STRUCTURES, SOURCE_LINK_RANGE, {
-    filter: (structure) => structure.structureType === STRUCTURE_LINK,
-  }) as StructureLink[];
+  resetSourceLinkCacheForTick();
+
+  const cached = sourceAdjacentLinksBySourceId.get(source.id);
+  if (cached?.source === source) {
+    return cached.links;
+  }
+
+  const tickContext = getTickContextService();
+  const canUseRoomContext = typeof source.room.find === "function";
+  const roomContext = canUseRoomContext ? tickContext.getRoomContext?.(source.room) : null;
+  const links = roomContext
+    ? roomContext.getLinks().filter((link) => link.pos.getRangeTo(source.pos) <= SOURCE_LINK_RANGE)
+    : (source.pos.findInRange(FIND_MY_STRUCTURES, SOURCE_LINK_RANGE, {
+        filter: (structure) => structure.structureType === STRUCTURE_LINK,
+      }) as StructureLink[]);
+
+  sourceAdjacentLinksBySourceId.set(source.id, { source, links });
+  return links;
 }
 
 export function getSourceAdjacentLink(source: Source): StructureLink | null {

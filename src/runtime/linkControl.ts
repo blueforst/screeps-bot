@@ -3,6 +3,7 @@ import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
 const CLASSIFY_INTERVAL = 11;
+const LINKED_SOURCE_CONTAINER_CLEANUP_INTERVAL = 101;
 const SOURCE_SENDER_RANGE = 2;
 const STORAGE_RECEIVER_RANGE = 2;
 const CONTROLLER_RECEIVER_RANGE = 3;
@@ -13,6 +14,8 @@ interface LinkRoomRuntime {
   senderIds: string[];
   receiverIds: string[];
 }
+
+const linkedSourceContainerCleanupTicks = new Map<string, number>();
 
 function ensureLinkRuntimeStore(): Record<string, LinkRoomRuntime> {
   const runtime = getMemoryService().ensureRuntime();
@@ -119,23 +122,34 @@ function chooseReceiverTarget(sender: StructureLink, receiverLinks: StructureLin
 }
 
 function cleanupLinkedSourceContainers(room: Room): void {
-  const sources = room.find(FIND_SOURCES);
+  const lastCleanupTick = linkedSourceContainerCleanupTicks.get(room.name);
+  if (lastCleanupTick !== undefined && Game.time - lastCleanupTick < LINKED_SOURCE_CONTAINER_CLEANUP_INTERVAL) {
+    return;
+  }
+
+  linkedSourceContainerCleanupTicks.set(room.name, Game.time);
+
+  const roomContext = getTickContextService().getRoomContext(room);
+  const sources = roomContext?.getSources() || [];
+  const containers = roomContext?.getContainers() || [];
+  const sites = roomContext?.getConstructionSites() || [];
+
   for (const source of sources) {
     if (!hasSourceAdjacentLink(source)) {
       continue;
     }
 
-    const containers = source.pos.findInRange(FIND_STRUCTURES, 1, {
-      filter: (structure) => structure.structureType === STRUCTURE_CONTAINER,
-    }) as StructureContainer[];
     for (const container of containers) {
+      if (container.pos.getRangeTo(source.pos) > 1) {
+        continue;
+      }
       container.destroy();
     }
 
-    const sites = source.pos.findInRange(FIND_CONSTRUCTION_SITES, 1, {
-      filter: (site) => site.structureType === STRUCTURE_CONTAINER,
-    });
     for (const site of sites) {
+      if (site.structureType !== STRUCTURE_CONTAINER || site.pos.getRangeTo(source.pos) > 1) {
+        continue;
+      }
       site.remove();
     }
   }
