@@ -136,7 +136,10 @@ function createSample(room: Room): ProductionSample {
     linkEnergy: getStructureEnergy(room, STRUCTURE_LINK),
     labEnergy: getStructureEnergy(room, STRUCTURE_LAB),
     factoryEnergy: getStructureEnergy(room, STRUCTURE_FACTORY),
-    sourceEnergy: room.find(FIND_SOURCES).reduce((sum, source) => sum + source.energy, 0),
+    sourceEnergy: (getTickContextService().getRoomContext?.(room)?.getSources() || room.find(FIND_SOURCES)).reduce(
+      (sum, source) => sum + source.energy,
+      0,
+    ),
     workerCount: getRoleCount(room, "worker"),
     carrierCount: getRoleCount(room, "carrier"),
     harvesterCount: getRoleCount(room, "harvester"),

@@ -1,5 +1,6 @@
 import { getSafeZone } from "@/runtime/safeZone";
 import { isDefenseMode, isOffensiveWarCreep } from "@/runtime/defenseMode";
+import { getTickContextService } from "@/runtime/runtimeServices";
 
 const DEFENSE_MODE_RUNTIME_EXEMPT_ROLES = new Set<CreepMemory["role"]>(["harvester", "miner"]);
 
@@ -30,8 +31,14 @@ export function createSafeZoneCostCallback(safeZone: Set<number>): (roomName: st
 }
 
 export function getBoundaryRamparts(room: Room, safeZone: Set<number>): StructureRampart[] {
-  return room.find(FIND_MY_STRUCTURES, {
-    filter: (s): s is StructureRampart => {
+  const roomContext = getTickContextService().getRoomContext?.(room);
+  const ramparts =
+    roomContext?.getRamparts() ||
+    (room.find(FIND_MY_STRUCTURES, {
+      filter: (structure) => structure.structureType === STRUCTURE_RAMPART,
+    }) as StructureRampart[]);
+
+  return ramparts.filter((s): s is StructureRampart => {
       if (s.structureType !== STRUCTURE_RAMPART) return false;
       if (!safeZone.has(s.pos.x * 50 + s.pos.y)) return false;
       const { x, y } = s.pos;
@@ -45,8 +52,7 @@ export function getBoundaryRamparts(room: Room, safeZone: Set<number>): Structur
         }
       }
       return false;
-    },
-  }) as StructureRampart[];
+    });
 }
 
 export function shouldRestrictToSafeZone(creep: Creep): boolean {
