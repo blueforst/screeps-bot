@@ -18,6 +18,28 @@ type RuntimeGlobalWithServices = typeof global & {
 
 const runtimeGlobal: RuntimeGlobalWithServices = global;
 
+function areStringArraysEqual(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((value, index) => value === right[index]);
+}
+
+function isUpsertedConfigCurrent(current: CreepConfig | undefined, next: CreepConfig): boolean {
+  if (!current) {
+    return false;
+  }
+
+  return (
+    current.role === next.role &&
+    current.roomName === next.roomName &&
+    current.name === undefined &&
+    current.body === undefined &&
+    areStringArraysEqual(current.args, next.args)
+  );
+}
+
 function createCreepConfigService(memory: RuntimeMemoryService): CreepConfigService {
   return {
     add(configName, role, ...args) {
@@ -53,7 +75,7 @@ function createCreepConfigService(memory: RuntimeMemoryService): CreepConfigServ
     upsert(configName, role, args, roomName) {
       const current = this.get(configName);
       const next: CreepConfig = { role, args, roomName };
-      if (!current || JSON.stringify(current) !== JSON.stringify(next)) {
+      if (!isUpsertedConfigCurrent(current, next)) {
         memory.getCreepConfigStore()[configName] = next;
       }
     },

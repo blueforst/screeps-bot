@@ -238,7 +238,6 @@ function getCachedRoomBaseCostMatrix(
     tick: Game.time,
     matrix: baseMatrix,
   });
-  pruneRoomBaseCostMatrixCache();
   return baseMatrix.clone();
 }
 
