@@ -15,13 +15,6 @@ type RuntimeGlobalWithMovementState = typeof global & {
 
 const runtimeGlobal: RuntimeGlobalWithMovementState = global;
 
-type LegacyMovementCreepMemory = CreepMemory & {
-  movePathState?: MovePathState;
-  travelState?: TravelState;
-  movementPushedAt?: number;
-  workAnchor?: WorkAnchor;
-};
-
 function ensureMovementStateStore(): MovementStateStore {
   if (!runtimeGlobal.__creepMovementState) {
     runtimeGlobal.__creepMovementState = {};
@@ -37,23 +30,8 @@ export function ensureCreepMovementState(creepName: string): CreepMovementState 
     return existing;
   }
 
-  const legacy = Memory.creeps?.[creepName] as LegacyMovementCreepMemory | undefined;
-  const state: CreepMovementState = {
-    movePathState: legacy?.movePathState,
-    travelState: legacy?.travelState,
-    movementPushedAt: legacy?.movementPushedAt,
-    workAnchor: legacy?.workAnchor,
-  };
-
-  if (legacy) {
-    delete legacy.movePathState;
-    delete legacy.travelState;
-    delete legacy.movementPushedAt;
-    delete legacy.workAnchor;
-  }
-
-  store[creepName] = state;
-  return state;
+  store[creepName] = {};
+  return store[creepName];
 }
 
 export function getCreepMovementState(creepName: string): CreepMovementState | undefined {

@@ -683,37 +683,8 @@ declare global {
   }
 
   interface RoomMemory {
-    tasks?: Record<string, import("@/types/system").WorkerTask>;
-    carrierTasks?: Record<
-      string,
-      {
-        id: string;
-        producer: string;
-        roomName: string;
-        type: "lab_supply" | "lab_cleanup" | "mineral_haul" | "terminal_feed" | "terminal_offload";
-        priority: number;
-        steps: Array<{
-          id: string;
-          resource: ResourceConstant;
-          fromKind: "lab" | "terminal" | "storage" | "container";
-          toKind: "lab" | "terminal" | "storage";
-          fromId: string;
-          toId: string;
-          amount: number;
-        }>;
-        createdAt: number;
-        updatedAt: number;
-      }
-    >;
     workerConstructionTier?: 0 | 1 | 2 | 3;
     coreRampartHits?: Record<string, number>;
-    pickupReservations?: Record<
-      string,
-      {
-        kind: "resource" | "structure";
-        claims: Record<string, { amount: number; until: number }>;
-      }
-    >;
   }
 
   interface SpawnMemory {

@@ -20,8 +20,6 @@ type RuntimeGlobalWithAssignmentState = typeof global & {
   __creepAssignmentState?: AssignmentStateStore;
 };
 
-type LegacyAssignmentCreepMemory = CreepMemory & CreepAssignmentState;
-
 const runtimeGlobal: RuntimeGlobalWithAssignmentState = global;
 
 function ensureAssignmentStateStore(): AssignmentStateStore {
@@ -39,33 +37,8 @@ export function ensureCreepAssignmentState(creepName: string): CreepAssignmentSt
     return existing;
   }
 
-  const legacy = Memory.creeps?.[creepName] as LegacyAssignmentCreepMemory | undefined;
-  const state: CreepAssignmentState = {
-    carrierPlanMode: legacy?.carrierPlanMode,
-    carrierPlanTargetId: legacy?.carrierPlanTargetId,
-    carrierPlanTargetKind: legacy?.carrierPlanTargetKind,
-    carrierStorageOnlyMode: legacy?.carrierStorageOnlyMode,
-    energyPickupTargetId: legacy?.energyPickupTargetId,
-    energyPickupTargetKind: legacy?.energyPickupTargetKind,
-    energyPickupRoomName: legacy?.energyPickupRoomName,
-    taskId: legacy?.taskId,
-    synthesisCarrierTaskId: legacy?.synthesisCarrierTaskId,
-  };
-
-  if (legacy) {
-    delete legacy.carrierPlanMode;
-    delete legacy.carrierPlanTargetId;
-    delete legacy.carrierPlanTargetKind;
-    delete legacy.carrierStorageOnlyMode;
-    delete legacy.energyPickupTargetId;
-    delete legacy.energyPickupTargetKind;
-    delete legacy.energyPickupRoomName;
-    delete legacy.taskId;
-    delete legacy.synthesisCarrierTaskId;
-  }
-
-  store[creepName] = state;
-  return state;
+  store[creepName] = {};
+  return store[creepName];
 }
 
 export function getCreepAssignmentState(creepName: string): CreepAssignmentState | undefined {
@@ -94,56 +67,6 @@ export function pruneDeadCreepAssignmentState(): number {
 
   if (Object.keys(store).length === 0) {
     delete runtimeGlobal.__creepAssignmentState;
-  }
-
-  return removed;
-}
-
-export function cleanupLegacyCreepAssignmentMemory(): number {
-  if (!Memory.creeps) {
-    return 0;
-  }
-
-  let removed = 0;
-  for (const creepMemory of Object.values(Memory.creeps)) {
-    const legacy = creepMemory as LegacyAssignmentCreepMemory;
-
-    if (legacy.carrierPlanMode !== undefined) {
-      delete legacy.carrierPlanMode;
-      removed += 1;
-    }
-    if (legacy.carrierPlanTargetId !== undefined) {
-      delete legacy.carrierPlanTargetId;
-      removed += 1;
-    }
-    if (legacy.carrierPlanTargetKind !== undefined) {
-      delete legacy.carrierPlanTargetKind;
-      removed += 1;
-    }
-    if (legacy.carrierStorageOnlyMode !== undefined) {
-      delete legacy.carrierStorageOnlyMode;
-      removed += 1;
-    }
-    if (legacy.energyPickupTargetId !== undefined) {
-      delete legacy.energyPickupTargetId;
-      removed += 1;
-    }
-    if (legacy.energyPickupTargetKind !== undefined) {
-      delete legacy.energyPickupTargetKind;
-      removed += 1;
-    }
-    if (legacy.energyPickupRoomName !== undefined) {
-      delete legacy.energyPickupRoomName;
-      removed += 1;
-    }
-    if (legacy.taskId !== undefined) {
-      delete legacy.taskId;
-      removed += 1;
-    }
-    if (legacy.synthesisCarrierTaskId !== undefined) {
-      delete legacy.synthesisCarrierTaskId;
-      removed += 1;
-    }
   }
 
   return removed;

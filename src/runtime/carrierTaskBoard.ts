@@ -51,38 +51,12 @@ function ensureRoomTaskStore(roomName: string): Record<string, CarrierTask> {
     return existing;
   }
 
-  const legacyTasks = Memory.rooms?.[roomName]?.carrierTasks;
-  if (legacyTasks) {
-    board[roomName] = legacyTasks;
-    delete Memory.rooms[roomName].carrierTasks;
-    if (Object.keys(Memory.rooms[roomName]).length === 0) {
-      delete Memory.rooms[roomName];
-    }
-    return board[roomName];
-  }
-
   board[roomName] = {};
   return board[roomName];
 }
 
 export function getCarrierTasksByRoom(roomName: string): Record<string, CarrierTask> {
-  const board = ensureCarrierTaskBoard();
-  if (board[roomName]) {
-    return board[roomName];
-  }
-
-  const legacyTasks = Memory.rooms?.[roomName]?.carrierTasks;
-  if (!legacyTasks) {
-    return {};
-  }
-
-  board[roomName] = legacyTasks;
-  delete Memory.rooms[roomName].carrierTasks;
-  if (Object.keys(Memory.rooms[roomName]).length === 0) {
-    delete Memory.rooms[roomName];
-  }
-
-  return board[roomName];
+  return ensureRoomTaskStore(roomName);
 }
 
 function cleanupRoomTaskStoreIfEmpty(roomName: string): void {
