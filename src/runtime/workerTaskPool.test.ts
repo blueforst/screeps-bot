@@ -7,7 +7,7 @@ jest.mock("@/runtime/safeZone", () => ({
 }));
 
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
-import { assignWorkerTask, clearWorkerTaskBoardForTest, refreshWorkerTasks, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import { assignWorkerTask, clearWorkerTaskBoardForTest, getWorkerTasksByRoom, refreshWorkerTasks, releaseWorkerTask } from "@/runtime/workerTaskPool";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { getSafeZone } from "@/runtime/safeZone";
@@ -156,8 +156,8 @@ describe("workerTaskPool", () => {
       repairMode: "normal",
       priority: 320,
     });
-    Memory.rooms.W1N1 = { tasks: { [repairTask.id]: repairTask } } as RoomMemory;
-    Memory.rooms.W1N2 = { tasks: {} } as RoomMemory;
+    getWorkerTasksByRoom("W1N1")[repairTask.id] = repairTask;
+    getWorkerTasksByRoom("W1N2");
 
     const creep = createCreep("Worker1", "W1N2");
     ensureCreepAssignmentState(creep.name).taskId = repairTask.id;
@@ -188,12 +188,9 @@ describe("workerTaskPool", () => {
       maxAssignees: 2,
       priority: 300,
     });
-    Memory.rooms.W1N1 = {
-      tasks: {
-        [repairTask.id]: repairTask,
-        [upgradeTask.id]: upgradeTask,
-      },
-    } as RoomMemory;
+    const tasks = getWorkerTasksByRoom("W1N1");
+    tasks[repairTask.id] = repairTask;
+    tasks[upgradeTask.id] = upgradeTask;
 
     const staleRepairAssignee = createCreep("Worker1", "W1N1");
     ensureCreepAssignmentState(staleRepairAssignee.name).taskId = upgradeTask.id;
@@ -230,12 +227,9 @@ describe("workerTaskPool", () => {
       maxAssignees: 2,
       priority: 300,
     });
-    Memory.rooms.W1N1 = {
-      tasks: {
-        [repairTask.id]: repairTask,
-        [upgradeTask.id]: upgradeTask,
-      },
-    } as RoomMemory;
+    const tasks = getWorkerTasksByRoom("W1N1");
+    tasks[repairTask.id] = repairTask;
+    tasks[upgradeTask.id] = upgradeTask;
 
     const activeRepairAssignee = createCreep("Worker1", "W1N1");
     ensureCreepAssignmentState(activeRepairAssignee.name).taskId = repairTask.id;
@@ -270,8 +264,8 @@ describe("workerTaskPool", () => {
       maxAssignees: 2,
       priority: 300,
     });
-    Memory.rooms.W1N1 = { tasks: { [homeRepairTask.id]: homeRepairTask } } as RoomMemory;
-    Memory.rooms.W1N2 = { tasks: { [foreignUpgradeTask.id]: foreignUpgradeTask } } as RoomMemory;
+    getWorkerTasksByRoom("W1N1")[homeRepairTask.id] = homeRepairTask;
+    getWorkerTasksByRoom("W1N2")[foreignUpgradeTask.id] = foreignUpgradeTask;
 
     const configName = "W1N1:worker:0";
     getCreepConfigService().upsert(configName, "worker", [], "W1N1");
@@ -306,8 +300,8 @@ describe("workerTaskPool", () => {
       maxAssignees: 2,
       priority: 300,
     });
-    Memory.rooms.W1N1 = { tasks: { [sourceRepairTask.id]: sourceRepairTask } } as RoomMemory;
-    Memory.rooms.W1N2 = { tasks: { [targetUpgradeTask.id]: targetUpgradeTask } } as RoomMemory;
+    getWorkerTasksByRoom("W1N1")[sourceRepairTask.id] = sourceRepairTask;
+    getWorkerTasksByRoom("W1N2")[targetUpgradeTask.id] = targetUpgradeTask;
 
     const configName = "W1N1:colonize:W1N2:worker:0";
     getCreepConfigService().upsert(configName, "colonizerWorker", ["W1N2", "W1N1|W1N2"], "W1N1");
@@ -342,12 +336,9 @@ describe("workerTaskPool", () => {
       maxAssignees: 2,
       priority: 500,
     });
-    Memory.rooms.W1N1 = {
-      tasks: {
-        [safeTask.id]: safeTask,
-        [unsafeTask.id]: unsafeTask,
-      },
-    } as RoomMemory;
+    const tasks = getWorkerTasksByRoom("W1N1");
+    tasks[safeTask.id] = safeTask;
+    tasks[unsafeTask.id] = unsafeTask;
 
     const configName = "W1N1:worker:0";
     getCreepConfigService().upsert(configName, "worker", [], "W1N1");

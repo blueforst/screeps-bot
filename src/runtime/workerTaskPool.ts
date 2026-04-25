@@ -39,38 +39,12 @@ function ensureRoomTaskStore(roomName: string): Record<string, WorkerTask> {
     return existing;
   }
 
-  const legacyTasks = Memory.rooms?.[roomName]?.tasks as Record<string, WorkerTask> | undefined;
-  if (legacyTasks) {
-    board[roomName] = legacyTasks;
-    delete Memory.rooms[roomName].tasks;
-    if (Object.keys(Memory.rooms[roomName]).length === 0) {
-      delete Memory.rooms[roomName];
-    }
-    return board[roomName];
-  }
-
   board[roomName] = {};
   return board[roomName];
 }
 
 export function getWorkerTasksByRoom(roomName: string): Record<string, WorkerTask> {
-  const board = ensureWorkerTaskBoard();
-  if (board[roomName]) {
-    return board[roomName];
-  }
-
-  const legacyTasks = Memory.rooms?.[roomName]?.tasks as Record<string, WorkerTask> | undefined;
-  if (!legacyTasks) {
-    return {};
-  }
-
-  board[roomName] = legacyTasks;
-  delete Memory.rooms[roomName].tasks;
-  if (Object.keys(Memory.rooms[roomName]).length === 0) {
-    delete Memory.rooms[roomName];
-  }
-
-  return board[roomName];
+  return ensureRoomTaskStore(roomName);
 }
 
 function getAssignedWorkerRoomName(creep: Creep): string {
@@ -115,24 +89,6 @@ function findTaskStore(taskId: string): Record<string, WorkerTask> | undefined {
     if (tasks?.[taskId]) {
       return tasks;
     }
-  }
-
-  if (!Memory.rooms) {
-    return undefined;
-  }
-
-  for (const [roomName, roomMemory] of Object.entries(Memory.rooms)) {
-    const tasks = roomMemory?.tasks as Record<string, WorkerTask> | undefined;
-    if (!tasks?.[taskId]) {
-      continue;
-    }
-
-    ensureWorkerTaskBoard()[roomName] = tasks;
-    delete roomMemory.tasks;
-    if (Object.keys(roomMemory).length === 0) {
-      delete Memory.rooms[roomName];
-    }
-    return ensureWorkerTaskBoard()[roomName];
   }
 
   return undefined;

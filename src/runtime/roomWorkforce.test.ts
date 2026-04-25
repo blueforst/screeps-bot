@@ -1,5 +1,6 @@
 import { getDesiredWorkerCount, getExpectedManagedConfigNames, getWorkerCap } from "@/runtime/roomWorkforce";
-import { clearWorkerTaskBoardForTest } from "@/runtime/workerTaskPool";
+import { clearWorkerTaskBoardForTest, getWorkerTasksByRoom } from "@/runtime/workerTaskPool";
+import type { WorkerTask } from "@/types/system";
 
 function createSource(id: string, roomName: string, hasLink = false): Source {
   return {
@@ -40,7 +41,7 @@ function createRoom(options: {
   name?: string;
   level?: number;
   constructionCount?: number;
-  tasks?: RoomMemory["tasks"];
+  tasks?: Record<string, WorkerTask>;
   sources?: Source[];
   workerConstructionTier?: RoomMemory["workerConstructionTier"];
   minerals?: Mineral[];
@@ -48,7 +49,6 @@ function createRoom(options: {
   const name = options.name ?? "W1N1";
   const memory = {
     workerConstructionTier: options.workerConstructionTier,
-    tasks: options.tasks,
   } as RoomMemory;
   Memory.rooms[name] = memory;
   const sources = options.sources ?? [];
@@ -139,41 +139,39 @@ describe("roomWorkforce", () => {
   it("adds a worker only for active normal repair tasks", () => {
     const normalRepairRoom = createRoom({
       level: 5,
-      tasks: {
-        "repair:r1": {
-          id: "repair:r1",
-          type: "repair",
-          targetId: "r1",
-          roomName: "W1N1",
-          priority: 320,
-          assignedCreeps: [],
-          maxAssignees: 1,
-          status: "active",
-          updatedAt: Game.time,
-          repairMode: "normal",
-        },
-      },
     });
+    const normalTasks = getWorkerTasksByRoom(normalRepairRoom.name);
+    normalTasks["repair:r1"] = {
+      id: "repair:r1",
+      type: "repair",
+      targetId: "r1",
+      roomName: "W1N1",
+      priority: 320,
+      assignedCreeps: [],
+      maxAssignees: 1,
+      status: "active",
+      updatedAt: Game.time,
+      repairMode: "normal",
+    };
     expect(getDesiredWorkerCount(normalRepairRoom)).toBe(2);
 
     const emergencyRepairRoom = createRoom({
       name: "W1N2",
       level: 5,
-      tasks: {
-        "repair:r2": {
-          id: "repair:r2",
-          type: "repair",
-          targetId: "r2",
-          roomName: "W1N2",
-          priority: 900,
-          assignedCreeps: [],
-          maxAssignees: 1,
-          status: "active",
-          updatedAt: Game.time,
-          repairMode: "emergency",
-        },
-      },
     });
+    const emergencyTasks = getWorkerTasksByRoom(emergencyRepairRoom.name);
+    emergencyTasks["repair:r2"] = {
+      id: "repair:r2",
+      type: "repair",
+      targetId: "r2",
+      roomName: "W1N2",
+      priority: 900,
+      assignedCreeps: [],
+      maxAssignees: 1,
+      status: "active",
+      updatedAt: Game.time,
+      repairMode: "emergency",
+    };
     expect(getDesiredWorkerCount(emergencyRepairRoom)).toBe(1);
   });
 

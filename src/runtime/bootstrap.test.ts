@@ -51,12 +51,9 @@ function createRoom(options: {
   sources?: Source[];
   minerals?: Mineral[];
   constructionCount?: number;
-  tasks?: RoomMemory["tasks"];
 } = {}): Room {
   const name = options.name ?? "W1N1";
-  const memory = {
-    tasks: options.tasks,
-  } as RoomMemory;
+  const memory = {} as RoomMemory;
   Memory.rooms[name] = memory;
   const sources = options.sources ?? [];
   const minerals = options.minerals ?? [];
