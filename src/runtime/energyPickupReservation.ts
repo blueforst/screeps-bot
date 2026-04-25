@@ -15,8 +15,24 @@ interface PickupTargetReservation {
   claims: Record<string, PickupReservationClaim>;
 }
 
+type PickupReservationStore = Record<string, Record<string, PickupTargetReservation>>;
+
+type RuntimeGlobalWithPickupReservations = typeof global & {
+  __pickupReservations?: PickupReservationStore;
+};
+
+const runtimeGlobal: RuntimeGlobalWithPickupReservations = global;
+
 function getTargetKind(target: PickupTarget): PickupTargetKind {
   return (target as Resource).amount !== undefined ? "resource" : "structure";
+}
+
+function ensurePickupReservationStore(): PickupReservationStore {
+  if (!runtimeGlobal.__pickupReservations) {
+    runtimeGlobal.__pickupReservations = {};
+  }
+
+  return runtimeGlobal.__pickupReservations;
 }
 
 export function getPickupTargetEnergyAmount(target: PickupTarget): number {
@@ -32,11 +48,12 @@ export function getPickupTargetEnergyAmount(target: PickupTarget): number {
 }
 
 function ensureRoomReservationStore(roomName: string): Record<string, PickupTargetReservation> {
-  Memory.rooms = Memory.rooms || {};
-  Memory.rooms[roomName] = Memory.rooms[roomName] || {};
-  const roomMemory = Memory.rooms[roomName] as RoomMemory;
-  roomMemory.pickupReservations = roomMemory.pickupReservations || {};
-  return roomMemory.pickupReservations;
+  const store = ensurePickupReservationStore();
+  if (!store[roomName]) {
+    store[roomName] = {};
+  }
+
+  return store[roomName];
 }
 
 function cleanupClaims(entry: PickupTargetReservation): void {
@@ -66,7 +83,7 @@ function ensureReservationEntry(
 }
 
 function clearTargetEntryIfEmpty(roomName: string, targetId: string): void {
-  const roomStore = Memory.rooms?.[roomName]?.pickupReservations;
+  const roomStore = runtimeGlobal.__pickupReservations?.[roomName];
   if (!roomStore) {
     return;
   }
@@ -78,6 +95,10 @@ function clearTargetEntryIfEmpty(roomName: string, targetId: string): void {
 
   if (Object.keys(entry.claims).length === 0) {
     delete roomStore[targetId];
+  }
+
+  if (Object.keys(roomStore).length === 0) {
+    delete runtimeGlobal.__pickupReservations?.[roomName];
   }
 }
 
@@ -91,9 +112,7 @@ export function clearPickupReservationTargetMemory(creep: Creep): void {
 export function releasePickupReservation(creep: Creep, targetId?: string): void {
   const assignmentState = ensureCreepAssignmentState(creep.name);
   const roomName = assignmentState.energyPickupRoomName || creep.room.name;
-  const roomStore = Memory.rooms?.[roomName]?.pickupReservations as
-    | Record<string, PickupTargetReservation>
-    | undefined;
+  const roomStore = runtimeGlobal.__pickupReservations?.[roomName];
   if (roomStore) {
     if (targetId) {
       const entry = roomStore[targetId];
@@ -128,7 +147,7 @@ export function reservePickupTarget(creep: Creep, target: PickupTarget, desiredA
   }
 
   const targetKind = getTargetKind(target);
-  const entry = ensureReservationEntry(creep.room.name, target.id, targetKind);
+  const entry = ensureReservationEntry(target.pos.roomName, target.id, targetKind);
 
   let reservedByOthers = 0;
   for (const [creepName, claim] of Object.entries(entry.claims)) {
@@ -178,4 +197,47 @@ export function getReservedPickupTarget(creep: Creep): PickupTarget | null {
   }
 
   return target;
+}
+
+export function cleanupPickupReservationStore(ownedRooms: Set<string>): number {
+  const store = runtimeGlobal.__pickupReservations;
+  if (!store) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const [roomName, reservations] of Object.entries(store)) {
+    const roomLost = !ownedRooms.has(roomName);
+    for (const [targetId, reservation] of Object.entries(reservations)) {
+      if (roomLost) {
+        delete reservations[targetId];
+        removed += 1;
+        continue;
+      }
+
+      cleanupClaims(reservation);
+      if (Object.keys(reservation.claims).length === 0) {
+        delete reservations[targetId];
+        removed += 1;
+      }
+    }
+
+    if (Object.keys(reservations).length === 0) {
+      delete store[roomName];
+    }
+  }
+
+  if (Object.keys(store).length === 0) {
+    delete runtimeGlobal.__pickupReservations;
+  }
+
+  return removed;
+}
+
+export function clearPickupReservationStoreForTest(): void {
+  delete runtimeGlobal.__pickupReservations;
+}
+
+export function getPickupReservationsByRoom(roomName: string): Record<string, PickupTargetReservation> {
+  return ensureRoomReservationStore(roomName);
 }

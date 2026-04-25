@@ -9,6 +9,7 @@ jest.mock("@/runtime/safeZone", () => ({
 
 import { getEnergyStoreTarget, pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import { clearPickupReservationStoreForTest, getPickupReservationsByRoom } from "@/runtime/energyPickupReservation";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getSafeZone } from "@/runtime/safeZone";
 
@@ -111,6 +112,7 @@ function createCreep(room: Room): Creep {
 describe("energyTargets", () => {
   beforeEach(() => {
     clearCreepAssignmentStateForTest();
+    clearPickupReservationStoreForTest();
     resetRuntimeServices();
     Game.time += 1;
     (isDefenseMode as jest.Mock).mockReturnValue(false);
@@ -297,13 +299,11 @@ describe("energyTargets", () => {
       structures: [container as unknown as Structure<StructureConstant>],
     });
     Game.rooms[room.name] = room;
-    Memory.rooms[room.name].pickupReservations = {
-      [container.id]: {
-        kind: "structure",
-        claims: {
-          Worker1: { amount: 20, until: Game.time + 10 },
-          Worker2: { amount: 40, until: Game.time + 10 },
-        },
+    getPickupReservationsByRoom(room.name)[container.id] = {
+      kind: "structure",
+      claims: {
+        Worker1: { amount: 20, until: Game.time + 10 },
+        Worker2: { amount: 40, until: Game.time + 10 },
       },
     };
     Game.creeps.Worker1 = { name: "Worker1" } as Creep;
@@ -325,7 +325,7 @@ describe("energyTargets", () => {
     expect(getCreepAssignmentState(creep.name)?.energyPickupTargetId).toBeUndefined();
     expect(getCreepAssignmentState(creep.name)?.energyPickupTargetKind).toBeUndefined();
     expect(getCreepAssignmentState(creep.name)?.energyPickupRoomName).toBeUndefined();
-    expect(Memory.rooms[room.name].pickupReservations?.[container.id]?.claims.Worker1).toBeUndefined();
+    expect(getPickupReservationsByRoom(room.name)[container.id]?.claims.Worker1).toBeUndefined();
   });
 
   it("skips proto storage containers when workers choose pickup targets", () => {
