@@ -1,4 +1,5 @@
 import { runMemoryCleanup } from "@/runtime/memoryCleanup";
+import { clearPickupReservationStoreForTest, getPickupReservationsByRoom } from "@/runtime/energyPickupReservation";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -32,26 +33,21 @@ function createManagedCreep(configName: string, role: CreepMemory["role"]): Cree
 describe("runMemoryCleanup", () => {
   beforeEach(() => {
     resetRuntimeServices();
+    clearPickupReservationStoreForTest();
     Game.time = 17;
     Game.rooms = {
       W1N1: createOwnedRoom("W1N1"),
     };
     Game.creeps = {};
     Game.spawns = {};
-    Memory.rooms = {
-      W2N2: {
-        pickupReservations: {
-          target1: {
-            kind: "structure",
-            claims: {
-              DeadCarrier: {
-                amount: 50,
-                until: 10,
-              },
-            },
-          },
+    getPickupReservationsByRoom("W2N2").target1 = {
+      kind: "structure",
+      claims: {
+        DeadCarrier: {
+          amount: 50,
+          until: 10,
         },
-      } as RoomMemory,
+      },
     };
     Memory.creeps = {};
     Memory.runtime = undefined;
@@ -61,7 +57,56 @@ describe("runMemoryCleanup", () => {
   it("removes foreign room pickup reservation memory after claims expire", () => {
     runMemoryCleanup();
 
-    expect(Memory.rooms?.W2N2).toBeUndefined();
+    expect(getPickupReservationsByRoom("W2N2")).toEqual({});
+  });
+
+  it("removes stale spawn planner, illegal structure cleanup, and rescue entries", () => {
+    Memory.runtime = {
+      spawnPlanner: {
+        sourceWorkerCommutes: {
+          "W1N1:source-a": { commute: 12, updatedAt: Game.time },
+          "W9N9:source-b": { commute: 20, updatedAt: Game.time },
+        },
+      },
+      illegalStructureCleanup: {
+        rooms: {
+          W1N1: { completedAt: Game.time, layoutSavedAt: 10 },
+          W9N9: { completedAt: Game.time, layoutSavedAt: 20 },
+        },
+      },
+    } as Memory["runtime"];
+    Memory.data = {
+      rescue: {
+        W1N2: {
+          targetRoom: "W1N2",
+          sourceRoom: "W1N1",
+          status: "bootstrapping",
+          flagName: "RESCUE",
+          createdAt: Game.time,
+          updatedAt: Game.time,
+        },
+        W9N8: {
+          targetRoom: "W9N8",
+          sourceRoom: "W9N9",
+          status: "bootstrapping",
+          flagName: "RESCUE_W9N9",
+          createdAt: Game.time,
+          updatedAt: Game.time,
+        },
+      },
+    } as Memory["data"];
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.spawnPlanner?.sourceWorkerCommutes).toEqual({
+      "W1N1:source-a": { commute: 12, updatedAt: Game.time },
+    });
+    expect(Memory.runtime?.illegalStructureCleanup?.rooms).toEqual({
+      W1N1: { completedAt: Game.time, layoutSavedAt: 10 },
+    });
+    expect(Memory.data?.rescue).toEqual({
+      W1N2: expect.objectContaining({ sourceRoom: "W1N1" }),
+    });
   });
 
   it("keeps supported non-legacy creep configs for active specialized roles", () => {
