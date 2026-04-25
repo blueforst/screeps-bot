@@ -7,19 +7,43 @@ jest.mock("@/runtime/safeZone", () => ({
 }));
 
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
-import { assignWorkerTask, clearWorkerTaskBoardForTest, getWorkerTasksByRoom, refreshWorkerTasks, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import { assignWorkerTask, clearWorkerTaskBoardForTest, refreshWorkerTasks, releaseWorkerTask } from "@/runtime/workerTaskPool";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { getSafeZone } from "@/runtime/safeZone";
 import type { WorkerTask } from "@/types/system";
 
-function createPos(roomName: string): RoomPosition {
+type RuntimeGlobal = typeof global & {
+  RoomPosition?: typeof MockRoomPosition;
+};
+
+class MockRoomPosition {
+  public constructor(
+    public readonly x: number,
+    public readonly y: number,
+    public readonly roomName: string,
+  ) {}
+
+  public getRangeTo(target: { x: number; y: number }): number {
+    return Math.max(Math.abs(target.x - this.x), Math.abs(target.y - this.y));
+  }
+}
+
+function createPos(roomName: string, x = 25, y = 25): RoomPosition {
   return {
-    x: 25,
-    y: 25,
+    x,
+    y,
     roomName,
     getRangeTo: () => 1,
   } as unknown as RoomPosition;
+}
+
+function createSource(id: string, x: number, y: number, roomName = "W1N1"): Source {
+  return {
+    id: id as Id<Source>,
+    pos: createPos(roomName, x, y),
+    room: { name: roomName } as Room,
+  } as Source;
 }
 
 function createCreep(name: string, roomName: string, configName?: string): Creep {
@@ -35,7 +59,11 @@ function createCreep(name: string, roomName: string, configName?: string): Creep
   } as Creep;
 }
 
-function createRoomForRefresh(structures: Structure<StructureConstant>[], towers: StructureTower[] = []): Room {
+function createRoomForRefresh(
+  structures: Structure<StructureConstant>[],
+  towers: StructureTower[] = [],
+  sources: Source[] = [],
+): Room {
   return {
     name: "W1N1",
     controller: {
@@ -50,6 +78,9 @@ function createRoomForRefresh(structures: Structure<StructureConstant>[], towers
       }
       if (type === FIND_STRUCTURES) {
         return structures;
+      }
+      if (type === FIND_SOURCES) {
+        return sources;
       }
       if (type === FIND_CONSTRUCTION_SITES || type === FIND_MY_CREEPS) {
         return [];
@@ -74,6 +105,7 @@ function createStructure(
     pos: { x, y, roomName: "W1N1", getRangeTo: () => 1 } as unknown as RoomPosition,
     hits: 5000,
     hitsMax: 5000,
+    destroy: jest.fn(() => OK),
     ...overrides,
   } as unknown as Structure<StructureConstant>;
 }
@@ -101,6 +133,7 @@ describe("workerTaskPool", () => {
   beforeEach(() => {
     clearCreepAssignmentStateForTest();
     clearWorkerTaskBoardForTest();
+    (global as RuntimeGlobal).RoomPosition = MockRoomPosition;
     (isDefenseMode as jest.Mock).mockReturnValue(false);
     (getSafeZone as jest.Mock).mockReturnValue(new Set());
     objects = {};
@@ -332,11 +365,15 @@ describe("workerTaskPool", () => {
     expect(unsafeTask.assignedCreeps).toEqual([]);
   });
 
-  it("creates a dismantle task for a non-owned structure outside the saved room plan after tower is built", () => {
+  it("destroys a non-owned structure outside the saved room plan after tower is built", () => {
     Game.time = 3;
     const tower = createStructure("tower1", STRUCTURE_TOWER, 20, 20, { my: true }) as StructureTower;
-    const plannedExtension = createStructure("plannedExt", STRUCTURE_EXTENSION, 10, 10, { my: false });
-    const illegalExtension = createStructure("illegalExt", STRUCTURE_EXTENSION, 11, 10, { my: false });
+    const plannedExtension = createStructure("plannedExt", STRUCTURE_EXTENSION, 10, 10, { my: false }) as StructureExtension & {
+      destroy: jest.Mock;
+    };
+    const illegalExtension = createStructure("illegalExt", STRUCTURE_EXTENSION, 11, 10, { my: false }) as StructureExtension & {
+      destroy: jest.Mock;
+    };
     const room = createRoomForRefresh([tower, plannedExtension, illegalExtension], [tower]);
     Game.rooms.W1N1 = room;
     Memory.data = {
@@ -354,16 +391,12 @@ describe("workerTaskPool", () => {
 
     refreshWorkerTasks();
 
-    const tasks = getWorkerTasksByRoom("W1N1");
-    expect(tasks["dismantle:illegalExt"]).toMatchObject({
-      type: "dismantle",
-      targetId: "illegalExt",
-      roomName: "W1N1",
-      maxAssignees: 1,
-      status: "active",
+    expect(illegalExtension.destroy).toHaveBeenCalledTimes(1);
+    expect(plannedExtension.destroy).not.toHaveBeenCalled();
+    expect(getIllegalStructureCleanupMemory()?.rooms?.W1N1).toMatchObject({
+      completedAt: 3,
+      layoutSavedAt: 42,
     });
-    expect(tasks["dismantle:plannedExt"]).toBeUndefined();
-    expect(getIllegalStructureCleanupMemory()?.rooms?.W1N1).toBeUndefined();
   });
 
   it("marks a planned room as illegal-structure cleaned after tower is built and no dismantle targets remain", () => {
@@ -391,13 +424,13 @@ describe("workerTaskPool", () => {
     });
   });
 
-  it("does not create dismantle tasks for owned structures even when they are outside the saved room plan", () => {
+  it("does not destroy owned structures even when they are outside the saved room plan", () => {
     Game.time = 9;
     const tower = createStructure("tower1", STRUCTURE_TOWER, 20, 20, { my: true, owner: { username: "me" } }) as StructureTower;
     const ownedOffPlanExtension = createStructure("ownedExt", STRUCTURE_EXTENSION, 11, 10, {
       my: true,
       owner: { username: "me" },
-    });
+    }) as StructureExtension & { destroy: jest.Mock };
     const room = createRoomForRefresh([tower, ownedOffPlanExtension], [tower]);
     Game.rooms.W1N1 = room;
     Memory.data = {
@@ -414,18 +447,19 @@ describe("workerTaskPool", () => {
 
     refreshWorkerTasks();
 
-    const tasks = getWorkerTasksByRoom("W1N1");
-    expect(tasks["dismantle:ownedExt"]).toBeUndefined();
+    expect(ownedOffPlanExtension.destroy).not.toHaveBeenCalled();
     expect(getIllegalStructureCleanupMemory()?.rooms?.W1N1).toMatchObject({
       completedAt: 9,
       layoutSavedAt: 42,
     });
   });
 
-  it("creates a dismantle task for a neutral road with the wrong type on a planned position", () => {
+  it("destroys a neutral road with the wrong type on a planned position", () => {
     Game.time = 12;
     const tower = createStructure("tower1", STRUCTURE_TOWER, 20, 20, { my: true, owner: { username: "me" } }) as StructureTower;
-    const legacyRoad = createStructure("legacyRoad", STRUCTURE_ROAD, 10, 10, { my: false });
+    const legacyRoad = createStructure("legacyRoad", STRUCTURE_ROAD, 10, 10, { my: false }) as StructureRoad & {
+      destroy: jest.Mock;
+    };
     const room = createRoomForRefresh([tower, legacyRoad], [tower]);
     Game.rooms.W1N1 = room;
     Memory.data = {
@@ -443,11 +477,59 @@ describe("workerTaskPool", () => {
 
     refreshWorkerTasks();
 
-    const tasks = getWorkerTasksByRoom("W1N1");
-    expect(tasks["dismantle:legacyRoad"]).toMatchObject({
-      type: "dismantle",
-      targetId: "legacyRoad",
-      roomName: "W1N1",
+    expect(legacyRoad.destroy).toHaveBeenCalledTimes(1);
+    expect(getIllegalStructureCleanupMemory()?.rooms?.W1N1).toMatchObject({
+      completedAt: 12,
+      layoutSavedAt: 42,
+    });
+  });
+
+  it("does not destroy protected source, storage, or controller proto containers", () => {
+    Game.time = 15;
+    const tower = createStructure("tower1", STRUCTURE_TOWER, 20, 20, { my: true, owner: { username: "me" } }) as StructureTower;
+    const source = createSource("source1", 10, 10);
+    const sourceContainer = createStructure("sourceContainer", STRUCTURE_CONTAINER, 9, 10, { my: false }) as StructureContainer & {
+      destroy: jest.Mock;
+    };
+    const storageContainer = createStructure("storageContainer", STRUCTURE_CONTAINER, 23, 23, { my: false }) as StructureContainer & {
+      destroy: jest.Mock;
+    };
+    const controllerContainer = createStructure("controllerContainer", STRUCTURE_CONTAINER, 25, 22, { my: false }) as StructureContainer & {
+      destroy: jest.Mock;
+    };
+    const room = createRoomForRefresh(
+      [tower, sourceContainer, storageContainer, controllerContainer],
+      [tower],
+      [source],
+    );
+    Game.rooms.W1N1 = room;
+    room.controller = {
+      ...room.controller,
+      pos: createPos("W1N1", 25, 25),
+    } as StructureController;
+    Memory.data = {
+      roomPlanner: {
+        W1N1: {
+          layout: {
+            [STRUCTURE_TOWER]: [{ x: 20, y: 20 }],
+            [STRUCTURE_STORAGE]: [{ x: 23, y: 23 }],
+            [STRUCTURE_LINK]: [{ x: 8, y: 10 }, { x: 25, y: 22 }],
+            work_pos: [{ x: 9, y: 10 }],
+          },
+          timestamp: "2026-04-24T00:00:00.000Z",
+          savedAt: 42,
+        },
+      },
+    };
+
+    refreshWorkerTasks();
+
+    expect(sourceContainer.destroy).not.toHaveBeenCalled();
+    expect(storageContainer.destroy).not.toHaveBeenCalled();
+    expect(controllerContainer.destroy).not.toHaveBeenCalled();
+    expect(getIllegalStructureCleanupMemory()?.rooms?.W1N1).toMatchObject({
+      completedAt: 15,
+      layoutSavedAt: 42,
     });
   });
 });

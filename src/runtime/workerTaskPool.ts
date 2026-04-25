@@ -1,4 +1,5 @@
 import type { WorkerTask } from "@/types/system";
+import { getPlannedControllerLinkPos, getPlannedStoragePos, getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
 import { ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { measureCreepDecision } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
@@ -9,8 +10,6 @@ import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
 const TASK_REFRESH_INTERVAL = 3;
 const RAMPART_EMERGENCY_TARGET_HITS = 6000;
 const RAMPART_NORMAL_REPAIR_PRIORITY = 320;
-const DISMANTLE_ILLEGAL_STRUCTURE_PRIORITY = 280;
-
 type PlannedLayout = { [structureType: string]: { x: number; y: number }[] };
 type StructureWithOptionalOwner = Structure<StructureConstant> & {
   my?: boolean;
@@ -226,21 +225,6 @@ function createRampartRepairTask(rampart: StructureRampart): WorkerTask {
   };
 }
 
-function createDismantleTask(structure: Structure<StructureConstant>): WorkerTask {
-  return {
-    id: `dismantle:${structure.id}`,
-    type: "dismantle",
-    targetId: structure.id,
-    roomName: structure.room.name,
-    priority: DISMANTLE_ILLEGAL_STRUCTURE_PRIORITY,
-    requiredWork: structure.hits,
-    assignedCreeps: [],
-    maxAssignees: 1,
-    status: "active",
-    updatedAt: Game.time,
-  };
-}
-
 function getPlannedPositionKey(structureType: string, x: number, y: number): string {
   return `${structureType}:${x}:${y}`;
 }
@@ -276,7 +260,31 @@ function markIllegalStructureCleanupComplete(roomName: string, layoutSavedAt: nu
   };
 }
 
-function isDismantleCandidate(structure: StructureWithOptionalOwner, plannedPositions: Set<string>): boolean {
+function getProtectedContainerPositionKeys(room: Room): Set<string> {
+  const protectedKeys = new Set<string>();
+
+  for (const pos of getSourceContainerPositionsForRoom(room.name)) {
+    protectedKeys.add(getPlannedPositionKey(STRUCTURE_CONTAINER, pos.x, pos.y));
+  }
+
+  const storagePos = getPlannedStoragePos(room);
+  if (storagePos) {
+    protectedKeys.add(getPlannedPositionKey(STRUCTURE_CONTAINER, storagePos.x, storagePos.y));
+  }
+
+  const controllerLinkPos = getPlannedControllerLinkPos(room);
+  if (controllerLinkPos) {
+    protectedKeys.add(getPlannedPositionKey(STRUCTURE_CONTAINER, controllerLinkPos.x, controllerLinkPos.y));
+  }
+
+  return protectedKeys;
+}
+
+function isIllegalStructureCandidate(
+  structure: StructureWithOptionalOwner,
+  plannedPositions: Set<string>,
+  protectedContainerPositions: Set<string>,
+): boolean {
   if (structure.my === true || structure.owner !== undefined) {
     return false;
   }
@@ -285,10 +293,17 @@ function isDismantleCandidate(structure: StructureWithOptionalOwner, plannedPosi
     return false;
   }
 
+  if (
+    structure.structureType === STRUCTURE_CONTAINER &&
+    protectedContainerPositions.has(getPlannedPositionKey(STRUCTURE_CONTAINER, structure.pos.x, structure.pos.y))
+  ) {
+    return false;
+  }
+
   return !plannedPositions.has(getPlannedPositionKey(structure.structureType, structure.pos.x, structure.pos.y));
 }
 
-function refreshIllegalStructureDismantleTasks(room: Room): void {
+function destroyIllegalStructures(room: Room): void {
   const roomContext = getTickContextService().getRoomContext(room);
   const layoutData = Memory.data?.roomPlanner?.[room.name];
   if (!roomContext || !layoutData || roomContext.getTowers().length === 0) {
@@ -300,15 +315,26 @@ function refreshIllegalStructureDismantleTasks(room: Room): void {
   }
 
   const plannedPositions = getPlannedStructurePositionKeys(layoutData.layout);
-  const candidates = roomContext.getStructures().filter((structure) => isDismantleCandidate(structure, plannedPositions));
+  const protectedContainerPositions = getProtectedContainerPositionKeys(room);
+  const candidates = roomContext
+    .getStructures()
+    .filter((structure) => isIllegalStructureCandidate(structure, plannedPositions, protectedContainerPositions));
 
   if (candidates.length === 0) {
     markIllegalStructureCleanupComplete(room.name, layoutData.savedAt);
     return;
   }
 
+  let allDestroyed = true;
   for (const structure of candidates) {
-    upsertTask(room.name, createDismantleTask(structure));
+    const destroyCode = structure.destroy();
+    if (destroyCode !== OK && destroyCode !== ERR_INVALID_TARGET) {
+      allDestroyed = false;
+    }
+  }
+
+  if (allDestroyed) {
+    markIllegalStructureCleanupComplete(room.name, layoutData.savedAt);
   }
 }
 
@@ -373,7 +399,7 @@ export function refreshWorkerTasks(): void {
 
       upsertTask(room.name, createRampartRepairTask(selectedNormalRampart));
     }
-    refreshIllegalStructureDismantleTasks(room);
+    destroyIllegalStructures(room);
 
     const upgradeTask = createUpgradeTask(room);
     if (upgradeTask) {
