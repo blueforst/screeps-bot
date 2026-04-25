@@ -86,4 +86,21 @@ describe("runMemoryCleanup", () => {
       scoutConfig: { role: "flagScout" },
     });
   });
+
+  it("removes room planner build runtime entries for rooms no longer owned", () => {
+    Memory.runtime = {
+      roomPlannerBuild: {
+        rooms: {
+          W1N1: { lastRunAt: 100 },
+          W9N9: { lastRunAt: 50 },
+        },
+      },
+    };
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.roomPlannerBuild?.rooms).toEqual({
+      W1N1: { lastRunAt: 100 },
+    });
+  });
 });

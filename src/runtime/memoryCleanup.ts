@@ -218,6 +218,27 @@ function cleanupLinkNetworkMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupRoomPlannerBuildRuntimeMemory(ownedRooms: Set<string>): number {
+  const roomPlannerBuildRooms = Memory.runtime?.roomPlannerBuild?.rooms;
+  if (!roomPlannerBuildRooms) {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const roomName of Object.keys(roomPlannerBuildRooms)) {
+    if (!ownedRooms.has(roomName)) {
+      delete roomPlannerBuildRooms[roomName];
+      removed += 1;
+    }
+  }
+
+  if (Object.keys(roomPlannerBuildRooms).length === 0 && Memory.runtime?.roomPlannerBuild) {
+    delete Memory.runtime.roomPlannerBuild;
+  }
+
+  return removed;
+}
+
 function cleanupTowerEmergencyMemory(ownedRooms: Set<string>): number {
   if (!Memory.runtime?.towerEmergencyRamparts) {
     return 0;
@@ -541,6 +562,7 @@ export function runMemoryCleanup(): void {
   const ownedRooms = getOwnedRoomNameSet();
   const colonizationTargets = getColonizationTargetRoomNameSet();
   cleanupRoomPlannerMemory(ownedRooms, colonizationTargets);
+  cleanupRoomPlannerBuildRuntimeMemory(ownedRooms);
   cleanupLinkNetworkMemory(ownedRooms);
   cleanupTowerEmergencyMemory(ownedRooms);
   cleanupResourceControlMemory(ownedRooms);
