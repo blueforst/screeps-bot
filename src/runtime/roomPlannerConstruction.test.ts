@@ -245,7 +245,9 @@ function setRoomPlannerLayout(roomName: string, layout: Partial<Record<string, P
   );
 
   Memory.data = {
+    ...Memory.data,
     roomPlanner: {
+      ...(Memory.data?.roomPlanner ?? {}),
       [roomName]: {
         layout: clonedLayout,
         timestamp: "2026-03-12T00:00:00.000Z",
@@ -340,6 +342,41 @@ describe("runRoomPlannerConstruction lab ordering", () => {
     runRoomPlannerConstruction();
 
     expect(room.__siteAttempts).toEqual([{ x: 12, y: 12, structureType: STRUCTURE_LINK }]);
+  });
+
+  it("tracks the 100-tick construction cadence independently per room", () => {
+    const earlyRoom = createRoom({ name: "W1N6" });
+    earlyRoom.__structures.push(createStructure(earlyRoom, STRUCTURE_SPAWN, 9, 9));
+    const dueRoom = createRoom({ name: "W1N7" });
+    dueRoom.__structures.push(createStructure(dueRoom, STRUCTURE_SPAWN, 9, 9));
+    Game.rooms[earlyRoom.name] = earlyRoom;
+    Game.rooms[dueRoom.name] = dueRoom;
+
+    setRoomPlannerLayout(earlyRoom.name, { [STRUCTURE_EXTENSION]: [{ x: 12, y: 12 }] });
+    setRoomPlannerLayout(dueRoom.name, { [STRUCTURE_EXTENSION]: [{ x: 13, y: 13 }] });
+    Memory.runtime = {
+      roomPlannerBuild: {
+        rooms: {
+          [earlyRoom.name]: { lastRunAt: 50 },
+          [dueRoom.name]: { lastRunAt: 0 },
+        },
+      },
+    };
+
+    runRoomPlannerConstruction();
+
+    expect(earlyRoom.__siteAttempts).toEqual([]);
+    expect(dueRoom.__siteAttempts).toEqual([{ x: 13, y: 13, structureType: STRUCTURE_EXTENSION }]);
+    expect(Memory.runtime.roomPlannerBuild?.rooms[earlyRoom.name]?.lastRunAt).toBe(50);
+    expect(Memory.runtime.roomPlannerBuild?.rooms[dueRoom.name]?.lastRunAt).toBe(100);
+
+    Game.time = 150;
+    runRoomPlannerConstruction();
+
+    expect(earlyRoom.__siteAttempts).toEqual([{ x: 12, y: 12, structureType: STRUCTURE_EXTENSION }]);
+    expect(dueRoom.__siteAttempts).toEqual([{ x: 13, y: 13, structureType: STRUCTURE_EXTENSION }]);
+    expect(Memory.runtime.roomPlannerBuild?.rooms[earlyRoom.name]?.lastRunAt).toBe(150);
+    expect(Memory.runtime.roomPlannerBuild?.rooms[dueRoom.name]?.lastRunAt).toBe(100);
   });
 });
 

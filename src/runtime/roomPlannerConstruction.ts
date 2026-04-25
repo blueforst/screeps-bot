@@ -1,5 +1,5 @@
 import { runPlannerForRoom, savePlannerForRoom } from "@/modules/autoplanner";
-import { getTickContextService } from "@/runtime/runtimeServices";
+import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 
 const CONSTRUCTION_PRIORITY: BuildableStructureConstant[] = [
@@ -22,10 +22,44 @@ const CONSTRUCTION_PRIORITY: BuildableStructureConstant[] = [
 
 const RUN_INTERVAL = 100;
 const DEFAULT_MAX_NEW_SITES_PER_ROOM = 2;
-const MAX_NEW_SITES_PER_RUN = 2;
+const MAX_NEW_SITES_PER_ROOM_PER_RUN = 2;
 const GLOBAL_SITE_SOFT_CAP = 95;
 const MINERAL_CONTAINER_MIN_RCL = 6;
 const CONTROLLER_LINK_RANGE = 3;
+
+interface RoomPlannerBuildRoomRuntime {
+  lastRunAt?: number;
+}
+
+function ensureRoomPlannerBuildRuntime(): { rooms: Record<string, RoomPlannerBuildRoomRuntime> } {
+  const runtime = getMemoryService().ensureRuntime();
+  if (!runtime.roomPlannerBuild) {
+    runtime.roomPlannerBuild = { rooms: {} };
+  }
+  if (!runtime.roomPlannerBuild.rooms) {
+    runtime.roomPlannerBuild.rooms = {};
+  }
+
+  return runtime.roomPlannerBuild;
+}
+
+function isRoomPlannerConstructionDue(roomName: string): boolean {
+  const store = ensureRoomPlannerBuildRuntime();
+  const roomState = store.rooms[roomName];
+  if (typeof roomState?.lastRunAt !== "number") {
+    return true;
+  }
+
+  return Game.time < roomState.lastRunAt || Game.time - roomState.lastRunAt >= RUN_INTERVAL;
+}
+
+function markRoomPlannerConstructionRun(roomName: string): void {
+  const store = ensureRoomPlannerBuildRuntime();
+  store.rooms[roomName] = {
+    ...store.rooms[roomName],
+    lastRunAt: Game.time,
+  };
+}
 
 type PlannedLayout = { [structureType: string]: { x: number; y: number }[] };
 type TargetOverrideMap = Partial<Record<BuildableStructureConstant, number>>;
@@ -690,10 +724,6 @@ export function runRoomPlannerConstruction(): void {
     return;
   }
 
-  if (Game.time % RUN_INTERVAL !== 0) {
-    return;
-  }
-
   const currentGlobalSiteCount = Object.keys(Game.constructionSites).length;
   if (currentGlobalSiteCount >= GLOBAL_SITE_SOFT_CAP) {
     return;
@@ -701,14 +731,19 @@ export function runRoomPlannerConstruction(): void {
 
   const rooms = getTickContextService().getMyRooms();
   const configuredMaxNewSitesPerRoom = Memory.cfg?.roomPlannerBuild?.maxNewSitesPerRoom ?? DEFAULT_MAX_NEW_SITES_PER_ROOM;
-  const maxNewSitesPerRoom = Math.min(configuredMaxNewSitesPerRoom, MAX_NEW_SITES_PER_RUN);
+  const maxNewSitesPerRoom = Math.min(configuredMaxNewSitesPerRoom, MAX_NEW_SITES_PER_ROOM_PER_RUN);
   let globalRemaining = GLOBAL_SITE_SOFT_CAP - currentGlobalSiteCount;
-  let runRemaining = Math.min(MAX_NEW_SITES_PER_RUN, globalRemaining);
 
   for (const room of rooms) {
-    if (globalRemaining <= 0 || runRemaining <= 0) {
+    if (globalRemaining <= 0) {
       return;
     }
+
+    if (!isRoomPlannerConstructionDue(room.name)) {
+      continue;
+    }
+
+    markRoomPlannerConstructionRun(room.name);
 
     let roomPlan = Memory.data?.roomPlanner?.[room.name];
     if (!roomPlan?.layout) {
@@ -778,7 +813,7 @@ export function runRoomPlannerConstruction(): void {
       }
 
       for (const pos of plannedPositions) {
-        if (newSites >= maxNewSitesPerRoom || globalRemaining <= 0 || runRemaining <= 0) {
+        if (newSites >= maxNewSitesPerRoom || globalRemaining <= 0) {
           break;
         }
 
@@ -802,17 +837,15 @@ export function runRoomPlannerConstruction(): void {
           if (code === OK) {
             newSites += 1;
             globalRemaining -= 1;
-            runRemaining -= 1;
             remaining -= 1;
           } else if (code === ERR_FULL) {
             globalRemaining = 0;
-            runRemaining = 0;
             break;
           }
         }
       }
 
-      if (newSites >= maxNewSitesPerRoom || globalRemaining <= 0 || runRemaining <= 0) {
+      if (newSites >= maxNewSitesPerRoom || globalRemaining <= 0) {
         break;
       }
     }
@@ -827,11 +860,10 @@ export function runRoomPlannerConstruction(): void {
       layout,
       controllerLevel,
       roomRemainingForRamparts,
-      Math.min(globalRemaining, runRemaining),
+      globalRemaining,
     );
     if (rampartQueued.roomAdded > 0) {
       globalRemaining = rampartQueued.globalRemaining;
-      runRemaining = Math.max(0, runRemaining - rampartQueued.roomAdded);
       console.log(`[roomPlanner] ${room.name} queued ${rampartQueued.roomAdded} rampart site(s)`);
     }
   }

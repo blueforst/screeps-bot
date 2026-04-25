@@ -343,6 +343,14 @@ declare global {
           }
         >;
       };
+      roomPlannerBuild?: {
+        rooms: Record<
+          string,
+          {
+            lastRunAt?: number;
+          }
+        >;
+      };
       linkNetwork?: Record<
         string,
         {
