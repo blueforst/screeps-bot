@@ -83,6 +83,8 @@ const MIN_PORTAL_TICKS_TO_DECAY = 200;
 const INTER_SHARD_PROTOCOL_VERSION = 1;
 const BOOTSTRAP_HARVESTER_COUNT = 2;
 const BOOTSTRAP_WORKER_COUNT = 2;
+const CLAIM_RETRY_TTL = 1500;
+const BOOTSTRAP_RETRY_TTL = 2000;
 
 function ensureTaskStore(): Record<string, CrossShardColonizationTask> {
   const data = getMemoryService().ensureData();
@@ -158,8 +160,12 @@ function selectSourceAndPortal(
 
   const orderedSourceRooms =
     preferredSourceRoom && sourceRooms.includes(preferredSourceRoom)
-      ? [preferredSourceRoom, ...sourceRooms.filter((roomName) => roomName !== preferredSourceRoom)]
+      ? [preferredSourceRoom]
       : sourceRooms;
+
+  if (preferredSourceRoom && !sourceRooms.includes(preferredSourceRoom)) {
+    return null;
+  }
 
   let best: { sourceRoom: string; portal: InterShardPortalEntry; distance: number } | null = null;
   for (const sourceRoom of orderedSourceRooms) {
@@ -188,6 +194,10 @@ function getTaskConfigName(task: CrossShardColonizationTask, role: "claimer" | "
 
 function getSpawnForRoom(roomName: string): StructureSpawn | null {
   return Object.values(Game.spawns).find((spawn) => spawn.room.name === roomName) || null;
+}
+
+function getSpawnsForRoom(roomName: string): StructureSpawn[] {
+  return Object.values(Game.spawns).filter((spawn) => spawn.room.name === roomName);
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {
@@ -222,12 +232,25 @@ function removeQueuedConfig(task: CrossShardColonizationTask, configName: string
     return;
   }
 
-  const spawn = getSpawnForRoom(task.sourceRoom);
-  if (!spawn?.memory.spawnList) {
-    return;
+  for (const spawn of getSpawnsForRoom(task.sourceRoom)) {
+    if (!spawn.memory.spawnList) {
+      continue;
+    }
+
+    spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+  }
+}
+
+function isConfigQueued(task: CrossShardColonizationTask, configName: string): boolean {
+  if (!task.sourceRoom) {
+    return false;
   }
 
-  spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+  return getSpawnsForRoom(task.sourceRoom).some((spawn) => spawn.memory.spawnList?.includes(configName));
+}
+
+function isConfigActive(task: CrossShardColonizationTask, configName: string): boolean {
+  return getLiveCreepsByConfig(configName).length > 0 || isConfigSpawning(configName) || isConfigQueued(task, configName);
 }
 
 function removeConfigWhenIdle(configName: string): void {
@@ -358,6 +381,15 @@ function ensureClaimer(task: CrossShardColonizationTask): void {
   const configName = task.claimerConfigName || getTaskConfigName(task, "claimer", 0);
   task.claimerConfigName = configName;
 
+  if (task.launchedAt && Game.time - task.launchedAt > CLAIM_RETRY_TTL) {
+    removeQueuedConfig(task, configName);
+    removeConfigWhenIdle(configName);
+    task.launchedAt = undefined;
+    task.claimerName = undefined;
+    task.status = "planning";
+    task.reason = `claimer retry after ${CLAIM_RETRY_TTL} ticks without remote claim`;
+  }
+
   if (!task.claimerName) {
     task.claimerName = generateTravelerName("claimer", task, 0);
   }
@@ -425,9 +457,24 @@ function ensureBootstrapSquad(task: CrossShardColonizationTask): void {
     return;
   }
 
+  if (task.bootstrapDispatchedAt && Game.time - task.bootstrapDispatchedAt > BOOTSTRAP_RETRY_TTL) {
+    for (const configName of task.bootstrapConfigNames || []) {
+      removeQueuedConfig(task, configName);
+      removeConfigWhenIdle(configName);
+    }
+
+    task.bootstrapConfigNames = undefined;
+    task.bootstrapDispatchedAt = undefined;
+    task.reason = `bootstrap retry after ${BOOTSTRAP_RETRY_TTL} ticks without target spawn`;
+  }
+
   if (task.bootstrapDispatchedAt) {
+    const hasActiveBootstrapConfig = (task.bootstrapConfigNames || []).some((configName) => isConfigActive(task, configName));
+    if (!hasActiveBootstrapConfig) {
+      task.reason = "bootstrap squad dispatched, waiting target shard spawn";
+    }
+
     task.status = "bootstrapping";
-    task.reason = "bootstrap squad dispatched, waiting target shard spawn";
     return;
   }
 
