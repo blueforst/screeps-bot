@@ -9,6 +9,7 @@ export interface MoveToTargetOptions {
   reusePath?: number;
   maxRooms?: number;
   ignoreCreeps?: boolean;
+  avoidExitTiles?: boolean;
 }
 
 export interface MoveToRoomOptions extends MoveToTargetOptions {
@@ -20,6 +21,7 @@ export type MovementOptions = MoveToRoomOptions;
 export interface TravelState {
   targetRoom: string;
   lastPosKey?: string;
+  lastWasExit?: boolean;
   stuckTicks: number;
 }
 
