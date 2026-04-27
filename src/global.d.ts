@@ -1,5 +1,5 @@
 import type { LoDashStatic } from "lodash";
-import type { CreepApi, CreepConfig, RoleName, WorkerTaskType } from "@/types/system";
+import type { CreepApi, CreepConfig, RoleName, RoomType, WorkerTaskType } from "@/types/system";
 
 declare const _: LoDashStatic;
 
@@ -226,6 +226,12 @@ declare global {
 
   interface Memory {
     cfg?: {
+      rooms?: Record<
+        string,
+        {
+          type?: RoomType;
+        }
+      >;
       worker?: {
         maxPerRoom?: number;
         dynamicBeforeRcl4?: boolean;
