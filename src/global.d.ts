@@ -526,6 +526,8 @@ declare global {
           temporaryDangerousRooms?: Record<string, number>;
           permanentDangerousRooms?: string[];
           scoutedAt?: number;
+          safeRouteRetryAt?: number;
+          safeRouteRetryKey?: string;
           createdAt: number;
           updatedAt: number;
         }

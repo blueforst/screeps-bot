@@ -9,6 +9,9 @@ const MIN_SAMPLE_INTERVAL = 5;
 const MAX_SAMPLE_INTERVAL = 100;
 const DEFAULT_SEGMENT_ID = 90;
 const MAX_SEGMENT_PAYLOAD_BYTES = 95_000;
+const MAX_DEBUG_CREEPS = 25;
+const MAX_DEBUG_ROUTE_ROOMS = 25;
+const MAX_DEBUG_VISITED_ROOMS = 20;
 
 interface RoomCreepTelemetry {
   workerCount: number;
@@ -105,6 +108,7 @@ interface ExternalTelemetrySnapshot {
       stateClears: number;
     };
   };
+  debug?: ExternalTelemetryDebugSnapshot;
   moduleCpu?: {
     tick: number;
     shard: string;
@@ -127,6 +131,66 @@ interface ExternalTelemetrySnapshot {
   };
   rooms: ExternalTelemetryRoomSnapshot[];
   truncated?: boolean;
+}
+
+interface ExternalTelemetryDebugSnapshot {
+  creeps: DebugCreepTelemetry[];
+  colonization: DebugColonizationTelemetry[];
+  counts: {
+    creepsWithMovementState: number;
+    creepsWithTravelState: number;
+    stuckCreeps: number;
+    colonizationTasks: number;
+  };
+  truncated?: boolean;
+}
+
+interface DebugCreepTelemetry {
+  name: string;
+  role?: string;
+  roomName: string;
+  x: number;
+  y: number;
+  ticksToLive?: number;
+  configName?: string;
+  targetRoom?: string;
+  roleArgs?: unknown[];
+  scoutVisitedRooms?: string[];
+  travelState?: {
+    targetRoom: string;
+    stuckTicks: number;
+    lastPosKey?: string;
+    lastWasExit?: boolean;
+  };
+  movePathState?: {
+    targetRoom: string;
+    targetX: number;
+    targetY: number;
+    range: number;
+    stuckTicks: number;
+    expiresAt: number;
+  };
+  workAnchor?: {
+    x: number;
+    y: number;
+    roomName: string;
+    range: number;
+  };
+}
+
+interface DebugColonizationTelemetry {
+  targetRoom: string;
+  sourceRoom: string;
+  status: string;
+  mode?: string;
+  scoutSafe?: boolean;
+  claimCompleted?: boolean;
+  scoutedAt?: number;
+  scoutRouteRooms?: string[];
+  dangerousRooms?: string[];
+  safeRouteRetryAt?: number;
+  temporaryDangerousRoomCount?: number;
+  permanentDangerousRoomCount?: number;
 }
 
 type ModuleCpuSnapshot = NonNullable<ExternalTelemetrySnapshot["moduleCpu"]>;
@@ -281,6 +345,143 @@ function collectSpawnTelemetryByRoom(ownedRooms: Room[]): Record<string, RoomSpa
   return stats;
 }
 
+function getCreepTargetRoom(creep: Creep): string | undefined {
+  const args = creep.memory.roleArgs;
+  if (!Array.isArray(args) || typeof args[0] !== "string") {
+    return undefined;
+  }
+
+  return args[0];
+}
+
+function isInterestingDebugCreep(creep: Creep): boolean {
+  const state = getCreepMovementState(creep.name);
+  const role = creep.memory.role;
+  if (state?.travelState || state?.movePathState || state?.workAnchor) {
+    return true;
+  }
+
+  return (
+    role === "scout" ||
+    role === "claimer" ||
+    role === "colonizerHarvester" ||
+    role === "colonizerWorker" ||
+    role === "flagScout"
+  );
+}
+
+function scoreDebugCreep(creep: Creep): number {
+  const state = getCreepMovementState(creep.name);
+  const role = creep.memory.role;
+  let score = 0;
+  if (role === "scout" || role === "flagScout") score += 100;
+  if (role === "claimer" || role === "colonizerHarvester" || role === "colonizerWorker") score += 80;
+  if ((state?.travelState?.stuckTicks ?? 0) >= 2) score += 70;
+  if ((state?.movePathState?.stuckTicks ?? 0) >= 2) score += 50;
+  if (state?.travelState) score += 30;
+  if (state?.movePathState) score += 10;
+  if (state?.workAnchor) score += 5;
+  return score;
+}
+
+function collectDebugCreeps(): DebugCreepTelemetry[] {
+  return Object.values(Game.creeps)
+    .filter(isInterestingDebugCreep)
+    .sort((left, right) => scoreDebugCreep(right) - scoreDebugCreep(left) || left.name.localeCompare(right.name))
+    .slice(0, MAX_DEBUG_CREEPS)
+    .map((creep) => {
+      const state = getCreepMovementState(creep.name);
+      const movePathState = state?.movePathState;
+      return {
+        name: creep.name,
+        role: creep.memory.role,
+        roomName: creep.room.name,
+        x: creep.pos.x,
+        y: creep.pos.y,
+        ticksToLive: creep.ticksToLive,
+        configName: creep.memory.configName,
+        targetRoom: state?.travelState?.targetRoom || getCreepTargetRoom(creep),
+        roleArgs: Array.isArray(creep.memory.roleArgs) ? creep.memory.roleArgs.slice(0, 4) : undefined,
+        scoutVisitedRooms: creep.memory.scoutVisitedRooms?.slice(-MAX_DEBUG_VISITED_ROOMS),
+        travelState: state?.travelState
+          ? {
+              targetRoom: state.travelState.targetRoom,
+              stuckTicks: state.travelState.stuckTicks,
+              lastPosKey: state.travelState.lastPosKey,
+              lastWasExit: state.travelState.lastWasExit,
+            }
+          : undefined,
+        movePathState: movePathState
+          ? {
+              targetRoom: movePathState.targetRoom,
+              targetX: movePathState.targetX,
+              targetY: movePathState.targetY,
+              range: movePathState.range,
+              stuckTicks: movePathState.stuckTicks,
+              expiresAt: movePathState.expiresAt,
+            }
+          : undefined,
+        workAnchor: state?.workAnchor,
+      } satisfies DebugCreepTelemetry;
+    });
+}
+
+function collectDebugColonization(): DebugColonizationTelemetry[] {
+  const colonization = Memory.data?.colonization || {};
+  return Object.values(colonization).map((task) => ({
+    targetRoom: task.targetRoom,
+    sourceRoom: task.sourceRoom,
+    status: task.status,
+    mode: task.mode,
+    scoutSafe: task.scoutSafe,
+    claimCompleted: task.claimCompleted,
+    scoutedAt: task.scoutedAt,
+    scoutRouteRooms: task.scoutRouteRooms?.slice(0, MAX_DEBUG_ROUTE_ROOMS),
+    dangerousRooms: task.dangerousRooms?.slice(0, MAX_DEBUG_ROUTE_ROOMS),
+    safeRouteRetryAt: task.safeRouteRetryAt,
+    temporaryDangerousRoomCount: task.temporaryDangerousRooms ? Object.keys(task.temporaryDangerousRooms).length : undefined,
+    permanentDangerousRoomCount: task.permanentDangerousRooms?.length,
+  }));
+}
+
+function countMovementStates(): ExternalTelemetryDebugSnapshot["counts"] {
+  let creepsWithMovementState = 0;
+  let creepsWithTravelState = 0;
+  let stuckCreeps = 0;
+
+  for (const creep of Object.values(Game.creeps)) {
+    const state = getCreepMovementState(creep.name);
+    if (!state) {
+      continue;
+    }
+    creepsWithMovementState += 1;
+    if (state.travelState) {
+      creepsWithTravelState += 1;
+    }
+    if ((state.travelState?.stuckTicks ?? 0) >= 2 || (state.movePathState?.stuckTicks ?? 0) >= 2) {
+      stuckCreeps += 1;
+    }
+  }
+
+  return {
+    creepsWithMovementState,
+    creepsWithTravelState,
+    stuckCreeps,
+    colonizationTasks: Object.keys(Memory.data?.colonization || {}).length,
+  };
+}
+
+function collectDebugTelemetry(): ExternalTelemetryDebugSnapshot {
+  const creeps = collectDebugCreeps();
+  const colonization = collectDebugColonization();
+  return {
+    creeps,
+    colonization,
+    counts: countMovementStates(),
+    truncated: Object.values(Game.creeps).filter(isInterestingDebugCreep).length > creeps.length,
+  };
+}
+
 function getOwnedRooms(): Room[] {
   return getTickContextService().getMyRooms();
 }
@@ -290,6 +491,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
   const creepsByRoom = collectCreepTelemetryByRoom(ownedRooms);
   const tasksByRoom = collectTaskTelemetryByRoom();
   const spawnsByRoom = collectSpawnTelemetryByRoom(ownedRooms);
+  const debug = collectDebugTelemetry();
   const productionRooms = Memory.analytics?.production?.rooms || {};
   const moduleCpuLatest = Memory.analytics?.moduleCpu?.latest;
   const moduleCpuHistory = getCpuPhaseHistory();
@@ -394,6 +596,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
       activeSpawns: totalActiveSpawns,
       movement: movementAnalytics?.totals,
     },
+    debug,
     moduleCpu: moduleCpuLatest
       ? {
           tick: moduleCpuLatest.tick,
@@ -465,6 +668,14 @@ function serializeSnapshot(snapshot: ExternalTelemetrySnapshot): string {
   const compactPayload = JSON.stringify({
     ...snapshot,
     truncated: true,
+    debug: snapshot.debug
+      ? {
+          counts: snapshot.debug.counts,
+          creeps: snapshot.debug.creeps.slice(0, 10),
+          colonization: snapshot.debug.colonization.slice(0, 10),
+          truncated: true,
+        }
+      : undefined,
     moduleCpu: compactModuleCpu(snapshot.moduleCpu, 20),
     rooms: compactRooms,
   });
@@ -482,6 +693,7 @@ function serializeSnapshot(snapshot: ExternalTelemetrySnapshot): string {
     cpu: snapshot.cpu,
     gcl: snapshot.gcl,
     totals: snapshot.totals,
+    debug: snapshot.debug ? { counts: snapshot.debug.counts, creeps: [], colonization: [], truncated: true } : undefined,
     moduleCpu: compactModuleCpu(snapshot.moduleCpu, 5),
     rooms: [],
     truncated: true,
