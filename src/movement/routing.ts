@@ -1,9 +1,10 @@
-import { measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
+import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
 import { ensureCreepMovementState } from "@/movement/creepState";
 import { getTickContextService } from "@/runtime/runtimeServices";
-import { getPosKey, parseEncodedRouteRooms } from "@/movement/common";
+import { getPosKey, isExitTile, parseEncodedRouteRooms } from "@/movement/common";
 import { recordMovementMetric } from "@/movement/metrics";
 import { moveToTarget } from "@/movement/pathing";
+import { moveOffExit } from "@/movement/traffic";
 import type { DynamicRouteCacheEntry, MoveToRoomOptions, MoveToTargetOptions, TravelState } from "@/movement/types";
 
 const DYNAMIC_ROUTE_CACHE_TTL = 25;
@@ -60,12 +61,15 @@ export function moveToTargetRoom(
   const hasFixedRoute = routeRooms.length > 0;
   const travelState = getTravelState(creep, targetRoom);
   const currentPosKey = getPosKey(creep.pos);
-  if (travelState.lastPosKey === currentPosKey && creep.fatigue === 0) {
+  const currentOnExit = isExitTile(creep.pos);
+  const repeatedExitTransition = travelState.lastWasExit && currentOnExit && travelState.lastPosKey !== currentPosKey;
+  if ((travelState.lastPosKey === currentPosKey || repeatedExitTransition) && creep.fatigue === 0) {
     travelState.stuckTicks += 1;
   } else {
     travelState.stuckTicks = 0;
   }
   travelState.lastPosKey = currentPosKey;
+  travelState.lastWasExit = currentOnExit;
 
   let nextRoom: string;
   if (hasFixedRoute) {
@@ -122,6 +126,7 @@ export function moveToTargetRoom(
     plainCost: options.plainCost,
     reusePath: travelState.stuckTicks >= 2 ? 0 : options.reusePath ?? 5,
     maxRooms: options.maxRooms ?? Math.max(routeRooms.length + 1, 16),
+    avoidExitTiles: true,
   };
 
   let result: ScreepsReturnCode;
@@ -134,6 +139,21 @@ export function moveToTargetRoom(
         exitPos = creep.pos.findClosestByRange(exitTiles);
       }
       if (exitPos) {
+        if (isOnExitDirection(creep.pos, exitDirection as DirectionConstant)) {
+          result = measureCreepIntent(() => creep.move(exitDirection as DirectionConstant));
+          updateTravelState(creep, travelState);
+          return result;
+        }
+
+        if (isExitTile(creep.pos)) {
+          recordMovementMetric("exitRecoveries", creep.room.name);
+          result = moveOffExit(creep);
+          if (result === OK || result === ERR_TIRED) {
+            updateTravelState(creep, travelState);
+            return result;
+          }
+        }
+
         result = moveToTarget(creep, exitPos, 0, moveOptions);
         updateTravelState(creep, travelState);
         return result;
@@ -152,6 +172,21 @@ function getTravelState(creep: Creep, targetRoom: string): TravelState {
     return { targetRoom, stuckTicks: 0 };
   }
   return memoryState;
+}
+
+function isOnExitDirection(pos: RoomPosition, direction: DirectionConstant): boolean {
+  switch (direction) {
+    case TOP:
+      return pos.y === 0;
+    case RIGHT:
+      return pos.x === 49;
+    case BOTTOM:
+      return pos.y === 49;
+    case LEFT:
+      return pos.x === 0;
+    default:
+      return false;
+  }
 }
 
 function updateTravelState(creep: Creep, state: TravelState): void {
