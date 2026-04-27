@@ -57,7 +57,7 @@ export function moveToTarget(
   const sameRoomTarget = creep.room.name === targetPos.roomName;
   const movePathKey = `${creep.room.name}:${targetPos.roomName}:${targetPos.x}:${targetPos.y}:r${range}:i${
     ignoreCreeps ? 1 : 0
-  }:s${options.swampCost ?? "d"}:p${options.plainCost ?? "d"}:m${options.maxRooms ?? "d"}`;
+  }:s${options.swampCost ?? "d"}:p${options.plainCost ?? "d"}:m${options.maxRooms ?? "d"}:e${options.avoidExitTiles ? 1 : 0}`;
 
   if (sameRoomTarget) {
     const currentPosKey = getPosKey(creep.pos);
@@ -97,7 +97,7 @@ export function moveToTarget(
         plainCost: options.plainCost,
         ignoreCreeps,
         maxRooms: options.maxRooms,
-        costCallback: (roomName, matrix) => buildRoomCostMatrix(creep, roomName, matrix, options),
+        costCallback: (roomName, matrix) => buildRoomCostMatrix(creep, roomName, matrix, options, targetPos),
       }),
     );
 
@@ -166,6 +166,7 @@ function buildRoomCostMatrix(
   roomName: string,
   matrix: CostMatrix,
   options: MoveToTargetOptions,
+  targetPos: RoomPosition,
 ): CostMatrix {
   if (roomName !== creep.room.name) {
     return matrix;
@@ -177,6 +178,10 @@ function buildRoomCostMatrix(
   }
 
   const roomMatrix = getCachedRoomBaseCostMatrix(creep.room, roomContext, matrix, options);
+
+  if (options.avoidExitTiles) {
+    applyExitTileAvoidance(roomMatrix, targetPos, roomName);
+  }
 
   if (options.ignoreCreeps ?? true) {
     return roomMatrix;
@@ -190,6 +195,23 @@ function buildRoomCostMatrix(
   }
 
   return roomMatrix;
+}
+
+function applyExitTileAvoidance(matrix: CostMatrix, targetPos: RoomPosition, roomName: string): void {
+  for (let index = 0; index < 50; index += 1) {
+    blockExitTile(matrix, 0, index, targetPos, roomName);
+    blockExitTile(matrix, 49, index, targetPos, roomName);
+    blockExitTile(matrix, index, 0, targetPos, roomName);
+    blockExitTile(matrix, index, 49, targetPos, roomName);
+  }
+}
+
+function blockExitTile(matrix: CostMatrix, x: number, y: number, targetPos: RoomPosition, roomName: string): void {
+  if (targetPos.roomName === roomName && targetPos.x === x && targetPos.y === y) {
+    return;
+  }
+
+  matrix.set(x, y, 0xff);
 }
 
 function getCachedRoomBaseCostMatrix(

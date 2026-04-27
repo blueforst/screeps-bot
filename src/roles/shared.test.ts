@@ -174,7 +174,7 @@ describe("moveToTarget yielding", () => {
     creeps.push(creep);
     Game.creeps[creep.name] = creep;
     ensureCreepMovementState(creep.name).movePathState = {
-      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md`,
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0`,
       path: "333",
       steps: [
         { x: 11, y: 10 },
@@ -381,6 +381,30 @@ describe("moveToTarget yielding", () => {
     expect(secondResult).toBe(OK);
     expect(findPathTo).toHaveBeenCalledTimes(2);
     expect(creep.move).toHaveBeenLastCalledWith(BOTTOM);
+  });
+
+  it("blocks non-target exit tiles when requested", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W4N2", creeps);
+    const creep = createCreep("scout-avoid-exits", "scout", 10, 10, room);
+    creeps.push(creep);
+    Game.creeps[creep.name] = creep;
+    let topExitCost = -1;
+    let targetExitCost = -1;
+
+    (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn((_target, opts: { costCallback?: Function }) => {
+      const matrix = opts.costCallback?.(room.name, new MockCostMatrix() as unknown as CostMatrix) as unknown as MockCostMatrix;
+      topExitCost = matrix.get(20, 0);
+      targetExitCost = matrix.get(0, 16);
+      return [{ x: 9, y: 10, dx: -1, dy: 0, direction: LEFT }];
+    });
+
+    moveToTarget(creep, new MockRoomPosition(0, 16, room.name) as unknown as RoomPosition, 0, {
+      avoidExitTiles: true,
+    });
+
+    expect(topExitCost).toBe(0xff);
+    expect(targetExitCost).toBe(0);
   });
 });
 
