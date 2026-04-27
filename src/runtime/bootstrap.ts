@@ -2,6 +2,7 @@ import { upsertConfig } from "@/runtime/creepApi";
 import { isColonizationBootstrapRoom } from "@/runtime/colonization";
 import { getEligibleMineralIds, getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 import { isRoomInReserveMode } from "@/runtime/roomReserve";
+import { isOwnedManagedRoom } from "@/runtime/roomTypes";
 import { isRescueRoom } from "@/runtime/rescue";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { TickContextService } from "@/runtime/tickContext";
@@ -90,6 +91,10 @@ export function bootstrapRooms(): void {
   const myRooms = tickContext.getMyRooms();
 
   for (const room of myRooms) {
+    if (!isOwnedManagedRoom(room.name)) {
+      continue;
+    }
+
     const expectedConfigNames = new Set(getExpectedManagedConfigNames(room));
     const sources = room.find(FIND_SOURCES);
     const isSupportedRoom = isColonizationBootstrapRoom(room.name) || isRescueRoom(room.name);

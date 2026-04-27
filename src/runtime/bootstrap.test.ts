@@ -131,6 +131,23 @@ describe("bootstrapRooms", () => {
     expect(spawn.memory.spawnList).toEqual(["W1N1:miner:source-b", "manual:keep"]);
   });
 
+  it("does not bootstrap owned-room configs for rooms configured as reserved", () => {
+    Memory.cfg = {
+      rooms: {
+        W1N1: { type: "reserved" },
+      },
+    };
+    const room = createRoom({
+      sources: [createSource("source-a", "W1N1")],
+    });
+    Game.rooms[room.name] = room;
+    Game.spawns.Spawn1 = createSpawn(room);
+
+    bootstrapRooms();
+
+    expect(getCreepConfigService().list()).toEqual({});
+  });
+
   it("removes stale source, mineral, and worker configs when no live creep still references them", () => {
     const room = createRoom({
       sources: [createSource("source-a", "W1N1")],
