@@ -51,13 +51,16 @@ function createRoom(options: {
   sources?: Source[];
   minerals?: Mineral[];
   constructionCount?: number;
+  structures?: Structure[];
+  constructionSites?: ConstructionSite[];
 } = {}): Room {
   const name = options.name ?? "W1N1";
   const memory = {} as RoomMemory;
   Memory.rooms[name] = memory;
   const sources = options.sources ?? [];
   const minerals = options.minerals ?? [];
-  const constructionSites = Array.from({ length: options.constructionCount ?? 0 }, (_, index) => ({
+  const structures = options.structures ?? [];
+  const constructionSites = options.constructionSites ?? Array.from({ length: options.constructionCount ?? 0 }, (_, index) => ({
     id: `site-${index}`,
   })) as ConstructionSite[];
 
@@ -77,6 +80,10 @@ function createRoom(options: {
         return constructionSites;
       }
 
+      if (type === FIND_STRUCTURES) {
+        return structures;
+      }
+
       if (type === FIND_MINERALS) {
         return minerals;
       }
@@ -93,6 +100,28 @@ function createSpawn(room: Room, queue: string[] = []): StructureSpawn {
       spawnList: [...queue],
     },
   } as StructureSpawn;
+}
+
+function createOwnedStructure(structureType: StructureConstant): Structure {
+  return {
+    structureType,
+    my: true,
+  } as unknown as Structure;
+}
+
+function createConstructionSite(structureType: BuildableStructureConstant): ConstructionSite {
+  return {
+    structureType,
+    my: true,
+  } as ConstructionSite;
+}
+
+function createRoomPlannerEntry(layout: Record<string, { x: number; y: number }[]>) {
+  return {
+    layout,
+    timestamp: "test-plan",
+    savedAt: Game.time,
+  };
 }
 
 describe("bootstrapRooms", () => {
@@ -272,6 +301,83 @@ describe("bootstrapRooms", () => {
     expect(getCreepConfigService().get("W1N1:harvester:source-a")).toBeUndefined();
     expect(getCreepConfigService().get("W1N1:miner:source-a")).toMatchObject({
       role: "miner",
+      args: ["source-a"],
+      roomName: "W1N1",
+    });
+  });
+
+  it("does not create local harvesters for managed colonies until rcl3 extensions are complete", () => {
+    const room = createRoom({
+      name: "W1N1",
+      level: 3,
+      sources: [createSource("source-a", "W1N1")],
+      structures: Array.from({ length: 9 }, () => createOwnedStructure(STRUCTURE_EXTENSION)),
+      constructionSites: [createConstructionSite(STRUCTURE_EXTENSION)],
+    });
+    Game.rooms[room.name] = room;
+    Game.spawns.Spawn1 = createSpawn(room);
+    Memory.data = {
+      colonization: {
+        W1N1: {
+          targetRoom: "W1N1",
+          sourceRoom: "W9N9",
+          status: "managed",
+          flagName: "CL",
+          planReady: true,
+          claimCompleted: true,
+          scoutSafe: true,
+          dangerousRooms: [],
+          createdAt: Game.time,
+          updatedAt: Game.time,
+        },
+      },
+      roomPlanner: {
+        W1N1: createRoomPlannerEntry({
+          [STRUCTURE_EXTENSION]: Array.from({ length: 10 }, (_, index) => ({ x: 10 + index, y: 10 })),
+        }),
+      },
+    } as unknown as Memory["data"];
+
+    bootstrapRooms();
+
+    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toBeUndefined();
+  });
+
+  it("creates local harvesters for managed colonies after rcl3 extensions are complete", () => {
+    const room = createRoom({
+      name: "W1N1",
+      level: 3,
+      sources: [createSource("source-a", "W1N1")],
+      structures: Array.from({ length: 10 }, () => createOwnedStructure(STRUCTURE_EXTENSION)),
+    });
+    Game.rooms[room.name] = room;
+    Game.spawns.Spawn1 = createSpawn(room);
+    Memory.data = {
+      colonization: {
+        W1N1: {
+          targetRoom: "W1N1",
+          sourceRoom: "W9N9",
+          status: "managed",
+          flagName: "CL",
+          planReady: true,
+          claimCompleted: true,
+          scoutSafe: true,
+          dangerousRooms: [],
+          createdAt: Game.time,
+          updatedAt: Game.time,
+        },
+      },
+      roomPlanner: {
+        W1N1: createRoomPlannerEntry({
+          [STRUCTURE_EXTENSION]: Array.from({ length: 10 }, (_, index) => ({ x: 10 + index, y: 10 })),
+        }),
+      },
+    } as unknown as Memory["data"];
+
+    bootstrapRooms();
+
+    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toMatchObject({
+      role: "harvester",
       args: ["source-a"],
       roomName: "W1N1",
     });
