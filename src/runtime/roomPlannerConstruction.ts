@@ -340,6 +340,16 @@ function isComplete(room: Room, structureType: BuildableStructureConstant, targe
   return countExisting(room, structureType) >= targetCount && countSites(room, structureType) === 0;
 }
 
+export function isRcl3ExtensionBuildoutComplete(room: Room): boolean {
+  const layout = Memory.data?.roomPlanner?.[room.name]?.layout as PlannedLayout | undefined;
+  if (!layout) {
+    return false;
+  }
+
+  const extTarget = Math.min(getPlannedCount(layout, STRUCTURE_EXTENSION), getAllowedCount(STRUCTURE_EXTENSION, 3));
+  return isComplete(room, STRUCTURE_EXTENSION, extTarget);
+}
+
 function getBuildPolicy(room: Room, layout: PlannedLayout, controllerLevel: number): {
   allowedTypes: Set<BuildableStructureConstant>;
   targetOverrides: TargetOverrideMap;

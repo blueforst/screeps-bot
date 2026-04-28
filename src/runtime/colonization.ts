@@ -1,5 +1,6 @@
 import { runPlannerForRoom, savePlannerForRoom } from "@/modules/autoplanner";
 import { spawnProfiles } from "@/config/spawnProfiles";
+import { isRcl3ExtensionBuildoutComplete } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { clearWarRoomTask, isWarRoomClearDone, requestWarRoomClear } from "@/runtime/warControl";
 import { isDefenseMode } from "@/runtime/defenseMode";
@@ -999,6 +1000,15 @@ function hasOwnedSpawnInTargetRoom(task: ColonizationTask): boolean {
   return getTickContextService().getSpawnsByRoom(task.targetRoom).length > 0;
 }
 
+function isManagedColonizationExtensionReady(task: ColonizationTask): boolean {
+  const targetRoom = Game.rooms[task.targetRoom];
+  if (!targetRoom) {
+    return false;
+  }
+
+  return isRcl3ExtensionBuildoutComplete(targetRoom);
+}
+
 function cleanupColonizationConfigs(task: ColonizationTask): boolean {
   const configNames = getTaskConfigNames(task);
   const store = ensureConfigStore();
@@ -1029,6 +1039,80 @@ function cleanupColonizationConfigs(task: ColonizationTask): boolean {
   return removedAll;
 }
 
+function hasLocalLiveSourceWorker(task: ColonizationTask, sourceId: string): boolean {
+  const sourceWorkerConfigs = getCreepConfigService().list(`${task.targetRoom}:`);
+  const sourceConfigNames = [`${task.targetRoom}:harvester:${sourceId}`, `${task.targetRoom}:miner:${sourceId}`];
+
+  return sourceConfigNames.some((configName) => {
+    const config = sourceWorkerConfigs[configName];
+    if (!config?.roomName) {
+      return false;
+    }
+
+    return getLiveCreepsByConfig(configName).length > 0;
+  });
+}
+
+function hasLocalSourceWorkerHandoff(task: ColonizationTask): boolean {
+  const targetRoom = Game.rooms[task.targetRoom];
+  if (!targetRoom) {
+    return false;
+  }
+
+  const sourceWorkerConfigs = getCreepConfigService().list(`${task.targetRoom}:`);
+  const sources = targetRoom.find(FIND_SOURCES);
+  if (sources.length === 0) {
+    return false;
+  }
+
+  return sources.every((source) => {
+    const sourceConfigNames = [
+      `${task.targetRoom}:harvester:${source.id}`,
+      `${task.targetRoom}:miner:${source.id}`,
+    ];
+
+    return sourceConfigNames.some((configName) => {
+      const config = sourceWorkerConfigs[configName];
+      if (!config?.roomName) {
+        return false;
+      }
+
+      return getLiveCreepsByConfig(configName).length > 0 || isConfigSpawning(configName);
+    });
+  });
+}
+
+function retireHandedOffHarvesters(task: ColonizationTask): void {
+  const store = ensureConfigStore();
+
+  for (const configName of getTaskConfigNames(task)) {
+    const config = store[configName];
+    if (config?.role !== "colonizerHarvester") {
+      continue;
+    }
+
+    const sourceId = config.args[1];
+    if (!sourceId || !hasLocalLiveSourceWorker(task, sourceId)) {
+      continue;
+    }
+
+    for (const creep of getLiveCreepsByConfig(configName)) {
+      creep.suicide();
+    }
+
+    removeQueuedConfig(task, configName);
+    if (config.roomName) {
+      delete config.roomName;
+    }
+
+    if (isConfigSpawning(configName)) {
+      continue;
+    }
+
+    delete store[configName];
+  }
+}
+
 function processTask(task: ColonizationTask): void {
   if (isDefenseMode(task.sourceRoom)) return;
 
@@ -1039,6 +1123,15 @@ function processTask(task: ColonizationTask): void {
     const targetRoomRcl = Game.rooms[task.targetRoom]?.controller?.level ?? 0;
     if (targetRoomRcl >= 3) {
       task.status = "managed";
+      if (!isManagedColonizationExtensionReady(task)) {
+        return;
+      }
+
+      retireHandedOffHarvesters(task);
+      if (!hasLocalSourceWorkerHandoff(task)) {
+        return;
+      }
+
       const cleaned = cleanupColonizationConfigs(task);
       if (cleaned) {
         const store = ensureColonizationStore();
@@ -1193,7 +1286,15 @@ function upsertColonizationTask(flag: Flag): boolean {
 
 export function isColonizationBootstrapRoom(roomName: string): boolean {
   const task = Memory.data?.colonization?.[roomName];
-  return task?.status === "bootstrapping" && !isDefenseMode(task.sourceRoom);
+  if (!task || isDefenseMode(task.sourceRoom)) {
+    return false;
+  }
+
+  if (task.status === "bootstrapping") {
+    return true;
+  }
+
+  return task.status === "managed" && !isManagedColonizationExtensionReady(task);
 }
 
 export function runColonizationByFlag(): void {
