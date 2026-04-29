@@ -119,6 +119,14 @@ function cleanupLegacyConfigMemory(): number {
   return removed;
 }
 
+const BOOTSTRAP_MANAGED_ROLES = new Set([
+  "harvester",
+  "mineralHarvester",
+  "miner",
+  "carrier",
+  "worker",
+]);
+
 function cleanupManagedCreepConfigs(): number {
   const configStore = getMemoryService().getCreepConfigStore();
   const expected = new Set<string>();
@@ -137,6 +145,10 @@ function cleanupManagedCreepConfigs(): number {
 
   for (const [configName, config] of Object.entries(configStore)) {
     if (!VALID_ROLES.has(config.role)) {
+      continue;
+    }
+
+    if (!BOOTSTRAP_MANAGED_ROLES.has(config.role)) {
       continue;
     }
 
