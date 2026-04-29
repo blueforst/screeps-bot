@@ -60,6 +60,21 @@ function createStoredStructure(
   } as unknown as AnyStoreStructure;
 }
 
+function createRemoteCarrierCreep(configName: string, carriedAmount: number): Creep {
+  return {
+    name: `remote-carrier-${carriedAmount}`,
+    memory: {
+      role: "remoteCarrier",
+      roleArgs: ["W5N5", "25", "25"],
+      configName,
+    },
+    room: { name: carriedAmount > 0 ? "W5N5" : "W1N1" } as Room,
+    store: {
+      getUsedCapacity: () => carriedAmount,
+    },
+  } as unknown as Creep;
+}
+
 describe("runFlagHaulingByFlag", () => {
   beforeEach(() => {
     resetRuntimeServices();
@@ -221,5 +236,47 @@ describe("runFlagHaulingByFlag", () => {
 
     expect(flag.remove).not.toHaveBeenCalled();
     expect(getCreepConfigService().get("W1N1:haul:W5N5:carrier:HAUL")?.roomName).toBe("W1N1");
+  });
+
+  it("keeps cancelled configs while loaded carriers still need to return home", () => {
+    const home = createRoom("W1N1");
+    createSpawn(home);
+    Game.flags.HAUL = createFlag("HAUL", "W5N5");
+    runFlagHaulingByFlag();
+    const configName = "W1N1:haul:W5N5:carrier:HAUL";
+    const carrier = createRemoteCarrierCreep(configName, 800);
+    Game.creeps = { [carrier.name]: carrier };
+    Game.flags = {};
+    Game.time += 1;
+
+    runFlagHaulingByFlag();
+
+    expect(getCreepConfigService().get(configName)).toMatchObject({
+      role: "remoteCarrier",
+      args: ["W5N5", "25", "25"],
+    });
+    expect(getCreepConfigService().get(configName)?.roomName).toBeUndefined();
+    expect(carrier.memory.configName).toBe(configName);
+    expect(Memory.data?.flagHauling?.HAUL).toBeDefined();
+  });
+
+  it("clears cancelled empty carriers so haul configs can be removed after return", () => {
+    const home = createRoom("W1N1");
+    createSpawn(home);
+    Game.flags.HAUL = createFlag("HAUL", "W5N5");
+    runFlagHaulingByFlag();
+    const configName = "W1N1:haul:W5N5:carrier:HAUL";
+    const carrier = createRemoteCarrierCreep(configName, 0);
+    Game.creeps = { [carrier.name]: carrier };
+    Game.flags = {};
+    Game.time += 1;
+
+    runFlagHaulingByFlag();
+
+    expect(getCreepConfigService().get(configName)).toBeUndefined();
+    expect(carrier.memory.configName).toBeUndefined();
+    expect(carrier.memory.role).toBeUndefined();
+    expect(carrier.memory.roleArgs).toBeUndefined();
+    expect(Memory.data?.flagHauling).toEqual({});
   });
 });

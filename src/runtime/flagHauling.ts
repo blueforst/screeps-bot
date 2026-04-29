@@ -218,6 +218,16 @@ function removeQueuedConfig(task: FlagHaulTask, configName: string): void {
   spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
 }
 
+function releaseFinishedHaulCreep(creep: Creep): void {
+  if (creep.store.getUsedCapacity() > 0) {
+    return;
+  }
+
+  delete creep.memory.configName;
+  delete creep.memory.role;
+  delete creep.memory.roleArgs;
+}
+
 function cleanupFlagHaulConfig(task: FlagHaulTask): boolean {
   const store = getMemoryService().getCreepConfigStore();
   let canDelete = true;
@@ -229,7 +239,12 @@ function cleanupFlagHaulConfig(task: FlagHaulTask): boolean {
       delete config.roomName;
     }
 
-    if (isConfigSpawning(configName) || getLiveCreepsByConfig(configName).length > 0) {
+    const liveCreeps = getLiveCreepsByConfig(configName);
+    for (const creep of liveCreeps) {
+      releaseFinishedHaulCreep(creep);
+    }
+
+    if (isConfigSpawning(configName) || liveCreeps.some((creep) => creep.memory.configName === configName)) {
       canDelete = false;
     }
   }
