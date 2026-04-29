@@ -32,6 +32,11 @@ interface ColonizationTask {
   updatedAt: number;
 }
 
+interface ParsedColonizationConfigName {
+  sourceRoom: string;
+  targetRoom: string;
+}
+
 const CLAIMER_BODY: BodyPartConstant[] = [CLAIM, MOVE];
 const SCOUT_BODY: BodyPartConstant[] = [MOVE];
 const BOOTSTRAP_WORKER_COUNT = 2;
@@ -143,6 +148,18 @@ function getTaskConfigNames(task: ColonizationTask): string[] {
   return Object.keys(getCreepConfigService().list(prefix));
 }
 
+function parseColonizationConfigName(configName: string): ParsedColonizationConfigName | null {
+  const parts = configName.split(":");
+  if (parts.length < 5 || parts[1] !== "colonize") {
+    return null;
+  }
+
+  return {
+    sourceRoom: parts[0],
+    targetRoom: parts[2],
+  };
+}
+
 function getLiveCreepsByConfig(configName: string): Creep[] {
   return getTickContextService().getCreepsByConfigName(configName);
 }
@@ -201,13 +218,17 @@ function removeConfigWhenIdle(configName: string): void {
   }
 }
 
-function removeQueuedConfig(task: ColonizationTask, configName: string): void {
-  const spawn = getSpawnForRoom(task.sourceRoom);
+function removeQueuedConfigFromSourceRoom(sourceRoom: string, configName: string): void {
+  const spawn = getSpawnForRoom(sourceRoom);
   if (!spawn?.memory.spawnList) {
     return;
   }
 
   spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+}
+
+function removeQueuedConfig(task: ColonizationTask, configName: string): void {
+  removeQueuedConfigFromSourceRoom(task.sourceRoom, configName);
 }
 
 function getMyUsername(): string | null {
@@ -966,6 +987,38 @@ function abandonColonization(task: ColonizationTask, reason: string): void {
   console.log(`[colonization] abandon ${task.targetRoom}: ${reason}`);
 }
 
+function cleanupOrphanedColonizationConfigs(tasks: Record<string, ColonizationTask>): void {
+  const configStore = ensureConfigStore();
+
+  for (const [configName, config] of Object.entries(configStore)) {
+    const parsed = parseColonizationConfigName(configName);
+    if (!parsed) {
+      continue;
+    }
+
+    const task = tasks[parsed.targetRoom];
+    if (task?.sourceRoom === parsed.sourceRoom) {
+      continue;
+    }
+
+    const liveCreeps = getLiveCreepsByConfig(configName);
+    for (const creep of liveCreeps) {
+      creep.suicide();
+    }
+
+    removeQueuedConfigFromSourceRoom(parsed.sourceRoom, configName);
+    if (config.roomName) {
+      delete config.roomName;
+    }
+
+    if (isConfigSpawning(configName) || liveCreeps.length > 0) {
+      continue;
+    }
+
+    delete configStore[configName];
+  }
+}
+
 function ensureScoutSafety(task: ColonizationTask): "pending" | "safe" | "abandon" {
   if (task.scoutSafe) {
     clearSafeRouteRetry(task);
@@ -1446,4 +1499,6 @@ export function runColonizationByFlag(): void {
     processTask(task);
     task.updatedAt = Game.time;
   }
+
+  cleanupOrphanedColonizationConfigs(store);
 }
