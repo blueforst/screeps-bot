@@ -4,6 +4,8 @@ import { isRcl3ExtensionBuildoutComplete } from "@/runtime/roomPlannerConstructi
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { clearWarRoomTask, isWarRoomClearDone, requestWarRoomClear } from "@/runtime/warControl";
 import { isDefenseMode } from "@/runtime/defenseMode";
+import { getColonizationTravelPathKey } from "@/movement/routing";
+import type { CachedTravelPath, StoredRoomPosition } from "@/movement/types";
 
 type ColonizationStatus = "claiming" | "clearing" | "waiting_plan" | "bootstrapping" | "managed";
 type ColonizationMode = "normal" | "npcStronghold";
@@ -17,6 +19,7 @@ interface ColonizationTask {
   claimCompleted: boolean;
   scoutSafe?: boolean;
   scoutRouteRooms?: string[];
+  cachedTravelPath?: CachedTravelPath;
   dangerousRooms?: string[];
   temporaryDangerousRooms?: Record<string, number>;
   permanentDangerousRooms?: string[];
@@ -642,6 +645,101 @@ function clearSafeRouteRetry(task: ColonizationTask): void {
   delete task.safeRouteRetryKey;
 }
 
+function getDangerousRoomKey(task: ColonizationTask): string[] {
+  return [...new Set(task.dangerousRooms ?? [])].sort();
+}
+
+function isValidRoomPosition(pos: RoomPosition | undefined): pos is RoomPosition {
+  return !!pos && typeof pos.x === "number" && typeof pos.y === "number" && typeof pos.roomName === "string";
+}
+
+function getColonizationStartPos(task: ColonizationTask): RoomPosition {
+  const spawn = getSpawnForRoom(task.sourceRoom);
+  if (isValidRoomPosition(spawn?.pos)) {
+    return spawn.pos;
+  }
+
+  return new RoomPosition(25, 25, task.sourceRoom);
+}
+
+function getExpectedTravelPathKey(task: ColonizationTask, routeRooms: string[]): string {
+  return getColonizationTravelPathKey(task.sourceRoom, task.targetRoom, routeRooms, getDangerousRoomKey(task));
+}
+
+function isCachedTravelPathUsable(task: ColonizationTask, routeRooms: string[]): boolean {
+  const cachedPath = task.cachedTravelPath;
+  if (!cachedPath || cachedPath.positions.length === 0) {
+    return false;
+  }
+
+  return (
+    cachedPath.key === getExpectedTravelPathKey(task, routeRooms) &&
+    cachedPath.sourceRoom === task.sourceRoom &&
+    cachedPath.targetRoom === task.targetRoom &&
+    cachedPath.routeRooms.join("|") === routeRooms.join("|")
+  );
+}
+
+function createTravelPathRoomCallback(task: ColonizationTask, routeRooms: string[]): (roomName: string) => boolean | CostMatrix {
+  const allowedRooms = new Set(routeRooms);
+  const dangerousRooms = new Set(task.dangerousRooms ?? []);
+
+  return (roomName: string): boolean | CostMatrix => {
+    if (!allowedRooms.has(roomName)) {
+      return false;
+    }
+    if (roomName !== task.sourceRoom && roomName !== task.targetRoom && dangerousRooms.has(roomName)) {
+      return false;
+    }
+
+    return new PathFinder.CostMatrix();
+  };
+}
+
+function cacheColonizationTravelPath(task: ColonizationTask): void {
+  const routeRooms = task.scoutRouteRooms;
+  if (!routeRooms || routeRooms.length === 0 || !isScoutRouteShapeValid(task) || isScoutRouteInterruptedByDanger(task)) {
+    delete task.cachedTravelPath;
+    return;
+  }
+
+  if (isCachedTravelPathUsable(task, routeRooms)) {
+    return;
+  }
+
+  const startPos = getColonizationStartPos(task);
+  const targetPos = new RoomPosition(25, 25, task.targetRoom);
+  const search = PathFinder.search(startPos, { pos: targetPos, range: 1 }, {
+    maxOps: 20000,
+    maxRooms: Math.max(1, routeRooms.length),
+    plainCost: 2,
+    swampCost: 10,
+    roomCallback: createTravelPathRoomCallback(task, routeRooms),
+  });
+
+  if (search.incomplete || search.path.length === 0) {
+    delete task.cachedTravelPath;
+    return;
+  }
+
+  const positions: StoredRoomPosition[] = search.path
+    .filter((pos) => typeof pos.x === "number" && typeof pos.y === "number" && typeof pos.roomName === "string")
+    .map((pos) => ({ x: pos.x, y: pos.y, roomName: pos.roomName }));
+  if (positions.length === 0) {
+    delete task.cachedTravelPath;
+    return;
+  }
+
+  task.cachedTravelPath = {
+    key: getExpectedTravelPathKey(task, routeRooms),
+    sourceRoom: task.sourceRoom,
+    targetRoom: task.targetRoom,
+    routeRooms: [...routeRooms],
+    positions,
+    generatedAt: Game.time,
+  };
+}
+
 function tryFindSafeRoute(task: ColonizationTask): string[] | null {
   const retryKey = getSafeRouteRetryKey(task);
   if (task.safeRouteRetryKey === retryKey && (task.safeRouteRetryAt ?? 0) > Game.time) {
@@ -796,6 +894,7 @@ function requestScoutRescan(task: ColonizationTask, reason: string): void {
 
   task.scoutSafe = false;
   task.scoutRouteRooms = undefined;
+  delete task.cachedTravelPath;
   task.scoutedAt = undefined;
 
   const claimerConfigName = getTaskConfigName(task, "claimer", "0");
@@ -1207,6 +1306,8 @@ function processTask(task: ColonizationTask): void {
       task.scoutRouteRooms = recoveredRoute;
     }
 
+    cacheColonizationTravelPath(task);
+
     ensureClaimer(task);
     return;
   }
@@ -1214,6 +1315,8 @@ function processTask(task: ColonizationTask): void {
   task.claimCompleted = true;
   task.status = task.planReady ? "bootstrapping" : "waiting_plan";
   removeConfigWhenIdle(getTaskConfigName(task, "claimer", "0"));
+
+  cacheColonizationTravelPath(task);
 
   if (task.status !== "bootstrapping") {
     return;
@@ -1262,6 +1365,7 @@ function upsertColonizationTask(flag: Flag): boolean {
     claimCompleted: existing?.claimCompleted ?? false,
     scoutSafe: existing?.scoutSafe ?? false,
     scoutRouteRooms: existing?.scoutRouteRooms,
+    cachedTravelPath: existing?.sourceRoom === sourceRoom ? existing?.cachedTravelPath : undefined,
     dangerousRooms: existing?.dangerousRooms ?? [],
     temporaryDangerousRooms: existing?.temporaryDangerousRooms,
     permanentDangerousRooms: existing?.permanentDangerousRooms,

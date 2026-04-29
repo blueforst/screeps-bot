@@ -226,6 +226,48 @@ describe("runColonizationByFlag", () => {
     expect(Memory.data?.colonization?.W1N2?.status).toBe("claiming");
   });
 
+  it("caches the full colonization travel path after a safe route is known", () => {
+    (PathFinder.search as jest.Mock).mockReturnValue({
+      incomplete: false,
+      path: [
+        new MockRoomPosition(26, 25, "W1N1"),
+        new MockRoomPosition(49, 25, "W1N1"),
+        new MockRoomPosition(0, 25, "W1N2"),
+        new MockRoomPosition(25, 25, "W1N2"),
+      ],
+    });
+    const sourceRoom = createSourceRoom("W1N1");
+    const targetRoom = createTargetRoom("W1N2");
+    const spawn = createSpawn(sourceRoom);
+    const scout = createScout(sourceRoom.name, targetRoom);
+
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    Game.rooms[targetRoom.name] = targetRoom;
+    Game.spawns.Spawn1 = spawn;
+    Game.creeps[scout.name] = scout;
+    Game.flags.CL = {
+      name: "CL",
+      pos: {
+        roomName: targetRoom.name,
+      } as RoomPosition,
+      remove: jest.fn(),
+    } as unknown as Flag;
+
+    runColonizationByFlag();
+
+    expect(Memory.data?.colonization?.W1N2?.cachedTravelPath).toMatchObject({
+      sourceRoom: "W1N1",
+      targetRoom: "W1N2",
+      routeRooms: ["W1N1", "W1N2"],
+      positions: [
+        { x: 26, y: 25, roomName: "W1N1" },
+        { x: 49, y: 25, roomName: "W1N1" },
+        { x: 0, y: 25, roomName: "W1N2" },
+        { x: 25, y: 25, roomName: "W1N2" },
+      ],
+    });
+  });
+
   it("preserves exact preferred source room flags", () => {
     const sourceRoomA = createSourceRoom("W1N1");
     const sourceRoomB = createSourceRoom("W3N3");
@@ -555,6 +597,14 @@ describe("runColonizationByFlag", () => {
           claimCompleted: true,
           scoutSafe: true,
           scoutRouteRooms: ["W1N1", "W1N2"],
+          cachedTravelPath: {
+            key: "W1N1->W1N2|r:W1N1>W1N2|d:",
+            sourceRoom: "W1N1",
+            targetRoom: "W1N2",
+            routeRooms: ["W1N1", "W1N2"],
+            positions: [{ x: 49, y: 25, roomName: "W1N1" }],
+            generatedAt: Game.time,
+          },
           dangerousRooms: [],
           createdAt: Game.time,
           updatedAt: Game.time,
