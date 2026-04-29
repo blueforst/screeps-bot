@@ -14,7 +14,8 @@ export type RoleName =
   | "crossShardClaimer"
   | "crossShardColonizerHarvester"
   | "crossShardColonizerWorker"
-  | "flagScout";
+  | "flagScout"
+  | "remoteCarrier";
 export type WorkerTaskType = "build" | "upgrade" | "repair" | "dismantle";
 export type RoomType = "normal" | "reserved" | "industrial";
 

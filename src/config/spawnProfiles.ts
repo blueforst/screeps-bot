@@ -147,4 +147,5 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   crossShardColonizerHarvester: () => [...COLONIZER_HARVESTER_BODY],
   crossShardColonizerWorker: oneOneOneBody,
   flagScout: () => [MOVE],
+  remoteCarrier: carryMoveBody,
 };
