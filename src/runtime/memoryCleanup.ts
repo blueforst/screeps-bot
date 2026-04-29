@@ -25,6 +25,7 @@ const VALID_ROLES = new Set([
   "crossShardColonizerHarvester",
   "crossShardColonizerWorker",
   "flagScout",
+  "remoteCarrier",
 ]);
 const ROOM_PLANNER_TTL = 50000;
 const INTER_SHARD_PORTAL_TTL = 10000;

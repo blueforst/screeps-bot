@@ -18,7 +18,7 @@ interface SpawnPlanningContext {
 }
 
 function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
-  if (role === "carrier") {
+  if (role === "carrier" || role === "remoteCarrier") {
     return 0;
   }
 
@@ -335,6 +335,7 @@ function isOutboundNonWarRole(role: CreepConfig["role"]): boolean {
     role === "crossShardColonizerHarvester" ||
     role === "crossShardColonizerWorker" ||
     role === "crossShardClaimer" ||
+    role === "remoteCarrier" ||
     role === "claimer" ||
     role === "scout";
 }
