@@ -5,6 +5,7 @@ import { runCrossShardColonizationByFlag } from "@/runtime/crossShardColonizatio
 import { runRescueByFlag } from "@/runtime/rescue";
 import { runScoutByFlag } from "@/runtime/scoutFlag";
 import { runAutoReserveFlags } from "@/runtime/autoReserveFlag";
+import { runFlagHaulingByFlag } from "@/runtime/flagHauling";
 
 function runSavePlannerByFlag(): void {
   const saveFlag = Game.flags.SP;
@@ -18,7 +19,7 @@ function runSavePlannerByFlag(): void {
 
 type FlagProcessor = () => void;
 
-const processors: FlagProcessor[] = [runAutoReserveFlags, runAutoPlannerByFlag, runSavePlannerByFlag, runColonizationByFlag, runCrossShardColonizationByFlag, runRescueByFlag, runScoutByFlag];
+const processors: FlagProcessor[] = [runAutoReserveFlags, runAutoPlannerByFlag, runSavePlannerByFlag, runColonizationByFlag, runCrossShardColonizationByFlag, runRescueByFlag, runFlagHaulingByFlag, runScoutByFlag];
 
 export function runFlagControl(): void {
   for (const processor of processors) {

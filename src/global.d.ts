@@ -579,6 +579,18 @@ declare global {
           updatedAt: number;
         }
       >;
+      flagHauling?: Record<
+        string,
+        {
+          targetRoom: string;
+          sourceRoom: string;
+          flagName: string;
+          targetX: number;
+          targetY: number;
+          createdAt: number;
+          updatedAt: number;
+        }
+      >;
       crossShardColonization?: Record<
         string,
         {
