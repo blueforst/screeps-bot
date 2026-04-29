@@ -203,6 +203,25 @@ describe("remoteCarrierRole", () => {
     expect(second.suicide).not.toHaveBeenCalled();
   });
 
+  it("suicides in source phase on subsequent departure when TTL is too low", () => {
+    const home = createHomeRoom("W1N1", 10, 20);
+    const creep = {
+      name: "remote-carrier-1",
+      ticksToLive: 133,
+      room: home,
+      memory: { configName: "W1N1:haul:W5N5:carrier:HAUL" },
+      pos: { getRangeTo: () => 1 } as unknown as RoomPosition,
+      store: createStore({}, 800),
+      suicide: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    const shouldSwitch = remoteCarrierRole("W5N5").source?.(creep);
+
+    expect(creep.suicide).toHaveBeenCalledTimes(1);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+    expect(shouldSwitch).toBe(false);
+  });
+
   it("does not suicide while returning with carried resources", () => {
     const creep = {
       name: "remote-carrier-1",

@@ -183,6 +183,12 @@ export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: str
     }
 
     if (creep.room.name !== targetRoom) {
+      const homeRoomName = getHomeRoomName(creep);
+      if (creep.room.name === homeRoomName && shouldRetireBeforeDeparture(creep, targetRoom)) {
+        creep.suicide();
+        return false;
+      }
+
       moveToTargetRoom(creep, targetRoom, undefined, { travelRange: 3, reusePath: 10 });
       return false;
     }
