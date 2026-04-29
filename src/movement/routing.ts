@@ -24,16 +24,14 @@ export function getCurrentColonizationRoute(targetRoom: string, fallbackEncodedR
     return fallbackEncodedRoute;
   }
 
-  if (!task.scoutSafe) {
-    return undefined;
+  if (task.scoutSafe) {
+    const routeRooms = task.scoutRouteRooms;
+    if (routeRooms && routeRooms.length > 0) {
+      return routeRooms.join("|");
+    }
   }
 
-  const routeRooms = task.scoutRouteRooms;
-  if (!routeRooms || routeRooms.length === 0) {
-    return undefined;
-  }
-
-  return routeRooms.join("|");
+  return fallbackEncodedRoute;
 }
 
 export function getCurrentScoutRoute(targetRoom: string, fallbackEncodedRoute?: string): string | undefined {
