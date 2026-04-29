@@ -13,6 +13,21 @@ beforeEach(() => {
     getRoomLinearDistance: jest.fn(() => 1),
     findRoute: jest.fn(() => [{ room: "W4N5", exit: FIND_EXIT_LEFT }] as ReturnType<GameMap["findRoute"]>),
   } as unknown as GameMap;
+  (global as typeof global & { RoomPosition: typeof RoomPosition }).RoomPosition = class RoomPositionMock {
+    public constructor(
+      public x: number,
+      public y: number,
+      public roomName: string,
+    ) {}
+  } as typeof RoomPosition;
+  (global as typeof global & { PathFinder: typeof PathFinder }).PathFinder = {
+    search: jest.fn(() => ({
+      path: Array.from({ length: 42 }, (_, index) => ({ x: index % 50, y: 25, roomName: "W5N5" })),
+      ops: 42,
+      cost: 42,
+      incomplete: false,
+    })),
+  } as unknown as typeof PathFinder;
 });
 
 function createStore(resources: Partial<Record<ResourceConstant, number>>, capacity = 800): StoreDefinition {
@@ -43,6 +58,18 @@ function createRemoteContainer(amount: number): AnyStoreStructure {
     pos: { getRangeTo: () => 1 } as unknown as RoomPosition,
     store: createStore({ [RESOURCE_CATALYZED_UTRIUM_ACID]: amount }, 2000),
   } as unknown as AnyStoreStructure;
+}
+
+function createHomeRoom(name: string, storageX = 10, storageY = 20): Room {
+  const room = {
+    name,
+    storage: {
+      pos: { x: storageX, y: storageY, roomName: name } as RoomPosition,
+      store: createStore({}, 100000),
+    } as StructureStorage,
+  } as unknown as Room;
+  Game.rooms[name] = room;
+  return room;
 }
 
 describe("remoteCarrierRole", () => {
@@ -109,37 +136,71 @@ describe("remoteCarrierRole", () => {
   });
 
   it("suicides before leaving home when lifetime cannot cover a round trip plus buffer", () => {
+    const home = createHomeRoom("W1N1");
     const creep = {
       name: "remote-carrier-1",
-      ticksToLive: 149,
-      room: { name: "W1N1" } as Room,
-      memory: { configName: "W1N1:haul:W5N5:carrier:HAUL" },
+      ticksToLive: 133,
+      room: home,
+      memory: { configName: "W1N1:haul:W5N6:carrier:HAUL" },
       store: createStore({}, 800),
       suicide: jest.fn(() => OK),
     } as unknown as Creep;
 
-    const prepared = remoteCarrierRole("W5N5").prepare?.(creep);
+    const prepared = remoteCarrierRole("W5N6").prepare?.(creep);
 
+    expect(PathFinder.search).toHaveBeenCalledWith(
+      home.storage?.pos,
+      { pos: expect.objectContaining({ x: 25, y: 25, roomName: "W5N6" }), range: 1 },
+      expect.objectContaining({ maxOps: 10000, maxRooms: 16, plainCost: 2, swampCost: 10 }),
+    );
     expect(creep.suicide).toHaveBeenCalledTimes(1);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
     expect(prepared).toBe(false);
   });
 
   it("leaves home when lifetime can cover a round trip plus buffer", () => {
+    const home = createHomeRoom("W1N1", 11, 20);
     const creep = {
       name: "remote-carrier-1",
-      ticksToLive: 150,
-      room: { name: "W1N1" } as Room,
-      memory: { configName: "W1N1:haul:W5N5:carrier:HAUL" },
+      ticksToLive: 134,
+      room: home,
+      memory: { configName: "W1N1:haul:W5N7:carrier:HAUL" },
       store: createStore({}, 800),
       suicide: jest.fn(() => OK),
     } as unknown as Creep;
 
-    const prepared = remoteCarrierRole("W5N5").prepare?.(creep);
+    const prepared = remoteCarrierRole("W5N7").prepare?.(creep);
 
     expect(creep.suicide).not.toHaveBeenCalled();
-    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, "W5N5", undefined, { travelRange: 3, reusePath: 10 });
+    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, "W5N7", undefined, { travelRange: 3, reusePath: 10 });
     expect(prepared).toBe(false);
+  });
+
+  it("reuses the storage-to-target path estimate for matching home and target rooms", () => {
+    const home = createHomeRoom("W1N1", 12, 20);
+    const first = {
+      name: "remote-carrier-1",
+      ticksToLive: 134,
+      room: home,
+      memory: { configName: "W1N1:haul:W5N8:carrier:HAUL" },
+      store: createStore({}, 800),
+      suicide: jest.fn(() => OK),
+    } as unknown as Creep;
+    const second = {
+      name: "remote-carrier-2",
+      ticksToLive: 134,
+      room: home,
+      memory: { configName: "W1N1:haul:W5N8:carrier:HAUL:2" },
+      store: createStore({}, 800),
+      suicide: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    remoteCarrierRole("W5N8").prepare?.(first);
+    remoteCarrierRole("W5N8").prepare?.(second);
+
+    expect(PathFinder.search).toHaveBeenCalledTimes(1);
+    expect(first.suicide).not.toHaveBeenCalled();
+    expect(second.suicide).not.toHaveBeenCalled();
   });
 
   it("does not suicide while returning with carried resources", () => {

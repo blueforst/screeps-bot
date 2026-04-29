@@ -16,6 +16,7 @@ const T3_RESOURCES = new Set<ResourceConstant>([
   RESOURCE_CATALYZED_GHODIUM_ACID,
   RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
 ]);
+const outboundTravelEstimateCache = new Map<string, number>();
 
 function getStoredResources(store: StoreDefinition): ResourceConstant[] {
   return (Object.keys(store) as ResourceConstant[]).filter((resource) => store.getUsedCapacity(resource) > 0);
@@ -118,21 +119,31 @@ function isCarryStoreFull(creep: Creep): boolean {
   return (creep.store.getFreeCapacity() ?? 0) <= 0;
 }
 
-function estimateRoomTravelTicks(fromRoom: string, toRoom: string): number {
-  if (fromRoom === toRoom) {
-    return 0;
-  }
-
-  const route = Game.map.findRoute(fromRoom, toRoom);
-  if (route === ERR_NO_PATH) {
-    return Game.map.getRoomLinearDistance(fromRoom, toRoom) * 50;
-  }
-
-  return route.length * 50;
-}
-
 function getHomeRoomName(creep: Creep): string {
   return creep.memory.configName?.split(":")[0] || creep.room.name;
+}
+
+function getOutboundTravelCacheKey(startPos: RoomPosition, targetRoom: string): string {
+  return `${startPos.roomName}:${startPos.x}:${startPos.y}->${targetRoom}:25:25`;
+}
+
+function estimateOutboundTravelTicks(startPos: RoomPosition, targetRoom: string): number {
+  const cacheKey = getOutboundTravelCacheKey(startPos, targetRoom);
+  const cached = outboundTravelEstimateCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const search = PathFinder.search(startPos, { pos: new RoomPosition(25, 25, targetRoom), range: 1 }, {
+    maxOps: 10000,
+    maxRooms: 16,
+    plainCost: 2,
+    swampCost: 10,
+  });
+  const estimate = search.incomplete ? Infinity : search.path.length;
+  outboundTravelEstimateCache.set(cacheKey, estimate);
+
+  return estimate;
 }
 
 function shouldRetireBeforeDeparture(creep: Creep, targetRoom: string): boolean {
@@ -140,7 +151,11 @@ function shouldRetireBeforeDeparture(creep: Creep, targetRoom: string): boolean 
     return false;
   }
 
-  return creep.ticksToLive < estimateRoomTravelTicks(creep.room.name, targetRoom) * 2 + 50;
+  const homeRoomName = getHomeRoomName(creep);
+  const homeRoom = Game.rooms[homeRoomName] || creep.room;
+  const startPos = homeRoom.storage?.pos || creep.pos;
+
+  return creep.ticksToLive < estimateOutboundTravelTicks(startPos, targetRoom) * 2 + 50;
 }
 
 export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: string, targetY?: string) => ({
