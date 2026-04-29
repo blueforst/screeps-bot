@@ -19,6 +19,7 @@ import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeS
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
+type RuinPickupAssignment = { target: Ruin; resource: ResourceConstant };
 
 interface CarrierPickupOptions {
   includeStorage?: boolean;
@@ -36,6 +37,19 @@ function isEmergencyResponseCarrier(creep: Creep): boolean {
 
 function getCarrierPickupAmount(target: CarrierPickupTarget): number {
   return getPickupTargetEnergyAmount(target);
+}
+
+function getStoredResources(store: StoreDefinition): ResourceConstant[] {
+  return (Object.keys(store) as ResourceConstant[]).filter((resource) => store.getUsedCapacity(resource) > 0);
+}
+
+function getBestRuinResource(ruin: Ruin): ResourceConstant | null {
+  const resources = getStoredResources(ruin.store);
+  if (resources.length === 0) {
+    return null;
+  }
+
+  return resources.sort((left, right) => ruin.store.getUsedCapacity(right) - ruin.store.getUsedCapacity(left))[0];
 }
 
 function isTombstonePickupTarget(target: Resource | AnyStoreStructure | Tombstone | Ruin): target is Tombstone {
@@ -480,6 +494,38 @@ function pickupSynthesisCarrierResource(creep: Creep): { picked: boolean; outOfR
   };
 }
 
+function pickupOwnedRoomRuinResource(creep: Creep): { picked: boolean; outOfRange: boolean } {
+  if (!creep.room.controller?.my || creep.store.getUsedCapacity() > 0) {
+    return { picked: false, outOfRange: false };
+  }
+
+  const assignment = measureCreepDecision((): RuinPickupAssignment | null => {
+    const roomContext = getTickContextService().getRoomContext(creep.room);
+    const ruins = (roomContext?.room.find(FIND_RUINS, {
+      filter: (ruin) => ruin.store.getUsedCapacity() > 0,
+    }) || []) as Ruin[];
+
+    const candidates = ruins
+      .map((target) => ({ target, resource: getBestRuinResource(target) }))
+      .filter((entry): entry is RuinPickupAssignment => !!entry.resource)
+      .sort((left, right) => creep.pos.getRangeTo(left.target.pos) - creep.pos.getRangeTo(right.target.pos));
+
+    return candidates[0] || null;
+  });
+
+  if (!assignment) {
+    return { picked: false, outOfRange: false };
+  }
+
+  const code = measureCreepIntent(() => creep.withdraw(assignment.target, assignment.resource));
+  if (code === ERR_NOT_IN_RANGE) {
+    moveToTarget(creep, assignment.target);
+    return { picked: false, outOfRange: true };
+  }
+
+  return { picked: code === OK, outOfRange: false };
+}
+
 function getFirstNonEnergyResource(creep: Creep): ResourceConstant | null {
   for (const resource of Object.keys(creep.store) as ResourceConstant[]) {
     if (resource === RESOURCE_ENERGY) {
@@ -598,6 +644,15 @@ export const carrierRole: RoleFactory = () => ({
     if (carrierTaskPickup.picked || carrierTaskPickup.outOfRange) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
       if (carrierTaskPickup.picked) {
+        releasePickupReservation(creep);
+      }
+      return creep.store.getUsedCapacity() > 0;
+    }
+
+    const ownedRoomRuinPickup = pickupOwnedRoomRuinResource(creep);
+    if (ownedRoomRuinPickup.picked || ownedRoomRuinPickup.outOfRange) {
+      delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+      if (ownedRoomRuinPickup.picked) {
         releasePickupReservation(creep);
       }
       return creep.store.getUsedCapacity() > 0;

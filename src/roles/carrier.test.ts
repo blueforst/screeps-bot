@@ -980,4 +980,48 @@ describe("carrierRole mineral hauling", () => {
     expect((creep.transfer as jest.Mock)).toHaveBeenCalledWith(target, RESOURCE_ENERGY);
     expect(done).toBe(true);
   });
+
+  it("uses existing owned-room carriers to collect non-energy ruin resources", () => {
+    const room = createRoom("W3N7");
+    const ruin = {
+      id: "owned-ruin-1",
+      pos: {
+        getRangeTo: () => 1,
+      },
+      store: {
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 200,
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) {
+            return 200;
+          }
+          return resource === RESOURCE_CATALYZED_UTRIUM_ACID ? 200 : 0;
+        },
+      },
+    } as unknown as Ruin;
+    room.find = jest.fn((type: FindConstant) => (type === FIND_RUINS ? [ruin] : [])) as Room["find"];
+    let carried = 0;
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) {
+            return carried;
+          }
+          return resource === RESOURCE_CATALYZED_UTRIUM_ACID ? carried : 0;
+        },
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn(() => {
+        carried = 200;
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(ruin, RESOURCE_CATALYZED_UTRIUM_ACID);
+    expect(switched).toBe(true);
+  });
 });
