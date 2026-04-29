@@ -1,7 +1,6 @@
 jest.mock("@/roles/shared", () => ({
   moveToTarget: jest.fn(),
   moveToTargetRoom: jest.fn(),
-  getCurrentColonizationRoute: jest.fn(),
 }));
 
 jest.mock("@/runtime/cpuPhaseProfiler", () => ({
@@ -9,7 +8,7 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
 }));
 
 import { claimerRole } from "@/roles/claimer";
-import { getCurrentColonizationRoute, moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 
 function createRoom(): Room {
   return {
@@ -61,16 +60,14 @@ describe("claimerRole", () => {
     expect(moveToTarget).toHaveBeenCalledWith(creep, room.controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
   });
 
-  it("uses colonization route travel while outside the target room", () => {
+  it("passes encoded route to moveToTargetRoom while outside the target room", () => {
     const room = { name: "W8N9" } as Room;
     const creep = createCreep(room);
-    (getCurrentColonizationRoute as jest.Mock).mockReturnValue("W8N9|W9N9");
 
     const role = claimerRole("W9N9", "W8N9|W9N9");
     const result = role.source(creep);
 
     expect(result).toBe(false);
-    expect(getCurrentColonizationRoute).toHaveBeenCalledWith("W9N9", "W8N9|W9N9");
     expect(moveToTargetRoom).toHaveBeenCalledWith(creep, "W9N9", "W8N9|W9N9", { plainCost: 2, swampCost: 10 });
   });
 });

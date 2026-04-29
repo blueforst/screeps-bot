@@ -2,7 +2,6 @@ export {
   clearMovementAnalyticsForTest,
   clearMovementState,
   clearRoomBaseCostMatrixCacheForTest,
-  getCurrentColonizationRoute,
   getCurrentScoutRoute,
   getMovementAnalyticsForTest,
   getRoomBaseCostMatrixCacheSizeForTest,
