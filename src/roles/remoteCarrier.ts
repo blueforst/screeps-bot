@@ -114,6 +114,31 @@ function getDeliveryTarget(homeRoomName: string, resource: ResourceConstant): An
   return null;
 }
 
+function isCarryStoreFull(creep: Creep): boolean {
+  return (creep.store.getFreeCapacity() ?? 0) <= 0;
+}
+
+function estimateRemainingRoomTravelTicks(fromRoom: string, homeRoom: string): number {
+  if (fromRoom === homeRoom) {
+    return 0;
+  }
+
+  const route = Game.map.findRoute(fromRoom, homeRoom);
+  if (route === ERR_NO_PATH) {
+    return Game.map.getRoomLinearDistance(fromRoom, homeRoom) * 50;
+  }
+
+  return route.length * 50;
+}
+
+function shouldRetireBeforeReturn(creep: Creep, homeRoomName: string): boolean {
+  if (creep.room.name === homeRoomName || creep.ticksToLive === undefined) {
+    return false;
+  }
+
+  return creep.ticksToLive < estimateRemainingRoomTravelTicks(creep.room.name, homeRoomName) + 50;
+}
+
 export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: string, targetY?: string) => ({
   prepare: (creep): boolean => {
     if (creep.store.getUsedCapacity() > 0) {
@@ -128,7 +153,7 @@ export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: str
     return true;
   },
   source: (creep): boolean => {
-    if (creep.store.getUsedCapacity() > 0) {
+    if (creep.store.getUsedCapacity() > 0 && isCarryStoreFull(creep)) {
       return true;
     }
 
@@ -139,6 +164,10 @@ export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: str
 
     const assignment = selectPickupTarget(creep);
     if (!assignment) {
+      if (creep.store.getUsedCapacity() > 0) {
+        return true;
+      }
+
       const x = Number(targetX);
       const y = Number(targetY);
       if (Number.isFinite(x) && Number.isFinite(y)) {
@@ -153,7 +182,7 @@ export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: str
       return false;
     }
 
-    return creep.store.getUsedCapacity() > 0;
+    return isCarryStoreFull(creep);
   },
   target: (creep): boolean => {
     const resource = getFirstCarriedResource(creep);
@@ -163,6 +192,11 @@ export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: str
 
     const homeRoomName = creep.memory.configName?.split(":")[0] || creep.room.name;
     if (creep.room.name !== homeRoomName) {
+      if (shouldRetireBeforeReturn(creep, homeRoomName)) {
+        creep.suicide();
+        return false;
+      }
+
       moveToTargetRoom(creep, homeRoomName, undefined, { travelRange: 3, reusePath: 10 });
       return false;
     }
