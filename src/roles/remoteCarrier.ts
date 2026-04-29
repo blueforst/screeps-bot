@@ -118,25 +118,29 @@ function isCarryStoreFull(creep: Creep): boolean {
   return (creep.store.getFreeCapacity() ?? 0) <= 0;
 }
 
-function estimateRemainingRoomTravelTicks(fromRoom: string, homeRoom: string): number {
-  if (fromRoom === homeRoom) {
+function estimateRoomTravelTicks(fromRoom: string, toRoom: string): number {
+  if (fromRoom === toRoom) {
     return 0;
   }
 
-  const route = Game.map.findRoute(fromRoom, homeRoom);
+  const route = Game.map.findRoute(fromRoom, toRoom);
   if (route === ERR_NO_PATH) {
-    return Game.map.getRoomLinearDistance(fromRoom, homeRoom) * 50;
+    return Game.map.getRoomLinearDistance(fromRoom, toRoom) * 50;
   }
 
   return route.length * 50;
 }
 
-function shouldRetireBeforeReturn(creep: Creep, homeRoomName: string): boolean {
-  if (creep.room.name === homeRoomName || creep.ticksToLive === undefined) {
+function getHomeRoomName(creep: Creep): string {
+  return creep.memory.configName?.split(":")[0] || creep.room.name;
+}
+
+function shouldRetireBeforeDeparture(creep: Creep, targetRoom: string): boolean {
+  if (creep.ticksToLive === undefined) {
     return false;
   }
 
-  return creep.ticksToLive < estimateRemainingRoomTravelTicks(creep.room.name, homeRoomName) + 50;
+  return creep.ticksToLive < estimateRoomTravelTicks(creep.room.name, targetRoom) * 2 + 50;
 }
 
 export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: string, targetY?: string) => ({
@@ -146,6 +150,12 @@ export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: str
     }
 
     if (creep.room.name !== targetRoom) {
+      const homeRoomName = getHomeRoomName(creep);
+      if (creep.room.name === homeRoomName && shouldRetireBeforeDeparture(creep, targetRoom)) {
+        creep.suicide();
+        return false;
+      }
+
       moveToTargetRoom(creep, targetRoom, undefined, { travelRange: 3, reusePath: 10 });
       return false;
     }
@@ -190,13 +200,8 @@ export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: str
       return true;
     }
 
-    const homeRoomName = creep.memory.configName?.split(":")[0] || creep.room.name;
+    const homeRoomName = getHomeRoomName(creep);
     if (creep.room.name !== homeRoomName) {
-      if (shouldRetireBeforeReturn(creep, homeRoomName)) {
-        creep.suicide();
-        return false;
-      }
-
       moveToTargetRoom(creep, homeRoomName, undefined, { travelRange: 3, reusePath: 10 });
       return false;
     }
