@@ -526,6 +526,71 @@ describe("runColonizationByFlag", () => {
     expect(spawn.memory.spawnList).toContain("W1N1:colonize:W1N2:scout:0");
   });
 
+  it("detaches colonization configs immediately when the flag is removed while creeps are alive", () => {
+    const sourceRoom = createSourceRoom("W1N1");
+    const spawn = createSpawn(sourceRoom);
+    const workerConfigName = "W1N1:colonize:W1N2:worker:0";
+    const workerMemory = {
+      role: "colonizerWorker",
+      configName: workerConfigName,
+    } as CreepMemory;
+    const workerSuicide = jest.fn(() => OK);
+
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    Game.spawns.Spawn1 = spawn;
+    Game.flags = {};
+    spawn.memory.spawnList = [workerConfigName];
+    Memory.creeps.colonizerWorker = workerMemory;
+    Game.creeps.colonizerWorker = {
+      name: "colonizerWorker",
+      room: sourceRoom,
+      memory: workerMemory,
+      owner: {
+        username: "me",
+      } as Owner,
+      suicide: workerSuicide,
+    } as unknown as Creep;
+    Memory.data = {
+      colonization: {
+        W1N2: {
+          targetRoom: "W1N2",
+          sourceRoom: "W1N1",
+          status: "bootstrapping",
+          flagName: "CL",
+          planReady: true,
+          claimCompleted: true,
+          scoutSafe: true,
+          scoutRouteRooms: ["W1N1", "W1N2"],
+          dangerousRooms: [],
+          createdAt: Game.time,
+          updatedAt: Game.time,
+        },
+      },
+      creepConfigs: {
+        [workerConfigName]: {
+          role: "colonizerWorker",
+          args: ["W1N2", "W1N1|W1N2"],
+          roomName: "W1N1",
+        },
+      },
+    } as Memory["data"];
+
+    runColonizationByFlag();
+
+    expect(workerSuicide).toHaveBeenCalledTimes(1);
+    expect(spawn.memory.spawnList).not.toContain(workerConfigName);
+    expect(getCreepConfigService().get(workerConfigName)?.roomName).toBeUndefined();
+
+    delete Game.creeps.colonizerWorker;
+    delete Memory.creeps.colonizerWorker;
+    Game.time += 1;
+
+    runColonizationByFlag();
+
+    expect(getCreepConfigService().get(workerConfigName)).toBeUndefined();
+    expect(Memory.data?.colonization?.W1N2).toBeUndefined();
+  });
+
   it("throttles repeated planner retries when plan generation fails", () => {
     const sourceRoom = createSourceRoom("W1N1");
     const targetRoom = createTargetRoom("W1N2");

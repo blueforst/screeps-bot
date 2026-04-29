@@ -936,16 +936,33 @@ function ensureScout(task: ColonizationTask): void {
 
 function abandonColonization(task: ColonizationTask, reason: string): void {
   const configNames = getTaskConfigNames(task);
+  const store = ensureColonizationStore();
+  const configStore = ensureConfigStore();
+  let removedAll = true;
+
   for (const configName of configNames) {
-    for (const creep of getLiveCreepsByConfig(configName)) {
+    const liveCreeps = getLiveCreepsByConfig(configName);
+    for (const creep of liveCreeps) {
       creep.suicide();
     }
     removeQueuedConfig(task, configName);
+
+    const config = configStore[configName];
+    if (config?.roomName) {
+      delete config.roomName;
+    }
+
+    if (isConfigSpawning(configName) || liveCreeps.length > 0) {
+      removedAll = false;
+      continue;
+    }
+
     removeConfigWhenIdle(configName);
   }
 
-  const store = ensureColonizationStore();
-  delete store[task.targetRoom];
+  if (removedAll) {
+    delete store[task.targetRoom];
+  }
   console.log(`[colonization] abandon ${task.targetRoom}: ${reason}`);
 }
 
