@@ -140,6 +140,12 @@ describe("moveToTarget yielding", () => {
     (global as RuntimeGlobal).Room = {
       serializePath: jest.fn((path: Array<{ direction: DirectionConstant }>) => path.map((step) => step.direction).join("")),
     };
+    Object.assign(global, {
+      PathFinder: {
+        search: jest.fn(() => ({ path: [], incomplete: true, ops: 0, cost: 0 })),
+        CostMatrix: MockCostMatrix,
+      },
+    });
     (global as typeof global & { RoomPosition: typeof MockRoomPosition }).RoomPosition = MockRoomPosition;
   });
 
@@ -420,6 +426,12 @@ describe("moveToTargetRoom", () => {
     (global as RuntimeGlobal).Room = {
       serializePath: jest.fn((path: Array<{ direction: DirectionConstant }>) => path.map((step) => step.direction).join("")),
     };
+    Object.assign(global, {
+      PathFinder: {
+        search: jest.fn(() => ({ path: [], incomplete: true, ops: 0, cost: 0 })),
+        CostMatrix: MockCostMatrix,
+      },
+    });
     (global as typeof global & { RoomPosition: typeof MockRoomPosition }).RoomPosition = MockRoomPosition;
   });
 

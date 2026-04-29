@@ -1,11 +1,18 @@
 import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
 import { ensureCreepMovementState } from "@/movement/creepState";
 import { getTickContextService } from "@/runtime/runtimeServices";
-import { getPosKey, isExitTile, parseEncodedRouteRooms } from "@/movement/common";
+import { getPosKey, isExitTile, isWalkableConstructionSite, isWalkableStructure, parseEncodedRouteRooms } from "@/movement/common";
 import { recordMovementMetric } from "@/movement/metrics";
 import { moveToTarget } from "@/movement/pathing";
 import { moveOffExit } from "@/movement/traffic";
-import type { DynamicRouteCacheEntry, MoveToRoomOptions, MoveToTargetOptions, TravelState } from "@/movement/types";
+import type {
+  CachedTravelPath,
+  DynamicRouteCacheEntry,
+  MoveToRoomOptions,
+  MoveToTargetOptions,
+  StoredRoomPosition,
+  TravelState,
+} from "@/movement/types";
 
 const DYNAMIC_ROUTE_CACHE_TTL = 25;
 const DYNAMIC_ROUTE_CACHE_MAX = 200;
@@ -129,31 +136,47 @@ export function moveToTargetRoom(
     avoidExitTiles: true,
   };
 
+  const cachedTravelPath = getUsableCachedTravelPath(creep, targetRoom, routeRooms, dangerousRooms, hasFixedRoute);
+
   let result: ScreepsReturnCode;
   if (nextRoom !== creep.room.name && (!hasFixedRoute || isAdjacentRoom(creep.room.name, nextRoom))) {
     const exitDirection = creep.room.findExitTo(nextRoom);
     if (typeof exitDirection === "number" && exitDirection >= 1 && exitDirection <= 8) {
+      if (isOnExitDirection(creep.pos, exitDirection as DirectionConstant)) {
+        result = measureCreepIntent(() => creep.move(exitDirection as DirectionConstant));
+        updateTravelState(creep, travelState);
+        return result;
+      }
+
+      if (isExitTile(creep.pos)) {
+        recordMovementMetric("exitRecoveries", creep.room.name);
+        result = moveOffExit(creep);
+        if (result === OK || result === ERR_TIRED) {
+          updateTravelState(creep, travelState);
+          return result;
+        }
+      }
+
+      if (cachedTravelPath && travelState.stuckTicks < 2) {
+        const cachedPathResult = followCachedTravelPath(creep, cachedTravelPath);
+        if (cachedPathResult === OK || cachedPathResult === ERR_TIRED) {
+          updateTravelState(creep, travelState);
+          return cachedPathResult;
+        }
+      }
+
+      const multiRoomResult = moveAlongMultiRoomPath(creep, targetRoom, routeRooms, dangerousRooms, hasFixedRoute, moveRange, moveOptions);
+      if (multiRoomResult !== ERR_NO_PATH) {
+        updateTravelState(creep, travelState);
+        return multiRoomResult;
+      }
+
       let exitPos = measureCreepPathing(() => creep.pos.findClosestByPath(exitDirection as ExitConstant));
       if (!exitPos) {
         const exitTiles = creep.room.find(exitDirection as ExitConstant);
         exitPos = creep.pos.findClosestByRange(exitTiles);
       }
       if (exitPos) {
-        if (isOnExitDirection(creep.pos, exitDirection as DirectionConstant)) {
-          result = measureCreepIntent(() => creep.move(exitDirection as DirectionConstant));
-          updateTravelState(creep, travelState);
-          return result;
-        }
-
-        if (isExitTile(creep.pos)) {
-          recordMovementMetric("exitRecoveries", creep.room.name);
-          result = moveOffExit(creep);
-          if (result === OK || result === ERR_TIRED) {
-            updateTravelState(creep, travelState);
-            return result;
-          }
-        }
-
         result = moveToTarget(creep, exitPos, 0, moveOptions);
         updateTravelState(creep, travelState);
         return result;
@@ -164,6 +187,214 @@ export function moveToTargetRoom(
   result = moveToTarget(creep, new RoomPosition(25, 25, nextRoom), moveRange, moveOptions);
   updateTravelState(creep, travelState);
   return result;
+}
+
+export function getColonizationTravelPathKey(sourceRoom: string, targetRoom: string, routeRooms: string[], dangerousRooms: string[]): string {
+  const routePart = routeRooms.join(">");
+  const dangerPart = [...new Set(dangerousRooms)].sort().join(">");
+  return `${sourceRoom}->${targetRoom}|r:${routePart}|d:${dangerPart}`;
+}
+
+function getUsableCachedTravelPath(
+  creep: Creep,
+  targetRoom: string,
+  routeRooms: string[],
+  dangerousRooms: string[],
+  hasFixedRoute: boolean,
+): CachedTravelPath | null {
+  if (!hasFixedRoute || routeRooms.length === 0) {
+    return null;
+  }
+  const task = Memory.data?.colonization?.[targetRoom];
+  const cachedPath = task?.cachedTravelPath;
+  if (!cachedPath || cachedPath.positions.length === 0) {
+    return null;
+  }
+  if (cachedPath.key !== getColonizationTravelPathKey(cachedPath.sourceRoom, targetRoom, routeRooms, dangerousRooms)) {
+    return null;
+  }
+  if (cachedPath.sourceRoom !== routeRooms[0] || cachedPath.targetRoom !== targetRoom) {
+    return null;
+  }
+  if (cachedPath.routeRooms.join("|") !== routeRooms.join("|")) {
+    return null;
+  }
+  if (!routeRooms.includes(creep.room.name)) {
+    return null;
+  }
+
+  return cachedPath as CachedTravelPath;
+}
+
+function followCachedTravelPath(creep: Creep, cachedPath: CachedTravelPath): ScreepsReturnCode {
+  const nextStep = getNextCachedTravelPathStep(creep.pos, cachedPath.positions);
+  if (!nextStep) {
+    return ERR_NO_PATH;
+  }
+
+  if (nextStep.roomName !== creep.room.name) {
+    const direction = getExitTransitionDirection(creep.pos, nextStep);
+    if (!direction) {
+      return ERR_NO_PATH;
+    }
+    return measureCreepIntent(() => creep.move(direction));
+  }
+
+  const nextPos = new RoomPosition(nextStep.x, nextStep.y, nextStep.roomName);
+  if (creep.pos.getRangeTo(nextPos) > 1) {
+    return ERR_NO_PATH;
+  }
+
+  const direction = creep.pos.getDirectionTo(nextPos);
+  return measureCreepIntent(() => creep.move(direction));
+}
+
+function getNextCachedTravelPathStep(pos: RoomPosition, positions: StoredRoomPosition[]): StoredRoomPosition | null {
+  const exactIndex = positions.findIndex((step) => step.roomName === pos.roomName && step.x === pos.x && step.y === pos.y);
+  if (exactIndex >= 0) {
+    return positions[exactIndex + 1] ?? null;
+  }
+
+  let bestIndex = -1;
+  let bestRange = Infinity;
+  for (let index = 0; index < positions.length; index += 1) {
+    const step = positions[index];
+    if (step.roomName !== pos.roomName) {
+      continue;
+    }
+    const range = pos.getRangeTo(step.x, step.y);
+    if (range >= bestRange) {
+      continue;
+    }
+    bestRange = range;
+    bestIndex = index;
+  }
+
+  return bestRange <= 1 && bestIndex >= 0 ? positions[bestIndex] : null;
+}
+
+function getExitTransitionDirection(pos: RoomPosition, nextStep: StoredRoomPosition): DirectionConstant | null {
+  if (pos.x === 49 && nextStep.x === 0) {
+    return RIGHT;
+  }
+  if (pos.x === 0 && nextStep.x === 49) {
+    return LEFT;
+  }
+  if (pos.y === 49 && nextStep.y === 0) {
+    return BOTTOM;
+  }
+  if (pos.y === 0 && nextStep.y === 49) {
+    return TOP;
+  }
+
+  return null;
+}
+
+function moveAlongMultiRoomPath(
+  creep: Creep,
+  targetRoom: string,
+  routeRooms: string[],
+  dangerousRooms: string[],
+  hasFixedRoute: boolean,
+  range: 1 | 3,
+  options: MoveToTargetOptions,
+): ScreepsReturnCode {
+  const targetPos = new RoomPosition(25, 25, targetRoom);
+  const search = measureCreepPathing(() =>
+    PathFinder.search(
+      creep.pos,
+      { pos: targetPos, range },
+      {
+        plainCost: options.plainCost,
+        swampCost: options.swampCost,
+        maxRooms: options.maxRooms ?? 16,
+        roomCallback: createMultiRoomTravelCallback(creep, targetRoom, routeRooms, dangerousRooms, hasFixedRoute, options),
+      },
+    ),
+  );
+
+  if (search.incomplete || search.path.length === 0) {
+    return ERR_NO_PATH;
+  }
+
+  const nextPos = search.path[0];
+  if (nextPos.roomName !== creep.room.name || creep.pos.getRangeTo(nextPos) > 1) {
+    return ERR_NO_PATH;
+  }
+
+  const direction = creep.pos.getDirectionTo(nextPos);
+  return measureCreepIntent(() => creep.move(direction));
+}
+
+function createMultiRoomTravelCallback(
+  creep: Creep,
+  targetRoom: string,
+  routeRooms: string[],
+  dangerousRooms: string[],
+  hasFixedRoute: boolean,
+  options: MoveToTargetOptions,
+): (roomName: string) => boolean | CostMatrix {
+  const dangerousSet = new Set(dangerousRooms);
+  const allowedRooms = hasFixedRoute && routeRooms.length > 0 ? new Set([...routeRooms, creep.room.name, targetRoom]) : null;
+
+  return (roomName: string): boolean | CostMatrix => {
+    if (allowedRooms && !allowedRooms.has(roomName)) {
+      return false;
+    }
+    if (roomName !== targetRoom && dangerousSet.has(roomName)) {
+      return false;
+    }
+    if (roomName !== creep.room.name && roomName !== targetRoom) {
+      if (Game.map.getRoomStatus(roomName).status !== "normal") {
+        return false;
+      }
+      if (isVisibleRoomDangerous(roomName)) {
+        return false;
+      }
+    }
+
+    return buildMultiRoomTravelMatrix(creep, roomName, options);
+  };
+}
+
+function buildMultiRoomTravelMatrix(creep: Creep, roomName: string, options: MoveToTargetOptions): CostMatrix {
+  const matrix = new PathFinder.CostMatrix();
+  const room = Game.rooms[roomName];
+  if (!room) {
+    return matrix;
+  }
+
+  const roomContext = getTickContextService().getRoomContext(room);
+  const structures = roomContext?.getStructures() ?? room.find(FIND_STRUCTURES);
+  for (const structure of structures) {
+    if (structure.structureType === STRUCTURE_ROAD) {
+      matrix.set(structure.pos.x, structure.pos.y, 1);
+      continue;
+    }
+    if (!isWalkableStructure(structure)) {
+      matrix.set(structure.pos.x, structure.pos.y, 0xff);
+    }
+  }
+
+  const sites = roomContext?.getConstructionSites() ?? room.find(FIND_CONSTRUCTION_SITES);
+  for (const site of sites) {
+    if (site.my && !isWalkableConstructionSite(site)) {
+      matrix.set(site.pos.x, site.pos.y, 0xff);
+    }
+  }
+
+  if (options.ignoreCreeps ?? true) {
+    return matrix;
+  }
+
+  const creeps = roomContext?.getMyCreeps() ?? room.find(FIND_MY_CREEPS);
+  for (const otherCreep of creeps) {
+    if (otherCreep.name !== creep.name) {
+      matrix.set(otherCreep.pos.x, otherCreep.pos.y, 0xfe);
+    }
+  }
+
+  return matrix;
 }
 
 function getTravelState(creep: Creep, targetRoom: string): TravelState {
