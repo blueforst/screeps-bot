@@ -3,6 +3,21 @@ export interface StoredPathStep {
   y: number;
 }
 
+export interface StoredRoomPosition {
+  x: number;
+  y: number;
+  roomName: string;
+}
+
+export interface CachedTravelPath {
+  key: string;
+  sourceRoom: string;
+  targetRoom: string;
+  routeRooms: string[];
+  positions: StoredRoomPosition[];
+  generatedAt: number;
+}
+
 export interface MoveToTargetOptions {
   swampCost?: number;
   plainCost?: number;

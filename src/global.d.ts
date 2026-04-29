@@ -528,6 +528,14 @@ declare global {
           claimCompleted: boolean;
           scoutSafe?: boolean;
           scoutRouteRooms?: string[];
+          cachedTravelPath?: {
+            key: string;
+            sourceRoom: string;
+            targetRoom: string;
+            routeRooms: string[];
+            positions: { x: number; y: number; roomName: string }[];
+            generatedAt: number;
+          };
           dangerousRooms?: string[];
           temporaryDangerousRooms?: Record<string, number>;
           permanentDangerousRooms?: string[];
