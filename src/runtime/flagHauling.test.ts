@@ -260,23 +260,22 @@ describe("runFlagHaulingByFlag", () => {
     expect(Memory.data?.flagHauling?.HAUL).toBeDefined();
   });
 
-  it("clears cancelled empty carriers so haul configs can be removed after return", () => {
+  it("suicides cancelled empty carriers so haul configs can be removed", () => {
     const home = createRoom("W1N1");
     createSpawn(home);
     Game.flags.HAUL = createFlag("HAUL", "W5N5");
     runFlagHaulingByFlag();
     const configName = "W1N1:haul:W5N5:carrier:HAUL";
     const carrier = createRemoteCarrierCreep(configName, 0);
+    carrier.suicide = jest.fn(() => OK as 0);
     Game.creeps = { [carrier.name]: carrier };
     Game.flags = {};
     Game.time += 1;
 
     runFlagHaulingByFlag();
 
+    expect(carrier.suicide).toHaveBeenCalledTimes(1);
     expect(getCreepConfigService().get(configName)).toBeUndefined();
-    expect(carrier.memory.configName).toBeUndefined();
-    expect(carrier.memory.role).toBeUndefined();
-    expect(carrier.memory.roleArgs).toBeUndefined();
     expect(Memory.data?.flagHauling).toEqual({});
   });
 });
