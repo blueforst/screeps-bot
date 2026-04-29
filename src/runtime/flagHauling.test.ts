@@ -39,6 +39,27 @@ function createFlag(name: string, roomName: string): Flag {
   } as unknown as Flag;
 }
 
+function createStoredStructure(
+  id: string,
+  structureType: StructureConstant,
+  resources: Partial<Record<ResourceConstant, number>>,
+): AnyStoreStructure {
+  return {
+    id,
+    structureType,
+    store: {
+      ...resources,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) {
+          return Object.values(resources).reduce((sum, amount) => sum + (amount || 0), 0);
+        }
+
+        return resources[resource] || 0;
+      },
+    },
+  } as unknown as AnyStoreStructure;
+}
+
 describe("runFlagHaulingByFlag", () => {
   beforeEach(() => {
     resetRuntimeServices();
@@ -68,6 +89,20 @@ describe("runFlagHaulingByFlag", () => {
       roomName: "W1N1",
     });
     expect(config.body).toHaveLength(32);
+  });
+
+  it("creates three max-body remote carrier configs per remote haul flag", () => {
+    const home = createRoom("W1N1");
+    createSpawn(home);
+    Game.flags.HAUL = createFlag("HAUL", "W5N5");
+
+    runFlagHaulingByFlag();
+
+    expect(Object.keys(getCreepConfigService().list()).sort()).toEqual([
+      "W1N1:haul:W5N5:carrier:HAUL",
+      "W1N1:haul:W5N5:carrier:HAUL:2",
+      "W1N1:haul:W5N5:carrier:HAUL:3",
+    ]);
   });
 
   it("honors a room suffix source override", () => {
@@ -109,5 +144,82 @@ describe("runFlagHaulingByFlag", () => {
     expect(flag.remove).toHaveBeenCalledTimes(1);
     expect(getCreepConfigService().list()).toEqual({});
     expect(Memory.data?.flagHauling).toEqual({});
+  });
+
+  it("removes the flag when only less-than-carrier-capacity energy remains", () => {
+    const home = createRoom("W1N1");
+    createSpawn(home);
+    const target = {
+      name: "W5N5",
+      controller: undefined,
+      find: jest.fn((type: FindConstant) => {
+        if (type === FIND_STRUCTURES) {
+          return [createStoredStructure("remote-container", STRUCTURE_CONTAINER, { [RESOURCE_ENERGY]: 799 })];
+        }
+
+        return [];
+      }),
+    } as unknown as Room;
+    Game.rooms[target.name] = target;
+    const flag = createFlag("HAUL", target.name);
+    Game.flags.HAUL = flag;
+
+    runFlagHaulingByFlag();
+
+    expect(flag.remove).toHaveBeenCalledTimes(1);
+    expect(getCreepConfigService().list()).toEqual({});
+  });
+
+  it("keeps hauling when the remaining energy can fill the carrier", () => {
+    const home = createRoom("W1N1");
+    createSpawn(home);
+    const target = {
+      name: "W5N5",
+      controller: undefined,
+      find: jest.fn((type: FindConstant) => {
+        if (type === FIND_STRUCTURES) {
+          return [createStoredStructure("remote-container", STRUCTURE_CONTAINER, { [RESOURCE_ENERGY]: 800 })];
+        }
+
+        return [];
+      }),
+    } as unknown as Room;
+    Game.rooms[target.name] = target;
+    const flag = createFlag("HAUL", target.name);
+    Game.flags.HAUL = flag;
+
+    runFlagHaulingByFlag();
+
+    expect(flag.remove).not.toHaveBeenCalled();
+    expect(getCreepConfigService().get("W1N1:haul:W5N5:carrier:HAUL")?.roomName).toBe("W1N1");
+  });
+
+  it("keeps hauling when non-energy resources remain with small energy", () => {
+    const home = createRoom("W1N1");
+    createSpawn(home);
+    const target = {
+      name: "W5N5",
+      controller: undefined,
+      find: jest.fn((type: FindConstant) => {
+        if (type === FIND_STRUCTURES) {
+          return [
+            createStoredStructure("remote-container", STRUCTURE_CONTAINER, {
+              [RESOURCE_ENERGY]: 100,
+              [RESOURCE_CATALYZED_UTRIUM_ACID]: 1,
+            }),
+          ];
+        }
+
+        return [];
+      }),
+    } as unknown as Room;
+    Game.rooms[target.name] = target;
+    const flag = createFlag("HAUL", target.name);
+    Game.flags.HAUL = flag;
+
+    runFlagHaulingByFlag();
+
+    expect(flag.remove).not.toHaveBeenCalled();
+    expect(getCreepConfigService().get("W1N1:haul:W5N5:carrier:HAUL")?.roomName).toBe("W1N1");
   });
 });

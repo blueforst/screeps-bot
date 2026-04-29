@@ -12,7 +12,13 @@ interface FlagHaulTask {
   updatedAt: number;
 }
 
+interface HaulableResourceSummary {
+  energyAmount: number;
+  nonEnergyAmount: number;
+}
+
 const FLAG_PREFIX = "HAUL";
+const REMOTE_CARRIER_COUNT = 3;
 
 function getBodyCost(body: BodyPartConstant[]): number {
   return body.reduce((sum, part) => sum + BODYPART_COST[part], 0);
@@ -28,6 +34,10 @@ function buildMaxCarrierBody(room: Room): BodyPartConstant[] {
   }
 
   return body;
+}
+
+function getBodyCarryCapacity(body: BodyPartConstant[]): number {
+  return body.filter((part) => part === CARRY).length * CARRY_CAPACITY;
 }
 
 function hasFlagHaulProductionCapability(spawn: StructureSpawn): boolean {
@@ -54,17 +64,52 @@ function isRemoteHaulStructure(structure: Structure<StructureConstant>): structu
   return (structure as AnyStoreStructure).store.getUsedCapacity() > 0;
 }
 
-function hasHaulableResources(room: Room): boolean {
+function getStoredResources(store: StoreDefinition): ResourceConstant[] {
+  return (Object.keys(store) as ResourceConstant[]).filter((resource) => store.getUsedCapacity(resource) > 0);
+}
+
+function addStoreResources(summary: HaulableResourceSummary, store: StoreDefinition): void {
+  for (const resource of getStoredResources(store)) {
+    const amount = store.getUsedCapacity(resource);
+    if (resource === RESOURCE_ENERGY) {
+      summary.energyAmount += amount;
+    } else {
+      summary.nonEnergyAmount += amount;
+    }
+  }
+}
+
+function getHaulableResourceSummary(room: Room): HaulableResourceSummary {
+  const summary: HaulableResourceSummary = {
+    energyAmount: 0,
+    nonEnergyAmount: 0,
+  };
+
   const structures = room.find(FIND_STRUCTURES, { filter: isRemoteHaulStructure });
-  if (structures.length > 0) {
-    return true;
+  for (const structure of structures) {
+    addStoreResources(summary, structure.store);
   }
 
   const ruins = room.find(FIND_RUINS, {
     filter: (ruin) => ruin.store.getUsedCapacity() > 0,
   });
+  for (const ruin of ruins) {
+    addStoreResources(summary, ruin.store);
+  }
 
-  return ruins.length > 0;
+  return summary;
+}
+
+function hasHaulableResources(summary: HaulableResourceSummary): boolean {
+  return summary.energyAmount + summary.nonEnergyAmount > 0;
+}
+
+function shouldCancelForSmallEnergyOnly(summary: HaulableResourceSummary, sourceRoom: Room): boolean {
+  if (summary.nonEnergyAmount > 0 || summary.energyAmount <= 0) {
+    return false;
+  }
+
+  return summary.energyAmount < getBodyCarryCapacity(buildMaxCarrierBody(sourceRoom));
 }
 
 function getPreferredSourceFromFlagName(flagName: string): string | undefined {
@@ -128,8 +173,18 @@ function ensureFlagHaulStore(): Record<string, FlagHaulTask> {
   return data.flagHauling;
 }
 
-function getConfigName(task: FlagHaulTask): string {
-  return `${task.sourceRoom}:haul:${task.targetRoom}:carrier:${task.flagName}`;
+function getConfigName(task: FlagHaulTask, index: number): string {
+  const suffix = index === 0 ? "" : `:${index + 1}`;
+  return `${task.sourceRoom}:haul:${task.targetRoom}:carrier:${task.flagName}${suffix}`;
+}
+
+function getConfigNames(task: FlagHaulTask): string[] {
+  const names: string[] = [];
+  for (let i = 0; i < REMOTE_CARRIER_COUNT; i++) {
+    names.push(getConfigName(task, i));
+  }
+
+  return names;
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {
@@ -164,34 +219,41 @@ function removeQueuedConfig(task: FlagHaulTask, configName: string): void {
 }
 
 function cleanupFlagHaulConfig(task: FlagHaulTask): boolean {
-  const configName = getConfigName(task);
   const store = getMemoryService().getCreepConfigStore();
-  const config = store[configName];
+  let canDelete = true;
 
-  removeQueuedConfig(task, configName);
-  if (config?.roomName) {
-    delete config.roomName;
+  for (const configName of getConfigNames(task)) {
+    const config = store[configName];
+    removeQueuedConfig(task, configName);
+    if (config?.roomName) {
+      delete config.roomName;
+    }
+
+    if (isConfigSpawning(configName) || getLiveCreepsByConfig(configName).length > 0) {
+      canDelete = false;
+    }
   }
 
-  if (isConfigSpawning(configName) || getLiveCreepsByConfig(configName).length > 0) {
+  if (!canDelete) {
     return false;
   }
 
-  if (store[configName]) {
-    delete store[configName];
+  for (const configName of getConfigNames(task)) {
+    if (store[configName]) {
+      delete store[configName];
+    }
   }
 
   return true;
 }
 
-function upsertFlagHaulConfig(task: FlagHaulTask): void {
+function upsertFlagHaulConfig(task: FlagHaulTask, configName: string): void {
   const room = Game.rooms[task.sourceRoom];
   if (!room) {
     return;
   }
 
   const store = getMemoryService().getCreepConfigStore();
-  const configName = getConfigName(task);
   const body = buildMaxCarrierBody(room);
   const nextConfig: CreepConfig = {
     role: "remoteCarrier",
@@ -213,6 +275,12 @@ function upsertFlagHaulConfig(task: FlagHaulTask): void {
   store[configName] = nextConfig;
 }
 
+function upsertFlagHaulConfigs(task: FlagHaulTask): void {
+  for (const configName of getConfigNames(task)) {
+    upsertFlagHaulConfig(task, configName);
+  }
+}
+
 function upsertFlagHaulTask(flag: Flag): boolean {
   const targetRoom = flag.pos.roomName;
   const targetRoomVisible = Game.rooms[targetRoom];
@@ -220,7 +288,8 @@ function upsertFlagHaulTask(flag: Flag): boolean {
     return true;
   }
 
-  if (targetRoomVisible && !hasHaulableResources(targetRoomVisible)) {
+  const resourceSummary = targetRoomVisible ? getHaulableResourceSummary(targetRoomVisible) : null;
+  if (resourceSummary && !hasHaulableResources(resourceSummary)) {
     flag.remove();
     return true;
   }
@@ -228,6 +297,12 @@ function upsertFlagHaulTask(flag: Flag): boolean {
   const sourceRoom = selectSourceRoom(targetRoom, getPreferredSourceFromFlagName(flag.name));
   if (!sourceRoom) {
     return false;
+  }
+
+  const sourceRoomVisible = Game.rooms[sourceRoom];
+  if (resourceSummary && sourceRoomVisible && shouldCancelForSmallEnergyOnly(resourceSummary, sourceRoomVisible)) {
+    flag.remove();
+    return true;
   }
 
   const store = ensureFlagHaulStore();
@@ -267,7 +342,7 @@ function processFlagHaulTask(task: FlagHaulTask): boolean {
     return cleanupFlagHaulConfig(task);
   }
 
-  upsertFlagHaulConfig(task);
+  upsertFlagHaulConfigs(task);
   task.updatedAt = Game.time;
   return true;
 }
