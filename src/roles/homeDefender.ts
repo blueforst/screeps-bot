@@ -64,6 +64,11 @@ function findNearestUnoccupiedRampartToFront(
   return best;
 }
 
+function chooseAdjacentAttackTarget(creep: Creep, hostiles: Creep[]): Creep | null {
+  const adjacentHostiles = hostiles.filter((hostile) => creep.pos.getRangeTo(hostile.pos) <= 1);
+  return chooseInsideBurstTarget(adjacentHostiles);
+}
+
 export const homeDefenderRole: RoleFactory = (roomName: string, slot?: string) => ({
   target: (creep): boolean => {
     if (creep.room.name !== roomName) {
@@ -173,8 +178,11 @@ export const homeDefenderRole: RoleFactory = (roomName: string, slot?: string) =
       });
     }
 
-    if (creep.pos.getRangeTo(hostile.pos) <= 1) {
-      measureCreepIntent(() => creep.attack(hostile));
+    const attackTarget = creep.pos.getRangeTo(hostile.pos) <= 1
+      ? hostile
+      : measureCreepDecision(() => chooseAdjacentAttackTarget(creep, allHostiles));
+    if (attackTarget) {
+      measureCreepIntent(() => creep.attack(attackTarget));
     }
 
     return false;
