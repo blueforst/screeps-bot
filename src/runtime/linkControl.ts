@@ -79,7 +79,20 @@ function isReceiverByPosition(link: StructureLink): boolean {
 
 function isStorageReceiverByPosition(link: StructureLink): boolean {
   const storagePos = link.room.storage?.pos;
-  return !!storagePos && link.pos.getRangeTo(storagePos) <= STORAGE_RECEIVER_RANGE;
+  if (!storagePos) {
+    return false;
+  }
+
+  if (link.pos.getRangeTo(storagePos) <= STORAGE_RECEIVER_RANGE) {
+    return true;
+  }
+
+  const controllerPos = link.room.controller?.pos;
+  return (
+    hasSharedStorageControllerLinkCluster(link.room) &&
+    !!controllerPos &&
+    link.pos.getRangeTo(controllerPos) <= CONTROLLER_RECEIVER_RANGE
+  );
 }
 
 function isLinkUnderfilled(link: StructureLink): boolean {
@@ -93,8 +106,22 @@ function isLinkUnderfilled(link: StructureLink): boolean {
 }
 
 function isControllerReceiver(link: StructureLink): boolean {
+  if (hasSharedStorageControllerLinkCluster(link.room)) {
+    return false;
+  }
+
   const controllerPos = link.room.controller?.pos;
   return !!controllerPos && link.pos.getRangeTo(controllerPos) <= CONTROLLER_RECEIVER_RANGE;
+}
+
+export function hasSharedStorageControllerLinkCluster(room: Room): boolean {
+  const storagePos = room.storage?.pos;
+  const controllerPos = room.controller?.pos;
+  return (
+    !!storagePos &&
+    !!controllerPos &&
+    storagePos.getRangeTo(controllerPos) <= STORAGE_RECEIVER_RANGE + CONTROLLER_RECEIVER_RANGE
+  );
 }
 
 function chooseReceiverTarget(sender: StructureLink, receiverLinks: StructureLink[]): StructureLink | null {
