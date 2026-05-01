@@ -473,6 +473,41 @@ describe("carrierRole mineral hauling", () => {
     expect(switched).toBe(false);
   });
 
+  it("can withdraw from controller-adjacent links when storage and controller share the link cluster", () => {
+    const controllerPos = {} as RoomPosition;
+    const storagePos = {
+      getRangeTo: (target: RoomPosition) => (target === controllerPos ? 5 : Number.POSITIVE_INFINITY),
+    } as RoomPosition;
+    const room = createRoom("W1N0Link");
+    room.controller.pos = controllerPos;
+    (room.storage as StructureStorage).pos = storagePos;
+    const link = {
+      id: "shared-link-1",
+      room,
+      structureType: STRUCTURE_LINK,
+      pos: {
+        getRangeTo: (target: { structureType?: StructureConstant }) =>
+          target.structureType === STRUCTURE_STORAGE ? 4 : 2,
+      } as RoomPosition,
+      store: { getUsedCapacity: () => 600, getFreeCapacity: () => 200, getCapacity: () => 800 },
+    } as unknown as StructureLink;
+    room.find = ((type: FindConstant) => (type === FIND_STRUCTURES ? [link] : [])) as Room["find"];
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue({
+      id: "spawn-1",
+      structureType: STRUCTURE_SPAWN,
+      store: { getFreeCapacity: () => 300 },
+      pos: { x: 5, y: 5, roomName: room.name },
+    });
+    getPickupTargetEnergyAmount.mockImplementation((target: { id: string }) => (target.id === link.id ? 600 : 0));
+    reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === link.id);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(link, RESOURCE_ENERGY);
+    expect(switched).toBe(false);
+  });
+
   it("does not withdraw from proto storage container when only tower demand exists", () => {
     const room = createRoom("W1N0C", { level: 3, storage: null, terminal: null });
     const protoStorage = {

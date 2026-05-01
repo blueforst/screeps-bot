@@ -13,7 +13,7 @@ import {
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
 import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "@/runtime/carrierTaskBoard";
-import { isStorageReceiverLink } from "@/runtime/linkControl";
+import { hasSharedStorageControllerLinkCluster, isStorageReceiverLink } from "@/runtime/linkControl";
 import { getPlannedStoragePos, getPlannedControllerLinkPos, getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
@@ -57,6 +57,10 @@ function isTombstonePickupTarget(target: Resource | AnyStoreStructure | Tombston
 }
 
 function isControllerAdjacentLink(link: StructureLink): boolean {
+  if (hasSharedStorageControllerLinkCluster(link.room)) {
+    return false;
+  }
+
   const controllerPos = link.room.controller?.pos;
   return !!controllerPos && link.pos.getRangeTo(controllerPos) <= 2;
 }
