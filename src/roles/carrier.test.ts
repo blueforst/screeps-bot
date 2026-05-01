@@ -35,9 +35,11 @@ const { isDroppedResourceTarget } = jest.requireMock("@/roles/energyTargets") as
 };
 
 const {
+  getPickupTargetEnergyAmount,
   getReservedPickupTarget,
   reservePickupTarget,
 } = jest.requireMock("@/runtime/energyPickupReservation") as {
+  getPickupTargetEnergyAmount: jest.Mock;
   getReservedPickupTarget: jest.Mock;
   reservePickupTarget: jest.Mock;
 };
@@ -126,6 +128,8 @@ describe("carrierRole mineral hauling", () => {
     getEnergyStoreTarget.mockReset();
     isDroppedResourceTarget.mockReset();
     isDroppedResourceTarget.mockReturnValue(false);
+    getPickupTargetEnergyAmount.mockReset();
+    getPickupTargetEnergyAmount.mockReturnValue(0);
     getReservedPickupTarget.mockReset();
     getReservedPickupTarget.mockReturnValue(null);
     reservePickupTarget.mockReset();
@@ -1023,5 +1027,49 @@ describe("carrierRole mineral hauling", () => {
 
     expect(creep.withdraw).toHaveBeenCalledWith(ruin, RESOURCE_CATALYZED_UTRIUM_ACID);
     expect(switched).toBe(true);
+  });
+
+  it("does not let emergency carriers withdraw storage energy when no delivery target needs energy", () => {
+    const storage = {
+      id: "idle-storage",
+      pos: {
+        getRangeTo: () => 1,
+      },
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 1000 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureStorage;
+    const room = createRoom("W4N1", { storage });
+    const configName = `${room.name}:manual:maxcarrier:test`;
+    let carried = 0;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) {
+            return carried;
+          }
+          return resource === RESOURCE_ENERGY ? carried : 0;
+        },
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn(() => {
+        carried = 800;
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    getCreepConfigService().upsert(configName, "carrier", [], room.name);
+    getEnergyStoreTarget.mockReturnValue(null);
+    getPickupTargetEnergyAmount.mockReturnValue(1000);
+    reservePickupTarget.mockReturnValue(true);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalled();
+    expect(switched).toBe(false);
   });
 });

@@ -668,7 +668,7 @@ export const carrierRole: RoleFactory = () => ({
     ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
 
     pickupEnergyForCarrier(creep, {
-      includeStorage: emergencyResponseMode,
+      includeStorage: false,
     });
     const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
     if (hasEnergy) {
