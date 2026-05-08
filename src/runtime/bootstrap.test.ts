@@ -306,6 +306,81 @@ describe("bootstrapRooms", () => {
     });
   });
 
+  it("orphans stale miner config when a linked source falls back to harvester", () => {
+    const room = createRoom({
+      sources: [createSource("source-a", "W1N1", false)],
+    });
+    Game.rooms[room.name] = room;
+    Game.spawns.Spawn1 = createSpawn(room, ["W1N1:miner:source-a", "manual:keep"]);
+    Memory.data = {
+      creepConfigs: {
+        "W1N1:miner:source-a": { role: "miner", args: ["source-a"], roomName: "W1N1" },
+      },
+    } as Memory["data"];
+    Game.creeps.minerLive = {
+      name: "minerLive",
+      room,
+      memory: {
+        role: "miner",
+        configName: "W1N1:miner:source-a",
+      },
+      suicide: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    bootstrapRooms();
+
+    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toMatchObject({
+      role: "harvester",
+      args: ["source-a"],
+      roomName: "W1N1",
+    });
+    expect(getCreepConfigService().get("W1N1:miner:source-a")).toMatchObject({
+      role: "miner",
+      args: ["source-a"],
+    });
+    expect(getCreepConfigService().get("W1N1:miner:source-a")?.roomName).toBeUndefined();
+    expect(Game.spawns.Spawn1.memory.spawnList).toEqual(["manual:keep"]);
+    expect(Game.creeps.minerLive.suicide).not.toHaveBeenCalled();
+  });
+
+  it("retires stale harvester once the replacement miner is live", () => {
+    const room = createRoom({
+      sources: [createSource("source-a", "W1N1", true)],
+    });
+    Game.rooms[room.name] = room;
+    Game.spawns.Spawn1 = createSpawn(room);
+    Memory.data = {
+      creepConfigs: {
+        "W1N1:harvester:source-a": { role: "harvester", args: ["source-a"] },
+        "W1N1:miner:source-a": { role: "miner", args: ["source-a"], roomName: "W1N1" },
+      },
+    } as Memory["data"];
+    Game.creeps.harvesterLive = {
+      name: "harvesterLive",
+      room,
+      memory: {
+        role: "harvester",
+        configName: "W1N1:harvester:source-a",
+      },
+      suicide: jest.fn(() => OK),
+    } as unknown as Creep;
+    Game.creeps.minerLive = {
+      name: "minerLive",
+      room,
+      memory: {
+        role: "miner",
+        configName: "W1N1:miner:source-a",
+      },
+      suicide: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    bootstrapRooms();
+
+    expect(Game.creeps.harvesterLive.suicide).toHaveBeenCalledTimes(1);
+    expect(Game.creeps.minerLive.suicide).not.toHaveBeenCalled();
+    expect(getCreepConfigService().get("W1N1:harvester:source-a")?.roomName).toBeUndefined();
+  });
+
   it("does not create local harvesters for managed colonies until rcl3 extensions are complete", () => {
     const room = createRoom({
       name: "W1N1",

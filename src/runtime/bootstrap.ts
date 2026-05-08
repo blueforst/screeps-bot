@@ -86,6 +86,22 @@ function orphanDeprecatedSourceConfig(configName: string): void {
   delete config.roomName;
 }
 
+function retireDeprecatedSourceWorkers(activeConfigName: string, deprecatedConfigName: string, tickContext: TickContextService): void {
+  if (tickContext.getCreepsByConfigName(activeConfigName).length === 0) {
+    return;
+  }
+
+  const deprecatedCreeps = tickContext.getCreepsByConfigName(deprecatedConfigName);
+  if (deprecatedCreeps.length === 0) {
+    getCreepConfigService().remove(deprecatedConfigName);
+    return;
+  }
+
+  for (const creep of deprecatedCreeps) {
+    creep.suicide();
+  }
+}
+
 export function bootstrapRooms(): void {
   const tickContext = getTickContextService();
   const myRooms = tickContext.getMyRooms();
@@ -102,14 +118,15 @@ export function bootstrapRooms(): void {
     for (const source of sources) {
       const role: SourceWorkerRole = hasSourceAdjacentLink(source) ? "miner" : "harvester";
       const configName = `${room.name}:${role}:${source.id}`;
+      const deprecatedRole: SourceWorkerRole = role === "miner" ? "harvester" : "miner";
+      const deprecatedConfigName = `${room.name}:${deprecatedRole}:${source.id}`;
       if (isSupportedRoom) {
         // Mother room is providing harvesters; remove from expected set so stale local configs get cleaned up
         expectedConfigNames.delete(configName);
       } else {
         upsertConfig(configName, role, [source.id], room.name);
-        if (role === "miner") {
-          orphanDeprecatedSourceConfig(`${room.name}:harvester:${source.id}`);
-        }
+        orphanDeprecatedSourceConfig(deprecatedConfigName);
+        retireDeprecatedSourceWorkers(configName, deprecatedConfigName, tickContext);
       }
     }
 
