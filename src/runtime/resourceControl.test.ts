@@ -366,7 +366,7 @@ describe("runResourceControl terminal feed tasks", () => {
     });
   });
 
-  it("stages native minerals above the 5000 threshold into the terminal before selling", () => {
+  it("stages native minerals above the 10000 threshold into the terminal before selling", () => {
     Memory.cfg = {
       resourceControl: {
         sampleInterval: 10,
@@ -379,7 +379,7 @@ describe("runResourceControl terminal feed tasks", () => {
       name: "W9N1",
       storageResources: {
         [RESOURCE_ENERGY]: 200000,
-        [RESOURCE_KEANIUM]: 6500,
+        [RESOURCE_KEANIUM]: 11500,
       },
       terminalResources: {
         [RESOURCE_ENERGY]: 20000,
@@ -406,7 +406,7 @@ describe("runResourceControl terminal feed tasks", () => {
     });
   });
 
-  it("sells native minerals above the 5000 threshold even before the room reaches export state", () => {
+  it("sells native minerals above the 10000 threshold even before the room reaches export state", () => {
     Memory.cfg = {
       resourceControl: {
         sampleInterval: 10,
@@ -419,7 +419,7 @@ describe("runResourceControl terminal feed tasks", () => {
       name: "W9N2",
       storageResources: {
         [RESOURCE_ENERGY]: 200000,
-        [RESOURCE_KEANIUM]: 5000,
+        [RESOURCE_KEANIUM]: 10000,
       },
       terminalResources: {
         [RESOURCE_ENERGY]: 25000,

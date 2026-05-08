@@ -109,7 +109,7 @@ const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
 const DEFAULT_MARKET_CONFIG: ResourceControlMarketConfig = {
   enabled: true,
   emergencyBuyEnabled: true,
-  nativeMineralAutoSellThreshold: 5_000,
+  nativeMineralAutoSellThreshold: 10_000,
   maxDealsPerRun: 1,
   minDealAmount: 1_000,
   maxDealAmount: 10_000,
