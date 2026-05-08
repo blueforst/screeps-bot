@@ -58,7 +58,7 @@ export const minerRole: RoleFactory = (sourceId?: string) => ({
 
     const link = getSourceAdjacentLink(source);
     if (!link) {
-      return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
+      return true;
     }
 
     const usedEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY);

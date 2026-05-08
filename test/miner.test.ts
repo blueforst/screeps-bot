@@ -222,4 +222,14 @@ describe("minerRole – target phase preserves link transfer behavior", () => {
     expect(role.target(creep as unknown as Creep)).toBe(false);
     expect(moveToTarget).toHaveBeenCalledWith(creep, link);
   });
+
+  test("switches back to source when the link disappears while carrying energy", () => {
+    (getSourceAdjacentLink as jest.Mock).mockReturnValue(null);
+
+    const creep = makeCreep(11, 10, ROOM, 0, 50);
+    const role = minerRole(SOURCE_ID);
+
+    expect(role.target(creep as unknown as Creep)).toBe(true);
+    expect(creep.transfer).not.toHaveBeenCalled();
+  });
 });
