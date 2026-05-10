@@ -1064,6 +1064,158 @@ describe("carrierRole mineral hauling", () => {
     expect(switched).toBe(true);
   });
 
+  it("clears synthesis task when cleanup carrier holds non-energy cargo and storage/terminal are full", () => {
+    const room = createRoom("W5N1", {
+      storage: {
+        id: "W5N1-storage",
+        structureType: STRUCTURE_STORAGE,
+        store: {
+          getUsedCapacity: () => 1000000,
+          getFreeCapacity: () => 0,
+        },
+      } as unknown as StructureStorage,
+      terminal: {
+        id: "W5N1-terminal",
+        structureType: STRUCTURE_TERMINAL,
+        store: {
+          getUsedCapacity: () => 300000,
+          getFreeCapacity: () => 0,
+        },
+      } as unknown as StructureTerminal,
+    });
+    const lab = {
+      id: "lab-cleanup-1",
+      structureType: STRUCTURE_LAB,
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+    let carried = 200;
+    const store = {
+      [RESOURCE_KEANIUM]: 200,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) {
+          return carried;
+        }
+        return resource === RESOURCE_KEANIUM ? carried : 0;
+      },
+      getFreeCapacity: () => 600,
+    };
+    const creep = {
+      ...createCreep(room),
+      memory: {},
+      store,
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "lab-cleanup-task";
+    getEnergyStoreTarget.mockReturnValue(null);
+    replaceCarrierTasksForProducerRoom("labSynthesis", room.name, [
+      {
+        id: "lab-cleanup-task",
+        type: "lab_cleanup",
+        priority: 70,
+        steps: [
+          {
+            id: "step-cleanup-1",
+            resource: RESOURCE_KEANIUM,
+            fromKind: "lab",
+            toKind: "storage",
+            fromId: lab.id,
+            toId: (room.storage as StructureStorage).id,
+            amount: 200,
+          },
+        ],
+      },
+    ]);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === lab.id) {
+        return lab;
+      }
+      if (id === (room.storage as StructureStorage).id) {
+        return room.storage;
+      }
+      if (id === (room.terminal as StructureTerminal).id) {
+        return room.terminal;
+      }
+      return null;
+    }) as Game["getObjectById"];
+
+    const done = carrierRole().target(creep);
+
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBeUndefined();
+    expect(done).toBe(false);
+  });
+
+  it("delivers cleanup resource to storage when storage has capacity", () => {
+    const room = createRoom("W5N2");
+    const storage = room.storage as StructureStorage;
+    const lab = {
+      id: "lab-cleanup-2",
+      structureType: STRUCTURE_LAB,
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+    let remaining = 200;
+    const store = {
+      [RESOURCE_KEANIUM]: 200,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) {
+          return remaining;
+        }
+        return resource === RESOURCE_KEANIUM ? remaining : 0;
+      },
+      getFreeCapacity: () => 600,
+    };
+    const creep = {
+      ...createCreep(room),
+      memory: {},
+      store,
+      transfer: jest.fn(() => {
+        remaining = 0;
+        delete store[RESOURCE_KEANIUM];
+        return OK;
+      }),
+    } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "lab-cleanup-task-2";
+    getEnergyStoreTarget.mockReturnValue(null);
+    replaceCarrierTasksForProducerRoom("labSynthesis", room.name, [
+      {
+        id: "lab-cleanup-task-2",
+        type: "lab_cleanup",
+        priority: 70,
+        steps: [
+          {
+            id: "step-cleanup-2",
+            resource: RESOURCE_KEANIUM,
+            fromKind: "lab",
+            toKind: "storage",
+            fromId: lab.id,
+            toId: storage.id,
+            amount: 200,
+          },
+        ],
+      },
+    ]);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === lab.id) {
+        return lab;
+      }
+      if (id === storage.id) {
+        return storage;
+      }
+      return null;
+    }) as Game["getObjectById"];
+
+    const done = carrierRole().target(creep);
+
+    expect((creep.transfer as jest.Mock)).toHaveBeenCalledWith(storage, RESOURCE_KEANIUM);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBeUndefined();
+    expect(done).toBe(true);
+  });
+
   it("does not let emergency carriers withdraw storage energy when no delivery target needs energy", () => {
     const storage = {
       id: "idle-storage",

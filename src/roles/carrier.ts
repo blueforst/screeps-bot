@@ -583,10 +583,7 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
       ? null
       : getSynthesisCleanupDeliveryTarget(creep, resource);
   if (!target) {
-    if (creep.store.getUsedCapacity() === 0) {
-      clearSynthesisCarrierTaskPlan(creep);
-      return false;
-    }
+    clearSynthesisCarrierTaskPlan(creep);
     return false;
   }
 
