@@ -337,6 +337,16 @@ declare global {
           >;
         };
       };
+      hub?: {
+        enabled?: boolean;
+        hubRoomName?: string;
+        planInterval?: number;
+        reservePerRoom?: number;
+        targetCompounds?: ResourceConstant[];
+        storagePauseFreeCapacity?: number;
+        surplusThreshold?: number;
+        internalOnly?: boolean;
+      };
     };
     runtime?: {
       lastDeployTag?: string;
@@ -494,6 +504,15 @@ declare global {
             lastTransitionAt: number;
           }
         >;
+      };
+      hub?: {
+        status?: "idle" | "importing" | "synthesizing" | "distributing" | "blocked";
+        updatedAt?: number;
+        activeProduct?: string;
+        activeStep?: number;
+        missingResources?: string[];
+        lastPlanActions?: string[];
+        needsPlan?: boolean;
       };
     };
     data?: {
