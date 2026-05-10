@@ -1149,6 +1149,42 @@ describe("planHubDistribution", () => {
     expect(task).toBeDefined();
     expect(task!.amount).toBe(750);
   });
+
+  it("creates export task when satellite storage is full but terminal has free capacity", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+    // Storage full, terminal has 15000 free (passes combined gate of 10000)
+    (satRoom.storage!.store as any).getFreeCapacity = () => 0;
+    (satRoom.terminal!.store as any).getFreeCapacity = () => 15000;
+
+    Game.rooms[SAT_ROOM] = satRoom;
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    // Shortage is 750, hub has 5000, terminal free is 15000 → capped by shortage (750)
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=750`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const task = tasks.find((t) => t.reason === `hub:export:${XGHO2}`);
+    expect(task).toBeDefined();
+    expect(task!.amount).toBe(750);
+  });
+
+  it("creates no export task when both satellite storage and terminal are full", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+    // Both full
+    (satRoom.storage!.store as any).getFreeCapacity = () => 0;
+    (satRoom.terminal!.store as any).getFreeCapacity = () => 0;
+
+    Game.rooms[SAT_ROOM] = satRoom;
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toHaveLength(0);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const task = tasks.find((t) => t.reason?.startsWith("hub:export:"));
+    expect(task).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

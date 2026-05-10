@@ -375,7 +375,9 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
   const actions: string[] = [];
 
   for (const satellite of satellites) {
-    if (satellite.storage!.store.getFreeCapacity() < 10000) continue;
+    const satStorageFree = satellite.storage!.store.getFreeCapacity();
+    const satTerminalFree = satellite.terminal!.store.getFreeCapacity();
+    if (satStorageFree + satTerminalFree < 10000) continue;
 
     for (const t3 of targetCompounds) {
       if (hubRemaining[t3] <= 0) continue;
