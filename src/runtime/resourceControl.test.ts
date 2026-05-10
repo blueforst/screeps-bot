@@ -819,6 +819,327 @@ describe("executeTransferTasks hub-aware priority ordering", () => {
     expect(sendCount).toBe(2);
   });
 
+  it("hub room does not sell hub intermediates (OH, G) on the market", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W14N1",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W14N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_HYDROXIDE]: 20000,
+        [RESOURCE_GHODIUM]: 15000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_HYDROXIDE]: 5000,
+        [RESOURCE_GHODIUM]: 5000,
+      },
+      nativeMineralType: RESOURCE_HYDROGEN,
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && (filter.resourceType === RESOURCE_HYDROXIDE || filter.resourceType === RESOURCE_GHODIUM)) {
+        return [
+          {
+            id: `buy-${filter.resourceType}`,
+            type: ORDER_BUY,
+            resourceType: filter.resourceType,
+            price: 1.0,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    const actions = Memory.runtime?.resourceControl?.lastMarketActions || [];
+    expect(actions.some((a: string) => a.includes("market-sell") && a.includes("OH"))).toBe(false);
+    expect(actions.some((a: string) => a.includes("market-sell") && a.includes("G"))).toBe(false);
+  });
+
+  it("hub room does not sell selected T3 compounds on the market", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W14N2",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID, RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+    };
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W14N2",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 10000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
+      },
+      nativeMineralType: RESOURCE_HYDROGEN,
+    });
+    Game.rooms[room.name] = room;
+    Memory.cfg!.resourceControl!.market!.sellResources = [RESOURCE_CATALYZED_UTRIUM_ACID];
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_CATALYZED_UTRIUM_ACID) {
+        return [
+          {
+            id: "buy-xutrium",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_CATALYZED_UTRIUM_ACID,
+            price: 5.0,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("hub room does not sell base minerals on the market", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W14N3",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W14N3",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_HYDROGEN]: 20000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_HYDROGEN]: 10000,
+      },
+      nativeMineralType: RESOURCE_HYDROGEN,
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_HYDROGEN) {
+        return [
+          {
+            id: "buy-h",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_HYDROGEN,
+            price: 0.5,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("hub room does not sell T2 intermediates (UH2O) on the market", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W14N4",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W14N4",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_UTRIUM_ACID]: 10000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_UTRIUM_ACID]: 5000,
+      },
+      nativeMineralType: RESOURCE_UTRIUM,
+    });
+    Game.rooms[room.name] = room;
+    Memory.cfg!.resourceControl!.market!.sellResources = [RESOURCE_UTRIUM_ACID];
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_UTRIUM_ACID) {
+        return [
+          {
+            id: "buy-uh2o",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_UTRIUM_ACID,
+            price: 1.0,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("hub room energy balancing still works when hub config is present", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W14N5",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    const donor = createRoom({
+      name: "W14N5",
+      storageResources: { [RESOURCE_ENERGY]: 300000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    const receiver = createRoom({
+      name: "W14N6",
+      storageResources: { [RESOURCE_ENERGY]: 50000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+
+    runResourceControl();
+
+    expect(donor.terminal.send).toHaveBeenCalledWith(
+      RESOURCE_ENERGY, expect.any(Number), receiver.name, "resourceControl:auto-balance",
+    );
+  });
+
+  it("non-hub room does not sell selected T3 at reserve level", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W14HUB",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W14N7",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 1000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 1000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    Game.rooms[room.name] = room;
+    Memory.cfg!.resourceControl!.market!.sellResources = [RESOURCE_CATALYZED_UTRIUM_ACID];
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_CATALYZED_UTRIUM_ACID) {
+        return [
+          {
+            id: "buy-xutrium",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_CATALYZED_UTRIUM_ACID,
+            price: 5.0,
+            amount: 1000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("non-hub room does not sell surplus selected T3 (left for hubPlanner reclaim)", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W14HUB",
+      targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+    };
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W14N8",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 8000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 3000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    Game.rooms[room.name] = room;
+    Memory.cfg!.resourceControl!.market!.sellResources = [RESOURCE_CATALYZED_GHODIUM_ALKALIDE];
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_CATALYZED_GHODIUM_ALKALIDE) {
+        return [
+          {
+            id: "buy-xgho2",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+            price: 5.0,
+            amount: 3000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("non-hub room can still sell non-hub-managed minerals normally", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W14HUB",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W14N9",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_KEANIUM]: 20000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_KEANIUM]: 5000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_KEANIUM) {
+        return [
+          {
+            id: "buy-k",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_KEANIUM,
+            price: 0.8,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("buy-k", 5000, room.name);
+  });
+
   it("skips hub export when hub import task exists for same hub room", () => {
     const hubRoom = createRoom({
       name: "W12N1",

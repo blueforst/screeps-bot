@@ -18,6 +18,23 @@ type ResourceThresholdMap = Partial<Record<ResourceConstant, number>>;
 const BASE_MINERALS: ResourceConstant[] = [RESOURCE_HYDROGEN, RESOURCE_OXYGEN, RESOURCE_UTRIUM, RESOURCE_LEMERGIUM, RESOURCE_KEANIUM, RESOURCE_ZYNTHIUM, RESOURCE_CATALYST];
 const DEFAULT_MARKET_SELL_RESOURCES: ResourceConstant[] = [...BASE_MINERALS];
 
+const HUB_INTERMEDIATES: ResourceConstant[] = [
+  RESOURCE_HYDROXIDE,
+  RESOURCE_ZYNTHIUM_KEANITE,
+  RESOURCE_UTRIUM_LEMERGITE,
+  RESOURCE_GHODIUM,
+  RESOURCE_UTRIUM_HYDRIDE,
+  RESOURCE_UTRIUM_OXIDE,
+  RESOURCE_LEMERGIUM_OXIDE,
+  RESOURCE_GHODIUM_HYDRIDE,
+  RESOURCE_GHODIUM_OXIDE,
+  RESOURCE_UTRIUM_ACID,
+  RESOURCE_UTRIUM_ALKALIDE,
+  RESOURCE_LEMERGIUM_ALKALIDE,
+  RESOURCE_GHODIUM_ACID,
+  RESOURCE_GHODIUM_ALKALIDE,
+];
+
 interface ResourceControlRoomConfig {
   energyFloor: number;
   energyTarget: number;
@@ -957,6 +974,24 @@ function findBestBuyOrder(
   return best;
 }
 
+function isHubProtectedResource(resource: ResourceConstant, roomName: string): boolean {
+  const hubCfg = Memory.cfg?.hub;
+  if (!hubCfg) {
+    return false;
+  }
+
+  const isHubRoom = hubCfg.hubRoomName === roomName;
+  const targetCompounds = hubCfg.targetCompounds || [];
+
+  if (!isHubRoom) {
+    return targetCompounds.includes(resource);
+  }
+
+  return targetCompounds.includes(resource)
+    || HUB_INTERMEDIATES.includes(resource)
+    || BASE_MINERALS.includes(resource);
+}
+
 function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: ResourceControlMarketConfig): string[] {
   if (!marketCfg.enabled || marketCfg.maxDealsPerRun <= 0) {
     return [];
@@ -980,6 +1015,10 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
     }
 
     for (const resource of getSellResourcesForRoom(room, marketCfg)) {
+      if (resource !== RESOURCE_ENERGY && isHubProtectedResource(resource, room.roomName)) {
+        continue;
+      }
+
       const isNativeAutoSell = room.canMineNative && room.nativeMineralType === resource;
       if (room.state !== "export" && !isNativeAutoSell) {
         continue;
