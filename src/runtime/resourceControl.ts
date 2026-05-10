@@ -992,7 +992,7 @@ function isHubProtectedResource(resource: ResourceConstant, roomName: string): b
     || BASE_MINERALS.includes(resource);
 }
 
-function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: ResourceControlMarketConfig): string[] {
+function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: ResourceControlMarketConfig, terminalBusy: Set<string>): string[] {
   if (!marketCfg.enabled || marketCfg.maxDealsPerRun <= 0) {
     return [];
   }
@@ -1012,6 +1012,9 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
   for (const room of exportRooms) {
     if (dealsDone >= marketCfg.maxDealsPerRun) {
       break;
+    }
+    if (terminalBusy.has(room.roomName)) {
+      continue;
     }
 
     for (const resource of getSellResourcesForRoom(room, marketCfg)) {
@@ -1096,6 +1099,9 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
     if (dealsDone >= marketCfg.maxDealsPerRun) {
       break;
     }
+    if (terminalBusy.has(room.roomName)) {
+      continue;
+    }
 
     const need = Math.max(0, room.energyTarget - room.storageEnergy);
     if (need < marketCfg.minDealAmount) {
@@ -1153,6 +1159,9 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
   for (const room of mineralBuyRooms) {
     if (dealsDone >= marketCfg.maxDealsPerRun) {
       break;
+    }
+    if (terminalBusy.has(room.roomName)) {
+      continue;
     }
 
     for (const resource of marketCfg.buyResources) {
@@ -1288,6 +1297,6 @@ export function runResourceControl(): void {
   const actions = applyInternalBalancing(snapshots, terminalBusy);
   const taskActions = executeTransferTasks(snapshots, terminalBusy, resolveTaskMaxPerRun());
   const preloadActions = syncTerminalFeedTasks(snapshots, marketConfig);
-  const marketActions = applyMarketOps(snapshots, marketConfig);
+  const marketActions = applyMarketOps(snapshots, marketConfig, terminalBusy);
   persistResourceControlState(snapshots, [...actions, ...taskActions, ...preloadActions], marketActions);
 }

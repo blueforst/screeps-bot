@@ -1295,4 +1295,114 @@ describe("executeTransferTasks hub-aware priority ordering", () => {
     expect(Game.market.deal).toHaveBeenCalledWith("buy-h2", 5000, room.name);
   });
 
+  it("transfer task terminal send suppresses same-tick market deal for that room", () => {
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    Memory.cfg!.resourceControl!.market!.sellResources = [RESOURCE_KEANIUM];
+    const donor = createRoom({
+      name: "W30N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_KEANIUM]: 20000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_KEANIUM]: 5000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    const receiver = createRoom({
+      name: "W30N2",
+      storageResources: { [RESOURCE_ENERGY]: 50000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_KEANIUM, 3000, "test:terminal-busy");
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_KEANIUM) {
+        return [
+          {
+            id: "buy-k-busy",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_KEANIUM,
+            price: 0.8,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    // Transfer task should have used the terminal
+    expect(donor.terminal.send).toHaveBeenCalled();
+    // Market deal should be skipped because terminal is now busy
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("idle room without terminal activity still executes market deals", () => {
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    Memory.cfg!.resourceControl!.market!.sellResources = [RESOURCE_KEANIUM];
+    const donor = createRoom({
+      name: "W30N3",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_KEANIUM]: 5000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_KEANIUM]: 5000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    const idleRoom = createRoom({
+      name: "W30N4",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_KEANIUM]: 20000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_KEANIUM]: 5000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    const receiver = createRoom({
+      name: "W30N5",
+      storageResources: { [RESOURCE_ENERGY]: 150000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    Game.rooms[idleRoom.name] = idleRoom;
+    // Transfer task only involves donor → receiver, idleRoom is free
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_KEANIUM, 3000, "test:idle-check");
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_KEANIUM) {
+        return [
+          {
+            id: "buy-k-idle",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_KEANIUM,
+            price: 0.8,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    // Donor's terminal was used by transfer task
+    expect(donor.terminal.send).toHaveBeenCalled();
+    // Idle room's market deal should still go through
+    expect(Game.market.deal).toHaveBeenCalledWith("buy-k-idle", 5000, idleRoom.name);
+  });
+
 });
