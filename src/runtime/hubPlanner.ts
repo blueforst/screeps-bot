@@ -312,6 +312,95 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
   return actions;
 }
 
+export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): string[] {
+  if (!cfg?.hubRoomName) return [];
+
+  const hubRoom = Game.rooms[cfg.hubRoomName];
+  if (!hubRoom?.storage || !hubRoom?.terminal) return [];
+
+  const reservePerRoom = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
+  const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : DEFAULT_TARGET_COMPOUNDS;
+
+  const hubT3Available: Record<string, number> = {};
+  const hubStorageStore = hubRoom.storage.store as unknown as Record<string, number>;
+  const hubTerminalStore = hubRoom.terminal.store as unknown as Record<string, number>;
+  for (const t3 of targetCompounds) {
+    hubT3Available[t3] = (hubStorageStore[t3] || 0) + (hubTerminalStore[t3] || 0);
+  }
+
+  const taskStore = ensureResourceTransferTaskStore();
+  const hubPendingOutgoing: Record<string, number> = {};
+  for (const task of Object.values(taskStore)) {
+    if (
+      task.status === "pending" &&
+      task.fromRoomName === cfg.hubRoomName &&
+      task.reason?.startsWith("hub:export:")
+    ) {
+      hubPendingOutgoing[task.resource] = (hubPendingOutgoing[task.resource] || 0) + task.remainingAmount;
+    }
+  }
+
+  const hubRemaining: Record<string, number> = {};
+  for (const t3 of targetCompounds) {
+    hubRemaining[t3] = Math.max(0, (hubT3Available[t3] || 0) - (hubPendingOutgoing[t3] || 0));
+  }
+
+  const myRooms = getTickContextService().getMyRooms();
+  const satellites = myRooms.filter(
+    (room) =>
+      room.name !== cfg.hubRoomName &&
+      room.controller?.my &&
+      room.storage &&
+      room.terminal,
+  );
+
+  const actions: string[] = [];
+
+  for (const satellite of satellites) {
+    if (satellite.storage!.store.getFreeCapacity() < 10000) continue;
+
+    for (const t3 of targetCompounds) {
+      if (hubRemaining[t3] <= 0) continue;
+
+      const satStorage = satellite.storage!.store as unknown as Record<string, number>;
+      const satTerminal = satellite.terminal!.store as unknown as Record<string, number>;
+      const current = (satStorage[t3] || 0) + (satTerminal[t3] || 0);
+
+      let pendingIncoming = 0;
+      for (const task of Object.values(taskStore)) {
+        if (
+          task.status === "pending" &&
+          task.toRoomName === satellite.name &&
+          task.resource === t3 &&
+          task.reason?.startsWith("hub:export:")
+        ) {
+          pendingIncoming += task.remainingAmount;
+        }
+      }
+
+      const effectiveTotal = current + pendingIncoming;
+      if (effectiveTotal >= reservePerRoom) continue;
+
+      const shortage = reservePerRoom - effectiveTotal;
+      const cappedByHub = Math.min(shortage, hubRemaining[t3]);
+      const terminalFree = satellite.terminal!.store.getFreeCapacity();
+      const amount = Math.min(cappedByHub, terminalFree);
+
+      if (amount <= 0) continue;
+
+      const reason = `hub:export:${t3}`;
+      const result = createResourceTransferTask(cfg.hubRoomName, satellite.name, t3, amount, reason);
+
+      if (typeof result === "object" && result.ok) {
+        actions.push(`export:${satellite.name}:${t3}=${amount}`);
+        hubRemaining[t3] -= amount;
+      }
+    }
+  }
+
+  return actions;
+}
+
 export function writeSynthesisConfig(
   hubRoomName: string,
   steps: ChainStep[],
@@ -433,5 +522,6 @@ export function runHubPlanner(): void {
 
   if (!result.blocked) {
     writeSynthesisConfig(cfg.hubRoomName, result.steps, hubInventory);
+    planHubDistribution(cfg);
   }
 }

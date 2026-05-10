@@ -7,6 +7,7 @@ import {
   getDefaultHubConfig,
   getDefaultHubRuntime,
   planHubChains,
+  planHubDistribution,
   planHubImports,
   runHubPlanner,
 } from "@/runtime/hubPlanner";
@@ -811,5 +812,139 @@ describe("writeSynthesisConfig", () => {
 
     const roomCfg = Memory.cfg.synthesisControl?.rooms?.[HUB_ROOM];
     expect(roomCfg?.reactions).toBeFalsy();
+  });
+});
+
+function createHubRoomForDistribution(t3Resources: Record<string, number>): Room {
+  const storageEntries: Record<string, number> = { [RESOURCE_ENERGY]: 200000, ...t3Resources };
+  return {
+    name: HUB_ROOM,
+    controller: { my: true, level: 8 },
+    storage: {
+      id: "hub-storage",
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        ...storageEntries,
+        getUsedCapacity: (resource?: string) => {
+          if (resource) return storageEntries[resource] || 0;
+          return Object.values(storageEntries).reduce((a: number, b: number) => a + b, 0);
+        },
+        getFreeCapacity: () => 500000,
+      },
+    },
+    terminal: {
+      id: "hub-terminal",
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        [RESOURCE_ENERGY]: 20000,
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300000,
+        cooldown: 0,
+      },
+    },
+    find: () => [],
+  } as unknown as Room;
+}
+
+describe("planHubDistribution", () => {
+  const SAT_ROOM = "W2N1";
+  const XGHO2 = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
+
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = { hub: getDefaultHubRuntime() };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("satellite with 250 XGHO2 receives task for 750 from hub", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=750`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const task = tasks.find((t) => t.reason === `hub:export:${XGHO2}`);
+    expect(task).toBeDefined();
+    expect(task!.fromRoomName).toBe(HUB_ROOM);
+    expect(task!.toRoomName).toBe(SAT_ROOM);
+    expect(task!.amount).toBe(750);
+  });
+
+  it("satellite with 1000 XGHO2 receives no task", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 1000 });
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toHaveLength(0);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const task = tasks.find((t) => t.reason?.startsWith("hub:export:"));
+    expect(task).toBeUndefined();
+  });
+
+  it("hub room is excluded from distribution even if below reserve", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    // No satellite rooms exist — hub is the only owned room
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("destination terminal capacity caps transfer amount", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+    (satRoom.terminal!.store as any).getFreeCapacity = () => 100;
+
+    Game.rooms[SAT_ROOM] = satRoom;
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    // Shortage is 750, hub has 5000, but terminal free capacity is 100
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=100`);
+  });
+
+  it("no export task when hub has 0 of the T3 compound", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({}); // No T3 in hub
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("pending incoming amounts are counted (don't over-send)", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+
+    // Existing pending export: hub → satellite, 500 XGHO2
+    createResourceTransferTask(HUB_ROOM, SAT_ROOM, XGHO2, 500, `hub:export:${XGHO2}`);
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    // Satellite has 250, pending 500 incoming → effective 750. Need 250 more.
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=250`);
+
+    // Verify the task was merged (total 500 + 250 = 750)
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const task = tasks.find((t) => t.reason === `hub:export:${XGHO2}`);
+    expect(task).toBeDefined();
+    expect(task!.amount).toBe(750);
   });
 });
