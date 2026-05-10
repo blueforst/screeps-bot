@@ -137,6 +137,8 @@ const INTERMEDIATE_COMPOUNDS: ResourceConstant[] = [
 
 const BASE_MINERAL_SAFETY_FLOOR = 500;
 
+const MIN_HUB_IMPORT_AMOUNT = 100;
+
 const HUB_RUNTIME_ARRAY_CAP = 20;
 
 export function planHubChains(
@@ -288,6 +290,7 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
       const amount = satResources[mineral] || 0;
       if (amount <= BASE_MINERAL_SAFETY_FLOOR) continue;
       const sendAmount = amount - BASE_MINERAL_SAFETY_FLOOR;
+      if (sendAmount < MIN_HUB_IMPORT_AMOUNT) continue;
       const reason = `hub:import:${mineral}`;
       const key = `${satellite.name}:${mineral}:${reason}`;
       if (existingKeys.has(key)) continue;
@@ -300,6 +303,7 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
     for (const compound of INTERMEDIATE_COMPOUNDS) {
       const amount = satResources[compound] || 0;
       if (amount <= 0) continue;
+      if (amount < MIN_HUB_IMPORT_AMOUNT) continue;
       const reason = `hub:import:${compound}`;
       const key = `${satellite.name}:${compound}:${reason}`;
       if (existingKeys.has(key)) continue;

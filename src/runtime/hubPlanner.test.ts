@@ -722,6 +722,46 @@ describe("planHubImports", () => {
     );
     expect(hTaskAfter!.amount).toBe(200);
   });
+
+  it("skips base mineral import when send amount is below minimum threshold", () => {
+    // 50 H above safety floor: 550 total - 500 floor = 50, which is < 100 minimum
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROGEN]: 550 });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).not.toContainEqual(expect.stringContaining(`import:${SAT_ROOM}:${RESOURCE_HYDROGEN}`));
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const hTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROGEN && t.reason === `hub:import:${RESOURCE_HYDROGEN}`,
+    );
+    expect(hTask).toBeUndefined();
+  });
+
+  it("skips intermediate import when amount is below minimum threshold", () => {
+    // 80 OH is below MIN_HUB_IMPORT_AMOUNT (100)
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROXIDE]: 80 });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).not.toContainEqual(expect.stringContaining(`import:${SAT_ROOM}:${RESOURCE_HYDROXIDE}`));
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const ohTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROXIDE && t.reason === `hub:import:${RESOURCE_HYDROXIDE}`,
+    );
+    expect(ohTask).toBeUndefined();
+  });
+
+  it("creates intermediate import task when amount meets minimum threshold", () => {
+    // 150 OH is above MIN_HUB_IMPORT_AMOUNT (100)
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROXIDE]: 150 });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toContainEqual(`import:${SAT_ROOM}:${RESOURCE_HYDROXIDE}=150`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const ohTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROXIDE && t.reason === `hub:import:${RESOURCE_HYDROXIDE}`,
+    );
+    expect(ohTask).toBeDefined();
+    expect(ohTask!.amount).toBe(150);
+  });
 });
 
 describe("writeSynthesisConfig", () => {
