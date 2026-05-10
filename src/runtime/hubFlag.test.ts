@@ -113,4 +113,96 @@ describe("runHubByFlag", () => {
     expect(Memory.cfg?.hub?.reservePerRoom).toBe(9999);
     expect(Memory.runtime?.hub?.needsPlan).toBe(true);
   });
+
+  it("no HUB flag present: complete no-op, memory untouched", () => {
+    Memory.cfg = {};
+    Memory.runtime = {};
+
+    runHubByFlag();
+
+    expect(Memory.cfg.hub).toBeUndefined();
+    expect(Memory.runtime.hub).toBeUndefined();
+  });
+
+  it("room visible but controller.my is undefined: flag not consumed, status=blocked", () => {
+    const room = {
+      name: "W1N1",
+      controller: { level: 0 },
+    } as unknown as Room;
+    Game.rooms["W1N1"] = room;
+    const flag = createFlag("HUB", "W1N1");
+    Game.flags["HUB"] = flag;
+
+    runHubByFlag();
+
+    expect(flag.remove).not.toHaveBeenCalled();
+    expect(Memory.runtime?.hub?.status).toBe("blocked");
+    expect(Memory.cfg?.hub?.enabled).toBeFalsy();
+  });
+
+  it("existing hubRoomName is empty string: flag consumed and config overwritten", () => {
+    const room = createOwnedRoom("W2N2");
+    Game.rooms["W2N2"] = room;
+    const flag = createFlag("HUB", "W2N2");
+    Game.flags["HUB"] = flag;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "",
+      },
+    };
+
+    runHubByFlag();
+
+    expect(flag.remove).toHaveBeenCalledTimes(1);
+    expect(Memory.cfg?.hub?.hubRoomName).toBe("W2N2");
+    expect(Memory.runtime?.hub?.needsPlan).toBe(true);
+  });
+
+  it("non-owned flag not consumed, existing hub config preserved", () => {
+    const room = createNonOwnedRoom("W3N3");
+    Game.rooms["W3N3"] = room;
+    const flag = createFlag("HUB", "W3N3");
+    Game.flags["HUB"] = flag;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        reservePerRoom: 5000,
+      },
+    };
+
+    runHubByFlag();
+
+    expect(flag.remove).not.toHaveBeenCalled();
+    expect(Memory.cfg?.hub?.hubRoomName).toBe("W1N1");
+    expect(Memory.cfg?.hub?.reservePerRoom).toBe(5000);
+    expect(Memory.runtime?.hub?.status).toBe("blocked");
+  });
+
+  it("existing hub in different room: new flag blocked, existing config untouched", () => {
+    const room = createOwnedRoom("W5N5");
+    Game.rooms["W5N5"] = room;
+    const flag = createFlag("HUB", "W5N5");
+    Game.flags["HUB"] = flag;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        reservePerRoom: 2000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ACID],
+      },
+    };
+
+    runHubByFlag();
+
+    expect(flag.remove).not.toHaveBeenCalled();
+    expect(Memory.cfg?.hub?.hubRoomName).toBe("W1N1");
+    expect(Memory.cfg?.hub?.reservePerRoom).toBe(2000);
+    expect(Memory.cfg?.hub?.targetCompounds).toEqual([RESOURCE_CATALYZED_GHODIUM_ACID]);
+    expect(Memory.runtime?.hub?.status).toBe("blocked");
+  });
 });

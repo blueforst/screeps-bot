@@ -949,3 +949,365 @@ describe("planHubDistribution", () => {
     expect(task!.amount).toBe(750);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Integration tests: full HUB lifecycle crossing hubFlag → hubPlanner → resourceTransferTasks
+// ---------------------------------------------------------------------------
+
+const ALL_BASE_MINERALS: Record<string, number> = {
+  [RESOURCE_HYDROGEN]: 10000,
+  [RESOURCE_OXYGEN]: 10000,
+  [RESOURCE_UTRIUM]: 10000,
+  [RESOURCE_LEMERGIUM]: 10000,
+  [RESOURCE_KEANIUM]: 10000,
+  [RESOURCE_ZYNTHIUM]: 10000,
+  [RESOURCE_CATALYST]: 10000,
+};
+
+function createIntegrationHubRoom(
+  roomName: string,
+  storageResources: Record<string, number>,
+  options: {
+    hasTerminal?: boolean;
+    hasStorage?: boolean;
+    labCount?: number;
+    storageFreeCapacity?: number;
+  } = {},
+): Room {
+  const {
+    hasTerminal = true,
+    hasStorage = true,
+    labCount = 3,
+    storageFreeCapacity = 500000,
+  } = options;
+
+  const storageEntries: Record<string, number> = {
+    [RESOURCE_ENERGY]: 200000,
+    ...storageResources,
+  };
+
+  const storage = hasStorage
+    ? {
+        id: `${roomName}-storage`,
+        structureType: STRUCTURE_STORAGE,
+        store: {
+          ...storageEntries,
+          getUsedCapacity: (resource?: string) => {
+            if (resource) return storageEntries[resource] || 0;
+            return Object.values(storageEntries).reduce(
+              (a: number, b: number) => a + b,
+              0,
+            );
+          },
+          getFreeCapacity: () => storageFreeCapacity,
+        },
+      }
+    : undefined;
+
+  const terminal = hasTerminal
+    ? {
+        id: `${roomName}-terminal`,
+        structureType: STRUCTURE_TERMINAL,
+        store: {
+          [RESOURCE_ENERGY]: 20000,
+          getUsedCapacity: () => 0,
+          getFreeCapacity: () => 300000,
+          cooldown: 0,
+        },
+      }
+    : undefined;
+
+  const labs: Structure[] = [];
+  for (let i = 0; i < labCount; i++) {
+    labs.push({
+      id: `${roomName}-lab-${i}`,
+      structureType: STRUCTURE_LAB,
+    } as Structure);
+  }
+
+  return {
+    name: roomName,
+    controller: { my: true, level: 8 },
+    storage,
+    terminal,
+    find: (
+      type: FindConstant,
+      opts?: {
+        filter?: ((s: Structure) => boolean) | { structureType: string };
+      },
+    ) => {
+      if (type === FIND_MY_STRUCTURES) {
+        if (!opts?.filter) return labs;
+        if (typeof opts.filter === "function") return labs.filter(opts.filter);
+        const targetType = (opts.filter as { structureType: string })
+          .structureType;
+        return labs.filter((s) => s.structureType === targetType);
+      }
+      return [];
+    },
+  } as unknown as Room;
+}
+
+function createTestFlag(roomName: string): Flag {
+  return {
+    name: "HUB",
+    pos: { x: 25, y: 25, roomName } as RoomPosition,
+    remove: jest.fn(() => OK),
+  } as unknown as Flag;
+}
+
+const INTEGRATION_HUB = "W1N1";
+const INTEGRATION_SAT = "W2N1";
+
+describe("HUB lifecycle integration", () => {
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Game.flags = {};
+    Memory.cfg = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  // 1. Full lifecycle: flag → config → needsPlan → planner writes OH reaction
+  it("flag placement → config written → planner writes first OH reaction", () => {
+    const hubRoom = createIntegrationHubRoom(INTEGRATION_HUB, ALL_BASE_MINERALS);
+    Game.rooms[INTEGRATION_HUB] = hubRoom;
+    const flag = createTestFlag(INTEGRATION_HUB);
+    Game.flags["HUB"] = flag;
+
+    // Tick A: flag processing
+    runHubByFlag();
+
+    expect(flag.remove).toHaveBeenCalledTimes(1);
+    expect(Memory.cfg.hub).toBeDefined();
+    expect(Memory.cfg.hub!.enabled).toBe(true);
+    expect(Memory.cfg.hub!.hubRoomName).toBe(INTEGRATION_HUB);
+    expect(Memory.runtime.hub).toBeDefined();
+    expect(Memory.runtime.hub!.needsPlan).toBe(true);
+
+    // Tick B: planner picks up needsPlan
+    runHubPlanner();
+
+    expect(Memory.runtime.hub!.needsPlan).toBe(false);
+    expect(Memory.runtime.hub!.updatedAt).toBe(Game.time);
+    expect(Memory.runtime.hub!.status).toBe("importing");
+    expect(Memory.runtime.hub!.activeProduct).toBe(RESOURCE_HYDROXIDE);
+
+    // synthesisControl written
+    expect(Memory.cfg.synthesisControl).toBeDefined();
+    expect(Memory.cfg.synthesisControl!.enabled).toBe(true);
+    const roomCfg = Memory.cfg.synthesisControl!.rooms![INTEGRATION_HUB];
+    expect(roomCfg).toBeDefined();
+    expect(roomCfg.enabled).toBe(true);
+    expect(roomCfg.reactions).toHaveLength(1);
+    expect(roomCfg.reactions![0].product).toBe(RESOURCE_HYDROXIDE);
+    expect(roomCfg.reactions![0].targetAmount).toBe(5000);
+  });
+
+  // 2. Full lifecycle: OH → ZK stage advancement when OH complete
+  it("advances from OH to ZK when OH target is met", () => {
+    Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(INTEGRATION_HUB, {
+      ...ALL_BASE_MINERALS,
+      [RESOURCE_HYDROXIDE]: 5000,
+    });
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: INTEGRATION_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: { ...getDefaultHubRuntime(), needsPlan: true },
+    };
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub!.status).toBe("importing");
+    expect(Memory.runtime.hub!.activeProduct).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+
+    const roomCfg = Memory.cfg.synthesisControl!.rooms![INTEGRATION_HUB];
+    expect(roomCfg.reactions).toHaveLength(1);
+    expect(roomCfg.reactions![0].product).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+    expect(roomCfg.reactions![0].targetAmount).toBe(2000);
+  });
+
+  // 3. Full lifecycle: T3 production complete → hub:export task created
+  it("creates hub:export task when T3 stock exists and satellite needs compound", () => {
+    const ALL_COMPLETE: Record<string, number> = {
+      ...ALL_BASE_MINERALS,
+      [RESOURCE_HYDROXIDE]: 5000,
+      [RESOURCE_ZYNTHIUM_KEANITE]: 2000,
+      [RESOURCE_UTRIUM_LEMERGITE]: 2000,
+      [RESOURCE_GHODIUM]: 2000,
+      [RESOURCE_UTRIUM_HYDRIDE]: 1000,
+      [RESOURCE_UTRIUM_OXIDE]: 1000,
+      [RESOURCE_LEMERGIUM_OXIDE]: 1000,
+      [RESOURCE_GHODIUM_HYDRIDE]: 1000,
+      [RESOURCE_GHODIUM_OXIDE]: 1000,
+      [RESOURCE_UTRIUM_ACID]: 1000,
+      [RESOURCE_UTRIUM_ALKALIDE]: 1000,
+      [RESOURCE_LEMERGIUM_ALKALIDE]: 1000,
+      [RESOURCE_GHODIUM_ALKALIDE]: 1000,
+      [RESOURCE_GHODIUM_ACID]: 1000,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 1000,
+      [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: 1000,
+      [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 1000,
+      [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 1000,
+      [RESOURCE_CATALYZED_GHODIUM_ACID]: 1000,
+    };
+
+    Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(
+      INTEGRATION_HUB,
+      ALL_COMPLETE,
+    );
+    Game.rooms[INTEGRATION_SAT] = createSatelliteRoom(INTEGRATION_SAT, {});
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: INTEGRATION_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: { ...getDefaultHubRuntime(), needsPlan: true },
+    };
+
+    runHubPlanner();
+
+    // All chains met → distributing
+    expect(Memory.runtime.hub!.status).toBe("distributing");
+    expect(Memory.runtime.hub!.activeProduct).toBe("");
+
+    // Export task created for satellite
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const exportTask = tasks.find((t) => t.reason?.startsWith("hub:export:"));
+    expect(exportTask).toBeDefined();
+    expect(exportTask!.fromRoomName).toBe(INTEGRATION_HUB);
+    expect(exportTask!.toRoomName).toBe(INTEGRATION_SAT);
+    expect(exportTask!.resource).toBe(RESOURCE_CATALYZED_UTRIUM_ACID);
+    expect(exportTask!.amount).toBe(1000);
+  });
+
+  // 4. No terminal → blocked safely (flag → planner integration)
+  it("blocks when hub room has no terminal", () => {
+    const hubRoom = createIntegrationHubRoom(INTEGRATION_HUB, ALL_BASE_MINERALS, {
+      hasTerminal: false,
+    });
+    Game.rooms[INTEGRATION_HUB] = hubRoom;
+    const flag = createTestFlag(INTEGRATION_HUB);
+    Game.flags["HUB"] = flag;
+
+    runHubByFlag();
+    expect(Memory.cfg.hub!.enabled).toBe(true);
+
+    runHubPlanner();
+    expect(Memory.runtime.hub!.status).toBe("blocked");
+    expect(Memory.runtime.hub!.needsPlan).toBe(true);
+    expect(Memory.cfg.synthesisControl?.rooms?.[INTEGRATION_HUB]?.reactions).toBeFalsy();
+  });
+
+  // 5. <3 labs → blocked safely (flag → planner integration)
+  it("blocks when hub room has fewer than 3 labs", () => {
+    const hubRoom = createIntegrationHubRoom(INTEGRATION_HUB, ALL_BASE_MINERALS, {
+      labCount: 2,
+    });
+    Game.rooms[INTEGRATION_HUB] = hubRoom;
+    const flag = createTestFlag(INTEGRATION_HUB);
+    Game.flags["HUB"] = flag;
+
+    runHubByFlag();
+    expect(Memory.cfg.hub!.enabled).toBe(true);
+
+    runHubPlanner();
+    expect(Memory.runtime.hub!.status).toBe("blocked");
+    expect(Memory.runtime.hub!.needsPlan).toBe(true);
+    expect(Memory.cfg.synthesisControl?.rooms?.[INTEGRATION_HUB]?.reactions).toBeFalsy();
+  });
+
+  // 6. Missing base minerals → blocked with exact missing list
+  it("blocks with exact missing minerals list when base minerals absent", () => {
+    const partialMinerals: Record<string, number> = {
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    };
+    const hubRoom = createIntegrationHubRoom(INTEGRATION_HUB, partialMinerals);
+    Game.rooms[INTEGRATION_HUB] = hubRoom;
+    const flag = createTestFlag(INTEGRATION_HUB);
+    Game.flags["HUB"] = flag;
+
+    runHubByFlag();
+    expect(Memory.cfg.hub!.enabled).toBe(true);
+
+    runHubPlanner();
+    expect(Memory.runtime.hub!.status).toBe("blocked");
+    expect(Memory.runtime.hub!.missingResources).toEqual(
+      expect.arrayContaining([RESOURCE_KEANIUM, RESOURCE_ZYNTHIUM]),
+    );
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_HYDROGEN);
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_OXYGEN);
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_UTRIUM);
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_LEMERGIUM);
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_CATALYST);
+    // No synthesis config written when blocked
+    expect(
+      Memory.cfg.synthesisControl?.rooms?.[INTEGRATION_HUB]?.reactions,
+    ).toBeFalsy();
+  });
+
+  // 7. Near-full storage prevents import tasks from satellite
+  it("does not create import tasks when hub storage is near full", () => {
+    Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(
+      INTEGRATION_HUB,
+      ALL_BASE_MINERALS,
+      { storageFreeCapacity: 50000 },
+    );
+    // Satellite with surplus hydrogen
+    Game.rooms[INTEGRATION_SAT] = createSatelliteRoom(INTEGRATION_SAT, {
+      [RESOURCE_HYDROGEN]: 2000,
+    });
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: INTEGRATION_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: { ...getDefaultHubRuntime(), needsPlan: true },
+    };
+
+    runHubPlanner();
+
+    // Planner should run (not blocked by minerals)
+    expect(Memory.runtime.hub!.status).not.toBe("blocked");
+    // But no import tasks because hub storage free capacity < threshold
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const importTask = tasks.find((t) => t.reason?.startsWith("hub:import:"));
+    expect(importTask).toBeUndefined();
+  });
+});

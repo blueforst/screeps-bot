@@ -1,4 +1,16 @@
-/** Hub planner config schema, defaults, runtime state, and chain planning. */
+/**
+ * Hub planner config schema, defaults, runtime state, and chain planning.
+ *
+ * PRODUCTION-RATE EXPECTATION:
+ * Producing 1000 each of 5 T3 compounds (~5000 total T3 units) requires ~27k
+ * base minerals and takes ~10k–15k ticks under one-room sequential lab execution
+ * (3+ labs), depending on terminal contention and cleanup ticks.
+ *
+ * The 19 sequential reactions range from shared intermediates (OH, ZK, UL, G)
+ * through tier-1, tier-2, to final T3 compounds. Each reaction cycle consumes
+ * 5 ticks per batch; total duration is dominated by the depth of the longest
+ * dependency chain plus terminal transfer overhead between rooms.
+ */
 
 import { createResourceTransferTask, ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { getTickContextService } from "@/runtime/runtimeServices";
