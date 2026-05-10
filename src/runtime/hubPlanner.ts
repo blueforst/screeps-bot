@@ -192,3 +192,83 @@ export function planHubChains(
     missingResources,
   };
 }
+
+function countLabs(room: Room): number {
+  return room.find(FIND_MY_STRUCTURES, {
+    filter: { structureType: STRUCTURE_LAB },
+  }).length;
+}
+
+export function runHubPlanner(): void {
+  const cfg = Memory.cfg?.hub;
+  if (cfg?.enabled !== true || !cfg.hubRoomName) return;
+
+  const rt = Memory.runtime?.hub;
+  if (!rt) return;
+
+  const onCadence = Game.time % (cfg.planInterval || 50) === 0;
+  if (!onCadence && rt.needsPlan !== true) return;
+
+  const room = Game.rooms[cfg.hubRoomName];
+  if (!room) {
+    rt.status = "blocked";
+    return;
+  }
+
+  if (!room.controller?.my) {
+    rt.status = "blocked";
+    return;
+  }
+
+  if (!room.storage) {
+    rt.status = "blocked";
+    return;
+  }
+
+  if (!room.terminal) {
+    rt.status = "blocked";
+    return;
+  }
+
+  if (countLabs(room) < 3) {
+    rt.status = "blocked";
+    return;
+  }
+
+  const hubInventory: Record<string, number> = {};
+  const storage = room.storage.store as unknown as Record<string, number>;
+  for (const [res, amt] of Object.entries(storage)) {
+    if (res !== RESOURCE_ENERGY && amt > 0) {
+      hubInventory[res] = amt;
+    }
+  }
+  const terminal = room.terminal.store as unknown as Record<string, number>;
+  for (const [res, amt] of Object.entries(terminal)) {
+    if (res !== RESOURCE_ENERGY && amt > 0) {
+      hubInventory[res] = (hubInventory[res] || 0) + amt;
+    }
+  }
+
+  const result = planHubChains(hubInventory, {}, cfg.reservePerRoom || 1000);
+
+  rt.needsPlan = false;
+  rt.updatedAt = Game.time;
+  rt.missingResources = result.missingResources;
+
+  if (result.blocked) {
+    rt.status = "blocked";
+    rt.activeProduct = "";
+    rt.activeStep = 0;
+    rt.lastPlanActions = [];
+  } else {
+    rt.status = "importing";
+    if (result.steps.length > 0) {
+      rt.activeProduct = result.steps[0].product;
+      rt.activeStep = 0;
+    } else {
+      rt.activeProduct = "";
+      rt.activeStep = 0;
+    }
+    rt.lastPlanActions = result.steps.map((s) => s.product);
+  }
+}

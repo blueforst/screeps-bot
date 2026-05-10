@@ -2,6 +2,7 @@ import {
   getDefaultHubConfig,
   getDefaultHubRuntime,
   planHubChains,
+  runHubPlanner,
 } from "@/runtime/hubPlanner";
 
 describe("hubPlanner defaults", () => {
@@ -139,5 +140,170 @@ describe("planHubChains", () => {
     expect(result.missingResources).not.toContain(RESOURCE_UTRIUM);
     expect(result.missingResources).not.toContain(RESOURCE_LEMERGIUM);
     expect(result.missingResources).not.toContain(RESOURCE_CATALYST);
+  });
+});
+
+function createHubRoom(options: {
+  hasStorage?: boolean;
+  hasTerminal?: boolean;
+  labCount?: number;
+  controllerMine?: boolean;
+}): Room {
+  const storage = options.hasStorage
+    ? {
+        id: "hub-storage",
+        structureType: STRUCTURE_STORAGE,
+        store: {
+          getUsedCapacity: () => 0,
+          [RESOURCE_ENERGY]: 0,
+        },
+      }
+    : undefined;
+
+  const terminal = options.hasTerminal
+    ? {
+        id: "hub-terminal",
+        structureType: STRUCTURE_TERMINAL,
+        store: {
+          getUsedCapacity: () => 0,
+          getFreeCapacity: () => 10000,
+        },
+        cooldown: 0,
+      }
+    : undefined;
+
+  const labCount = options.labCount ?? 3;
+  const labs: Structure[] = [];
+  for (let i = 0; i < labCount; i++) {
+    labs.push({
+      id: `hub-lab-${i}`,
+      structureType: STRUCTURE_LAB,
+    } as Structure);
+  }
+
+  const room = {
+    name: "W1N1",
+    controller: { my: options.controllerMine ?? true, level: 8 },
+    storage,
+    terminal,
+    find: (type: FindConstant, opts?: { filter?: ((s: Structure) => boolean) | { structureType: string } }) => {
+      if (type === FIND_MY_STRUCTURES) {
+        if (!opts?.filter) return labs;
+        if (typeof opts.filter === "function") return labs.filter(opts.filter);
+        const targetType = (opts.filter as { structureType: string }).structureType;
+        return labs.filter((s) => s.structureType === targetType);
+      }
+      return [];
+    },
+  } as unknown as Room;
+
+  return room;
+}
+
+describe("runHubPlanner", () => {
+  const HUB_ROOM = "W1N1";
+  const PLAN_INTERVAL = 50;
+
+  beforeEach(() => {
+    Game.time = 1;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: PLAN_INTERVAL,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: getDefaultHubRuntime(),
+    };
+  });
+
+  it("no-ops when hub disabled", () => {
+    Memory.cfg!.hub!.enabled = false;
+    const beforeStatus = Memory.runtime.hub.status;
+    runHubPlanner();
+    expect(Memory.runtime.hub.status).toBe(beforeStatus);
+    expect(Memory.runtime.hub.updatedAt).toBe(0);
+  });
+
+  it("no-ops when off cadence and needsPlan=false", () => {
+    Game.time = 7;
+    Memory.runtime.hub.needsPlan = false;
+    const beforeUpdatedAt = Memory.runtime.hub.updatedAt;
+    runHubPlanner();
+    expect(Memory.runtime.hub.updatedAt).toBe(beforeUpdatedAt);
+  });
+
+  it("runs on cadence (Game.time % planInterval === 0)", () => {
+    Game.time = PLAN_INTERVAL;
+    const room = createHubRoom({ hasStorage: true, hasTerminal: true, labCount: 3 });
+    Game.rooms[HUB_ROOM] = room;
+    runHubPlanner();
+    expect(Memory.runtime.hub.updatedAt).toBe(Game.time);
+    expect(Memory.runtime.hub.needsPlan).toBe(false);
+  });
+
+  it("runs when needsPlan=true regardless of cadence", () => {
+    Game.time = 7;
+    Memory.runtime.hub.needsPlan = true;
+    const room = createHubRoom({ hasStorage: true, hasTerminal: true, labCount: 3 });
+    Game.rooms[HUB_ROOM] = room;
+    runHubPlanner();
+    expect(Memory.runtime.hub.updatedAt).toBe(Game.time);
+    expect(Memory.runtime.hub.needsPlan).toBe(false);
+  });
+
+  it("is blocked when hub room has no terminal", () => {
+    Game.time = PLAN_INTERVAL;
+    const room = createHubRoom({ hasStorage: true, hasTerminal: false, labCount: 3 });
+    Game.rooms[HUB_ROOM] = room;
+    runHubPlanner();
+    expect(Memory.runtime.hub.status).toBe("blocked");
+  });
+
+  it("is blocked when hub room has no storage", () => {
+    Game.time = PLAN_INTERVAL;
+    const room = createHubRoom({ hasStorage: false, hasTerminal: true, labCount: 3 });
+    Game.rooms[HUB_ROOM] = room;
+    runHubPlanner();
+    expect(Memory.runtime.hub.status).toBe("blocked");
+  });
+
+  it("is blocked when hub room has fewer than 3 labs", () => {
+    Game.time = PLAN_INTERVAL;
+    const room = createHubRoom({ hasStorage: true, hasTerminal: true, labCount: 2 });
+    Game.rooms[HUB_ROOM] = room;
+    runHubPlanner();
+    expect(Memory.runtime.hub.status).toBe("blocked");
+  });
+
+  it("successful plan clears needsPlan and sets updatedAt", () => {
+    Game.time = PLAN_INTERVAL;
+    Memory.runtime.hub.needsPlan = true;
+    const room = createHubRoom({ hasStorage: true, hasTerminal: true, labCount: 3 });
+    const mineralStore = (room.storage!.store as unknown as Record<string, number>);
+    mineralStore[RESOURCE_HYDROGEN] = 10000;
+    mineralStore[RESOURCE_OXYGEN] = 10000;
+    mineralStore[RESOURCE_UTRIUM] = 10000;
+    mineralStore[RESOURCE_LEMERGIUM] = 10000;
+    mineralStore[RESOURCE_KEANIUM] = 10000;
+    mineralStore[RESOURCE_ZYNTHIUM] = 10000;
+    mineralStore[RESOURCE_CATALYST] = 10000;
+    Game.rooms[HUB_ROOM] = room;
+    runHubPlanner();
+    expect(Memory.runtime.hub.needsPlan).toBe(false);
+    expect(Memory.runtime.hub.updatedAt).toBe(PLAN_INTERVAL);
+    expect(Memory.runtime.hub.status).not.toBe("blocked");
+    expect(Memory.runtime.hub.status).not.toBe("idle");
+    if (Memory.runtime.hub.activeProduct) {
+      expect(typeof Memory.runtime.hub.activeProduct).toBe("string");
+      expect(Memory.runtime.hub.activeProduct.length).toBeGreaterThan(0);
+    }
   });
 });
