@@ -517,6 +517,35 @@ function cleanupRescueMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+const HUB_RUNTIME_ARRAY_CAP = 20;
+
+function cleanupHubRuntimeMemory(ownedRooms: Set<string>): number {
+  const rt = Memory.runtime?.hub;
+  if (!rt) return 0;
+
+  const cfg = Memory.cfg?.hub;
+  if (!cfg?.enabled || !cfg.hubRoomName) return 0;
+
+  const hubRoom = Game.rooms[cfg.hubRoomName];
+  const roomLost = !hubRoom || !hubRoom.controller?.my;
+
+  if (roomLost) {
+    rt.status = "blocked";
+    rt.activeProduct = "";
+    rt.updatedAt = Game.time;
+  }
+
+  if (rt.lastPlanActions && rt.lastPlanActions.length > HUB_RUNTIME_ARRAY_CAP) {
+    rt.lastPlanActions = rt.lastPlanActions.slice(-HUB_RUNTIME_ARRAY_CAP);
+  }
+
+  if (rt.missingResources && rt.missingResources.length > HUB_RUNTIME_ARRAY_CAP) {
+    rt.missingResources = rt.missingResources.slice(0, HUB_RUNTIME_ARRAY_CAP);
+  }
+
+  return roomLost ? 1 : 0;
+}
+
 function cleanupNonOwnedRoomMemory(ownedRooms: Set<string>): number {
   if (!Memory.rooms) {
     return 0;
@@ -573,5 +602,6 @@ export function runMemoryCleanup(): void {
   cleanupCarrierTaskBoardMemory(ownedRooms);
   cleanupTowerCombatMemory(ownedRooms);
   cleanupDefenseCoordinationMemory(ownedRooms);
+  cleanupHubRuntimeMemory(ownedRooms);
   cleanupNonOwnedRoomMemory(ownedRooms);
 }

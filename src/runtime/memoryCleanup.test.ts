@@ -148,4 +148,247 @@ describe("runMemoryCleanup", () => {
       W1N1: { lastRunAt: 100 },
     });
   });
+
+  describe("hub runtime cleanup", () => {
+    it("sets hub runtime to blocked when hub room no longer owned", () => {
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W9N9",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "importing",
+          updatedAt: 100,
+          activeProduct: "OH",
+          activeStep: 0,
+          missingResources: [],
+          lastPlanActions: ["OH", "ZK"],
+          needsPlan: false,
+        },
+      };
+
+      runMemoryCleanup();
+
+      expect(Memory.runtime?.hub?.status).toBe("blocked");
+      expect(Memory.runtime?.hub?.activeProduct).toBe("");
+      expect(Memory.runtime?.hub?.updatedAt).toBe(Game.time);
+    });
+
+    it("does NOT delete Memory.cfg.hub when hub room is lost", () => {
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W9N9",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "importing",
+          updatedAt: 100,
+          activeProduct: "OH",
+          activeStep: 0,
+          missingResources: [],
+          lastPlanActions: ["OH"],
+          needsPlan: false,
+        },
+      };
+
+      runMemoryCleanup();
+
+      expect(Memory.cfg?.hub).toBeDefined();
+      expect(Memory.cfg?.hub?.hubRoomName).toBe("W9N9");
+    });
+
+    it("does not touch hub runtime when hub room is still owned", () => {
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W1N1",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "importing",
+          updatedAt: 100,
+          activeProduct: "OH",
+          activeStep: 0,
+          missingResources: [],
+          lastPlanActions: ["OH"],
+          needsPlan: false,
+        },
+      };
+
+      runMemoryCleanup();
+
+      expect(Memory.runtime?.hub?.status).toBe("importing");
+      expect(Memory.runtime?.hub?.activeProduct).toBe("OH");
+    });
+
+    it("sets hub runtime to blocked when hub room exists but controller is not mine", () => {
+      const lostRoom = {
+        name: "W1N1",
+        controller: { my: false, level: 8 },
+        find: () => [],
+      } as unknown as Room;
+      Game.rooms["W1N1"] = lostRoom;
+
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W1N1",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "importing",
+          updatedAt: 100,
+          activeProduct: "OH",
+          activeStep: 0,
+          missingResources: [],
+          lastPlanActions: ["OH"],
+          needsPlan: false,
+        },
+      };
+
+      runMemoryCleanup();
+
+      expect(Memory.runtime?.hub?.status).toBe("blocked");
+    });
+
+    it("caps lastPlanActions to 20 entries", () => {
+      const manyActions = Array.from({ length: 30 }, (_, i) => `product-${i}`);
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W9N9",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "importing",
+          updatedAt: 100,
+          activeProduct: "OH",
+          activeStep: 0,
+          missingResources: [],
+          lastPlanActions: manyActions,
+          needsPlan: false,
+        },
+      };
+
+      runMemoryCleanup();
+
+      expect(Memory.runtime?.hub?.lastPlanActions!.length).toBeLessThanOrEqual(20);
+    });
+
+    it("caps missingResources to 20 entries", () => {
+      const manyMissing = Array.from({ length: 30 }, (_, i) => `resource-${i}`);
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W1N1",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "blocked",
+          updatedAt: 100,
+          activeProduct: "",
+          activeStep: 0,
+          missingResources: manyMissing,
+          lastPlanActions: [],
+          needsPlan: false,
+        },
+      };
+
+      runMemoryCleanup();
+
+      expect(Memory.runtime?.hub?.missingResources!.length).toBeLessThanOrEqual(20);
+    });
+
+    it("does not crash when hub runtime is missing", () => {
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W9N9",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {};
+
+      expect(() => runMemoryCleanup()).not.toThrow();
+    });
+
+    it("does not crash when hub config is disabled", () => {
+      Memory.cfg = {
+        hub: {
+          enabled: false,
+          hubRoomName: "",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "idle",
+          updatedAt: 100,
+          activeProduct: "",
+          activeStep: 0,
+          missingResources: [],
+          lastPlanActions: [],
+          needsPlan: false,
+        },
+      };
+
+      runMemoryCleanup();
+
+      expect(Memory.runtime?.hub?.status).toBe("idle");
+    });
+  });
 });

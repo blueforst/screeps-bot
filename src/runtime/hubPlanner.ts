@@ -125,6 +125,8 @@ const INTERMEDIATE_COMPOUNDS: ResourceConstant[] = [
 
 const BASE_MINERAL_SAFETY_FLOOR = 500;
 
+const HUB_RUNTIME_ARRAY_CAP = 20;
+
 export function planHubChains(
   hubInventory: Record<string, number>,
   incomingResources: Record<string, number>,
@@ -501,7 +503,7 @@ export function runHubPlanner(): void {
 
   rt.needsPlan = false;
   rt.updatedAt = Game.time;
-  rt.missingResources = result.missingResources;
+  rt.missingResources = result.missingResources.slice(0, HUB_RUNTIME_ARRAY_CAP);
 
   if (result.blocked) {
     rt.status = "blocked";
@@ -517,7 +519,7 @@ export function runHubPlanner(): void {
     rt.status = "importing";
     rt.activeProduct = result.steps[0].product;
     rt.activeStep = 0;
-    rt.lastPlanActions = result.steps.map((s) => s.product);
+    rt.lastPlanActions = result.steps.map((s) => s.product).slice(0, HUB_RUNTIME_ARRAY_CAP);
   }
 
   if (!result.blocked) {
