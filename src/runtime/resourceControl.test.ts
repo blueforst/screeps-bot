@@ -1140,7 +1140,7 @@ describe("executeTransferTasks hub-aware priority ordering", () => {
     expect(Game.market.deal).toHaveBeenCalledWith("buy-k", 5000, room.name);
   });
 
-  it("skips hub export when hub import task exists for same hub room", () => {
+  it("does not skip hub export when hub import task exists for a different resource", () => {
     const hubRoom = createRoom({
       name: "W12N1",
       storageResources: { [RESOURCE_ENERGY]: 200000 },
@@ -1169,6 +1169,41 @@ describe("executeTransferTasks hub-aware priority ordering", () => {
 
     expect(importDonor.terminal.send).toHaveBeenCalledWith(
       RESOURCE_OXYGEN, expect.any(Number), hubRoom.name, expect.any(String),
+    );
+    expect(hubRoom.terminal.send).toHaveBeenCalledWith(
+      RESOURCE_CATALYZED_GHODIUM_ALKALIDE, expect.any(Number), exportTarget.name, expect.any(String),
+    );
+  });
+
+  it("skips hub export when hub import task exists for same resource", () => {
+    const hubRoom = createRoom({
+      name: "W12N1",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 8000 },
+    });
+    const importDonor = createRoom({
+      name: "W12N2",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 30000 },
+    });
+    const exportTarget = createRoom({
+      name: "W12N3",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20000 },
+    });
+    Game.rooms[hubRoom.name] = hubRoom;
+    Game.rooms[importDonor.name] = importDonor;
+    Game.rooms[exportTarget.name] = exportTarget;
+
+    Memory.cfg!.resourceControl!.taskMaxPerRun = 10;
+
+    createResourceTransferTask(importDonor.name, hubRoom.name, RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 30000, "hub:import:XGHO2");
+    createResourceTransferTask(hubRoom.name, exportTarget.name, RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 3000, "hub:export:XGHO2");
+
+    runResourceControl();
+
+    expect(importDonor.terminal.send).toHaveBeenCalledWith(
+      RESOURCE_CATALYZED_GHODIUM_ALKALIDE, expect.any(Number), hubRoom.name, expect.any(String),
     );
     expect(hubRoom.terminal.send).not.toHaveBeenCalled();
   });

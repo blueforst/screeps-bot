@@ -525,13 +525,19 @@ function getTransferTaskPriority(task: ResourceTransferTask, survivalRooms: Set<
   return 1;
 }
 
-function getHubRoomsWithPendingImportsOrReclaims(): Set<string> {
-  const result = new Set<string>();
+function getHubPendingImportResources(): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
   for (const task of Object.values(ensureResourceTransferTaskStore())) {
     if (task.status !== "pending") continue;
     const reason = task.reason;
     if (reason && (reason.startsWith("hub:import:") || reason.startsWith("hub:reclaim:"))) {
-      result.add(task.toRoomName);
+      const resource = reason.split(":").pop()!;
+      let set = result.get(task.toRoomName);
+      if (!set) {
+        set = new Set<string>();
+        result.set(task.toRoomName, set);
+      }
+      set.add(resource);
     }
   }
   return result;
@@ -553,7 +559,7 @@ function executeTransferTasks(
   const survivalRooms = new Set(
     snapshots.filter((s) => s.state === "survival").map((s) => s.roomName),
   );
-  const hubRoomsWithPendingImports = getHubRoomsWithPendingImportsOrReclaims();
+  const hubPendingImportResources = getHubPendingImportResources();
 
   const tasks = getResourceTransferTaskListSorted().sort((a, b) => {
     const pa = getTransferTaskPriority(a, survivalRooms);
@@ -573,8 +579,12 @@ function executeTransferTasks(
     }
 
     const taskReason = task.reason || "";
-    if (taskReason.startsWith("hub:export:") && hubRoomsWithPendingImports.has(task.fromRoomName)) {
-      continue;
+    if (taskReason.startsWith("hub:export:")) {
+      const exportResource = taskReason.split(":").pop()!;
+      const pendingResources = hubPendingImportResources.get(task.fromRoomName);
+      if (pendingResources && pendingResources.has(exportResource)) {
+        continue;
+      }
     }
 
     if (task.remainingAmount <= 0) {
