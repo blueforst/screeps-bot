@@ -1,7 +1,13 @@
 import {
+  createResourceTransferTask,
+  ensureResourceTransferTaskStore,
+} from "@/runtime/logistics/resourceTransferTasks";
+import { registerRuntimeServices } from "@/runtime/runtimeServices";
+import {
   getDefaultHubConfig,
   getDefaultHubRuntime,
   planHubChains,
+  planHubImports,
   runHubPlanner,
 } from "@/runtime/hubPlanner";
 
@@ -155,6 +161,7 @@ function createHubRoom(options: {
         structureType: STRUCTURE_STORAGE,
         store: {
           getUsedCapacity: () => 0,
+          getFreeCapacity: () => 500000,
           [RESOURCE_ENERGY]: 0,
         },
       }
@@ -200,8 +207,9 @@ function createHubRoom(options: {
   return room;
 }
 
+const HUB_ROOM = "W1N1";
+
 describe("runHubPlanner", () => {
-  const HUB_ROOM = "W1N1";
   const PLAN_INTERVAL = 50;
 
   beforeEach(() => {
@@ -222,6 +230,9 @@ describe("runHubPlanner", () => {
     Memory.runtime = {
       hub: getDefaultHubRuntime(),
     };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
   });
 
   it("no-ops when hub disabled", () => {
@@ -305,5 +316,247 @@ describe("runHubPlanner", () => {
       expect(typeof Memory.runtime.hub.activeProduct).toBe("string");
       expect(Memory.runtime.hub.activeProduct.length).toBeGreaterThan(0);
     }
+  });
+});
+
+function createSatelliteRoom(
+  roomName: string,
+  storageResources: Record<string, number>,
+  terminalResources: Record<string, number> = {},
+): Room {
+  const storageEntries: Record<string, number> = { [RESOURCE_ENERGY]: 50000, ...storageResources };
+  const terminalEntries: Record<string, number> = { [RESOURCE_ENERGY]: 20000, ...terminalResources };
+
+  const storage = {
+    id: `${roomName}-storage`,
+    structureType: STRUCTURE_STORAGE,
+    store: {
+      ...storageEntries,
+      getUsedCapacity: (resource?: string) => {
+        if (resource) return storageEntries[resource] || 0;
+        return Object.values(storageEntries).reduce((a: number, b: number) => a + b, 0);
+      },
+      getFreeCapacity: () => 500000,
+    },
+  };
+
+  const terminal = {
+    id: `${roomName}-terminal`,
+    structureType: STRUCTURE_TERMINAL,
+    store: {
+      ...terminalEntries,
+      getUsedCapacity: (resource?: string) => {
+        if (resource) return terminalEntries[resource] || 0;
+        return Object.values(terminalEntries).reduce((a: number, b: number) => a + b, 0);
+      },
+      getFreeCapacity: () => 300000,
+      cooldown: 0,
+    },
+  };
+
+  return {
+    name: roomName,
+    controller: { my: true, level: 8 },
+    storage,
+    terminal,
+    find: () => [],
+  } as unknown as Room;
+}
+
+function createHubRoomForImports(freeCapacity: number = 500000): Room {
+  const storageEntries: Record<string, number> = { [RESOURCE_ENERGY]: 200000 };
+  return {
+    name: HUB_ROOM,
+    controller: { my: true, level: 8 },
+    storage: {
+      id: "hub-storage",
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        ...storageEntries,
+        getUsedCapacity: (resource?: string) => {
+          if (resource) return storageEntries[resource] || 0;
+          return Object.values(storageEntries).reduce((a: number, b: number) => a + b, 0);
+        },
+        getFreeCapacity: () => freeCapacity,
+      },
+    },
+    terminal: {
+      id: "hub-terminal",
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        [RESOURCE_ENERGY]: 20000,
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300000,
+        cooldown: 0,
+      },
+    },
+    find: () => [],
+  } as unknown as Room;
+}
+
+describe("planHubImports", () => {
+  const HUB_ROOM = "W1N1";
+  const SAT_ROOM = "W2N1";
+
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE], // XGHO2
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = { hub: getDefaultHubRuntime() };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("creates base mineral import from satellite with surplus H above safety floor", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROGEN]: 1000 });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toContainEqual(`import:${SAT_ROOM}:${RESOURCE_HYDROGEN}=500`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const hTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROGEN && t.reason === `hub:import:${RESOURCE_HYDROGEN}`,
+    );
+    expect(hTask).toBeDefined();
+    expect(hTask!.fromRoomName).toBe(SAT_ROOM);
+    expect(hTask!.toRoomName).toBe(HUB_ROOM);
+    expect(hTask!.amount).toBe(500);
+  });
+
+  it("does not create base mineral import when satellite has only 500 H (at safety floor)", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROGEN]: 500 });
+    planHubImports(Memory.cfg!.hub!);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const hTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROGEN && t.reason === `hub:import:${RESOURCE_HYDROGEN}`,
+    );
+    expect(hTask).toBeUndefined();
+  });
+
+  it("creates intermediate import task for satellite with surplus OH", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROXIDE]: 100 });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toContainEqual(`import:${SAT_ROOM}:${RESOURCE_HYDROXIDE}=100`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const ohTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROXIDE && t.reason === `hub:import:${RESOURCE_HYDROXIDE}`,
+    );
+    expect(ohTask).toBeDefined();
+    expect(ohTask!.amount).toBe(100);
+  });
+
+  it("creates surplus T3 reclaim task when satellite has 1501 XGHO2", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 1501,
+    });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toContainEqual(
+      `reclaim:${SAT_ROOM}:${RESOURCE_CATALYZED_GHODIUM_ALKALIDE}=501`,
+    );
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const t3Task = tasks.find(
+      (t) =>
+        t.resource === RESOURCE_CATALYZED_GHODIUM_ALKALIDE &&
+        t.reason === `hub:reclaim:${RESOURCE_CATALYZED_GHODIUM_ALKALIDE}`,
+    );
+    expect(t3Task).toBeDefined();
+    expect(t3Task!.amount).toBe(501);
+  });
+
+  it("does not create reclaim task when satellite has exactly 1000 XGHO2 (at reserve)", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 1000,
+    });
+    planHubImports(Memory.cfg!.hub!);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const t3Task = tasks.find(
+      (t) =>
+        t.resource === RESOURCE_CATALYZED_GHODIUM_ALKALIDE &&
+        t.reason === `hub:reclaim:${RESOURCE_CATALYZED_GHODIUM_ALKALIDE}`,
+    );
+    expect(t3Task).toBeUndefined();
+  });
+
+  it("does not create tasks when hub storage free capacity is below threshold", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports(50000);
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROGEN]: 1000,
+      [RESOURCE_HYDROXIDE]: 100,
+      [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 2000,
+    });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toHaveLength(0);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    expect(Object.keys(tasks)).toHaveLength(0);
+  });
+
+  it("does not create tasks from survival-economy rooms", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROGEN]: 1000,
+    });
+    Memory.runtime!.resourceControl = {
+      updatedAt: Game.time,
+      rooms: {
+        [SAT_ROOM]: {
+          state: "survival",
+          storageEnergy: 50000,
+          terminalEnergy: 20000,
+          energyFloor: 120000,
+          energyTarget: 200000,
+          energyExportStart: 250000,
+          canMineNative: false,
+          minerals: {},
+        },
+      },
+      lastActions: [],
+      lastMarketActions: [],
+    };
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toHaveLength(0);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    expect(Object.keys(tasks)).toHaveLength(0);
+  });
+
+  it("does not create duplicate tasks when existing hub:import task already exists", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROGEN]: 1000,
+    });
+    createResourceTransferTask(
+      SAT_ROOM,
+      HUB_ROOM,
+      RESOURCE_HYDROGEN,
+      200,
+      `hub:import:${RESOURCE_HYDROGEN}`,
+    );
+    const tasksBefore = Object.values(ensureResourceTransferTaskStore());
+    const hTaskBefore = tasksBefore.find(
+      (t) => t.resource === RESOURCE_HYDROGEN && t.reason === `hub:import:${RESOURCE_HYDROGEN}`,
+    );
+    expect(hTaskBefore).toBeDefined();
+    expect(hTaskBefore!.amount).toBe(200);
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toHaveLength(0);
+    const tasksAfter = Object.values(ensureResourceTransferTaskStore());
+    const hTaskAfter = tasksAfter.find(
+      (t) => t.resource === RESOURCE_HYDROGEN && t.reason === `hub:import:${RESOURCE_HYDROGEN}`,
+    );
+    expect(hTaskAfter!.amount).toBe(200);
   });
 });
