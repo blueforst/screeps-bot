@@ -681,3 +681,175 @@ describe("runResourceControl terminal feed tasks", () => {
   });
 
 });
+
+describe("executeTransferTasks hub-aware priority ordering", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    resetRuntimeServices();
+    Game.time = 10;
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: false,
+        },
+      },
+    };
+    Memory.data = undefined;
+    Memory.runtime = undefined;
+    Memory.rooms = {};
+    Game.rooms = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: jest.fn(() => 0),
+      getAllOrders: jest.fn(() => []),
+      deal: jest.fn(() => OK),
+    };
+  });
+
+  it("executes hub import before hub export with limited taskMaxPerRun", () => {
+    const hubRoom = createRoom({
+      name: "W10N1",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000 },
+    });
+    const importDonor = createRoom({
+      name: "W10N2",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_OXYGEN]: 5000 },
+    });
+    const exportTarget = createRoom({
+      name: "W10N3",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20000 },
+    });
+    Game.rooms[hubRoom.name] = hubRoom;
+    Game.rooms[importDonor.name] = importDonor;
+    Game.rooms[exportTarget.name] = exportTarget;
+
+    Memory.cfg!.resourceControl!.taskMaxPerRun = 1;
+
+    createResourceTransferTask(hubRoom.name, exportTarget.name, RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 3000, "hub:export:XGHO2");
+    createResourceTransferTask(importDonor.name, hubRoom.name, RESOURCE_OXYGEN, 3000, "hub:import:O");
+
+    runResourceControl();
+
+    expect(importDonor.terminal.send).toHaveBeenCalledWith(
+      RESOURCE_OXYGEN, 3000, hubRoom.name, expect.any(String),
+    );
+    expect(hubRoom.terminal.send).not.toHaveBeenCalled();
+  });
+
+  it("prioritizes survival energy transfers over hub exports", () => {
+    const survivalRoom = createRoom({
+      name: "W11N1",
+      storageResources: { [RESOURCE_ENERGY]: 50000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+    });
+    const energyDonor = createRoom({
+      name: "W11N2",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    const hubExportRoom = createRoom({
+      name: "W11N3",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000 },
+    });
+    const exportTarget = createRoom({
+      name: "W11N4",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20000 },
+    });
+    Game.rooms[survivalRoom.name] = survivalRoom;
+    Game.rooms[energyDonor.name] = energyDonor;
+    Game.rooms[hubExportRoom.name] = hubExportRoom;
+    Game.rooms[exportTarget.name] = exportTarget;
+
+    Memory.cfg!.resourceControl!.taskMaxPerRun = 1;
+
+    createResourceTransferTask(hubExportRoom.name, exportTarget.name, RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 3000, "hub:export:XGHO2");
+    createResourceTransferTask(energyDonor.name, survivalRoom.name, RESOURCE_ENERGY, 5000, "energy-support");
+
+    runResourceControl();
+
+    expect(energyDonor.terminal.send).toHaveBeenCalledWith(
+      RESOURCE_ENERGY, 5000, survivalRoom.name, expect.any(String),
+    );
+    expect(hubExportRoom.terminal.send).not.toHaveBeenCalled();
+  });
+
+  it("respects taskMaxPerRun limit with hub-aware ordering", () => {
+    const room1 = createRoom({
+      name: "W13N1",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_KEANIUM]: 10000 },
+    });
+    const room2 = createRoom({
+      name: "W13N2",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_KEANIUM]: 10000 },
+    });
+    const room3 = createRoom({
+      name: "W13N3",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_KEANIUM]: 10000 },
+    });
+    const target = createRoom({
+      name: "W13N4",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20000 },
+    });
+    Game.rooms[room1.name] = room1;
+    Game.rooms[room2.name] = room2;
+    Game.rooms[room3.name] = room3;
+    Game.rooms[target.name] = target;
+
+    Memory.cfg!.resourceControl!.taskMaxPerRun = 2;
+
+    createResourceTransferTask(room1.name, target.name, RESOURCE_KEANIUM, 3000, "test:a");
+    createResourceTransferTask(room2.name, target.name, RESOURCE_KEANIUM, 3000, "test:b");
+    createResourceTransferTask(room3.name, target.name, RESOURCE_KEANIUM, 3000, "test:c");
+
+    runResourceControl();
+
+    let sendCount = 0;
+    sendCount += (room1.terminal.send as jest.Mock).mock.calls.length;
+    sendCount += (room2.terminal.send as jest.Mock).mock.calls.length;
+    sendCount += (room3.terminal.send as jest.Mock).mock.calls.length;
+    expect(sendCount).toBe(2);
+  });
+
+  it("skips hub export when hub import task exists for same hub room", () => {
+    const hubRoom = createRoom({
+      name: "W12N1",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000 },
+    });
+    const importDonor = createRoom({
+      name: "W12N2",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_OXYGEN]: 30000 },
+    });
+    const exportTarget = createRoom({
+      name: "W12N3",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20000 },
+    });
+    Game.rooms[hubRoom.name] = hubRoom;
+    Game.rooms[importDonor.name] = importDonor;
+    Game.rooms[exportTarget.name] = exportTarget;
+
+    Memory.cfg!.resourceControl!.taskMaxPerRun = 10;
+
+    createResourceTransferTask(importDonor.name, hubRoom.name, RESOURCE_OXYGEN, 30000, "hub:import:O");
+    createResourceTransferTask(hubRoom.name, exportTarget.name, RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 3000, "hub:export:XGHO2");
+
+    runResourceControl();
+
+    expect(importDonor.terminal.send).toHaveBeenCalledWith(
+      RESOURCE_OXYGEN, expect.any(Number), hubRoom.name, expect.any(String),
+    );
+    expect(hubRoom.terminal.send).not.toHaveBeenCalled();
+  });
+
+});

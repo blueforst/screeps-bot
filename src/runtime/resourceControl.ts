@@ -8,6 +8,7 @@ import {
   getIncomingResourceTransferAmount,
   getOutgoingResourceTransferAmount,
   getResourceTransferTaskListSorted,
+  type ResourceTransferTask,
 } from "@/runtime/logistics/resourceTransferTasks";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 
@@ -491,6 +492,34 @@ function applyInternalBalancing(snapshots: ResourceControlSnapshot[], terminalBu
   return actions;
 }
 
+function getTransferTaskPriority(task: ResourceTransferTask, survivalRooms: Set<string>): number {
+  if (task.resource === RESOURCE_ENERGY && survivalRooms.has(task.toRoomName)) {
+    return 0;
+  }
+
+  const reason = task.reason;
+  if (!reason) {
+    return 5;
+  }
+
+  if (reason.startsWith("hub:import:")) return 2;
+  if (reason.startsWith("hub:reclaim:")) return 3;
+  if (reason.startsWith("hub:export:")) return 4;
+  return 1;
+}
+
+function getHubRoomsWithPendingImportsOrReclaims(): Set<string> {
+  const result = new Set<string>();
+  for (const task of Object.values(ensureResourceTransferTaskStore())) {
+    if (task.status !== "pending") continue;
+    const reason = task.reason;
+    if (reason && (reason.startsWith("hub:import:") || reason.startsWith("hub:reclaim:"))) {
+      result.add(task.toRoomName);
+    }
+  }
+  return result;
+}
+
 function executeTransferTasks(
   snapshots: ResourceControlSnapshot[],
   terminalBusy: Set<string>,
@@ -504,15 +533,33 @@ function executeTransferTasks(
     },
     {} as Record<string, ResourceControlSnapshot>,
   );
+  const survivalRooms = new Set(
+    snapshots.filter((s) => s.state === "survival").map((s) => s.roomName),
+  );
+  const hubRoomsWithPendingImports = getHubRoomsWithPendingImportsOrReclaims();
+
+  const tasks = getResourceTransferTaskListSorted().sort((a, b) => {
+    const pa = getTransferTaskPriority(a, survivalRooms);
+    const pb = getTransferTaskPriority(b, survivalRooms);
+    if (pa !== pb) return pa - pb;
+    return a.createdAt - b.createdAt;
+  });
+
   let executed = 0;
 
-    for (const task of getResourceTransferTaskListSorted()) {
+    for (const task of tasks) {
     if (executed >= maxPerRun) {
       break;
     }
     if (task.status !== "pending") {
       continue;
     }
+
+    const taskReason = task.reason || "";
+    if (taskReason.startsWith("hub:export:") && hubRoomsWithPendingImports.has(task.fromRoomName)) {
+      continue;
+    }
+
     if (task.remainingAmount <= 0) {
       task.status = "done";
       task.updatedAt = Game.time;
