@@ -312,6 +312,50 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
   return actions;
 }
 
+export function writeSynthesisConfig(
+  hubRoomName: string,
+  steps: ChainStep[],
+  hubInventory: Record<string, number>,
+): void {
+  if (!Memory.cfg) return;
+  if (!Memory.cfg.synthesisControl) {
+    Memory.cfg.synthesisControl = {};
+  }
+  Memory.cfg.synthesisControl.enabled = true;
+
+  if (!Memory.cfg.synthesisControl.rooms) {
+    Memory.cfg.synthesisControl.rooms = {};
+  }
+
+  const nextStep = steps.length > 0 ? steps[0] : null;
+
+  if (!nextStep) {
+    const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
+    if (roomCfg) {
+      roomCfg.reactions = [];
+    }
+    return;
+  }
+
+  if (!Memory.cfg.synthesisControl.rooms[hubRoomName]) {
+    Memory.cfg.synthesisControl.rooms[hubRoomName] = {
+      enabled: true,
+      donorRoomNames: [],
+    };
+  }
+
+  const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
+  roomCfg.enabled = true;
+
+  roomCfg.reactions = [
+    {
+      product: nextStep.product,
+      targetAmount: nextStep.targetAmount,
+      donorRoomNames: [],
+    },
+  ];
+}
+
 export function runHubPlanner(): void {
   const cfg = Memory.cfg?.hub;
   if (cfg?.enabled !== true || !cfg.hubRoomName) return;
@@ -375,15 +419,19 @@ export function runHubPlanner(): void {
     rt.activeProduct = "";
     rt.activeStep = 0;
     rt.lastPlanActions = [];
+  } else if (result.steps.length === 0) {
+    rt.status = "distributing";
+    rt.activeProduct = "";
+    rt.activeStep = 0;
+    rt.lastPlanActions = [];
   } else {
     rt.status = "importing";
-    if (result.steps.length > 0) {
-      rt.activeProduct = result.steps[0].product;
-      rt.activeStep = 0;
-    } else {
-      rt.activeProduct = "";
-      rt.activeStep = 0;
-    }
+    rt.activeProduct = result.steps[0].product;
+    rt.activeStep = 0;
     rt.lastPlanActions = result.steps.map((s) => s.product);
+  }
+
+  if (!result.blocked) {
+    writeSynthesisConfig(cfg.hubRoomName, result.steps, hubInventory);
   }
 }

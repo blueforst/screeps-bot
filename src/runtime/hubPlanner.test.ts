@@ -560,3 +560,256 @@ describe("planHubImports", () => {
     expect(hTaskAfter!.amount).toBe(200);
   });
 });
+
+describe("writeSynthesisConfig", () => {
+  const PLAN_INTERVAL = 50;
+
+  function setupHubRoomForSynthesis(
+    storageResources: Record<string, number>,
+    terminalResources: Record<string, number> = {},
+  ): void {
+    const storageEntries: Record<string, number> = {
+      [RESOURCE_ENERGY]: 200000,
+      ...storageResources,
+    };
+    const terminalEntries: Record<string, number> = {
+      [RESOURCE_ENERGY]: 20000,
+      ...terminalResources,
+    };
+
+    const storage = {
+      id: "hub-storage",
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        ...storageEntries,
+        getUsedCapacity: (resource?: string) => {
+          if (resource) return storageEntries[resource] || 0;
+          return Object.values(storageEntries).reduce((a: number, b: number) => a + b, 0);
+        },
+        getFreeCapacity: () => 500000,
+      },
+    };
+
+    const terminal = {
+      id: "hub-terminal",
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        ...terminalEntries,
+        getUsedCapacity: (resource?: string) => {
+          if (resource) return terminalEntries[resource] || 0;
+          return Object.values(terminalEntries).reduce((a: number, b: number) => a + b, 0);
+        },
+        getFreeCapacity: () => 300000,
+        cooldown: 0,
+      },
+    };
+
+    const labCount = 3;
+    const labs: Structure[] = [];
+    for (let i = 0; i < labCount; i++) {
+      labs.push({
+        id: `hub-lab-${i}`,
+        structureType: STRUCTURE_LAB,
+      } as Structure);
+    }
+
+    const room = {
+      name: HUB_ROOM,
+      controller: { my: true, level: 8 },
+      storage,
+      terminal,
+      find: (type: FindConstant, opts?: { filter?: ((s: Structure) => boolean) | { structureType: string } }) => {
+        if (type === FIND_MY_STRUCTURES) {
+          if (!opts?.filter) return labs;
+          if (typeof opts.filter === "function") return labs.filter(opts.filter);
+          const targetType = (opts.filter as { structureType: string }).structureType;
+          return labs.filter((s) => s.structureType === targetType);
+        }
+        return [];
+      },
+    } as unknown as Room;
+
+    Game.rooms[HUB_ROOM] = room;
+  }
+
+  beforeEach(() => {
+    Game.time = PLAN_INTERVAL;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: PLAN_INTERVAL,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: getDefaultHubRuntime(),
+    };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("writes first reaction (OH) when hub inventory is empty", () => {
+    setupHubRoomForSynthesis({
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_KEANIUM]: 10000,
+      [RESOURCE_ZYNTHIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    });
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).toBe("importing");
+    expect(Memory.runtime.hub.activeProduct).toBe(RESOURCE_HYDROXIDE);
+    expect(Memory.runtime.hub.activeStep).toBe(0);
+
+    expect(Memory.cfg.synthesisControl).toBeDefined();
+    expect(Memory.cfg.synthesisControl!.enabled).toBe(true);
+    const roomCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(roomCfg).toBeDefined();
+    expect(roomCfg.enabled).toBe(true);
+    expect(roomCfg.reactions).toBeDefined();
+    expect(roomCfg.reactions).toHaveLength(1);
+    expect(roomCfg.reactions![0].product).toBe(RESOURCE_HYDROXIDE);
+    expect(roomCfg.reactions![0].targetAmount).toBe(5000);
+  });
+
+  it("advances to next step (ZK) when hub has 5000 OH", () => {
+    setupHubRoomForSynthesis({
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_KEANIUM]: 10000,
+      [RESOURCE_ZYNTHIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+      [RESOURCE_HYDROXIDE]: 5000,
+    });
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.activeProduct).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+    expect(Memory.runtime.hub.activeStep).toBe(0);
+
+    const roomCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(roomCfg.reactions).toHaveLength(1);
+    expect(roomCfg.reactions![0].product).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+    expect(roomCfg.reactions![0].targetAmount).toBe(2000);
+  });
+
+  it("preserves existing reagentLabIds in synthesisControl config", () => {
+    setupHubRoomForSynthesis({
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_KEANIUM]: 10000,
+      [RESOURCE_ZYNTHIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    });
+
+    Memory.cfg.synthesisControl = {
+      enabled: true,
+      sampleInterval: 5,
+      defaultBatchSize: 100,
+      defaultMaxRunsPerTick: 3,
+      rooms: {
+        [HUB_ROOM]: {
+          enabled: true,
+          reagentLabIds: ["lab-a", "lab-b"],
+          donorRoomNames: [],
+          reactions: [],
+        },
+      },
+    };
+
+    runHubPlanner();
+
+    const roomCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(roomCfg.reagentLabIds).toEqual(["lab-a", "lab-b"]);
+    expect(roomCfg.reactions).toHaveLength(1);
+    expect(roomCfg.reactions![0].product).toBe(RESOURCE_HYDROXIDE);
+    expect(Memory.cfg.synthesisControl!.sampleInterval).toBe(5);
+    expect(Memory.cfg.synthesisControl!.defaultBatchSize).toBe(100);
+    expect(Memory.cfg.synthesisControl!.defaultMaxRunsPerTick).toBe(3);
+  });
+
+  it("sets status to 'acquiring' when imports are pending but reagents not yet available", () => {
+    setupHubRoomForSynthesis({
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_KEANIUM]: 10000,
+      [RESOURCE_ZYNTHIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    });
+
+    createResourceTransferTask("W2N1", HUB_ROOM, RESOURCE_HYDROGEN, 500, "hub:import:H");
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).toBe("importing");
+    expect(Memory.cfg.synthesisControl!.rooms![HUB_ROOM].reactions).toHaveLength(1);
+  });
+
+  it("sets status to 'blocked' when no internal source can satisfy reagents", () => {
+    setupHubRoomForSynthesis({});
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).toBe("blocked");
+    expect(Memory.runtime.hub.missingResources!.length).toBeGreaterThan(0);
+    const roomCfg = Memory.cfg.synthesisControl?.rooms?.[HUB_ROOM];
+    expect(roomCfg?.reactions).toBeFalsy();
+  });
+
+  it("sets status to 'distributing' when all chain steps are complete", () => {
+    setupHubRoomForSynthesis({
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_KEANIUM]: 10000,
+      [RESOURCE_ZYNTHIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+      [RESOURCE_HYDROXIDE]: 5000,
+      [RESOURCE_ZYNTHIUM_KEANITE]: 2000,
+      [RESOURCE_UTRIUM_LEMERGITE]: 2000,
+      [RESOURCE_GHODIUM]: 2000,
+      [RESOURCE_UTRIUM_HYDRIDE]: 1000,
+      [RESOURCE_UTRIUM_OXIDE]: 1000,
+      [RESOURCE_LEMERGIUM_OXIDE]: 1000,
+      [RESOURCE_GHODIUM_HYDRIDE]: 1000,
+      [RESOURCE_GHODIUM_OXIDE]: 1000,
+      [RESOURCE_UTRIUM_ACID]: 1000,
+      [RESOURCE_UTRIUM_ALKALIDE]: 1000,
+      [RESOURCE_LEMERGIUM_ALKALIDE]: 1000,
+      [RESOURCE_GHODIUM_ALKALIDE]: 1000,
+      [RESOURCE_GHODIUM_ACID]: 1000,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 1000,
+      [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: 1000,
+      [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 1000,
+      [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 1000,
+      [RESOURCE_CATALYZED_GHODIUM_ACID]: 1000,
+    });
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).toBe("distributing");
+    expect(Memory.runtime.hub.activeProduct).toBe("");
+    expect(Memory.runtime.hub.activeStep).toBe(0);
+
+    const roomCfg = Memory.cfg.synthesisControl?.rooms?.[HUB_ROOM];
+    expect(roomCfg?.reactions).toBeFalsy();
+  });
+});
