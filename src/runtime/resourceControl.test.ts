@@ -1173,4 +1173,126 @@ describe("executeTransferTasks hub-aware priority ordering", () => {
     expect(hubRoom.terminal.send).not.toHaveBeenCalled();
   });
 
+  it("pending outgoing transfer prevents market sale of same resource", () => {
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    Memory.cfg!.resourceControl!.market!.sellResources = [RESOURCE_HYDROGEN];
+    const room = createRoom({
+      name: "W20N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_HYDROGEN]: 11000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_HYDROGEN]: 5000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    const destRoom = createRoom({
+      name: "W20N2",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    Game.rooms[room.name] = room;
+    Game.rooms[destRoom.name] = destRoom;
+    createResourceTransferTask(room.name, destRoom.name, RESOURCE_HYDROGEN, 5500, "hub:import:H");
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_HYDROGEN) {
+        return [
+          {
+            id: "buy-h",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_HYDROGEN,
+            price: 1.0,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("pending outgoing transfer does not block market sale of unrelated resource", () => {
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W20N3",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_HYDROGEN]: 20000,
+        [RESOURCE_KEANIUM]: 15000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_KEANIUM]: 5000,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    Game.rooms[room.name] = room;
+    createResourceTransferTask(room.name, "W20N4", RESOURCE_HYDROGEN, 5000, "hub:import:H");
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_KEANIUM) {
+        return [
+          {
+            id: "buy-k2",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_KEANIUM,
+            price: 0.8,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("buy-k2", 5000, room.name);
+  });
+
+  it("no pending transfers — normal market sell behavior unchanged", () => {
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    const room = createRoom({
+      name: "W20N5",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_HYDROGEN]: 20000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_HYDROGEN]: 5000,
+      },
+      nativeMineralType: RESOURCE_HYDROGEN,
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_HYDROGEN) {
+        return [
+          {
+            id: "buy-h2",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_HYDROGEN,
+            price: 1.0,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("buy-h2", 5000, room.name);
+  });
+
 });

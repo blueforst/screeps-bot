@@ -1025,11 +1025,13 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
       }
 
       const total = getStock(room, resource);
+      const outgoingReserved = resource === RESOURCE_ENERGY ? 0 : getOutgoingResourceTransferAmount(room.roomName, resource);
+      const effectiveTotal = Math.max(0, total - outgoingReserved);
       const exportStart = resource === RESOURCE_ENERGY ? room.energyExportStart : room.mineralExportStart[resource] || 0;
       const sellThreshold = isNativeAutoSell
         ? Math.min(exportStart, marketCfg.nativeMineralAutoSellThreshold)
         : exportStart;
-      const surplus = Math.max(0, total - sellThreshold);
+      const surplus = Math.max(0, effectiveTotal - sellThreshold);
       if (surplus < marketCfg.minDealAmount) {
         continue;
       }
