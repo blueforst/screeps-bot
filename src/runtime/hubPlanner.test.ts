@@ -5,6 +5,7 @@ import {
 import { runHubByFlag } from "@/runtime/hubFlag";
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
 import {
+  clearHubSynthesisReactions,
   getDefaultHubConfig,
   getDefaultHubRuntime,
   planHubChains,
@@ -318,6 +319,166 @@ describe("runHubPlanner", () => {
       expect(typeof Memory.runtime.hub.activeProduct).toBe("string");
       expect(Memory.runtime.hub.activeProduct.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("clearHubSynthesisReactions", () => {
+  const OTHER_ROOM = "W2N1";
+  const PLAN_INTERVAL = 50;
+
+  beforeEach(() => {
+    Game.time = PLAN_INTERVAL;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: PLAN_INTERVAL,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: getDefaultHubRuntime(),
+    };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("clears hub room reactions when blocked by missing terminal", () => {
+    Memory.cfg!.synthesisControl = {
+      enabled: true,
+      rooms: {
+        [HUB_ROOM]: {
+          enabled: true,
+          reagentLabIds: ["lab-a", "lab-b"],
+          donorRoomNames: [],
+          reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 5000, donorRoomNames: [] }],
+        },
+        [OTHER_ROOM]: {
+          enabled: true,
+          reagentLabIds: ["lab-c"],
+          donorRoomNames: [],
+          reactions: [{ product: RESOURCE_ZYNTHIUM_KEANITE, targetAmount: 2000, donorRoomNames: [] }],
+        },
+      },
+    };
+
+    const room = createHubRoom({ hasStorage: true, hasTerminal: false, labCount: 3 });
+    Game.rooms[HUB_ROOM] = room;
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).toBe("blocked");
+    const hubCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(hubCfg.reactions).toEqual([]);
+    expect(hubCfg.reagentLabIds).toEqual(["lab-a", "lab-b"]);
+    const otherCfg = Memory.cfg.synthesisControl!.rooms![OTHER_ROOM];
+    expect(otherCfg.reactions).toHaveLength(1);
+    expect(otherCfg.reactions![0].product).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+  });
+
+  it("clears hub room reactions when blocked by missing labs", () => {
+    Memory.cfg!.synthesisControl = {
+      enabled: true,
+      rooms: {
+        [HUB_ROOM]: {
+          enabled: true,
+          reagentLabIds: ["lab-a", "lab-b"],
+          donorRoomNames: [],
+          reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 5000, donorRoomNames: [] }],
+        },
+      },
+    };
+
+    const room = createHubRoom({ hasStorage: true, hasTerminal: true, labCount: 2 });
+    Game.rooms[HUB_ROOM] = room;
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).toBe("blocked");
+    const hubCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(hubCfg.reactions).toEqual([]);
+    expect(hubCfg.reagentLabIds).toEqual(["lab-a", "lab-b"]);
+  });
+
+  it("clears hub room reactions when hub is disabled", () => {
+    Memory.cfg!.hub!.enabled = false;
+    Memory.cfg!.synthesisControl = {
+      enabled: true,
+      rooms: {
+        [HUB_ROOM]: {
+          enabled: true,
+          reagentLabIds: ["lab-a", "lab-b"],
+          donorRoomNames: [],
+          reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 5000, donorRoomNames: [] }],
+        },
+      },
+    };
+
+    runHubPlanner();
+
+    const hubCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(hubCfg.reactions).toEqual([]);
+    expect(hubCfg.reagentLabIds).toEqual(["lab-a", "lab-b"]);
+  });
+
+  it("preserves lab IDs and other room config after clearing reactions", () => {
+    Memory.cfg!.synthesisControl = {
+      enabled: true,
+      sampleInterval: 5,
+      rooms: {
+        [HUB_ROOM]: {
+          enabled: true,
+          reagentLabIds: ["lab-x", "lab-y"],
+          donorRoomNames: ["W3N1"],
+          reactions: [{ product: RESOURCE_UTRIUM_HYDRIDE, targetAmount: 1000, donorRoomNames: [] }],
+        },
+      },
+    };
+
+    clearHubSynthesisReactions(HUB_ROOM);
+
+    const hubCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(hubCfg.reactions).toEqual([]);
+    expect(hubCfg.reagentLabIds).toEqual(["lab-x", "lab-y"]);
+    expect(hubCfg.donorRoomNames).toEqual(["W3N1"]);
+    expect(hubCfg.enabled).toBe(true);
+    expect(Memory.cfg.synthesisControl!.sampleInterval).toBe(5);
+  });
+
+  it("does not affect non-hub rooms' synthesis config", () => {
+    Memory.cfg!.synthesisControl = {
+      enabled: true,
+      rooms: {
+        [HUB_ROOM]: {
+          enabled: true,
+          reagentLabIds: ["lab-a"],
+          donorRoomNames: [],
+          reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 5000, donorRoomNames: [] }],
+        },
+        [OTHER_ROOM]: {
+          enabled: true,
+          reagentLabIds: ["lab-c"],
+          donorRoomNames: [],
+          reactions: [{ product: RESOURCE_ZYNTHIUM_KEANITE, targetAmount: 2000, donorRoomNames: [] }],
+        },
+      },
+    };
+
+    clearHubSynthesisReactions(HUB_ROOM);
+
+    const hubCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(hubCfg.reactions).toEqual([]);
+    const otherCfg = Memory.cfg.synthesisControl!.rooms![OTHER_ROOM];
+    expect(otherCfg.reactions).toHaveLength(1);
+    expect(otherCfg.reactions![0].product).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+  });
+
+  it("returns safely when no synthesis config exists", () => {
+    expect(() => clearHubSynthesisReactions(HUB_ROOM)).not.toThrow();
   });
 });
 

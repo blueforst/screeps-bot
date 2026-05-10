@@ -459,9 +459,23 @@ export function writeSynthesisConfig(
   ];
 }
 
+/**
+ * Clear stale hub synthesis reactions when hub planning is blocked or disabled.
+ * Preserves lab IDs and all other room config metadata.
+ */
+export function clearHubSynthesisReactions(hubRoomName: string): void {
+  const roomCfg = Memory.cfg?.synthesisControl?.rooms?.[hubRoomName];
+  if (roomCfg) {
+    roomCfg.reactions = [];
+  }
+}
+
 export function runHubPlanner(): void {
   const cfg = Memory.cfg?.hub;
-  if (cfg?.enabled !== true || !cfg.hubRoomName) return;
+  if (cfg?.enabled !== true || !cfg.hubRoomName) {
+    if (cfg?.hubRoomName) clearHubSynthesisReactions(cfg.hubRoomName);
+    return;
+  }
 
   const rt = Memory.runtime?.hub;
   if (!rt) return;
@@ -472,26 +486,31 @@ export function runHubPlanner(): void {
   const room = Game.rooms[cfg.hubRoomName];
   if (!room) {
     rt.status = "blocked";
+    clearHubSynthesisReactions(cfg.hubRoomName);
     return;
   }
 
   if (!room.controller?.my) {
     rt.status = "blocked";
+    clearHubSynthesisReactions(cfg.hubRoomName);
     return;
   }
 
   if (!room.storage) {
     rt.status = "blocked";
+    clearHubSynthesisReactions(cfg.hubRoomName);
     return;
   }
 
   if (!room.terminal) {
     rt.status = "blocked";
+    clearHubSynthesisReactions(cfg.hubRoomName);
     return;
   }
 
   if (countLabs(room) < 3) {
     rt.status = "blocked";
+    clearHubSynthesisReactions(cfg.hubRoomName);
     return;
   }
 
@@ -522,6 +541,7 @@ export function runHubPlanner(): void {
     rt.activeProduct = "";
     rt.activeStep = 0;
     rt.lastPlanActions = [];
+    clearHubSynthesisReactions(cfg.hubRoomName);
   } else if (result.steps.length === 0) {
     rt.status = "distributing";
     rt.activeProduct = "";
