@@ -1,6 +1,7 @@
 import {
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
+  getIncomingResourceTransferAmount,
 } from "@/runtime/logistics/resourceTransferTasks";
 import { runHubByFlag } from "@/runtime/hubFlag";
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
@@ -1546,5 +1547,115 @@ describe("HUB lifecycle integration", () => {
     const tasks = Object.values(ensureResourceTransferTaskStore());
     const importTask = tasks.find((t) => t.reason?.startsWith("hub:import:"));
     expect(importTask).toBeUndefined();
+  });
+
+  it("pending hub:import:Z reduces chain demand for zynthium", () => {
+    const partialMinerals: Record<string, number> = {
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    };
+    Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(INTEGRATION_HUB, partialMinerals);
+    Game.rooms[INTEGRATION_SAT] = createSatelliteRoom(INTEGRATION_SAT, {
+      [RESOURCE_ZYNTHIUM]: 5000,
+    });
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: INTEGRATION_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: { ...getDefaultHubRuntime(), needsPlan: true },
+    };
+
+    // Create pending import of Z from satellite to hub
+    createResourceTransferTask(
+      INTEGRATION_SAT,
+      INTEGRATION_HUB,
+      RESOURCE_ZYNTHIUM,
+      3000,
+      `hub:import:${RESOURCE_ZYNTHIUM}`,
+    );
+
+    // Also import K to unblock chains
+    createResourceTransferTask(
+      INTEGRATION_SAT,
+      INTEGRATION_HUB,
+      RESOURCE_KEANIUM,
+      3000,
+      `hub:import:${RESOURCE_KEANIUM}`,
+    );
+
+    // Verify incoming amounts are tracked
+    expect(getIncomingResourceTransferAmount(INTEGRATION_HUB, RESOURCE_ZYNTHIUM)).toBe(3000);
+    expect(getIncomingResourceTransferAmount(INTEGRATION_HUB, RESOURCE_KEANIUM)).toBe(3000);
+
+    runHubPlanner();
+
+    // With pending Z and K imports, chains should be unblocked
+    expect(Memory.runtime.hub!.status).not.toBe("blocked");
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_ZYNTHIUM);
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_KEANIUM);
+  });
+
+  it("creates hub:export:XGHO2 when chains blocked but hub has T3 stock", () => {
+    const partialMinerals: Record<string, number> = {
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    };
+    const XGHO2 = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
+
+    Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(INTEGRATION_HUB, {
+      ...partialMinerals,
+      [XGHO2]: 5000,
+    });
+    Game.rooms[INTEGRATION_SAT] = createSatelliteRoom(INTEGRATION_SAT, {});
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: INTEGRATION_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [XGHO2],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: { ...getDefaultHubRuntime(), needsPlan: true },
+    };
+
+    runHubPlanner();
+
+    // Chains are blocked by missing K and Z
+    expect(Memory.runtime.hub!.status).toBe("blocked");
+    expect(Memory.runtime.hub!.missingResources).toEqual(
+      expect.arrayContaining([RESOURCE_KEANIUM, RESOURCE_ZYNTHIUM]),
+    );
+
+    // But distribution still runs — hub has 5000 XGHO2, satellite has 0
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const exportTask = tasks.find(
+      (t) => t.resource === XGHO2 && t.reason === `hub:export:${XGHO2}`,
+    );
+    expect(exportTask).toBeDefined();
+    expect(exportTask!.fromRoomName).toBe(INTEGRATION_HUB);
+    expect(exportTask!.toRoomName).toBe(INTEGRATION_SAT);
+    expect(exportTask!.amount).toBe(1000);
   });
 });

@@ -12,7 +12,7 @@
  * dependency chain plus terminal transfer overhead between rooms.
  */
 
-import { createResourceTransferTask, ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import { createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
 import { getTickContextService } from "@/runtime/runtimeServices";
 
 const DEFAULT_TARGET_COMPOUNDS: ResourceConstant[] = [
@@ -534,7 +534,16 @@ export function runHubPlanner(): void {
     }
   }
 
-  const result = planHubChains(hubInventory, {}, cfg.reservePerRoom || 1000);
+  const allRelevantResources = [...BASE_MINERALS, ...INTERMEDIATE_COMPOUNDS, ...T3_TARGETS];
+  const incomingResources: Record<string, number> = {};
+  for (const res of allRelevantResources) {
+    const amount = getIncomingResourceTransferAmount(cfg.hubRoomName, res);
+    if (amount > 0) {
+      incomingResources[res] = amount;
+    }
+  }
+
+  const result = planHubChains(hubInventory, incomingResources, cfg.reservePerRoom || 1000);
 
   const importActions = planHubImports(cfg);
 
@@ -562,6 +571,9 @@ export function runHubPlanner(): void {
 
   if (!result.blocked) {
     writeSynthesisConfig(cfg.hubRoomName, result.steps, hubInventory);
+  }
+
+  if (room.storage && room.terminal) {
     planHubDistribution(cfg);
   }
 }
