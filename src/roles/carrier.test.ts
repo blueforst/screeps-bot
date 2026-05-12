@@ -1463,6 +1463,216 @@ describe("carrierRole mineral hauling", () => {
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-assigned");
   });
 
+  // Regression tests: terminal_offload cargo must NOT fall through to getEnergyStoreTarget()
+  // when the assigned storage target is temporarily blocked (full or out of range).
+  // Bug: deliverSynthesisCarrierResource returns false when storage is full,
+  // then target() falls through to getEnergyStoreTarget() at line ~720.
+
+  it("terminal_offload with energy moves toward storage when storage has free capacity", () => {
+    const room = createRoom("W4N6");
+    const terminal = {
+      id: "terminal-target-ok",
+      pos: { x: 15, y: 15, roomName: room.name },
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 12000 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    const creep = createCreep(room);
+    (creep.store as unknown as { getUsedCapacity: jest.Mock }).getUsedCapacity = jest.fn((resource?: ResourceConstant) => {
+      if (resource === RESOURCE_ENERGY) return 500;
+      if (resource === undefined) return 500;
+      return 0;
+    });
+    creep.transfer = jest.fn(() => ERR_NOT_IN_RANGE);
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      return null;
+    }) as Game["getObjectById"];
+
+    replaceCarrierTasksForProducerRoom("test-offload-ok", room.name, [
+      {
+        id: "terminal-offload-ok-test",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [{
+          id: "step-offload-ok",
+          resource: RESOURCE_ENERGY,
+          fromKind: "terminal",
+          toKind: "storage",
+          fromId: terminal.id,
+          toId: storage.id,
+          amount: 12000,
+        }],
+      },
+    ]);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "terminal-offload-ok-test";
+
+    getEnergyStoreTarget.mockClear();
+    moveToTarget.mockClear();
+    getEnergyStoreTarget.mockReturnValue({ id: "fake-spawn" } as unknown as AnyStoreStructure);
+
+    carrierRole().target(creep);
+
+    expect(moveToTarget).toHaveBeenCalledWith(creep, storage);
+    expect(getEnergyStoreTarget).not.toHaveBeenCalled();
+  });
+
+  it("terminal_offload with energy does NOT call getEnergyStoreTarget when storage is full", () => {
+    const room = createRoom("W4N7");
+    const terminal = {
+      id: "terminal-full-storage",
+      pos: { x: 15, y: 15, roomName: room.name },
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 12000 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    // Storage reports full for energy
+    const storage = {
+      id: "W4N7-storage",
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: () => 900000,
+        getFreeCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 0 : 0),
+      },
+    } as unknown as StructureStorage;
+    const creep = createCreep(room);
+    (creep.store as unknown as { getUsedCapacity: jest.Mock }).getUsedCapacity = jest.fn((resource?: ResourceConstant) => {
+      if (resource === RESOURCE_ENERGY) return 500;
+      if (resource === undefined) return 500;
+      return 0;
+    });
+    creep.transfer = jest.fn(() => ERR_NOT_IN_RANGE);
+    const fakeSpawnTarget = { id: "fake-spawn-full-test" } as unknown as AnyStoreStructure;
+    getEnergyStoreTarget.mockReturnValue(fakeSpawnTarget);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === (storage as { id: string }).id) return storage;
+      return null;
+    }) as Game["getObjectById"];
+
+    replaceCarrierTasksForProducerRoom("test-offload-full", room.name, [
+      {
+        id: "terminal-offload-full-test",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [{
+          id: "step-offload-full",
+          resource: RESOURCE_ENERGY,
+          fromKind: "terminal",
+          toKind: "storage",
+          fromId: terminal.id,
+          toId: (storage as { id: string }).id,
+          amount: 12000,
+        }],
+      },
+    ]);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "terminal-offload-full-test";
+
+    getEnergyStoreTarget.mockClear();
+    moveToTarget.mockClear();
+
+    carrierRole().target(creep);
+
+    // BUG: current code falls through to getEnergyStoreTarget when storage is full
+    expect(getEnergyStoreTarget).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalledWith(creep, fakeSpawnTarget);
+  });
+
+  it("carrier without synthesis task still uses generic getEnergyStoreTarget", () => {
+    const room = createRoom("W4N8");
+    const storage = room.storage as StructureStorage;
+    const creep = createCreep(room);
+    (creep.store as unknown as { getUsedCapacity: jest.Mock }).getUsedCapacity = jest.fn((resource?: ResourceConstant) => {
+      if (resource === RESOURCE_ENERGY) return 500;
+      if (resource === undefined) return 500;
+      return 0;
+    });
+    creep.transfer = jest.fn(() => ERR_NOT_IN_RANGE);
+    const fakeSpawn = { id: "fake-spawn-generic" } as unknown as AnyStoreStructure;
+    getEnergyStoreTarget.mockReturnValue(fakeSpawn);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      return null;
+    }) as Game["getObjectById"];
+
+    getEnergyStoreTarget.mockClear();
+    moveToTarget.mockClear();
+
+    carrierRole().target(creep);
+
+    expect(getEnergyStoreTarget).toHaveBeenCalled();
+    expect(moveToTarget).toHaveBeenCalledWith(creep, fakeSpawn);
+  });
+
+  it("terminal_offload with non-energy resource does not move toward generic energy target", () => {
+    const room = createRoom("W4N9");
+    const terminal = {
+      id: "terminal-mineral-offload",
+      pos: { x: 15, y: 15, roomName: room.name },
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_KEANIUM ? 5000 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "W4N9-storage",
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: () => 900000,
+        getFreeCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_KEANIUM ? 0 : 0),
+      },
+    } as unknown as StructureStorage;
+    const creep = createCreep(room);
+    (creep.store as unknown as { getUsedCapacity: jest.Mock }).getUsedCapacity = jest.fn((resource?: ResourceConstant) => {
+      if (resource === RESOURCE_KEANIUM) return 500;
+      if (resource === RESOURCE_ENERGY) return 200;
+      if (resource === undefined) return 700;
+      return 0;
+    });
+    creep.transfer = jest.fn(() => ERR_NOT_IN_RANGE);
+    const fakeExtension = { id: "fake-extension-mineral-test" } as unknown as AnyStoreStructure;
+    getEnergyStoreTarget.mockReturnValue(fakeExtension);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === (storage as { id: string }).id) return storage;
+      return null;
+    }) as Game["getObjectById"];
+
+    replaceCarrierTasksForProducerRoom("test-offload-mineral", room.name, [
+      {
+        id: "terminal-offload-mineral-test",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [{
+          id: "step-offload-mineral",
+          resource: RESOURCE_KEANIUM,
+          fromKind: "terminal",
+          toKind: "storage",
+          fromId: terminal.id,
+          toId: (storage as { id: string }).id,
+          amount: 5000,
+        }],
+      },
+    ]);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "terminal-offload-mineral-test";
+
+    getEnergyStoreTarget.mockClear();
+    moveToTarget.mockClear();
+
+    carrierRole().target(creep);
+
+    // BUG: non-energy cargo should NOT fall through to getEnergyStoreTarget
+    expect(moveToTarget).not.toHaveBeenCalledWith(creep, fakeExtension);
+  });
+
   it("preserves assigned mineral_haul task even when a new terminal_offload appears on the board", () => {
     const room = createRoom("W4N5");
     const container = {

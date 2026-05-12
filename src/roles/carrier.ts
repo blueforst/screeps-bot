@@ -558,6 +558,40 @@ function getSynthesisCleanupDeliveryTarget(creep: Creep, resource: ResourceConst
 
 function deliverSynthesisCarrierResource(creep: Creep): boolean {
   const assigned = getAssignedSynthesisCarrierTask(creep);
+
+  // terminal_offload task-bound delivery: keep carrier bound to the assigned
+  // storage target even when selectDeliveryStep returns null (storage full) —
+  // prevents fall-through to generic getEnergyStoreTarget which would route
+  // energy toward spawn/extension/tower.
+  if (assigned?.type === "terminal_offload") {
+    const offloadStep = assigned.steps.find(
+      (step) => creep.store.getUsedCapacity(step.resource) > 0,
+    );
+    if (offloadStep) {
+      const offloadTarget = resolveTaskStructure(offloadStep.toId);
+      if (offloadTarget) {
+        const code = measureCreepIntent(() =>
+          creep.transfer(offloadTarget, offloadStep.resource),
+        );
+        if (code === ERR_NOT_IN_RANGE) {
+          moveToTarget(creep, offloadTarget);
+          return true;
+        }
+        if (code === OK) {
+          if (!getFirstCarriedResource(creep)) {
+            clearSynthesisCarrierTaskPlan(creep);
+          }
+          return true;
+        }
+        // ERR_FULL, ERR_INVALID_TARGET, etc — stay bound, retry next tick
+        return true;
+      }
+    }
+    // No matching step (nothing to deliver) or target destroyed — clear task
+    clearSynthesisCarrierTaskPlan(creep);
+    return false;
+  }
+
   const assignedStep = measureCreepDecision(() => (assigned ? selectDeliveryStep(assigned, creep) : null));
   const assignedResource = assignedStep?.resource;
   const fallbackResource = getFirstNonEnergyResource(creep);
