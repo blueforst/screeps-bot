@@ -167,6 +167,10 @@ declare global {
         }
       | null;
   };
+  var statusHub: () => string;
+  var statusHubRaw: () => Record<string, unknown>;
+  var stopHub: () => string;
+  var stopHubRaw: () => Record<string, unknown>;
   var addResourceTransferTask: (
     fromRoomName: string,
     toRoomName: string,
@@ -908,6 +912,10 @@ declare namespace NodeJS {
           }
         | null;
     };
+    statusHub: () => string;
+    statusHubRaw: () => Record<string, unknown>;
+    stopHub: () => string;
+    stopHubRaw: () => Record<string, unknown>;
     addResourceTransferTask: (
       fromRoomName: string,
       toRoomName: string,

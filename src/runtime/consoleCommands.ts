@@ -40,6 +40,7 @@ import {
   listResourceTransferTasksRaw,
   registerResourceTransferConsoleCommands,
 } from "@/runtime/console/resourceTransferCommands";
+import { clearHubSynthesisReactions } from "@/runtime/hubPlanner";
 
 interface SynthesisControlStatusResult {
   ok: true;
@@ -76,12 +77,53 @@ export function statusSynthesisControlCommand(): string {
   return JSON.stringify(statusSynthesisControlRaw());
 }
 
+export function statusHubRaw(): Record<string, unknown> {
+  const hub = Memory.cfg?.hub;
+  if (!hub?.hubRoomName) {
+    return { enabled: false, hubRoomName: null, status: "not_configured" };
+  }
+  const synthesisRoom = Memory.runtime?.synthesisControl?.rooms?.[hub.hubRoomName];
+  return {
+    enabled: hub.enabled ?? false,
+    hubRoomName: hub.hubRoomName,
+    status: hub.enabled ? "active" : "disabled",
+    activeProduct: synthesisRoom?.activeProduct ?? null,
+    activeStage: synthesisRoom?.stage ?? null,
+    lastError: Memory.runtime?.hub?.lastError ?? null,
+    needsPlan: Memory.runtime?.hub?.needsPlan ?? false,
+    targetCompounds: hub.targetCompounds ?? [],
+  };
+}
+
+export function statusHubCommand(): string {
+  return JSON.stringify(statusHubRaw(), null, 2);
+}
+
+export function stopHubRaw(): Record<string, unknown> {
+  const hub = Memory.cfg?.hub;
+  const hubRoomName = hub?.hubRoomName;
+  if (!hubRoomName) {
+    return { ok: false, error: "hub_not_configured" };
+  }
+  hub.enabled = false;
+  clearHubSynthesisReactions(hubRoomName);
+  return { ok: true, hubRoomName, enabled: false, reactionsCleared: true };
+}
+
+export function stopHubCommand(): string {
+  return JSON.stringify(stopHubRaw(), null, 2);
+}
+
 export function registerConsoleCommands(): void {
   registerOperationsConsoleCommands();
   registerTelemetryConsoleCommands();
   registerCpuProfilerConsoleCommands();
   global.statusSynthesisControl = statusSynthesisControlCommand;
   global.statusSynthesisControlRaw = statusSynthesisControlRaw;
+  global.statusHub = statusHubCommand;
+  global.statusHubRaw = statusHubRaw;
+  global.stopHub = stopHubCommand;
+  global.stopHubRaw = stopHubRaw;
   registerResourceTransferConsoleCommands();
 }
 

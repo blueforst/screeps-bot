@@ -1,4 +1,4 @@
-import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand } from "@/runtime/consoleCommands";
+import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand } from "@/runtime/consoleCommands";
 
 describe("cpuMonitor", () => {
   it("returns empty monitor data when no cpu snapshot exists", () => {
@@ -218,5 +218,82 @@ describe("telemetry commands", () => {
     expect(stopTelemetryCommand()).toBe(
       JSON.stringify({ ok: true, enabled: false, previousEnabled: true, sampleInterval: 10, segmentId: 90 }),
     );
+  });
+});
+
+describe("hub commands", () => {
+  beforeEach(() => {
+    Memory.cfg = {};
+    Memory.runtime = {};
+  });
+
+  it("statusHub returns not_configured when no hub", () => {
+    Memory.cfg = {};
+    const result = statusHubRaw();
+    expect(result).toEqual({ enabled: false, hubRoomName: null, status: "not_configured" });
+  });
+
+  it("statusHub returns active state", () => {
+    Memory.cfg!.hub = { hubRoomName: "W1N1", enabled: true, internalOnly: true };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: 100,
+      generatedTaskCount: 5,
+      failedTaskCount: 0,
+      successfulRunCount: 3,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        W1N1: {
+          stage: "synthesizing",
+          activeProduct: "XGHO2",
+          reagentLabIds: [],
+          productLabIds: [],
+          successfulRuns: 10,
+          pendingTasks: 1,
+          lastTransitionAt: 200,
+        },
+      },
+    } as NonNullable<Memory["runtime"]>["synthesisControl"];
+    const result = statusHubRaw();
+    expect(result).toMatchObject({
+      enabled: true,
+      hubRoomName: "W1N1",
+      status: "active",
+      activeProduct: "XGHO2",
+      activeStage: "synthesizing",
+      targetCompounds: [],
+    });
+  });
+
+  it("stopHub disables hub and clears reactions", () => {
+    Memory.cfg!.hub = { hubRoomName: "W1N1", enabled: true };
+    const result = stopHubRaw();
+    expect(result).toMatchObject({ ok: true, hubRoomName: "W1N1", enabled: false, reactionsCleared: true });
+    expect(Memory.cfg!.hub!.enabled).toBe(false);
+  });
+
+  it("stopHub preserves config overrides", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      targetCompounds: ["XGHO2"],
+      reservePerRoom: 1000,
+    };
+    stopHubRaw();
+    expect(Memory.cfg!.hub!.targetCompounds).toEqual(["XGHO2"]);
+    expect(Memory.cfg!.hub!.reservePerRoom).toBe(1000);
+  });
+
+  it("statusHubCommand returns formatted JSON", () => {
+    Memory.cfg!.hub = { hubRoomName: "W1N1", enabled: true };
+    const result = statusHubCommand();
+    const parsed = JSON.parse(result);
+    expect(parsed).toMatchObject({ enabled: true, hubRoomName: "W1N1", status: "active" });
+  });
+
+  it("stopHub returns error when not configured", () => {
+    Memory.cfg = {};
+    const result = stopHubRaw();
+    expect(result).toEqual({ ok: false, error: "hub_not_configured" });
   });
 });
