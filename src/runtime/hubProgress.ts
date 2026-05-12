@@ -116,8 +116,40 @@ export interface HubVisualModel {
   progressText: string;
   missingSummary: string;
   logisticsCounts: { imports: number; reclaims: number; exports: number };
-  blockerRows: Array<{ room: string; terminalEnergy: number; reserve: number; pendingNonEnergy: number }>;
-  blockerOverflow: number;
+  inboundRows: Array<{ room: string; amount: number; taskCount: number }>;
+  inboundOverflow: number;
+}
+
+const MAX_INBOUND_ROWS = 2;
+
+export function buildInboundTransferRows(snapshot: HubProgressSnapshot): {
+  rows: Array<{ room: string; amount: number; taskCount: number }>;
+  overflow: number;
+} {
+  const hub = snapshot.hubRoomName;
+  const bySource = new Map<string, { amount: number; taskCount: number }>();
+
+  for (const task of snapshot.pendingTasks) {
+    if (task.to !== hub) continue;
+    if (task.from === hub) continue;
+
+    const existing = bySource.get(task.from);
+    if (existing) {
+      existing.amount += task.remaining;
+      existing.taskCount += 1;
+    } else {
+      bySource.set(task.from, { amount: task.remaining, taskCount: 1 });
+    }
+  }
+
+  const sorted = Array.from(bySource.entries())
+    .map(([room, data]) => ({ room, amount: data.amount, taskCount: data.taskCount }))
+    .sort((a, b) => b.amount - a.amount || a.room.localeCompare(b.room));
+
+  return {
+    rows: sorted.slice(0, MAX_INBOUND_ROWS),
+    overflow: Math.max(0, sorted.length - MAX_INBOUND_ROWS),
+  };
 }
 
 export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualModel {
@@ -154,8 +186,7 @@ export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualMod
     exports: snapshot.pendingExports,
   };
 
-  const blockerRows = snapshot.roomTerminalBlockers.slice(0, 2);
-  const blockerOverflow = Math.max(0, snapshot.roomTerminalBlockers.length - 2);
+  const { rows: inboundRows, overflow: inboundOverflow } = buildInboundTransferRows(snapshot);
 
   return {
     productLabel,
@@ -166,8 +197,8 @@ export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualMod
     progressText,
     missingSummary,
     logisticsCounts,
-    blockerRows,
-    blockerOverflow,
+    inboundRows,
+    inboundOverflow,
   };
 }
 
@@ -209,18 +240,18 @@ export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel): vo
   const lc = model.logisticsCounts;
   p.textRow(`imp ${lc.imports} | recl ${lc.reclaims} | exp ${lc.exports}`);
 
-  if (model.blockerRows.length > 0) {
-    for (const blocker of model.blockerRows) {
-      p.textRow(
-        `${blocker.room}: term ${formatEnergy(blocker.terminalEnergy)} / reserve ${formatEnergy(blocker.reserve)}, nonE ${blocker.pendingNonEnergy}`,
-        { font: 0.35, color: VIS_WARN },
-      );
+  if (model.inboundRows.length > 0) {
+    for (const row of model.inboundRows) {
+      const label = row.taskCount === 1
+        ? `${row.room}: ${formatEnergy(row.amount)} inbound`
+        : `${row.room}: ${formatEnergy(row.amount)} inbound (${row.taskCount} tasks)`;
+      p.textRow(label, { font: 0.35, color: VIS_WARN });
     }
-    if (model.blockerOverflow > 0) {
-      p.textRow(`+${model.blockerOverflow} more`, { font: 0.35, color: VIS_MUTED });
+    if (model.inboundOverflow > 0) {
+      p.textRow(`+${model.inboundOverflow} more inbound`, { font: 0.35, color: VIS_MUTED });
     }
   } else {
-    p.textRow("blockers: none", { font: 0.35, color: VIS_MUTED });
+    p.textRow("inbound: none", { font: 0.35, color: VIS_MUTED });
   }
 }
 
@@ -512,10 +543,16 @@ export function buildHubOverlayLines(snapshot: HubProgressSnapshot): string[] {
   // Line 7: tasks
   lines.push(`tasks: ${snapshot.pendingImports} imp, ${snapshot.pendingReclaims} recl, ${snapshot.pendingExports} exp`);
 
-  // Line 8: blockers
-  if (snapshot.roomTerminalBlockers.length > 0) {
-    const b = snapshot.roomTerminalBlockers[0];
-    lines.push(`blocker: ${b.room} (term=${formatEnergy(b.terminalEnergy)}, reserve=${formatEnergy(b.reserve)})`);
+  // Line 8: inbound summary
+  const inbound = buildInboundTransferRows(snapshot);
+  if (inbound.rows.length > 0) {
+    const top = inbound.rows[0];
+    const totalSourceRooms = inbound.rows.length + inbound.overflow;
+    let line = `inbound: ${top.room} ${formatEnergy(top.amount)} (${top.taskCount} tasks)`;
+    if (totalSourceRooms > 1) {
+      line += `, +${totalSourceRooms - 1} more`;
+    }
+    lines.push(line);
   }
 
   return lines.slice(0, MAX_OVERLAY_LINES);
