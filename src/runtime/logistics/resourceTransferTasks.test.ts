@@ -295,3 +295,59 @@ describe("cleanupResourceTransferTaskStore", () => {
     expect(removed).toBe(0);
   });
 });
+
+describe("getIncomingResourceTransferAmount blocked task filter", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    registerRuntimeServices();
+    Game.time = 100;
+    Memory.data = undefined;
+    Memory.runtime = undefined;
+  });
+
+  it("excludes pending task blocked by insufficient terminal resource or fee", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
+    const store = ensureResourceTransferTaskStore();
+    const task = Object.values(store)[0];
+    task.lastError = "insufficient_terminal_resource_or_fee";
+
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(0);
+  });
+
+  it("excludes pending task blocked by remaining below transfer minimum", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
+    const store = ensureResourceTransferTaskStore();
+    const task = Object.values(store)[0];
+    task.lastError = "remaining_below_transfer_min";
+
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(0);
+  });
+
+  it("includes healthy pending incoming task", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
+
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(500);
+  });
+
+  it("includes pending task with non-blocking lastError", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
+    const store = ensureResourceTransferTaskStore();
+    const task = Object.values(store)[0];
+    task.lastError = "cooldown";
+
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(500);
+  });
+
+  it("sums multiple healthy tasks but excludes blocked ones", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_HYDROGEN, 1000, "a");
+    createResourceTransferTask("W3N1", "W2N1", RESOURCE_HYDROGEN, 1000, "b");
+    createResourceTransferTask("W4N1", "W2N1", RESOURCE_HYDROGEN, 5000, "c");
+
+    const store = ensureResourceTransferTaskStore();
+    const tasks = Object.values(store);
+    const blockedTask = tasks.find((t) => t.reason === "c")!;
+    blockedTask.lastError = "insufficient_terminal_resource_or_fee";
+
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_HYDROGEN)).toBe(2000);
+  });
+});

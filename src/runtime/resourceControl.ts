@@ -96,12 +96,13 @@ const MAX_TASK_MAX_PER_RUN = 5;
 const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";
 const RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY = 80;
 const RESOURCE_CONTROL_TERMINAL_OFFLOAD_PRIORITY = 90;
+const TERMINAL_TOTAL_STORAGE_CAP = 250_000;
 
 const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
   energyFloor: 120_000,
   energyTarget: 200_000,
   energyExportStart: 250_000,
-  terminalEnergyReserve: 20_000,
+  terminalEnergyReserve: 50_000,
   transferBatchSize: 10_000,
   transferMinAmount: 1_000,
   mineralFloor: {
@@ -893,6 +894,31 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: 
         .map(([resource, target]) => createTerminalFeedTask(snapshot, resource, target))
         .filter((draft): draft is CarrierTaskDraft => !!draft),
     );
+
+    // Terminal overflow: offload non-energy surplus above cap to storage
+    if (snapshot.storage) {
+      let overflowTotal = snapshot.terminal.store.getUsedCapacity();
+      if (overflowTotal > TERMINAL_TOTAL_STORAGE_CAP) {
+        const roomPending = pendingByRoom.get(snapshot.roomName);
+        let storageFree = snapshot.storage.store.getFreeCapacity();
+        for (const resource of Object.keys(snapshot.terminal.store) as ResourceConstant[]) {
+          if (resource === RESOURCE_ENERGY) continue;
+          const stored = snapshot.terminal.store[resource];
+          if (typeof stored !== "number" || stored <= 0) continue;
+          const protectedAmount = Math.min(stored, roomPending?.get(resource) ?? 0);
+          const offloadable = stored - protectedAmount;
+          if (offloadable <= 0 || overflowTotal <= TERMINAL_TOTAL_STORAGE_CAP) continue;
+          const amount = Math.min(offloadable, overflowTotal - TERMINAL_TOTAL_STORAGE_CAP, snapshot.transferBatchSize, storageFree);
+          if (amount <= 0) continue;
+          const draft = createTerminalOffloadTask(snapshot, resource, amount);
+          if (draft) {
+            drafts.push(draft);
+            overflowTotal -= amount;
+            storageFree -= amount;
+          }
+        }
+      }
+    }
 
     replaceCarrierTasksForProducerRoom(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, snapshot.roomName, drafts);
     if (drafts.length > 0) {

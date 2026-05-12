@@ -1772,6 +1772,57 @@ describe("HUB lifecycle integration", () => {
     expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_KEANIUM);
   });
 
+  it("hub planner treats blocked incoming resources as unavailable", () => {
+    const partialMinerals: Record<string, number> = {
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    };
+    Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(INTEGRATION_HUB, partialMinerals);
+    Game.rooms[INTEGRATION_SAT] = createSatelliteRoom(INTEGRATION_SAT, {
+      [RESOURCE_ZYNTHIUM]: 5000,
+    });
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: INTEGRATION_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: { ...getDefaultHubRuntime(), needsPlan: true },
+    };
+
+    createResourceTransferTask(
+      INTEGRATION_SAT,
+      INTEGRATION_HUB,
+      RESOURCE_ZYNTHIUM,
+      3000,
+      `hub:import:${RESOURCE_ZYNTHIUM}`,
+    );
+
+    const store = ensureResourceTransferTaskStore();
+    const zTask = Object.values(store).find((t) => t.resource === RESOURCE_ZYNTHIUM)!;
+    zTask.lastError = "insufficient_terminal_resource_or_fee";
+
+    expect(getIncomingResourceTransferAmount(INTEGRATION_HUB, RESOURCE_ZYNTHIUM)).toBe(0);
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub!.status).toBe("blocked");
+    expect(Memory.runtime.hub!.missingResources).toEqual(
+      expect.arrayContaining([RESOURCE_KEANIUM, RESOURCE_ZYNTHIUM]),
+    );
+  });
+
   it("creates hub:export:XGHO2 when chains blocked but hub has T3 stock", () => {
     const partialMinerals: Record<string, number> = {
       [RESOURCE_HYDROGEN]: 10000,
@@ -1821,6 +1872,123 @@ describe("HUB lifecycle integration", () => {
     expect(exportTask!.fromRoomName).toBe(INTEGRATION_HUB);
     expect(exportTask!.toRoomName).toBe(INTEGRATION_SAT);
     expect(exportTask!.amount).toBe(1000);
+  });
+
+  // Regression: blocked pending incoming does not cause hub to enter distributing
+  it("blocked pending Z import does not cause hub to enter distributing", () => {
+    // Hub has all base minerals EXCEPT zynthium, targeting XGHO2 which requires Z
+    const mineralsWithoutZ: Record<string, number> = {
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_KEANIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    };
+
+    Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(INTEGRATION_HUB, mineralsWithoutZ);
+    Game.rooms[INTEGRATION_SAT] = createSatelliteRoom(INTEGRATION_SAT, {
+      [RESOURCE_ZYNTHIUM]: 5000,
+    });
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: INTEGRATION_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: { ...getDefaultHubRuntime(), needsPlan: true },
+    };
+
+    // Create pending import of Z from satellite to hub — but mark it as blocked
+    createResourceTransferTask(
+      INTEGRATION_SAT,
+      INTEGRATION_HUB,
+      RESOURCE_ZYNTHIUM,
+      3000,
+      `hub:import:${RESOURCE_ZYNTHIUM}`,
+    );
+    const store = ensureResourceTransferTaskStore();
+    const zTask = Object.values(store).find((t) => t.resource === RESOURCE_ZYNTHIUM)!;
+    zTask.lastError = "insufficient_terminal_resource_or_fee";
+
+    // Verify blocked import is excluded from incoming amounts
+    expect(getIncomingResourceTransferAmount(INTEGRATION_HUB, RESOURCE_ZYNTHIUM)).toBe(0);
+
+    runHubPlanner();
+
+    // Hub must NOT enter distributing — Z is not actually available
+    expect(Memory.runtime.hub!.status).not.toBe("distributing");
+    expect(Memory.runtime.hub!.status).toBe("blocked");
+    expect(Memory.runtime.hub!.missingResources).toContain(RESOURCE_ZYNTHIUM);
+    // K is present in storage, so it must not be reported missing
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_KEANIUM);
+  });
+
+  // Regression: healthy pending incoming prevents duplicate demand
+  it("healthy pending Z import is counted and does not create duplicate demand", () => {
+    const mineralsWithoutZ: Record<string, number> = {
+      [RESOURCE_HYDROGEN]: 10000,
+      [RESOURCE_OXYGEN]: 10000,
+      [RESOURCE_UTRIUM]: 10000,
+      [RESOURCE_LEMERGIUM]: 10000,
+      [RESOURCE_KEANIUM]: 10000,
+      [RESOURCE_CATALYST]: 10000,
+    };
+
+    Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(INTEGRATION_HUB, mineralsWithoutZ);
+    Game.rooms[INTEGRATION_SAT] = createSatelliteRoom(INTEGRATION_SAT, {
+      [RESOURCE_ZYNTHIUM]: 5000,
+    });
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: INTEGRATION_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: { ...getDefaultHubRuntime(), needsPlan: true },
+    };
+
+    // Create healthy pending import of Z (no lastError)
+    createResourceTransferTask(
+      INTEGRATION_SAT,
+      INTEGRATION_HUB,
+      RESOURCE_ZYNTHIUM,
+      3000,
+      `hub:import:${RESOURCE_ZYNTHIUM}`,
+    );
+
+    // Verify healthy import IS counted as incoming
+    expect(getIncomingResourceTransferAmount(INTEGRATION_HUB, RESOURCE_ZYNTHIUM)).toBe(3000);
+
+    runHubPlanner();
+
+    // Hub should NOT be blocked — healthy Z import covers the deficit
+    expect(Memory.runtime.hub!.status).not.toBe("blocked");
+    expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_ZYNTHIUM);
+
+    // Verify no duplicate Z import task was created
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const zImportTasks = tasks.filter(
+      (t) => t.resource === RESOURCE_ZYNTHIUM && t.reason === `hub:import:${RESOURCE_ZYNTHIUM}`,
+    );
+    expect(zImportTasks).toHaveLength(1);
+    expect(zImportTasks[0].amount).toBe(3000);
   });
 });
 

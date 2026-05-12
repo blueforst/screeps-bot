@@ -185,10 +185,20 @@ export function getOutgoingResourceTransferAmount(roomName: string, resource: Re
   return total;
 }
 
+const BLOCKING_ERRORS = new Set([
+  "insufficient_terminal_resource_or_fee",
+  "remaining_below_transfer_min",
+]);
+
 export function getIncomingResourceTransferAmount(roomName: string, resource: ResourceConstant): number {
   let total = 0;
   for (const task of Object.values(ensureResourceTransferTaskStore())) {
-    if (task.status === "pending" && task.toRoomName === roomName && task.resource === resource) {
+    if (
+      task.status === "pending" &&
+      task.toRoomName === roomName &&
+      task.resource === resource &&
+      !BLOCKING_ERRORS.has(task.lastError ?? "")
+    ) {
       total += task.remainingAmount;
     }
   }
