@@ -706,6 +706,38 @@ declare global {
           untracked: number;
         };
       };
+      hub?: {
+        updatedAt: number;
+        enabled: boolean;
+        hubRoomName: string;
+        hubRoomVisible: boolean;
+        status: string | null;
+        stage: string | null;
+        activeProduct: string | null;
+        lastPlanActions: string[];
+        missingResources: string[];
+        lastError: string | null;
+        needsPlan: boolean;
+        hubStorageEnergy: number;
+        hubTerminalEnergy: number;
+        hubInventory: Record<string, number>;
+        pendingImports: number;
+        pendingReclaims: number;
+        pendingExports: number;
+        pendingTasks: Array<{
+          resource: string;
+          from: string;
+          to: string;
+          remaining: number;
+          reason: string;
+        }>;
+        roomTerminalBlockers: Array<{
+          room: string;
+          terminalEnergy: number;
+          reserve: number;
+          pendingNonEnergy: number;
+        }>;
+      };
     };
   }
 

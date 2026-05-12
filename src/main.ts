@@ -27,6 +27,7 @@ import { runWarControl } from "@/runtime/warControl";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 import { createTickCpuProfiler, setActiveTickCpuProfiler } from "@/runtime/cpuPhaseProfiler";
 import { getMemoryService } from "@/runtime/runtimeServices";
+import { runHubProgressAnalytics } from "@/runtime/hubProgress";
 
 mountAll();
 registerGlobalApi();
@@ -58,6 +59,7 @@ function gameLoop(): void {
   cpuProfiler.measure("synthesisControl", runSynthesisControl);
   cpuProfiler.measure("mineralExtraction", runMineralExtraction);
   cpuProfiler.measure("resourceControl", runResourceControl);
+  cpuProfiler.measure("hubProgressAnalytics", runHubProgressAnalytics);
   cpuProfiler.measure("externalTelemetryExport", runExternalTelemetryExport);
   cpuProfiler.measure("memoryCleanup", runMemoryCleanup);
   cpuProfiler.measure("portalDiscovery", runPortalDiscovery);
