@@ -12,6 +12,9 @@ export interface CreepAssignmentState {
   energyPickupRoomName?: string;
   taskId?: string;
   synthesisCarrierTaskId?: string;
+  synthesisCarrierPendingPickupTick?: number;
+  synthesisCarrierPendingStepId?: string;
+  synthesisCarrierPendingDeliveryTick?: number;
 }
 
 type AssignmentStateStore = Record<string, CreepAssignmentState>;

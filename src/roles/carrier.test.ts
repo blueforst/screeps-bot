@@ -1767,6 +1767,15 @@ describe("carrierRole mineral hauling", () => {
     expect(switched).toBe(false);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("mineral-haul-assigned");
   });
+
+  // ── Phase-jitter regression tests ────────────────────────────────────────
+  // In live Screeps, withdraw(OK) and transfer(OK) do NOT immediately mutate
+  // creep.store. The store update arrives next tick. This causes:
+  //  1. source() returning false after withdraw(OK) because store is still 0.
+  //  2. target() clearing the task when selectDeliveryStep sees store=0.
+  // These tests MUST FAIL against the current implementation to confirm the bug.
+
+
 });
 
 describe("carrierRole lab logistics", () => {
@@ -2372,5 +2381,375 @@ describe("storage withdrawal gate for spawn/extension supply", () => {
 
     expect(creep.withdraw).not.toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
     expect(switched).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// E4N58 phase jitter: pending synthesis intent timing tests
+//
+// In live Screeps, withdraw(OK) and transfer(OK) are *intents* — store
+// mutations are applied at END of tick, not immediately after the call.
+// These tests model that behavior and expose the phase mismatch bugs at
+// carrier.ts:487 (picked check) and carrier.ts:581/624 (delivery clear).
+// ---------------------------------------------------------------------------
+describe("pending synthesis intent – phase jitter (E4N58)", () => {
+  // E4N58 geometry: terminal (17,14), storage (18,15), creep (17,15)
+  const TERMINAL_POS = { x: 17, y: 14, roomName: "E4N58" };
+  const STORAGE_POS = { x: 18, y: 15, roomName: "E4N58" };
+  const CREEP_POS = { x: 17, y: 15, roomName: "E4N58" };
+
+  /**
+   * Test 1: withdraw(OK) does not mutate creep.store this tick.
+   * Bug path: carrier.ts:487 — picked = creep.store.getUsedCapacity() > 0
+   * is false because store hasn't mutated yet, so source() returns false
+   * and the creep never switches to target phase despite a committed intent.
+   */
+  it("pending synthesis intent: withdraw(OK) with store still empty should still record pickup", () => {
+    const room = createRoom("E4N58");
+    const terminal = {
+      id: "e4n58-terminal",
+      pos: TERMINAL_POS,
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5000 : 0,
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "e4n58-storage",
+      pos: STORAGE_POS,
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+
+    // Creep store stays empty even after withdraw(OK) — live intent timing
+    const creep = {
+      ...createCreep(room),
+      pos: CREEP_POS as unknown as RoomPosition,
+      store: {
+        // Store remains empty this tick (intent not yet applied)
+        getUsedCapacity: (_resource?: ResourceConstant) => 0,
+        getFreeCapacity: () => 1000,
+      },
+      // withdraw returns OK but does NOT mutate store
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById =
+      jest.fn((id: string) => {
+        if (id === terminal.id) return terminal;
+        if (id === storage.id) return storage;
+        return null;
+      }) as Game["getObjectById"];
+
+    replaceCarrierTasksForProducerRoom("e4n58-offload", room.name, [
+      {
+        id: "e4n58-terminal-offload",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [
+          {
+            id: "step-energy",
+            resource: RESOURCE_ENERGY,
+            fromKind: "terminal",
+            toKind: "storage",
+            fromId: terminal.id,
+            toId: storage.id,
+            amount: 5000,
+          },
+        ],
+      },
+    ]);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId =
+      "e4n58-terminal-offload";
+
+    moveToTarget.mockClear();
+
+    // source() should recognize the committed withdraw intent and return true
+    // (switch to target phase) even though store is still empty this tick.
+    // BUG: currently returns false because picked check at L487 reads store.
+    const switched = carrierRole().source?.(creep);
+
+    // The creep committed a withdraw intent — it should switch to delivery
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    // This assertion FAILS before fix: source returns false because store is empty
+    expect(switched).toBe(true);
+  });
+
+  /**
+   * Test 2: Same-tick target re-entry after pending withdraw(OK).
+   * After source() commits withdraw(OK), mount re-enters target() (mountCreep.ts:93-103).
+   * With store still empty, deliverSynthesisCarrierResource sees no matching
+   * step resource and may clear the task. The carrier should NOT clear the task
+   * and should move toward the committed toId (storage), not back to terminal.
+   */
+  it("pending synthesis intent: same-tick target re-entry moves toward committed toId storage", () => {
+    const room = createRoom("E4N58");
+    const terminal = {
+      id: "e4n58-terminal-reentry",
+      pos: TERMINAL_POS,
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5000 : 0,
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "e4n58-storage-reentry",
+      pos: STORAGE_POS,
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+
+    // Creep at (17,15) — adjacent to terminal (17,14) and storage (18,15)
+    const creep = {
+      ...createCreep(room),
+      name: "carrier-reentry",
+      pos: CREEP_POS as unknown as RoomPosition,
+      store: {
+        // Store stays empty (pending intent)
+        getUsedCapacity: (_resource?: ResourceConstant) => 0,
+        getFreeCapacity: () => 1000,
+      },
+      withdraw: jest.fn(() => OK),
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById =
+      jest.fn((id: string) => {
+        if (id === terminal.id) return terminal;
+        if (id === storage.id) return storage;
+        return null;
+      }) as Game["getObjectById"];
+
+    replaceCarrierTasksForProducerRoom("e4n58-reentry", room.name, [
+      {
+        id: "e4n58-reentry-task",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [
+          {
+            id: "step-reentry",
+            resource: RESOURCE_ENERGY,
+            fromKind: "terminal",
+            toKind: "storage",
+            fromId: terminal.id,
+            toId: storage.id,
+            amount: 5000,
+          },
+        ],
+      },
+    ]);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId =
+      "e4n58-reentry-task";
+
+    moveToTarget.mockClear();
+
+    // Simulate mount re-entry: target() called immediately after source()
+    // with store still empty (withdraw intent pending)
+    const done = carrierRole().target?.(creep);
+
+    // Task should NOT be cleared — the withdraw intent is committed
+    const state = getCreepAssignmentState(creep.name);
+    expect(state?.synthesisCarrierTaskId).toBe("e4n58-reentry-task");
+    // Carrier should plan movement toward storage (toId), not terminal
+    expect(moveToTarget).toHaveBeenCalledWith(creep, storage);
+    // NOT done — creep has a pending intent and should stay in target phase
+    expect(done).toBe(false);
+  });
+
+  /**
+   * Test 3: transfer(OK) with store still populated this tick.
+   * Bug path: carrier.ts:581 — !getFirstCarriedResource(creep) is false
+   * because store still has resource, so task is NOT cleared.
+   * The carrier stays in target phase and returns false (not done),
+   * which is actually correct for intent timing — it should keep the task
+   * and wait for the next tick when store will be empty.
+   * However, carrier.ts:707 `target()` returns `store.getUsedCapacity() === 0`
+   * which is false, so mount sees `shouldSwitch=false` and the creep stays
+   * in target. Next tick store IS empty, task gets cleared. This works.
+   *
+   * The REAL bug: if re-entry happens (mountCreep.ts:93), source() is called
+   * again and `creep.store.getUsedCapacity() > 0` at L634 returns true,
+   * switching back to target. This creates an oscillation. Test verifies that
+   * after transfer(OK), task persists until next-tick empty-store confirmation.
+   */
+  it("pending synthesis intent: transfer(OK) with store still populated does not clear task prematurely", () => {
+    const room = createRoom("E4N58");
+    const terminal = {
+      id: "e4n58-terminal-xfer",
+      pos: TERMINAL_POS,
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5000 : 0,
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "e4n58-storage-xfer",
+      pos: STORAGE_POS,
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+
+    // Creep carries energy — store stays populated after transfer(OK)
+    let storeRemaining = 500;
+    const store = {
+      [RESOURCE_ENERGY]: 500,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return storeRemaining;
+        return resource === RESOURCE_ENERGY ? storeRemaining : 0;
+      },
+      getFreeCapacity: () => 500,
+    };
+
+    const creep = {
+      ...createCreep(room),
+      name: "carrier-xfer",
+      pos: CREEP_POS as unknown as RoomPosition,
+      store,
+      // transfer returns OK but does NOT clear store (live intent timing)
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById =
+      jest.fn((id: string) => {
+        if (id === terminal.id) return terminal;
+        if (id === storage.id) return storage;
+        return null;
+      }) as Game["getObjectById"];
+
+    replaceCarrierTasksForProducerRoom("e4n58-xfer", room.name, [
+      {
+        id: "e4n58-xfer-task",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [
+          {
+            id: "step-xfer",
+            resource: RESOURCE_ENERGY,
+            fromKind: "terminal",
+            toKind: "storage",
+            fromId: terminal.id,
+            toId: storage.id,
+            amount: 5000,
+          },
+        ],
+      },
+    ]);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId =
+      "e4n58-xfer-task";
+
+    moveToTarget.mockClear();
+
+    // target() with store still populated after transfer(OK)
+    const done = carrierRole().target?.(creep);
+
+    // transfer was attempted
+    expect(creep.transfer).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    // Task should NOT be cleared — store mutation hasn't happened yet
+    const state = getCreepAssignmentState(creep.name);
+    expect(state?.synthesisCarrierTaskId).toBe("e4n58-xfer-task");
+    // NOT done — store still appears populated, creep stays in target phase
+    expect(done).toBe(false);
+  });
+
+  /**
+   * Test 4: source() re-entry oscillation after pending transfer(OK).
+   * Mount sees shouldSwitch=false from target() (store still full), so
+   * no re-entry. But if source() is called externally, it should NOT
+   * re-withdraw from terminal while a pending transfer exists.
+   * Tests that source() at L634 sees store > 0 and immediately returns true,
+   * but the task should persist for the delivery completion.
+   */
+  it("pending synthesis intent: source() re-entry with pending transfer does not re-withdraw", () => {
+    const room = createRoom("E4N58");
+    const terminal = {
+      id: "e4n58-terminal-osc",
+      pos: TERMINAL_POS,
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5000 : 0,
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "e4n58-storage-osc",
+      pos: STORAGE_POS,
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+
+    // Creep appears to still carry energy (pending transfer intent)
+    const creep = {
+      ...createCreep(room),
+      name: "carrier-osc",
+      pos: CREEP_POS as unknown as RoomPosition,
+      store: {
+        [RESOURCE_ENERGY]: 500,
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+        getFreeCapacity: () => 500,
+      },
+      withdraw: jest.fn(() => OK),
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById =
+      jest.fn((id: string) => {
+        if (id === terminal.id) return terminal;
+        if (id === storage.id) return storage;
+        return null;
+      }) as Game["getObjectById"];
+
+    replaceCarrierTasksForProducerRoom("e4n58-osc", room.name, [
+      {
+        id: "e4n58-osc-task",
+        type: "terminal_offload",
+        priority: 90,
+        steps: [
+          {
+            id: "step-osc",
+            resource: RESOURCE_ENERGY,
+            fromKind: "terminal",
+            toKind: "storage",
+            fromId: terminal.id,
+            toId: storage.id,
+            amount: 5000,
+          },
+        ],
+      },
+    ]);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId =
+      "e4n58-osc-task";
+
+    getEnergyStoreTarget.mockClear();
+    moveToTarget.mockClear();
+
+    // source() sees store > 0 and returns true (wants to switch to target)
+    const switched = carrierRole().source?.(creep);
+
+    // Should NOT withdraw again — already has pending cargo
+    expect(creep.withdraw).not.toHaveBeenCalled();
+    // Source returns true to switch back to target for delivery completion
+    expect(switched).toBe(true);
   });
 });

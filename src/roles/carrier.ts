@@ -354,7 +354,11 @@ function getSynthesisCarrierTasks(roomName: string): CarrierTask[] {
 }
 
 function clearSynthesisCarrierTaskPlan(creep: Creep): void {
-  delete ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
+  const state = ensureCreepAssignmentState(creep.name);
+  delete state.synthesisCarrierTaskId;
+  delete state.synthesisCarrierPendingPickupTick;
+  delete state.synthesisCarrierPendingStepId;
+  delete state.synthesisCarrierPendingDeliveryTick;
 }
 
 function getAssignedSynthesisCarrierTask(creep: Creep): CarrierTask | null {
@@ -483,6 +487,10 @@ function pickupSynthesisCarrierResource(creep: Creep): { picked: boolean; outOfR
     return { picked: false, outOfRange: false };
   }
 
+  // Record the accepted intent — store mutation happens next tick in live Screeps
+  const state = ensureCreepAssignmentState(creep.name);
+  state.synthesisCarrierPendingPickupTick = Game.time;
+  state.synthesisCarrierPendingStepId = assignment.step.id;
   return {
     picked: creep.store.getUsedCapacity() > 0,
     outOfRange: false,
@@ -558,6 +566,51 @@ function getSynthesisCleanupDeliveryTarget(creep: Creep, resource: ResourceConst
 
 function deliverSynthesisCarrierResource(creep: Creep): boolean {
   const assigned = getAssignedSynthesisCarrierTask(creep);
+  const state = ensureCreepAssignmentState(creep.name);
+
+  const explicitPendingStepId = (state.synthesisCarrierPendingPickupTick != null &&
+    state.synthesisCarrierPendingPickupTick >= Game.time - 1)
+    ? state.synthesisCarrierPendingStepId : undefined;
+  const pendingStepId = explicitPendingStepId ||
+    (assigned && creep.store.getUsedCapacity() === 0 &&
+     state.synthesisCarrierPendingDeliveryTick !== Game.time - 1
+     ? assigned.steps[0]?.id : undefined);
+
+  if (pendingStepId) {
+    const step = assigned?.steps.find(s => s.id === pendingStepId);
+    const target = step ? resolveTaskStructure(step.toId) : null;
+    if (step && target) {
+      if (creep.store.getUsedCapacity() === 0) {
+        moveToTarget(creep, target);
+        state.synthesisCarrierPendingDeliveryTick = Game.time;
+        return true;
+      }
+      const code = measureCreepIntent(() => creep.transfer(target, step.resource));
+      if (code === ERR_NOT_IN_RANGE) {
+        moveToTarget(creep, target);
+        return true;
+      }
+      if (code === OK) {
+        delete state.synthesisCarrierPendingPickupTick;
+        delete state.synthesisCarrierPendingStepId;
+        if (creep.store.getUsedCapacity() === 0) {
+          clearSynthesisCarrierTaskPlan(creep);
+        } else {
+          state.synthesisCarrierPendingDeliveryTick = Game.time;
+        }
+        return true;
+      }
+      if (code === ERR_NOT_ENOUGH_RESOURCES) {
+        moveToTarget(creep, target);
+        return true;
+      }
+      delete state.synthesisCarrierPendingPickupTick;
+      delete state.synthesisCarrierPendingStepId;
+    } else {
+      delete state.synthesisCarrierPendingPickupTick;
+      delete state.synthesisCarrierPendingStepId;
+    }
+  }
 
   // terminal_offload task-bound delivery: keep carrier bound to the assigned
   // storage target even when selectDeliveryStep returns null (storage full) —
@@ -578,12 +631,26 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
           return true;
         }
         if (code === OK) {
-          if (!getFirstCarriedResource(creep)) {
+          const dState = ensureCreepAssignmentState(creep.name);
+          if (creep.store.getUsedCapacity() === 0) {
             clearSynthesisCarrierTaskPlan(creep);
+          } else {
+            dState.synthesisCarrierPendingDeliveryTick = Game.time;
           }
           return true;
         }
         // ERR_FULL, ERR_INVALID_TARGET, etc — stay bound, retry next tick
+        return true;
+      }
+    }
+    // Empty-store fallback: carrier called target() during mount re-entry
+    // before withdraw intent has mutated store. Use first step's toId as
+    // movement target to prevent task clear and source-side movement.
+    if (creep.store.getUsedCapacity() === 0 && assigned.steps.length > 0) {
+      const fallbackStep = assigned.steps[0];
+      const fallbackTarget = resolveTaskStructure(fallbackStep.toId);
+      if (fallbackTarget) {
+        moveToTarget(creep, fallbackTarget);
         return true;
       }
     }
@@ -621,8 +688,11 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
     return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
   }
 
-  if (!getFirstCarriedResource(creep)) {
+  const dState = ensureCreepAssignmentState(creep.name);
+  if (creep.store.getUsedCapacity() === 0) {
     clearSynthesisCarrierTaskPlan(creep);
+  } else {
+    dState.synthesisCarrierPendingDeliveryTick = Game.time;
   }
   return true;
 }
@@ -630,6 +700,14 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
 export const carrierRole: RoleFactory = () => ({
   source: (creep): boolean => {
     clearPostTransferPlan(creep);
+
+    const deliveryState = ensureCreepAssignmentState(creep.name);
+    if (deliveryState.synthesisCarrierPendingDeliveryTick === Game.time - 1) {
+      delete deliveryState.synthesisCarrierPendingDeliveryTick;
+      if (creep.store.getUsedCapacity() === 0) {
+        clearSynthesisCarrierTaskPlan(creep);
+      }
+    }
 
     if (creep.store.getUsedCapacity() > 0) {
       releasePickupReservation(creep);
@@ -665,13 +743,30 @@ export const carrierRole: RoleFactory = () => ({
       return hasEnergy;
     }
 
+    const hadExistingTask = !!ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
+    const hadPendingPickup = ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time;
+    if (hadPendingPickup) {
+      delete ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick;
+      delete ensureCreepAssignmentState(creep.name).synthesisCarrierPendingStepId;
+    }
+
     const carrierTaskPickup = pickupSynthesisCarrierResource(creep);
     if (carrierTaskPickup.picked || carrierTaskPickup.outOfRange) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
       if (carrierTaskPickup.picked) {
         releasePickupReservation(creep);
       }
-      return creep.store.getUsedCapacity() > 0;
+      return creep.store.getUsedCapacity() > 0 ||
+        ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time;
+    }
+
+    // Pre-assigned task with fresh withdraw(OK) committed this tick —
+    // same-tick mount re-entry should switch to target for delivery
+    if (hadExistingTask && !hadPendingPickup &&
+        ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time) {
+      delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+      releasePickupReservation(creep);
+      return true;
     }
 
     const ownedRoomRuinPickup = pickupOwnedRoomRuinResource(creep);
@@ -704,6 +799,9 @@ export const carrierRole: RoleFactory = () => ({
   },
   target: (creep): boolean => {
     if (deliverSynthesisCarrierResource(creep)) {
+      if (ensureCreepAssignmentState(creep.name).synthesisCarrierPendingDeliveryTick === Game.time) {
+        return false;
+      }
       return creep.store.getUsedCapacity() === 0;
     }
 
