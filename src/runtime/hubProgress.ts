@@ -82,10 +82,188 @@ const MAX_LAST_PLAN_ACTIONS = 8;
 const MAX_INVENTORY_EXTRA = 10;
 const MAX_OVERLAY_LINES = 8;
 
+// Visual layout constants
+const HUB_VISUAL_X = 1;
+const HUB_VISUAL_Y = 2;
+const HUB_VISUAL_WIDTH = 13.5;
+const HUB_VISUAL_ROW = 0.7;
+const HUB_VISUAL_BAR_HEIGHT = 0.45;
+const HUB_VISUAL_BAR_PAD = 0.15;
+const HUB_PROGRESS_TARGET = 1000;
+
+// Palette
+const VIS_TEXT = "#c9c9c9";
+const VIS_HEADER_FILL = "#1a1a2e";
+const VIS_PANEL_STROKE = "#c9c9c9";
+const VIS_OK = "#00ff88";
+const VIS_WARN = "#ffaa00";
+const VIS_ERROR = "#ff5555";
+const VIS_MUTED = "#888888";
+
 function formatEnergy(amount: number): string {
   if (amount >= 1000000) return `${Math.round(amount / 10000) / 100}M`;
   if (amount >= 1000) return `${Math.round(amount / 100) / 10}K`;
   return `${amount}`;
+}
+
+export interface HubVisualModel {
+  productLabel: string;
+  statusLabel: string;
+  stageLabel: string | null;
+  needsPlan: boolean;
+  progressPercent: number;
+  progressText: string;
+  missingSummary: string;
+  logisticsCounts: { imports: number; reclaims: number; exports: number };
+  blockerRows: Array<{ room: string; terminalEnergy: number; reserve: number; pendingNonEnergy: number }>;
+  blockerOverflow: number;
+}
+
+export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualModel {
+  const activeProduct = snapshot.activeProduct;
+  const productLabel = activeProduct ?? "idle";
+  const statusLabel = snapshot.status ?? "—";
+  const stageLabel = snapshot.stage ?? null;
+  const needsPlan = snapshot.needsPlan;
+
+  const inventoryAmount = activeProduct ? (snapshot.hubInventory[activeProduct] || 0) : 0;
+  const progressPercent = activeProduct ? Math.min(inventoryAmount / HUB_PROGRESS_TARGET, 1) : 0;
+
+  let progressText: string;
+  if (activeProduct) {
+    progressText = formatEnergy(inventoryAmount) + `/${HUB_PROGRESS_TARGET} stock`;
+  } else {
+    progressText = "0% idle";
+  }
+
+  const missingResources = snapshot.missingResources;
+  let missingSummary = "";
+  if (missingResources.length > 0) {
+    const first4 = missingResources.slice(0, 4);
+    const remainder = missingResources.length - 4;
+    missingSummary = first4.join(", ");
+    if (remainder > 0) {
+      missingSummary += `, +${remainder}`;
+    }
+  }
+
+  const logisticsCounts = {
+    imports: snapshot.pendingImports,
+    reclaims: snapshot.pendingReclaims,
+    exports: snapshot.pendingExports,
+  };
+
+  const blockerRows = snapshot.roomTerminalBlockers.slice(0, 2);
+  const blockerOverflow = Math.max(0, snapshot.roomTerminalBlockers.length - 2);
+
+  return {
+    productLabel,
+    statusLabel,
+    stageLabel,
+    needsPlan,
+    progressPercent,
+    progressText,
+    missingSummary,
+    logisticsCounts,
+    blockerRows,
+    blockerOverflow,
+  };
+}
+
+export function drawSection(rv: any, x: number, y: number, width: number, title: string): number {
+  rv.rect(x, y, width, 0.55, { fill: VIS_HEADER_FILL, opacity: 0.8, stroke: VIS_PANEL_STROKE, strokeWidth: 0.03 });
+  rv.text(title, x + 0.25, y + 0.42, { align: "left", font: 0.45, color: VIS_TEXT });
+  return y + 0.7;
+}
+
+export function drawProgressBar(
+  rv: any,
+  x: number,
+  y: number,
+  width: number,
+  percent: number,
+  fillColor: string,
+  label: string,
+): number {
+  rv.rect(x, y, width, HUB_VISUAL_BAR_HEIGHT, {
+    fill: "transparent",
+    stroke: VIS_PANEL_STROKE,
+    strokeWidth: 0.03,
+    opacity: 0.8,
+  });
+  if (percent > 0) {
+    rv.rect(x, y, width * percent, HUB_VISUAL_BAR_HEIGHT, {
+      fill: fillColor,
+      opacity: 0.4,
+      strokeWidth: 0,
+    });
+  }
+  rv.text(label, x + width / 2, y + 0.36, { align: "center", font: 0.35, color: VIS_TEXT });
+  return y + HUB_VISUAL_BAR_HEIGHT + HUB_VISUAL_BAR_PAD;
+}
+
+function getStatusColor(model: HubVisualModel): string {
+  if (model.statusLabel === "blocked") return VIS_ERROR;
+  if (model.needsPlan || model.missingSummary !== "") return VIS_WARN;
+  if (model.statusLabel === "synthesizing") return VIS_OK;
+  if (!model.productLabel || model.productLabel === "idle") return VIS_MUTED;
+  return VIS_OK;
+}
+
+const getProgressColor = getStatusColor;
+
+export function drawHubVisualPanel(rv: any, model: HubVisualModel): void {
+  let y = HUB_VISUAL_Y;
+  const x = HUB_VISUAL_X;
+
+  y = drawSection(rv, x, y, HUB_VISUAL_WIDTH, "Hub Production");
+
+  const statusColor = getStatusColor(model);
+  rv.text(model.productLabel, x + 0.25, y, { align: "left", font: 0.4, color: statusColor });
+  y += HUB_VISUAL_ROW;
+
+  if (model.statusLabel !== "—") {
+    rv.text("status: " + model.statusLabel, x + 0.25, y, { align: "left", font: 0.4, color: statusColor });
+    y += HUB_VISUAL_ROW;
+  }
+
+  if (model.stageLabel !== null) {
+    rv.text("stage: " + model.stageLabel, x + 0.25, y, { align: "left", font: 0.4, color: statusColor });
+    y += HUB_VISUAL_ROW;
+  }
+
+  if (model.needsPlan) {
+    rv.text("⚠ needs plan", x + 0.25, y, { align: "left", font: 0.4, color: VIS_WARN });
+    y += HUB_VISUAL_ROW;
+  }
+
+  y += HUB_VISUAL_ROW;
+
+  y = drawSection(rv, x, y, HUB_VISUAL_WIDTH, "Progress");
+
+  const progressColor = getProgressColor(model);
+  drawProgressBar(rv, x + 0.25, y, HUB_VISUAL_WIDTH - 0.5, model.progressPercent, progressColor, model.progressText);
+
+  y += HUB_VISUAL_ROW;
+  y = drawSection(rv, x, y, HUB_VISUAL_WIDTH, "Logistics");
+
+  const lc = model.logisticsCounts;
+  rv.text(`imp ${lc.imports} | recl ${lc.reclaims} | exp ${lc.exports}`, x + 0.25, y, { align: "left", font: 0.4, color: VIS_TEXT });
+  y += HUB_VISUAL_ROW;
+
+  if (model.blockerRows.length > 0) {
+    for (const blocker of model.blockerRows) {
+      rv.text(`${blocker.room}: term ${formatEnergy(blocker.terminalEnergy)} / reserve ${formatEnergy(blocker.reserve)}, nonE ${blocker.pendingNonEnergy}`, x + 0.25, y, { align: "left", font: 0.35, color: VIS_WARN });
+      y += HUB_VISUAL_ROW;
+    }
+    if (model.blockerOverflow > 0) {
+      rv.text(`+${model.blockerOverflow} more`, x + 0.25, y, { align: "left", font: 0.35, color: VIS_MUTED });
+      y += HUB_VISUAL_ROW;
+    }
+  } else {
+    rv.text("blockers: none", x + 0.25, y, { align: "left", font: 0.35, color: VIS_MUTED });
+    y += HUB_VISUAL_ROW;
+  }
 }
 
 function classifyTransferTask(
@@ -385,6 +563,8 @@ export function buildHubOverlayLines(snapshot: HubProgressSnapshot): string[] {
   return lines.slice(0, MAX_OVERLAY_LINES);
 }
 
+const MAX_HUB_VISUAL_CALLS = 40;
+
 export function renderHubProgressOverlays(): void {
   if (typeof RoomVisual === "undefined") return;
   if (!Memory.cfg?.hub?.enabled) return;
@@ -393,17 +573,23 @@ export function renderHubProgressOverlays(): void {
   if (Game.cpu.bucket < 100) return;
 
   const snapshot = collectHubProgressSnapshot();
-  const lines = buildHubOverlayLines(snapshot);
-  if (lines.length === 0) return;
+  if (!snapshot.enabled) return;
+  if (!snapshot.hubRoomName) return;
 
-  // Render in every owned room
-  const myRooms = Object.values(Game.rooms).filter(r => r.controller?.my);
-  for (const room of myRooms) {
-    const rv = new RoomVisual(room.name);
-    let y = 1;
-    for (const line of lines) {
-      rv.text(line, 1, y, { align: "left" as const, font: 0.45 });
-      y += 0.6;
-    }
+  const hubRoom = Game.rooms[snapshot.hubRoomName];
+  if (!hubRoom) return;
+
+  const rv = new RoomVisual(snapshot.hubRoomName);
+  const model = buildHubVisualModel(snapshot);
+
+  const callsBefore = (global as any).__roomVisualCalls?.length ?? 0;
+  drawHubVisualPanel(rv, model);
+  const callsAfter = (global as any).__roomVisualCalls?.length ?? 0;
+  const callsUsed = callsAfter - callsBefore;
+
+  // Production RoomVisual has no __roomVisualCalls global, so callsUsed=0 and this never fires.
+  // Budget warning only triggers in test mock environment where __roomVisualCalls is recorded.
+  if (callsUsed > MAX_HUB_VISUAL_CALLS) {
+    console.log(`[hub-visual] WARNING: panel used ${callsUsed} visual calls (max ${MAX_HUB_VISUAL_CALLS})`);
   }
 }
