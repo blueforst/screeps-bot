@@ -830,14 +830,16 @@ function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: Reso
 
   const terminalEnergy = room.terminalEnergy;
   const reservedTerminalEnergy = getReservedTerminalEnergyForPendingSends(room, snapshots);
-  const offloadableTerminalEnergy = Math.max(0, terminalEnergy - reservedTerminalEnergy);
+  const protectedTerminalEnergy = room.terminalEnergyReserve + reservedTerminalEnergy;
+  const trueOffloadableTerminalEnergy = Math.max(0, terminalEnergy - protectedTerminalEnergy);
 
-  if (room.storageEnergy < room.energyTarget && offloadableTerminalEnergy > 0) {
+  const storageDeficit = room.energyTarget - room.storageEnergy;
+  if (storageDeficit > room.transferBatchSize && trueOffloadableTerminalEnergy >= room.transferBatchSize) {
     return createTerminalOffloadTask(
       room,
       RESOURCE_ENERGY,
-      Math.min(room.transferBatchSize, room.energyTarget - room.storageEnergy),
-      offloadableTerminalEnergy,
+      Math.min(room.transferBatchSize, storageDeficit),
+      trueOffloadableTerminalEnergy,
     );
   }
 

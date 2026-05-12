@@ -202,7 +202,7 @@ describe("runResourceControl terminal feed tasks", () => {
     const room = createRoom({
       name: "W7N2",
       storageResources: { [RESOURCE_ENERGY]: 150000 },
-      terminalResources: { [RESOURCE_ENERGY]: 12000 },
+      terminalResources: { [RESOURCE_ENERGY]: 35000 },
     });
     Game.rooms[room.name] = room;
 
@@ -1698,6 +1698,151 @@ describe("hub internalOnly market buy", () => {
     runResourceControl();
 
     expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+});
+
+describe("terminal energy jitter", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    resetRuntimeServices();
+    Game.time = 10;
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: false,
+        },
+      },
+    };
+    Memory.data = undefined;
+    Memory.runtime = undefined;
+    Memory.rooms = {};
+    Game.rooms = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: jest.fn(() => 0),
+      getAllOrders: jest.fn(() => []),
+      deal: jest.fn(() => OK),
+    };
+  });
+
+  it("boundary no-op: storage slightly below target + terminal slightly above reserve produces no task", () => {
+    const room = createRoom({
+      name: "WJ1",
+      storageResources: { [RESOURCE_ENERGY]: 195000 },
+      terminalResources: { [RESOURCE_ENERGY]: 22000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+    expect(tasks[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+  it("true surplus offload: storage well below target + terminal well above reserve produces offload", () => {
+    const room = createRoom({
+      name: "WJ2",
+      storageResources: { [RESOURCE_ENERGY]: 180000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(getCarrierTasksByRoom(room.name)).toMatchObject({
+      [`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]: {
+        type: "terminal_offload",
+        steps: [
+          {
+            resource: RESOURCE_ENERGY,
+            fromKind: "terminal",
+            toKind: "storage",
+            amount: 10000,
+          },
+        ],
+      },
+    });
+  });
+
+  it("consecutive stability: offload then equilibrium produces no energy task", () => {
+    const room = createRoom({
+      name: "WJ3",
+      storageResources: { [RESOURCE_ENERGY]: 180000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(getCarrierTasksByRoom(room.name)[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toMatchObject({
+      type: "terminal_offload",
+    });
+
+    clearCarrierTaskBoardForTest();
+    resetRuntimeServices();
+    Game.time = 20;
+    Memory.cfg!.resourceControl!.sampleInterval = 10;
+
+    const roomAfter = createRoom({
+      name: "WJ3",
+      storageResources: { [RESOURCE_ENERGY]: 190000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20000 },
+    });
+    Game.rooms[roomAfter.name] = roomAfter;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(roomAfter.name);
+    expect(tasks[`resourceControl:terminal_offload:${roomAfter.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+    expect(tasks[`resourceControl:terminal_feed:${roomAfter.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+  it("feed still works: terminal below reserve creates feed task", () => {
+    const room = createRoom({
+      name: "WJ4",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(getCarrierTasksByRoom(room.name)).toMatchObject({
+      [`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]: {
+        type: "terminal_feed",
+        steps: [
+          {
+            resource: RESOURCE_ENERGY,
+            fromKind: "storage",
+            toKind: "terminal",
+          },
+        ],
+      },
+    });
+  });
+
+  it("pending/reserved energy protection: terminal energy above zero but below reserve+pending+batch produces no offload", () => {
+    const donor = createRoom({
+      name: "WJ5",
+      storageResources: { [RESOURCE_ENERGY]: 150000 },
+      terminalResources: { [RESOURCE_ENERGY]: 28000 },
+    });
+    const receiver = createRoom({ name: "WJ5R" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    // calcTransactionCost returns 3000 per batch, so pending energy send reserves:
+    // stagedEnergy=10000 + feeBudget=3000 = 13000 reserved
+    // protectedTerminalEnergy = 20000 (reserve) + 13000 (reserved) = 33000
+    // terminal has 28000, which is below 33000 → no offload
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 3000);
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_ENERGY, 10000, "test");
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(donor.name);
+    expect(tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
   });
 
 });
