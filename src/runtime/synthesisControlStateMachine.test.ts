@@ -345,3 +345,244 @@ describe("synthesisControl state machine – happy-path lifecycle", () => {
     expect(roomState.activeProduct).toBeUndefined();
   });
 });
+
+describe("contamination cleanup", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("contamination triggers unloading and cleanup task", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("synthesizing");
+
+    const { room } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    const contaminatedLab = createLab(room, "W1N1-lab-contam", "K" as ResourceConstant, {
+      K: 200,
+    });
+    const correctLab = createLab(room, "W1N1-lab-correct", RESOURCE_HYDROGEN, {
+      [RESOURCE_HYDROGEN]: 1000,
+    });
+    const productLab = createLab(room, "W1N1-lab-product");
+
+    const allLabs = [contaminatedLab, correctLab, productLab];
+    (room as any).find = ((
+      type: FindConstant,
+      opts?: { filter?: (structure: Structure) => boolean },
+    ) => {
+      if (type === FIND_MY_STRUCTURES) {
+        return opts?.filter
+          ? allLabs.filter((s: any) => opts.filter!(s as Structure))
+          : allLabs;
+      }
+      return [];
+    }) as Room["find"];
+
+    const labById: Record<string, any> = {
+      [contaminatedLab.id]: contaminatedLab,
+      [correctLab.id]: correctLab,
+      [productLab.id]: productLab,
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const taskIds = Object.keys(carrierTasks);
+    expect(taskIds.length).toBeGreaterThanOrEqual(1);
+
+    const cleanupTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_cleanup",
+    );
+    expect(cleanupTask).toBeDefined();
+    expect(cleanupTask!.steps.length).toBeGreaterThanOrEqual(1);
+    expect(cleanupTask!.steps.some((s) => s.resource === "K")).toBe(true);
+    expect(cleanupTask!.steps.some((s) => s.fromId === "W1N1-lab-contam")).toBe(true);
+  });
+
+  it("cleanup task has correct from/to/resource/amount", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("synthesizing");
+
+    const { room } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    const contaminatedLab = createLab(room, "W1N1-lab-contam", "K" as ResourceConstant, {
+      K: 200,
+    });
+    const correctLab = createLab(room, "W1N1-lab-correct", RESOURCE_HYDROGEN, {
+      [RESOURCE_HYDROGEN]: 1000,
+    });
+    const productLab = createLab(room, "W1N1-lab-product");
+
+    const allLabs = [contaminatedLab, correctLab, productLab];
+    (room as any).find = ((
+      type: FindConstant,
+      opts?: { filter?: (structure: Structure) => boolean },
+    ) => {
+      if (type === FIND_MY_STRUCTURES) {
+        return opts?.filter
+          ? allLabs.filter((s: any) => opts.filter!(s as Structure))
+          : allLabs;
+      }
+      return [];
+    }) as Room["find"];
+
+    const labById: Record<string, any> = {
+      [contaminatedLab.id]: contaminatedLab,
+      [correctLab.id]: correctLab,
+      [productLab.id]: productLab,
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const cleanupTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_cleanup",
+    );
+    expect(cleanupTask).toBeDefined();
+
+    const contamStep = cleanupTask!.steps.find((s) => s.resource === "K");
+    expect(contamStep).toBeDefined();
+    expect(contamStep!.fromKind).toBe("lab");
+    expect(contamStep!.fromId).toBe("W1N1-lab-contam");
+    expect(contamStep!.toKind === "terminal" || contamStep!.toKind === "storage").toBe(true);
+    expect(contamStep!.amount).toBe(200);
+  });
+
+  it("full storage + terminal records lastError for hub room", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("synthesizing");
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    const { room } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      terminalResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    const storageStore = room.storage!.store;
+    const terminalStore = room.terminal!.store;
+    (storageStore as any).getFreeCapacity = () => 0;
+    (terminalStore as any).getFreeCapacity = () => 0;
+
+    const contaminatedLab = createLab(room, "W1N1-lab-contam", "K" as ResourceConstant, {
+      K: 200,
+    });
+    const correctLab = createLab(room, "W1N1-lab-correct", RESOURCE_HYDROGEN, {
+      [RESOURCE_HYDROGEN]: 1000,
+    });
+    const productLab = createLab(room, "W1N1-lab-product");
+
+    const allLabs = [contaminatedLab, correctLab, productLab];
+    (room as any).find = ((
+      type: FindConstant,
+      opts?: { filter?: (structure: Structure) => boolean },
+    ) => {
+      if (type === FIND_MY_STRUCTURES) {
+        return opts?.filter
+          ? allLabs.filter((s: any) => opts.filter!(s as Structure))
+          : allLabs;
+      }
+      return [];
+    }) as Room["find"];
+
+    const labById: Record<string, any> = {
+      [contaminatedLab.id]: contaminatedLab,
+      [correctLab.id]: correctLab,
+      [productLab.id]: productLab,
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    expect(Memory.runtime!.hub).toBeDefined();
+    expect(Memory.runtime!.hub!.lastError).toBe("lab_cleanup_destination_full");
+  });
+
+  it("full storage + terminal does NOT set lastError for non-hub room", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("synthesizing");
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W2N2",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    const { room } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      terminalResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    const storageStore = room.storage!.store;
+    const terminalStore = room.terminal!.store;
+    (storageStore as any).getFreeCapacity = () => 0;
+    (terminalStore as any).getFreeCapacity = () => 0;
+
+    const contaminatedLab = createLab(room, "W1N1-lab-contam", "K" as ResourceConstant, {
+      K: 200,
+    });
+    const correctLab = createLab(room, "W1N1-lab-correct", RESOURCE_HYDROGEN, {
+      [RESOURCE_HYDROGEN]: 1000,
+    });
+    const productLab = createLab(room, "W1N1-lab-product");
+
+    const allLabs = [contaminatedLab, correctLab, productLab];
+    (room as any).find = ((
+      type: FindConstant,
+      opts?: { filter?: (structure: Structure) => boolean },
+    ) => {
+      if (type === FIND_MY_STRUCTURES) {
+        return opts?.filter
+          ? allLabs.filter((s: any) => opts.filter!(s as Structure))
+          : allLabs;
+      }
+      return [];
+    }) as Room["find"];
+
+    const labById: Record<string, any> = {
+      [contaminatedLab.id]: contaminatedLab,
+      [correctLab.id]: correctLab,
+      [productLab.id]: productLab,
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    expect(Memory.runtime!.hub?.lastError).not.toBe("lab_cleanup_destination_full");
+  });
+});

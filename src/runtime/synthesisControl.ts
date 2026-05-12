@@ -698,6 +698,10 @@ function generateCleanupTask(
 
     const target = resolveCleanupTargetStructure(room, mineralType);
     if (!target) {
+      if (Memory.cfg.hub?.hubRoomName === room.name) {
+        if (!Memory.runtime.hub) Memory.runtime.hub = {};
+        Memory.runtime.hub.lastError = "lab_cleanup_destination_full";
+      }
       continue;
     }
 

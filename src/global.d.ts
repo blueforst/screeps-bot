@@ -513,6 +513,7 @@ declare global {
         missingResources?: string[];
         lastPlanActions?: string[];
         needsPlan?: boolean;
+        lastError?: string;
       };
     };
     data?: {
