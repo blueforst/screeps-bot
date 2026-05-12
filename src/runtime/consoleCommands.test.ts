@@ -1,4 +1,4 @@
-import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand } from "@/runtime/consoleCommands";
+import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand, hubProgressRaw, hubProgressCommand } from "@/runtime/consoleCommands";
 
 describe("cpuMonitor", () => {
   it("returns empty monitor data when no cpu snapshot exists", () => {
@@ -295,5 +295,72 @@ describe("hub commands", () => {
     Memory.cfg = {};
     const result = stopHubRaw();
     expect(result).toEqual({ ok: false, error: "hub_not_configured" });
+  });
+});
+
+describe("hubProgress commands", () => {
+  beforeEach(() => {
+    Memory.cfg = {};
+    Memory.runtime = {};
+    Memory.data = {};
+  });
+
+  it("hubProgressRaw returns disabled snapshot when hub not enabled", () => {
+    Memory.cfg = {};
+    const result = hubProgressRaw();
+    expect(result).toMatchObject({
+      enabled: false,
+      hubRoomName: "",
+      hubRoomVisible: false,
+      status: null,
+      stage: null,
+      activeProduct: null,
+    });
+  });
+
+  it("hubProgressRaw returns active snapshot when hub enabled", () => {
+    Memory.cfg!.hub = { hubRoomName: "W1N1", enabled: true, targetCompounds: ["XGHO2"] };
+    Memory.runtime!.hub = {
+      status: "synthesizing",
+      updatedAt: 500,
+      activeProduct: "XGHO2",
+      missingResources: [],
+      lastPlanActions: ["import:OH"],
+      needsPlan: false,
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: 500,
+      generatedTaskCount: 3,
+      failedTaskCount: 0,
+      successfulRunCount: 2,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        W1N1: {
+          stage: "synthesizing",
+          activeProduct: "XGHO2",
+          reagentLabIds: [],
+          productLabIds: [],
+          successfulRuns: 5,
+          pendingTasks: 1,
+          lastTransitionAt: 400,
+        },
+      },
+    } as NonNullable<Memory["runtime"]>["synthesisControl"];
+
+    const result = hubProgressRaw();
+    expect(result).toMatchObject({
+      enabled: true,
+      hubRoomName: "W1N1",
+      status: "synthesizing",
+      activeProduct: "XGHO2",
+    });
+  });
+
+  it("hubProgressCommand returns valid JSON", () => {
+    Memory.cfg!.hub = { hubRoomName: "W1N1", enabled: true };
+    const result = hubProgressCommand();
+    const parsed = JSON.parse(result);
+    expect(parsed).toMatchObject({ enabled: true, hubRoomName: "W1N1" });
   });
 });

@@ -41,6 +41,7 @@ import {
   registerResourceTransferConsoleCommands,
 } from "@/runtime/console/resourceTransferCommands";
 import { clearHubSynthesisReactions } from "@/runtime/hubPlanner";
+import { collectHubProgressSnapshot } from "@/runtime/hubProgress";
 
 interface SynthesisControlStatusResult {
   ok: true;
@@ -114,6 +115,14 @@ export function stopHubCommand(): string {
   return JSON.stringify(stopHubRaw(), null, 2);
 }
 
+export function hubProgressRaw(): ReturnType<typeof collectHubProgressSnapshot> {
+  return collectHubProgressSnapshot();
+}
+
+export function hubProgressCommand(): string {
+  return JSON.stringify(hubProgressRaw(), null, 2);
+}
+
 export function registerConsoleCommands(): void {
   registerOperationsConsoleCommands();
   registerTelemetryConsoleCommands();
@@ -124,6 +133,8 @@ export function registerConsoleCommands(): void {
   global.statusHubRaw = statusHubRaw;
   global.stopHub = stopHubCommand;
   global.stopHubRaw = stopHubRaw;
+  global.hubProgress = hubProgressCommand;
+  global.hubProgressRaw = hubProgressRaw;
   registerResourceTransferConsoleCommands();
 }
 

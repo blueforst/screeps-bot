@@ -1,5 +1,6 @@
 import type { LoDashStatic } from "lodash";
 import type { CreepApi, CreepConfig, RoleName, RoomType, WorkerTaskType } from "@/types/system";
+import type { HubProgressSnapshot } from "@/runtime/hubProgress";
 
 declare const _: LoDashStatic;
 
@@ -171,6 +172,8 @@ declare global {
   var statusHubRaw: () => Record<string, unknown>;
   var stopHub: () => string;
   var stopHubRaw: () => Record<string, unknown>;
+  var hubProgress: () => string;
+  var hubProgressRaw: () => HubProgressSnapshot;
   var addResourceTransferTask: (
     fromRoomName: string,
     toRoomName: string,
@@ -948,6 +951,8 @@ declare namespace NodeJS {
     statusHubRaw: () => Record<string, unknown>;
     stopHub: () => string;
     stopHubRaw: () => Record<string, unknown>;
+    hubProgress: () => string;
+    hubProgressRaw: () => HubProgressSnapshot;
     addResourceTransferTask: (
       fromRoomName: string,
       toRoomName: string,

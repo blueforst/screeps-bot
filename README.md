@@ -133,8 +133,14 @@ npm run monitor:once
 - Room list: `http://127.0.0.1:3131/rooms`
 - Poll history: `http://127.0.0.1:3131/history`
 - Module CPU: `http://127.0.0.1:3131/cpu`
+- Hub analytics: `http://127.0.0.1:3131/hub`
 
 Snapshots are appended to `monitor-data/snapshots.jsonl` by default.
+
+When hub is enabled, `npm run monitor:once` includes a hub progress summary under `memory.hub`.
+
+- `SCREEPS_MONITOR_SHARD=<shard>` explicitly selects a shard; if omitted, the service falls back automatically.
+- Screeps console: `hubProgressRaw()` returns the raw hub progress snapshot; `hubProgress()` returns pretty-printed JSON.
 
 ## RoomPlanner Auto Construction
 
