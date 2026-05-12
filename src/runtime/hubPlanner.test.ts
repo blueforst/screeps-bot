@@ -1659,3 +1659,72 @@ describe("HUB lifecycle integration", () => {
     expect(exportTask!.amount).toBe(1000);
   });
 });
+
+describe("runHubPlanner – out-of-cadence regression", () => {
+  const PLAN_INTERVAL = 1000;
+
+  beforeEach(() => {
+    Game.time = 7;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: PLAN_INTERVAL,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: getDefaultHubRuntime(),
+    };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("runs out-of-cadence when needsPlan=true and writes next chain step", () => {
+    Memory.runtime.hub.needsPlan = true;
+
+    const room = createHubRoom({ hasStorage: true, hasTerminal: true, labCount: 3 });
+    const mineralStore = (room.storage!.store as unknown as Record<string, number>);
+    mineralStore[RESOURCE_HYDROGEN] = 10000;
+    mineralStore[RESOURCE_OXYGEN] = 10000;
+    mineralStore[RESOURCE_UTRIUM] = 10000;
+    mineralStore[RESOURCE_LEMERGIUM] = 10000;
+    mineralStore[RESOURCE_KEANIUM] = 10000;
+    mineralStore[RESOURCE_ZYNTHIUM] = 10000;
+    mineralStore[RESOURCE_CATALYST] = 10000;
+    Game.rooms[HUB_ROOM] = room;
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.updatedAt).toBe(7);
+    expect(Memory.runtime.hub.needsPlan).toBe(false);
+    expect(Memory.runtime.hub.status).not.toBe("blocked");
+    expect(Memory.runtime.hub.activeProduct).toBeDefined();
+    expect(Memory.runtime.hub.activeProduct!.length).toBeGreaterThan(0);
+
+    const scConfig = Memory.cfg.synthesisControl?.rooms?.[HUB_ROOM];
+    expect(scConfig).toBeDefined();
+    expect(scConfig!.enabled).toBe(true);
+    expect(scConfig!.reactions.length).toBeGreaterThanOrEqual(1);
+    expect(scConfig!.reactions[0].product).toBe(Memory.runtime.hub.activeProduct);
+  });
+
+  it("does NOT run when off cadence and needsPlan=false", () => {
+    Memory.runtime.hub.needsPlan = false;
+
+    const room = createHubRoom({ hasStorage: true, hasTerminal: true, labCount: 3 });
+    Game.rooms[HUB_ROOM] = room;
+
+    const beforeUpdatedAt = Memory.runtime.hub.updatedAt;
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.updatedAt).toBe(beforeUpdatedAt);
+    expect(Memory.runtime.hub.status).toBe("idle");
+  });
+});

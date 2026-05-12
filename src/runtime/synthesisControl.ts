@@ -964,6 +964,16 @@ function handleRoom(
       reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
       productLabIds: topology.productLabs.map((lab) => lab.id),
     };
+
+    // Signal hub planner when a non-idle room runs out of reactions
+    if (roomState.stage !== "idle" && Memory.cfg.hub?.hubRoomName === room.name) {
+      if (!Memory.runtime.hub) {
+        Memory.runtime.hub = { needsPlan: true, updatedAt: Game.time };
+      } else {
+        Memory.runtime.hub.needsPlan = true;
+      }
+    }
+
     return { generated, failed, runs };
   }
 
@@ -1081,6 +1091,15 @@ function handleRoom(
   if (productCurrent >= activePlan.targetAmount && !hasContamination) {
     stage = "idle";
     roomState.lastTransitionAt = Game.time;
+
+    // Signal hub planner to plan next step immediately
+    if (Memory.cfg.hub?.hubRoomName === room.name) {
+      if (!Memory.runtime.hub) {
+        Memory.runtime.hub = { needsPlan: true, updatedAt: Game.time };
+      } else {
+        Memory.runtime.hub.needsPlan = true;
+      }
+    }
   } else if (!reagentReady && !hasContamination) {
     stage = "loading";
   }

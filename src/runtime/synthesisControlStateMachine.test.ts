@@ -586,3 +586,115 @@ describe("contamination cleanup", () => {
     expect(Memory.runtime!.hub?.lastError).not.toBe("lab_cleanup_destination_full");
   });
 });
+
+describe("hub completion signal", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("sets needsPlan=true when hub room completes reaction target", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("synthesizing");
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 5000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("idle");
+    expect(Memory.runtime!.hub).toBeDefined();
+    expect(Memory.runtime!.hub!.needsPlan).toBe(true);
+  });
+
+  it("initializes Memory.runtime.hub when it does not exist", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("synthesizing");
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 5000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    expect(Memory.runtime!.hub).toBeDefined();
+    expect(Memory.runtime!.hub!.needsPlan).toBe(true);
+    expect(Memory.runtime!.hub!.updatedAt).toBe(10);
+  });
+
+  it("does NOT set needsPlan for non-hub room", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("synthesizing");
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W2N2",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 5000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("idle");
+    expect(Memory.runtime!.hub?.needsPlan).toBeFalsy();
+  });
+});
