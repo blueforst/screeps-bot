@@ -680,6 +680,97 @@ describe("runResourceControl terminal feed tasks", () => {
     );
   });
 
+  it("feeds terminal energy even when storage is below energyTarget", () => {
+    const room = createRoom({
+      name: "W15N1",
+      storageResources: { [RESOURCE_ENERGY]: 50_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 0 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    // energyTarget defaults to 200000, storage has 50000 — should still feed terminal
+    expect(getCarrierTasksByRoom(room.name)[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [
+        {
+          resource: RESOURCE_ENERGY,
+          fromKind: "storage",
+          toKind: "terminal",
+        },
+      ],
+    });
+  });
+
+  it("reserves terminal energy for pending non-energy transfer fees", () => {
+    const donor = createRoom({
+      name: "W15N2",
+      storageResources: { [RESOURCE_ENERGY]: 50_000, [RESOURCE_KEANIUM]: 5000 },
+      terminalResources: { [RESOURCE_KEANIUM]: 0 },
+    });
+    const receiver = createRoom({ name: "W15N3" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn((amount: number, _from: string, _to: string) => {
+      if (amount > 5000) return 5000;
+      return 1000;
+    });
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_KEANIUM, 5000, "hub:import:K");
+
+    runResourceControl();
+
+    const feedTask = getCarrierTasksByRoom(donor.name)[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`];
+    expect(feedTask).toMatchObject({
+      type: "terminal_feed",
+      steps: [
+        {
+          resource: RESOURCE_ENERGY,
+          amount: 21000,
+        },
+      ],
+    });
+  });
+
+  it("does not feed terminal energy when storage is empty", () => {
+    const room = createRoom({
+      name: "W15N4",
+      storageResources: { [RESOURCE_ENERGY]: 0 },
+      terminalResources: { [RESOURCE_ENERGY]: 0 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    // createTerminalFeedTask caps by storageAmount which is 0
+    expect(getCarrierTasksByRoom(room.name)[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+  it("offloads terminal energy to storage when storage is below target and terminal has surplus", () => {
+    const room = createRoom({
+      name: "W15N5",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    // storageEnergy(150000) < energyTarget(200000), terminal has 30000, reserved = 20000
+    // offloadable = 10000, should offload min(batchSize=10000, target-storage=50000, offloadable=10000) = 10000
+    expect(getCarrierTasksByRoom(room.name)[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [
+        {
+          resource: RESOURCE_ENERGY,
+          fromKind: "terminal",
+          toKind: "storage",
+          amount: 10000,
+        },
+      ],
+    });
+  });
+
 });
 
 describe("executeTransferTasks hub-aware priority ordering", () => {

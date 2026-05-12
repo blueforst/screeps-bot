@@ -812,7 +812,15 @@ function getReservedTerminalEnergyForPendingSends(
 ): number {
   const stagedEnergy = getPlannedEnergySendBatch(room);
   const feeBudget = getEnergySendFeeBudget(room, snapshots, stagedEnergy);
-  return stagedEnergy + feeBudget;
+  let mineralFeeBudget = 0;
+  for (const task of getResourceTransferTaskListSorted()) {
+    if (task.status !== "pending" || task.fromRoomName !== room.roomName || task.resource === RESOURCE_ENERGY) {
+      continue;
+    }
+    const batchAmount = Math.min(room.transferBatchSize, task.remainingAmount);
+    mineralFeeBudget += Game.market.calcTransactionCost(batchAmount, room.roomName, task.toRoomName);
+  }
+  return stagedEnergy + feeBudget + mineralFeeBudget;
 }
 
 function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: ResourceControlSnapshot[]): CarrierTaskDraft | null {
@@ -831,10 +839,6 @@ function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: Reso
       Math.min(room.transferBatchSize, room.energyTarget - room.storageEnergy),
       offloadableTerminalEnergy,
     );
-  }
-
-  if (room.storageEnergy < room.energyTarget) {
-    return null;
   }
 
   const stagedEnergy = getPlannedEnergySendBatch(room);
