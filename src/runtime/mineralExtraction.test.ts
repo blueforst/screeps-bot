@@ -115,7 +115,7 @@ describe("runMineralExtraction", () => {
     expect(getCarrierTasksByRoom(room.name)).toMatchObject({
       [`mineral:mineral_haul:${room.name}:${mineral.id}`]: {
         type: "mineral_haul",
-        priority: 85,
+        priority: 91,
         steps: [
           {
             resource: mineral.mineralType,
@@ -148,7 +148,7 @@ describe("runMineralExtraction", () => {
       {
         id: `mineral:mineral_haul:${room.name}:${mineral.id}`,
         type: "mineral_haul",
-        priority: 85,
+        priority: 91,
         steps: [
           {
             id: "step-1",

@@ -824,6 +824,13 @@ function getReservedTerminalEnergyForPendingSends(
   return stagedEnergy + feeBudget + mineralFeeBudget;
 }
 
+function getProtectedTerminalEnergy(
+  snapshot: ResourceControlSnapshot,
+  snapshots: ResourceControlSnapshot[],
+): number {
+  return Math.max(25_000, snapshot.terminalEnergyReserve + getReservedTerminalEnergyForPendingSends(snapshot, snapshots));
+}
+
 function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: ResourceControlSnapshot[]): CarrierTaskDraft | null {
   if (!room.storage) {
     return null;
@@ -831,7 +838,7 @@ function createEnergyTerminalTask(room: ResourceControlSnapshot, snapshots: Reso
 
   const terminalEnergy = room.terminalEnergy;
   const reservedTerminalEnergy = getReservedTerminalEnergyForPendingSends(room, snapshots);
-  const protectedTerminalEnergy = room.terminalEnergyReserve + reservedTerminalEnergy;
+  const protectedTerminalEnergy = getProtectedTerminalEnergy(room, snapshots);
   const trueOffloadableTerminalEnergy = Math.max(0, terminalEnergy - protectedTerminalEnergy);
 
   const storageDeficit = room.energyTarget - room.storageEnergy;
@@ -901,19 +908,25 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: 
       if (overflowTotal > TERMINAL_TOTAL_STORAGE_CAP) {
         const roomPending = pendingByRoom.get(snapshot.roomName);
         let storageFree = snapshot.storage.store.getFreeCapacity();
-        for (const resource of Object.keys(snapshot.terminal.store) as ResourceConstant[]) {
+        const allResources = Object.keys(snapshot.terminal.store) as ResourceConstant[];
+        allResources.sort((a, b) => {
+          if (a === RESOURCE_ENERGY && b !== RESOURCE_ENERGY) return 1;
+          if (a !== RESOURCE_ENERGY && b === RESOURCE_ENERGY) return -1;
+          return 0;
+        });
+        for (const resource of allResources) {
           const stored = snapshot.terminal.store[resource];
           if (typeof stored !== "number" || stored <= 0) continue;
 
           let protectedAmount: number;
           if (resource === RESOURCE_ENERGY) {
-            protectedAmount = snapshot.terminalEnergyReserve + getReservedTerminalEnergyForPendingSends(snapshot, snapshots);
+            protectedAmount = getProtectedTerminalEnergy(snapshot, snapshots);
           } else {
             protectedAmount = Math.min(stored, roomPending?.get(resource) ?? 0);
           }
 
           const offloadable = stored - protectedAmount;
-          if (offloadable <= 0 || overflowTotal <= TERMINAL_TOTAL_STORAGE_CAP) continue;
+          if (offloadable <= 0) continue;
           const amount = Math.min(offloadable, overflowTotal - TERMINAL_TOTAL_STORAGE_CAP, snapshot.transferBatchSize, storageFree);
           if (amount <= 0) continue;
           const draft = createTerminalOffloadTask(snapshot, resource, amount);

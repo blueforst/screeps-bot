@@ -754,13 +754,13 @@ describe("runResourceControl terminal feed tasks", () => {
     const room = createRoom({
       name: "W15N5",
       storageResources: { [RESOURCE_ENERGY]: 150_000 },
-      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 35_000 },
     });
     Game.rooms[room.name] = room;
 
     runResourceControl();
 
-    // storageEnergy(150000) < energyTarget(200000), terminal has 30000, reserved = 20000
+    // storageEnergy(150000) < energyTarget(200000), terminal has 35000, protected = max(25000, 20000) = 25000
     // offloadable = 10000, should offload min(batchSize=10000, target-storage=50000, offloadable=10000) = 10000
     expect(getCarrierTasksByRoom(room.name)[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toMatchObject({
       type: "terminal_offload",
@@ -2003,7 +2003,7 @@ describe("terminal energy jitter", () => {
     const room = createRoom({
       name: "WJ2",
       storageResources: { [RESOURCE_ENERGY]: 180000 },
-      terminalResources: { [RESOURCE_ENERGY]: 30000 },
+      terminalResources: { [RESOURCE_ENERGY]: 35000 },
     });
     Game.rooms[room.name] = room;
 
@@ -2028,7 +2028,7 @@ describe("terminal energy jitter", () => {
     const room = createRoom({
       name: "WJ3",
       storageResources: { [RESOURCE_ENERGY]: 180000 },
-      terminalResources: { [RESOURCE_ENERGY]: 30000 },
+      terminalResources: { [RESOURCE_ENERGY]: 35000 },
     });
     Game.rooms[room.name] = room;
 
@@ -2046,7 +2046,7 @@ describe("terminal energy jitter", () => {
     const roomAfter = createRoom({
       name: "WJ3",
       storageResources: { [RESOURCE_ENERGY]: 190000 },
-      terminalResources: { [RESOURCE_ENERGY]: 20000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
     });
     Game.rooms[roomAfter.name] = roomAfter;
 
@@ -2206,6 +2206,210 @@ describe("terminalEnergyReserve default 20000", () => {
 
     const tasks = getCarrierTasksByRoom(donor.name);
     expect(tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+});
+
+describe("terminal energy 25k floor protection", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    resetRuntimeServices();
+    Game.time = 10;
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: false,
+        },
+      },
+    };
+    Memory.data = undefined;
+    Memory.runtime = undefined;
+    Memory.rooms = {};
+    Game.rooms = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: jest.fn(() => 0),
+      getAllOrders: jest.fn(() => []),
+      deal: jest.fn(() => OK),
+    };
+  });
+
+  it("terminal energy exactly 25000 creates no energy offload task", () => {
+    const room = createRoom({
+      name: "W25KF1",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25_000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+  it("terminal energy above 25000 is eligible only for surplus above the protection line", () => {
+    const room = createRoom({
+      name: "W25KF2",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 35_000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const offload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`];
+    expect(offload).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
+    });
+  });
+
+  it("config override terminalEnergyReserve 30000 protects 30k not 25k", () => {
+    Memory.cfg!.resourceControl!.rooms = {
+      W25KF3: { terminalEnergyReserve: 30_000 },
+    };
+    const room = createRoom({
+      name: "W25KF3",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 35_000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+  it("pending send fee reserve greater than 25k raises the protection line", () => {
+    const donor = createRoom({
+      name: "W25KF4",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 40_000 },
+    });
+    const receiver = createRoom({ name: "W25KF4R" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 10_000);
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_HYDROGEN, 50_000, "test");
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(donor.name);
+    const offload = tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`];
+    expect(offload).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
+    });
+  });
+
+  it("overflow offload processes non-energy before energy", () => {
+    const room = createRoom({
+      name: "W25KF5",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 200_000,
+        [RESOURCE_HYDROGEN]: 100_000,
+      },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const offloadKeys = Object.keys(tasks).filter(k => k.includes("terminal_offload"));
+    const hKey = `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`;
+    const eKey = `resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`;
+    expect(tasks[hKey]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN }],
+    });
+    expect(tasks[eKey]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_ENERGY }],
+    });
+  });
+
+  it("mixed overflow offloads non-energy before energy and energy never drops below protected line", () => {
+    const room = createRoom({
+      name: "W25KF6",
+      storageResources: { [RESOURCE_ENERGY]: 200_000, [RESOURCE_HYDROGEN]: 0 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 230_000,
+      },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const hOffload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`];
+    expect(hOffload).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    const eOffload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`];
+    expect(eOffload).toBeUndefined();
+  });
+
+  it("overflow offload continues evaluating energy after non-energy brings total to exactly cap", () => {
+    // 150k H + 110k energy = 260k → offload 10k H → 250k → energy surplus 0 → no energy offload
+    const room = createRoom({
+      name: "W25KF7",
+      storageResources: { [RESOURCE_ENERGY]: 200_000, [RESOURCE_HYDROGEN]: 0 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 110_000,
+        [RESOURCE_HYDROGEN]: 150_000,
+      },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const hOffload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`];
+    expect(hOffload).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    const eOffload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`];
+    expect(eOffload).toBeUndefined();
+  });
+
+  it("overflow offload processes both minerals and energy when total far exceeds cap", () => {
+    // Terminal: 200k H + 100k energy = 300k total, overflow = 50k
+    // H offloaded 10k → total 290k, surplus 40k
+    // Energy: offloadable = 100k - 25k = 75k, amount = min(75k, 40k, 10k) = 10k
+    const room = createRoom({
+      name: "W25KF8",
+      storageResources: { [RESOURCE_ENERGY]: 200_000, [RESOURCE_HYDROGEN]: 0 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 100_000,
+        [RESOURCE_HYDROGEN]: 200_000,
+      },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    // Both H and energy should get offloaded (batch size each)
+    const hOffload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`];
+    expect(hOffload).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    const eOffload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`];
+    expect(eOffload).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
+    });
   });
 
 });
