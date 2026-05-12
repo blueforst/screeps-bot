@@ -1174,6 +1174,12 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
       continue;
     }
 
+    // Skip market buys for hub room when internalOnly is active
+    const hubCfg = Memory.cfg?.hub;
+    if (hubCfg && hubCfg.enabled !== false && hubCfg.hubRoomName === room.roomName && hubCfg.internalOnly !== false) {
+      continue;
+    }
+
     for (const resource of marketCfg.buyResources) {
       if (dealsDone >= marketCfg.maxDealsPerRun) {
         break;

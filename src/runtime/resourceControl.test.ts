@@ -1441,3 +1441,172 @@ describe("executeTransferTasks hub-aware priority ordering", () => {
   });
 
 });
+
+describe("hub internalOnly market buy", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    resetRuntimeServices();
+    Game.time = 10;
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: true,
+          maxBuyPrice: {
+            [RESOURCE_HYDROGEN]: 1,
+          },
+        },
+        synthesis: {
+          enabled: true,
+          rooms: {},
+        },
+      },
+    };
+    Memory.data = undefined;
+    Memory.runtime = undefined;
+    Memory.rooms = {};
+    Game.rooms = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: jest.fn(() => 200),
+      getAllOrders: jest.fn((filter: OrderFilter) => {
+        if (filter.type === ORDER_SELL && filter.resourceType === RESOURCE_HYDROGEN) {
+          return [
+            {
+              id: "sell-h-internal",
+              type: ORDER_SELL,
+              resourceType: RESOURCE_HYDROGEN,
+              price: 0.5,
+              amount: 5000,
+              roomName: "W0N0",
+            } as Order,
+          ];
+        }
+        return [];
+      }),
+      deal: jest.fn(() => OK),
+    };
+  });
+
+  function setHubSynthesisDemand(roomName: string, resource: ResourceConstant, amount: number): void {
+    Memory.cfg!.resourceControl!.synthesis!.rooms![roomName] = { demands: { [resource]: amount } };
+  }
+
+  it("hub room with internalOnly (default) does not buy minerals from market", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    setHubSynthesisDemand("W1N1", RESOURCE_HYDROGEN, 5000);
+    const room = createRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    const actions = Memory.runtime?.resourceControl?.lastMarketActions || [];
+    expect(actions.some((a: string) => a.includes("market-buy") && a.includes("H"))).toBe(false);
+  });
+
+  it("hub room with internalOnly: false allows mineral market buy", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N2",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+      internalOnly: false,
+    };
+    setHubSynthesisDemand("W1N2", RESOURCE_HYDROGEN, 5000);
+    const room = createRoom({
+      name: "W1N2",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("sell-h-internal", 5000, room.name);
+    expect(Memory.runtime?.resourceControl?.lastMarketActions).toContain(
+      `market-buy:${room.name}:${RESOURCE_HYDROGEN}=5000:price=0.500:cost=200`,
+    );
+  });
+
+  it("non-hub room still buys minerals regardless of hub internalOnly", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1_HUB",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    setHubSynthesisDemand("W1N3", RESOURCE_HYDROGEN, 5000);
+    const room = createRoom({
+      name: "W1N3",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("sell-h-internal", 5000, room.name);
+    expect(Memory.runtime?.resourceControl?.lastMarketActions).toContain(
+      `market-buy:${room.name}:${RESOURCE_HYDROGEN}=5000:price=0.500:cost=200`,
+    );
+  });
+
+  it("hub room internalOnly does not affect emergency energy buy", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N4",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+    };
+    Memory.cfg!.resourceControl!.market!.emergencyBuyEnabled = true;
+    Memory.cfg!.resourceControl!.market!.maxBuyPrice![RESOURCE_ENERGY] = 1;
+    const room = createRoom({
+      name: "W1N4",
+      storageResources: { [RESOURCE_ENERGY]: 50000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_SELL && filter.resourceType === RESOURCE_ENERGY) {
+        return [
+          {
+            id: "sell-energy-hub",
+            type: ORDER_SELL,
+            resourceType: RESOURCE_ENERGY,
+            price: 0.1,
+            amount: 10000,
+            roomName: "W0N0",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("sell-energy-hub", expect.any(Number), room.name);
+    const actions = Memory.runtime?.resourceControl?.lastMarketActions || [];
+    expect(actions.some((a: string) => a.includes("market-buy") && a.includes("energy"))).toBe(true);
+  });
+
+  it("hub room with explicit internalOnly: true does not buy minerals", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N5",
+      targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+      internalOnly: true,
+    };
+    setHubSynthesisDemand("W1N5", RESOURCE_HYDROGEN, 5000);
+    const room = createRoom({
+      name: "W1N5",
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+});
