@@ -1912,3 +1912,255 @@ describe("carrierRole lab logistics", () => {
     expect(done).toBe(true);
   });
 });
+
+describe("storage withdrawal gate for spawn/extension supply", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    clearCreepAssignmentStateForTest();
+    resetRuntimeServices();
+    Game.time += 1;
+    Memory.rooms = {};
+    getEnergyStoreTarget.mockReset();
+    isDroppedResourceTarget.mockReset();
+    isDroppedResourceTarget.mockReturnValue(false);
+    getPickupTargetEnergyAmount.mockReset();
+    getPickupTargetEnergyAmount.mockReturnValue(0);
+    getReservedPickupTarget.mockReset();
+    getReservedPickupTarget.mockReturnValue(null);
+    reservePickupTarget.mockReset();
+    reservePickupTarget.mockReturnValue(false);
+    moveToTarget.mockReset();
+    getPlannedStoragePos.mockReset();
+    getPlannedStoragePos.mockReturnValue(null);
+    getProtoStorageContainer.mockReset();
+    getProtoStorageContainer.mockReturnValue(null);
+    getProtoControllerLinkContainer.mockReset();
+    getProtoControllerLinkContainer.mockReturnValue(null);
+  });
+
+  it("allows storage withdrawal when delivery target is spawn", () => {
+    const storage = {
+      id: "gate-storage-spawn",
+      pos: { getRangeTo: () => 1 },
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+    const room = createRoom("G1N1", { storage });
+    const spawnTarget = {
+      id: "spawn-gate-1",
+      structureType: STRUCTURE_SPAWN,
+      store: { getFreeCapacity: () => 300 },
+      pos: { x: 5, y: 5, roomName: room.name },
+    } as unknown as StructureSpawn;
+    let carried = 0;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "G1N1:carrier:0" },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) return carried;
+          return resource === RESOURCE_ENERGY ? carried : 0;
+        },
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn(() => {
+        carried = 800;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(spawnTarget);
+    getPickupTargetEnergyAmount.mockReturnValue(5000);
+    reservePickupTarget.mockReturnValue(true);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(switched).toBe(true);
+  });
+
+  it("allows storage withdrawal when delivery target is extension", () => {
+    const storage = {
+      id: "gate-storage-ext",
+      pos: { getRangeTo: () => 1 },
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+    const room = createRoom("G1N2", { storage });
+    const extensionTarget = {
+      id: "ext-gate-1",
+      structureType: STRUCTURE_EXTENSION,
+      store: { getFreeCapacity: () => 50 },
+      pos: { x: 6, y: 6, roomName: room.name },
+    } as unknown as StructureExtension;
+    let carried = 0;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "G1N2:carrier:0" },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) return carried;
+          return resource === RESOURCE_ENERGY ? carried : 0;
+        },
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn(() => {
+        carried = 800;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(extensionTarget);
+    getPickupTargetEnergyAmount.mockReturnValue(5000);
+    reservePickupTarget.mockReturnValue(true);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(switched).toBe(true);
+  });
+
+  it("denies storage withdrawal when delivery target is tower", () => {
+    const storage = {
+      id: "gate-storage-tower",
+      pos: { getRangeTo: () => 1 },
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+    const room = createRoom("G1N3", { storage });
+    const towerTarget = {
+      id: "tower-gate-1",
+      structureType: STRUCTURE_TOWER,
+      store: { getFreeCapacity: () => 500 },
+      pos: { x: 7, y: 7, roomName: room.name },
+    } as unknown as StructureTower;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "G1N3:carrier:0" },
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(towerTarget);
+    getPickupTargetEnergyAmount.mockReturnValue(5000);
+    reservePickupTarget.mockReturnValue(true);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(switched).toBe(false);
+  });
+
+  it("denies storage withdrawal when delivery target is factory", () => {
+    const storage = {
+      id: "gate-storage-factory",
+      pos: { getRangeTo: () => 1 },
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+    const room = createRoom("G1N4", { storage });
+    const factoryTarget = {
+      id: "factory-gate-1",
+      structureType: STRUCTURE_FACTORY,
+      store: { getFreeCapacity: () => 50000 },
+      pos: { x: 8, y: 8, roomName: room.name },
+    } as unknown as StructureFactory;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName: "G1N4:carrier:0" },
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(factoryTarget);
+    getPickupTargetEnergyAmount.mockReturnValue(5000);
+    reservePickupTarget.mockReturnValue(true);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(switched).toBe(false);
+  });
+
+  it("emergency carrier allows storage withdrawal when target is spawn", () => {
+    const storage = {
+      id: "gate-storage-emergency-spawn",
+      pos: { getRangeTo: () => 1 },
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+    const room = createRoom("G1N5", { storage });
+    const spawnTarget = {
+      id: "spawn-emergency-1",
+      structureType: STRUCTURE_SPAWN,
+      store: { getFreeCapacity: () => 300 },
+      pos: { x: 5, y: 5, roomName: room.name },
+    } as unknown as StructureSpawn;
+    const configName = `${room.name}:manual:maxcarrier:test`;
+    let carried = 0;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) return carried;
+          return resource === RESOURCE_ENERGY ? carried : 0;
+        },
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn(() => {
+        carried = 800;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getCreepConfigService().upsert(configName, "carrier", [], room.name);
+    getEnergyStoreTarget.mockReturnValue(spawnTarget);
+    getPickupTargetEnergyAmount.mockReturnValue(5000);
+    reservePickupTarget.mockReturnValue(true);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(switched).toBe(true);
+  });
+
+  it("emergency carrier denies storage withdrawal when target is tower", () => {
+    const storage = {
+      id: "gate-storage-emergency-tower",
+      pos: { getRangeTo: () => 1 },
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 500000,
+      },
+    } as unknown as StructureStorage;
+    const room = createRoom("G1N6", { storage });
+    const towerTarget = {
+      id: "tower-emergency-1",
+      structureType: STRUCTURE_TOWER,
+      store: { getFreeCapacity: () => 500 },
+      pos: { x: 7, y: 7, roomName: room.name },
+    } as unknown as StructureTower;
+    const configName = `${room.name}:emergency:carrier:0`;
+    const creep = {
+      ...createCreep(room),
+      memory: { configName },
+    } as unknown as Creep;
+    getCreepConfigService().upsert(configName, "carrier", [], room.name);
+    getEnergyStoreTarget.mockReturnValue(towerTarget);
+    getPickupTargetEnergyAmount.mockReturnValue(5000);
+    reservePickupTarget.mockReturnValue(true);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(switched).toBe(false);
+  });
+});

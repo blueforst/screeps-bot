@@ -26,15 +26,6 @@ interface CarrierPickupOptions {
   includeProtoStorage?: boolean;
 }
 
-function isEmergencyResponseCarrier(creep: Creep): boolean {
-  const configName = creep.memory.configName;
-  if (!configName) {
-    return false;
-  }
-
-  return configName.includes(":manual:maxcarrier:") || configName.includes(":emergency:");
-}
-
 function getCarrierPickupAmount(target: CarrierPickupTarget): number {
   return getPickupTargetEnergyAmount(target);
 }
@@ -605,7 +596,6 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
 export const carrierRole: RoleFactory = () => ({
   source: (creep): boolean => {
     clearPostTransferPlan(creep);
-    const emergencyResponseMode = isEmergencyResponseCarrier(creep);
 
     if (creep.store.getUsedCapacity() > 0) {
       releasePickupReservation(creep);
@@ -620,7 +610,7 @@ export const carrierRole: RoleFactory = () => ({
 
     if (energyDemandTarget) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
-      const includeProtoStorage = isSpawnOrExtensionTarget(energyDemandTarget);
+      const isSupplyingSpawnOrExtension = isSpawnOrExtensionTarget(energyDemandTarget);
 
       if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep) &&
           (getAssignedCarrierRoom(creep)?.controller?.level ?? 0) > 2) {
@@ -631,8 +621,8 @@ export const carrierRole: RoleFactory = () => ({
       }
 
       pickupEnergyForCarrier(creep, {
-        includeStorage: emergencyResponseMode,
-        includeProtoStorage,
+        includeStorage: isSupplyingSpawnOrExtension,
+        includeProtoStorage: isSupplyingSpawnOrExtension,
       });
       const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
       if (hasEnergy) {
