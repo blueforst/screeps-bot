@@ -158,8 +158,7 @@ export function planHubChains(
   const needed: Record<string, number> = {};
 
   for (const t3 of T3_TARGETS) {
-    const have = available[t3] || 0;
-    needed[t3] = Math.max(0, targetReserve - have);
+    needed[t3] = targetReserve;
   }
 
   for (const product of PROCESS_ORDER) {

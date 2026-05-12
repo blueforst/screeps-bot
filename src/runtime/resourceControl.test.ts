@@ -1,5 +1,5 @@
 import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
-import { createResourceTransferTask } from "@/runtime/logistics/resourceTransferTasks";
+import { createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
 import { runResourceControl } from "@/runtime/resourceControl";
 
 type RuntimeGlobal = typeof global & {
@@ -1028,6 +1028,65 @@ describe("terminal overflow offload above 250k", () => {
       type: "terminal_offload",
       steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
     });
+  });
+
+  it("overflow offload suppresses terminal feed for the same mineral", () => {
+    const room = createRoom({
+      name: "W25O1",
+      storageResources: { [RESOURCE_ENERGY]: 200_000, [RESOURCE_HYDROGEN]: 10_000 },
+      terminalResources: { [RESOURCE_HYDROGEN]: 200_000, [RESOURCE_KEANIUM]: 100_000 },
+    });
+    const receiver = createRoom({ name: "W25O1B" });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(room.name, receiver.name, RESOURCE_HYDROGEN, 5000, "test");
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toBeDefined();
+    expect(tasks[`resourceControl:terminal_feed:${room.name}:${RESOURCE_HYDROGEN}`]).toBeUndefined();
+  });
+
+  it("below-cap terminal still creates mineral feed for pending exports", () => {
+    const room = createRoom({
+      name: "W25O2",
+      storageResources: { [RESOURCE_ENERGY]: 200_000, [RESOURCE_HYDROGEN]: 10_000 },
+      terminalResources: { [RESOURCE_HYDROGEN]: 2_000 },
+    });
+    const receiver = createRoom({ name: "W25O2B" });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(room.name, receiver.name, RESOURCE_HYDROGEN, 5000, "test");
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_feed:${room.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN, fromKind: "storage", toKind: "terminal" }],
+    });
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toBeUndefined();
+  });
+
+  it("energy terminal task is unaffected by mineral offload feed suppression", () => {
+    const room = createRoom({
+      name: "W25O3",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5_000, [RESOURCE_HYDROGEN]: 200_000, [RESOURCE_KEANIUM]: 100_000 },
+    });
+    const receiver = createRoom({ name: "W25O3B" });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_ENERGY, fromKind: "storage", toKind: "terminal" }],
+    });
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toBeDefined();
   });
 });
 
@@ -2412,4 +2471,94 @@ describe("terminal energy 25k floor protection", () => {
     });
   });
 
+});
+
+describe("executeTransferTasks below-min blocked tasks", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    resetRuntimeServices();
+    Game.time = 10;
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: false,
+        },
+      },
+    };
+    Memory.data = undefined;
+    Memory.runtime = undefined;
+    Memory.rooms = {};
+    Game.rooms = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: jest.fn(() => 0),
+      getAllOrders: jest.fn(() => []),
+      deal: jest.fn(() => OK),
+    };
+  });
+
+  it("keeps task pending with blocking error when remainingAmount < transferMinAmount", () => {
+    const donor = createRoom({
+      name: "WBM1",
+      storageResources: { [RESOURCE_KEANIUM]: 5000 },
+      terminalResources: { [RESOURCE_KEANIUM]: 500 },
+    });
+    const receiver = createRoom({ name: "WBM2" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_KEANIUM, 500, "test:below-min");
+
+    runResourceControl();
+
+    const actions = Memory.runtime?.resourceControl?.lastActions || [];
+    const blockedAction = actions.find((a: string) => a.includes("task-blocked") && a.includes("remaining_below_transfer_min"));
+    expect(blockedAction).toBeDefined();
+
+    const store = ensureResourceTransferTaskStore();
+    const task = Object.values(store).find(
+      (t) => t.fromRoomName === donor.name && t.resource === RESOURCE_KEANIUM,
+    );
+    expect(task).toBeDefined();
+    expect(task!.status).toBe("pending");
+    expect(task!.lastError).toBe("remaining_below_transfer_min");
+    expect(task!.remainingAmount).toBe(500);
+  });
+
+  it("merges duplicate task into existing blocked pending task instead of creating new", () => {
+    const donor = createRoom({
+      name: "WBM3",
+      storageResources: { [RESOURCE_KEANIUM]: 5000 },
+      terminalResources: { [RESOURCE_KEANIUM]: 500 },
+    });
+    const receiver = createRoom({ name: "WBM4" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_KEANIUM, 500, "test:merge");
+    runResourceControl();
+
+    const result2 = createResourceTransferTask(donor.name, receiver.name, RESOURCE_KEANIUM, 300, "test:merge") as any;
+
+    expect(result2.ok).toBe(true);
+    const task = result2.task;
+    expect(task.remainingAmount).toBe(800);
+    expect(task.status).toBe("pending");
+  });
+
+  it("getIncomingResourceTransferAmount returns 0 for below-min blocked pending tasks", () => {
+    const donor = createRoom({
+      name: "WBM5",
+      storageResources: { [RESOURCE_KEANIUM]: 5000 },
+      terminalResources: { [RESOURCE_KEANIUM]: 500 },
+    });
+    const receiver = createRoom({ name: "WBM6" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_KEANIUM, 500, "test:incoming");
+    runResourceControl();
+
+    expect(getIncomingResourceTransferAmount(receiver.name, RESOURCE_KEANIUM)).toBe(0);
+  });
 });

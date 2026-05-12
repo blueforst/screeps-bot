@@ -616,10 +616,9 @@ function executeTransferTasks(
       continue;
     }
     if (task.remainingAmount < donor.transferMinAmount) {
-      task.status = "failed";
       task.updatedAt = Game.time;
       task.lastError = "remaining_below_transfer_min";
-      actions.push(`task-failed:${task.id}:remaining_below_transfer_min`);
+      actions.push(`task-blocked:${task.id}:remaining_below_transfer_min`);
       continue;
     }
 
@@ -878,31 +877,9 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: 
       drafts.push(energyDraft);
     }
 
-    const desiredFeedByResource = new Map<ResourceConstant, number>();
-    const roomPending = pendingByRoom.get(snapshot.roomName);
-    if (roomPending) {
-      for (const [resource, amount] of roomPending.entries()) {
-        desiredFeedByResource.set(resource, Math.min(snapshot.transferBatchSize, amount));
-      }
-    }
-
-    if (snapshot.nativeMineralType) {
-      const target = getNativeMineralAutoSellTerminalTarget(snapshot, marketCfg);
-      if (target > 0) {
-        desiredFeedByResource.set(
-          snapshot.nativeMineralType,
-          Math.max(desiredFeedByResource.get(snapshot.nativeMineralType) || 0, target),
-        );
-      }
-    }
-
-    drafts.push(
-      ...Array.from(desiredFeedByResource.entries())
-        .map(([resource, target]) => createTerminalFeedTask(snapshot, resource, target))
-        .filter((draft): draft is CarrierTaskDraft => !!draft),
-    );
-
     // Terminal overflow: offload surplus above cap to storage
+    // Compute offload drafts first so we can suppress conflicting feed drafts
+    const offloadedResources = new Set<ResourceConstant>();
     if (snapshot.storage) {
       let overflowTotal = snapshot.terminal.store.getUsedCapacity();
       if (overflowTotal > TERMINAL_TOTAL_STORAGE_CAP) {
@@ -932,12 +909,39 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: 
           const draft = createTerminalOffloadTask(snapshot, resource, amount);
           if (draft) {
             drafts.push(draft);
+            offloadedResources.add(resource);
             overflowTotal -= amount;
             storageFree -= amount;
           }
         }
       }
     }
+
+    // Mineral feed drafts — skip resources that already have an overflow offload
+    const desiredFeedByResource = new Map<ResourceConstant, number>();
+    const roomPending = pendingByRoom.get(snapshot.roomName);
+    if (roomPending) {
+      for (const [resource, amount] of roomPending.entries()) {
+        if (offloadedResources.has(resource)) continue;
+        desiredFeedByResource.set(resource, Math.min(snapshot.transferBatchSize, amount));
+      }
+    }
+
+    if (snapshot.nativeMineralType && !offloadedResources.has(snapshot.nativeMineralType)) {
+      const target = getNativeMineralAutoSellTerminalTarget(snapshot, marketCfg);
+      if (target > 0) {
+        desiredFeedByResource.set(
+          snapshot.nativeMineralType,
+          Math.max(desiredFeedByResource.get(snapshot.nativeMineralType) || 0, target),
+        );
+      }
+    }
+
+    drafts.push(
+      ...Array.from(desiredFeedByResource.entries())
+        .map(([resource, target]) => createTerminalFeedTask(snapshot, resource, target))
+        .filter((draft): draft is CarrierTaskDraft => !!draft),
+    );
 
     replaceCarrierTasksForProducerRoom(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, snapshot.roomName, drafts);
     if (drafts.length > 0) {

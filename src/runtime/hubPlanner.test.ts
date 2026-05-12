@@ -132,6 +132,28 @@ describe("planHubChains", () => {
     expect(byProduct.get(RESOURCE_HYDROXIDE)!.targetAmount).toBe(4000);
   });
 
+  it("produces XUHO2 when inventory is below reserve (894/1000)", () => {
+    const result = planHubChains({ [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: 894 }, {}, 1000);
+    const byProduct = new Map(result.steps.map((s) => [s.product, s]));
+    const xuho2Step = byProduct.get(RESOURCE_CATALYZED_UTRIUM_ALKALIDE);
+    expect(xuho2Step).toBeDefined();
+    expect(xuho2Step!.targetAmount).toBe(106);
+  });
+
+  it("does not produce XUHO2 when inventory is at reserve (1000/1000)", () => {
+    const result = planHubChains({ [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: 1000 }, {}, 1000);
+    const byProduct = new Map(result.steps.map((s) => [s.product, s]));
+    expect(byProduct.has(RESOURCE_CATALYZED_UTRIUM_ALKALIDE)).toBe(false);
+  });
+
+  it("produces XUHO2 with correct amount at half reserve (500/1000)", () => {
+    const result = planHubChains({ [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: 500 }, {}, 1000);
+    const byProduct = new Map(result.steps.map((s) => [s.product, s]));
+    const xuho2Step = byProduct.get(RESOURCE_CATALYZED_UTRIUM_ALKALIDE);
+    expect(xuho2Step).toBeDefined();
+    expect(xuho2Step!.targetAmount).toBe(500);
+  });
+
   it("reports blocked with missing base minerals when insufficient", () => {
     const partialInventory: Record<string, number> = {
       [RESOURCE_HYDROGEN]: 10000,
