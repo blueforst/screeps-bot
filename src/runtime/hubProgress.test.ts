@@ -1,4 +1,5 @@
-import { buildHubProgressSnapshot, collectHubProgressSnapshot, runHubProgressAnalytics } from "@/runtime/hubProgress";
+import { buildHubProgressSnapshot, collectHubProgressSnapshot, runHubProgressAnalytics, buildHubOverlayLines, renderHubProgressOverlays } from "@/runtime/hubProgress";
+import type { HubProgressSnapshot } from "@/runtime/hubProgress";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
 
@@ -263,5 +264,118 @@ describe("runHubProgressAnalytics", () => {
     runHubProgressAnalytics();
 
     expect(Memory.analytics?.hub).toBeUndefined();
+  });
+});
+
+describe("buildHubOverlayLines", () => {
+  function makeSnapshot(overrides: Partial<HubProgressSnapshot> = {}): HubProgressSnapshot {
+    return {
+      updatedAt: 100,
+      enabled: true,
+      hubRoomName: "W1N1",
+      hubRoomVisible: true,
+      status: "importing",
+      stage: "acquiring",
+      activeProduct: "XGH2O",
+      lastPlanActions: ["XGH2O", "XUHO2"],
+      missingResources: ["U"],
+      lastError: null,
+      needsPlan: false,
+      hubStorageEnergy: 100000,
+      hubTerminalEnergy: 20000,
+      hubInventory: {},
+      pendingImports: 3,
+      pendingReclaims: 0,
+      pendingExports: 1,
+      pendingTasks: [],
+      roomTerminalBlockers: [
+        { room: "W2N1", terminalEnergy: 0, reserve: 20000, pendingNonEnergy: 0 },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("returns array of strings with core content", () => {
+    const lines = buildHubOverlayLines(makeSnapshot());
+    expect(Array.isArray(lines)).toBe(true);
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.length).toBeLessThanOrEqual(8);
+    const joined = lines.join(" ");
+    expect(joined).toContain("importing");
+    expect(joined).toContain("XGH2O");
+    expect(joined).toContain("U");
+  });
+
+  it("caps at 8 lines even with many plan actions", () => {
+    const manyActions = Array.from({ length: 15 }, (_, i) => `compound${i}`);
+    const lines = buildHubOverlayLines(makeSnapshot({ lastPlanActions: manyActions }));
+    expect(lines.length).toBeLessThanOrEqual(8);
+  });
+});
+
+describe("renderHubProgressOverlays", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    registerRuntimeServices();
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: ["XGH2O" as ResourceConstant],
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        activeProduct: "",
+        activeStep: 0,
+        missingResources: [],
+        lastPlanActions: [],
+        needsPlan: false,
+      },
+    };
+    Memory.data = { resourceControl: { tasks: {} } };
+    Memory.analytics = {};
+    Game.time = 100;
+    Game.rooms = {};
+  });
+
+  it("does not throw when RoomVisual is undefined", () => {
+    const prev = (global as any).RoomVisual;
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete (global as any).RoomVisual;
+    expect(() => renderHubProgressOverlays()).not.toThrow();
+    (global as any).RoomVisual = prev;
+  });
+
+  it("processes two owned rooms", () => {
+    const textCalls: Array<{ room: string; text: string }> = [];
+    const MockRV = class {
+      private room: string;
+      constructor(room: string) {
+        this.room = room;
+      }
+      text(content: string): any {
+        textCalls.push({ room: this.room, text: content });
+        return this;
+      }
+    };
+    const prev = (global as any).RoomVisual;
+    (global as any).RoomVisual = MockRV;
+
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.rooms = {
+      W1N1: { name: "W1N1", controller: { my: true } } as any,
+      W2N1: { name: "W2N1", controller: { my: true } } as any,
+    };
+
+    renderHubProgressOverlays();
+
+    const rooms = new Set(textCalls.map((c) => c.room));
+    expect(rooms.has("W1N1")).toBe(true);
+    expect(rooms.has("W2N1")).toBe(true);
+
+    (global as any).RoomVisual = prev;
   });
 });

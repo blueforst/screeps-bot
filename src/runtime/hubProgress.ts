@@ -80,6 +80,13 @@ export interface HubProgressSnapshot {
 const ANALYTICS_SAMPLE_INTERVAL = 5;
 const MAX_LAST_PLAN_ACTIONS = 8;
 const MAX_INVENTORY_EXTRA = 10;
+const MAX_OVERLAY_LINES = 8;
+
+function formatEnergy(amount: number): string {
+  if (amount >= 1000000) return `${Math.round(amount / 10000) / 100}M`;
+  if (amount >= 1000) return `${Math.round(amount / 100) / 10}K`;
+  return `${amount}`;
+}
 
 function classifyTransferTask(
   reason: string | undefined,
@@ -332,4 +339,71 @@ export function runHubProgressAnalytics(): void {
   const snapshot = collectHubProgressSnapshot();
   const analytics = getMemoryService().ensureAnalytics();
   analytics.hub = snapshot;
+}
+
+export function buildHubOverlayLines(snapshot: HubProgressSnapshot): string[] {
+  if (!snapshot.enabled) return [];
+
+  const lines: string[] = [];
+
+  // Line 1: status + product
+  const statusStr = snapshot.status ?? "—";
+  const productStr = snapshot.activeProduct ?? "—";
+  lines.push(`[hub] ${statusStr} product=${productStr}`);
+
+  // Line 2: stage
+  if (snapshot.stage) {
+    lines.push(`stage=${snapshot.stage}`);
+  }
+
+  // Line 3: plan actions (truncated)
+  if (snapshot.lastPlanActions.length > 0) {
+    const actions = snapshot.lastPlanActions.slice(0, 4).join(", ");
+    lines.push(`plan: ${actions}`);
+  }
+
+  // Line 4: missing
+  if (snapshot.missingResources.length > 0) {
+    lines.push(`missing: ${snapshot.missingResources.join(", ")}`);
+  }
+
+  // Line 5: error
+  lines.push(`error: ${snapshot.lastError ?? "(none)"}`);
+
+  // Line 6: energy
+  lines.push(`storage=${formatEnergy(snapshot.hubStorageEnergy)} terminal=${formatEnergy(snapshot.hubTerminalEnergy)}`);
+
+  // Line 7: tasks
+  lines.push(`tasks: ${snapshot.pendingImports} imp, ${snapshot.pendingReclaims} recl, ${snapshot.pendingExports} exp`);
+
+  // Line 8: blockers
+  if (snapshot.roomTerminalBlockers.length > 0) {
+    const b = snapshot.roomTerminalBlockers[0];
+    lines.push(`blocker: ${b.room} (term=${formatEnergy(b.terminalEnergy)}, reserve=${formatEnergy(b.reserve)})`);
+  }
+
+  return lines.slice(0, MAX_OVERLAY_LINES);
+}
+
+export function renderHubProgressOverlays(): void {
+  if (typeof RoomVisual === "undefined") return;
+  if (!Memory.cfg?.hub?.enabled) return;
+
+  // CPU guard
+  if (Game.cpu.bucket < 100) return;
+
+  const snapshot = collectHubProgressSnapshot();
+  const lines = buildHubOverlayLines(snapshot);
+  if (lines.length === 0) return;
+
+  // Render in every owned room
+  const myRooms = Object.values(Game.rooms).filter(r => r.controller?.my);
+  for (const room of myRooms) {
+    const rv = new RoomVisual(room.name);
+    let y = 1;
+    for (const line of lines) {
+      rv.text(line, 1, y, { align: "left" as const, font: 0.45 });
+      y += 0.6;
+    }
+  }
 }
