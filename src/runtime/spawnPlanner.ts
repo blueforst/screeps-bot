@@ -313,10 +313,23 @@ function shouldQueueConfig(
     return false;
   }
 
+  if (config.role === "mineralHarvester") {
+    const mineralId = getMineralIdFromConfig(config);
+    if (mineralId) {
+      const mineral = Game.getObjectById<Mineral>(mineralId);
+      if (!mineral || mineral.mineralAmount <= 0) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+
+    return shouldPreSpawnSourceWorker(spawn, configName, config, context);
+  }
+
   if (
     config.role === "harvester" ||
     config.role === "miner" ||
-    config.role === "mineralHarvester" ||
     config.role === "colonizerHarvester"
   ) {
     return shouldPreSpawnSourceWorker(spawn, configName, config, context);

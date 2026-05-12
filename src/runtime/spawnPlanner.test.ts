@@ -376,6 +376,91 @@ describe("spawnPlanner managed mineral harvester queueing", () => {
     expect(spawnFindPathTo).toHaveBeenCalledTimes(0);
   });
 
+  it("does not pre-spawn mineral harvesters when mineral is depleted", () => {
+    const room = createRoom("W1N6");
+    room.energyCapacityAvailable = 750;
+    const spawn = createSpawn(room);
+    const mineral = createMineral("mineral-depleted", { amount: 0 });
+    const mineralConfigName = "W1N6:mineralHarvester:mineral-depleted";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.carrierD = {
+      name: "carrierD",
+      room,
+      memory: {
+        role: "carrier",
+      },
+    } as Creep;
+    Game.creeps.mhD = {
+      name: "mhD",
+      room,
+      ticksToLive: 10,
+      memory: {
+        role: "mineralHarvester",
+        configName: mineralConfigName,
+      },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [mineralConfigName]: {
+          role: "mineralHarvester",
+          args: [mineral.id],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === mineral.id) {
+        return mineral;
+      }
+
+      return null;
+    }) as Game["getObjectById"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(mineralConfigName);
+  });
+
+  it("does not pre-spawn mineral harvesters when configured mineral is missing", () => {
+    const room = createRoom("W1N7");
+    room.energyCapacityAvailable = 750;
+    const spawn = createSpawn(room);
+    const mineralId = "mineral-missing" as Id<Mineral>;
+    const mineralConfigName = "W1N7:mineralHarvester:mineral-missing";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.carrierM = {
+      name: "carrierM",
+      room,
+      memory: {
+        role: "carrier",
+      },
+    } as Creep;
+    Game.creeps.mhM = {
+      name: "mhM",
+      room,
+      ticksToLive: 10,
+      memory: {
+        role: "mineralHarvester",
+        configName: mineralConfigName,
+      },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [mineralConfigName]: {
+          role: "mineralHarvester",
+          args: [mineralId],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn(() => null) as Game["getObjectById"];
+
+    expect(() => scheduleSpawnTasks()).not.toThrow();
+    expect(spawn.memory.spawnList).not.toContain(mineralConfigName);
+  });
+
   it("falls back to spawn position when storage is unavailable", () => {
     const room = createRoomWithoutStorage("W1N4");
     room.energyCapacityAvailable = 750;
