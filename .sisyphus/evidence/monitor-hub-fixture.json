@@ -1,0 +1,32 @@
+{
+  "production": {
+    "rooms": {
+      "W1N1": {
+        "energy": { "looseEnergy": 5000, "storedEnergy": 200000 },
+        "creeps": { "workers": 3, "carriers": 2 },
+        "updatedAt": 12345
+      }
+    }
+  },
+  "hub": {
+    "updatedAt": 12345,
+    "enabled": true,
+    "hubRoomName": "W1N1",
+    "hubRoomVisible": true,
+    "status": "synthesizing",
+    "stage": "loading",
+    "activeProduct": "XGH2O",
+    "lastPlanActions": ["XGH2O"],
+    "missingResources": [],
+    "lastError": null,
+    "needsPlan": false,
+    "hubStorageEnergy": 200000,
+    "hubTerminalEnergy": 20000,
+    "hubInventory": { "U": 3000, "XGH2O": 500 },
+    "pendingImports": 2,
+    "pendingReclaims": 0,
+    "pendingExports": 1,
+    "pendingTasks": [{ "resource": "U", "from": "W2N1", "to": "W1N1", "remaining": 1000, "reason": "hub:import:U" }],
+    "roomTerminalBlockers": []
+  }
+}

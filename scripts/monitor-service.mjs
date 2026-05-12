@@ -26,13 +26,19 @@ Options:
   --memory-interval-ms <ms>       Memory polling interval (default: 60000)
   --segment-id <id>               Optional RawMemory segment id (0-99)
   --shard <name>                  Optional shard name (e.g. shard2)
+  --shards <csv>                  Shard candidates for auto-selection (default: shard0,shard1,shard2,shard3)
   --segment-interval-ms <ms>      Segment polling interval (default: 10000)
   --output <path|off>             JSONL output path (default: monitor-data/snapshots.jsonl)
   --port <port>                   HTTP server port (default: 3131)
   --history-limit <n>             In-memory history length (default: 200)
   --request-timeout-ms <ms>       API request timeout (default: 15000)
   --no-http                       Disable HTTP server mode
+  --memory-fixture <path>         Load memory from JSON file instead of API (for testing)
   --help                          Show this help
+
+Shard behavior:
+  Without --shard, the monitor tries all --shards candidates and selects the
+  one with the most recent hub analytics or latest tick.
 
 Environment variables:
   SCREEPS_TOKEN
@@ -40,11 +46,13 @@ Environment variables:
   SCREEPS_MONITOR_MEMORY_INTERVAL_MS
   SCREEPS_MONITOR_SEGMENT_ID
   SCREEPS_MONITOR_SHARD
+  SCREEPS_MONITOR_SHARDS
   SCREEPS_MONITOR_SEGMENT_INTERVAL_MS
   SCREEPS_MONITOR_OUTPUT
   SCREEPS_MONITOR_PORT
   SCREEPS_MONITOR_HISTORY_LIMIT
   SCREEPS_MONITOR_REQUEST_TIMEOUT_MS
+  SCREEPS_MONITOR_MEMORY_FIXTURE
 `);
 }
 
@@ -81,7 +89,9 @@ function parseArgs(argv) {
       key !== "--output" &&
       key !== "--port" &&
       key !== "--history-limit" &&
-      key !== "--request-timeout-ms"
+      key !== "--request-timeout-ms" &&
+      key !== "--memory-fixture" &&
+      key !== "--shards"
     ) {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -114,6 +124,10 @@ function parseArgs(argv) {
       args.historyLimit = nextValue;
     } else if (key === "--request-timeout-ms") {
       args.requestTimeoutMs = nextValue;
+    } else if (key === "--memory-fixture") {
+      args.memoryFixture = nextValue;
+    } else if (key === "--shards") {
+      args.shards = nextValue;
     }
   }
 
@@ -242,6 +256,17 @@ async function resolveConfig(args) {
     120_000,
   );
 
+  const memoryFixture =
+    process.env.SCREEPS_MONITOR_MEMORY_FIXTURE || args.memoryFixture || null;
+
+  const shardsRaw = args.shards || process.env.SCREEPS_MONITOR_SHARDS || "shard0,shard1,shard2,shard3";
+  const shardCandidates = String(shardsRaw)
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const explicitShard = !!(args.shard || process.env.SCREEPS_MONITOR_SHARD);
+
   return {
     once: args.once,
     noHttp: args.noHttp,
@@ -250,11 +275,14 @@ async function resolveConfig(args) {
     memoryIntervalMs,
     segmentId,
     shard,
+    explicitShard,
+    shardCandidates,
     segmentIntervalMs,
     outputPath,
     port,
     historyLimit,
     requestTimeoutMs,
+    memoryFixture,
   };
 }
 
@@ -517,6 +545,33 @@ function summarizeModuleCpu(moduleCpu) {
   };
 }
 
+function summarizeHub(hub) {
+  if (!hub || typeof hub !== "object") {
+    return { available: false, updatedAt: null };
+  }
+  return {
+    available: true,
+    updatedAt: hub.updatedAt ?? null,
+    enabled: hub.enabled ?? false,
+    hubRoomName: hub.hubRoomName ?? "",
+    hubRoomVisible: hub.hubRoomVisible ?? false,
+    status: hub.status ?? null,
+    stage: hub.stage ?? null,
+    activeProduct: hub.activeProduct ?? null,
+    missingResources: Array.isArray(hub.missingResources) ? hub.missingResources : [],
+    lastError: hub.lastError ?? null,
+    needsPlan: hub.needsPlan ?? false,
+    hubStorageEnergy: hub.hubStorageEnergy ?? 0,
+    hubTerminalEnergy: hub.hubTerminalEnergy ?? 0,
+    hubInventory: hub.hubInventory && typeof hub.hubInventory === "object" ? hub.hubInventory : {},
+    pendingImports: hub.pendingImports ?? 0,
+    pendingReclaims: hub.pendingReclaims ?? 0,
+    pendingExports: hub.pendingExports ?? 0,
+    pendingTaskCount: Array.isArray(hub.pendingTasks) ? hub.pendingTasks.length : 0,
+    roomTerminalBlockers: Array.isArray(hub.roomTerminalBlockers) ? hub.roomTerminalBlockers : [],
+  };
+}
+
 function parseSegmentSnapshot(segmentId, payload) {
   if (!payload || typeof payload !== "object") {
     return {
@@ -552,6 +607,45 @@ function parseSegmentSnapshot(segmentId, payload) {
 }
 
 async function fetchMemorySnapshot(config) {
+  // Fixture mode: read from file instead of API
+  if (config.memoryFixture) {
+    const fs = await import("node:fs/promises");
+    const raw = await fs.readFile(config.memoryFixture, "utf-8");
+    const parsed = JSON.parse(raw);
+    const rateLimit = { limit: "?", remaining: "?", reset: "?" };
+
+    let production = null;
+    let moduleCpu = null;
+    let hub = null;
+
+    if (parsed && typeof parsed === "object") {
+      if ("rooms" in parsed) {
+        production = parsed;
+        if ("moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
+      } else if ("production" in parsed && parsed.production) {
+        production = parsed.production;
+        if ("moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
+      } else if ("analytics" in parsed && parsed.analytics) {
+        const analytics = parsed.analytics;
+        if (typeof analytics === "object" && analytics) {
+          if ("production" in analytics) production = analytics.production;
+          if ("moduleCpu" in analytics) moduleCpu = analytics.moduleCpu;
+          if ("hub" in analytics) hub = analytics.hub;
+        }
+      }
+      if ("hub" in parsed) hub = parsed.hub;
+    }
+
+    return {
+      source: "memory",
+      fetchedAt: new Date().toISOString(),
+      rateLimit,
+      summary: summarizeProduction(production),
+      moduleCpu: summarizeModuleCpu(moduleCpu),
+      hub: summarizeHub(hub),
+    };
+  }
+
   const { payload, rateLimit } = await fetchApiJson(config, "/api/user/memory", {
     shard: config.shard,
     path: "analytics",
@@ -559,6 +653,7 @@ async function fetchMemorySnapshot(config) {
   const memoryOrProduction = parseMemoryBody(payload);
   let production = null;
   let moduleCpu = null;
+  let hub = null;
   if (memoryOrProduction && typeof memoryOrProduction === "object") {
     if ("rooms" in memoryOrProduction) {
       production = memoryOrProduction;
@@ -579,6 +674,9 @@ async function fetchMemorySnapshot(config) {
         if ("moduleCpu" in analytics) {
           moduleCpu = analytics.moduleCpu;
         }
+        if ("hub" in analytics) {
+          hub = analytics.hub;
+        }
       }
     }
   }
@@ -591,6 +689,7 @@ async function fetchMemorySnapshot(config) {
     rateLimit,
     summary,
     moduleCpu: moduleCpuSummary,
+    hub: summarizeHub(hub),
   };
 }
 
@@ -674,6 +773,7 @@ function summarizeState(state) {
     roomCount: memory ? memory.summary.roomCount : 0,
     latestTick: memory ? memory.summary.latestTick : null,
     totals: memory ? memory.summary.totals : null,
+    hub: memory?.hub ?? null,
     moduleCpuAvailable: moduleCpu ? moduleCpu.available : false,
     moduleCpuTick: latestModuleCpu ? latestModuleCpu.tick : null,
     moduleCpuTotalUsed: latestModuleCpu ? latestModuleCpu.totalUsed : null,
@@ -750,10 +850,15 @@ function createHttpServer(state) {
       });
       return;
     }
+    if (url.pathname === "/hub") {
+      const hub = state.latest.memory?.hub ?? null;
+      writeJson(res, 200, { ok: true, hub, selectedShard: state.selectedShard ?? null });
+      return;
+    }
 
     writeJson(res, 200, {
       summary: summarizeState(state),
-      endpoints: ["/health", "/state", "/rooms", "/history", "/cpu"],
+      endpoints: ["/health", "/state", "/rooms", "/history", "/cpu", "/hub"],
     });
   });
 }
@@ -764,8 +869,12 @@ function logMemorySnapshot(snapshot) {
   const topPhase = moduleCpu && moduleCpu.topPhases && moduleCpu.topPhases.length > 0
     ? `${moduleCpu.topPhases[0].phase}:${moduleCpu.topPhases[0].used.toFixed(2)}`
     : "n/a";
+  const hub = snapshot.hub;
+  const hubStr = hub && hub.available
+    ? ` hub=${hub.hubRoomName} status=${hub.status ?? "n/a"} stage=${hub.stage ?? "n/a"} product=${hub.activeProduct ?? "n/a"} imports=${hub.pendingImports} exports=${hub.pendingExports}`
+    : "";
   console.log(
-    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} moduleCpuTick=${moduleCpu?.tick ?? "n/a"} moduleCpuUsed=${moduleCpu?.totalUsed ?? "n/a"} topPhase=${topPhase} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} moduleCpuTick=${moduleCpu?.tick ?? "n/a"} moduleCpuUsed=${moduleCpu?.totalUsed ?? "n/a"} topPhase=${topPhase}${hubStr} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
   );
 }
 
@@ -781,8 +890,42 @@ function logSegmentSnapshot(snapshot) {
   );
 }
 
+async function fetchWithShardFallback(config) {
+  const candidates = [undefined, ...config.shardCandidates];
+  let bestResult = null;
+  let bestShard = null;
+  let bestHubTime = -1;
+  let bestTick = -1;
+  const shardResults = [];
+
+  for (const shard of candidates) {
+    try {
+      const result = await fetchMemorySnapshot({ ...config, shard, memoryFixture: config.memoryFixture });
+      const hubTime = result.memory?.hub?.updatedAt ?? result.hub?.updatedAt ?? -1;
+      const tick = result.memory?.summary?.latestTick ?? result.summary?.latestTick ?? -1;
+      shardResults.push({ shard: shard ?? "(default)", ok: true, hubTime, tick });
+      if (hubTime > bestHubTime || (hubTime === bestHubTime && tick > bestTick)) {
+        bestResult = result;
+        bestShard = shard ?? "(default)";
+        bestHubTime = hubTime;
+        bestTick = tick;
+      }
+    } catch (e) {
+      shardResults.push({ shard: shard ?? "(default)", ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  if (bestResult) {
+    bestResult.selectedShard = bestShard;
+    bestResult.shardCandidates = shardResults;
+  }
+  return bestResult;
+}
+
 async function runOnce(config) {
-  const memory = await fetchMemorySnapshot(config);
+  const memory = config.explicitShard || config.memoryFixture
+    ? await fetchMemorySnapshot(config)
+    : await fetchWithShardFallback(config);
   const segment = config.segmentId === null ? null : await fetchSegmentSnapshot(config, config.segmentId);
   const payload = {
     capturedAt: new Date().toISOString(),
@@ -914,7 +1057,7 @@ async function main() {
 
   const config = await resolveConfig(args);
   console.log(
-    `[monitor] base=${config.baseUrl} shard=${config.shard ?? "auto"} memoryInterval=${config.memoryIntervalMs}ms segment=${config.segmentId ?? "off"} output=${config.outputPath ?? "off"}`,
+    `[monitor] base=${config.baseUrl} shard=${config.shard ?? "auto"} memoryInterval=${config.memoryIntervalMs}ms segment=${config.segmentId ?? "off"} output=${config.outputPath ?? "off"} memoryFixture=${config.memoryFixture ?? "off"}`,
   );
 
   if (config.once) {
