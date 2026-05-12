@@ -1260,3 +1260,357 @@ describe("carrierRole mineral hauling", () => {
     expect(switched).toBe(false);
   });
 });
+
+describe("carrierRole lab logistics", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    clearCreepAssignmentStateForTest();
+    resetRuntimeServices();
+    Game.time += 1;
+    Memory.rooms = {};
+    getEnergyStoreTarget.mockReset();
+    isDroppedResourceTarget.mockReset();
+    isDroppedResourceTarget.mockReturnValue(false);
+    getPickupTargetEnergyAmount.mockReset();
+    getPickupTargetEnergyAmount.mockReturnValue(0);
+    getReservedPickupTarget.mockReset();
+    getReservedPickupTarget.mockReturnValue(null);
+    reservePickupTarget.mockReset();
+    reservePickupTarget.mockReturnValue(false);
+    moveToTarget.mockReset();
+    getPlannedStoragePos.mockReset();
+    getPlannedStoragePos.mockReturnValue(null);
+    getProtoStorageContainer.mockReset();
+    getProtoStorageContainer.mockReturnValue(null);
+    getProtoControllerLinkContainer.mockReset();
+    getProtoControllerLinkContainer.mockReturnValue(null);
+  });
+
+  it("supplies reagent lab from terminal (lab_supply)", () => {
+    const room = createRoom("W7N1");
+    const terminal = room.terminal as StructureTerminal;
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_UTRIUM ? 500 : 0),
+      getFreeCapacity: () => 10000,
+    } as StoreDefinition;
+    const lab = {
+      id: "lab-supply-1",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+    let carried = 0;
+    const store = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carried;
+        return resource === RESOURCE_UTRIUM ? carried : 0;
+      },
+      getFreeCapacity: () => 800 - carried,
+    };
+    const creep = {
+      ...createCreep(room),
+      store,
+      withdraw: jest.fn(() => {
+        carried = 500;
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        carried = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [{
+      id: "synth:lab_supply:W7N1:OH",
+      type: "lab_supply",
+      priority: 100,
+      steps: [{
+        id: "U:term->lab",
+        resource: RESOURCE_UTRIUM,
+        fromKind: "terminal",
+        toKind: "lab",
+        fromId: terminal.id,
+        toId: lab.id,
+        amount: 500,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_UTRIUM);
+    expect(switched).toBe(true);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("synth:lab_supply:W7N1:OH");
+
+    const done = carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(lab, RESOURCE_UTRIUM);
+    expect(done).toBe(true);
+  });
+
+  it("supplies reagent lab from storage when terminal is empty (lab_supply fallback)", () => {
+    const room = createRoom("W7N2");
+    const terminal = room.terminal as StructureTerminal;
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: () => 0,
+      getFreeCapacity: () => 10000,
+    } as StoreDefinition;
+    const storage = room.storage as StructureStorage;
+    (storage as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_UTRIUM ? 800 : 0),
+      getFreeCapacity: () => 9200,
+    } as StoreDefinition;
+    const lab = {
+      id: "lab-supply-2",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 12, y: 12, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+    let carried = 0;
+    const store = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carried;
+        return resource === RESOURCE_UTRIUM ? carried : 0;
+      },
+      getFreeCapacity: () => 800 - carried,
+    };
+    const creep = {
+      ...createCreep(room),
+      store,
+      withdraw: jest.fn(() => {
+        carried = 500;
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        carried = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [{
+      id: "synth:lab_supply:W7N2:OH",
+      type: "lab_supply",
+      priority: 100,
+      steps: [{
+        id: "U:storage->lab",
+        resource: RESOURCE_UTRIUM,
+        fromKind: "storage",
+        toKind: "lab",
+        fromId: storage.id,
+        toId: lab.id,
+        amount: 500,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM);
+    expect(switched).toBe(true);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("synth:lab_supply:W7N2:OH");
+  });
+
+  it("cleans contaminated lab and deposits to terminal (lab_cleanup)", () => {
+    const room = createRoom("W7N3");
+    const terminal = room.terminal as StructureTerminal;
+    const lab = {
+      id: "lab-cleanup-3",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_KEANIUM ? 300 : 0),
+        getFreeCapacity: () => 2700,
+      },
+    } as unknown as StructureLab;
+    let carried = 0;
+    const store = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carried;
+        return resource === RESOURCE_KEANIUM ? carried : 0;
+      },
+      getFreeCapacity: () => 800 - carried,
+    };
+    const creep = {
+      ...createCreep(room),
+      store,
+      withdraw: jest.fn(() => {
+        carried = 300;
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        carried = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === lab.id) return lab;
+      if (id === terminal.id) return terminal;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("labSynthesis", room.name, [{
+      id: "synth:lab_cleanup:W7N3",
+      type: "lab_cleanup",
+      priority: 70,
+      steps: [{
+        id: "K:lab->term",
+        resource: RESOURCE_KEANIUM,
+        fromKind: "lab",
+        toKind: "terminal",
+        fromId: lab.id,
+        toId: terminal.id,
+        amount: 300,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(lab, RESOURCE_KEANIUM);
+    expect(switched).toBe(true);
+
+    const done = carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(terminal, RESOURCE_KEANIUM);
+    expect(done).toBe(true);
+  });
+
+  it("clears task when cleanup target terminal is full and no fallback (lab_cleanup)", () => {
+    const room = createRoom("W7N4", {
+      terminal: {
+        id: "W7N4-terminal",
+        structureType: STRUCTURE_TERMINAL,
+        store: {
+          getUsedCapacity: () => 300000,
+          getFreeCapacity: (resource?: ResourceConstant) => 0,
+        },
+      } as unknown as StructureTerminal,
+      storage: {
+        id: "W7N4-storage",
+        structureType: STRUCTURE_STORAGE,
+        store: {
+          getUsedCapacity: () => 900000,
+          getFreeCapacity: (resource?: ResourceConstant) => 0,
+        },
+      } as unknown as StructureStorage,
+    });
+    let carried = 200;
+    const store = {
+      [RESOURCE_KEANIUM]: 200,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carried;
+        return resource === RESOURCE_KEANIUM ? carried : 0;
+      },
+      getFreeCapacity: () => 600,
+    };
+    const creep = {
+      ...createCreep(room),
+      memory: {},
+      store,
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "synth:lab_cleanup:W7N4";
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === (room.terminal as StructureTerminal).id) return room.terminal;
+      if (id === (room.storage as StructureStorage).id) return room.storage;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("labSynthesis", room.name, [{
+      id: "synth:lab_cleanup:W7N4",
+      type: "lab_cleanup",
+      priority: 70,
+      steps: [{
+        id: "K:lab->term-full",
+        resource: RESOURCE_KEANIUM,
+        fromKind: "lab",
+        toKind: "terminal",
+        fromId: "lab-cleanup-4",
+        toId: (room.terminal as StructureTerminal).id,
+        amount: 200,
+      }],
+    }]);
+
+    const done = carrierRole().target(creep);
+
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBeUndefined();
+    expect(done).toBe(false);
+  });
+
+  it("handles target lab already full gracefully during lab_supply delivery", () => {
+    const room = createRoom("W7N5");
+    const terminal = room.terminal as StructureTerminal;
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_UTRIUM ? 500 : 0),
+      getFreeCapacity: () => 10000,
+    } as StoreDefinition;
+    const lab = {
+      id: "lab-supply-full",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 3000,
+        getFreeCapacity: () => 0,
+      },
+    } as unknown as StructureLab;
+    let carried = 500;
+    const store: Record<string, unknown> & { getUsedCapacity: (r?: ResourceConstant) => number; getFreeCapacity: () => number } = {
+      [RESOURCE_UTRIUM]: 500,
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carried;
+        return resource === RESOURCE_UTRIUM ? carried : 0;
+      },
+      getFreeCapacity: () => 300,
+    };
+    const creep = {
+      ...createCreep(room),
+      memory: {},
+      store,
+      transfer: jest.fn(() => {
+        carried = 0;
+        delete store[RESOURCE_UTRIUM];
+        return OK;
+      }),
+    } as unknown as Creep;
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = "synth:lab_supply:W7N5:OH";
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [{
+      id: "synth:lab_supply:W7N5:OH",
+      type: "lab_supply",
+      priority: 100,
+      steps: [{
+        id: "U:term->lab-full",
+        resource: RESOURCE_UTRIUM,
+        fromKind: "terminal",
+        toKind: "lab",
+        fromId: terminal.id,
+        toId: lab.id,
+        amount: 500,
+      }],
+    }]);
+
+    const done = carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(terminal, RESOURCE_UTRIUM);
+    expect(done).toBe(true);
+  });
+});
