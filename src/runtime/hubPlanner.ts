@@ -269,9 +269,6 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
   );
 
   for (const satellite of satellites) {
-    const roomState = Memory.runtime?.resourceControl?.rooms?.[satellite.name]?.state;
-    if (roomState === "survival") continue;
-
     const satResources: Record<string, number> = {};
     const storageStore = satellite.storage!.store as unknown as Record<string, number>;
     for (const [res, amt] of Object.entries(storageStore)) {
