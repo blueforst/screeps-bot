@@ -1,6 +1,7 @@
 import { getMemoryService } from "@/runtime/runtimeServices";
 import type { ResourceTransferTask } from "@/runtime/logistics/resourceTransferTasks";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import { Panel, type VisualSurface } from "@/visual/panel";
 
 export interface HubProgressInput {
   hubConfig: {
@@ -170,38 +171,6 @@ export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualMod
   };
 }
 
-export function drawSection(rv: any, x: number, y: number, width: number, title: string): number {
-  rv.rect(x, y, width, 0.55, { fill: VIS_HEADER_FILL, opacity: 0.8, stroke: VIS_PANEL_STROKE, strokeWidth: 0.03 });
-  rv.text(title, x + 0.25, y + 0.42, { align: "left", font: 0.45, color: VIS_TEXT });
-  return y + 0.7;
-}
-
-export function drawProgressBar(
-  rv: any,
-  x: number,
-  y: number,
-  width: number,
-  percent: number,
-  fillColor: string,
-  label: string,
-): number {
-  rv.rect(x, y, width, HUB_VISUAL_BAR_HEIGHT, {
-    fill: "transparent",
-    stroke: VIS_PANEL_STROKE,
-    strokeWidth: 0.03,
-    opacity: 0.8,
-  });
-  if (percent > 0) {
-    rv.rect(x, y, width * percent, HUB_VISUAL_BAR_HEIGHT, {
-      fill: fillColor,
-      opacity: 0.4,
-      strokeWidth: 0,
-    });
-  }
-  rv.text(label, x + width / 2, y + 0.36, { align: "center", font: 0.35, color: VIS_TEXT });
-  return y + HUB_VISUAL_BAR_HEIGHT + HUB_VISUAL_BAR_PAD;
-}
-
 function getStatusColor(model: HubVisualModel): string {
   if (model.statusLabel === "blocked") return VIS_ERROR;
   if (model.needsPlan || model.missingSummary !== "") return VIS_WARN;
@@ -212,57 +181,46 @@ function getStatusColor(model: HubVisualModel): string {
 
 const getProgressColor = getStatusColor;
 
-export function drawHubVisualPanel(rv: any, model: HubVisualModel): void {
-  let y = HUB_VISUAL_Y;
-  const x = HUB_VISUAL_X;
+export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel): void {
+  const p = new Panel({ rv, x: HUB_VISUAL_X, y: HUB_VISUAL_Y, width: HUB_VISUAL_WIDTH });
 
-  y = drawSection(rv, x, y, HUB_VISUAL_WIDTH, "Hub Production");
+  p.sectionHeader("Hub Production");
 
   const statusColor = getStatusColor(model);
-  rv.text(model.productLabel, x + 0.25, y, { align: "left", font: 0.4, color: statusColor });
-  y += HUB_VISUAL_ROW;
+  p.textRow(model.productLabel, { color: statusColor });
 
   if (model.statusLabel !== "—") {
-    rv.text("status: " + model.statusLabel, x + 0.25, y, { align: "left", font: 0.4, color: statusColor });
-    y += HUB_VISUAL_ROW;
+    p.textRow("status: " + model.statusLabel, { color: statusColor });
   }
-
   if (model.stageLabel !== null) {
-    rv.text("stage: " + model.stageLabel, x + 0.25, y, { align: "left", font: 0.4, color: statusColor });
-    y += HUB_VISUAL_ROW;
+    p.textRow("stage: " + model.stageLabel, { color: statusColor });
   }
-
   if (model.needsPlan) {
-    rv.text("⚠ needs plan", x + 0.25, y, { align: "left", font: 0.4, color: VIS_WARN });
-    y += HUB_VISUAL_ROW;
+    p.textRow("⚠ needs plan", { color: VIS_WARN });
   }
 
-  y += HUB_VISUAL_ROW;
+  p.spacer(HUB_VISUAL_ROW);
 
-  y = drawSection(rv, x, y, HUB_VISUAL_WIDTH, "Progress");
-
+  p.sectionHeader("Progress");
   const progressColor = getProgressColor(model);
-  drawProgressBar(rv, x + 0.25, y, HUB_VISUAL_WIDTH - 0.5, model.progressPercent, progressColor, model.progressText);
+  p.progressBar(model.progressPercent, progressColor, model.progressText);
 
-  y += HUB_VISUAL_ROW;
-  y = drawSection(rv, x, y, HUB_VISUAL_WIDTH, "Logistics");
-
+  p.sectionHeader("Logistics");
   const lc = model.logisticsCounts;
-  rv.text(`imp ${lc.imports} | recl ${lc.reclaims} | exp ${lc.exports}`, x + 0.25, y, { align: "left", font: 0.4, color: VIS_TEXT });
-  y += HUB_VISUAL_ROW;
+  p.textRow(`imp ${lc.imports} | recl ${lc.reclaims} | exp ${lc.exports}`);
 
   if (model.blockerRows.length > 0) {
     for (const blocker of model.blockerRows) {
-      rv.text(`${blocker.room}: term ${formatEnergy(blocker.terminalEnergy)} / reserve ${formatEnergy(blocker.reserve)}, nonE ${blocker.pendingNonEnergy}`, x + 0.25, y, { align: "left", font: 0.35, color: VIS_WARN });
-      y += HUB_VISUAL_ROW;
+      p.textRow(
+        `${blocker.room}: term ${formatEnergy(blocker.terminalEnergy)} / reserve ${formatEnergy(blocker.reserve)}, nonE ${blocker.pendingNonEnergy}`,
+        { font: 0.35, color: VIS_WARN },
+      );
     }
     if (model.blockerOverflow > 0) {
-      rv.text(`+${model.blockerOverflow} more`, x + 0.25, y, { align: "left", font: 0.35, color: VIS_MUTED });
-      y += HUB_VISUAL_ROW;
+      p.textRow(`+${model.blockerOverflow} more`, { font: 0.35, color: VIS_MUTED });
     }
   } else {
-    rv.text("blockers: none", x + 0.25, y, { align: "left", font: 0.35, color: VIS_MUTED });
-    y += HUB_VISUAL_ROW;
+    p.textRow("blockers: none", { font: 0.35, color: VIS_MUTED });
   }
 }
 

@@ -725,4 +725,97 @@ describe("drawHubVisualPanel", () => {
     expect(overflow).toBeDefined();
     expect(overflow!.args[3]?.color).toBe("#888888");
   });
+
+  it("minimal model: logistics header Y follows progress bar stride", () => {
+    const rv = new RoomVisual("W1N1");
+    // Minimal model: idle state, no optional rows, no blockers
+    const model = makeModel({
+      productLabel: "idle",
+      statusLabel: "—",
+      stageLabel: null,
+      needsPlan: false,
+      progressPercent: 0,
+      progressText: "0% idle",
+      blockerRows: [],
+      blockerOverflow: 0,
+    });
+    drawHubVisualPanel(rv, model);
+
+    // Section headers are rect calls with VIS_HEADER_FILL ("#1a1a2e")
+    const headerRects = findCalls("rect", args => args[4]?.fill === "#1a1a2e");
+    expect(headerRects.length).toBe(3);
+
+    const hubProdY = headerRects[0].args[1]; // y=2.0
+    const progressY = headerRects[1].args[1]; // should be 4.1
+    const logisticsY = headerRects[2].args[1]; // should be 5.4
+
+    // Hub Production at y=2.0
+    expect(hubProdY).toBeCloseTo(2.0, 2);
+
+    // Progress header at y=4.1 (2.0 + 0.7 headerStride + 0.7 rowHeight + 0.7 spacer + 0.7 headerStride = 4.1)
+    // Actually: sectionHeader("Hub Production") advances by headerStride(0.7) → y=2.7
+    //   textRow("idle") advances by rowHeight(0.7) → y=3.4
+    //   spacer(0.7) → y=4.1
+    //   sectionHeader("Progress") rect drawn at y=4.1, then cursor advances → y=4.8
+    expect(progressY).toBeCloseTo(4.1, 2);
+
+    // Logistics header at y=5.4 (4.1 + 0.7 headerStride + 0.6 barStride)
+    //   sectionHeader("Progress") advances cursor to 4.8
+    //   progressBar advances by barHeight+barPad=0.6 → y=5.4
+    //   sectionHeader("Logistics") rect drawn at y=5.4
+    expect(logisticsY).toBeCloseTo(5.4, 2);
+
+    // KEY REGRESSION ASSERTION: The gap between Progress section end and Logistics header
+    // must be 0.6 (progressBar stride), NOT 0.7 (old HUB_VISUAL_ROW bug).
+    // Progress header rect is at 4.1, cursor after sectionHeader = 4.1 + 0.7 = 4.8
+    // After progressBar: 4.8 + 0.6 = 5.4 = logisticsY
+    // logisticsY - (progressY + headerStride) = 5.4 - (4.1 + 0.7) = 0.6 (NOT 0.7)
+    const gapAfterProgressBar = logisticsY - (progressY + 0.7);
+    expect(gapAfterProgressBar).toBeCloseTo(0.6, 2);
+    // Explicitly assert it is NOT 0.7 — catches the old bug where y+=HUB_VISUAL_ROW was used
+    expect(gapAfterProgressBar).not.toBeCloseTo(0.7, 2);
+  });
+
+  it("full model: all sections at deterministic Y positions", () => {
+    const rv = new RoomVisual("W1N1");
+    // Full model: all optional rows present, 2 blockers + overflow
+    const model = makeModel({
+      productLabel: "XGH2O",
+      statusLabel: "synthesizing",
+      stageLabel: "reacting",
+      needsPlan: true,
+      progressPercent: 0.5,
+      progressText: "500/1000 stock",
+      blockerRows: [
+        { room: "W2N1", terminalEnergy: 100, reserve: 20000, pendingNonEnergy: 0 },
+        { room: "W3N1", terminalEnergy: 200, reserve: 20000, pendingNonEnergy: 1 },
+      ],
+      blockerOverflow: 3,
+    });
+    drawHubVisualPanel(rv, model);
+
+    const headerRects = findCalls("rect", args => args[4]?.fill === "#1a1a2e");
+    expect(headerRects.length).toBe(3);
+
+    const hubProdY = headerRects[0].args[1];
+    const progressY = headerRects[1].args[1];
+    const logisticsY = headerRects[2].args[1];
+
+    // Hub Production at y=2.0
+    expect(hubProdY).toBeCloseTo(2.0, 2);
+
+    // Cursor trace: 2.0 + 0.7(header) + 0.7(product) + 0.7(status) + 0.7(stage) + 0.7(needsPlan) + 0.7(spacer) = 6.2
+    // Progress sectionHeader rect drawn at y=6.2
+    expect(progressY).toBeCloseTo(6.2, 2);
+
+    // Cursor after Progress header: 6.2 + 0.7 = 6.9
+    // After progressBar: 6.9 + 0.6 = 7.5
+    // Logistics sectionHeader rect drawn at y=7.5
+    expect(logisticsY).toBeCloseTo(7.5, 2);
+
+    // KEY REGRESSION ASSERTION: gap after progressBar must be 0.6, not 0.7
+    const gapAfterProgressBar = logisticsY - (progressY + 0.7);
+    expect(gapAfterProgressBar).toBeCloseTo(0.6, 2);
+    expect(gapAfterProgressBar).not.toBeCloseTo(0.7, 2);
+  });
 });
