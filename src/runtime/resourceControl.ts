@@ -102,7 +102,7 @@ const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
   energyFloor: 120_000,
   energyTarget: 200_000,
   energyExportStart: 250_000,
-  terminalEnergyReserve: 50_000,
+  terminalEnergyReserve: 20_000,
   transferBatchSize: 10_000,
   transferMinAmount: 1_000,
   mineralFloor: {
@@ -895,17 +895,23 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: 
         .filter((draft): draft is CarrierTaskDraft => !!draft),
     );
 
-    // Terminal overflow: offload non-energy surplus above cap to storage
+    // Terminal overflow: offload surplus above cap to storage
     if (snapshot.storage) {
       let overflowTotal = snapshot.terminal.store.getUsedCapacity();
       if (overflowTotal > TERMINAL_TOTAL_STORAGE_CAP) {
         const roomPending = pendingByRoom.get(snapshot.roomName);
         let storageFree = snapshot.storage.store.getFreeCapacity();
         for (const resource of Object.keys(snapshot.terminal.store) as ResourceConstant[]) {
-          if (resource === RESOURCE_ENERGY) continue;
           const stored = snapshot.terminal.store[resource];
           if (typeof stored !== "number" || stored <= 0) continue;
-          const protectedAmount = Math.min(stored, roomPending?.get(resource) ?? 0);
+
+          let protectedAmount: number;
+          if (resource === RESOURCE_ENERGY) {
+            protectedAmount = snapshot.terminalEnergyReserve + getReservedTerminalEnergyForPendingSends(snapshot, snapshots);
+          } else {
+            protectedAmount = Math.min(stored, roomPending?.get(resource) ?? 0);
+          }
+
           const offloadable = stored - protectedAmount;
           if (offloadable <= 0 || overflowTotal <= TERMINAL_TOTAL_STORAGE_CAP) continue;
           const amount = Math.min(offloadable, overflowTotal - TERMINAL_TOTAL_STORAGE_CAP, snapshot.transferBatchSize, storageFree);
