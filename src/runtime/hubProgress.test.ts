@@ -553,7 +553,7 @@ describe("buildHubVisualModel", () => {
     };
   }
 
-  it("active production model: derives productLabel, progressPercent, progressText", () => {
+  it("fallback stock display: no synthesisTargetAmount uses 1000 stock", () => {
     const model = buildHubVisualModel(makeSnapshot({
       activeProduct: "XGH2O",
       hubInventory: { XGH2O: 500 },
@@ -573,12 +573,80 @@ describe("buildHubVisualModel", () => {
     expect(model.progressText).toBe("0% idle");
   });
 
-  it("progress capped at 1 when inventory exceeds 1000", () => {
+  it("progress capped at 1 when inventory exceeds 1000 (fallback mode)", () => {
     const model = buildHubVisualModel(makeSnapshot({
       activeProduct: "XGH2O",
       hubInventory: { XGH2O: 2000 },
     }));
     expect(model.progressPercent).toBe(1);
+  });
+
+  it("batch mode: active UO synthesizing uses hubLabInventory + hubInventory", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      activeProduct: "UO",
+      status: "synthesizing",
+      synthesisTargetAmount: 106,
+      hubLabInventory: { UO: 110 },
+      hubInventory: {},
+    }));
+    expect(model.progressPercent).toBe(1);
+    expect(model.progressText).toContain("UO");
+    expect(model.progressText).toContain("110");
+    expect(model.progressText).toContain("106");
+    expect(model.progressText).not.toContain("1000");
+    expect(model.progressText).not.toContain("stock");
+  });
+
+  it("batch mode: active UO unloading sums both inventories", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      activeProduct: "UO",
+      status: "unloading",
+      stage: "unloading",
+      synthesisTargetAmount: 106,
+      hubLabInventory: { UO: 50 },
+      hubInventory: { UO: 60 },
+    }));
+    expect(model.progressPercent).toBe(1);
+    expect(model.progressText).toContain("UO");
+    expect(model.progressText).toContain("110");
+    expect(model.progressText).toContain("106");
+    expect(model.progressText).toContain("unloading");
+    expect(model.progressText).not.toContain("1000");
+    expect(model.progressText).not.toContain("stock");
+  });
+
+  it("batch mode: partial progress under target", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      activeProduct: "GH",
+      status: "acquiring",
+      synthesisTargetAmount: 200,
+      hubLabInventory: { GH: 80 },
+      hubInventory: { GH: 0 },
+    }));
+    expect(model.progressPercent).toBeCloseTo(0.4);
+    expect(model.progressText).toContain("80/200");
+    expect(model.progressText).toContain("acquiring");
+  });
+
+  it("batch mode: progress capped at 1 when amount exceeds target", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      activeProduct: "UO",
+      status: "synthesizing",
+      synthesisTargetAmount: 100,
+      hubLabInventory: { UO: 150 },
+      hubInventory: {},
+    }));
+    expect(model.progressPercent).toBe(1);
+    expect(model.progressText).toContain("150/100");
+  });
+
+  it("fallback stock display: activeProduct without synthesisTargetAmount", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      activeProduct: "XGH2O",
+      hubInventory: { XGH2O: 500 },
+      synthesisTargetAmount: undefined,
+    }));
+    expect(model.progressText).toContain("500/1000 stock");
   });
 
   it("missing resources truncated to first 4 with +N suffix", () => {

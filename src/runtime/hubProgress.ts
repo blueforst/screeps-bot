@@ -163,14 +163,24 @@ export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualMod
   const stageLabel = snapshot.stage ?? null;
   const needsPlan = snapshot.needsPlan;
 
-  const inventoryAmount = activeProduct ? (snapshot.hubInventory[activeProduct] || 0) : 0;
-  const progressPercent = activeProduct ? Math.min(inventoryAmount / HUB_PROGRESS_TARGET, 1) : 0;
+  const isBatchMode = !!activeProduct && typeof snapshot.synthesisTargetAmount === "number" && snapshot.synthesisTargetAmount > 0;
 
+  let progressPercent: number;
   let progressText: string;
-  if (activeProduct) {
-    progressText = formatEnergy(inventoryAmount) + `/${HUB_PROGRESS_TARGET} stock`;
-  } else {
+
+  if (!activeProduct) {
+    progressPercent = 0;
     progressText = "0% idle";
+  } else if (isBatchMode) {
+    const target = snapshot.synthesisTargetAmount!;
+    const currentAmount = (snapshot.hubInventory[activeProduct] || 0) + (snapshot.hubLabInventory[activeProduct] || 0);
+    progressPercent = Math.min(currentAmount / target, 1);
+    const stageOrStatus = stageLabel ?? statusLabel;
+    progressText = `${activeProduct} ${currentAmount}/${target} ${stageOrStatus}`;
+  } else {
+    const inventoryAmount = snapshot.hubInventory[activeProduct] || 0;
+    progressPercent = Math.min(inventoryAmount / HUB_PROGRESS_TARGET, 1);
+    progressText = formatEnergy(inventoryAmount) + `/${HUB_PROGRESS_TARGET} stock`;
   }
 
   const missingResources = snapshot.missingResources;
