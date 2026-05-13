@@ -227,6 +227,12 @@ describe("synthesisControl state machine – happy-path lifecycle", () => {
 
     storageMap[RESOURCE_HYDROXIDE] = 5000;
 
+    // Simulate reagent consumption by reactions (mock runReaction doesn't drain labs)
+    labs[0].mineralType = undefined;
+    labs[0]._resourceMap = {};
+    labs[1].mineralType = undefined;
+    labs[1]._resourceMap = {};
+
     Game.time = 30;
     runSynthesisControl();
 
@@ -331,9 +337,9 @@ describe("synthesisControl state machine – happy-path lifecycle", () => {
     });
 
     labs[0].mineralType = RESOURCE_OXYGEN;
-    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 0;
     labs[1].mineralType = RESOURCE_HYDROGEN;
-    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 0;
 
     Game.rooms["W1N1"] = room;
     Game.time = 10;
@@ -617,9 +623,9 @@ describe("hub completion signal", () => {
     });
 
     labs[0].mineralType = RESOURCE_OXYGEN;
-    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 0;
     labs[1].mineralType = RESOURCE_HYDROGEN;
-    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 0;
 
     Game.rooms["W1N1"] = room;
     Game.time = 10;
@@ -684,9 +690,9 @@ describe("hub completion signal", () => {
     });
 
     labs[0].mineralType = RESOURCE_OXYGEN;
-    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 0;
     labs[1].mineralType = RESOURCE_HYDROGEN;
-    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 0;
 
     Game.rooms["W1N1"] = room;
     Game.time = 10;
@@ -1543,5 +1549,363 @@ describe("E4N58 stall regression", () => {
       (t) => t.type === "lab_supply",
     );
     expect(supplyTask).toBeUndefined();
+  });
+});
+
+describe("batch-complete unload gate (Bug A regression)", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("does not generate product unload during synthesizing stage when product is mid-batch", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 5000,
+      batchSize: 500,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    // Reagent labs loaded, product lab has partial UHO2 (mid-batch)
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 300;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 300;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 30;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("synthesizing");
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeUndefined();
+  });
+
+  it("generates product unload when target met and stage transitions to idle", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 100 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 100,
+      batchSize: 60,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    // Product lab has enough to meet target (110 > 100)
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    // chooseActivePlan returns null (productCurrent=110 >= 100), so null-plan branch handles unload
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(unloadTask!.steps[0].amount).toBe(110);
+  });
+
+  it("does not generate product unload during acquiring stage", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    setRoomStage("acquiring", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 5000,
+      batchSize: 500,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_UTRIUM]: 2000,
+        [RESOURCE_OXYGEN]: 2000,
+      },
+    });
+
+    // Product lab happens to have some product from a previous cycle
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 0;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 0;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 50;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeUndefined();
+  });
+});
+
+describe("reagent lab cleanup when idle (Bug B regression)", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("cleans up reagent labs when activePlan is null and labs have residue", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 61 },
+      ],
+    });
+    setRoomStage("idle", {
+      activeProduct: undefined,
+      reagentA: undefined,
+      reagentB: undefined,
+      targetAmount: undefined,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_UTRIUM_OXIDE as string]: 65,
+        // OH above auto-plan threshold (1 room * 2000) to prevent auto OH plan from activating
+        [RESOURCE_HYDROXIDE]: 2500,
+      },
+      terminalResources: {},
+    });
+
+    // Reagent labs have stranded residue: U:45, O:735
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 45;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 735;
+    // Product lab empty
+    labs[2].mineralType = undefined;
+    labs[2]._resourceMap = {};
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const cleanupTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_cleanup",
+    );
+    expect(cleanupTask).toBeDefined();
+    expect(cleanupTask!.priority).toBe(190);
+    expect(cleanupTask!.steps.length).toBe(2);
+
+    const uoStep = cleanupTask!.steps.find((s) => s.resource === RESOURCE_UTRIUM);
+    expect(uoStep).toBeDefined();
+    expect(uoStep!.amount).toBe(45);
+    expect(uoStep!.fromKind).toBe("lab");
+    expect(uoStep!.fromId).toBe(labs[0].id);
+
+    const oStep = cleanupTask!.steps.find((s) => s.resource === RESOURCE_OXYGEN);
+    expect(oStep).toBeDefined();
+    expect(oStep!.amount).toBe(735);
+    expect(oStep!.fromKind).toBe("lab");
+    expect(oStep!.fromId).toBe(labs[1].id);
+  });
+
+  it("returns to idle after reagent cleanup completes (labs empty)", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 61 },
+      ],
+    });
+    setRoomStage("idle", {
+      activeProduct: undefined,
+      reagentA: undefined,
+      reagentB: undefined,
+      targetAmount: undefined,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_UTRIUM_OXIDE as string]: 65,
+        [RESOURCE_HYDROXIDE]: 2500,
+      },
+    });
+
+    // All labs empty — nothing to clean up
+    labs[0].mineralType = undefined;
+    labs[0]._resourceMap = {};
+    labs[1].mineralType = undefined;
+    labs[1]._resourceMap = {};
+    labs[2].mineralType = undefined;
+    labs[2]._resourceMap = {};
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("idle");
+    expect(roomState.activeProduct).toBeUndefined();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    expect(Object.keys(carrierTasks).length).toBe(0);
+  });
+
+  it("product unload takes priority over reagent cleanup", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 100 },
+      ],
+    });
+    setRoomStage("idle", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      targetAmount: 100,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 2500,
+      },
+    });
+
+    // Product lab has product AND reagent labs have residue
+    // UO total = 110 (lab) >= targetAmount 100 → chooseActivePlan returns null
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 45;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 735;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    // Should have product unload task
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    // Reagent cleanup should NOT be generated when product unload exists
+    const cleanupTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_cleanup" && t.id.includes("reagent-residue"),
+    );
+    expect(cleanupTask).toBeUndefined();
   });
 });

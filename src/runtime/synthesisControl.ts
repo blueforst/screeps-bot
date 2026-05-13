@@ -855,6 +855,42 @@ function generateStrandedProductUnloadTask(
   };
 }
 
+function generateReagentCleanupTask(
+  room: Room,
+  allLabs: StructureLab[],
+): CarrierTaskDraft | null {
+  const steps: CarrierTaskStep[] = [];
+
+  for (const lab of allLabs) {
+    const mineralType = lab.mineralType;
+    if (!mineralType) continue;
+    const amount = lab.store.getUsedCapacity(mineralType);
+    if (amount <= 0) continue;
+
+    const target = resolveProductUnloadTargetStructure(room, mineralType);
+    if (!target) continue;
+
+    steps.push({
+      id: createCarrierTaskStepId(mineralType, lab.id, target.id),
+      resource: mineralType,
+      amount,
+      fromKind: "lab",
+      toKind: target.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+      fromId: lab.id,
+      toId: target.id,
+    });
+  }
+
+  if (steps.length === 0) return null;
+
+  return {
+    id: `synthesis:lab_cleanup:${room.name}:reagent-residue`,
+    type: "lab_cleanup",
+    priority: 190,
+    steps,
+  };
+}
+
 function generateSupplyTask(
   room: Room,
   orderedReagentLabs: [StructureLab, StructureLab],
@@ -1100,20 +1136,32 @@ function handleRoom(
       }
     }
 
+    let reagentCleanupTask: CarrierTaskDraft | null = null;
+    if (!productUnloadTask) {
+      const allLabs = [...topology.reagentLabs, ...topology.productLabs];
+      reagentCleanupTask = generateReagentCleanupTask(room, allLabs);
+    }
+
+    const allTasks = [
+      ...(productUnloadTask ? [productUnloadTask] : []),
+      ...(reagentCleanupTask ? [reagentCleanupTask] : []),
+    ];
     replaceCarrierTasksForProducerRoom(
       SYNTHESIS_CARRIER_TASK_PRODUCER,
       roomName,
-      productUnloadTask ? [productUnloadTask] : [],
+      allTasks,
     );
+
+    const hasAnyCleanup = productUnloadTask || reagentCleanupTask;
     runtime.rooms[roomName] = {
       ...roomState,
-      stage: productUnloadTask ? "unloading" : "idle",
-      activeProduct: productUnloadTask
+      stage: hasAnyCleanup ? "unloading" : "idle",
+      activeProduct: hasAnyCleanup
         ? (strandedResult ? strandedResult.product : unloadProduct ?? undefined)
         : undefined,
       reagentA: undefined,
       reagentB: undefined,
-      targetAmount: productUnloadTask
+      targetAmount: hasAnyCleanup
         ? (strandedResult ? strandedResult.targetAmount ?? unloadTarget : unloadTarget) ?? undefined
         : undefined,
       batchSize: undefined,
@@ -1185,7 +1233,9 @@ function handleRoom(
   const supplyTask = hasContamination
     ? null
     : generateSupplyTask(room, orderedReagentLabs, reagents, activePlan.batchSize, activePlan.product, activePlan.targetAmount);
-  const productUnloadTask = !hasContamination
+  // Only generate product unload when NOT actively synthesizing.
+  // During synthesis the product lab accumulates; unload after batch completes.
+  const productUnloadTask = !hasContamination && stage !== "synthesizing" && stage !== "acquiring" && stage !== "loading"
     ? generateProductUnloadTask(room, topology.productLabs, activePlan.product, activePlan.targetAmount)
     : null;
   const prevProductUnloadTask = roomState.activeProduct && roomState.activeProduct !== activePlan.product && roomState.targetAmount
