@@ -455,7 +455,7 @@ export function writeSynthesisConfig(
   roomCfg.reactions = [
     {
       product: nextStep.product,
-      targetAmount: nextStep.targetAmount,
+      targetAmount: (hubInventory[nextStep.product] || 0) + nextStep.targetAmount,
       batchSize: Math.min(3000, Math.max(5, Math.ceil(nextStep.targetAmount / 5) * 5)),
       donorRoomNames: [],
     },
