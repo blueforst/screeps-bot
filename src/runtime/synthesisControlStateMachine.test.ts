@@ -2166,9 +2166,7 @@ describe("in-flight synthesis cargo suppresses duplicate supply demand", () => {
     carrierState.synthesisCarrierPendingResource = RESOURCE_OXYGEN;
 
     // effectiveCurrentAmount = 2946 (lab) + 50 (in-flight) = 2996
-    // desiredLabAmount = min(LAB_MINERAL_CAPACITY=5000, batchSize=3000) = 3000
-    // deficit = 3000 - 2996 = 4 → below LAB_REACTION_AMOUNT (5)
-    // isPartialTopUp: deficit > 0 && deficit < 5 && desiredLabAmount >= 5 && effectiveCurrentAmount > 0 → TRUE
+    // With early skip at > 2200, oxygen lab is skipped entirely — already has enough reagent.
 
     Game.rooms["W1N1"] = room;
     Game.time = 10;
@@ -2183,8 +2181,7 @@ describe("in-flight synthesis cargo suppresses duplicate supply demand", () => {
     const oxygenStep = supplyTask?.steps?.find(
       (s: any) => s.resource === RESOURCE_OXYGEN && s.toId === labs[0].id,
     );
-    expect(oxygenStep).toBeDefined();
-    // amount = min(deficit=4, available=200) = 4
-    expect(oxygenStep!.amount).toBe(4);
+    // Oxygen lab has effectiveCurrentAmount=2996 > 2200, so no supply step is generated
+    expect(oxygenStep).toBeUndefined();
   });
 });

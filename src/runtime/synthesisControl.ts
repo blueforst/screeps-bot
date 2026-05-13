@@ -929,6 +929,7 @@ function generateSupplyTask(
     const currentAmount = mineralType === reagent ? lab.store.getUsedCapacity(reagent) : 0;
     const inFlightAmount = countInFlightSynthesisCargo(lab.id, reagent);
     const effectiveCurrentAmount = currentAmount + inFlightAmount;
+    if (effectiveCurrentAmount > 2200) continue;
     const deficit = Math.max(0, desiredLabAmount - effectiveCurrentAmount);
     const isPartialTopUp = deficit > 0 && deficit < LAB_REACTION_AMOUNT
       && desiredLabAmount >= LAB_REACTION_AMOUNT
