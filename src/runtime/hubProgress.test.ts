@@ -203,6 +203,53 @@ describe("buildHubProgressSnapshot", () => {
     expect(inventoryKeys.length).toBeLessThan(16);
     expect(snapshot.hubInventory["energy"]).toBeUndefined();
   });
+
+  it("captures lab inventory separately from hubInventory (storage+terminal)", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "synthesizing" },
+      synthesisRuntime: { activeProduct: "UO" as ResourceConstant },
+      hubStorageStore: { energy: 500000 },
+      hubTerminalStore: {},
+      hubLabInventory: { UO: 110 },
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 600,
+    });
+
+    expect(snapshot.hubLabInventory.UO).toBe(110);
+    expect(snapshot.hubInventory.UO).toBeUndefined();
+  });
+
+  it("threads synthesisTargetAmount from synthesisRuntime", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "synthesizing" },
+      synthesisRuntime: { activeProduct: "UO" as ResourceConstant, targetAmount: 106 },
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 700,
+    });
+
+    expect(snapshot.synthesisTargetAmount).toBe(106);
+  });
+
+  it("returns empty hubLabInventory when hub room is invisible", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 800,
+    });
+
+    expect(snapshot.hubLabInventory).toEqual({});
+  });
 });
 
 describe("runHubProgressAnalytics", () => {
@@ -289,6 +336,7 @@ describe("buildHubOverlayLines", () => {
       pendingExports: 1,
       pendingTasks: [],
       roomTerminalBlockers: [],
+      hubLabInventory: {},
       ...overrides,
     };
   }
@@ -500,6 +548,7 @@ describe("buildHubVisualModel", () => {
       roomTerminalBlockers: [
         { room: "W2N1", terminalEnergy: 0, reserve: 20000, pendingNonEnergy: 0 },
       ],
+      hubLabInventory: {},
       ...overrides,
     };
   }
@@ -908,6 +957,7 @@ describe("buildInboundTransferRows", () => {
       pendingExports: 0,
       pendingTasks: [],
       roomTerminalBlockers: [],
+      hubLabInventory: {},
       ...overrides,
     };
   }

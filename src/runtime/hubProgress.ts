@@ -24,7 +24,9 @@ export interface HubProgressInput {
     activeProduct?: ResourceConstant;
     reagentA?: ResourceConstant;
     reagentB?: ResourceConstant;
+    targetAmount?: number;
   } | null;
+  hubLabInventory?: Record<string, number>;
   hubStorageStore: Record<string, number> | null;
   hubTerminalStore: Record<string, number> | null;
   resourceControlRooms: Record<
@@ -76,6 +78,8 @@ export interface HubProgressSnapshot {
     reserve: number;
     pendingNonEnergy: number;
   }>;
+  hubLabInventory: Record<string, number>;
+  synthesisTargetAmount?: number;
 }
 
 const ANALYTICS_SAMPLE_INTERVAL = 5;
@@ -408,6 +412,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       pendingExports: 0,
       pendingTasks: [],
       roomTerminalBlockers: [],
+      hubLabInventory: {},
     };
   }
 
@@ -461,6 +466,8 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
     pendingExports,
     pendingTasks,
     roomTerminalBlockers,
+    hubLabInventory: input.hubLabInventory ?? {},
+    synthesisTargetAmount: input.synthesisRuntime?.targetAmount,
   };
 }
 
@@ -476,6 +483,21 @@ export function collectHubProgressSnapshot(): HubProgressSnapshot {
   const hubStorageStore = (room?.storage?.store as unknown as Record<string, number> | undefined) ?? null;
   const hubTerminalStore = (room?.terminal?.store as unknown as Record<string, number> | undefined) ?? null;
 
+  const hubLabInventory: Record<string, number> = {};
+  if (room && typeof room.find === "function") {
+    const labs = room.find(FIND_MY_STRUCTURES, {
+      filter: (s: AnyStructure) => s.structureType === STRUCTURE_LAB,
+    }) as StructureLab[];
+    for (const lab of labs) {
+      const store = lab.store as unknown as Record<string, number>;
+      for (const [resource, amount] of Object.entries(store)) {
+        if (resource !== RESOURCE_ENERGY && amount > 0) {
+          hubLabInventory[resource] = (hubLabInventory[resource] || 0) + amount;
+        }
+      }
+    }
+  }
+
   const resourceControlRooms = Memory.runtime?.resourceControl?.rooms ?? null;
 
   const transferTasks = ensureResourceTransferTaskStore();
@@ -486,6 +508,7 @@ export function collectHubProgressSnapshot(): HubProgressSnapshot {
     synthesisRuntime,
     hubStorageStore,
     hubTerminalStore,
+    hubLabInventory,
     resourceControlRooms,
     transferTasks,
     currentTick: Game.time,
