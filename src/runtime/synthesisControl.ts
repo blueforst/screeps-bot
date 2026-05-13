@@ -15,6 +15,7 @@ import {
   type CarrierTaskStep,
 } from "@/runtime/carrierTaskBoard";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import { getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 
 type SynthesisStage = "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
 
@@ -388,6 +389,21 @@ function roomTransferableAmount(room: Room, resource: ResourceConstant): number 
   }
   if (room.terminal) {
     total += room.terminal.store.getUsedCapacity(resource);
+  }
+  return total;
+}
+
+function countInFlightSynthesisCargo(labId: string, resource: ResourceConstant): number {
+  let total = 0;
+  for (const creep of Object.values(Game.creeps)) {
+    const state = getCreepAssignmentState(creep.name);
+    if (!state) continue;
+    if (state.synthesisCarrierPendingToId !== labId) continue;
+    if (state.synthesisCarrierPendingResource !== resource) continue;
+    const carried = creep.store.getUsedCapacity(resource);
+    if (carried > 0) {
+      total += carried;
+    }
   }
   return total;
 }
@@ -915,10 +931,12 @@ function generateSupplyTask(
     }
 
     const currentAmount = mineralType === reagent ? lab.store.getUsedCapacity(reagent) : 0;
-    const deficit = Math.max(0, desiredLabAmount - currentAmount);
+    const inFlightAmount = countInFlightSynthesisCargo(lab.id, reagent);
+    const effectiveCurrentAmount = currentAmount + inFlightAmount;
+    const deficit = Math.max(0, desiredLabAmount - effectiveCurrentAmount);
     const isPartialTopUp = deficit > 0 && deficit < LAB_REACTION_AMOUNT
       && desiredLabAmount >= LAB_REACTION_AMOUNT
-      && currentAmount > 0;
+      && effectiveCurrentAmount > 0;
     if (deficit < LAB_REACTION_AMOUNT && !isPartialTopUp) {
       continue;
     }
@@ -932,7 +950,7 @@ function generateSupplyTask(
     const amount = Math.min(deficit, available);
     const isAmountPartialTopUp = amount > 0 && amount < LAB_REACTION_AMOUNT
       && desiredLabAmount >= LAB_REACTION_AMOUNT
-      && currentAmount > 0;
+      && effectiveCurrentAmount > 0;
     if (amount < LAB_REACTION_AMOUNT && !isAmountPartialTopUp) {
       continue;
     }

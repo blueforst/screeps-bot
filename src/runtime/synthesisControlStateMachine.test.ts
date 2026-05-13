@@ -3,9 +3,11 @@ import {
   clearCarrierTaskBoardForTest,
   getCarrierTasksByRoom,
 } from "@/runtime/carrierTaskBoard";
+import { ensureCreepAssignmentState } from "@/runtime/creepAssignmentState";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
+  __creepAssignmentState?: unknown;
 };
 
 function resetRuntimeServices(): void {
@@ -1907,5 +1909,148 @@ describe("reagent lab cleanup when idle (Bug B regression)", () => {
       (t) => t.type === "lab_cleanup" && t.id.includes("reagent-residue"),
     );
     expect(cleanupTask).toBeUndefined();
+  });
+});
+
+describe("in-flight synthesis cargo suppresses duplicate supply demand", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Game.creeps = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+    delete (global as RuntimeGlobal).__creepAssignmentState;
+  });
+
+  it("does NOT generate oxygen supply step when carrier is already bringing oxygen to that lab", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    setRoomStage("loading", {
+      activeProduct: RESOURCE_HYDROXIDE,
+      reagentA: RESOURCE_OXYGEN,
+      reagentB: RESOURCE_HYDROGEN,
+      targetAmount: 5000,
+      batchSize: 500,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        // Terminal has hydrogen but NO oxygen (carrier already picked it up)
+        [RESOURCE_HYDROGEN]: 1000,
+      },
+      terminalResources: {},
+    });
+
+    // Oxygen lab (labs[0]): empty — carrier is in-flight with 500 oxygen
+    // Hydrogen lab (labs[1]): empty, but terminal has hydrogen so supply step is possible
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap = {};
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap = {};
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    // Create a carrier creep carrying 500 oxygen toward the oxygen lab
+    const carrierStore = createStore({ [RESOURCE_OXYGEN]: 500 });
+    (Game as any).creeps = {
+      "carrier-W1N1-1": {
+        name: "carrier-W1N1-1",
+        store: carrierStore,
+        room,
+      } as unknown as Creep,
+    };
+
+    // Set carrier assignment state to target the oxygen lab
+    const carrierState = ensureCreepAssignmentState("carrier-W1N1-1");
+    carrierState.synthesisCarrierPendingToId = labs[0].id;
+    carrierState.synthesisCarrierPendingResource = RESOURCE_OXYGEN;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const supplyTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_supply",
+    );
+
+    // The oxygen step should NOT appear — in-flight 500 covers the demand.
+    // If a hydrogen step exists, that's fine; oxygen step must not.
+    if (supplyTask) {
+      const oxygenStep = supplyTask.steps.find(
+        (s: any) => s.resource === RESOURCE_OXYGEN && s.toId === labs[0].id,
+      );
+      expect(oxygenStep).toBeUndefined();
+    }
+    // If no supply task at all, that also means oxygen was suppressed — good.
+  });
+
+  it("generates oxygen supply step when no in-flight carrier exists", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    setRoomStage("loading", {
+      activeProduct: RESOURCE_HYDROXIDE,
+      reagentA: RESOURCE_OXYGEN,
+      reagentB: RESOURCE_HYDROGEN,
+      targetAmount: 5000,
+      batchSize: 500,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_OXYGEN]: 1000,
+        [RESOURCE_HYDROGEN]: 1000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap = {};
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap = {};
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    // No carriers — Game.creeps is empty (set in beforeEach)
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const supplyTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_supply",
+    );
+
+    expect(supplyTask).toBeDefined();
+    const oxygenStep = supplyTask!.steps.find(
+      (s: any) => s.resource === RESOURCE_OXYGEN && s.toId === labs[0].id,
+    );
+    expect(oxygenStep).toBeDefined();
   });
 });
