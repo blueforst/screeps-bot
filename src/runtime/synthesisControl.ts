@@ -112,6 +112,10 @@ const MIN_BATCH_SIZE = LAB_REACTION_AMOUNT;
 const MAX_BATCH_SIZE = 3000;
 const MIN_MAX_RUNS_PER_TICK = 1;
 const MAX_MAX_RUNS_PER_TICK = 20;
+
+function roundUpReactionAmount(amount: number): number {
+  return Math.ceil(amount / LAB_REACTION_AMOUNT) * LAB_REACTION_AMOUNT;
+}
 const SYNTHESIS_BINDING_LEASE_TICKS = 200;
 const SYNTHESIS_BINDING_STICKY_BONUS = 5;
 const SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO = 1.2;
@@ -628,7 +632,7 @@ function createRoomState(stage: SynthesisStage, lastTransitionAt: number): Synth
   };
 }
 
-function createCarrierTaskId(type: "lab_supply" | "lab_cleanup", roomName: string, product: ResourceConstant): string {
+function createCarrierTaskId(type: "lab_supply" | "lab_cleanup" | "lab_product_unload", roomName: string, product: ResourceConstant): string {
   return `synthesis:${type}:${roomName}:${product}`;
 }
 
@@ -728,15 +732,143 @@ function generateCleanupTask(
   };
 }
 
+function resolveProductUnloadTargetStructure(room: Room, resource: ResourceConstant): StructureStorage | StructureTerminal | null {
+  if (room.storage && room.storage.store.getFreeCapacity(resource) > 0) {
+    return room.storage;
+  }
+  if (room.terminal && room.terminal.store.getFreeCapacity(resource) > 0) {
+    return room.terminal;
+  }
+  return null;
+}
+
+function generateProductUnloadTask(
+  room: Room,
+  productLabs: StructureLab[],
+  product: ResourceConstant,
+  targetAmount: number,
+): CarrierTaskDraft | null {
+  const transferableCurrent = roomTransferableAmount(room, product);
+  if (transferableCurrent >= targetAmount) {
+    return null;
+  }
+
+  const steps: CarrierTaskStep[] = [];
+  for (const lab of productLabs) {
+    if (lab.mineralType !== product) {
+      continue;
+    }
+    const amount = lab.store.getUsedCapacity(product);
+    if (amount <= 0) {
+      continue;
+    }
+
+    const target = resolveProductUnloadTargetStructure(room, product);
+    if (!target) {
+      if (Memory.cfg.hub?.hubRoomName === room.name) {
+        if (!Memory.runtime.hub) Memory.runtime.hub = {};
+        Memory.runtime.hub.lastError = "lab_product_unload_destination_full";
+      }
+      continue;
+    }
+
+    steps.push({
+      id: createCarrierTaskStepId(product, lab.id, target.id),
+      resource: product,
+      amount,
+      fromKind: "lab",
+      toKind: target.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+      fromId: lab.id,
+      toId: target.id,
+    });
+  }
+
+  if (steps.length === 0) {
+    return null;
+  }
+
+  return {
+    id: createCarrierTaskId("lab_product_unload", room.name, product),
+    type: "lab_product_unload",
+    priority: 180,
+    steps,
+  };
+}
+
+function generateStrandedProductUnloadTask(
+  room: Room,
+  productLabs: StructureLab[],
+  roomCfg: SynthesisRoomConfig,
+  autoPlan?: SynthesisReactionPlan | null,
+): { task: CarrierTaskDraft; product: ResourceConstant; targetAmount?: number } | null {
+  const steps: CarrierTaskStep[] = [];
+  let firstDetectedMineral: ResourceConstant | undefined;
+
+  for (const lab of productLabs) {
+    const mineralType = lab.mineralType;
+    if (!mineralType) continue;
+    const amount = lab.store.getUsedCapacity(mineralType);
+    if (amount <= 0) continue;
+
+    const target = resolveProductUnloadTargetStructure(room, mineralType);
+    if (!target) continue;
+
+    if (!firstDetectedMineral) {
+      firstDetectedMineral = mineralType;
+    }
+
+    steps.push({
+      id: createCarrierTaskStepId(mineralType, lab.id, target.id),
+      resource: mineralType,
+      amount,
+      fromKind: "lab",
+      toKind: target.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+      fromId: lab.id,
+      toId: target.id,
+    });
+  }
+
+  if (steps.length === 0 || !firstDetectedMineral) {
+    return null;
+  }
+
+  const detectedProduct = firstDetectedMineral as ResourceConstant;
+
+  // Derive targetAmount from matching reaction in roomCfg or autoPlan
+  let targetAmount: number | undefined;
+  const matchingReaction = roomCfg.reactions.find((r) => r.product === detectedProduct);
+  if (matchingReaction) {
+    targetAmount = matchingReaction.targetAmount;
+  } else if (autoPlan && autoPlan.product === detectedProduct) {
+    targetAmount = autoPlan.targetAmount;
+  }
+
+  return {
+    task: {
+      id: createCarrierTaskId("lab_product_unload", room.name, detectedProduct),
+      type: "lab_product_unload",
+      priority: 180,
+      steps,
+    },
+    product: detectedProduct,
+    targetAmount,
+  };
+}
+
 function generateSupplyTask(
   room: Room,
   orderedReagentLabs: [StructureLab, StructureLab],
   reagents: [ResourceConstant, ResourceConstant],
   batchSize: number,
   product: ResourceConstant,
+  targetAmount: number,
 ): CarrierTaskDraft | null {
   const steps: CarrierTaskStep[] = [];
-  const desiredLabAmount = Math.min(LAB_MINERAL_CAPACITY, Math.max(LAB_REACTION_AMOUNT, batchSize));
+  const productDeficit = Math.max(0, targetAmount - roomResourceAmount(room, product));
+  const deficitBoundedAmount = productDeficit > 0 ? roundUpReactionAmount(productDeficit) : 0;
+  const desiredLabAmount = productDeficit > 0
+    ? Math.min(LAB_MINERAL_CAPACITY, batchSize, deficitBoundedAmount)
+    : Math.min(LAB_MINERAL_CAPACITY, Math.max(LAB_REACTION_AMOUNT, batchSize));
 
   for (let index = 0; index < orderedReagentLabs.length; index += 1) {
     const lab = orderedReagentLabs[index];
@@ -748,7 +880,10 @@ function generateSupplyTask(
 
     const currentAmount = mineralType === reagent ? lab.store.getUsedCapacity(reagent) : 0;
     const deficit = Math.max(0, desiredLabAmount - currentAmount);
-    if (deficit < LAB_REACTION_AMOUNT) {
+    const isPartialTopUp = deficit > 0 && deficit < LAB_REACTION_AMOUNT
+      && desiredLabAmount >= LAB_REACTION_AMOUNT
+      && currentAmount > 0;
+    if (deficit < LAB_REACTION_AMOUNT && !isPartialTopUp) {
       continue;
     }
 
@@ -759,7 +894,10 @@ function generateSupplyTask(
 
     const available = source.store.getUsedCapacity(reagent);
     const amount = Math.min(deficit, available);
-    if (amount < LAB_REACTION_AMOUNT) {
+    const isAmountPartialTopUp = amount > 0 && amount < LAB_REACTION_AMOUNT
+      && desiredLabAmount >= LAB_REACTION_AMOUNT
+      && currentAmount > 0;
+    if (amount < LAB_REACTION_AMOUNT && !isAmountPartialTopUp) {
       continue;
     }
 
@@ -948,14 +1086,36 @@ function handleRoom(
 
   const activePlan = chooseActivePlan(room, roomCfg, autoPlan);
   if (!activePlan) {
-    replaceCarrierTasksForProducerRoom(SYNTHESIS_CARRIER_TASK_PRODUCER, roomName, []);
+    const unloadProduct = roomState.activeProduct as ResourceConstant | undefined;
+    const unloadTarget = roomState.targetAmount as number | undefined;
+    let productUnloadTask = unloadProduct && unloadTarget
+      ? generateProductUnloadTask(room, topology.productLabs, unloadProduct, unloadTarget)
+      : null;
+
+    let strandedResult: ReturnType<typeof generateStrandedProductUnloadTask> = null;
+    if (!productUnloadTask && (!unloadProduct || !unloadTarget)) {
+      strandedResult = generateStrandedProductUnloadTask(room, topology.productLabs, roomCfg, autoPlan);
+      if (strandedResult) {
+        productUnloadTask = strandedResult.task;
+      }
+    }
+
+    replaceCarrierTasksForProducerRoom(
+      SYNTHESIS_CARRIER_TASK_PRODUCER,
+      roomName,
+      productUnloadTask ? [productUnloadTask] : [],
+    );
     runtime.rooms[roomName] = {
       ...roomState,
-      stage: "idle",
-      activeProduct: undefined,
+      stage: productUnloadTask ? "unloading" : "idle",
+      activeProduct: productUnloadTask
+        ? (strandedResult ? strandedResult.product : unloadProduct ?? undefined)
+        : undefined,
       reagentA: undefined,
       reagentB: undefined,
-      targetAmount: undefined,
+      targetAmount: productUnloadTask
+        ? (strandedResult ? strandedResult.targetAmount ?? unloadTarget : unloadTarget) ?? undefined
+        : undefined,
       batchSize: undefined,
       missing: undefined,
       cleanupTasks: undefined,
@@ -965,8 +1125,11 @@ function handleRoom(
       productLabIds: topology.productLabs.map((lab) => lab.id),
     };
 
-    // Signal hub planner when a non-idle room runs out of reactions
-    if (roomState.stage !== "idle" && Memory.cfg.hub?.hubRoomName === room.name) {
+    // Signal hub planner when an actively synthesizing room runs out of reactions.
+    // Do NOT signal during product-unload (stage="unloading"): hubPlanner uses
+    // storage+terminal inventory, which hasn't changed yet — signalling would
+    // cause an infinite needsPlan loop (hub rewrites same step every tick).
+    if (roomState.stage !== "idle" && roomState.stage !== "unloading" && Memory.cfg.hub?.hubRoomName === room.name) {
       if (!Memory.runtime.hub) {
         Memory.runtime.hub = { needsPlan: true, updatedAt: Game.time };
       } else {
@@ -1021,8 +1184,16 @@ function handleRoom(
     : null;
   const supplyTask = hasContamination
     ? null
-    : generateSupplyTask(room, orderedReagentLabs, reagents, activePlan.batchSize, activePlan.product);
-  const boardTasks = hasContamination ? (cleanupTask ? [cleanupTask] : []) : supplyTask ? [supplyTask] : [];
+    : generateSupplyTask(room, orderedReagentLabs, reagents, activePlan.batchSize, activePlan.product, activePlan.targetAmount);
+  const productUnloadTask = !hasContamination
+    ? generateProductUnloadTask(room, topology.productLabs, activePlan.product, activePlan.targetAmount)
+    : null;
+  const prevProductUnloadTask = roomState.activeProduct && roomState.activeProduct !== activePlan.product && roomState.targetAmount
+    ? generateProductUnloadTask(room, topology.productLabs, roomState.activeProduct as ResourceConstant, roomState.targetAmount as number)
+    : null;
+  const boardTasks = hasContamination
+    ? [...(cleanupTask ? [cleanupTask] : []), ...(prevProductUnloadTask ? [prevProductUnloadTask] : [])]
+    : [...(supplyTask ? [supplyTask] : []), ...(productUnloadTask ? [productUnloadTask] : []), ...(prevProductUnloadTask ? [prevProductUnloadTask] : [])];
   replaceCarrierTasksForProducerRoom(SYNTHESIS_CARRIER_TASK_PRODUCER, roomName, boardTasks);
   const cleanupTaskView = (cleanupTask?.steps || []).map((step) => ({
     labId: step.fromId,

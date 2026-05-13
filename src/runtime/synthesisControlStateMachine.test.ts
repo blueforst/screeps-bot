@@ -698,3 +698,850 @@ describe("hub completion signal", () => {
     expect(Memory.runtime!.hub?.needsPlan).toBeFalsy();
   });
 });
+
+describe("lab_product_unload task generation", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("generates lab_product_unload when product lab holds completed product and storage+terminal below target", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 106,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    expect(unloadTask!.priority).toBe(180);
+    expect(unloadTask!.steps.length).toBeGreaterThanOrEqual(1);
+    expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(unloadTask!.steps[0].fromId).toBe(labs[2].id);
+    expect(unloadTask!.steps[0].fromKind).toBe("lab");
+    expect(unloadTask!.steps[0].toKind).toBe("storage");
+    expect(unloadTask!.steps[0].toId).toBe((room.storage as StructureStorage).id);
+  });
+
+  it("targets terminal when storage is full", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 106,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 3000 },
+      terminalResources: {},
+    });
+
+    const storageStore = (room.storage as StructureStorage).store as any;
+    storageStore.getFreeCapacity = () => 0;
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    expect(unloadTask!.steps[0].toKind).toBe("terminal");
+    expect(unloadTask!.steps[0].toId).toBe((room.terminal as StructureTerminal).id);
+  });
+
+  it("sets lastError when both storage and terminal are full", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 106,
+    });
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 3000 },
+      terminalResources: { [RESOURCE_ENERGY]: 3000 },
+    });
+
+    const storageStore = (room.storage as StructureStorage).store as any;
+    storageStore.getFreeCapacity = () => 0;
+    const terminalStore = (room.terminal as StructureTerminal).store as any;
+    terminalStore.getFreeCapacity = () => 0;
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    expect(Memory.runtime!.hub).toBeDefined();
+    expect(Memory.runtime!.hub!.lastError).toBe("lab_product_unload_destination_full");
+  });
+
+  it("only generates steps for non-empty labs with correct product", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_HYDROXIDE,
+      reagentA: RESOURCE_OXYGEN,
+      reagentB: RESOURCE_HYDROGEN,
+      targetAmount: 5000,
+    });
+
+    const roomObj: Partial<Room> = {
+      name: "W1N1",
+      controller: { my: true, level: 7 } as StructureController,
+    };
+
+    const lab0 = createLab(roomObj as Room, "W1N1-lab-0", RESOURCE_OXYGEN, {
+      [RESOURCE_OXYGEN]: 500,
+    });
+    const lab1 = createLab(roomObj as Room, "W1N1-lab-1", RESOURCE_HYDROGEN, {
+      [RESOURCE_HYDROGEN]: 500,
+    });
+    const lab2 = createLab(roomObj as Room, "W1N1-lab-2", RESOURCE_HYDROXIDE as ResourceConstant, {
+      [RESOURCE_HYDROXIDE]: 200,
+    });
+    const lab3 = createLab(roomObj as Room, "W1N1-lab-3");
+    const allLabs = [lab0, lab1, lab2, lab3];
+
+    Object.assign(roomObj, {
+      storage: {
+        id: "W1N1-storage",
+        structureType: STRUCTURE_STORAGE,
+        store: createStore({ [RESOURCE_ENERGY]: 500000 }),
+      } as unknown as StructureStorage,
+      terminal: {
+        id: "W1N1-terminal",
+        structureType: STRUCTURE_TERMINAL,
+        cooldown: 0,
+        store: createStore({}),
+      } as unknown as StructureTerminal,
+      find: ((type: FindConstant, opts?: { filter?: (s: Structure) => boolean }) => {
+        if (type === FIND_MY_STRUCTURES) {
+          return opts?.filter
+            ? allLabs.filter((s: any) => opts.filter!(s as Structure))
+            : allLabs;
+        }
+        return [];
+      }) as Room["find"],
+    });
+
+    const labById: Record<string, any> = {
+      [lab0.id]: lab0,
+      [lab1.id]: lab1,
+      [lab2.id]: lab2,
+      [lab3.id]: lab3,
+      "W1N1-storage": (roomObj as any).storage,
+      "W1N1-terminal": (roomObj as any).terminal,
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = roomObj as Room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    if (unloadTask) {
+      expect(unloadTask.steps.length).toBe(1);
+      expect(unloadTask.steps[0].fromId).toBe(lab2.id);
+    }
+  });
+
+  it("does not generate lab_product_unload when transferable amount meets target", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_HYDROXIDE,
+      reagentA: RESOURCE_OXYGEN,
+      reagentB: RESOURCE_HYDROGEN,
+      targetAmount: 5000,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 5000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+    labs[2].mineralType = RESOURCE_HYDROXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_HYDROXIDE] = 100;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeUndefined();
+  });
+});
+
+describe("E4N58 stall regression", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("generates product-unload and stage=unloading when product in lab meets target but storage+terminal is empty", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 106,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+    expect(roomState.lastError).toBeUndefined();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    expect(unloadTask!.priority).toBe(180);
+    expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(unloadTask!.steps[0].fromId).toBe(labs[2].id);
+    expect(unloadTask!.steps[0].fromKind).toBe("lab");
+    expect(unloadTask!.steps[0].toKind).toBe("storage");
+  });
+
+  it("does not set needsPlan when already in product-unload unloading stage", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    setRoomStage("unloading", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      targetAmount: 106,
+    });
+
+    Memory.runtime!.hub = { needsPlan: false, updatedAt: 5 };
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    expect(Memory.runtime!.hub!.needsPlan).toBe(false);
+  });
+
+  it("sets needsPlan on synthesizing-to-unloading transition (completion signal)", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 106,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+    expect(Memory.runtime!.hub!.needsPlan).toBe(true);
+  });
+
+  it("generates prevProductUnloadTask when autoPlan switches product from UO to OH", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 106,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(unloadTask!.steps[0].fromId).toBe(labs[2].id);
+    expect(unloadTask!.steps[0].fromKind).toBe("lab");
+
+    const cleanupTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_cleanup",
+    );
+    expect(cleanupTask).toBeDefined();
+    expect(cleanupTask!.priority).toBeGreaterThan(unloadTask!.priority);
+  });
+
+  it("product-unload has no lastError; contamination has lastError=lab_contaminated_waiting_clear", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 106,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    let roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+    expect(roomState.lastError).toBeUndefined();
+
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 20;
+    Memory.runtime = undefined;
+
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("synthesizing");
+
+    const { room: room2 } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    const contaminatedLab = createLab(room2, "W1N1-lab-contam", "K" as ResourceConstant, {
+      K: 200,
+    });
+    const correctLab = createLab(room2, "W1N1-lab-correct", RESOURCE_HYDROGEN, {
+      [RESOURCE_HYDROGEN]: 1000,
+    });
+    const productLab = createLab(room2, "W1N1-lab-product");
+
+    const allLabs = [contaminatedLab, correctLab, productLab];
+    (room2 as any).find = ((
+      type: FindConstant,
+      opts?: { filter?: (structure: Structure) => boolean },
+    ) => {
+      if (type === FIND_MY_STRUCTURES) {
+        return opts?.filter
+          ? allLabs.filter((s: any) => opts.filter!(s as Structure))
+          : allLabs;
+      }
+      return [];
+    }) as Room["find"];
+
+    const labById2: Record<string, any> = {
+      [contaminatedLab.id]: contaminatedLab,
+      [correctLab.id]: correctLab,
+      [productLab.id]: productLab,
+    };
+    (Game as any).getObjectById = (id: string) => labById2[id] ?? null;
+
+    Game.rooms["W1N1"] = room2;
+
+    runSynthesisControl();
+
+    roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+    expect(roomState.lastError).toBe("lab_contaminated_waiting_clear");
+  });
+
+  it("stranded recovery: idle with no activeProduct, product lab has UO, targetAmount=106 → generates lab_product_unload", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("idle", {
+      activeProduct: undefined,
+      reagentA: undefined,
+      reagentB: undefined,
+      targetAmount: undefined,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 0;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 0;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+    expect(roomState.activeProduct).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(roomState.targetAmount).toBe(106);
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(unloadTask!.steps[0].fromId).toBe(labs[2].id);
+    expect(unloadTask!.steps[0].fromKind).toBe("lab");
+    expect(unloadTask!.steps[0].toKind).toBe("storage");
+    expect(unloadTask!.steps[0].amount).toBe(110);
+  });
+
+  it("stranded recovery: empty product labs with idle/no-activeProduct → no carrier task, remains idle", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("idle", {
+      activeProduct: undefined,
+      reagentA: undefined,
+      reagentB: undefined,
+      targetAmount: undefined,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_UTRIUM_OXIDE as string]: 200,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 0;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 0;
+    labs[2].mineralType = undefined;
+    labs[2]._resourceMap = {};
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("idle");
+    expect(roomState.activeProduct).toBeUndefined();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeUndefined();
+  });
+
+  it("stranded recovery: storage already has UO above target AND product lab has UO → stranded unload still generates", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("idle", {
+      activeProduct: undefined,
+      reagentA: undefined,
+      reagentB: undefined,
+      targetAmount: undefined,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_UTRIUM_OXIDE as string]: 200,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 0;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 0;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 50;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(unloadTask!.steps[0].fromId).toBe(labs[2].id);
+    expect(unloadTask!.steps[0].amount).toBe(50);
+  });
+
+  it("stranded recovery: normal active-plan path still produces supply/product-unload without invoking stranded recovery", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
+      ],
+    });
+    setRoomStage("synthesizing", {
+      activeProduct: RESOURCE_UTRIUM_OXIDE,
+      reagentA: RESOURCE_UTRIUM,
+      reagentB: RESOURCE_OXYGEN,
+      targetAmount: 106,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_UTRIUM]: 2000,
+        [RESOURCE_OXYGEN]: 2000,
+        [RESOURCE_HYDROXIDE]: 2000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_UTRIUM;
+    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
+    labs[1].mineralType = RESOURCE_OXYGEN;
+    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+    expect(roomState.activeProduct).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(roomState.targetAmount).toBe(106);
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const unloadTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_product_unload",
+    );
+    expect(unloadTask).toBeDefined();
+    expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+
+    const supplyTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_supply",
+    );
+    expect(supplyTask).toBeUndefined();
+  });
+});
