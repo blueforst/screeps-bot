@@ -531,6 +531,24 @@ export function runHubPlanner(): void {
     }
   }
 
+  // Include lab/factory/power-spawn mineral contents so hub inventory agrees
+  // with synthesisControl roomResourceAmount (which also counts these structures).
+  const labLikeStructures = room.find(FIND_MY_STRUCTURES, {
+    filter: (s: Structure) =>
+      s.structureType === STRUCTURE_LAB ||
+      s.structureType === STRUCTURE_FACTORY ||
+      s.structureType === STRUCTURE_POWER_SPAWN,
+  }) as AnyStoreStructure[];
+  for (const structure of labLikeStructures) {
+    if (!structure.store) continue;
+    const store = structure.store as unknown as Record<string, number>;
+    for (const [res, amt] of Object.entries(store)) {
+      if (res !== RESOURCE_ENERGY && amt > 0) {
+        hubInventory[res] = (hubInventory[res] || 0) + amt;
+      }
+    }
+  }
+
   const allRelevantResources = [...BASE_MINERALS, ...INTERMEDIATE_COMPOUNDS, ...T3_TARGETS];
   const incomingResources: Record<string, number> = {};
   for (const res of allRelevantResources) {

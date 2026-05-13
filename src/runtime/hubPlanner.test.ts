@@ -957,6 +957,7 @@ describe("writeSynthesisConfig", () => {
   function setupHubRoomForSynthesis(
     storageResources: Record<string, number>,
     terminalResources: Record<string, number> = {},
+    labStores: Record<string, number>[] = [],
   ): void {
     const storageEntries: Record<string, number> = {
       [RESOURCE_ENERGY]: 200000,
@@ -994,13 +995,24 @@ describe("writeSynthesisConfig", () => {
       },
     };
 
-    const labCount = 3;
+    const labCount = Math.max(3, labStores.length);
     const labs: Structure[] = [];
     for (let i = 0; i < labCount; i++) {
+      const labEntries: Record<string, number> = {
+        [RESOURCE_ENERGY]: 2000,
+        ...labStores[i],
+      };
       labs.push({
         id: `hub-lab-${i}`,
         structureType: STRUCTURE_LAB,
-      } as Structure);
+        store: {
+          ...labEntries,
+          getUsedCapacity: (resource?: string) => {
+            if (resource) return labEntries[resource] || 0;
+            return Object.values(labEntries).reduce((a: number, b: number) => a + b, 0);
+          },
+        },
+      } as unknown as Structure);
     }
 
     const room = {
@@ -1201,6 +1213,33 @@ describe("writeSynthesisConfig", () => {
 
     const roomCfg = Memory.cfg.synthesisControl?.rooms?.[HUB_ROOM];
     expect(roomCfg?.reactions).toBeFalsy();
+  });
+
+  it("skips UO step when UO exists only in lab (counts lab-held resources)", () => {
+    Memory.cfg.hub!.targetCompounds = [RESOURCE_CATALYZED_UTRIUM_ALKALIDE];
+
+    setupHubRoomForSynthesis(
+      {
+        [RESOURCE_HYDROGEN]: 10000,
+        [RESOURCE_OXYGEN]: 10000,
+        [RESOURCE_UTRIUM]: 10000,
+        [RESOURCE_LEMERGIUM]: 10000,
+        [RESOURCE_KEANIUM]: 10000,
+        [RESOURCE_ZYNTHIUM]: 10000,
+        [RESOURCE_CATALYST]: 10000,
+        [RESOURCE_HYDROXIDE]: 5000,
+      },
+      {},
+      [{ [RESOURCE_UTRIUM_OXIDE]: 1000 }],
+    );
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).not.toBe("blocked");
+    expect(Memory.runtime.hub.activeProduct).not.toBe(RESOURCE_UTRIUM_OXIDE);
+    expect(Memory.runtime.hub.lastPlanActions).toBeDefined();
+    expect(Memory.runtime.hub.lastPlanActions).not.toContain(RESOURCE_UTRIUM_OXIDE);
+    expect(Memory.runtime.hub.lastPlanActions).toContain(RESOURCE_UTRIUM_ALKALIDE);
   });
 });
 
