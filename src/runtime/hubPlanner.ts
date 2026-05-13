@@ -232,7 +232,9 @@ export function planHubChains(
   hubInventory: Record<string, number>,
   incomingResources: Record<string, number>,
   targetReserve: number,
+  targetCompounds: ResourceConstant[] = T3_TARGETS,
 ): { steps: ChainStep[]; blocked: boolean; missingResources: ResourceConstant[] } {
+  // 1. Merge hub inventory + healthy incoming into available pool
   const available: Record<string, number> = {};
   const merge = (rec: Record<string, number>) => {
     for (const [k, v] of Object.entries(rec)) {
@@ -242,14 +244,26 @@ export function planHubChains(
   merge(hubInventory);
   merge(incomingResources);
 
+  // 2. Seed demand only for the target compounds parameter
   const needed: Record<string, number> = {};
-
-  for (const t3 of T3_TARGETS) {
-    needed[t3] = targetReserve;
+  for (const t3 of targetCompounds) {
+    const have = available[t3] || 0;
+    const deficit = Math.max(0, targetReserve - have);
+    if (deficit > 0) {
+      needed[t3] = deficit;
+    }
   }
 
+  // If all targets are at reserve, nothing to produce
+  if (Object.keys(needed).length === 0) {
+    return { steps: [], blocked: false, missingResources: [] };
+  }
+
+  // 3. Propagate deficits down PROCESS_ORDER (T3 → base intermediates)
   for (const product of PROCESS_ORDER) {
     const demand = needed[product] || 0;
+    if (demand <= 0) continue;
+
     const have = available[product] || 0;
     const toProduce = Math.max(0, demand - have);
     needed[product] = toProduce;
@@ -264,6 +278,7 @@ export function planHubChains(
     }
   }
 
+  // 4. Build candidates: products with demand > 0 AND both reagents available
   const OUTPUT_ORDER: ResourceConstant[] = [
     // Base intermediates
     RESOURCE_HYDROXIDE,
@@ -305,33 +320,42 @@ export function planHubChains(
     RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
   ];
 
-  const steps: ChainStep[] = [];
-
+  const candidates: ChainStep[] = [];
   for (const product of OUTPUT_ORDER) {
-    const amount = needed[product] || 0;
-    if (amount > 0) {
-      const reagents = REACTION_MAP[product]!;
-      steps.push({ product, targetAmount: amount, reagents });
-    }
+    const demand = needed[product] || 0;
+    if (demand <= 0) continue;
+
+    const reagents = REACTION_MAP[product];
+    if (!reagents) continue;
+
+    const availA = available[reagents[0]] || 0;
+    const availB = available[reagents[1]] || 0;
+
+    if (availA <= 0 || availB <= 0) continue;
+
+    const amount = Math.max(1, Math.min(demand, availA, availB));
+    candidates.push({ product, targetAmount: amount, reagents });
   }
 
-  const baseNeeds: Record<string, number> = {};
-  for (const base of BASE_MINERALS) {
-    baseNeeds[base] = needed[base] || 0;
+  // 5. If we have feasible candidates, return them unblocked
+  if (candidates.length > 0) {
+    return { steps: candidates, blocked: false, missingResources: [] };
   }
 
+  // 6. No candidate has both reagents — find blocking base minerals
+  // Report only bases that block ALL remaining feasible paths
   const missingResources: ResourceConstant[] = [];
   for (const base of BASE_MINERALS) {
     const have = available[base] || 0;
-    const need = baseNeeds[base] || 0;
+    const need = needed[base] || 0;
     if (need > have) {
       missingResources.push(base);
     }
   }
 
   return {
-    steps,
-    blocked: missingResources.length > 0,
+    steps: [],
+    blocked: true,
     missingResources,
   };
 }
@@ -706,7 +730,7 @@ export function runHubPlanner(): void {
   const satelliteDeficit = computeTotalSatelliteDeficit(cfg, targetCompounds);
   const chainTarget = hubReservePerCompound + satelliteDeficit;
 
-  const result = planHubChains(hubInventory, incomingResources, chainTarget);
+  const result = planHubChains(hubInventory, incomingResources, chainTarget, targetCompounds);
 
   const importActions = planHubImports(cfg);
 
