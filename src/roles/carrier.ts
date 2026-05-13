@@ -480,7 +480,14 @@ function pickupSynthesisCarrierResource(creep: Creep): { picked: boolean; outOfR
     return { picked: false, outOfRange: false };
   }
 
-  const code = measureCreepIntent(() => creep.withdraw(from, assignment.step.resource));
+  const freeCapacity = creep.store.getFreeCapacity(assignment.step.resource);
+  const sourceAvailable = from.store.getUsedCapacity(assignment.step.resource);
+  const withdrawAmount = Math.min(assignment.step.amount, freeCapacity, sourceAvailable);
+  if (withdrawAmount <= 0) {
+    return { picked: false, outOfRange: false };
+  }
+
+  const code = measureCreepIntent(() => creep.withdraw(from, assignment.step.resource, withdrawAmount));
   if (code === ERR_NOT_IN_RANGE) {
     moveToTarget(creep, from);
     return { picked: false, outOfRange: true };
@@ -498,7 +505,7 @@ function pickupSynthesisCarrierResource(creep: Creep): { picked: boolean; outOfR
   state.synthesisCarrierPendingToId = assignment.step.toId;
   state.synthesisCarrierPendingResource = assignment.step.resource;
   return {
-    picked: creep.store.getUsedCapacity() > 0,
+    picked: true,
     outOfRange: false,
   };
 }
@@ -574,6 +581,31 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
   const assigned = getAssignedSynthesisCarrierTask(creep);
   const state = ensureCreepAssignmentState(creep.name);
 
+  // committed-delivery guard: snapshot delivery before pendingStepId expiry gates
+  const _cdToId = state.synthesisCarrierPendingToId;
+  const _cdResource = state.synthesisCarrierPendingResource;
+  if (_cdToId && _cdResource && creep.store.getUsedCapacity(_cdResource) > 0) {
+    const _cdTarget = resolveTaskStructure(_cdToId);
+    if (_cdTarget && _cdTarget.store.getFreeCapacity(_cdResource) > 0) {
+      const _cdCode = measureCreepIntent(() => creep.transfer(_cdTarget, _cdResource));
+      if (_cdCode === ERR_NOT_IN_RANGE) {
+        moveToTarget(creep, _cdTarget);
+        return true;
+      }
+      if (_cdCode === OK) {
+        clearSynthesisCarrierTaskPlan(creep);
+        return true;
+      }
+      if (_cdCode === ERR_NOT_ENOUGH_RESOURCES) {
+        moveToTarget(creep, _cdTarget);
+        return true;
+      }
+    }
+    delete state.synthesisCarrierPendingFromId;
+    delete state.synthesisCarrierPendingToId;
+    delete state.synthesisCarrierPendingResource;
+  }
+
   const explicitPendingStepId = (state.synthesisCarrierPendingPickupTick != null &&
     state.synthesisCarrierPendingPickupTick >= Game.time - 1)
     ? state.synthesisCarrierPendingStepId : undefined;
@@ -619,7 +651,10 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
       const snapshotResource = state.synthesisCarrierPendingResource;
       if (snapshotToId && snapshotResource) {
         const snapshotTarget = resolveTaskStructure(snapshotToId);
-        if (snapshotTarget && creep.store.getUsedCapacity(snapshotResource) > 0) {
+        if (!snapshotTarget) {
+          delete state.synthesisCarrierPendingToId;
+          delete state.synthesisCarrierPendingResource;
+        } else if (creep.store.getUsedCapacity(snapshotResource) > 0) {
           const code = measureCreepIntent(() => creep.transfer(snapshotTarget, snapshotResource));
           if (code === ERR_NOT_IN_RANGE) {
             moveToTarget(creep, snapshotTarget);
@@ -785,6 +820,12 @@ export const carrierRole: RoleFactory = () => ({
     if (hadPendingPickup) {
       delete ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick;
       delete ensureCreepAssignmentState(creep.name).synthesisCarrierPendingStepId;
+      const state = ensureCreepAssignmentState(creep.name);
+      if (state.synthesisCarrierPendingResource &&
+          creep.store.getUsedCapacity(state.synthesisCarrierPendingResource) === 0) {
+        delete state.synthesisCarrierPendingToId;
+        delete state.synthesisCarrierPendingResource;
+      }
     }
 
     const carrierTaskPickup = pickupSynthesisCarrierResource(creep);
@@ -822,7 +863,14 @@ export const carrierRole: RoleFactory = () => ({
       return false;
     }
 
-    ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
+    const carrierState = ensureCreepAssignmentState(creep.name);
+    const snapshotResource = carrierState.synthesisCarrierPendingResource;
+    const carryingSnapshot = snapshotResource && carrierState.synthesisCarrierPendingToId &&
+      creep.store.getUsedCapacity(snapshotResource) > 0;
+
+    if (!carryingSnapshot) {
+      carrierState.carrierStorageOnlyMode = true;
+    }
 
     pickupEnergyForCarrier(creep, {
       includeStorage: false,
@@ -843,6 +891,28 @@ export const carrierRole: RoleFactory = () => ({
     }
 
     if (creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0) {
+      const tState = ensureCreepAssignmentState(creep.name);
+      const tSnapshotResource = tState.synthesisCarrierPendingResource;
+      const tSnapshotToId = tState.synthesisCarrierPendingToId;
+      if (tSnapshotResource && tSnapshotToId && creep.store.getUsedCapacity(tSnapshotResource) > 0) {
+        const tSnapshotTarget = resolveTaskStructure(tSnapshotToId);
+        if (tSnapshotTarget) {
+          const tCode = measureCreepIntent(() => creep.transfer(tSnapshotTarget, tSnapshotResource));
+          if (tCode === ERR_NOT_IN_RANGE) {
+            moveToTarget(creep, tSnapshotTarget);
+            return false;
+          }
+          if (tCode === OK) {
+            delete tState.synthesisCarrierPendingToId;
+            delete tState.synthesisCarrierPendingResource;
+            clearPostTransferPlan(creep);
+            return true;
+          }
+          return false;
+        }
+        delete tState.synthesisCarrierPendingToId;
+        delete tState.synthesisCarrierPendingResource;
+      }
       clearPostTransferPlan(creep);
       return creep.store.getUsedCapacity() === 0;
     }

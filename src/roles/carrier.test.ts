@@ -186,8 +186,8 @@ describe("carrierRole mineral hauling", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM);
-    expect(switched).toBe(false);
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM, 800);
+    expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("mineral-task");
   });
 
@@ -636,8 +636,8 @@ describe("carrierRole mineral hauling", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM);
-    expect(switched).toBe(false);
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM, 800);
+    expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-feed-task");
   });
 
@@ -711,8 +711,8 @@ describe("carrierRole mineral hauling", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM);
-    expect(switched).toBe(false);
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM, 800);
+    expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("mineral-task");
   });
 
@@ -760,8 +760,8 @@ describe("carrierRole mineral hauling", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
-    expect(switched).toBe(false);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 800);
+    expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-task");
   });
 
@@ -875,9 +875,9 @@ describe("carrierRole mineral hauling", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 800);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-home");
-    expect(switched).toBe(false);
+    expect(switched).toBe(true);
   });
 
   it("delivers assigned board-task energy to the assigned room target even when currently elsewhere", () => {
@@ -1327,8 +1327,8 @@ describe("carrierRole mineral hauling", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM);
-    expect(switched).toBe(false);
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM, 800);
+    expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("mineral-haul-task");
   });
 
@@ -1390,8 +1390,8 @@ describe("carrierRole mineral hauling", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
-    expect(switched).toBe(false);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 800);
+    expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-task");
   });
 
@@ -1459,8 +1459,8 @@ describe("carrierRole mineral hauling", () => {
 
     // Second source call: should still be on the same assigned task
     const switched2 = carrierRole().source?.(creep);
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
-    expect(switched2).toBe(false);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 800);
+    expect(switched2).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-assigned");
   });
 
@@ -1764,8 +1764,8 @@ describe("carrierRole mineral hauling", () => {
 
     // Second source call: should still be on mineral_haul, not flip to terminal_offload
     const switched = carrierRole().source?.(creep);
-    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM);
-    expect(switched).toBe(false);
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM, 800);
+    expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("mineral-haul-assigned");
   });
 
@@ -1863,7 +1863,7 @@ describe("carrierRole lab logistics", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_UTRIUM);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_UTRIUM, 500);
     expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("synth:lab_supply:W7N1:OH");
 
@@ -1938,7 +1938,7 @@ describe("carrierRole lab logistics", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM);
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM, 500);
     expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("synth:lab_supply:W7N2:OH");
   });
@@ -2053,7 +2053,7 @@ describe("carrierRole lab logistics", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(lab, RESOURCE_KEANIUM);
+    expect(creep.withdraw).toHaveBeenCalledWith(lab, RESOURCE_KEANIUM, 300);
     expect(switched).toBe(true);
 
     const done = carrierRole().target(creep);
@@ -2248,7 +2248,7 @@ describe("carrierRole lab logistics", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(lab, RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(creep.withdraw).toHaveBeenCalledWith(lab, RESOURCE_UTRIUM_OXIDE as ResourceConstant, 110);
     expect(switched).toBe(true);
 
     const done = carrierRole().target(creep);
@@ -2436,7 +2436,7 @@ describe("carrierRole lab logistics", () => {
 
     // Carrier picks up oxygen from terminal
     const switched = carrierRole().source?.(creep);
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_OXYGEN);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_OXYGEN, 500);
     expect(switched).toBe(true);
     expect(carriedOxygen).toBe(500);
 
@@ -2501,6 +2501,263 @@ describe("carrierRole lab logistics", () => {
     const roomState = Memory.runtime?.synthesisControl?.rooms?.["W8N1"];
     expect(roomState).toBeDefined();
     expect(roomState!.stage).not.toBe("blocked");
+  });
+
+  // ========================================================
+  // RED regression tests for lab_supply jitter defects
+  // These tests MUST fail against the current implementation.
+  // ========================================================
+
+  it("withdraws only the lab_supply step amount (not the full terminal stock)", () => {
+    const room = createRoom("W9N1");
+    const terminal = room.terminal as StructureTerminal;
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) =>
+        resource === RESOURCE_HYDROXIDE ? 800 : 0,
+      getFreeCapacity: () => 10000,
+    } as StoreDefinition;
+    const lab = {
+      id: "lab-over-withdraw-1",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (_resource?: ResourceConstant) => 0,
+        getFreeCapacity: () => 800,
+      },
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+
+    // lab_supply task with amount=45 (less than terminal stock and creep capacity)
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [{
+      id: "synth:lab_supply:W9N1:OH",
+      type: "lab_supply",
+      priority: 100,
+      steps: [{
+        id: "OH:term->lab",
+        resource: RESOURCE_HYDROXIDE,
+        fromKind: "terminal",
+        toKind: "lab",
+        fromId: terminal.id,
+        toId: lab.id,
+        amount: 45,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+
+    // BUG: current code calls withdraw(terminal, RESOURCE_HYDROXIDE) without amount.
+    // FIX should call withdraw(terminal, RESOURCE_HYDROXIDE, 45).
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_HYDROXIDE, 45);
+    expect(switched).toBe(true);
+  });
+
+  it("delivers stale committed lab_supply cargo to lab (not terminal/storage)", () => {
+    const room = createRoom("W9N2");
+    const terminal = room.terminal as StructureTerminal;
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: () => 0,
+      getFreeCapacity: () => 10000,
+    } as StoreDefinition;
+    const storage = room.storage as StructureStorage;
+    (storage as { store: StoreDefinition }).store = {
+      getUsedCapacity: () => 0,
+      getFreeCapacity: () => 100000,
+    } as StoreDefinition;
+    const lab = {
+      id: "lab-stale-1",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+
+    // Creep is carrying OH
+    let staleCarried = 100;
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) return staleCarried;
+          return resource === RESOURCE_HYDROXIDE ? staleCarried : 0;
+        },
+        getFreeCapacity: () => 800 - staleCarried,
+      },
+      transfer: jest.fn(() => { staleCarried = 0; return OK; }),
+    } as unknown as Creep;
+
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+
+    // Set up assignment state with stale snapshot
+    const state = ensureCreepAssignmentState(creep.name);
+    state.synthesisCarrierTaskId = "synth:lab_supply:W9N2:OH";
+    state.synthesisCarrierPendingPickupTick = Game.time - 5; // stale: older than Game.time - 1
+    state.synthesisCarrierPendingStepId = "OH:term->lab";
+    state.synthesisCarrierPendingFromId = terminal.id;
+    state.synthesisCarrierPendingToId = lab.id;
+    state.synthesisCarrierPendingResource = RESOURCE_HYDROXIDE;
+
+    // Board has been cleared — no tasks remain
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, []);
+
+    const done = carrierRole().target(creep);
+
+    // BUG: current code falls through to generic cleanup because pickupTick is stale,
+    // routing OH to terminal via getSynthesisCleanupDeliveryTarget instead of the lab.
+    // FIX should deliver to lab using snapshot fields regardless of pickup tick staleness.
+    expect(creep.transfer).toHaveBeenCalledWith(lab, RESOURCE_HYDROXIDE);
+    expect(done).toBe(true);
+  });
+
+  it("multi-tick stale pickup still delivers to committed lab (not generic cleanup)", () => {
+    const room = createRoom("W9N3");
+    const terminal = room.terminal as StructureTerminal;
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) =>
+        resource === RESOURCE_HYDROXIDE ? 800 : 0,
+      getFreeCapacity: () => 10000,
+    } as StoreDefinition;
+    const storage = room.storage as StructureStorage;
+    (storage as { store: StoreDefinition }).store = {
+      getUsedCapacity: () => 0,
+      getFreeCapacity: () => 100000,
+    } as StoreDefinition;
+    const lab = {
+      id: "lab-multi-tick-1",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 10, y: 10, roomName: room.name, inRangeTo: () => false } as unknown as RoomPosition,
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+
+    let carriedOH = 0;
+    let transferRangeOK = false;
+    const creep = {
+      ...createCreep(room),
+      name: "carrier-W9N3-1",
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) return carriedOH;
+          return resource === RESOURCE_HYDROXIDE ? carriedOH : 0;
+        },
+        getFreeCapacity: () => 800 - carriedOH,
+      },
+      withdraw: jest.fn(() => {
+        carriedOH = 100;
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        if (!transferRangeOK) return ERR_NOT_IN_RANGE;
+        carriedOH = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    getEnergyStoreTarget.mockReturnValue(null);
+    const terminalMap: Record<string, number> = { [RESOURCE_HYDROXIDE]: 800 };
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return Object.values(terminalMap).reduce((s, v) => s + v, 0);
+        return terminalMap[resource] ?? 0;
+      },
+      getFreeCapacity: () => 10000 - Object.values(terminalMap).reduce((s, v) => s + v, 0),
+    } as StoreDefinition;
+
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+
+    // ---- TICK N: Pickup ----
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [{
+      id: "synth:lab_supply:W9N3:OH",
+      type: "lab_supply",
+      priority: 100,
+      steps: [{
+        id: "OH:term->lab",
+        resource: RESOURCE_HYDROXIDE,
+        fromKind: "terminal",
+        toKind: "lab",
+        fromId: terminal.id,
+        toId: lab.id,
+        amount: 100,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+    expect(switched).toBe(true);
+    expect(carriedOH).toBe(100);
+
+    // Verify snapshot was set
+    const stateN = getCreepAssignmentState(creep.name);
+    expect(stateN?.synthesisCarrierPendingToId).toBe(lab.id);
+    expect(stateN?.synthesisCarrierPendingResource).toBe(RESOURCE_HYDROXIDE);
+    const pickupTickN = stateN?.synthesisCarrierPendingPickupTick;
+    expect(pickupTickN).toBe(Game.time);
+
+    // ---- TICK N+1: Move toward lab (out of range) ----
+    Game.time += 1;
+    // Lab is still out of range — simulate movement
+    moveToTarget.mockClear();
+    (creep.transfer as jest.Mock).mockClear();
+
+    // Keep the task on the board
+    const tick1Done = carrierRole().target(creep);
+    // Carrier is carrying OH but out of range — should move toward lab and stay in target
+    expect(tick1Done).toBe(false);
+
+    // ---- TICK N+2: Pickup tick is now stale (N < N+2-1 = N+1) ----
+    Game.time += 1;
+    transferRangeOK = true;
+    // Clear board to simulate synthesis control refresh removing completed task
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, []);
+
+    moveToTarget.mockClear();
+    (creep.transfer as jest.Mock).mockClear();
+
+    // Now pickupTick = N, Game.time = N+2 → stale.
+    // Carrier still carries OH with snapshot pointing at lab.
+    // BUG: current code ignores snapshot when pickupTick is stale and
+    // routes to terminal/storage via generic cleanup instead.
+    const tick2Done = carrierRole().target(creep);
+
+    // FIX should use snapshot to deliver to lab even with stale pickupTick.
+    // At minimum, must target the lab (move or transfer).
+    const moveOrTransferToLab =
+      (creep.transfer as jest.Mock).mock.calls.some(
+        (call: [any, ResourceConstant]) => call[0] === lab && call[1] === RESOURCE_HYDROXIDE,
+      ) ||
+      moveToTarget.mock.calls.some(
+        (call: [Creep, any]) => call[1] === lab,
+      );
+    expect(moveOrTransferToLab).toBe(true);
+    expect(tick2Done).toBe(true);
   });
 });
 
@@ -2848,7 +3105,7 @@ describe("pending synthesis intent – phase jitter (E4N58)", () => {
     const switched = carrierRole().source?.(creep);
 
     // The creep committed a withdraw intent — it should switch to delivery
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 1000);
     // This assertion FAILS before fix: source returns false because store is empty
     expect(switched).toBe(true);
   });
