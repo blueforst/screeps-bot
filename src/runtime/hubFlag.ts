@@ -31,6 +31,7 @@ export function runHubByFlag(): void {
     hubRoomName: roomName,
     planInterval: existing.planInterval ?? defaults.planInterval,
     reservePerRoom: existing.reservePerRoom ?? defaults.reservePerRoom,
+    hubReservePerCompound: existing.hubReservePerCompound ?? defaults.hubReservePerCompound,
     targetCompounds: existing.targetCompounds ?? defaults.targetCompounds,
     storagePauseFreeCapacity: existing.storagePauseFreeCapacity ?? defaults.storagePauseFreeCapacity,
     surplusThreshold: existing.surplusThreshold ?? defaults.surplusThreshold,

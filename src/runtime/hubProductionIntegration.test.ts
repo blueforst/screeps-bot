@@ -201,6 +201,7 @@ describe("hub production integration – ordered runtime calls", () => {
         hubRoomName: "W1N1",
         planInterval: 50,
         reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
         targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE as ResourceConstant],
         storagePauseFreeCapacity: 100_000,
         surplusThreshold: 1500,

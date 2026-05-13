@@ -2,11 +2,11 @@
  * Hub planner config schema, defaults, runtime state, and chain planning.
  *
  * PRODUCTION-RATE EXPECTATION:
- * Producing 1000 each of 5 T3 compounds (~5000 total T3 units) requires ~27k
- * base minerals and takes ~10k–15k ticks under one-room sequential lab execution
+ * Producing 1000 each of 10 T3 compounds (~10000 total T3 units) requires ~54k
+ * base minerals and takes ~20k–30k ticks under one-room sequential lab execution
  * (3+ labs), depending on terminal contention and cleanup ticks.
  *
- * The 19 sequential reactions range from shared intermediates (OH, ZK, UL, G)
+ * The 38 sequential reactions range from shared intermediates (OH, ZK, UL, G)
  * through tier-1, tier-2, to final T3 compounds. Each reaction cycle consumes
  * 5 ticks per batch; total duration is dominated by the depth of the longest
  * dependency chain plus terminal transfer overhead between rooms.
@@ -16,11 +16,16 @@ import { createResourceTransferTask, ensureResourceTransferTaskStore, getIncomin
 import { getTickContextService } from "@/runtime/runtimeServices";
 
 const DEFAULT_TARGET_COMPOUNDS: ResourceConstant[] = [
-  RESOURCE_CATALYZED_GHODIUM_ALKALIDE, // XGHO2
-  RESOURCE_CATALYZED_GHODIUM_ACID, // XGH2O
   RESOURCE_CATALYZED_UTRIUM_ACID, // XUH2O
   RESOURCE_CATALYZED_UTRIUM_ALKALIDE, // XUHO2
+  RESOURCE_CATALYZED_KEANIUM_ACID, // XKH2O
+  RESOURCE_CATALYZED_KEANIUM_ALKALIDE, // XKHO2
+  RESOURCE_CATALYZED_LEMERGIUM_ACID, // XLH2O
   RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, // XLHO2
+  RESOURCE_CATALYZED_ZYNTHIUM_ACID, // XZH2O
+  RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, // XZHO2
+  RESOURCE_CATALYZED_GHODIUM_ACID, // XGH2O
+  RESOURCE_CATALYZED_GHODIUM_ALKALIDE, // XGHO2
 ];
 
 const DEFAULT_RESERVE_PER_ROOM = 1000;
@@ -31,6 +36,7 @@ export function getDefaultHubConfig(): NonNullable<Memory["cfg"]>["hub"] {
     hubRoomName: "",
     planInterval: 50,
     reservePerRoom: DEFAULT_RESERVE_PER_ROOM,
+    hubReservePerCompound: 20000,
     targetCompounds: [...DEFAULT_TARGET_COMPOUNDS],
     storagePauseFreeCapacity: 100_000,
     surplusThreshold: DEFAULT_RESERVE_PER_ROOM + 500,
@@ -50,6 +56,32 @@ export function getDefaultHubRuntime(): NonNullable<Memory["runtime"]>["hub"] {
   };
 }
 
+const OLD_DEFAULT_TARGET_COMPOUNDS = new Set<ResourceConstant>([
+  RESOURCE_CATALYZED_GHODIUM_ALKALIDE, // XGHO2
+  RESOURCE_CATALYZED_GHODIUM_ACID, // XGH2O
+  RESOURCE_CATALYZED_UTRIUM_ACID, // XUH2O
+  RESOURCE_CATALYZED_UTRIUM_ALKALIDE, // XUHO2
+  RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, // XLHO2
+]);
+
+export function normalizeHubConfig(cfg: NonNullable<Memory["cfg"]>["hub"]): NonNullable<Memory["cfg"]>["hub"] {
+  const compounds = cfg?.targetCompounds;
+  if (compounds && compounds.length === OLD_DEFAULT_TARGET_COMPOUNDS.size) {
+    const compoundSet = new Set(compounds);
+    let matchesOldDefault = true;
+    for (const c of OLD_DEFAULT_TARGET_COMPOUNDS) {
+      if (!compoundSet.has(c)) {
+        matchesOldDefault = false;
+        break;
+      }
+    }
+    if (matchesOldDefault) {
+      return { ...cfg, targetCompounds: [...DEFAULT_TARGET_COMPOUNDS] };
+    }
+  }
+  return cfg;
+}
+
 export interface ChainStep {
   product: ResourceConstant;
   targetAmount: number;
@@ -57,43 +89,83 @@ export interface ChainStep {
 }
 
 const REACTION_MAP: Record<string, [ResourceConstant, ResourceConstant]> = {
+  // Base intermediates
   [RESOURCE_HYDROXIDE]: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN],
   [RESOURCE_ZYNTHIUM_KEANITE]: [RESOURCE_ZYNTHIUM, RESOURCE_KEANIUM],
   [RESOURCE_UTRIUM_LEMERGITE]: [RESOURCE_UTRIUM, RESOURCE_LEMERGIUM],
   [RESOURCE_GHODIUM]: [RESOURCE_ZYNTHIUM_KEANITE, RESOURCE_UTRIUM_LEMERGITE],
+  // U chains (Utrium)
   [RESOURCE_UTRIUM_HYDRIDE]: [RESOURCE_UTRIUM, RESOURCE_HYDROGEN],
   [RESOURCE_UTRIUM_OXIDE]: [RESOURCE_UTRIUM, RESOURCE_OXYGEN],
-  [RESOURCE_LEMERGIUM_OXIDE]: [RESOURCE_LEMERGIUM, RESOURCE_OXYGEN],
-  [RESOURCE_GHODIUM_HYDRIDE]: [RESOURCE_GHODIUM, RESOURCE_HYDROGEN],
-  [RESOURCE_GHODIUM_OXIDE]: [RESOURCE_GHODIUM, RESOURCE_OXYGEN],
   [RESOURCE_UTRIUM_ACID]: [RESOURCE_UTRIUM_HYDRIDE, RESOURCE_HYDROXIDE],
   [RESOURCE_UTRIUM_ALKALIDE]: [RESOURCE_UTRIUM_OXIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_LEMERGIUM_ALKALIDE]: [RESOURCE_LEMERGIUM_OXIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_GHODIUM_ACID]: [RESOURCE_GHODIUM_HYDRIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_GHODIUM_ALKALIDE]: [RESOURCE_GHODIUM_OXIDE, RESOURCE_HYDROXIDE],
   [RESOURCE_CATALYZED_UTRIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_UTRIUM_ACID],
   [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_UTRIUM_ALKALIDE],
+  // K chains (Keanium)
+  [RESOURCE_KEANIUM_HYDRIDE]: [RESOURCE_KEANIUM, RESOURCE_HYDROGEN],
+  [RESOURCE_KEANIUM_OXIDE]: [RESOURCE_KEANIUM, RESOURCE_OXYGEN],
+  [RESOURCE_KEANIUM_ACID]: [RESOURCE_KEANIUM_HYDRIDE, RESOURCE_HYDROXIDE],
+  [RESOURCE_KEANIUM_ALKALIDE]: [RESOURCE_KEANIUM_OXIDE, RESOURCE_HYDROXIDE],
+  [RESOURCE_CATALYZED_KEANIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_KEANIUM_ACID],
+  [RESOURCE_CATALYZED_KEANIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_KEANIUM_ALKALIDE],
+  // L chains (Lemergium)
+  [RESOURCE_LEMERGIUM_HYDRIDE]: [RESOURCE_LEMERGIUM, RESOURCE_HYDROGEN],
+  [RESOURCE_LEMERGIUM_OXIDE]: [RESOURCE_LEMERGIUM, RESOURCE_OXYGEN],
+  [RESOURCE_LEMERGIUM_ACID]: [RESOURCE_LEMERGIUM_HYDRIDE, RESOURCE_HYDROXIDE],
+  [RESOURCE_LEMERGIUM_ALKALIDE]: [RESOURCE_LEMERGIUM_OXIDE, RESOURCE_HYDROXIDE],
+  [RESOURCE_CATALYZED_LEMERGIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_LEMERGIUM_ACID],
   [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_LEMERGIUM_ALKALIDE],
-  [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_GHODIUM_ALKALIDE],
+  // Z chains (Zynthium)
+  [RESOURCE_ZYNTHIUM_HYDRIDE]: [RESOURCE_ZYNTHIUM, RESOURCE_HYDROGEN],
+  [RESOURCE_ZYNTHIUM_OXIDE]: [RESOURCE_ZYNTHIUM, RESOURCE_OXYGEN],
+  [RESOURCE_ZYNTHIUM_ACID]: [RESOURCE_ZYNTHIUM_HYDRIDE, RESOURCE_HYDROXIDE],
+  [RESOURCE_ZYNTHIUM_ALKALIDE]: [RESOURCE_ZYNTHIUM_OXIDE, RESOURCE_HYDROXIDE],
+  [RESOURCE_CATALYZED_ZYNTHIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_ZYNTHIUM_ACID],
+  [RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_ZYNTHIUM_ALKALIDE],
+  // G chains (Ghodium)
+  [RESOURCE_GHODIUM_HYDRIDE]: [RESOURCE_GHODIUM, RESOURCE_HYDROGEN],
+  [RESOURCE_GHODIUM_OXIDE]: [RESOURCE_GHODIUM, RESOURCE_OXYGEN],
+  [RESOURCE_GHODIUM_ACID]: [RESOURCE_GHODIUM_HYDRIDE, RESOURCE_HYDROXIDE],
+  [RESOURCE_GHODIUM_ALKALIDE]: [RESOURCE_GHODIUM_OXIDE, RESOURCE_HYDROXIDE],
   [RESOURCE_CATALYZED_GHODIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_GHODIUM_ACID],
+  [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_GHODIUM_ALKALIDE],
 };
 
 const PROCESS_ORDER: ResourceConstant[] = [
+  // T3 products (catalyzed)
   RESOURCE_CATALYZED_UTRIUM_ACID,
   RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+  RESOURCE_CATALYZED_KEANIUM_ACID,
+  RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+  RESOURCE_CATALYZED_LEMERGIUM_ACID,
   RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
-  RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+  RESOURCE_CATALYZED_ZYNTHIUM_ACID,
+  RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
   RESOURCE_CATALYZED_GHODIUM_ACID,
+  RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+  // T2 intermediates
   RESOURCE_UTRIUM_ACID,
   RESOURCE_UTRIUM_ALKALIDE,
+  RESOURCE_KEANIUM_ACID,
+  RESOURCE_KEANIUM_ALKALIDE,
+  RESOURCE_LEMERGIUM_ACID,
   RESOURCE_LEMERGIUM_ALKALIDE,
+  RESOURCE_ZYNTHIUM_ACID,
+  RESOURCE_ZYNTHIUM_ALKALIDE,
   RESOURCE_GHODIUM_ACID,
   RESOURCE_GHODIUM_ALKALIDE,
+  // T1 intermediates
   RESOURCE_UTRIUM_HYDRIDE,
   RESOURCE_UTRIUM_OXIDE,
+  RESOURCE_KEANIUM_HYDRIDE,
+  RESOURCE_KEANIUM_OXIDE,
+  RESOURCE_LEMERGIUM_HYDRIDE,
   RESOURCE_LEMERGIUM_OXIDE,
+  RESOURCE_ZYNTHIUM_HYDRIDE,
+  RESOURCE_ZYNTHIUM_OXIDE,
   RESOURCE_GHODIUM_HYDRIDE,
   RESOURCE_GHODIUM_OXIDE,
+  // Base intermediates
   RESOURCE_GHODIUM,
   RESOURCE_HYDROXIDE,
   RESOURCE_ZYNTHIUM_KEANITE,
@@ -103,9 +175,14 @@ const PROCESS_ORDER: ResourceConstant[] = [
 const T3_TARGETS: ResourceConstant[] = [
   RESOURCE_CATALYZED_UTRIUM_ACID,
   RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+  RESOURCE_CATALYZED_KEANIUM_ACID,
+  RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+  RESOURCE_CATALYZED_LEMERGIUM_ACID,
   RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
-  RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+  RESOURCE_CATALYZED_ZYNTHIUM_ACID,
+  RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
   RESOURCE_CATALYZED_GHODIUM_ACID,
+  RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
 ];
 
 const BASE_MINERALS: ResourceConstant[] = [
@@ -125,12 +202,22 @@ const INTERMEDIATE_COMPOUNDS: ResourceConstant[] = [
   RESOURCE_GHODIUM,
   RESOURCE_UTRIUM_HYDRIDE,
   RESOURCE_UTRIUM_OXIDE,
+  RESOURCE_KEANIUM_HYDRIDE,
+  RESOURCE_KEANIUM_OXIDE,
+  RESOURCE_LEMERGIUM_HYDRIDE,
   RESOURCE_LEMERGIUM_OXIDE,
+  RESOURCE_ZYNTHIUM_HYDRIDE,
+  RESOURCE_ZYNTHIUM_OXIDE,
   RESOURCE_GHODIUM_HYDRIDE,
   RESOURCE_GHODIUM_OXIDE,
   RESOURCE_UTRIUM_ACID,
   RESOURCE_UTRIUM_ALKALIDE,
+  RESOURCE_KEANIUM_ACID,
+  RESOURCE_KEANIUM_ALKALIDE,
+  RESOURCE_LEMERGIUM_ACID,
   RESOURCE_LEMERGIUM_ALKALIDE,
+  RESOURCE_ZYNTHIUM_ACID,
+  RESOURCE_ZYNTHIUM_ALKALIDE,
   RESOURCE_GHODIUM_ALKALIDE,
   RESOURCE_GHODIUM_ACID,
 ];
@@ -178,25 +265,44 @@ export function planHubChains(
   }
 
   const OUTPUT_ORDER: ResourceConstant[] = [
+    // Base intermediates
     RESOURCE_HYDROXIDE,
     RESOURCE_ZYNTHIUM_KEANITE,
     RESOURCE_UTRIUM_LEMERGITE,
     RESOURCE_GHODIUM,
+    // T1 intermediates
     RESOURCE_UTRIUM_HYDRIDE,
     RESOURCE_UTRIUM_OXIDE,
+    RESOURCE_KEANIUM_HYDRIDE,
+    RESOURCE_KEANIUM_OXIDE,
+    RESOURCE_LEMERGIUM_HYDRIDE,
     RESOURCE_LEMERGIUM_OXIDE,
+    RESOURCE_ZYNTHIUM_HYDRIDE,
+    RESOURCE_ZYNTHIUM_OXIDE,
     RESOURCE_GHODIUM_HYDRIDE,
     RESOURCE_GHODIUM_OXIDE,
+    // T2 intermediates
     RESOURCE_UTRIUM_ACID,
     RESOURCE_UTRIUM_ALKALIDE,
+    RESOURCE_KEANIUM_ACID,
+    RESOURCE_KEANIUM_ALKALIDE,
+    RESOURCE_LEMERGIUM_ACID,
     RESOURCE_LEMERGIUM_ALKALIDE,
+    RESOURCE_ZYNTHIUM_ACID,
+    RESOURCE_ZYNTHIUM_ALKALIDE,
     RESOURCE_GHODIUM_ALKALIDE,
     RESOURCE_GHODIUM_ACID,
+    // T3 products
     RESOURCE_CATALYZED_UTRIUM_ACID,
     RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+    RESOURCE_CATALYZED_KEANIUM_ACID,
+    RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+    RESOURCE_CATALYZED_LEMERGIUM_ACID,
     RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
-    RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+    RESOURCE_CATALYZED_ZYNTHIUM_ACID,
+    RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
     RESOURCE_CATALYZED_GHODIUM_ACID,
+    RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
   ];
 
   const steps: ChainStep[] = [];
@@ -354,9 +460,10 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
     }
   }
 
+  const hubReservePerCompound = cfg.hubReservePerCompound ?? 20000;
   const hubRemaining: Record<string, number> = {};
   for (const t3 of targetCompounds) {
-    hubRemaining[t3] = Math.max(0, (hubT3Available[t3] || 0) - (hubPendingOutgoing[t3] || 0));
+    hubRemaining[t3] = Math.max(0, (hubT3Available[t3] || 0) - (hubPendingOutgoing[t3] || 0) - hubReservePerCompound);
   }
 
   const myRooms = getTickContextService().getMyRooms();
@@ -382,19 +489,7 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
       const satTerminal = satellite.terminal!.store as unknown as Record<string, number>;
       const current = (satStorage[t3] || 0) + (satTerminal[t3] || 0);
 
-      let pendingIncoming = 0;
-      for (const task of Object.values(taskStore)) {
-        if (
-          task.status === "pending" &&
-          task.toRoomName === satellite.name &&
-          task.resource === t3 &&
-          task.reason?.startsWith("hub:export:")
-        ) {
-          pendingIncoming += task.remainingAmount;
-        }
-      }
-
-      const effectiveTotal = current + pendingIncoming;
+      const effectiveTotal = current;
       if (effectiveTotal >= reservePerRoom) continue;
 
       const shortage = reservePerRoom - effectiveTotal;
@@ -473,11 +568,59 @@ export function clearHubSynthesisReactions(hubRoomName: string): void {
   }
 }
 
+function computeTotalSatelliteDeficit(
+  cfg: NonNullable<Memory["cfg"]>["hub"],
+  targetCompounds: ResourceConstant[],
+): number {
+  const reservePerRoom = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
+  const taskStore = ensureResourceTransferTaskStore();
+  const myRooms = getTickContextService().getMyRooms();
+  const satellites = myRooms.filter(
+    (room) =>
+      room.name !== cfg.hubRoomName &&
+      room.controller?.my &&
+      room.storage &&
+      room.terminal,
+  );
+
+  let totalDeficit = 0;
+  for (const satellite of satellites) {
+    for (const t3 of targetCompounds) {
+      const satStorage = satellite.storage!.store as unknown as Record<string, number>;
+      const satTerminal = satellite.terminal!.store as unknown as Record<string, number>;
+      const current = (satStorage[t3] || 0) + (satTerminal[t3] || 0);
+
+      // Count pending incoming for this satellite+resource
+      let pendingIncoming = 0;
+      for (const task of Object.values(taskStore)) {
+        if (
+          task.status === "pending" &&
+          task.toRoomName === satellite.name &&
+          task.resource === t3 &&
+          task.reason?.startsWith("hub:export:")
+        ) {
+          pendingIncoming += task.remainingAmount;
+        }
+      }
+
+      const effectiveTotal = current + pendingIncoming;
+      const deficit = Math.max(0, reservePerRoom - effectiveTotal);
+      totalDeficit += deficit;
+    }
+  }
+  return totalDeficit;
+}
+
 export function runHubPlanner(): void {
-  const cfg = Memory.cfg?.hub;
+  let cfg = Memory.cfg?.hub;
   if (cfg?.enabled !== true || !cfg.hubRoomName) {
     if (cfg?.hubRoomName) clearHubSynthesisReactions(cfg.hubRoomName);
     return;
+  }
+
+  cfg = normalizeHubConfig(cfg);
+  if (cfg !== Memory.cfg?.hub) {
+    Memory.cfg!.hub = cfg;
   }
 
   const rt = Memory.runtime?.hub;
@@ -558,7 +701,12 @@ export function runHubPlanner(): void {
     }
   }
 
-  const result = planHubChains(hubInventory, incomingResources, cfg.reservePerRoom || 1000);
+  const hubReservePerCompound = cfg.hubReservePerCompound ?? 20000;
+  const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : DEFAULT_TARGET_COMPOUNDS;
+  const satelliteDeficit = computeTotalSatelliteDeficit(cfg, targetCompounds);
+  const chainTarget = hubReservePerCompound + satelliteDeficit;
+
+  const result = planHubChains(hubInventory, incomingResources, chainTarget);
 
   const importActions = planHubImports(cfg);
 

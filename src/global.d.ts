@@ -349,6 +349,7 @@ declare global {
         hubRoomName?: string;
         planInterval?: number;
         reservePerRoom?: number;
+        hubReservePerCompound?: number;
         targetCompounds?: ResourceConstant[];
         storagePauseFreeCapacity?: number;
         surplusThreshold?: number;
