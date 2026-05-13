@@ -2562,3 +2562,149 @@ describe("executeTransferTasks below-min blocked tasks", () => {
     expect(getIncomingResourceTransferAmount(receiver.name, RESOURCE_KEANIUM)).toBe(0);
   });
 });
+
+describe("terminal feed respects TERMINAL_TOTAL_STORAGE_CAP", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    resetRuntimeServices();
+    Game.time = 10;
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+        market: {
+          enabled: true,
+          nativeMineralAutoSellThreshold: 10_000,
+          minDealAmount: 1_000,
+          maxDealAmount: 10_000,
+        },
+      },
+    };
+    Memory.data = undefined;
+    Memory.runtime = undefined;
+    Memory.rooms = {};
+    Game.rooms = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: jest.fn(() => 0),
+      getAllOrders: jest.fn(() => []),
+      deal: jest.fn(() => OK),
+    };
+  });
+
+  it("caps native mineral feed when terminal total is near 250k", () => {
+    // Native X room, storage has 223k X, terminal has 249,500 total (of other minerals, 0 X)
+    // Auto-sell target = min(223k surplus, 10k maxDeal) = 10k
+    // But feedCapacity = 250,000 - 249,500 = 500
+    // Feed should be capped to 500 X, no offload
+    const room = createRoom({
+      name: "WFC1",
+      nativeMineralType: RESOURCE_HYDROGEN,
+      hasExtractor: true,
+      storageResources: { [RESOURCE_HYDROGEN]: 223_000, [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_KEANIUM]: 249_500 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const feedKey = `resourceControl:terminal_feed:${room.name}:${RESOURCE_HYDROGEN}`;
+    const offloadKey = `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`;
+    // Feed exists but is capped to at most 500
+    expect(tasks[feedKey]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 500 }],
+    });
+    // No offload of H (terminal total 249,500 < 250,000)
+    expect(tasks[offloadKey]).toBeUndefined();
+  });
+
+  it("produces no native mineral feed when terminal total is exactly 250k", () => {
+    // Terminal total exactly 250,000: feedCapacity = 0, no native X feed, no X offload
+    const room = createRoom({
+      name: "WFC2",
+      nativeMineralType: RESOURCE_HYDROGEN,
+      hasExtractor: true,
+      storageResources: { [RESOURCE_HYDROGEN]: 223_000, [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_KEANIUM]: 250_000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const feedKey = `resourceControl:terminal_feed:${room.name}:${RESOURCE_HYDROGEN}`;
+    const offloadKey = `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`;
+    expect(tasks[feedKey]).toBeUndefined();
+    expect(tasks[offloadKey]).toBeUndefined();
+  });
+
+  it("native mineral feed works when terminal total well under 250k", () => {
+    // Terminal total 240,000: feedCapacity = 10,000
+    // Auto-sell target = 10k, which fits within feedCapacity
+    const room = createRoom({
+      name: "WFC3",
+      nativeMineralType: RESOURCE_HYDROGEN,
+      hasExtractor: true,
+      storageResources: { [RESOURCE_HYDROGEN]: 223_000, [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_KEANIUM]: 240_000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const feedKey = `resourceControl:terminal_feed:${room.name}:${RESOURCE_HYDROGEN}`;
+    expect(tasks[feedKey]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN }],
+    });
+    // Amount should be full 10k since feedCapacity = 10k
+    expect(tasks[feedKey].steps[0].amount).toBe(10_000);
+  });
+
+  it("pending transfer feed still works when feedCapacity is available", () => {
+    // Terminal total 240,000: feedCapacity = 10,000
+    // Pending transfer for K needs 5k feed — should work
+    const room = createRoom({
+      name: "WFC4",
+      storageResources: { [RESOURCE_KEANIUM]: 20_000, [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_HYDROGEN]: 240_000 },
+    });
+    const receiver = createRoom({ name: "WFC4B" });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(room.name, receiver.name, RESOURCE_KEANIUM, 5_000, "test");
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const feedKey = `resourceControl:terminal_feed:${room.name}:${RESOURCE_KEANIUM}`;
+    expect(tasks[feedKey]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_KEANIUM, amount: 5_000 }],
+    });
+  });
+
+  it("pending transfer feed is capped when feedCapacity is limited", () => {
+    // Terminal total 248,000: feedCapacity = 2,000
+    // Pending transfer for K needs 5k feed, but only 2k capacity available
+    const room = createRoom({
+      name: "WFC5",
+      storageResources: { [RESOURCE_KEANIUM]: 20_000, [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_HYDROGEN]: 248_000 },
+    });
+    const receiver = createRoom({ name: "WFC5B" });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(room.name, receiver.name, RESOURCE_KEANIUM, 5_000, "test");
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    const feedKey = `resourceControl:terminal_feed:${room.name}:${RESOURCE_KEANIUM}`;
+    expect(tasks[feedKey]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_KEANIUM, amount: 2_000 }],
+    });
+  });
+});

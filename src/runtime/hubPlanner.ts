@@ -456,6 +456,7 @@ export function writeSynthesisConfig(
     {
       product: nextStep.product,
       targetAmount: nextStep.targetAmount,
+      batchSize: Math.min(3000, Math.max(5, Math.ceil(nextStep.targetAmount / 5) * 5)),
       donorRoomNames: [],
     },
   ];

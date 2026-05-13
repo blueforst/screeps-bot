@@ -2082,3 +2082,142 @@ describe("runHubPlanner – out-of-cadence regression", () => {
     expect(Memory.runtime.hub.status).toBe("idle");
   });
 });
+
+describe("hub chain advancement after product unload", () => {
+  const PLAN_INTERVAL = 50;
+  const UO = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
+  const UHO2 = RESOURCE_UTRIUM_ALKALIDE as ResourceConstant;
+  const XUHO2 = RESOURCE_CATALYZED_UTRIUM_ALKALIDE as ResourceConstant;
+
+  function setupHubRoomForUOChain(
+    storageResources: Record<string, number>,
+  ): { room: Room; storageEntries: Record<string, number> } {
+    const storageEntries: Record<string, number> = {
+      [RESOURCE_ENERGY]: 200000,
+      ...storageResources,
+    };
+
+    const storage = {
+      id: "hub-storage",
+      structureType: STRUCTURE_STORAGE,
+      store: {
+        ...storageEntries,
+        getUsedCapacity: (resource?: string) => {
+          if (resource) return storageEntries[resource] || 0;
+          return Object.values(storageEntries).reduce((a: number, b: number) => a + b, 0);
+        },
+        getFreeCapacity: () => 500000,
+      },
+    };
+
+    const terminal = {
+      id: "hub-terminal",
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        [RESOURCE_ENERGY]: 20000,
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300000,
+        cooldown: 0,
+      },
+    };
+
+    const labs: Structure[] = [];
+    for (let i = 0; i < 3; i++) {
+      labs.push({ id: `hub-lab-${i}`, structureType: STRUCTURE_LAB } as Structure);
+    }
+
+    const room = {
+      name: HUB_ROOM,
+      controller: { my: true, level: 8 },
+      storage,
+      terminal,
+      find: (
+        type: FindConstant,
+        opts?: { filter?: ((s: Structure) => boolean) | { structureType: string } },
+      ) => {
+        if (type === FIND_MY_STRUCTURES) {
+          if (!opts?.filter) return labs;
+          if (typeof opts.filter === "function") return labs.filter(opts.filter);
+          const targetType = (opts.filter as { structureType: string }).structureType;
+          return labs.filter((s) => s.structureType === targetType);
+        }
+        return [];
+      },
+    } as unknown as Room;
+
+    Game.rooms[HUB_ROOM] = room;
+    return { room, storageEntries };
+  }
+
+  beforeEach(() => {
+    Game.time = PLAN_INTERVAL;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: PLAN_INTERVAL,
+        reservePerRoom: 1000,
+        targetCompounds: [XUHO2],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = { hub: getDefaultHubRuntime() };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("writes UO as active step when OH through UH are met but UO is not", () => {
+    setupHubRoomForUOChain({
+      ...ALL_BASE_MINERALS,
+      [RESOURCE_HYDROXIDE]: 5000,
+      [RESOURCE_ZYNTHIUM_KEANITE]: 2000,
+      [RESOURCE_UTRIUM_LEMERGITE]: 2000,
+      [RESOURCE_GHODIUM]: 2000,
+      [RESOURCE_UTRIUM_HYDRIDE]: 1000,
+    });
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub!.status).toBe("importing");
+    expect(Memory.runtime.hub!.activeProduct).toBe(UO);
+
+    const roomCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(roomCfg.reactions).toHaveLength(1);
+    expect(roomCfg.reactions![0].product).toBe(UO);
+  });
+
+  it("advances past UO after product unload makes UO visible in storage", () => {
+    const { storageEntries } = setupHubRoomForUOChain({
+      ...ALL_BASE_MINERALS,
+      [RESOURCE_HYDROXIDE]: 5000,
+      [RESOURCE_ZYNTHIUM_KEANITE]: 2000,
+      [RESOURCE_UTRIUM_LEMERGITE]: 2000,
+      [RESOURCE_GHODIUM]: 2000,
+      [RESOURCE_UTRIUM_HYDRIDE]: 1000,
+    });
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub!.activeProduct).toBe(UO);
+
+    storageEntries[UO] = 1000;
+    const storageStore = Game.rooms[HUB_ROOM].storage!.store as unknown as Record<string, number>;
+    storageStore[UO] = 1000;
+    Game.time = PLAN_INTERVAL + 1;
+    Memory.runtime.hub!.needsPlan = true;
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub!.status).toBe("importing");
+    expect(Memory.runtime.hub!.activeProduct).not.toBe(UO);
+    expect(Memory.runtime.hub!.activeProduct).toBe(RESOURCE_LEMERGIUM_OXIDE as ResourceConstant);
+
+    const roomCfg = Memory.cfg.synthesisControl!.rooms![HUB_ROOM];
+    expect(roomCfg.reactions).toHaveLength(1);
+    expect(roomCfg.reactions![0].product).toBe(RESOURCE_LEMERGIUM_OXIDE as ResourceConstant);
+  });
+});

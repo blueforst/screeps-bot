@@ -2130,6 +2130,76 @@ describe("carrierRole lab logistics", () => {
     expect(creep.transfer).toHaveBeenCalledWith(terminal, RESOURCE_UTRIUM);
     expect(done).toBe(true);
   });
+
+  it("withdraws product from lab and transfers to storage via lab_product_unload task", () => {
+    const room = createRoom("W8N1");
+    const storage = room.storage as StructureStorage;
+    const lab = {
+      id: "lab-product-unload-1",
+      structureType: STRUCTURE_LAB,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === RESOURCE_UTRIUM_OXIDE as ResourceConstant) return 110;
+          return resource === undefined ? 110 : 0;
+        },
+        getFreeCapacity: () => 2890,
+      },
+    } as unknown as StructureLab;
+    let carried = 0;
+    const store: Record<string, unknown> & { getUsedCapacity: (r?: ResourceConstant) => number; getFreeCapacity: () => number } = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carried;
+        return resource === (RESOURCE_UTRIUM_OXIDE as ResourceConstant) ? carried : 0;
+      },
+      getFreeCapacity: () => 600,
+    };
+    const creep = {
+      ...createCreep(room),
+      memory: {},
+      store,
+      withdraw: jest.fn(() => {
+        carried = 110;
+        (store as any)[RESOURCE_UTRIUM_OXIDE] = 110;
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        carried = 0;
+        delete (store as any)[RESOURCE_UTRIUM_OXIDE];
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [{
+      id: "synthesis:lab_product_unload:W8N1:UO",
+      type: "lab_product_unload",
+      priority: 180,
+      steps: [{
+        id: "UO:lab-product-unload-1->storage",
+        resource: RESOURCE_UTRIUM_OXIDE as ResourceConstant,
+        fromKind: "lab",
+        toKind: "storage",
+        fromId: lab.id,
+        toId: storage.id,
+        amount: 110,
+      }],
+    }]);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === lab.id) return lab;
+      if (id === storage.id) return storage;
+      if (id === (room.terminal as StructureTerminal).id) return room.terminal;
+      return null;
+    }) as Game["getObjectById"];
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(lab, RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(switched).toBe(true);
+
+    const done = carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM_OXIDE as ResourceConstant);
+    expect(done).toBe(true);
+  });
 });
 
 describe("storage withdrawal gate for spawn/extension supply", () => {

@@ -917,7 +917,12 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: 
       }
     }
 
-    // Mineral feed drafts — skip resources that already have an overflow offload
+    const offloadTotal = drafts.reduce(
+      (sum, d) => (d.type === "terminal_offload" ? sum + d.steps.reduce((s, step) => s + step.amount, 0) : sum),
+      0,
+    );
+    let feedCapacity = Math.max(0, TERMINAL_TOTAL_STORAGE_CAP - (snapshot.terminal.store.getUsedCapacity() - offloadTotal));
+
     const desiredFeedByResource = new Map<ResourceConstant, number>();
     const roomPending = pendingByRoom.get(snapshot.roomName);
     if (roomPending) {
@@ -937,11 +942,16 @@ function syncTerminalFeedTasks(snapshots: ResourceControlSnapshot[], marketCfg: 
       }
     }
 
-    drafts.push(
-      ...Array.from(desiredFeedByResource.entries())
-        .map(([resource, target]) => createTerminalFeedTask(snapshot, resource, target))
-        .filter((draft): draft is CarrierTaskDraft => !!draft),
-    );
+    for (const [resource, target] of desiredFeedByResource.entries()) {
+      if (feedCapacity <= 0) break;
+      const cappedTarget = Math.min(target, feedCapacity);
+      const draft = createTerminalFeedTask(snapshot, resource, cappedTarget);
+      if (draft) {
+        const feedAmount = draft.steps.reduce((s, step) => s + step.amount, 0);
+        feedCapacity -= feedAmount;
+        drafts.push(draft);
+      }
+    }
 
     replaceCarrierTasksForProducerRoom(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, snapshot.roomName, drafts);
     if (drafts.length > 0) {
