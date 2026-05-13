@@ -15,6 +15,9 @@ export interface CreepAssignmentState {
   synthesisCarrierPendingPickupTick?: number;
   synthesisCarrierPendingStepId?: string;
   synthesisCarrierPendingDeliveryTick?: number;
+  synthesisCarrierPendingFromId?: string;
+  synthesisCarrierPendingToId?: string;
+  synthesisCarrierPendingResource?: ResourceConstant;
 }
 
 type AssignmentStateStore = Record<string, CreepAssignmentState>;

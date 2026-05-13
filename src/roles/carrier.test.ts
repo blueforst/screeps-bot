@@ -1942,6 +1942,61 @@ describe("carrierRole lab logistics", () => {
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("synth:lab_supply:W7N2:OH");
   });
 
+  it("delivers reagent to lab via snapshot when board is cleared after pickup (lab_supply)", () => {
+    const room = createRoom("W8N1");
+    const terminal = room.terminal as StructureTerminal;
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_OXYGEN ? 500 : 0),
+      getFreeCapacity: () => 10000,
+    } as StoreDefinition;
+    const lab = {
+      id: "lab-snapshot-1",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+    let carried = 100;
+    const store = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carried;
+        return resource === RESOURCE_OXYGEN ? carried : 0;
+      },
+      getFreeCapacity: () => 800 - carried,
+    };
+    const creep = {
+      ...createCreep(room),
+      store,
+      transfer: jest.fn(() => {
+        carried = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+
+    const state = ensureCreepAssignmentState(creep.name);
+    state.synthesisCarrierTaskId = "synth:lab_supply:W8N1:H2O2";
+    state.synthesisCarrierPendingPickupTick = Game.time - 1;
+    state.synthesisCarrierPendingStepId = "O:term->lab";
+    state.synthesisCarrierPendingFromId = terminal.id;
+    state.synthesisCarrierPendingToId = lab.id;
+    state.synthesisCarrierPendingResource = RESOURCE_OXYGEN;
+
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, []);
+
+    const done = carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(lab, RESOURCE_OXYGEN);
+    expect(done).toBe(true);
+  });
+
   it("cleans contaminated lab and deposits to terminal (lab_cleanup)", () => {
     const room = createRoom("W7N3");
     const terminal = room.terminal as StructureTerminal;

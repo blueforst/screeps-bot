@@ -359,6 +359,9 @@ function clearSynthesisCarrierTaskPlan(creep: Creep): void {
   delete state.synthesisCarrierPendingPickupTick;
   delete state.synthesisCarrierPendingStepId;
   delete state.synthesisCarrierPendingDeliveryTick;
+  delete state.synthesisCarrierPendingFromId;
+  delete state.synthesisCarrierPendingToId;
+  delete state.synthesisCarrierPendingResource;
 }
 
 function getAssignedSynthesisCarrierTask(creep: Creep): CarrierTask | null {
@@ -491,6 +494,9 @@ function pickupSynthesisCarrierResource(creep: Creep): { picked: boolean; outOfR
   const state = ensureCreepAssignmentState(creep.name);
   state.synthesisCarrierPendingPickupTick = Game.time;
   state.synthesisCarrierPendingStepId = assignment.step.id;
+  state.synthesisCarrierPendingFromId = assignment.step.fromId;
+  state.synthesisCarrierPendingToId = assignment.step.toId;
+  state.synthesisCarrierPendingResource = assignment.step.resource;
   return {
     picked: creep.store.getUsedCapacity() > 0,
     outOfRange: false,
@@ -607,6 +613,37 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
       delete state.synthesisCarrierPendingPickupTick;
       delete state.synthesisCarrierPendingStepId;
     } else {
+      // Board was refreshed and the original task/step is gone.
+      // Fall back to snapshot fields captured at pickup time.
+      const snapshotToId = state.synthesisCarrierPendingToId;
+      const snapshotResource = state.synthesisCarrierPendingResource;
+      if (snapshotToId && snapshotResource) {
+        const snapshotTarget = resolveTaskStructure(snapshotToId);
+        if (snapshotTarget && creep.store.getUsedCapacity(snapshotResource) > 0) {
+          const code = measureCreepIntent(() => creep.transfer(snapshotTarget, snapshotResource));
+          if (code === ERR_NOT_IN_RANGE) {
+            moveToTarget(creep, snapshotTarget);
+            return true;
+          }
+          if (code === OK) {
+            delete state.synthesisCarrierPendingPickupTick;
+            delete state.synthesisCarrierPendingStepId;
+            delete state.synthesisCarrierPendingFromId;
+            delete state.synthesisCarrierPendingToId;
+            delete state.synthesisCarrierPendingResource;
+            if (creep.store.getUsedCapacity() === 0) {
+              clearSynthesisCarrierTaskPlan(creep);
+            } else {
+              state.synthesisCarrierPendingDeliveryTick = Game.time;
+            }
+            return true;
+          }
+          if (code === ERR_NOT_ENOUGH_RESOURCES) {
+            moveToTarget(creep, snapshotTarget);
+            return true;
+          }
+        }
+      }
       delete state.synthesisCarrierPendingPickupTick;
       delete state.synthesisCarrierPendingStepId;
     }
