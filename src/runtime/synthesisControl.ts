@@ -771,7 +771,7 @@ function generateProductUnloadTask(
       continue;
     }
     const amount = lab.store.getUsedCapacity(product);
-    if (amount <= 0) {
+    if (amount < 700) {
       continue;
     }
 
@@ -820,7 +820,7 @@ function generateStrandedProductUnloadTask(
     const mineralType = lab.mineralType;
     if (!mineralType) continue;
     const amount = lab.store.getUsedCapacity(mineralType);
-    if (amount <= 0) continue;
+    if (amount < 700) continue;
 
     const target = resolveProductUnloadTargetStructure(room, mineralType);
     if (!target) continue;

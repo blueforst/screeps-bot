@@ -742,7 +742,7 @@ describe("lab_product_unload task generation", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -798,7 +798,7 @@ describe("lab_product_unload task generation", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -857,7 +857,7 @@ describe("lab_product_unload task generation", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1040,7 +1040,7 @@ describe("E4N58 stall regression", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1104,7 +1104,7 @@ describe("E4N58 stall regression", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1155,7 +1155,7 @@ describe("E4N58 stall regression", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1198,7 +1198,7 @@ describe("E4N58 stall regression", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1255,7 +1255,7 @@ describe("E4N58 stall regression", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1353,7 +1353,7 @@ describe("E4N58 stall regression", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 0;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1381,7 +1381,7 @@ describe("E4N58 stall regression", () => {
     expect(unloadTask!.steps[0].fromId).toBe(labs[2].id);
     expect(unloadTask!.steps[0].fromKind).toBe("lab");
     expect(unloadTask!.steps[0].toKind).toBe("storage");
-    expect(unloadTask!.steps[0].amount).toBe(110);
+    expect(unloadTask!.steps[0].amount).toBe(1000);
   });
 
   it("stranded recovery: empty product labs with idle/no-activeProduct → no carrier task, remains idle", () => {
@@ -1465,7 +1465,7 @@ describe("E4N58 stall regression", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 0;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 50;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1489,7 +1489,7 @@ describe("E4N58 stall regression", () => {
     expect(unloadTask).toBeDefined();
     expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
     expect(unloadTask!.steps[0].fromId).toBe(labs[2].id);
-    expect(unloadTask!.steps[0].amount).toBe(50);
+    expect(unloadTask!.steps[0].amount).toBe(1000);
   });
 
   it("stranded recovery: normal active-plan path still produces supply/product-unload without invoking stranded recovery", () => {
@@ -1521,7 +1521,7 @@ describe("E4N58 stall regression", () => {
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1635,13 +1635,13 @@ describe("batch-complete unload gate (Bug A regression)", () => {
       storageResources: { [RESOURCE_ENERGY]: 500000 },
     });
 
-    // Product lab has enough to meet target (110 > 100)
+    // Product lab has enough to meet target (1000 > 100)
     labs[0].mineralType = RESOURCE_UTRIUM;
     labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
@@ -1655,7 +1655,7 @@ describe("batch-complete unload gate (Bug A regression)", () => {
 
     runSynthesisControl();
 
-    // chooseActivePlan returns null (productCurrent=110 >= 100), so null-plan branch handles unload
+    // chooseActivePlan returns null (productCurrent=1000 >= 100), so null-plan branch handles unload
     const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
     expect(roomState.stage).toBe("unloading");
 
@@ -1665,7 +1665,7 @@ describe("batch-complete unload gate (Bug A regression)", () => {
     );
     expect(unloadTask).toBeDefined();
     expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
-    expect(unloadTask!.steps[0].amount).toBe(110);
+    expect(unloadTask!.steps[0].amount).toBe(1000);
   });
 
   it("does not generate product unload during acquiring stage", () => {
@@ -1875,13 +1875,13 @@ describe("reagent lab cleanup when idle (Bug B regression)", () => {
     });
 
     // Product lab has product AND reagent labs have residue
-    // UO total = 110 (lab) >= targetAmount 100 → chooseActivePlan returns null
+    // UO total = 1000 (lab) >= targetAmount 100 → chooseActivePlan returns null
     labs[0].mineralType = RESOURCE_UTRIUM;
     labs[0]._resourceMap[RESOURCE_UTRIUM] = 45;
     labs[1].mineralType = RESOURCE_OXYGEN;
     labs[1]._resourceMap[RESOURCE_OXYGEN] = 735;
     labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 110;
+    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
 
     const labById: Record<string, any> = {
       [labs[0].id]: labs[0],
