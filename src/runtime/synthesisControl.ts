@@ -1173,6 +1173,14 @@ function handleRoom(
       productLabIds: topology.productLabs.map((lab) => lab.id),
     };
 
+    if (!hasAnyCleanup && roomState.stage === "unloading" && Memory.cfg.hub?.hubRoomName === room.name) {
+      if (!Memory.runtime.hub) {
+        Memory.runtime.hub = { needsPlan: true, updatedAt: Game.time };
+      } else {
+        Memory.runtime.hub.needsPlan = true;
+      }
+    }
+
     // Signal hub planner when an actively synthesizing room runs out of reactions.
     // Do NOT signal during product-unload (stage="unloading"): hubPlanner uses
     // storage+terminal inventory, which hasn't changed yet — signalling would
