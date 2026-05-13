@@ -2053,4 +2053,138 @@ describe("in-flight synthesis cargo suppresses duplicate supply demand", () => {
     );
     expect(oxygenStep).toBeDefined();
   });
+
+  it("counts cargo from live creeps only — dead-creep assignment state does NOT suppress demand", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    setRoomStage("loading", {
+      activeProduct: RESOURCE_HYDROXIDE,
+      reagentA: RESOURCE_OXYGEN,
+      reagentB: RESOURCE_HYDROGEN,
+      targetAmount: 5000,
+      batchSize: 500,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_OXYGEN]: 1000,
+        [RESOURCE_HYDROGEN]: 1000,
+      },
+    });
+
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap = {};
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap = {};
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    // Assignment state exists for a dead creep (NOT in Game.creeps)
+    const deadState = ensureCreepAssignmentState("dead-carrier-1");
+    deadState.synthesisCarrierPendingToId = labs[0].id;
+    deadState.synthesisCarrierPendingResource = RESOURCE_OXYGEN;
+
+    // Game.creeps is empty — the carrier is dead
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const supplyTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_supply",
+    );
+
+    expect(supplyTask).toBeDefined();
+    const oxygenStep = supplyTask!.steps.find(
+      (s: any) => s.resource === RESOURCE_OXYGEN && s.toId === labs[0].id,
+    );
+    expect(oxygenStep).toBeDefined();
+  });
+
+  it("partial top-up with in-flight cargo: deficit < LAB_REACTION_AMOUNT still generates step when effectiveCurrentAmount > 0", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    // Override batchSize to MAX_BATCH_SIZE (3000) so desiredLabAmount = 3000
+    (Memory.cfg!.synthesisControl!.rooms!["W1N1"] as any).batchSize = 3000;
+    setRoomStage("loading", {
+      activeProduct: RESOURCE_HYDROXIDE,
+      reagentA: RESOURCE_OXYGEN,
+      reagentB: RESOURCE_HYDROGEN,
+      targetAmount: 5000,
+      batchSize: 3000,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_OXYGEN]: 200,
+        [RESOURCE_HYDROGEN]: 1000,
+      },
+    });
+
+    // Oxygen lab has 2946 — almost full; mutate _resourceMap in-place (store shares the same map)
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 2946;
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+
+    const labById: Record<string, any> = {
+      [labs[0].id]: labs[0],
+      [labs[1].id]: labs[1],
+      [labs[2].id]: labs[2],
+    };
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    // Carrier has 50 oxygen in-flight toward the oxygen lab
+    const carrierStore = createStore({ [RESOURCE_OXYGEN]: 50 });
+    (Game as any).creeps = {
+      "carrier-W1N1-1": {
+        name: "carrier-W1N1-1",
+        store: carrierStore,
+        room,
+      } as unknown as Creep,
+    };
+
+    const carrierState = ensureCreepAssignmentState("carrier-W1N1-1");
+    carrierState.synthesisCarrierPendingToId = labs[0].id;
+    carrierState.synthesisCarrierPendingResource = RESOURCE_OXYGEN;
+
+    // effectiveCurrentAmount = 2946 (lab) + 50 (in-flight) = 2996
+    // desiredLabAmount = min(LAB_MINERAL_CAPACITY=5000, batchSize=3000) = 3000
+    // deficit = 3000 - 2996 = 4 → below LAB_REACTION_AMOUNT (5)
+    // isPartialTopUp: deficit > 0 && deficit < 5 && desiredLabAmount >= 5 && effectiveCurrentAmount > 0 → TRUE
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    const supplyTask = Object.values(carrierTasks).find(
+      (t) => t.type === "lab_supply",
+    );
+
+    const oxygenStep = supplyTask?.steps?.find(
+      (s: any) => s.resource === RESOURCE_OXYGEN && s.toId === labs[0].id,
+    );
+    expect(oxygenStep).toBeDefined();
+    // amount = min(deficit=4, available=200) = 4
+    expect(oxygenStep!.amount).toBe(4);
+  });
 });

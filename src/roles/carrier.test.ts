@@ -1,7 +1,8 @@
 import { carrierRole } from "@/roles/carrier";
-import { clearCarrierTaskBoardForTest, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
+import { runSynthesisControl } from "@/runtime/synthesisControl";
 
 jest.mock("@/roles/energyTargets", () => ({
   getEnergyStoreTarget: jest.fn(),
@@ -2254,6 +2255,252 @@ describe("carrierRole lab logistics", () => {
 
     expect(creep.transfer).toHaveBeenCalledWith(storage, RESOURCE_UTRIUM_OXIDE as ResourceConstant);
     expect(done).toBe(true);
+  });
+
+  it("multi-tick synthesis jitter: carrier pickup → board refresh → delivery stays stable", () => {
+    // ---- Setup room W8N1 with terminal, storage, 3 labs (2 reagent + 1 product) ----
+    const room = createRoom("W8N1", { level: 7 });
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+
+    // Mutable resource maps for terminal and storage
+    const terminalMap: Record<string, number> = { [RESOURCE_OXYGEN]: 1000, [RESOURCE_HYDROGEN]: 1000 };
+    const storageMap: Record<string, number> = { [RESOURCE_ENERGY]: 500000 };
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return Object.values(terminalMap).reduce((s, v) => s + v, 0);
+        return terminalMap[resource] ?? 0;
+      },
+      getFreeCapacity: () => 300000 - Object.values(terminalMap).reduce((s, v) => s + v, 0),
+    } as StoreDefinition;
+    (storage as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return Object.values(storageMap).reduce((s, v) => s + v, 0);
+        return storageMap[resource] ?? 0;
+      },
+      getFreeCapacity: () => 1000000 - Object.values(storageMap).reduce((s, v) => s + v, 0),
+    } as StoreDefinition;
+
+    // Create 3 labs: oxygen reagent, hydrogen reagent, product
+    const oxygenLab = {
+      id: "W8N1-lab-O",
+      structureType: STRUCTURE_LAB,
+      room,
+      pos: { x: 10, y: 10, roomName: room.name, inRangeTo: () => true } as unknown as RoomPosition,
+      store: createStore({} as Record<string, number>),
+      runReaction: jest.fn(() => OK),
+      cooldown: 0,
+      mineralType: undefined,
+    } as unknown as StructureLab;
+    const hydrogenLab = {
+      id: "W8N1-lab-H",
+      structureType: STRUCTURE_LAB,
+      room,
+      pos: { x: 11, y: 10, roomName: room.name, inRangeTo: () => true } as unknown as RoomPosition,
+      store: createStore({} as Record<string, number>),
+      runReaction: jest.fn(() => OK),
+      cooldown: 0,
+      mineralType: undefined,
+    } as unknown as StructureLab;
+    const productLab = {
+      id: "W8N1-lab-product",
+      structureType: STRUCTURE_LAB,
+      room,
+      pos: { x: 10, y: 11, roomName: room.name, inRangeTo: () => true } as unknown as RoomPosition,
+      store: createStore({} as Record<string, number>),
+      runReaction: jest.fn(() => OK),
+      cooldown: 0,
+      mineralType: undefined,
+    } as unknown as StructureLab;
+    const allLabs = [oxygenLab, hydrogenLab, productLab];
+
+    // Mock room.find to return labs
+    (room as any).find = ((type: FindConstant, opts?: { filter?: (structure: Structure) => boolean }) => {
+      if (type === FIND_MY_STRUCTURES) {
+        const filtered = opts?.filter
+          ? allLabs.filter((s: any) => opts.filter!(s as Structure))
+          : allLabs;
+        return filtered;
+      }
+      if (type === FIND_MINERALS) return [];
+      return [];
+    }) as Room["find"];
+
+    // Mock Game.getObjectById to resolve all structures
+    const objectMap: Record<string, any> = {
+      [terminal.id]: terminal,
+      [storage.id]: storage,
+      [oxygenLab.id]: oxygenLab,
+      [hydrogenLab.id]: hydrogenLab,
+      [productLab.id]: productLab,
+    };
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      return objectMap[id] ?? null;
+    }) as Game["getObjectById"];
+
+    // Set synthesis config for OH (hydroxide = oxygen + hydrogen)
+    Memory.cfg = {
+      synthesisControl: {
+        enabled: true,
+        sampleInterval: 100,
+        defaultBatchSize: 500,
+        defaultMaxRunsPerTick: 6,
+        rooms: {
+          W8N1: {
+            enabled: true,
+            batchSize: 500,
+            maxRunsPerTick: 6,
+            donorRoomNames: [],
+            reagentLabIds: [oxygenLab.id, hydrogenLab.id],
+            reactions: [
+              { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
+            ],
+          },
+        },
+      },
+    };
+    Game.rooms["W8N1"] = room;
+    Game.creeps = {};
+
+    // Create mutable carrier store
+    let carriedOxygen = 0;
+    let carriedHydrogen = 0;
+    const carrierStore = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carriedOxygen + carriedHydrogen;
+        if (resource === RESOURCE_OXYGEN) return carriedOxygen;
+        if (resource === RESOURCE_HYDROGEN) return carriedHydrogen;
+        return 0;
+      },
+      getFreeCapacity: () => 800 - carriedOxygen - carriedHydrogen,
+    };
+
+    // Create carrier creep
+    const creep = {
+      ...createCreep(room),
+      name: "carrier-W8N1-1",
+      store: carrierStore,
+      withdraw: jest.fn((_target: any, resource: ResourceConstant) => {
+        if (resource === RESOURCE_OXYGEN) { carriedOxygen = 500; terminalMap[RESOURCE_OXYGEN] -= 500; }
+        if (resource === RESOURCE_HYDROGEN) { carriedHydrogen = 500; terminalMap[RESOURCE_HYDROGEN] -= 500; }
+        return OK;
+      }),
+      transfer: jest.fn((_target: any, resource: ResourceConstant) => {
+        if (resource === RESOURCE_OXYGEN) { carriedOxygen = 0; }
+        if (resource === RESOURCE_HYDROGEN) { carriedHydrogen = 0; }
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    // Helper: make lab store mutable via a resource map
+    function createStore(resourceMap: Record<string, number>) {
+      return {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) return Object.values(resourceMap).reduce((s, v) => s + v, 0);
+          return resourceMap[resource] ?? 0;
+        },
+        getFreeCapacity: () => 3000 - Object.values(resourceMap).reduce((s, v) => s + v, 0),
+      };
+    }
+
+    // Mutable lab resource maps for simulating deliveries
+    const oxygenLabResources: Record<string, number> = {};
+    const hydrogenLabResources: Record<string, number> = {};
+    (oxygenLab as any).store = createStore(oxygenLabResources);
+    (hydrogenLab as any).store = createStore(hydrogenLabResources);
+
+    // =============================================
+    // TICK N (Game.time = 100)
+    // =============================================
+    const baseTime = 100;
+    Game.time = baseTime;
+    // Clear runtime so tick context rebuilds
+    resetRuntimeServices();
+
+    // Run synthesis control — should detect OH needed → enter loading → create lab_supply task
+    runSynthesisControl();
+
+    // Verify board has lab_supply task
+    const tasksN = getCarrierTasksByRoom("W8N1");
+    const supplyTaskN = Object.values(tasksN).find(t => t.type === "lab_supply");
+    expect(supplyTaskN).toBeDefined();
+    // Should have oxygen step targeting the oxygen lab
+    const oxygenStepN = supplyTaskN!.steps.find(s => s.resource === RESOURCE_OXYGEN);
+    expect(oxygenStepN).toBeDefined();
+    expect(oxygenStepN!.toId).toBe(oxygenLab.id);
+
+    // Register carrier in Game.creeps for in-flight detection
+    (Game as any).creeps = { "carrier-W8N1-1": creep };
+
+    // Carrier picks up oxygen from terminal
+    const switched = carrierRole().source?.(creep);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_OXYGEN);
+    expect(switched).toBe(true);
+    expect(carriedOxygen).toBe(500);
+
+    // Verify carrier state has snapshot fields set
+    const stateN = getCreepAssignmentState(creep.name);
+    expect(stateN?.synthesisCarrierTaskId).toBe(supplyTaskN!.id);
+    expect(stateN?.synthesisCarrierPendingToId).toBe(oxygenLab.id);
+    expect(stateN?.synthesisCarrierPendingResource).toBe(RESOURCE_OXYGEN);
+
+    // =============================================
+    // TICK N+1 (Game.time = 101)
+    // This is the CRITICAL jitter tick: synthesisControl refreshes the board
+    // while carrier has in-flight cargo. The oxygen step must NOT be duplicated.
+    // =============================================
+    Game.time = baseTime + 1;
+    resetRuntimeServices();
+
+    runSynthesisControl();
+
+    // Assert: oxygen lab_supply step is NOT duplicated for the oxygen lab
+    // (because carrier has in-flight cargo via snapshot → countInFlightSynthesisCargo returns 500)
+    const tasksN1 = getCarrierTasksByRoom("W8N1");
+    const supplyTaskN1 = Object.values(tasksN1).find(t => t.type === "lab_supply");
+    if (supplyTaskN1) {
+      const oxygenStepN1 = supplyTaskN1.steps.find(s => s.resource === RESOURCE_OXYGEN && s.toId === oxygenLab.id);
+      // The oxygen step should NOT appear — in-flight 500 covers the deficit
+      expect(oxygenStepN1).toBeUndefined();
+    }
+    // If no supply task at all, oxygen was suppressed — also fine.
+
+    // Carrier delivers oxygen to the lab
+    (creep.transfer as jest.Mock).mockClear();
+    const done = carrierRole().target(creep);
+    expect(creep.transfer).toHaveBeenCalledWith(oxygenLab, RESOURCE_OXYGEN);
+    expect(done).toBe(true);
+    expect(carriedOxygen).toBe(0);
+
+    // Simulate the lab receiving the resource
+    oxygenLabResources[RESOURCE_OXYGEN] = 500;
+    (oxygenLab as any).mineralType = RESOURCE_OXYGEN;
+
+    // =============================================
+    // TICK N+2 (Game.time = 102)
+    // Synthesis control refreshes again. Lab now has 500 oxygen.
+    // No duplicate oxygen supply should be created.
+    // =============================================
+    Game.time = baseTime + 2;
+    resetRuntimeServices();
+
+    runSynthesisControl();
+
+    // Assert: room state is stable — no duplicate supply for oxygen
+    const tasksN2 = getCarrierTasksByRoom("W8N1");
+    const supplyTaskN2 = Object.values(tasksN2).find(t => t.type === "lab_supply");
+    if (supplyTaskN2) {
+      const oxygenStepN2 = supplyTaskN2.steps.find(s => s.resource === RESOURCE_OXYGEN && s.toId === oxygenLab.id);
+      // Lab already has 500 oxygen — no new demand
+      expect(oxygenStepN2).toBeUndefined();
+    }
+
+    // Verify room stage is loading or synthesizing (not idle/blocked)
+    const roomState = Memory.runtime?.synthesisControl?.rooms?.["W8N1"];
+    expect(roomState).toBeDefined();
+    expect(roomState!.stage).not.toBe("blocked");
   });
 });
 
