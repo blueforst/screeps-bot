@@ -223,10 +223,6 @@ function normalizeRoomConfig(
     .map((entry) => normalizeReactionPlan(entry, roomCfg, defaultBatchSize))
     .filter((entry): entry is SynthesisReactionPlan => !!entry);
 
-  if (roomCfg.reactions.length === 0) {
-    roomCfg.enabled = false;
-  }
-
   if (roomCfg.reagentLabIds.length > 0 && roomCfg.reagentLabIds.length < 2) {
     roomCfg.enabled = false;
   }

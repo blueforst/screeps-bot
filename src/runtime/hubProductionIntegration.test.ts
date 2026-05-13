@@ -430,3 +430,236 @@ describe("hub production integration – statusHub reflects cleanup error", () =
     });
   });
 });
+
+describe("hub intermediate production recovery", () => {
+  it("partial resources produce intermediate reaction config and synthesisControl is not blocked", () => {
+    // Hub room has H+O but no K/Z — targeting XGHO2 which requires deep chains.
+    // Progressive planner should find OH (hydroxide) as a feasible intermediate.
+    const { room } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+      },
+    });
+    Game.rooms["W1N1"] = room;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE as ResourceConstant],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        activeProduct: "",
+        activeStep: 0,
+        missingResources: [],
+        lastPlanActions: [],
+        needsPlan: true,
+      },
+    };
+
+    Game.time = 0;
+
+    // Step 1: runHubPlanner should find feasible intermediates
+    runHubPlanner();
+
+    // Hub status should NOT be "blocked" — partial resources allow intermediate production
+    expect(Memory.runtime!.hub!.status).not.toBe("blocked");
+    expect(Memory.runtime!.hub!.status).toBe("importing");
+
+    // Synthesis config should be written with enabled:true
+    const roomSynthesisCfg = Memory.cfg?.synthesisControl?.rooms?.["W1N1"];
+    expect(roomSynthesisCfg).toBeDefined();
+    expect(roomSynthesisCfg!.enabled).toBe(true);
+    expect(roomSynthesisCfg!.reactions).toBeDefined();
+    expect(roomSynthesisCfg!.reactions.length).toBeGreaterThanOrEqual(1);
+
+    // First reaction should be a useful intermediate (hydroxide from H+O)
+    const firstReaction = roomSynthesisCfg!.reactions[0];
+    expect(firstReaction.product).toBe(RESOURCE_HYDROXIDE);
+    expect(firstReaction.targetAmount).toBeGreaterThan(0);
+
+    // Step 2: runSynthesisControl should accept the config without blocking
+    Game.time = 1;
+    runSynthesisControl();
+
+    const synthesisRoomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(synthesisRoomState).toBeDefined();
+    expect(synthesisRoomState!.stage).not.toBe("blocked");
+    expect(synthesisRoomState!.lastError).not.toBe("room_config_disabled");
+    // Should be in acquiring or loading stage (has reagents in storage)
+    expect(["acquiring", "loading", "synthesizing"]).toContain(synthesisRoomState!.stage);
+    expect(synthesisRoomState!.activeProduct).toBe(RESOURCE_HYDROXIDE);
+  });
+
+  it("empty reactions after distributing does not create room_config_disabled", () => {
+    // Hub room has all T3 targets already at reserve — planner enters distributing
+    // state with empty reactions. synthesisControl should not block.
+    const { room } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_UTRIUM]: 50000,
+        [RESOURCE_LEMERGIUM]: 50000,
+        [RESOURCE_KEANIUM]: 50000,
+        [RESOURCE_ZYNTHIUM]: 50000,
+        [RESOURCE_CATALYST]: 50000,
+        // All T3 targets already at reserve level
+        [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 50000,
+      },
+    });
+    Game.rooms["W1N1"] = room;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE as ResourceConstant],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        activeProduct: "",
+        activeStep: 0,
+        missingResources: [],
+        lastPlanActions: [],
+        needsPlan: true,
+      },
+    };
+
+    Game.time = 0;
+
+    // runHubPlanner: all targets at reserve → distributing, empty reactions
+    runHubPlanner();
+
+    expect(Memory.runtime!.hub!.status).toBe("distributing");
+    expect(Memory.runtime!.hub!.needsPlan).toBe(false);
+
+    // writeSynthesisConfig does not create a room entry when steps are empty,
+    // so seed the room config with enabled:true and empty reactions to simulate
+    // the post-distributing state that hubPlanner leaves behind.
+    if (!Memory.cfg!.synthesisControl) {
+      Memory.cfg!.synthesisControl = { enabled: true };
+    }
+    Memory.cfg!.synthesisControl.enabled = true;
+    if (!Memory.cfg!.synthesisControl.rooms) {
+      Memory.cfg!.synthesisControl.rooms = {};
+    }
+    Memory.cfg!.synthesisControl.rooms["W1N1"] = {
+      enabled: true,
+      batchSize: 500,
+      maxRunsPerTick: 6,
+      donorRoomNames: [],
+      reagentLabIds: [],
+      reactions: [],
+    };
+
+    Game.time = 1;
+    runSynthesisControl();
+
+    const synthesisRoomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(synthesisRoomState).toBeDefined();
+    expect(synthesisRoomState!.stage).not.toBe("blocked");
+    expect(synthesisRoomState!.lastError).not.toBe("room_config_disabled");
+    expect(["idle", "loading", "acquiring"]).toContain(synthesisRoomState!.stage);
+  });
+});
+
+describe("synthesis room config – empty reactions vs explicit disabled", () => {
+  it("enabled:true with empty reactions does NOT produce room_config_disabled", () => {
+    const { room } = createSynthesisRoom({
+      name: "W2N2",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+      },
+    });
+    Game.rooms["W2N2"] = room;
+
+    Memory.cfg = {
+      synthesisControl: {
+        enabled: true,
+        rooms: {
+          W2N2: {
+            enabled: true,
+            batchSize: 500,
+            maxRunsPerTick: 6,
+            donorRoomNames: [],
+            reagentLabIds: [],
+            reactions: [],
+          },
+        },
+      },
+    };
+
+    Game.time = 10;
+    runSynthesisControl();
+
+    const synthesisRoomState = Memory.runtime!.synthesisControl!.rooms["W2N2"];
+    expect(synthesisRoomState).toBeDefined();
+    expect(synthesisRoomState!.stage).not.toBe("blocked");
+    expect(synthesisRoomState!.lastError).not.toBe("room_config_disabled");
+  });
+
+  it("explicit enabled:false still produces stage blocked and room_config_disabled", () => {
+    const { room } = createSynthesisRoom({
+      name: "W3N3",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+      },
+    });
+    Game.rooms["W3N3"] = room;
+
+    Memory.cfg = {
+      synthesisControl: {
+        enabled: true,
+        rooms: {
+          W3N3: {
+            enabled: false,
+            batchSize: 500,
+            maxRunsPerTick: 6,
+            donorRoomNames: [],
+            reagentLabIds: [],
+            reactions: [
+              {
+                product: RESOURCE_HYDROXIDE as ResourceConstant,
+                targetAmount: 5000,
+                batchSize: 500,
+                donorRoomNames: [],
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    Game.time = 10;
+    runSynthesisControl();
+
+    const synthesisRoomState = Memory.runtime!.synthesisControl!.rooms["W3N3"];
+    expect(synthesisRoomState).toBeDefined();
+    expect(synthesisRoomState!.stage).toBe("blocked");
+    expect(synthesisRoomState!.lastError).toBe("room_config_disabled");
+  });
+});
