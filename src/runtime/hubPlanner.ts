@@ -12,7 +12,7 @@
  * dependency chain plus terminal transfer overhead between rooms.
  */
 
-import { createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount, getOutgoingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
+import { BLOCKING_ERRORS, createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount, getOutgoingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { collectCarrierCargoInventory } from "@/runtime/hubProgress";
 
@@ -536,6 +536,8 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
   const taskStore = ensureResourceTransferTaskStore();
   for (const task of Object.values(taskStore)) {
     if (task.status === "pending" && task.toRoomName === cfg.hubRoomName) {
+      // Skip tasks stuck with blocking errors - they can't execute anyway
+      if (task.lastError && BLOCKING_ERRORS.has(task.lastError)) continue;
       existingKeys.add(`${task.fromRoomName}:${task.resource}:${task.reason}`);
     }
   }
@@ -1265,6 +1267,23 @@ export function wireRouteTransferTasks(
   }
 }
 
+function cancelStaleSynthesisRouteTasks(): number {
+  const taskStore = ensureResourceTransferTaskStore();
+  let cancelled = 0;
+  for (const task of Object.values(taskStore)) {
+    if (
+      task.status === "pending" &&
+      (task.reason?.startsWith("synthesis:direct:") || task.reason?.startsWith("synthesis:hub-route:"))
+    ) {
+      task.status = "cancelled";
+      task.updatedAt = Game.time;
+      task.lastError = "cancelled_by_replan";
+      cancelled++;
+    }
+  }
+  return cancelled;
+}
+
 export function wireDistributedSynthesis(
   hubRoomName: string,
   targetCompounds: ResourceConstant[],
@@ -1505,6 +1524,8 @@ export function runHubPlanner(): void {
     rt.activeStep = 0;
     rt.lastPlanActions = result.steps.map((s) => s.product).slice(0, HUB_RUNTIME_ARRAY_CAP);
   }
+
+  cancelStaleSynthesisRouteTasks();
 
   if (!result.blocked) {
     const hubReservePerCompound2 = cfg.hubReservePerCompound ?? 20000;
