@@ -395,9 +395,9 @@ export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, pro
 }
 
 /** Satellite visual panel position constants. */
-const SATELLITE_VISUAL_X = 38;
-const SATELLITE_VISUAL_Y = 0;
-const SATELLITE_VISUAL_WIDTH = 12;
+const SATELLITE_VISUAL_X = 1;
+const SATELLITE_VISUAL_Y = 2;
+const SATELLITE_VISUAL_WIDTH = 13.5;
 
 /** Render a compact production panel in a satellite room. */
 function drawSatellitePanel(rv: VisualSurface, room: ProductionRoomEntry): void {
