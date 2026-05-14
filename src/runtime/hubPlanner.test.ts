@@ -9,6 +9,7 @@ import {
   clearHubSynthesisReactions,
   getDefaultHubConfig,
   getDefaultHubRuntime,
+  getEligibleSynthesisRooms,
   planHubChains,
   planHubDistribution,
   planHubImports,
@@ -3206,5 +3207,218 @@ describe("distributed synthesis planning", () => {
     expect(ds!.allocationLedger![RESOURCE_HYDROGEN].totalAmount).toBe(20000);
     expect(ds!.progressEdges).toHaveLength(1);
     expect(ds!.progressEdges![0].delivered).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getEligibleSynthesisRooms tests
+// ---------------------------------------------------------------------------
+
+describe("getEligibleSynthesisRooms", () => {
+  const ELIG_HUB = "E1N1";
+  const ELIG_AUX = "E2N1";
+  const ELIG_AUX2 = "E3N1";
+
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: ELIG_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+      homeDefense: {},
+    };
+    Memory.runtime = {
+      hub: getDefaultHubRuntime(),
+    };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("returns eligible rooms with storage, terminal, and 3+ labs", () => {
+    const hubRoom = createSynthesisCapableRoom(ELIG_HUB, {
+      labCount: 3,
+      storageResources: { [RESOURCE_HYDROGEN]: 5000 },
+    });
+    const auxRoom = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 5,
+      storageResources: { [RESOURCE_KEANIUM]: 3000 },
+    });
+    Game.rooms[ELIG_HUB] = hubRoom;
+    Game.rooms[ELIG_AUX] = auxRoom;
+
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(2);
+    const names = result.map((r) => r.roomName);
+    expect(names).toContain(ELIG_HUB);
+    expect(names).toContain(ELIG_AUX);
+  });
+
+  it("excludes rooms without storage", () => {
+    const noStorageRoom = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 3,
+      hasStorage: false,
+    });
+    Game.rooms[ELIG_AUX] = noStorageRoom;
+
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("excludes rooms without terminal", () => {
+    const noTerminalRoom = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 3,
+      hasTerminal: false,
+    });
+    Game.rooms[ELIG_AUX] = noTerminalRoom;
+
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("excludes rooms with fewer than 3 labs", () => {
+    const twoLabRoom = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 2,
+    });
+    Game.rooms[ELIG_AUX] = twoLabRoom;
+
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("excludes rooms not visible in Game.rooms", () => {
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("includes survival-state rooms as eligible", () => {
+    const survivalRoom = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 3,
+      storageResources: { [RESOURCE_HYDROGEN]: 500 },
+    });
+    Game.rooms[ELIG_AUX] = survivalRoom;
+
+    Memory.runtime!.resourceControl = {
+      updatedAt: Game.time,
+      rooms: {
+        [ELIG_AUX]: {
+          state: "survival",
+          storageEnergy: 10000,
+          terminalEnergy: 5000,
+          energyFloor: 120000,
+          energyTarget: 200000,
+          energyExportStart: 250000,
+          canMineNative: false,
+          minerals: {},
+        },
+      },
+      lastActions: [],
+      lastMarketActions: [],
+    };
+
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].roomName).toBe(ELIG_AUX);
+  });
+
+  it("includes room with boost lab when room has multiple labs", () => {
+    const room = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 3,
+      storageResources: { [RESOURCE_UTRIUM]: 1000 },
+    });
+    Game.rooms[ELIG_AUX] = room;
+
+    Memory.cfg!.homeDefense = {
+      rooms: {
+        [ELIG_AUX]: {
+          boostLabId: `${ELIG_AUX}-lab-0`,
+        },
+      },
+    };
+
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].boostLabExclusive).toBe(false);
+    expect(result[0].labCount).toBe(3);
+  });
+
+  it("excludes room where all labs are boost-reserved (1 lab + boostLabId)", () => {
+    const room = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 1,
+    });
+    Game.rooms[ELIG_AUX] = room;
+
+    Memory.cfg!.homeDefense = {
+      rooms: {
+        [ELIG_AUX]: {
+          boostLabId: `${ELIG_AUX}-lab-0`,
+        },
+      },
+    };
+
+    const result = getEligibleSynthesisRooms();
+
+    // 1 lab room is also excluded by the <3 lab count check
+    expect(result).toHaveLength(0);
+  });
+
+  it("collects mineral inventory from storage and terminal", () => {
+    const room = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 3,
+      storageResources: { [RESOURCE_HYDROGEN]: 5000, [RESOURCE_UTRIUM]: 3000 },
+      terminalResources: { [RESOURCE_KEANIUM]: 2000, [RESOURCE_HYDROGEN]: 1000 },
+    });
+    Game.rooms[ELIG_AUX] = room;
+
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(1);
+    const inv = result[0].mineralInventory;
+    expect(inv[RESOURCE_HYDROGEN]).toBe(6000);
+    expect(inv[RESOURCE_UTRIUM]).toBe(3000);
+    expect(inv[RESOURCE_KEANIUM]).toBe(2000);
+    expect(inv[RESOURCE_ENERGY]).toBeUndefined();
+  });
+
+  it("includes hub room alongside auxiliary rooms", () => {
+    const hubRoom = createSynthesisCapableRoom(ELIG_HUB, {
+      labCount: 3,
+      storageResources: { [RESOURCE_HYDROGEN]: 10000 },
+    });
+    const auxRoom = createSynthesisCapableRoom(ELIG_AUX, {
+      labCount: 5,
+      storageResources: { [RESOURCE_KEANIUM]: 5000 },
+    });
+    const aux2Room = createSynthesisCapableRoom(ELIG_AUX2, {
+      labCount: 4,
+      storageResources: { [RESOURCE_ZYNTHIUM]: 8000 },
+    });
+    Game.rooms[ELIG_HUB] = hubRoom;
+    Game.rooms[ELIG_AUX] = auxRoom;
+    Game.rooms[ELIG_AUX2] = aux2Room;
+
+    const result = getEligibleSynthesisRooms();
+
+    expect(result).toHaveLength(3);
+    const hubCap = result.find((r) => r.roomName === ELIG_HUB);
+    expect(hubCap).toBeDefined();
+    expect(hubCap!.hasStorage).toBe(true);
+    expect(hubCap!.hasTerminal).toBe(true);
   });
 });

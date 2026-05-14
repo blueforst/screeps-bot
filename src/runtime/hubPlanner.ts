@@ -12,7 +12,7 @@
  * dependency chain plus terminal transfer overhead between rooms.
  */
 
-import { createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
+import { createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount, getOutgoingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { collectCarrierCargoInventory } from "@/runtime/hubProgress";
 
@@ -691,6 +691,58 @@ function computeTotalSatelliteDeficit(
     }
   }
   return totalDeficit;
+}
+
+/**
+ * Discover all eligible rooms for distributed synthesis and score their capacity.
+ *
+ * Eligibility: visible owned room with storage, terminal, and at least 3 labs.
+ * Labs must not ALL be boost-reserved (a single boost lab is fine).
+ * Survival-state rooms ARE eligible.
+ */
+export function getEligibleSynthesisRooms(): SynthesisRoomCapability[] {
+  const myRooms = getTickContextService().getMyRooms();
+  const results: SynthesisRoomCapability[] = [];
+
+  for (const room of myRooms) {
+    if (!room.storage || !room.terminal) continue;
+
+    const labCount = countLabs(room);
+    if (labCount < 3) continue;
+
+    // boostLabExclusive: a single boost lab is fine; only exclude when ALL labs are boost-reserved
+    const boostLabId = Memory.cfg?.homeDefense?.rooms?.[room.name]?.boostLabId;
+    const boostLabExclusive = labCount >= 1 && boostLabId != null && labCount <= 1;
+
+    if (boostLabExclusive) continue;
+
+    const mineralInventory: Partial<Record<ResourceConstant, number>> = {};
+
+    const storageStore = room.storage.store as unknown as Record<string, number>;
+    for (const [res, amt] of Object.entries(storageStore)) {
+      if (res !== RESOURCE_ENERGY && amt > 0) {
+        mineralInventory[res as ResourceConstant] = amt;
+      }
+    }
+
+    const terminalStore = room.terminal.store as unknown as Record<string, number>;
+    for (const [res, amt] of Object.entries(terminalStore)) {
+      if (res !== RESOURCE_ENERGY && amt > 0) {
+        mineralInventory[res as ResourceConstant] = (mineralInventory[res as ResourceConstant] || 0) + amt;
+      }
+    }
+
+    results.push({
+      roomName: room.name,
+      labCount,
+      hasTerminal: true,
+      hasStorage: true,
+      boostLabExclusive: false,
+      mineralInventory,
+    });
+  }
+
+  return results;
 }
 
 export function runHubPlanner(): void {
