@@ -625,6 +625,9 @@ function executeTransferTasks(
     if (terminalBusy.has(donor.roomName) || donor.terminal.cooldown > 0) {
       continue;
     }
+    if (task.resource !== RESOURCE_ENERGY && (receiver.storageEnergy ?? 0) < 100_000) {
+      continue;
+    }
     if (task.remainingAmount < donor.transferMinAmount) {
       task.updatedAt = Game.time;
       task.lastError = "remaining_below_transfer_min";

@@ -2503,7 +2503,7 @@ describe("executeTransferTasks below-min blocked tasks", () => {
       storageResources: { [RESOURCE_KEANIUM]: 5000 },
       terminalResources: { [RESOURCE_KEANIUM]: 500 },
     });
-    const receiver = createRoom({ name: "WBM2" });
+    const receiver = createRoom({ name: "WBM2", storageResources: { [RESOURCE_ENERGY]: 200000 } });
     Game.rooms[donor.name] = donor;
     Game.rooms[receiver.name] = receiver;
 
@@ -2552,7 +2552,7 @@ describe("executeTransferTasks below-min blocked tasks", () => {
       storageResources: { [RESOURCE_KEANIUM]: 5000 },
       terminalResources: { [RESOURCE_KEANIUM]: 500 },
     });
-    const receiver = createRoom({ name: "WBM6" });
+    const receiver = createRoom({ name: "WBM6", storageResources: { [RESOURCE_ENERGY]: 200000 } });
     Game.rooms[donor.name] = donor;
     Game.rooms[receiver.name] = receiver;
 
