@@ -294,7 +294,8 @@ describe("cleanupResourceTransferTaskStore", () => {
     if (typeof r === "string") throw new Error("unexpected error");
     const store = ensureResourceTransferTaskStore();
     store[r.task.id].lastError = "insufficient_terminal_resource_or_fee";
-    store[r.task.id].updatedAt = 50; // 50 ticks ago, TTL=10
+    store[r.task.id].createdAt = 50; // created 50 ticks ago, TTL=10
+    store[r.task.id].updatedAt = 99; // resourceControl keeps refreshing updatedAt
 
     const ownedRooms = new Set(["W1N1", "W2N1"]);
     const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);
@@ -308,7 +309,9 @@ describe("cleanupResourceTransferTaskStore", () => {
     if (typeof r === "string") throw new Error("unexpected error");
     const store = ensureResourceTransferTaskStore();
     store[r.task.id].lastError = "remaining_below_transfer_min";
-    store[r.task.id].updatedAt = 95; // 5 ticks ago, TTL=10
+    // createdAt=95, Game.time=100, diff=5 < TTL=10
+    store[r.task.id].createdAt = 95;
+    store[r.task.id].updatedAt = 99;
 
     const ownedRooms = new Set(["W1N1", "W2N1"]);
     const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);
@@ -322,7 +325,7 @@ describe("cleanupResourceTransferTaskStore", () => {
     if (typeof r === "string") throw new Error("unexpected error");
     const store = ensureResourceTransferTaskStore();
     store[r.task.id].lastError = "some_other_error";
-    store[r.task.id].updatedAt = 1; // very old
+    store[r.task.id].createdAt = 1; // very old
 
     const ownedRooms = new Set(["W1N1", "W2N1"]);
     const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);
