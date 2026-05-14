@@ -100,7 +100,7 @@ export interface ResourceControlSnapshot {
 const DEFAULT_INTERVAL = 10;
 const MIN_INTERVAL = 5;
 const MAX_INTERVAL = 100;
-const DEFAULT_TASK_MAX_PER_RUN = 1;
+const DEFAULT_TASK_MAX_PER_RUN = 5;
 const MIN_TASK_MAX_PER_RUN = 1;
 const MAX_TASK_MAX_PER_RUN = 5;
 const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";

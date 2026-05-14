@@ -1,4 +1,4 @@
-import { buildHubProgressSnapshot, buildHubVisualModel, collectHubProgressSnapshot, collectCarrierCargoInventory, runHubProgressAnalytics, buildHubOverlayLines, renderHubProgressOverlays, drawHubVisualPanel, buildInboundTransferRows } from "@/runtime/hubProgress";
+import { buildHubProgressSnapshot, buildHubVisualModel, collectHubProgressSnapshot, collectCarrierCargoInventory, runHubProgressAnalytics, buildHubOverlayLines, renderHubProgressOverlays, drawHubVisualPanel } from "@/runtime/hubProgress";
 import type { HubProgressSnapshot, HubVisualModel, ProductionRoomEntry } from "@/runtime/hubProgress";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { getCreepConfigService, registerRuntimeServices } from "@/runtime/runtimeServices";
@@ -343,60 +343,46 @@ describe("buildHubOverlayLines", () => {
     };
   }
 
-  it("returns array of strings with core content", () => {
-    const lines = buildHubOverlayLines(makeSnapshot());
-    expect(Array.isArray(lines)).toBe(true);
-    expect(lines.length).toBeGreaterThan(0);
-    expect(lines.length).toBeLessThanOrEqual(8);
-    const joined = lines.join(" ");
-    expect(joined).toContain("importing");
-    expect(joined).toContain("XGH2O");
-    expect(joined).toContain("U");
+  it("returns [] when snapshot.enabled is false", () => {
+    const lines = buildHubOverlayLines(makeSnapshot({ enabled: false }));
+    expect(lines).toEqual([]);
   });
 
-  it("caps at 8 lines even with many plan actions", () => {
-    const manyActions = Array.from({ length: 15 }, (_, i) => `compound${i}`);
-    const lines = buildHubOverlayLines(makeSnapshot({ lastPlanActions: manyActions }));
-    expect(lines.length).toBeLessThanOrEqual(8);
-  });
-
-  it("shows inbound summary with single source room", () => {
+  it("first line is progress: ...", () => {
     const lines = buildHubOverlayLines(makeSnapshot({
       pendingTasks: [
         { resource: "U", from: "W2N1", to: "W1N1", remaining: 4000, reason: "hub:import:U" },
-        { resource: "K", from: "W2N1", to: "W1N1", remaining: 4000, reason: "hub:import:K" },
+        { resource: "K", from: "W2N1", to: "W1N1", remaining: 2000, reason: "hub:import:K" },
       ],
     }));
-    const inboundLine = lines.find(l => l.startsWith("inbound:"));
-    expect(inboundLine).toBe("inbound: W2N1 8K (2 tasks)");
+    expect(lines[0]).toBe("progress: XGH2O 0/1000");
+    expect(lines[1]).toBe("tasks: 2");
   });
 
-  it("shows inbound summary with overflow rooms", () => {
+  it("subsequent lines are per-room breakdowns", () => {
     const lines = buildHubOverlayLines(makeSnapshot({
       pendingTasks: [
         { resource: "U", from: "W2N1", to: "W1N1", remaining: 4000, reason: "hub:import:U" },
-        { resource: "K", from: "W2N1", to: "W1N1", remaining: 4000, reason: "hub:import:K" },
-        { resource: "L", from: "W3N1", to: "W1N1", remaining: 4000, reason: "hub:import:L" },
-        { resource: "Z", from: "W4N1", to: "W1N1", remaining: 2000, reason: "hub:import:Z" },
+        { resource: "K", from: "W2N1", to: "W1N1", remaining: 2000, reason: "hub:import:K" },
       ],
     }));
-    const inboundLine = lines.find(l => l.startsWith("inbound:"));
-    expect(inboundLine).toBe("inbound: W2N1 8K (2 tasks), +2 more");
+    expect(lines[2]).toBe("W2N1: 2 tasks, 6K");
   });
 
-  it("omits inbound line when no inbound tasks", () => {
+  it("shows only progress and tasks: 0 when no pending tasks", () => {
     const lines = buildHubOverlayLines(makeSnapshot({ pendingTasks: [] }));
-    expect(lines.some(l => l.startsWith("blocker:"))).toBe(false);
-    expect(lines.some(l => l.includes("reserve="))).toBe(false);
-    expect(lines.some(l => l.startsWith("inbound:"))).toBe(false);
+    expect(lines).toEqual(["progress: XGH2O 0/1000", "tasks: 0"]);
   });
 
-  it("still caps at 8 lines with inbound summary", () => {
-    const lines = buildHubOverlayLines(makeSnapshot({
-      pendingTasks: [
-        { resource: "U", from: "W2N1", to: "W1N1", remaining: 8000, reason: "hub:import:U" },
-      ],
+  it("caps at 8 lines", () => {
+    const tasks = Array.from({ length: 15 }, (_, i) => ({
+      resource: `res${i}` as string,
+      from: `W${i}N1`,
+      to: "W1N1",
+      remaining: 1000,
+      reason: `hub:import:res${i}`,
     }));
+    const lines = buildHubOverlayLines(makeSnapshot({ pendingTasks: tasks }));
     expect(lines.length).toBeLessThanOrEqual(8);
   });
 });
@@ -688,9 +674,7 @@ describe("buildHubVisualModel", () => {
       pendingReclaims: 0,
       pendingExports: 1,
       pendingTasks: [],
-      roomTerminalBlockers: [
-        { room: "W2N1", terminalEnergy: 0, reserve: 20000, pendingNonEnergy: 0 },
-      ],
+      roomTerminalBlockers: [],
       hubLabInventory: {},
       hubCarrierCargo: {},
       productionRooms: [],
@@ -698,159 +682,86 @@ describe("buildHubVisualModel", () => {
     };
   }
 
-  it("fallback stock display: no synthesisTargetAmount uses 1000 stock", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      activeProduct: "XGH2O",
-      hubInventory: { XGH2O: 500 },
-    }));
-    expect(model.productLabel).toBe("XGH2O");
-    expect(model.progressPercent).toBe(0.5);
-    expect(model.progressText).toContain("500/1000 stock");
-  });
-
-  it("idle state: productLabel=idle, progressPercent=0, progressText='0% idle'", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      activeProduct: null,
-      status: null,
-    }));
-    expect(model.productLabel).toBe("idle");
-    expect(model.progressPercent).toBe(0);
-    expect(model.progressText).toBe("0% idle");
-  });
-
-  it("progress capped at 1 when inventory exceeds 1000 (fallback mode)", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      activeProduct: "XGH2O",
-      hubInventory: { XGH2O: 2000 },
-    }));
-    expect(model.progressPercent).toBe(1);
-  });
-
-  it("batch mode: active UO synthesizing uses hubLabInventory + hubInventory", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      activeProduct: "UO",
-      status: "synthesizing",
-      synthesisTargetAmount: 106,
-      hubLabInventory: { UO: 110 },
-      hubInventory: {},
-    }));
-    expect(model.progressPercent).toBe(1);
-    expect(model.progressText).toContain("UO");
-    expect(model.progressText).toContain("110");
-    expect(model.progressText).toContain("106");
-    expect(model.progressText).not.toContain("1000");
-    expect(model.progressText).not.toContain("stock");
-  });
-
-  it("batch mode: active UO unloading sums both inventories", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      activeProduct: "UO",
-      status: "unloading",
-      stage: "unloading",
-      synthesisTargetAmount: 106,
-      hubLabInventory: { UO: 50 },
-      hubInventory: { UO: 60 },
-    }));
-    expect(model.progressPercent).toBe(1);
-    expect(model.progressText).toContain("UO");
-    expect(model.progressText).toContain("110");
-    expect(model.progressText).toContain("106");
-    expect(model.progressText).toContain("unloading");
-    expect(model.progressText).not.toContain("1000");
-    expect(model.progressText).not.toContain("stock");
-  });
-
-  it("batch mode: partial progress under target", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      activeProduct: "GH",
-      status: "acquiring",
-      synthesisTargetAmount: 200,
-      hubLabInventory: { GH: 80 },
-      hubInventory: { GH: 0 },
-    }));
-    expect(model.progressPercent).toBeCloseTo(0.4);
-    expect(model.progressText).toContain("80/200");
-    expect(model.progressText).toContain("acquiring");
-  });
-
-  it("batch mode: progress capped at 1 when amount exceeds target", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      activeProduct: "UO",
-      status: "synthesizing",
-      synthesisTargetAmount: 100,
-      hubLabInventory: { UO: 150 },
-      hubInventory: {},
-    }));
-    expect(model.progressPercent).toBe(1);
-    expect(model.progressText).toContain("150/100");
-  });
-
-  it("fallback stock display: activeProduct without synthesisTargetAmount", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      activeProduct: "XGH2O",
-      hubInventory: { XGH2O: 500 },
-      synthesisTargetAmount: undefined,
-    }));
-    expect(model.progressText).toContain("500/1000 stock");
-  });
-
-  it("missing resources truncated to first 4 with +N suffix", () => {
-    const model = buildHubVisualModel(makeSnapshot({
-      missingResources: ["U", "K", "L", "Z", "O", "H", "OH"],
-    }));
-    expect(model.missingSummary).toContain("U");
-    expect(model.missingSummary).toContain("K");
-    expect(model.missingSummary).toContain("L");
-    expect(model.missingSummary).toContain("Z");
-    expect(model.missingSummary).toContain("+3");
-  });
-
-  it("blockers truncated to 2 entries with overflow count", () => {
+  it("totalTasks counts all pending tasks", () => {
     const model = buildHubVisualModel(makeSnapshot({
       pendingTasks: [
-        { resource: "U", from: "W2N1", to: "W1N1", remaining: 1000, reason: "hub:import:U" },
-        { resource: "K", from: "W3N1", to: "W1N1", remaining: 2000, reason: "hub:import:K" },
-        { resource: "L", from: "W4N1", to: "W1N1", remaining: 3000, reason: "hub:import:L" },
-        { resource: "Z", from: "W5N1", to: "W1N1", remaining: 4000, reason: "hub:import:Z" },
-        { resource: "O", from: "W6N1", to: "W1N1", remaining: 5000, reason: "hub:import:O" },
+        { resource: "U", from: "W2N1", to: "W1N1", remaining: 4000, reason: "hub:import:U" },
+        { resource: "K", from: "W2N1", to: "W1N1", remaining: 2000, reason: "hub:import:K" },
+        { resource: "L", from: "W3N1", to: "W1N1", remaining: 1000, reason: "hub:import:L" },
       ],
     }));
-    expect(model.inboundRows).toHaveLength(2);
-    expect(model.inboundOverflow).toBe(3);
+    expect(model.totalTasks).toBe(3);
   });
 
-  it("no blockers: empty rows and zero overflow", () => {
+  it("roomBreakdown groups tasks by from room with counts and total resource amount", () => {
     const model = buildHubVisualModel(makeSnapshot({
-      pendingTasks: [],
+      pendingTasks: [
+        { resource: "U", from: "W2N1", to: "W1N1", remaining: 4000, reason: "hub:import:U" },
+        { resource: "K", from: "W2N1", to: "W1N1", remaining: 2000, reason: "hub:import:K" },
+        { resource: "U", from: "W2N1", to: "W1N1", remaining: 1000, reason: "hub:import:U" },
+      ],
     }));
-    expect(model.inboundRows).toHaveLength(0);
-    expect(model.inboundOverflow).toBe(0);
+    expect(model.roomBreakdown).toHaveLength(1);
+    expect(model.roomBreakdown[0]).toEqual({ room: "W2N1", taskCount: 3, resourceAmount: 7000 });
+    expect(model.activeProduct).toBe("XGH2O");
+    expect(model.progressPercent).toBe(0);
+    expect(model.progressText).toBe("XGH2O 0/1000");
   });
 
-  it("disabled snapshot: still returns model with idle defaults", () => {
+  it("roomBreakdown sorted by taskCount desc then room name asc", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      pendingTasks: [
+        { resource: "U", from: "W3N1", to: "W1N1", remaining: 1000, reason: "hub:import:U" },
+        { resource: "K", from: "W2N1", to: "W1N1", remaining: 2000, reason: "hub:import:K" },
+        { resource: "L", from: "W2N1", to: "W1N1", remaining: 3000, reason: "hub:import:L" },
+      ],
+    }));
+    expect(model.roomBreakdown).toHaveLength(2);
+    // W2N1 has 2 tasks, W3N1 has 1 task → W2N1 first
+    expect(model.roomBreakdown[0].room).toBe("W2N1");
+    expect(model.roomBreakdown[0].taskCount).toBe(2);
+    expect(model.roomBreakdown[1].room).toBe("W3N1");
+    expect(model.roomBreakdown[1].taskCount).toBe(1);
+  });
+
+  it("tie-breaking: sorted by room name ascending when taskCount equal", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      pendingTasks: [
+        { resource: "U", from: "W3N1", to: "W1N1", remaining: 1000, reason: "hub:import:U" },
+        { resource: "K", from: "W2N1", to: "W1N1", remaining: 2000, reason: "hub:import:K" },
+      ],
+    }));
+    expect(model.roomBreakdown[0].room).toBe("W2N1");
+    expect(model.roomBreakdown[1].room).toBe("W3N1");
+  });
+
+  it("empty pendingTasks → totalTasks=0, roomBreakdown=[]", () => {
+    const model = buildHubVisualModel(makeSnapshot({ pendingTasks: [] }));
+    expect(model.totalTasks).toBe(0);
+    expect(model.roomBreakdown).toEqual([]);
+  });
+
+  it("disabled snapshot still returns model", () => {
     const model = buildHubVisualModel(makeSnapshot({
       enabled: false,
-      activeProduct: null,
-      status: null,
+      pendingTasks: [],
     }));
-    expect(model.productLabel).toBe("idle");
-    expect(model.progressPercent).toBe(0);
+    expect(model.totalTasks).toBe(0);
+    expect(model.roomBreakdown).toEqual([]);
   });
 });
 
 describe("drawHubVisualPanel", () => {
   function makeModel(overrides: Partial<HubVisualModel> = {}): HubVisualModel {
     return {
-      productLabel: "XGH2O",
-      statusLabel: "synthesizing",
-      stageLabel: "reacting",
-      needsPlan: false,
-      progressPercent: 0.5,
-      progressText: "500/1000 stock",
-      missingSummary: "",
-      logisticsCounts: { imports: 0, reclaims: 0, exports: 0 },
-      inboundRows: [],
-      inboundOverflow: 0,
+      totalTasks: 3,
+      roomBreakdown: [
+        { room: "E1N57", taskCount: 2, resourceAmount: 1000 },
+        { room: "E2N57", taskCount: 1, resourceAmount: 500 },
+      ],
+      activeProduct: null,
+      progressPercent: 0,
+      progressText: "idle",
       ...overrides,
     };
   }
@@ -867,393 +778,58 @@ describe("drawHubVisualPanel", () => {
     (global as any).__resetRoomVisualCalls();
   });
 
-  it("renders production header and product row", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({ productLabel: "XGH2O", statusLabel: "synthesizing" });
-    drawHubVisualPanel(rv, model);
-
-    const headerRects = findCalls("rect", args => args[4]?.fill === "#1a1a2e");
-    expect(headerRects.length).toBeGreaterThanOrEqual(1);
-
-    const titleTexts = findCalls("text", args => args[0] === "Hub Production");
-    expect(titleTexts).toHaveLength(1);
-
-    const productTexts = findCalls("text", args => args[0] === "XGH2O");
-    expect(productTexts).toHaveLength(1);
-  });
-
-  it("renders progress bar outline and fill at 50%", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({ progressPercent: 0.5, progressText: "500/1000 stock" });
-    drawHubVisualPanel(rv, model);
-
-    const barWidth = 13.5 - 0.5;
-    const outlines = findCalls("rect", args => args[4]?.fill === "transparent");
-    const barOutlines = outlines.filter(c => Math.abs(c.args[2] - barWidth) < 0.01);
-    expect(barOutlines.length).toBeGreaterThanOrEqual(1);
-
-    const fills = findCalls("rect", args => args[4]?.fill === "#00ff88" && args[4]?.strokeWidth === 0);
-    expect(fills).toHaveLength(1);
-    expect(Math.abs(fills[0].args[2] - barWidth * 0.5)).toBeLessThan(0.01);
-
-    const labelTexts = findCalls("text", args => args[0] === "500/1000 stock");
-    expect(labelTexts).toHaveLength(1);
-  });
-
-  it("draws no fill rect when progressPercent is 0", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({ progressPercent: 0, progressText: "0% idle", productLabel: "idle" });
-    drawHubVisualPanel(rv, model);
-
-    const coloredFills = findCalls("rect", args =>
-      args[4]?.fill === "#00ff88" ||
-      args[4]?.fill === "#ffaa00" ||
-      args[4]?.fill === "#ff5555"
-    );
-    expect(coloredFills).toHaveLength(0);
-  });
-
-  it("shows needs plan warning row", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({ needsPlan: true });
-    drawHubVisualPanel(rv, model);
-
-    const warningTexts = findCalls("text", args =>
-      typeof args[0] === "string" && args[0].includes("needs plan") && args[3]?.color === "#ffaa00"
-    );
-    expect(warningTexts).toHaveLength(1);
-  });
-
-  it("omits stage row when stageLabel is null", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({ stageLabel: null });
-    drawHubVisualPanel(rv, model);
-
-    const stageTexts = findCalls("text", args =>
-      typeof args[0] === "string" && args[0].startsWith("stage:")
-    );
-    expect(stageTexts).toHaveLength(0);
-  });
-
-  it("uses error color when status is blocked", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({ statusLabel: "blocked" });
-    drawHubVisualPanel(rv, model);
-
-    const progressFills = findCalls("rect", args => args[4]?.fill === "#ff5555");
-    expect(progressFills.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("uses muted color when idle with no product", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({ productLabel: "idle", statusLabel: "—", progressPercent: 0 });
-    drawHubVisualPanel(rv, model);
-
-    const mutedFills = findCalls("rect", args => args[4]?.fill === "#888888");
-    expect(mutedFills).toHaveLength(0);
-
-    const mutedTexts = findCalls("text", args => args[3]?.color === "#888888");
-    expect(mutedTexts.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("renders logistics section header", () => {
+  it("renders Progress and Logistics section headers", () => {
     const rv = new RoomVisual("W1N1");
     const model = makeModel();
     drawHubVisualPanel(rv, model);
+
+    const headerRects = findCalls("rect", args => args[4]?.fill === "#1a1a2e");
+    expect(headerRects.length).toBeGreaterThanOrEqual(2);
+
+    const progressTitle = findCalls("text", args => args[0] === "Progress");
+    expect(progressTitle).toHaveLength(1);
 
     const logisticsTitle = findCalls("text", args => args[0] === "Logistics");
     expect(logisticsTitle).toHaveLength(1);
   });
 
-  it("logistics summary row with no inbound", () => {
+  it("renders tasks: N text row", () => {
+    const rv = new RoomVisual("W1N1");
+    const model = makeModel({ totalTasks: 5 });
+    drawHubVisualPanel(rv, model);
+
+    const taskTexts = findCalls("text", args => args[0] === "tasks: 5");
+    expect(taskTexts).toHaveLength(1);
+  });
+
+  it("renders per-room breakdown lines", () => {
     const rv = new RoomVisual("W1N1");
     const model = makeModel({
-      logisticsCounts: { imports: 3, reclaims: 1, exports: 2 },
-      inboundRows: [],
-      inboundOverflow: 0,
+      totalTasks: 3,
+      roomBreakdown: [
+        { room: "E1N57", taskCount: 2, resourceAmount: 3000 },
+        { room: "E2N57", taskCount: 1, resourceAmount: 500 },
+      ],
     });
     drawHubVisualPanel(rv, model);
 
     const textCalls = findCalls("text");
-    const logisticsSummary = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("imp 3"));
-    expect(logisticsSummary).toBeDefined();
-    expect(logisticsSummary!.args[0]).toContain("recl 1");
-    expect(logisticsSummary!.args[0]).toContain("exp 2");
-
-    const inboundNone = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("inbound: none"));
-    expect(inboundNone).toBeDefined();
+    const room1 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("E1N57"));
+    const room2 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("E2N57"));
+    expect(room1).toBeDefined();
+    expect(room1!.args[0]).toBe("E1N57: 2 tasks, 3K");
+    expect(room2).toBeDefined();
+    expect(room2!.args[0]).toBe("E2N57: 1 tasks, 500");
   });
 
-  it("renders one inbound row without overflow", () => {
+  it("renders none when roomBreakdown is empty", () => {
     const rv = new RoomVisual("W1N1");
-    const model = makeModel({
-      inboundRows: [{ room: "W3N1", amount: 500, taskCount: 1 }],
-      inboundOverflow: 0,
-    });
+    const model = makeModel({ totalTasks: 0, roomBreakdown: [] });
     drawHubVisualPanel(rv, model);
 
     const textCalls = findCalls("text");
-    const inboundText = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("W3N1"));
-    expect(inboundText).toBeDefined();
-    // taskCount=1: no task count shown
-    expect(inboundText!.args[0]).toBe("W3N1: 500 inbound");
-    expect(inboundText!.args[3]?.color).toBe("#ffaa00");
-
-    const overflow = textCalls.find(c => typeof c.args[0] === "string" && /\+\d+ more/.test(c.args[0]));
-    expect(overflow).toBeUndefined();
-  });
-
-  it("caps inbound rows and shows overflow count", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({
-      inboundRows: [
-        { room: "W2N1", amount: 8000, taskCount: 2 },
-        { room: "W3N1", amount: 200, taskCount: 1 },
-      ],
-      inboundOverflow: 3,
-    });
-    drawHubVisualPanel(rv, model);
-
-    const textCalls = findCalls("text");
-    const row1 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("W2N1"));
-    const row2 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("W3N1"));
-    expect(row1).toBeDefined();
-    expect(row1!.args[0]).toBe("W2N1: 8K inbound (2 tasks)");
-    expect(row1!.args[3]?.color).toBe("#ffaa00");
-    expect(row2).toBeDefined();
-    expect(row2!.args[0]).toBe("W3N1: 200 inbound");
-
-    const overflow = textCalls.find(c => typeof c.args[0] === "string" && c.args[0] === "+3 more inbound");
-    expect(overflow).toBeDefined();
-    expect(overflow!.args[3]?.color).toBe("#888888");
-  });
-
-  it("minimal model: logistics header Y follows progress bar stride", () => {
-    const rv = new RoomVisual("W1N1");
-    // Minimal model: idle state, no optional rows, no inbound
-    const model = makeModel({
-      productLabel: "idle",
-      statusLabel: "—",
-      stageLabel: null,
-      needsPlan: false,
-      progressPercent: 0,
-      progressText: "0% idle",
-      inboundRows: [],
-      inboundOverflow: 0,
-    });
-    drawHubVisualPanel(rv, model);
-
-    // Section headers are rect calls with VIS_HEADER_FILL ("#1a1a2e")
-    const headerRects = findCalls("rect", args => args[4]?.fill === "#1a1a2e");
-    expect(headerRects.length).toBe(3);
-
-    const hubProdY = headerRects[0].args[1]; // y=2.0
-    const progressY = headerRects[1].args[1]; // should be 4.1
-    const logisticsY = headerRects[2].args[1]; // should be 5.4
-
-    // Hub Production at y=2.0
-    expect(hubProdY).toBeCloseTo(2.0, 2);
-
-    // Progress header at y=4.1 (2.0 + 0.7 headerStride + 0.7 rowHeight + 0.7 spacer + 0.7 headerStride = 4.1)
-    // Actually: sectionHeader("Hub Production") advances by headerStride(0.7) → y=2.7
-    //   textRow("idle") advances by rowHeight(0.7) → y=3.4
-    //   spacer(0.7) → y=4.1
-    //   sectionHeader("Progress") rect drawn at y=4.1, then cursor advances → y=4.8
-    expect(progressY).toBeCloseTo(4.1, 2);
-
-    // Logistics header at y=5.4 (4.1 + 0.7 headerStride + 0.6 barStride)
-    //   sectionHeader("Progress") advances cursor to 4.8
-    //   progressBar advances by barHeight+barPad=0.6 → y=5.4
-    //   sectionHeader("Logistics") rect drawn at y=5.4
-    expect(logisticsY).toBeCloseTo(5.4, 2);
-
-    // KEY REGRESSION ASSERTION: The gap between Progress section end and Logistics header
-    // must be 0.6 (progressBar stride), NOT 0.7 (old HUB_VISUAL_ROW bug).
-    // Progress header rect is at 4.1, cursor after sectionHeader = 4.1 + 0.7 = 4.8
-    // After progressBar: 4.8 + 0.6 = 5.4 = logisticsY
-    // logisticsY - (progressY + headerStride) = 5.4 - (4.1 + 0.7) = 0.6 (NOT 0.7)
-    const gapAfterProgressBar = logisticsY - (progressY + 0.7);
-    expect(gapAfterProgressBar).toBeCloseTo(0.6, 2);
-    // Explicitly assert it is NOT 0.7 — catches the old bug where y+=HUB_VISUAL_ROW was used
-    expect(gapAfterProgressBar).not.toBeCloseTo(0.7, 2);
-  });
-
-  it("full model: all sections at deterministic Y positions", () => {
-    const rv = new RoomVisual("W1N1");
-    // Full model: all optional rows present, 2 inbound + overflow
-    const model = makeModel({
-      productLabel: "XGH2O",
-      statusLabel: "synthesizing",
-      stageLabel: "reacting",
-      needsPlan: true,
-      progressPercent: 0.5,
-      progressText: "500/1000 stock",
-      inboundRows: [
-        { room: "W2N1", amount: 100, taskCount: 1 },
-        { room: "W3N1", amount: 200, taskCount: 2 },
-      ],
-      inboundOverflow: 3,
-    });
-    drawHubVisualPanel(rv, model);
-
-    const headerRects = findCalls("rect", args => args[4]?.fill === "#1a1a2e");
-    expect(headerRects.length).toBe(3);
-
-    const hubProdY = headerRects[0].args[1];
-    const progressY = headerRects[1].args[1];
-    const logisticsY = headerRects[2].args[1];
-
-    // Hub Production at y=2.0
-    expect(hubProdY).toBeCloseTo(2.0, 2);
-
-    // Cursor trace: 2.0 + 0.7(header) + 0.7(product) + 0.7(status) + 0.7(stage) + 0.7(needsPlan) + 0.7(spacer) = 6.2
-    // Progress sectionHeader rect drawn at y=6.2
-    expect(progressY).toBeCloseTo(6.2, 2);
-
-    // Cursor after Progress header: 6.2 + 0.7 = 6.9
-    // After progressBar: 6.9 + 0.6 = 7.5
-    // Logistics sectionHeader rect drawn at y=7.5
-    expect(logisticsY).toBeCloseTo(7.5, 2);
-
-    // KEY REGRESSION ASSERTION: gap after progressBar must be 0.6, not 0.7
-    const gapAfterProgressBar = logisticsY - (progressY + 0.7);
-    expect(gapAfterProgressBar).toBeCloseTo(0.6, 2);
-    expect(gapAfterProgressBar).not.toBeCloseTo(0.7, 2);
-  });
-
-  it("inbound section contains no reserve/blocker/term/nonE text", () => {
-    const rv = new RoomVisual("W1N1");
-    const model = makeModel({
-      inboundRows: [
-        { room: "W2N1", amount: 5000, taskCount: 1 },
-      ],
-      inboundOverflow: 2,
-    });
-    drawHubVisualPanel(rv, model);
-
-    const textCalls = findCalls("text").filter(c => typeof c.args[0] === "string");
-    const forbidden = ["reserve", "blocker", "term", "nonE"];
-    const violations: string[] = [];
-    for (const call of textCalls) {
-      const text: string = call.args[0];
-      if (text.includes("inbound") || text.includes("more inbound") || text.includes("inbound: none")) {
-        for (const word of forbidden) {
-          if (text.toLowerCase().includes(word.toLowerCase())) {
-            violations.push(`"${text}" contains "${word}"`);
-          }
-        }
-      }
-    }
-    expect(violations).toEqual([]);
-  });
-});
-
-describe("buildInboundTransferRows", () => {
-  function makeSnapshot(overrides: Partial<HubProgressSnapshot> = {}): HubProgressSnapshot {
-    return {
-      updatedAt: 100,
-      enabled: true,
-      hubRoomName: "W1N1",
-      hubRoomVisible: true,
-      status: "importing",
-      stage: null,
-      activeProduct: null,
-      lastPlanActions: [],
-      missingResources: [],
-      lastError: null,
-      needsPlan: false,
-      hubStorageEnergy: 0,
-      hubTerminalEnergy: 0,
-      hubInventory: {},
-      pendingImports: 0,
-      pendingReclaims: 0,
-      pendingExports: 0,
-      pendingTasks: [],
-      roomTerminalBlockers: [],
-      hubLabInventory: {},
-      hubCarrierCargo: {},
-      productionRooms: [],
-      ...overrides,
-    };
-  }
-
-  it("groups two inbound tasks from same source room", () => {
-    const result = buildInboundTransferRows(makeSnapshot({
-      hubRoomName: "W1N1",
-      pendingTasks: [
-        { resource: "U", from: "W2N1", to: "W1N1", remaining: 3000, reason: "hub:import:U" },
-        { resource: "K", from: "W2N1", to: "W1N1", remaining: 5000, reason: "hub:import:K" },
-      ],
-    }));
-
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toEqual({ room: "W2N1", amount: 8000, taskCount: 2 });
-    expect(result.overflow).toBe(0);
-  });
-
-  it("excludes export tasks from hub", () => {
-    const result = buildInboundTransferRows(makeSnapshot({
-      hubRoomName: "W1N1",
-      pendingTasks: [
-        { resource: "XUHO2", from: "W1N1", to: "W2N1", remaining: 1000, reason: "hub:export:XUHO2" },
-      ],
-    }));
-
-    expect(result.rows).toHaveLength(0);
-    expect(result.overflow).toBe(0);
-  });
-
-  it("three source rooms: 2 visible rows and overflow=1", () => {
-    const result = buildInboundTransferRows(makeSnapshot({
-      hubRoomName: "W1N1",
-      pendingTasks: [
-        { resource: "U", from: "W2N1", to: "W1N1", remaining: 5000, reason: "hub:import:U" },
-        { resource: "K", from: "W3N1", to: "W1N1", remaining: 3000, reason: "hub:import:K" },
-        { resource: "L", from: "W4N1", to: "W1N1", remaining: 1000, reason: "hub:import:L" },
-      ],
-    }));
-
-    expect(result.rows).toHaveLength(2);
-    expect(result.overflow).toBe(1);
-    // Sorted by amount descending
-    expect(result.rows[0].room).toBe("W2N1");
-    expect(result.rows[1].room).toBe("W3N1");
-  });
-
-  it("no inbound tasks: empty rows and zero overflow", () => {
-    const result = buildInboundTransferRows(makeSnapshot({
-      hubRoomName: "W1N1",
-      pendingTasks: [],
-    }));
-
-    expect(result.rows).toHaveLength(0);
-    expect(result.overflow).toBe(0);
-  });
-
-  it("excludes non-hub-to-non-hub tasks", () => {
-    const result = buildInboundTransferRows(makeSnapshot({
-      hubRoomName: "W1N1",
-      pendingTasks: [
-        { resource: "energy", from: "W2N1", to: "W3N1", remaining: 5000, reason: "energy_transfer" },
-      ],
-    }));
-
-    expect(result.rows).toHaveLength(0);
-    expect(result.overflow).toBe(0);
-  });
-
-  it("sorts by amount descending, then room name ascending for ties", () => {
-    const result = buildInboundTransferRows(makeSnapshot({
-      hubRoomName: "W1N1",
-      pendingTasks: [
-        { resource: "U", from: "W3N1", to: "W1N1", remaining: 3000, reason: "hub:import:U" },
-        { resource: "K", from: "W2N1", to: "W1N1", remaining: 3000, reason: "hub:import:K" },
-      ],
-    }));
-
-    expect(result.rows).toHaveLength(2);
-    expect(result.rows[0].room).toBe("W2N1");
-    expect(result.rows[1].room).toBe("W3N1");
+    const noneText = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("none"));
+    expect(noneText).toBeDefined();
   });
 });
 

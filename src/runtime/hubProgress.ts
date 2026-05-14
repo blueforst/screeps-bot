@@ -168,57 +168,35 @@ function formatEnergy(amount: number): string {
 }
 
 export interface HubVisualModel {
-  productLabel: string;
-  statusLabel: string;
-  stageLabel: string | null;
-  needsPlan: boolean;
+  totalTasks: number;
+  roomBreakdown: Array<{ room: string; taskCount: number; resourceAmount: number }>;
+  activeProduct: string | null;
   progressPercent: number;
   progressText: string;
-  missingSummary: string;
-  logisticsCounts: { imports: number; reclaims: number; exports: number };
-  inboundRows: Array<{ room: string; amount: number; taskCount: number }>;
-  inboundOverflow: number;
 }
 
 const MAX_INBOUND_ROWS = 2;
 
-export function buildInboundTransferRows(snapshot: HubProgressSnapshot): {
-  rows: Array<{ room: string; amount: number; taskCount: number }>;
-  overflow: number;
-} {
-  const hub = snapshot.hubRoomName;
-  const bySource = new Map<string, { amount: number; taskCount: number }>();
+export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualModel {
+  const byRoom = new Map<string, { taskCount: number; resourceAmount: number }>();
+  let totalTasks = 0;
 
   for (const task of snapshot.pendingTasks) {
-    if (task.to !== hub) continue;
-    if (task.from === hub) continue;
-
-    const existing = bySource.get(task.from);
+    totalTasks++;
+    const existing = byRoom.get(task.from);
     if (existing) {
-      existing.amount += task.remaining;
-      existing.taskCount += 1;
+      existing.taskCount++;
+      existing.resourceAmount += task.remaining;
     } else {
-      bySource.set(task.from, { amount: task.remaining, taskCount: 1 });
+      byRoom.set(task.from, { taskCount: 1, resourceAmount: task.remaining });
     }
   }
 
-  const sorted = Array.from(bySource.entries())
-    .map(([room, data]) => ({ room, amount: data.amount, taskCount: data.taskCount }))
-    .sort((a, b) => b.amount - a.amount || a.room.localeCompare(b.room));
+  const roomBreakdown = Array.from(byRoom.entries())
+    .map(([room, data]) => ({ room, taskCount: data.taskCount, resourceAmount: data.resourceAmount }))
+    .sort((a, b) => b.taskCount - a.taskCount || a.room.localeCompare(b.room));
 
-  return {
-    rows: sorted.slice(0, MAX_INBOUND_ROWS),
-    overflow: Math.max(0, sorted.length - MAX_INBOUND_ROWS),
-  };
-}
-
-export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualModel {
   const activeProduct = snapshot.activeProduct;
-  const productLabel = activeProduct ?? "idle";
-  const statusLabel = snapshot.status ?? "—";
-  const stageLabel = snapshot.stage ?? null;
-  const needsPlan = snapshot.needsPlan;
-
   const isBatchMode = !!activeProduct && typeof snapshot.synthesisTargetAmount === "number" && snapshot.synthesisTargetAmount > 0;
 
   let progressPercent: number;
@@ -226,61 +204,20 @@ export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualMod
 
   if (!activeProduct) {
     progressPercent = 0;
-    progressText = "0% idle";
+    progressText = "idle";
   } else if (isBatchMode) {
     const target = snapshot.synthesisTargetAmount!;
     const currentAmount = (snapshot.hubInventory[activeProduct] || 0) + (snapshot.hubLabInventory[activeProduct] || 0);
     progressPercent = Math.min(currentAmount / target, 1);
-    const stageOrStatus = stageLabel ?? statusLabel;
-    progressText = `${activeProduct} ${currentAmount}/${target} ${stageOrStatus}`;
+    progressText = `${activeProduct} ${currentAmount}/${target}`;
   } else {
     const inventoryAmount = snapshot.hubInventory[activeProduct] || 0;
     progressPercent = Math.min(inventoryAmount / HUB_PROGRESS_TARGET, 1);
-    progressText = formatEnergy(inventoryAmount) + `/${HUB_PROGRESS_TARGET} stock`;
+    progressText = `${activeProduct} ${formatEnergy(inventoryAmount)}/${HUB_PROGRESS_TARGET}`;
   }
 
-  const missingResources = snapshot.missingResources;
-  let missingSummary = "";
-  if (missingResources.length > 0) {
-    const first4 = missingResources.slice(0, 4);
-    const remainder = missingResources.length - 4;
-    missingSummary = first4.join(", ");
-    if (remainder > 0) {
-      missingSummary += `, +${remainder}`;
-    }
-  }
-
-  const logisticsCounts = {
-    imports: snapshot.pendingImports,
-    reclaims: snapshot.pendingReclaims,
-    exports: snapshot.pendingExports,
-  };
-
-  const { rows: inboundRows, overflow: inboundOverflow } = buildInboundTransferRows(snapshot);
-
-  return {
-    productLabel,
-    statusLabel,
-    stageLabel,
-    needsPlan,
-    progressPercent,
-    progressText,
-    missingSummary,
-    logisticsCounts,
-    inboundRows,
-    inboundOverflow,
-  };
+  return { totalTasks, roomBreakdown, activeProduct, progressPercent, progressText };
 }
-
-function getStatusColor(model: HubVisualModel): string {
-  if (model.statusLabel === "blocked") return VIS_ERROR;
-  if (model.needsPlan || model.missingSummary !== "") return VIS_WARN;
-  if (model.statusLabel === "synthesizing") return VIS_OK;
-  if (!model.productLabel || model.productLabel === "idle") return VIS_MUTED;
-  return VIS_OK;
-}
-
-const getProgressColor = getStatusColor;
 
 function formatCompactAmount(amount: number): string {
   if (amount >= 1000000) return `${Math.round(amount / 10000) / 100}M`;
@@ -347,45 +284,20 @@ function drawDistributedProductionSection(
 export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, productionRooms?: ProductionRoomEntry[]): void {
   const p = new Panel({ rv, x: HUB_VISUAL_X, y: HUB_VISUAL_Y, width: HUB_VISUAL_WIDTH });
 
-  p.sectionHeader("Hub Production");
-
-  const statusColor = getStatusColor(model);
-  p.textRow(model.productLabel, { color: statusColor });
-
-  if (model.statusLabel !== "—") {
-    p.textRow("status: " + model.statusLabel, { color: statusColor });
-  }
-  if (model.stageLabel !== null) {
-    p.textRow("stage: " + model.stageLabel, { color: statusColor });
-  }
-  if (model.needsPlan) {
-    p.textRow("⚠ needs plan", { color: VIS_WARN });
-  }
-
-  p.spacer(HUB_VISUAL_ROW);
-
   p.sectionHeader("Progress");
-  const progressColor = getProgressColor(model);
-  p.progressBar(model.progressPercent, progressColor, model.progressText);
+  const barColor = !model.activeProduct ? VIS_MUTED : model.progressPercent >= 1 ? VIS_OK : VIS_WARN;
+  p.progressBar(model.progressPercent, barColor, model.progressText);
 
   p.sectionHeader("Logistics");
-  const lc = model.logisticsCounts;
-  p.textRow(`imp ${lc.imports} | recl ${lc.reclaims} | exp ${lc.exports}`);
+  p.textRow(`tasks: ${model.totalTasks}`);
 
-  if (model.inboundRows.length > 0) {
-    for (const row of model.inboundRows) {
-      const label = row.taskCount === 1
-        ? `${row.room}: ${formatEnergy(row.amount)} inbound`
-        : `${row.room}: ${formatEnergy(row.amount)} inbound (${row.taskCount} tasks)`;
-      p.textRow(label, { font: 0.35, color: VIS_WARN });
-    }
-    if (model.inboundOverflow > 0) {
-      p.textRow(`+${model.inboundOverflow} more inbound`, { font: 0.35, color: VIS_MUTED });
-    }
-  } else {
-    p.textRow("inbound: none", { font: 0.35, color: VIS_MUTED });
+  for (const room of model.roomBreakdown.slice(0, 3)) {
+    p.textRow(`${room.room}: ${room.taskCount} tasks, ${formatEnergy(room.resourceAmount)}`, { font: 0.35 });
   }
 
+  if (model.roomBreakdown.length === 0) {
+    p.textRow("none", { font: 0.35, color: VIS_MUTED });
+  }
 }
 
 
@@ -843,47 +755,12 @@ export function buildHubOverlayLines(snapshot: HubProgressSnapshot): string[] {
   if (!snapshot.enabled) return [];
 
   const lines: string[] = [];
+  const model = buildHubVisualModel(snapshot);
 
-  // Line 1: status + product
-  const statusStr = snapshot.status ?? "—";
-  const productStr = snapshot.activeProduct ?? "—";
-  lines.push(`[hub] ${statusStr} product=${productStr}`);
-
-  // Line 2: stage
-  if (snapshot.stage) {
-    lines.push(`stage=${snapshot.stage}`);
-  }
-
-  // Line 3: plan actions (truncated)
-  if (snapshot.lastPlanActions.length > 0) {
-    const actions = snapshot.lastPlanActions.slice(0, 4).join(", ");
-    lines.push(`plan: ${actions}`);
-  }
-
-  // Line 4: missing
-  if (snapshot.missingResources.length > 0) {
-    lines.push(`missing: ${snapshot.missingResources.join(", ")}`);
-  }
-
-  // Line 5: error
-  lines.push(`error: ${snapshot.lastError ?? "(none)"}`);
-
-  // Line 6: energy
-  lines.push(`storage=${formatEnergy(snapshot.hubStorageEnergy)} terminal=${formatEnergy(snapshot.hubTerminalEnergy)}`);
-
-  // Line 7: tasks
-  lines.push(`tasks: ${snapshot.pendingImports} imp, ${snapshot.pendingReclaims} recl, ${snapshot.pendingExports} exp`);
-
-  // Line 8: inbound summary
-  const inbound = buildInboundTransferRows(snapshot);
-  if (inbound.rows.length > 0) {
-    const top = inbound.rows[0];
-    const totalSourceRooms = inbound.rows.length + inbound.overflow;
-    let line = `inbound: ${top.room} ${formatEnergy(top.amount)} (${top.taskCount} tasks)`;
-    if (totalSourceRooms > 1) {
-      line += `, +${totalSourceRooms - 1} more`;
-    }
-    lines.push(line);
+  lines.push(`progress: ${model.progressText}`);
+  lines.push(`tasks: ${model.totalTasks}`);
+  for (const room of model.roomBreakdown.slice(0, 3)) {
+    lines.push(`${room.room}: ${room.taskCount} tasks, ${formatEnergy(room.resourceAmount)}`);
   }
 
   return lines.slice(0, MAX_OVERLAY_LINES);
