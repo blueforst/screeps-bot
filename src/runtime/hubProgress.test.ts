@@ -1698,7 +1698,7 @@ describe("drawHubVisualPanel distributed production rendering", () => {
       progressPercent: 0.5,
       currentAmount: 500,
       targetAmount: 1000,
-      isHubRoom: false,
+      isHubRoom: true,
       upstream: [],
       downstream: [],
       directSupplyAmount: 0,
@@ -1879,5 +1879,20 @@ describe("drawHubVisualPanel distributed production rendering", () => {
 
     const barLabels = findText(t => t.includes("750/1K") && t.includes("75%"));
     expect(barLabels).toHaveLength(1);
+  });
+
+  it("filters out non-hub rooms from hub panel", () => {
+    const rv = new RoomVisual("W1N1");
+    const model = makeModel();
+    const rooms = [
+      makeProductionRoom({ roomName: "W1N1", product: "OH", isHubRoom: true }),
+      makeProductionRoom({ roomName: "W2N1", product: "UO", isHubRoom: false }),
+    ];
+    drawHubVisualPanel(rv, model, rooms);
+
+    const hubTexts = findText(t => t.includes("W1N1") && t.includes("OH"));
+    const satTexts = findText(t => t.includes("W2N1") && t.includes("UO"));
+    expect(hubTexts).toHaveLength(1);
+    expect(satTexts).toHaveLength(0);
   });
 });

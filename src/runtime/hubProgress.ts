@@ -387,7 +387,10 @@ export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, pro
   }
 
   if (productionRooms && productionRooms.length > 0) {
-    drawDistributedProductionSection(p, productionRooms);
+    const hubOnly = productionRooms.filter(r => r.isHubRoom);
+    if (hubOnly.length > 0) {
+      drawDistributedProductionSection(p, hubOnly);
+    }
   }
 }
 
