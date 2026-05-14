@@ -392,3 +392,19 @@ Hub room monopolized all synthesis assignments because:
 - 7-room realistic inventory: verifies >1 assignment, ≤1 per room, ≥3 distinct rooms, tier ordering
 - Cross-room reagent routing: hub supplies OH to satellite for T1 production
 - One-per-room distribution: 3 rooms with abundant resources, first 3 assignments go to 3 distinct rooms
+
+## Task: Fix wireRouteTransferTasks hub-as-source silent failure
+
+### Root Cause
+When `route.fromRoom === hubRoomName`, the fee comparison in `wireRouteTransferTasks` at line 1192 always set `preferDirect = false`:
+- `feeToHub = calcTransactionCost(amount, hub, hub)` = 0
+- `feeHubToTarget = calcTransactionCost(amount, hub, target)` = directFee
+- `directFee >= 0 + directFee` → always true → preferDirect = false
+
+Then the hub-route fallback called `createResourceTransferTask(hub, hub, ...)` which returned `"ERR_SAME_ROOM"` — silently ignored.
+
+### Fix
+Added `route.fromRoom !== hubRoomName` guard before the fee comparison. When source IS the hub, direct is the only valid path.
+
+### Key Insight
+Any route decision where `fromRoom` equals `hubRoomName` and `toRoom` is a satellite will ALWAYS hit this bug. The `createResourceTransferTask` return value is never checked — errors are silently swallowed.

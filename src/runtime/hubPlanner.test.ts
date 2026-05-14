@@ -4800,6 +4800,34 @@ describe("logistics-cost-aware dispatch scoring", () => {
       expect(directTasks.length).toBe(1);
       expect(directTasks[0].amount).toBe(1800);
     });
+
+    it("creates direct task when fromRoom is hub room (avoids ERR_SAME_ROOM in hub-route fallback)", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      (Game as any).market = {
+        ...(Game.market || {}),
+        calcTransactionCost: (amount: number, _from: string, _to: string) =>
+          Math.ceil(amount * 0.01),
+      };
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_HUB, toRoom: WIRE_AUX, resource: RESOURCE_KEANIUM, amount: 20000, fee: 0 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000);
+
+      const store = ensureResourceTransferTaskStore();
+      const allTasks = Object.values(store).filter(t => t.status === "pending");
+      const kTasks = allTasks.filter(t => t.resource === RESOURCE_KEANIUM);
+
+      expect(kTasks.length).toBe(1);
+      expect(kTasks[0].fromRoomName).toBe(WIRE_HUB);
+      expect(kTasks[0].toRoomName).toBe(WIRE_AUX);
+      expect(kTasks[0].amount).toBe(20000);
+      expect(kTasks[0].reason).toBe("synthesis:direct:K");
+    });
   });
 });
 

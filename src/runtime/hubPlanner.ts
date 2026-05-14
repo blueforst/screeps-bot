@@ -1189,7 +1189,8 @@ export function wireRouteTransferTasks(
     if (route.amount <= 0) continue;
 
     let preferDirect = true;
-    if (typeof Game.market?.calcTransactionCost === "function") {
+    // Source IS hub → hub-route creates same-room task (ERR_SAME_ROOM).
+    if (route.fromRoom !== hubRoomName && typeof Game.market?.calcTransactionCost === "function") {
       const directFee = Game.market.calcTransactionCost(route.amount, route.fromRoom, route.toRoom);
       const feeToHub = Game.market.calcTransactionCost(route.amount, route.fromRoom, hubRoomName);
       const feeHubToTarget = Game.market.calcTransactionCost(route.amount, hubRoomName, route.toRoom);
