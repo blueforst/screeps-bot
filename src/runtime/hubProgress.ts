@@ -386,13 +386,8 @@ export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, pro
     p.textRow("inbound: none", { font: 0.35, color: VIS_MUTED });
   }
 
-  if (productionRooms && productionRooms.length > 0) {
-    const hubOnly = productionRooms.filter(r => r.isHubRoom);
-    if (hubOnly.length > 0) {
-      drawDistributedProductionSection(p, hubOnly);
-    }
-  }
 }
+
 
 /** Satellite visual panel position constants. */
 const SATELLITE_VISUAL_X = 1;
