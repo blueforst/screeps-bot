@@ -708,7 +708,28 @@ export function getSourceContainerPositionsForRoom(roomName: string): { x: numbe
     return sources.some((s) => Math.abs(wp.x - s.pos.x) <= 1 && Math.abs(wp.y - s.pos.y) <= 1);
   });
 
-  return [...fromContainers, ...fromWorkPos];
+  const minerals = room.find(FIND_MINERALS);
+  const mineralPositions: { x: number; y: number }[] = [];
+  for (const mineral of minerals) {
+    mineralPositions.push({ x: mineral.pos.x, y: mineral.pos.y });
+    const containers = mineral.pos.findInRange(FIND_STRUCTURES, 1).filter(
+      (s) => s.structureType === STRUCTURE_CONTAINER,
+    );
+    for (const c of containers) {
+      mineralPositions.push({ x: c.pos.x, y: c.pos.y });
+    }
+  }
+
+  const seen = new Set<string>();
+  const unique: { x: number; y: number }[] = [];
+  for (const pos of [...fromContainers, ...fromWorkPos, ...mineralPositions]) {
+    const key = `${pos.x}:${pos.y}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(pos);
+    }
+  }
+  return unique;
 }
 
 export function getPlannedSourceContainerPos(source: Source): RoomPosition | null {
