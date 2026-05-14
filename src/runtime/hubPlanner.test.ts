@@ -4596,6 +4596,81 @@ describe("logistics-cost-aware dispatch scoring", () => {
       expect(Memory.runtime!.hub!.distributedSynthesis!.roomCapabilities).toBeDefined();
     });
 
+    it("includes busy synthesizing room in dispatchAssignments for analytics", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_ZYNTHIUM]: 5000,
+          [RESOURCE_KEANIUM]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = {
+        stage: "synthesizing",
+        activeProduct: RESOURCE_ZYNTHIUM_KEANITE,
+        targetAmount: 5000,
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 10000, [RESOURCE_OXYGEN]: 10000, [RESOURCE_ZYNTHIUM]: 5000, [RESOURCE_KEANIUM]: 5000 },
+        [],
+      );
+
+      const assignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+      const auxAssignment = assignments.find(a => a.roomName === WIRE_AUX);
+      expect(auxAssignment).toBeDefined();
+      expect(auxAssignment!.product).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+      expect(auxAssignment!.targetAmount).toBe(5000);
+      expect(auxAssignment!.isHubRoom).toBe(false);
+    });
+
+    it("does not double-count idle rooms already in plan dispatchAssignments", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_UTRIUM]: 5000,
+          [RESOURCE_HYDROGEN]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 15000, [RESOURCE_OXYGEN]: 10000, [RESOURCE_UTRIUM]: 5000 },
+        [],
+      );
+
+      const assignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+      const auxCount = assignments.filter(a => a.roomName === WIRE_AUX).length;
+      expect(auxCount).toBeLessThanOrEqual(1);
+    });
+
     it("creates direct A→B transfer when downstream consumer is known and direct fee is lower", () => {
       (global as any).__runtimeServices = undefined;
       registerRuntimeServices();

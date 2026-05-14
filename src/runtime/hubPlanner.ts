@@ -1325,6 +1325,27 @@ export function wireDistributedSynthesis(
     ];
   }
 
+  // Second pass: ensure busy rooms (not in ACCEPT_REASSIGN_STAGES) with active
+  // reactions are included in dispatchAssignments so analytics displays them.
+  const existing = Memory.runtime.hub.distributedSynthesis.dispatchAssignments;
+  for (const room of eligibleRooms) {
+    if (existing.some(a => a.roomName === room.roomName)) continue;
+
+    const runtimeRoom = Memory.runtime?.synthesisControl?.rooms?.[room.roomName];
+    const stage = runtimeRoom?.stage;
+    if (!stage || ACCEPT_REASSIGN_STAGES.has(stage)) continue;
+
+    const activeProduct = runtimeRoom?.activeProduct;
+    if (!activeProduct) continue;
+
+    existing.push({
+      roomName: room.roomName,
+      product: activeProduct as ResourceConstant,
+      targetAmount: runtimeRoom?.targetAmount ?? 0,
+      isHubRoom: room.roomName === hubRoomName,
+    });
+  }
+
   wireRouteTransferTasks(plan.routeDecisions, hubRoomName, reservePerRoom);
 
   return true;
