@@ -282,7 +282,69 @@ function getStatusColor(model: HubVisualModel): string {
 
 const getProgressColor = getStatusColor;
 
-export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel): void {
+function formatCompactAmount(amount: number): string {
+  if (amount >= 1000000) return `${Math.round(amount / 10000) / 100}M`;
+  if (amount >= 1000) return `${Math.round(amount / 100) / 10}K`;
+  return `${amount}`;
+}
+
+function drawDistributedProductionSection(
+  p: Panel,
+  productionRooms: ProductionRoomEntry[],
+): void {
+  if (productionRooms.length === 0) return;
+
+  p.sectionHeader("Distributed Production");
+
+  const rooms = productionRooms.slice(0, MAX_PRODUCTION_ROOM_ROWS);
+
+  for (const room of rooms) {
+    // Row 1: room name + product + stage
+    const hubTag = room.isHubRoom ? " ★" : "";
+    p.textRow(`${room.roomName}${hubTag} ${room.product} [${room.stage}]`, { font: 0.35 });
+
+    // Row 2: progress bar
+    const pct = room.progressPercent;
+    const progressLabel = `${formatCompactAmount(room.currentAmount)}/${formatCompactAmount(room.targetAmount)} ${Math.round(pct * 100)}%`;
+    const barColor = room.stage === "blocked" ? VIS_ERROR
+      : room.stage === "synthesizing" ? VIS_OK
+      : pct >= 1 ? VIS_OK
+      : VIS_MUTED;
+    p.progressBar(pct, barColor, progressLabel);
+
+    // Row 3: upstream + downstream links + amounts
+    const upstreamLabels = room.upstream
+      .slice(0, MAX_LINK_LABELS)
+      .map(u => u.roomName);
+    const upstreamStr = upstreamLabels.length > 0
+      ? `←${upstreamLabels.join(",")}${room.upstream.length > MAX_LINK_LABELS ? `+${room.upstream.length - MAX_LINK_LABELS}` : ""}`
+      : "";
+
+    const downstreamLabels = room.downstream
+      .slice(0, MAX_LINK_LABELS)
+      .map(d => d.roomName);
+    const downstreamStr = downstreamLabels.length > 0
+      ? `→${downstreamLabels.join(",")}${room.downstream.length > MAX_LINK_LABELS ? `+${room.downstream.length - MAX_LINK_LABELS}` : ""}`
+      : "";
+
+    const supplyParts: string[] = [];
+    if (upstreamStr) supplyParts.push(upstreamStr);
+    if (downstreamStr) supplyParts.push(downstreamStr);
+    if (room.directSupplyAmount > 0) supplyParts.push(`direct:${formatCompactAmount(room.directSupplyAmount)}`);
+    if (room.hubSurplusAmount > 0) supplyParts.push(`hub:${formatCompactAmount(room.hubSurplusAmount)}`);
+
+    if (supplyParts.length > 0) {
+      p.textRow(supplyParts.join(" "), { font: 0.35, color: VIS_MUTED });
+    }
+
+    // Row 4: blockers (up to 2)
+    if (room.blocker) {
+      p.textRow(`⚠ ${room.blocker}`, { font: 0.35, color: VIS_ERROR });
+    }
+  }
+}
+
+export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, productionRooms?: ProductionRoomEntry[]): void {
   const p = new Panel({ rv, x: HUB_VISUAL_X, y: HUB_VISUAL_Y, width: HUB_VISUAL_WIDTH });
 
   p.sectionHeader("Hub Production");
@@ -322,6 +384,10 @@ export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel): vo
     }
   } else {
     p.textRow("inbound: none", { font: 0.35, color: VIS_MUTED });
+  }
+
+  if (productionRooms && productionRooms.length > 0) {
+    drawDistributedProductionSection(p, productionRooms);
   }
 }
 
@@ -771,7 +837,9 @@ export function buildHubOverlayLines(snapshot: HubProgressSnapshot): string[] {
   return lines.slice(0, MAX_OVERLAY_LINES);
 }
 
-const MAX_HUB_VISUAL_CALLS = 40;
+const MAX_PRODUCTION_ROOM_ROWS = 6;
+const MAX_LINK_LABELS = 2;
+const MAX_HUB_VISUAL_CALLS = 80;
 
 export function renderHubProgressOverlays(): void {
   if (typeof RoomVisual === "undefined") return;
@@ -791,7 +859,7 @@ export function renderHubProgressOverlays(): void {
   const model = buildHubVisualModel(snapshot);
 
   const callsBefore = (global as any).__roomVisualCalls?.length ?? 0;
-  drawHubVisualPanel(rv, model);
+  drawHubVisualPanel(rv, model, snapshot.productionRooms);
   const callsAfter = (global as any).__roomVisualCalls?.length ?? 0;
   const callsUsed = callsAfter - callsBefore;
 
