@@ -2388,3 +2388,169 @@ describe("in-flight synthesis cargo suppresses duplicate supply demand", () => {
     expect(oxygenStep).toBeUndefined();
   });
 });
+
+describe("resolveLabTopology – room planner layout preference", () => {
+  function makeLab(
+    room: Room,
+    id: string,
+    x: number,
+    y: number,
+    mineralType?: ResourceConstant,
+  ): LabHandle {
+    const lab = createLab(room, id, mineralType);
+    lab.pos = {
+      x,
+      y,
+      inRangeTo(target: { x: number; y: number }, range: number): boolean {
+        const dx = Math.abs(x - target.x);
+        const dy = Math.abs(y - target.y);
+        return dx <= range && dy <= range;
+      },
+    } as any;
+    return lab;
+  }
+
+  function setPlannedLayout(roomName: string, labPositions: { x: number; y: number }[]): void {
+    if (!Memory.data) Memory.data = {};
+    if (!(Memory.data as any).roomPlanner) (Memory.data as any).roomPlanner = {};
+    (Memory.data as any).roomPlanner[roomName] = {
+      layout: { lab: labPositions },
+    };
+  }
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("prefers planned reagent labs over brute-force search", () => {
+    setConfig({ sampleInterval: 100 });
+
+    const { room } = createSynthesisRoom({ name: "W1N1" });
+
+    // Layout: reagent labs are last 2 positions in the layout array
+    // Reagent at (10,10) and (10,12), product at (11,11), (11,10), (11,12)
+    // Brute-force would find a different pair since all labs are in range-2 of each other
+    const reagentA = makeLab(room, "lab-reagent-a", 10, 10);
+    const reagentB = makeLab(room, "lab-reagent-b", 10, 12);
+    const product1 = makeLab(room, "lab-product-1", 11, 11);
+    const product2 = makeLab(room, "lab-product-2", 11, 10);
+    const product3 = makeLab(room, "lab-product-3", 11, 12);
+
+    const allLabs = [product1, reagentA, product2, product3, reagentB];
+
+    (room as any).find = ((type: FindConstant) => {
+      if (type === FIND_MY_STRUCTURES) return allLabs;
+      return [];
+    }) as Room["find"];
+
+    setPlannedLayout("W1N1", [
+      { x: 11, y: 11 },
+      { x: 11, y: 10 },
+      { x: 11, y: 12 },
+      { x: 10, y: 10 }, // reagent (last-2)
+      { x: 10, y: 12 }, // reagent (last-1)
+    ]);
+
+    const labById: Record<string, any> = {};
+    for (const l of allLabs) labById[l.id] = l;
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const runtime = Memory.runtime!.synthesisControl!;
+    expect(runtime.rooms["W1N1"].stage).toBe("loading");
+    expect(runtime.rooms["W1N1"].reagentLabIds).toEqual(
+      expect.arrayContaining(["lab-reagent-a", "lab-reagent-b"]),
+    );
+  });
+
+  it("falls back to brute-force when planned reagent labs are not built", () => {
+    setConfig({ sampleInterval: 100 });
+
+    const { room } = createSynthesisRoom({ name: "W1N1" });
+
+    // Only build 3 labs, none at the planned reagent positions
+    const lab1 = makeLab(room, "lab-1", 20, 20);
+    const lab2 = makeLab(room, "lab-2", 21, 21);
+    const lab3 = makeLab(room, "lab-3", 22, 20);
+
+    const allLabs = [lab1, lab2, lab3];
+    (room as any).find = ((type: FindConstant) => {
+      if (type === FIND_MY_STRUCTURES) return allLabs;
+      return [];
+    }) as Room["find"];
+
+    // Planned reagent labs at positions that don't have built labs
+    setPlannedLayout("W1N1", [
+      { x: 30, y: 30 },
+      { x: 30, y: 32 },
+      { x: 10, y: 10 },
+      { x: 10, y: 12 },
+    ]);
+
+    const labById: Record<string, any> = {};
+    for (const l of allLabs) labById[l.id] = l;
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const runtime = Memory.runtime!.synthesisControl!;
+    // Should still find a topology via brute-force and progress
+    expect(runtime.rooms["W1N1"].stage).not.toBe("blocked");
+  });
+
+  it("manual reagentLabIds config overrides planned layout", () => {
+    setConfig({ sampleInterval: 100 });
+    // Set manual reagent lab IDs
+    (Memory.cfg!.synthesisControl!.rooms!["W1N1"] as any).reagentLabIds = [
+      "lab-manual-a",
+      "lab-manual-b",
+    ];
+
+    const { room } = createSynthesisRoom({ name: "W1N1" });
+
+    const manualA = makeLab(room, "lab-manual-a", 5, 5);
+    const manualB = makeLab(room, "lab-manual-b", 5, 7);
+    const product1 = makeLab(room, "lab-product-1", 6, 6);
+
+    const allLabs = [manualA, manualB, product1];
+    (room as any).find = ((type: FindConstant) => {
+      if (type === FIND_MY_STRUCTURES) return allLabs;
+      return [];
+    }) as Room["find"];
+
+    // Planned layout would choose different labs
+    setPlannedLayout("W1N1", [
+      { x: 6, y: 6 },
+      { x: 5, y: 5 },
+      { x: 5, y: 7 },
+    ]);
+
+    const labById: Record<string, any> = {};
+    for (const l of allLabs) labById[l.id] = l;
+    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const runtime = Memory.runtime!.synthesisControl!;
+    expect(runtime.rooms["W1N1"].stage).toBe("loading");
+    expect(runtime.rooms["W1N1"].reagentLabIds).toEqual(
+      expect.arrayContaining(["lab-manual-a", "lab-manual-b"]),
+    );
+  });
+});

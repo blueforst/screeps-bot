@@ -452,6 +452,38 @@ function resolveLabTopology(room: Room, roomCfg: SynthesisRoomConfig): LabTopolo
     }
   }
 
+  // Prefer room planner layout's reagent lab positions over brute-force search.
+  // getSortedLabPlannedPositions() returns [...planned.slice(-2), ...planned.slice(0, -2)],
+  // so the last 2 positions in the layout array are the planned reagent labs.
+  const plannedLayout = (Memory.data as any)?.roomPlanner?.[room.name]?.layout as
+    | { [structureType: string]: { x: number; y: number }[] }
+    | undefined;
+  const plannedLabPositions = plannedLayout?.[STRUCTURE_LAB];
+  if (plannedLabPositions && plannedLabPositions.length >= 2) {
+    const reagentPositions = plannedLabPositions.slice(-2);
+    const firstPlanned = labs.find(
+      (lab) => lab.pos.x === reagentPositions[0].x && lab.pos.y === reagentPositions[0].y,
+    );
+    const secondPlanned = labs.find(
+      (lab) => lab.pos.x === reagentPositions[1].x && lab.pos.y === reagentPositions[1].y,
+    );
+    if (firstPlanned && secondPlanned) {
+      const productLabs = labs.filter(
+        (lab) =>
+          lab.id !== firstPlanned.id &&
+          lab.id !== secondPlanned.id &&
+          lab.pos.inRangeTo(firstPlanned.pos, 2) &&
+          lab.pos.inRangeTo(secondPlanned.pos, 2),
+      );
+      if (productLabs.length > 0) {
+        return {
+          reagentLabs: [firstPlanned, secondPlanned],
+          productLabs,
+        };
+      }
+    }
+  }
+
   let best: LabTopology | null = null;
   for (let i = 0; i < labs.length; i += 1) {
     for (let j = i + 1; j < labs.length; j += 1) {
