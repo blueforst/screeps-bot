@@ -936,12 +936,14 @@ export function planDistributedSynthesis(
   ];
 
   const depGraph = new DependencyGraph();
+  const usedRooms = new Set<string>();
 
   for (const step of chainResult.steps) {
-    const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName, rooms, depGraph);
+    const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName, rooms, depGraph, usedRooms);
     if (result) {
       assignments.push(result.assignment);
       routeDecisions.push(...result.routes);
+      usedRooms.add(result.assignment.roomName);
     }
   }
 
@@ -966,10 +968,18 @@ export function scoreRoomForStep(
   ledger: Record<string, AllocationLedgerEntry>,
   hubRoomName: string,
   roomCapabilities: SynthesisRoomCapability[],
+  usedRooms?: Set<string>,
 ): RoomDispatchScore {
   const [reagentA, reagentB] = step.reagents;
   const needed = step.targetAmount;
   let score = 0;
+
+  // Heavily penalize rooms that already have an assignment so other rooms
+  // are preferred.  -300 is stronger than the +100 local-reagent bonus,
+  // effectively reserving used rooms as a last resort.
+  if (usedRooms?.has(roomName)) {
+    score -= 300;
+  }
 
   if (roomName === hubRoomName) {
     score += 1;
@@ -1058,12 +1068,17 @@ function assignStepToRoom(
   hubRoomName: string,
   roomCapabilities: SynthesisRoomCapability[],
   depGraph: DependencyGraph,
+  usedRooms: Set<string>,
 ): { assignment: SynthesisDispatchAssignment; routes: DirectRouteDecision[] } | null {
   const [reagentA, reagentB] = step.reagents;
-  const needed = step.targetAmount;
+  const globalA = ledger[reagentA]?.totalAmount ?? 0;
+  const globalB = ledger[reagentB]?.totalAmount ?? 0;
+  if (globalA <= 0 || globalB <= 0) return null;
+  let needed = Math.min(step.targetAmount, globalA, globalB);
+  if (needed <= 0) return null;
 
   const scored = roomOrder
-    .map(r => scoreRoomForStep(r, step, ledger, hubRoomName, roomCapabilities))
+    .map(r => scoreRoomForStep(r, step, ledger, hubRoomName, roomCapabilities, usedRooms))
     .sort((a, b) => b.score - a.score);
 
   for (const { roomName } of scored) {
@@ -1079,10 +1094,6 @@ function assignStepToRoom(
         routes: [],
       };
     }
-
-    const totalA = ledger[reagentA]?.totalAmount ?? 0;
-    const totalB = ledger[reagentB]?.totalAmount ?? 0;
-    if (totalA < needed || totalB < needed) continue;
 
     const routes: DirectRouteDecision[] = [];
     const changes: Array<{ res: string; room: string; amt: number }> = [];

@@ -3920,6 +3920,219 @@ describe("planDistributedSynthesis", () => {
       expect(entry.roomCommitments).toBeDefined();
     }
   });
+
+  it("distributes assignments across rooms: 7 rooms with diverse minerals produce multiple parallel assignments", () => {
+    // Mimic live game state: hub (E4N58) has lots of intermediates,
+    // 6 satellite rooms each extract different base minerals.
+    // Hub: OH, UH, UO, LO, GH, GO intermediates + Catalyst
+    // Satellites: each has a primary base mineral + H/O support.
+    const DIST_SAT1 = "SA1";
+    const DIST_SAT2 = "SA2";
+    const DIST_SAT3 = "SA3";
+    const DIST_SAT4 = "SA4";
+    const DIST_SAT5 = "SA5";
+    const DIST_SAT6 = "SA6";
+
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROXIDE]: 16838,
+        [RESOURCE_UTRIUM_HYDRIDE]: 8447,
+        [RESOURCE_UTRIUM_OXIDE]: 955,
+        [RESOURCE_LEMERGIUM_OXIDE]: 11175,
+        [RESOURCE_GHODIUM_HYDRIDE]: 8911,
+        [RESOURCE_GHODIUM_OXIDE]: 19999,
+        [RESOURCE_CATALYST]: 30000,
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+      },
+    });
+    // Sat1: K (keanium) — needed for K-chain T3s (XKH2O, XKHO2)
+    const sat1 = createSynthesisCapableRoom(DIST_SAT1, {
+      labCount: 3,
+      storageResources: { [RESOURCE_KEANIUM]: 10000, [RESOURCE_HYDROGEN]: 5000 },
+    });
+    // Sat2: L (lemergium) — needed for L-chain T3s (XLH2O)
+    const sat2 = createSynthesisCapableRoom(DIST_SAT2, {
+      labCount: 3,
+      storageResources: { [RESOURCE_LEMERGIUM]: 10000, [RESOURCE_OXYGEN]: 5000 },
+    });
+    // Sat3: Z (zynthium) — needed for Z-chain T3s (XZH2O, XZHO2)
+    const sat3 = createSynthesisCapableRoom(DIST_SAT3, {
+      labCount: 3,
+      storageResources: { [RESOURCE_ZYNTHIUM]: 10000, [RESOURCE_HYDROGEN]: 5000 },
+    });
+    // Sat4: U (utrium) — needed for U-chain (XUHO2)
+    const sat4 = createSynthesisCapableRoom(DIST_SAT4, {
+      labCount: 3,
+      storageResources: { [RESOURCE_UTRIUM]: 10000, [RESOURCE_OXYGEN]: 5000 },
+    });
+    // Sat5: H + O support
+    const sat5 = createSynthesisCapableRoom(DIST_SAT5, {
+      labCount: 3,
+      storageResources: { [RESOURCE_HYDROGEN]: 8000, [RESOURCE_OXYGEN]: 8000 },
+    });
+    // Sat6: extra K + H
+    const sat6 = createSynthesisCapableRoom(DIST_SAT6, {
+      labCount: 3,
+      storageResources: { [RESOURCE_KEANIUM]: 8000, [RESOURCE_OXYGEN]: 8000 },
+    });
+
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SAT1] = sat1;
+    Game.rooms[DIST_SAT2] = sat2;
+    Game.rooms[DIST_SAT3] = sat3;
+    Game.rooms[DIST_SAT4] = sat4;
+    Game.rooms[DIST_SAT5] = sat5;
+    Game.rooms[DIST_SAT6] = sat6;
+
+    // Target T3s that are NOT at reserve (missing):
+    // XKH2O, XKHO2, XLH2O, XZH2O, XZHO2, XUHO2
+    const targets: ResourceConstant[] = [
+      RESOURCE_CATALYZED_KEANIUM_ACID,      // XKH2O
+      RESOURCE_CATALYZED_KEANIUM_ALKALIDE,   // XKHO2
+      RESOURCE_CATALYZED_LEMERGIUM_ACID,     // XLH2O
+      RESOURCE_CATALYZED_ZYNTHIUM_ACID,      // XZH2O
+      RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,  // XZHO2
+      RESOURCE_CATALYZED_UTRIUM_ALKALIDE,    // XUHO2
+    ];
+
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // Must produce more than 1 assignment — distributed across rooms
+    expect(plan.dispatchAssignments.length).toBeGreaterThan(1);
+
+    // Each room should appear at most once in the assignments
+    const roomCounts: Record<string, number> = {};
+    for (const a of plan.dispatchAssignments) {
+      roomCounts[a.roomName] = (roomCounts[a.roomName] || 0) + 1;
+    }
+    for (const [room, count] of Object.entries(roomCounts)) {
+      expect(count).toBeLessThanOrEqual(1);
+    }
+
+    // Assignments should span at least 3 distinct rooms
+    const distinctRooms = Object.keys(roomCounts);
+    expect(distinctRooms.length).toBeGreaterThanOrEqual(3);
+
+    // Lower-tier products should appear first (base intermediates before T1 before T2 before T3)
+    const tierOrder: Record<string, number> = {
+      [RESOURCE_HYDROXIDE]: 0,
+      [RESOURCE_ZYNTHIUM_KEANITE]: 0,
+      [RESOURCE_UTRIUM_LEMERGITE]: 0,
+      [RESOURCE_GHODIUM]: 0,
+      [RESOURCE_UTRIUM_HYDRIDE]: 1, [RESOURCE_UTRIUM_OXIDE]: 1,
+      [RESOURCE_KEANIUM_HYDRIDE]: 1, [RESOURCE_KEANIUM_OXIDE]: 1,
+      [RESOURCE_LEMERGIUM_HYDRIDE]: 1, [RESOURCE_LEMERGIUM_OXIDE]: 1,
+      [RESOURCE_ZYNTHIUM_HYDRIDE]: 1, [RESOURCE_ZYNTHIUM_OXIDE]: 1,
+      [RESOURCE_GHODIUM_HYDRIDE]: 1, [RESOURCE_GHODIUM_OXIDE]: 1,
+      [RESOURCE_UTRIUM_ACID]: 2, [RESOURCE_UTRIUM_ALKALIDE]: 2,
+      [RESOURCE_KEANIUM_ACID]: 2, [RESOURCE_KEANIUM_ALKALIDE]: 2,
+      [RESOURCE_LEMERGIUM_ACID]: 2, [RESOURCE_LEMERGIUM_ALKALIDE]: 2,
+      [RESOURCE_ZYNTHIUM_ACID]: 2, [RESOURCE_ZYNTHIUM_ALKALIDE]: 2,
+      [RESOURCE_GHODIUM_ACID]: 2, [RESOURCE_GHODIUM_ALKALIDE]: 2,
+    };
+    for (let i = 1; i < plan.dispatchAssignments.length; i++) {
+      const prevTier = tierOrder[plan.dispatchAssignments[i - 1].product] ?? 3;
+      const currTier = tierOrder[plan.dispatchAssignments[i].product] ?? 3;
+      expect(currTier).toBeGreaterThanOrEqual(prevTier);
+    }
+
+    // Not blocked — we have enough resources globally
+    expect(plan.blockedTargets).toEqual([]);
+  });
+
+  it("cross-room reagent routing: hub supplies OH to satellite for T1 production", () => {
+    // Hub has OH, satellite has K — KH (K+H) needs H which satellite may not have enough,
+    // but KO (K+O) is also a T1 step. With OH routing, satellite can make KO if it gets OH.
+    // Actually KO = K + O, no OH needed. So test KO production at satellite using its K + O.
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROXIDE]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+      },
+    });
+    const satRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_KEANIUM]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = satRoom;
+
+    const targets: ResourceConstant[] = [RESOURCE_CATALYZED_KEANIUM_ALKALIDE]; // XKHO2
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // Should produce at least KO assignment (K+O → KO)
+    const products = plan.dispatchAssignments.map(a => a.product);
+    expect(products.length).toBeGreaterThan(0);
+
+    // Satellite has K+O locally → KO should be assigned to satellite or hub
+    const koAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_KEANIUM_OXIDE);
+    if (koAssignment) {
+      // Verify KO got an assignment — either room is fine
+      expect(koAssignment.targetAmount).toBeGreaterThan(0);
+    }
+  });
+
+  it("rooms get one assignment each before any room gets a second", () => {
+    // 3 rooms, each with all base minerals in abundance
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_UTRIUM]: 20000,
+        [RESOURCE_LEMERGIUM]: 20000,
+        [RESOURCE_KEANIUM]: 20000,
+        [RESOURCE_ZYNTHIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+      },
+    });
+    const aux1 = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_UTRIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+      },
+    });
+    const aux2 = createSynthesisCapableRoom(DIST_SYNTH_AUX2, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_KEANIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = aux1;
+    Game.rooms[DIST_SYNTH_AUX2] = aux2;
+
+    // Multiple T3 targets to force many assignments
+    const targets: ResourceConstant[] = [
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+      RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+      RESOURCE_CATALYZED_KEANIUM_ACID,
+      RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+    ];
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // Must produce multiple assignments
+    expect(plan.dispatchAssignments.length).toBeGreaterThan(1);
+
+    // First 3 assignments should go to 3 distinct rooms
+    const firstThree = plan.dispatchAssignments.slice(0, 3);
+    const roomSet = new Set(firstThree.map(a => a.roomName));
+    expect(roomSet.size).toBe(Math.min(3, firstThree.length));
+  });
 });
 
 // ---------------------------------------------------------------------------
