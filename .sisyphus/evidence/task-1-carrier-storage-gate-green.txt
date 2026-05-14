@@ -1,0 +1,50 @@
+PASS src/roles/carrier.test.ts
+  carrierRole mineral hauling
+    ✓ picks mineral board tasks when there is no energy demand target (2 ms)
+    ✓ keeps mineral hauling behind active energy demand
+    ✓ fills proto storage container before proto controller container in storage-only mode (1 ms)
+    ✓ falls back to the proto controller container when proto storage is full in storage-only mode
+    ✓ moves to planned storage position to drop energy before the proto storage site exists (1 ms)
+    ✓ drops energy at planned storage position before the proto storage site exists
+    ✓ does not drop at planned storage position after a construction site exists
+    ✓ does not pick up dropped energy from planned storage before storage exists at rcl3 (1 ms)
+    ✓ delivers to generic demand targets during the pre-storage gap
+    ✓ can withdraw from proto storage container when spawn or extension demand exists (1 ms)
+    ✓ can withdraw from controller-adjacent links when storage and controller share the link cluster
+    ✓ does not withdraw from proto storage container when only tower demand exists
+    ✓ delivers hauled minerals to the terminal before storage (1 ms)
+    ✓ picks terminal feed board tasks when cross-room preload is pending
+    ✓ prefers mineral hauling over terminal feed when both board tasks are available
+    ✓ picks terminal offload board tasks for energy only when no room energy demand exists (4 ms)
+    ✓ delivers board-task energy to the assigned storage target (1 ms)
+    ✓ keeps synthesis task lookup bound to the assigned room (1 ms)
+    ✓ delivers assigned board-task energy to the assigned room target even when currently elsewhere (1 ms)
+    ✓ uses the assigned room storage in storage-only mode
+    ✓ queries generic delivery targets from the assigned room
+    ✓ uses existing owned-room carriers to collect non-energy ruin resources (1 ms)
+    ✓ clears synthesis task when cleanup carrier holds non-energy cargo and storage/terminal are full
+    ✓ delivers cleanup resource to storage when storage has capacity
+    ✓ does not let emergency carriers withdraw storage energy when no delivery target needs energy (1 ms)
+    ✓ prefers mineral_haul (priority 91) over terminal_offload (priority 90) when both are runnable
+    ✓ prefers terminal_offload (priority 90) over terminal_feed (priority 80) when no mineral_haul exists
+    ✓ preserves assigned terminal_offload task across board refresh when still runnable
+    ✓ preserves assigned mineral_haul task even when a new terminal_offload appears on the board
+  carrierRole lab logistics
+    ✓ supplies reagent lab from terminal (lab_supply) (1 ms)
+    ✓ supplies reagent lab from storage when terminal is empty (lab_supply fallback)
+    ✓ cleans contaminated lab and deposits to terminal (lab_cleanup)
+    ✓ clears task when cleanup target terminal is full and no fallback (lab_cleanup) (1 ms)
+    ✓ handles target lab already full gracefully during lab_supply delivery
+  storage withdrawal gate for spawn/extension supply
+    ✓ allows storage withdrawal when delivery target is spawn
+    ✓ allows storage withdrawal when delivery target is extension (1 ms)
+    ✓ denies storage withdrawal when delivery target is tower
+    ✓ denies storage withdrawal when delivery target is factory
+    ✓ emergency carrier allows storage withdrawal when target is spawn
+    ✓ emergency carrier denies storage withdrawal when target is tower (1 ms)
+
+Test Suites: 1 passed, 1 total
+Tests:       40 passed, 40 total
+Snapshots:   0 total
+Time:        0.766 s, estimated 1 s
+Ran all test suites matching /src\/roles\/carrier.test.ts/i.

@@ -476,9 +476,6 @@ declare global {
         generatedTaskCount: number;
         failedTaskCount: number;
         successfulRunCount: number;
-        autoOhTarget?: number;
-        autoOhCurrent?: number;
-        autoOhProducerRoomName?: string;
         lastActions: string[];
         bindings: Record<
           string,

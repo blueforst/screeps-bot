@@ -1,0 +1,255 @@
+
+> screeps@2026.3.9-1 test
+> jest --config jest.config.cjs
+
+PASS src/runtime/synthesisControlStateMachine.test.ts
+PASS src/runtime/bootstrap.test.ts
+PASS src/runtime/hubProgress.test.ts
+PASS src/runtime/roomPlannerConstruction.test.ts
+  ● Console
+
+    console.log
+      [roomPlanner] W1N1 queued 2 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W1N1 queued 2 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W1N1 queued 1 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W1N2 queued 2 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W1N5 queued 1 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W1N7 queued 1 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W1N6 queued 1 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W1N1 queued 1 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W1N4 queued 1 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W2N2 queued 1 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W2N3 placed proto-storage container at (23, 23)
+
+      at runProtoStorageManagement (src/runtime/roomPlannerConstruction.ts:568:13)
+
+    console.log
+      [roomPlanner] W2N3 placed proto-controller-link container at (25, 22)
+
+      at runProtoControllerLinkContainerManagement (src/runtime/roomPlannerConstruction.ts:592:13)
+
+    console.log
+      [roomPlanner] W3N1 queued 2 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+    console.log
+      [roomPlanner] W3N1 queued 2 construction site(s)
+
+      at runRoomPlannerConstruction (src/runtime/roomPlannerConstruction.ts:864:15)
+
+PASS src/runtime/hubPlanner.test.ts
+PASS src/runtime/colonization.test.ts
+  ● Console
+
+    console.log
+      [colonization] started: flag=CL target=W1N2 source=W1N1 status=claiming
+
+      at upsertColonizationTask (src/runtime/colonization.ts:1453:13)
+
+    console.log
+      [colonization] started: flag=CL target=W1N2 source=W1N1 status=claiming
+
+      at upsertColonizationTask (src/runtime/colonization.ts:1453:13)
+
+    console.log
+      [colonization] started: flag=CL_W3N3 target=W1N2 source=W3N3 status=claiming
+
+      at upsertColonizationTask (src/runtime/colonization.ts:1453:13)
+
+    console.log
+      [colonization] started: flag=CL_W3N3_batch1 target=W1N2 source=W3N3 status=claiming
+
+      at upsertColonizationTask (src/runtime/colonization.ts:1453:13)
+
+    console.log
+      [colonization] started: flag=CL_W3N3shared target=W1N2 source=W3N3 status=claiming
+
+      at upsertColonizationTask (src/runtime/colonization.ts:1453:13)
+
+    console.log
+      [colonization] started: flag=CL target=W1N2 source=W1N1 status=claiming
+
+      at upsertColonizationTask (src/runtime/colonization.ts:1453:13)
+
+    console.log
+      [colonization] rescout W1N2: pending scout route invalid or interrupted by dangerous room
+
+      at requestScoutRescan (src/runtime/colonization.ts:932:11)
+
+    console.log
+      [colonization] rescout W1N2: pending scout route invalid or interrupted by dangerous room
+
+      at requestScoutRescan (src/runtime/colonization.ts:932:11)
+
+    console.log
+      [colonization] started: flag=CL target=W1N2 source=W1N1 status=claiming
+
+      at upsertColonizationTask (src/runtime/colonization.ts:1453:13)
+
+    console.log
+      [colonization] abandon W1N2: flag removed by player
+
+      at abandonColonization (src/runtime/colonization.ts:987:11)
+
+    console.log
+      [colonization] abandon W1N2: flag removed by player
+
+      at abandonColonization (src/runtime/colonization.ts:987:11)
+
+    console.log
+      [colonization] started: flag=CL target=W1N2 source=W1N1 status=claiming
+
+      at upsertColonizationTask (src/runtime/colonization.ts:1453:13)
+
+    console.log
+      [colonization] complete: W1N2 rcl≥3, flag removed
+
+      at processTask (src/runtime/colonization.ts:1309:17)
+
+PASS src/mount/mountCreep.test.ts
+PASS src/runtime/externalTelemetry.test.ts
+PASS src/runtime/workerTaskPool.test.ts
+PASS src/runtime/spawnPlanner.test.ts
+PASS src/main.test.ts
+PASS src/roles/carrier.test.ts
+PASS src/runtime/roomWorkforce.test.ts
+PASS src/runtime/linkControl.test.ts
+PASS src/roles/energyTargets.test.ts
+PASS src/roles/remoteCarrier.test.ts
+PASS src/roles/shared.test.ts
+PASS src/runtime/memoryCleanup.test.ts
+PASS src/runtime/synthesisControl.test.ts
+PASS src/runtime/homeDefense.test.ts
+PASS src/runtime/resourceControl.test.ts
+PASS src/runtime/flagHauling.test.ts
+  ● Console
+
+    console.log
+      [flag-haul] started: flag=HAUL target=W5N5 source=W1N1
+
+      at upsertFlagHaulTask (src/runtime/flagHauling.ts:334:13)
+
+    console.log
+      [flag-haul] started: flag=HAUL target=W5N5 source=W1N1
+
+      at upsertFlagHaulTask (src/runtime/flagHauling.ts:334:13)
+
+    console.log
+      [flag-haul] started: flag=HAUL_W2N2_batch target=W5N5 source=W2N2
+
+      at upsertFlagHaulTask (src/runtime/flagHauling.ts:334:13)
+
+    console.log
+      [flag-haul] started: flag=HAUL target=W5N5 source=W1N1
+
+      at upsertFlagHaulTask (src/runtime/flagHauling.ts:334:13)
+
+    console.log
+      [flag-haul] started: flag=HAUL target=W5N5 source=W1N1
+
+      at upsertFlagHaulTask (src/runtime/flagHauling.ts:334:13)
+
+    console.log
+      [flag-haul] started: flag=HAUL target=W5N5 source=W1N1
+
+      at upsertFlagHaulTask (src/runtime/flagHauling.ts:334:13)
+
+    console.log
+      [flag-haul] started: flag=HAUL target=W5N5 source=W1N1
+
+      at upsertFlagHaulTask (src/runtime/flagHauling.ts:334:13)
+
+    console.log
+      [flag-haul] cancelled: flag=HAUL target=W5N5
+
+      at runFlagHaulingByFlag (src/runtime/flagHauling.ts:378:17)
+
+PASS src/runtime/consoleCommands.test.ts
+PASS src/runtime/autoReserveFlag.test.ts
+  ● Console
+
+    console.log
+      [reserve] W1N1 entered reserve mode at 49999 energy
+
+      at runAutoReserveFlags (src/runtime/autoReserveFlag.ts:36:17)
+
+    console.log
+      [reserve] W1N4 cleared reserve mode at 80000 energy
+
+      at runAutoReserveFlags (src/runtime/autoReserveFlag.ts:43:15)
+
+PASS src/roles/claimer.test.ts
+PASS src/runtime/towerControl.test.ts
+PASS src/runtime/hubProductionIntegration.test.ts
+PASS src/roles/scout.test.ts
+PASS test/harvester.test.ts
+PASS src/runtime/mineralExtraction.test.ts
+PASS src/runtime/crossShardColonization.test.ts
+  ● Console
+
+    console.log
+      [cross-shard] flag accepted: CLX_shard1_W9N9_W2N2 targetShard=shard1 targetRoom=W9N9 preferredSource=W2N2
+
+      at upsertTaskFromFlag (src/runtime/crossShardColonization.ts:617:11)
+
+PASS src/roles/homeDefender.test.ts
+PASS src/runtime/roomTypes.test.ts
+PASS src/runtime/actionLog.test.ts
+PASS src/runtime/hubFlag.test.ts
+PASS test/miner.test.ts
+PASS src/visual/panel.test.ts
+PASS test/defenseMode.test.ts
+PASS src/runtime/safeZoneHelpers.test.ts
+PASS src/roles/mineralHarvester.test.ts
+PASS src/runtime/hostilePriorities.test.ts
+PASS src/runtime/carrierTaskBoard.test.ts
+PASS src/runtime/logistics/resourceTransferTasks.test.ts
+PASS src/visual/palette.test.ts
+PASS src/movement/routing.test.ts
+
+Test Suites: 45 passed, 45 total
+Tests:       536 passed, 536 total
+Snapshots:   0 total
+Time:        3.381 s
+Ran all test suites.

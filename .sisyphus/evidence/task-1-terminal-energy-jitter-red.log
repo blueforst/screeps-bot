@@ -1,0 +1,107 @@
+FAIL src/runtime/resourceControl.test.ts
+  runResourceControl terminal feed tasks
+    ✓ creates a storage-to-terminal energy task to maintain terminal reserve from storage (3 ms)
+    ✓ does not offload terminal energy reserved for a pending send while the terminal is on cooldown (1 ms)
+    ✓ stages terminal energy for pending energy sends only after storage is healthy
+    ✓ includes transfer fee budget when staging terminal energy for pending sends (1 ms)
+    ✓ feeds terminal energy even when storage is below energyTarget
+    ✓ reserves terminal energy for pending non-energy transfer fees (1 ms)
+    ✓ does not feed terminal energy when storage is empty
+    ✓ offloads terminal energy to storage when storage is below target and terminal has surplus
+    ○ skipped creates a storage-to-terminal carrier task for pending non-energy transfers
+    ○ skipped does not create a terminal feed task when terminal stock already covers the next send
+    ○ skipped clears stale terminal feed tasks when no pending transfer remains
+    ○ skipped creates a terminal-to-storage energy offload task when storage is below target
+    ○ skipped does not keep a terminal offload task after a full emergency energy send drains the terminal snapshot
+    ○ skipped includes fee budget in export staging for auto-balance receivers
+    ○ skipped stages native minerals above the 10000 threshold into the terminal before selling
+    ○ skipped sells native minerals above the 10000 threshold even before the room reaches export state
+    ○ skipped does not auto-sell energy even if sellResources includes energy
+    ○ skipped does not buy base minerals just to refill mineralFloor when no synthesis demand exists
+    ○ skipped buys base minerals when synthesis demand is below target
+    ○ skipped buys base minerals when active synthesis runtime state reports missing reagents
+  executeTransferTasks hub-aware priority ordering
+    ○ skipped executes hub import before hub export with limited taskMaxPerRun
+    ○ skipped prioritizes survival energy transfers over hub exports
+    ○ skipped respects taskMaxPerRun limit with hub-aware ordering
+    ○ skipped hub room does not sell hub intermediates (OH, G) on the market
+    ○ skipped hub room does not sell selected T3 compounds on the market
+    ○ skipped hub room does not sell base minerals on the market
+    ○ skipped hub room does not sell T2 intermediates (UH2O) on the market
+    ○ skipped hub room energy balancing still works when hub config is present
+    ○ skipped non-hub room does not sell selected T3 at reserve level
+    ○ skipped non-hub room does not sell surplus selected T3 (left for hubPlanner reclaim)
+    ○ skipped non-hub room can still sell non-hub-managed minerals normally
+    ○ skipped does not skip hub export when hub import task exists for a different resource
+    ○ skipped skips hub export when hub import task exists for same resource
+    ○ skipped pending outgoing transfer prevents market sale of same resource
+    ○ skipped pending outgoing transfer does not block market sale of unrelated resource
+    ○ skipped no pending transfers — normal market sell behavior unchanged
+    ○ skipped transfer task terminal send suppresses same-tick market deal for that room
+    ○ skipped idle room without terminal activity still executes market deals
+  hub internalOnly market buy
+    ○ skipped hub room with internalOnly (default) does not buy minerals from market
+    ○ skipped hub room with internalOnly: false allows mineral market buy
+    ○ skipped non-hub room still buys minerals regardless of hub internalOnly
+    ○ skipped hub room internalOnly does not affect emergency energy buy
+    ○ skipped hub room with explicit internalOnly: true does not buy minerals
+  terminal energy jitter
+    ✕ boundary no-op: storage slightly below target + terminal slightly above reserve produces no task (1 ms)
+    ✓ true surplus offload: storage well below target + terminal well above reserve produces offload (1 ms)
+    ✕ consecutive stability: offload then equilibrium produces no energy task
+    ✓ feed still works: terminal below reserve creates feed task
+    ✕ pending/reserved energy protection: terminal energy above zero but below reserve+pending+batch produces no offload
+
+  ● terminal energy jitter › boundary no-op: storage slightly below target + terminal slightly above reserve produces no task
+
+    expect(received).toBeUndefined()
+
+    Received: {"createdAt": 10, "id": "resourceControl:terminal_offload:WJ1:energy", "priority": 90, "producer": "resourceControl:preload", "roomName": "WJ1", "steps": [{"amount": 5000, "fromId": "WJ1-terminal", "fromKind": "terminal", "id": "energy:WJ1-terminal->WJ1-storage", "resource": "energy", "toId": "WJ1-storage", "toKind": "storage"}], "type": "terminal_offload", "updatedAt": 10}
+
+      1738 |
+      1739 |     const tasks = getCarrierTasksByRoom(room.name);
+    > 1740 |     expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+           |                                                                                       ^
+      1741 |     expect(tasks[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+      1742 |   });
+      1743 |
+
+      at Object.<anonymous> (src/runtime/resourceControl.test.ts:1740:87)
+
+  ● terminal energy jitter › consecutive stability: offload then equilibrium produces no energy task
+
+    expect(received).toBeUndefined()
+
+    Received: {"createdAt": 10, "id": "resourceControl:terminal_offload:WJ3:energy", "priority": 90, "producer": "resourceControl:preload", "roomName": "WJ3", "steps": [{"amount": 10000, "fromId": "WJ3-terminal", "fromKind": "terminal", "id": "energy:WJ3-terminal->WJ3-storage", "resource": "energy", "toId": "WJ3-storage", "toKind": "storage"}], "type": "terminal_offload", "updatedAt": 10}
+
+      1793 |
+      1794 |     const tasks = getCarrierTasksByRoom(roomAfter.name);
+    > 1795 |     expect(tasks[`resourceControl:terminal_offload:${roomAfter.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+           |                                                                                            ^
+      1796 |     expect(tasks[`resourceControl:terminal_feed:${roomAfter.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+      1797 |   });
+      1798 |
+
+      at Object.<anonymous> (src/runtime/resourceControl.test.ts:1795:92)
+
+  ● terminal energy jitter › pending/reserved energy protection: terminal energy above zero but below reserve+pending+batch produces no offload
+
+    expect(received).toBeUndefined()
+
+    Received: {"createdAt": 10, "id": "resourceControl:terminal_offload:WJ5:energy", "priority": 90, "producer": "resourceControl:preload", "roomName": "WJ5", "steps": [{"amount": 10000, "fromId": "WJ5-terminal", "fromKind": "terminal", "id": "energy:WJ5-terminal->WJ5-storage", "resource": "energy", "toId": "WJ5-storage", "toKind": "storage"}], "type": "terminal_offload", "updatedAt": 10}
+
+      1840 |
+      1841 |     const tasks = getCarrierTasksByRoom(donor.name);
+    > 1842 |     expect(tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+           |                                                                                        ^
+      1843 |   });
+      1844 |
+      1845 | });
+
+      at Object.<anonymous> (src/runtime/resourceControl.test.ts:1842:88)
+
+Test Suites: 1 failed, 1 total
+Tests:       3 failed, 35 skipped, 10 passed, 48 total
+Snapshots:   0 total
+Time:        0.64 s, estimated 1 s
+Ran all test suites matching /src\/runtime\/resourceControl.test.ts/i with tests matching "terminal energy".

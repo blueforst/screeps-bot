@@ -1,0 +1,109 @@
+FAIL src/roles/carrier.test.ts
+  carrierRole mineral hauling
+    ✓ picks mineral board tasks when there is no energy demand target (3 ms)
+    ✓ keeps mineral hauling behind active energy demand (1 ms)
+    ✓ fills proto storage container before proto controller container in storage-only mode
+    ✓ falls back to the proto controller container when proto storage is full in storage-only mode (1 ms)
+    ✓ moves to planned storage position to drop energy before the proto storage site exists
+    ✓ drops energy at planned storage position before the proto storage site exists (1 ms)
+    ✓ does not drop at planned storage position after a construction site exists
+    ✓ does not pick up dropped energy from planned storage before storage exists at rcl3
+    ✓ delivers to generic demand targets during the pre-storage gap (1 ms)
+    ✓ can withdraw from proto storage container when spawn or extension demand exists
+    ✓ can withdraw from controller-adjacent links when storage and controller share the link cluster (1 ms)
+    ✓ does not withdraw from proto storage container when only tower demand exists
+    ✓ delivers hauled minerals to the terminal before storage
+    ✓ picks terminal feed board tasks when cross-room preload is pending (1 ms)
+    ✓ prefers mineral hauling over terminal feed when both board tasks are available
+    ✓ picks terminal offload board tasks for energy only when no room energy demand exists (1 ms)
+    ✓ delivers board-task energy to the assigned storage target
+    ✓ keeps synthesis task lookup bound to the assigned room
+    ✓ delivers assigned board-task energy to the assigned room target even when currently elsewhere (1 ms)
+    ✓ uses the assigned room storage in storage-only mode
+    ✓ queries generic delivery targets from the assigned room
+    ✓ uses existing owned-room carriers to collect non-energy ruin resources (1 ms)
+    ✓ clears synthesis task when cleanup carrier holds non-energy cargo and storage/terminal are full
+    ✓ delivers cleanup resource to storage when storage has capacity
+    ✓ does not let emergency carriers withdraw storage energy when no delivery target needs energy (1 ms)
+    ✓ prefers mineral_haul (priority 91) over terminal_offload (priority 90) when both are runnable
+    ✓ prefers terminal_offload (priority 90) over terminal_feed (priority 80) when no mineral_haul exists
+    ✓ preserves assigned terminal_offload task across board refresh when still runnable (1 ms)
+    ✓ terminal_offload with energy moves toward storage when storage has free capacity
+    ✓ terminal_offload with energy does NOT call getEnergyStoreTarget when storage is full
+    ✓ carrier without synthesis task still uses generic getEnergyStoreTarget (1 ms)
+    ✓ terminal_offload with non-energy resource does not move toward generic energy target
+    ✓ preserves assigned mineral_haul task even when a new terminal_offload appears on the board
+    ✕ picks up dropped non-energy resource when empty and no energy demand (1 ms)
+    ✕ withdraws non-energy from tombstone when empty and no energy demand
+    ✓ delivers orphan non-energy cargo to terminal
+    ✓ delivers orphan non-energy cargo to storage when terminal full
+    ✓ does not pick up orphan non-energy when energy demand exists (1 ms)
+    ✓ does not pick up orphan non-energy when already carrying energy
+    ✓ orphan pickup ignores energy-only dropped resources and energy-only tombstones
+    ✓ does not crash when terminal and storage are full with orphan non-energy cargo (1 ms)
+  carrierRole lab logistics
+    ✓ supplies reagent lab from terminal (lab_supply)
+    ✓ supplies reagent lab from storage when terminal is empty (lab_supply fallback) (1 ms)
+    ✓ delivers reagent to lab via snapshot when board is cleared after pickup (lab_supply)
+    ✓ cleans contaminated lab and deposits to terminal (lab_cleanup)
+    ✓ clears task when cleanup target terminal is full and no fallback (lab_cleanup) (1 ms)
+    ✓ handles target lab already full gracefully during lab_supply delivery
+    ✓ withdraws product from lab and transfers to storage via lab_product_unload task
+    ✓ multi-tick synthesis jitter: carrier pickup → board refresh → delivery stays stable (2 ms)
+    ✓ withdraws only the lab_supply step amount (not the full terminal stock)
+    ✓ delivers stale committed lab_supply cargo to lab (not terminal/storage) (1 ms)
+    ✓ multi-tick stale pickup still delivers to committed lab (not generic cleanup)
+  storage withdrawal gate for spawn/extension supply
+    ✓ allows storage withdrawal when delivery target is spawn (1 ms)
+    ✓ allows storage withdrawal when delivery target is extension
+    ✓ denies storage withdrawal when delivery target is tower
+    ✓ denies storage withdrawal when delivery target is factory (1 ms)
+    ✓ emergency carrier allows storage withdrawal when target is spawn
+    ✓ emergency carrier denies storage withdrawal when target is tower
+  pending synthesis intent – phase jitter (E4N58)
+    ✓ pending synthesis intent: withdraw(OK) with store still empty should still record pickup (1 ms)
+    ✓ pending synthesis intent: same-tick target re-entry moves toward committed toId storage
+    ✓ pending synthesis intent: transfer(OK) with store still populated does not clear task prematurely
+    ✓ pending synthesis intent: source() re-entry with pending transfer does not re-withdraw
+
+  ● carrierRole mineral hauling › picks up dropped non-energy resource when empty and no energy demand
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"amount": 300, "id": "dropped-utrium-1", "pos": {"roomName": "W6N1", "x": 10, "y": 10}, "resourceType": "U", "room": {"controller": {"level": 6, "my": true}, "find": [Function mockConstructor], "name": "W6N1", "storage": {"id": "W6N1-storage", "store": {"getFreeCapacity": [Function getFreeCapacity], "getUsedCapacity": [Function getUsedCapacity]}, "structureType": "storage"}, "terminal": {"id": "W6N1-terminal", "store": {"getFreeCapacity": [Function getFreeCapacity], "getUsedCapacity": [Function getUsedCapacity]}, "structureType": "terminal"}}}
+
+    Number of calls: 0
+
+      1803 |     const switched = carrierRole().source?.(creep);
+      1804 |
+    > 1805 |     expect(creep.pickup).toHaveBeenCalledWith(dropped);
+           |                          ^
+      1806 |     expect(switched).toBe(true);
+      1807 |   });
+      1808 |
+
+      at Object.<anonymous> (src/roles/carrier.test.ts:1805:26)
+
+  ● carrierRole mineral hauling › withdraws non-energy from tombstone when empty and no energy demand
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: {"deathTime": -8, "id": "tombstone-utrium-1", "pos": {"roomName": "W6N2", "x": 10, "y": 10}, "store": {"U": 200, "getUsedCapacity": [Function getUsedCapacity]}}, "U"
+
+    Number of calls: 0
+
+      1837 |     const switched = carrierRole().source?.(creep);
+      1838 |
+    > 1839 |     expect(creep.withdraw).toHaveBeenCalledWith(tombstone, RESOURCE_UTRIUM);
+           |                            ^
+      1840 |     expect(switched).toBe(true);
+      1841 |   });
+      1842 |
+
+      at Object.<anonymous> (src/roles/carrier.test.ts:1839:28)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 60 passed, 62 total
+Snapshots:   0 total
+Time:        0.876 s, estimated 1 s
+Ran all test suites matching /src\/roles\/carrier.test.ts/i.

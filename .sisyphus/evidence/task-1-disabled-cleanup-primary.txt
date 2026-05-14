@@ -1,0 +1,54 @@
+PASS src/runtime/synthesisControlStateMachine.test.ts
+  synthesisControl state machine – happy-path lifecycle
+    ○ skipped progresses idle → loading → synthesizing → idle across ticks
+    ○ skipped calls runReaction on each product lab with correct reagent lab arguments
+    ○ skipped limits runReaction calls to maxRunsPerTick across multiple product labs
+    ○ skipped transitions to idle when targetAmount is reached during synthesizing
+  contamination cleanup
+    ○ skipped contamination triggers unloading and cleanup task
+    ○ skipped cleanup task has correct from/to/resource/amount
+    ○ skipped full storage + terminal records lastError for hub room
+    ○ skipped full storage + terminal does NOT set lastError for non-hub room
+  hub completion signal
+    ○ skipped sets needsPlan=true when hub room completes reaction target
+    ○ skipped initializes Memory.runtime.hub when it does not exist
+    ○ skipped does NOT set needsPlan for non-hub room
+  lab_product_unload task generation
+    ○ skipped generates lab_product_unload when product lab holds completed product and storage+terminal below target
+    ○ skipped targets terminal when storage is full
+    ○ skipped sets lastError when both storage and terminal are full
+    ○ skipped only generates steps for non-empty labs with correct product
+    ○ skipped does not generate lab_product_unload when transferable amount meets target
+  E4N58 stall regression
+    ○ skipped generates product-unload and stage=unloading when product in lab meets target but storage+terminal is empty
+    ○ skipped does not set needsPlan when already in product-unload unloading stage
+    ○ skipped sets needsPlan on synthesizing-to-unloading transition (completion signal)
+    ○ skipped generates prevProductUnloadTask when autoPlan switches product from UO to OH
+    ○ skipped product-unload has no lastError; contamination has lastError=lab_contaminated_waiting_clear
+    ○ skipped stranded recovery: idle with no activeProduct, product lab has UO, targetAmount=106 → generates lab_product_unload
+    ○ skipped stranded recovery: empty product labs with idle/no-activeProduct → no carrier task, remains idle
+    ○ skipped stranded recovery: storage already has UO above target AND product lab has UO → stranded unload still generates
+    ○ skipped stranded recovery: normal active-plan path still produces supply/product-unload without invoking stranded recovery
+  batch-complete unload gate (Bug A regression)
+    ○ skipped does not generate product unload during synthesizing stage when product is mid-batch
+    ○ skipped generates product unload when target met and stage transitions to idle
+    ○ skipped does not generate product unload during acquiring stage
+  reagent lab cleanup when idle (Bug B regression)
+    ○ skipped cleans up reagent labs when activePlan is null and labs have residue
+    ○ skipped returns to idle after reagent cleanup completes (labs empty)
+    ○ skipped product unload takes priority over reagent cleanup
+  in-flight synthesis cargo suppresses duplicate supply demand
+    ○ skipped does NOT generate oxygen supply step when carrier is already bringing oxygen to that lab
+    ○ skipped generates oxygen supply step when no in-flight carrier exists
+    ○ skipped counts cargo from live creeps only — dead-creep assignment state does NOT suppress demand
+    ○ skipped partial top-up with in-flight cargo: deficit < LAB_REACTION_AMOUNT still generates step when effectiveCurrentAmount > 0
+  disabled room lab cargo cleanup
+    ✓ disabled room with product lab cargo generates lab_product_unload before blocking (2 ms)
+    ✓ disabled room with reagent residue generates lab_cleanup when no product unload exists (1 ms)
+    ✓ disabled room with empty labs goes to blocked with no carrier tasks
+
+Test Suites: 1 passed, 1 total
+Tests:       35 skipped, 3 passed, 38 total
+Snapshots:   0 total
+Time:        0.445 s, estimated 1 s
+Ran all test suites matching /src\/runtime\/synthesisControlStateMachine.test.ts/i with tests matching "disabled room lab cargo cleanup".

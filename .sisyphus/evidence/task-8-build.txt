@@ -1,0 +1,9 @@
+
+> screeps@2026.3.9-1 build
+> rollup -c
+
+No deployment target set. Build only.
+cleared:  /Users/forst/code/screeps/dist
+[36m
+[1msrc/main.ts[22m → [1mdist/main.js[22m...[39m
+[32mcreated [1mdist/main.js[22m in [1m3s[22m[39m

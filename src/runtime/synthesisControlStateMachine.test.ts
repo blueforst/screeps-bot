@@ -1174,60 +1174,6 @@ describe("E4N58 stall regression", () => {
     expect(Memory.runtime!.hub!.needsPlan).toBe(true);
   });
 
-  it("generates prevProductUnloadTask when autoPlan switches product from UO to OH", () => {
-    setConfig({
-      sampleInterval: 100,
-      reactions: [
-        { product: RESOURCE_UTRIUM_OXIDE as ResourceConstant, targetAmount: 106 },
-      ],
-    });
-    setRoomStage("synthesizing", {
-      activeProduct: RESOURCE_UTRIUM_OXIDE,
-      reagentA: RESOURCE_UTRIUM,
-      reagentB: RESOURCE_OXYGEN,
-      targetAmount: 106,
-    });
-
-    const { room, labs } = createSynthesisRoom({
-      name: "W1N1",
-      storageResources: { [RESOURCE_ENERGY]: 500000 },
-    });
-
-    labs[0].mineralType = RESOURCE_UTRIUM;
-    labs[0]._resourceMap[RESOURCE_UTRIUM] = 500;
-    labs[1].mineralType = RESOURCE_OXYGEN;
-    labs[1]._resourceMap[RESOURCE_OXYGEN] = 500;
-    labs[2].mineralType = RESOURCE_UTRIUM_OXIDE as ResourceConstant;
-    labs[2]._resourceMap[RESOURCE_UTRIUM_OXIDE as string] = 1000;
-
-    const labById: Record<string, any> = {
-      [labs[0].id]: labs[0],
-      [labs[1].id]: labs[1],
-      [labs[2].id]: labs[2],
-    };
-    (Game as any).getObjectById = (id: string) => labById[id] ?? null;
-
-    Game.rooms["W1N1"] = room;
-    Game.time = 10;
-
-    runSynthesisControl();
-
-    const carrierTasks = getCarrierTasksByRoom("W1N1");
-    const unloadTask = Object.values(carrierTasks).find(
-      (t) => t.type === "lab_product_unload",
-    );
-    expect(unloadTask).toBeDefined();
-    expect(unloadTask!.steps[0].resource).toBe(RESOURCE_UTRIUM_OXIDE as ResourceConstant);
-    expect(unloadTask!.steps[0].fromId).toBe(labs[2].id);
-    expect(unloadTask!.steps[0].fromKind).toBe("lab");
-
-    const cleanupTask = Object.values(carrierTasks).find(
-      (t) => t.type === "lab_cleanup",
-    );
-    expect(cleanupTask).toBeDefined();
-    expect(cleanupTask!.priority).toBeGreaterThan(unloadTask!.priority);
-  });
-
   it("product-unload has no lastError; contamination has lastError=lab_contaminated_waiting_clear", () => {
     setConfig({
       sampleInterval: 100,
