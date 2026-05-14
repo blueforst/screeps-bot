@@ -89,6 +89,63 @@ export interface ChainStep {
   reagents: [ResourceConstant, ResourceConstant];
 }
 
+// ---------------------------------------------------------------------------
+// Distributed synthesis type contract — multi-room hub dispatch planning types
+// ---------------------------------------------------------------------------
+
+/** Describes a room's capability to participate in distributed synthesis. */
+export interface SynthesisRoomCapability {
+  roomName: string;
+  labCount: number;
+  hasTerminal: boolean;
+  hasStorage: boolean;
+  /** If this room has a lab reserved for boost operations (not available for synthesis). */
+  boostLabExclusive: boolean;
+  /** Distinct minerals available in this room (storage + terminal + lab). */
+  mineralInventory: Partial<Record<ResourceConstant, number>>;
+}
+
+/** A dispatch assignment: which room should synthesize what, and how much. */
+export interface SynthesisDispatchAssignment {
+  roomName: string;
+  product: ResourceConstant;
+  targetAmount: number;
+  /** Whether this is the hub room itself or an auxiliary room. */
+  isHubRoom: boolean;
+}
+
+/** Tracks resource allocation commitments across rooms. */
+export interface AllocationLedgerEntry {
+  resource: ResourceConstant;
+  totalAmount: number;
+  /** How much each room has committed or holds. */
+  roomCommitments: Record<string, number>;
+}
+
+/** A decision to send resources directly between rooms via terminal. */
+export interface DirectRouteDecision {
+  fromRoom: string;
+  toRoom: string;
+  resource: ResourceConstant;
+  amount: number;
+  /** Terminal send fee in energy. */
+  fee: number;
+}
+
+/** Represents an edge in the upstream/downstream production progress graph. */
+export interface ProgressEdge {
+  /** The room providing the resource (upstream). */
+  fromRoom: string;
+  /** The room receiving the resource (downstream). */
+  toRoom: string;
+  /** The resource flowing along this edge. */
+  resource: ResourceConstant;
+  /** How many units have been delivered so far. */
+  delivered: number;
+  /** Total units to deliver. */
+  total: number;
+}
+
 const REACTION_MAP: Record<string, [ResourceConstant, ResourceConstant]> = {
   // Base intermediates
   [RESOURCE_HYDROXIDE]: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN],

@@ -14,6 +14,13 @@ import {
   planHubImports,
   runHubPlanner,
 } from "@/runtime/hubPlanner";
+import type {
+  SynthesisRoomCapability,
+  SynthesisDispatchAssignment,
+  AllocationLedgerEntry,
+  DirectRouteDecision,
+  ProgressEdge,
+} from "@/runtime/hubPlanner";
 
 describe("hubPlanner defaults", () => {
   describe("getDefaultHubConfig", () => {
@@ -2843,5 +2850,361 @@ describe("hub reserve floor (TDD RED)", () => {
     // Should still be only the original pending 1500 task
     const totalPending = exportTasks.reduce((sum, t) => sum + t.remainingAmount, 0);
     expect(totalPending).toBe(1500);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Distributed synthesis: multi-room fixture contract tests
+// ---------------------------------------------------------------------------
+
+function createSynthesisCapableRoom(
+  roomName: string,
+  options: {
+    labCount?: number;
+    storageResources?: Record<string, number>;
+    terminalResources?: Record<string, number>;
+    hasStorage?: boolean;
+    hasTerminal?: boolean;
+    controllerLevel?: number;
+  } = {},
+): Room {
+  const {
+    labCount = 3,
+    hasStorage = true,
+    hasTerminal = true,
+    controllerLevel = 8,
+  } = options;
+
+  const storageEntries: Record<string, number> = {
+    [RESOURCE_ENERGY]: 200000,
+    ...(options.storageResources ?? {}),
+  };
+
+  const terminalEntries: Record<string, number> = {
+    [RESOURCE_ENERGY]: 20000,
+    ...(options.terminalResources ?? {}),
+  };
+
+  const storage = hasStorage
+    ? {
+        id: `${roomName}-storage`,
+        structureType: STRUCTURE_STORAGE,
+        store: {
+          ...storageEntries,
+          getUsedCapacity: (resource?: string) => {
+            if (resource) return storageEntries[resource] || 0;
+            return Object.values(storageEntries).reduce((a: number, b: number) => a + b, 0);
+          },
+          getFreeCapacity: () => 500000,
+        },
+      }
+    : undefined;
+
+  const terminal = hasTerminal
+    ? {
+        id: `${roomName}-terminal`,
+        structureType: STRUCTURE_TERMINAL,
+        store: {
+          ...terminalEntries,
+          getUsedCapacity: (resource?: string) => {
+            if (resource) return terminalEntries[resource] || 0;
+            return Object.values(terminalEntries).reduce((a: number, b: number) => a + b, 0);
+          },
+          getFreeCapacity: () => 300000,
+          cooldown: 0,
+        },
+      }
+    : undefined;
+
+  const labs: Structure[] = [];
+  for (let i = 0; i < labCount; i++) {
+    labs.push({
+      id: `${roomName}-lab-${i}`,
+      structureType: STRUCTURE_LAB,
+    } as Structure);
+  }
+
+  return {
+    name: roomName,
+    controller: { my: true, level: controllerLevel },
+    storage,
+    terminal,
+    find: (
+      type: FindConstant,
+      opts?: { filter?: ((s: Structure) => boolean) | { structureType: string } },
+    ) => {
+      if (type === FIND_MY_STRUCTURES) {
+        if (!opts?.filter) return labs;
+        if (typeof opts.filter === "function") return labs.filter(opts.filter);
+        const targetType = (opts.filter as { structureType: string }).structureType;
+        return labs.filter((s) => s.structureType === targetType);
+      }
+      return [];
+    },
+  } as unknown as Room;
+}
+
+const DIST_HUB = "W1N1";
+const DIST_AUX1 = "W2N1";
+const DIST_AUX2 = "W3N1";
+const DIST_PLAN_INTERVAL = 50;
+
+describe("distributed synthesis planning", () => {
+  beforeEach(() => {
+    Game.time = DIST_PLAN_INTERVAL;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: DIST_HUB,
+        planInterval: DIST_PLAN_INTERVAL,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [
+          RESOURCE_CATALYZED_UTRIUM_ACID,
+          RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+        ],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        ...getDefaultHubRuntime(),
+        distributedSynthesis: {
+          roomCapabilities: {},
+          dispatchAssignments: [],
+          allocationLedger: {},
+          routeDecisions: [],
+          progressEdges: [],
+        },
+      },
+    };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("constructs 3-room mock environment with correct room count and structure presence", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 20000,
+        [RESOURCE_OXYGEN]: 20000,
+        [RESOURCE_UTRIUM]: 10000,
+        [RESOURCE_CATALYST]: 10000,
+      },
+    });
+
+    const aux1Room = createSynthesisCapableRoom(DIST_AUX1, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_KEANIUM]: 10000,
+        [RESOURCE_ZYNTHIUM]: 10000,
+      },
+    });
+
+    const aux2Room = createSynthesisCapableRoom(DIST_AUX2, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_LEMERGIUM]: 10000,
+      },
+    });
+
+    Game.rooms[DIST_HUB] = hubRoom;
+    Game.rooms[DIST_AUX1] = aux1Room;
+    Game.rooms[DIST_AUX2] = aux2Room;
+
+    expect(Object.keys(Game.rooms)).toHaveLength(3);
+    expect(Game.rooms[DIST_HUB]).toBeDefined();
+    expect(Game.rooms[DIST_AUX1]).toBeDefined();
+    expect(Game.rooms[DIST_AUX2]).toBeDefined();
+  });
+
+  it("each room has storage, terminal, and 3+ labs", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_HUB, { labCount: 3 });
+    const aux1Room = createSynthesisCapableRoom(DIST_AUX1, { labCount: 3 });
+    const aux2Room = createSynthesisCapableRoom(DIST_AUX2, { labCount: 3 });
+
+    for (const room of [hubRoom, aux1Room, aux2Room]) {
+      expect(room.storage).toBeDefined();
+      expect(room.terminal).toBeDefined();
+      const labs = room.find(FIND_MY_STRUCTURES, {
+        filter: { structureType: STRUCTURE_LAB },
+      });
+      expect(labs.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("rooms have distinct mineral stores as configured", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_HUB, {
+      storageResources: { [RESOURCE_HYDROGEN]: 20000, [RESOURCE_UTRIUM]: 10000 },
+    });
+    const aux1Room = createSynthesisCapableRoom(DIST_AUX1, {
+      storageResources: { [RESOURCE_KEANIUM]: 10000 },
+    });
+    const aux2Room = createSynthesisCapableRoom(DIST_AUX2, {
+      storageResources: { [RESOURCE_LEMERGIUM]: 10000 },
+    });
+
+    const hubStore = hubRoom.storage!.store as unknown as Record<string, number>;
+    const aux1Store = aux1Room.storage!.store as unknown as Record<string, number>;
+    const aux2Store = aux2Room.storage!.store as unknown as Record<string, number>;
+
+    expect(hubStore[RESOURCE_HYDROGEN]).toBe(20000);
+    expect(hubStore[RESOURCE_UTRIUM]).toBe(10000);
+    expect(aux1Store[RESOURCE_KEANIUM]).toBe(10000);
+    expect(aux2Store[RESOURCE_LEMERGIUM]).toBe(10000);
+
+    expect(hubStore[RESOURCE_KEANIUM]).toBeFalsy();
+    expect(hubStore[RESOURCE_LEMERGIUM]).toBeFalsy();
+    expect(aux1Store[RESOURCE_HYDROGEN]).toBeFalsy();
+    expect(aux2Store[RESOURCE_HYDROGEN]).toBeFalsy();
+  });
+
+  it("SynthesisRoomCapability type contract captures room eligibility", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_HUB, {
+      labCount: 3,
+      storageResources: { [RESOURCE_HYDROGEN]: 5000 },
+    });
+
+    const capability: SynthesisRoomCapability = {
+      roomName: hubRoom.name,
+      labCount: hubRoom.find(FIND_MY_STRUCTURES, {
+        filter: { structureType: STRUCTURE_LAB },
+      }).length,
+      hasTerminal: !!hubRoom.terminal,
+      hasStorage: !!hubRoom.storage,
+      boostLabExclusive: false,
+      mineralInventory: { [RESOURCE_HYDROGEN]: 5000 },
+    };
+
+    expect(capability.roomName).toBe(DIST_HUB);
+    expect(capability.labCount).toBe(3);
+    expect(capability.hasTerminal).toBe(true);
+    expect(capability.hasStorage).toBe(true);
+    expect(capability.boostLabExclusive).toBe(false);
+    expect(capability.mineralInventory[RESOURCE_HYDROGEN]).toBe(5000);
+  });
+
+  it("SynthesisDispatchAssignment type contract models room reaction assignment", () => {
+    const assignment: SynthesisDispatchAssignment = {
+      roomName: DIST_AUX1,
+      product: RESOURCE_HYDROXIDE,
+      targetAmount: 5000,
+      isHubRoom: false,
+    };
+
+    expect(assignment.roomName).toBe(DIST_AUX1);
+    expect(assignment.product).toBe(RESOURCE_HYDROXIDE);
+    expect(assignment.targetAmount).toBe(5000);
+    expect(assignment.isHubRoom).toBe(false);
+  });
+
+  it("AllocationLedgerEntry type contract models resource commitments", () => {
+    const entry: AllocationLedgerEntry = {
+      resource: RESOURCE_HYDROGEN,
+      totalAmount: 20000,
+      roomCommitments: {
+        [DIST_HUB]: 10000,
+        [DIST_AUX1]: 5000,
+        [DIST_AUX2]: 5000,
+      },
+    };
+
+    expect(entry.resource).toBe(RESOURCE_HYDROGEN);
+    expect(entry.totalAmount).toBe(20000);
+    expect(Object.keys(entry.roomCommitments)).toHaveLength(3);
+    const totalCommitted = Object.values(entry.roomCommitments).reduce(
+      (sum, v) => sum + v,
+      0,
+    );
+    expect(totalCommitted).toBe(20000);
+  });
+
+  it("DirectRouteDecision type contract models terminal transfer", () => {
+    const decision: DirectRouteDecision = {
+      fromRoom: DIST_AUX1,
+      toRoom: DIST_HUB,
+      resource: RESOURCE_KEANIUM,
+      amount: 5000,
+      fee: 200,
+    };
+
+    expect(decision.fromRoom).toBe(DIST_AUX1);
+    expect(decision.toRoom).toBe(DIST_HUB);
+    expect(decision.resource).toBe(RESOURCE_KEANIUM);
+    expect(decision.amount).toBe(5000);
+    expect(decision.fee).toBe(200);
+  });
+
+  it("ProgressEdge type contract models upstream/downstream flow", () => {
+    const edge: ProgressEdge = {
+      fromRoom: DIST_AUX1,
+      toRoom: DIST_HUB,
+      resource: RESOURCE_HYDROXIDE,
+      delivered: 2000,
+      total: 5000,
+    };
+
+    expect(edge.fromRoom).toBe(DIST_AUX1);
+    expect(edge.toRoom).toBe(DIST_HUB);
+    expect(edge.resource).toBe(RESOURCE_HYDROXIDE);
+    expect(edge.delivered).toBeLessThan(edge.total);
+    expect(edge.total - edge.delivered).toBe(3000);
+  });
+
+  it("distributedSynthesis runtime state initializes and round-trips through Memory", () => {
+    const capabilities: Record<string, SynthesisRoomCapability> = {
+      [DIST_HUB]: {
+        roomName: DIST_HUB,
+        labCount: 3,
+        hasTerminal: true,
+        hasStorage: true,
+        boostLabExclusive: false,
+        mineralInventory: { [RESOURCE_HYDROGEN]: 20000 },
+      },
+      [DIST_AUX1]: {
+        roomName: DIST_AUX1,
+        labCount: 3,
+        hasTerminal: true,
+        hasStorage: true,
+        boostLabExclusive: false,
+        mineralInventory: { [RESOURCE_KEANIUM]: 10000 },
+      },
+    };
+
+    Memory.runtime!.hub!.distributedSynthesis = {
+      roomCapabilities: capabilities,
+      dispatchAssignments: [
+        { roomName: DIST_HUB, product: RESOURCE_HYDROXIDE, targetAmount: 5000, isHubRoom: true },
+      ],
+      allocationLedger: {
+        [RESOURCE_HYDROGEN]: {
+          resource: RESOURCE_HYDROGEN,
+          totalAmount: 20000,
+          roomCommitments: { [DIST_HUB]: 20000 },
+        },
+      },
+      routeDecisions: [],
+      progressEdges: [
+        {
+          fromRoom: DIST_AUX1,
+          toRoom: DIST_HUB,
+          resource: RESOURCE_KEANIUM,
+          delivered: 0,
+          total: 5000,
+        },
+      ],
+    };
+
+    const ds = Memory.runtime!.hub!.distributedSynthesis;
+    expect(Object.keys(ds!.roomCapabilities!)).toHaveLength(2);
+    expect(ds!.dispatchAssignments).toHaveLength(1);
+    expect(ds!.dispatchAssignments![0].isHubRoom).toBe(true);
+    expect(ds!.allocationLedger![RESOURCE_HYDROGEN].totalAmount).toBe(20000);
+    expect(ds!.progressEdges).toHaveLength(1);
+    expect(ds!.progressEdges![0].delivered).toBe(0);
   });
 });

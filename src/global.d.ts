@@ -1,6 +1,13 @@
 import type { LoDashStatic } from "lodash";
 import type { CreepApi, CreepConfig, RoleName, RoomType, WorkerTaskType } from "@/types/system";
 import type { HubProgressSnapshot } from "@/runtime/hubProgress";
+import type {
+  SynthesisRoomCapability,
+  SynthesisDispatchAssignment,
+  AllocationLedgerEntry,
+  DirectRouteDecision,
+  ProgressEdge,
+} from "@/runtime/hubPlanner";
 
 declare const _: LoDashStatic;
 
@@ -519,6 +526,13 @@ declare global {
         lastPlanActions?: string[];
         needsPlan?: boolean;
         lastError?: string;
+        distributedSynthesis?: {
+          roomCapabilities?: Record<string, SynthesisRoomCapability>;
+          dispatchAssignments?: SynthesisDispatchAssignment[];
+          allocationLedger?: Record<string, AllocationLedgerEntry>;
+          routeDecisions?: DirectRouteDecision[];
+          progressEdges?: ProgressEdge[];
+        };
       };
     };
     data?: {
