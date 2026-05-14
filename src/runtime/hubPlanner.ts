@@ -1280,7 +1280,7 @@ function cancelStaleSynthesisRouteTasks(): number {
   for (const task of Object.values(taskStore)) {
     if (
       task.status === "pending" &&
-      (task.reason?.startsWith("synthesis:direct:") || task.reason?.startsWith("synthesis:hub-route:"))
+      (task.reason?.startsWith("synthesis:direct:") || task.reason?.startsWith("synthesis:hub-route:") || task.reason?.startsWith("synthesis:resupply:"))
     ) {
       task.status = "cancelled";
       task.updatedAt = Game.time;
@@ -1289,6 +1289,56 @@ function cancelStaleSynthesisRouteTasks(): number {
     }
   }
   return cancelled;
+}
+
+export function resupplyBusySynthesisRooms(
+  hubRoomName: string,
+  hubInventory: Record<string, number>,
+  reservePerRoom: number,
+): string[] {
+  const actions: string[] = [];
+
+  const myRooms = getTickContextService().getMyRooms();
+  const synthesisRooms = Memory.runtime?.synthesisControl?.rooms;
+  if (!synthesisRooms) return actions;
+
+  for (const room of myRooms) {
+    if (room.name === hubRoomName) continue;
+    if (!room.controller?.my || !room.terminal || !room.storage) continue;
+
+    const roomState = synthesisRooms[room.name];
+    if (!roomState) continue;
+
+    const stage = roomState.stage;
+    if (!stage || ACCEPT_REASSIGN_STAGES.has(stage)) continue;
+
+    const missing = roomState.missing;
+    if (!missing) continue;
+
+    for (const [resource, deficit] of Object.entries(missing)) {
+      if (!deficit || deficit <= 0) continue;
+      const rc = resource as ResourceConstant;
+
+      const incoming = getIncomingResourceTransferAmount(room.name, rc);
+      if (incoming >= deficit) continue;
+
+      const needed = deficit - incoming;
+
+      const hubHas = hubInventory[rc] || 0;
+      const hubOutgoing = getOutgoingResourceTransferAmount(hubRoomName, rc);
+      const hubExportable = Math.max(0, hubHas - hubOutgoing - reservePerRoom);
+      if (hubExportable <= 0) continue;
+
+      const amount = Math.min(needed, hubExportable);
+      const reason = `synthesis:resupply:${rc}`;
+      const result = createResourceTransferTask(hubRoomName, room.name, rc, amount, reason);
+      if (typeof result === "object" && result.ok) {
+        actions.push(`resupply:${room.name}:${rc}=${amount}`);
+      }
+    }
+  }
+
+  return actions;
 }
 
 export function wireDistributedSynthesis(
@@ -1552,6 +1602,9 @@ export function runHubPlanner(): void {
       writeSynthesisConfig(cfg.hubRoomName, result.steps, hubInventory);
     }
   }
+
+  const reservePerRoom3 = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
+  resupplyBusySynthesisRooms(cfg.hubRoomName, hubInventory, reservePerRoom3);
 
   if (room.storage && room.terminal) {
     planHubDistribution(cfg);

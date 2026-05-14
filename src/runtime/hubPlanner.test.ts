@@ -15,6 +15,7 @@ import {
   planHubChains,
   planHubDistribution,
   planHubImports,
+  resupplyBusySynthesisRooms,
   runHubPlanner,
   scoreRoomForStep,
   wireDistributedSynthesis,
@@ -5332,5 +5333,209 @@ describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
     const surplus = Memory.runtime.hub.marketSellSurplus;
     expect(surplus).toBeDefined();
     expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBe(2000);
+  });
+});
+
+describe("resupplyBusySynthesisRooms", () => {
+  const SAT_ROOM = "W2N1";
+  const HUB_ROOM_NAME = "W1N1";
+
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM_NAME,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: getDefaultHubRuntime(),
+      synthesisControl: {
+        updatedAt: 0,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {},
+      },
+    } as any;
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("creates resupply task for busy room missing reagent", () => {
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
+    const reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+
+    Memory.runtime!.synthesisControl!.rooms![SAT_ROOM] = {
+      stage: "synthesizing",
+      missing: { [RESOURCE_UTRIUM]: 800 },
+    } as any;
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, reservePerRoom);
+
+    expect(actions).toContainEqual(`resupply:${SAT_ROOM}:${RESOURCE_UTRIUM}=800`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const task = tasks.find(
+      (t) => t.reason === `synthesis:resupply:${RESOURCE_UTRIUM}`,
+    );
+    expect(task).toBeDefined();
+    expect(task!.fromRoomName).toBe(HUB_ROOM_NAME);
+    expect(task!.toRoomName).toBe(SAT_ROOM);
+    expect(task!.amount).toBe(800);
+  });
+
+  it("skips idle rooms", () => {
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
+    const reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+
+    Memory.runtime!.synthesisControl!.rooms![SAT_ROOM] = {
+      stage: "idle",
+      missing: { [RESOURCE_UTRIUM]: 800 },
+    } as any;
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, reservePerRoom);
+
+    expect(actions).toHaveLength(0);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const task = tasks.find(
+      (t) => t.reason === `synthesis:resupply:${RESOURCE_UTRIUM}`,
+    );
+    expect(task).toBeUndefined();
+  });
+
+  it("skips rooms without missing reagents", () => {
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
+    const reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+
+    Memory.runtime!.synthesisControl!.rooms![SAT_ROOM] = {
+      stage: "synthesizing",
+      missing: {},
+    } as any;
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, reservePerRoom);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("skips when hub has no exportable reagent", () => {
+    // Hub has 1200 U, reservePerRoom=1000, so exportable = 1200 - 0 - 1000 = 200
+    // But if we set reservePerRoom=1500, exportable = 1200 - 0 - 1500 < 0
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 1200 };
+    const reservePerRoom = 1500;
+
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+
+    Memory.runtime!.synthesisControl!.rooms![SAT_ROOM] = {
+      stage: "synthesizing",
+      missing: { [RESOURCE_UTRIUM]: 800 },
+    } as any;
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, reservePerRoom);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("deduplicates with incoming transfers", () => {
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
+    const reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+
+    Memory.runtime!.synthesisControl!.rooms![SAT_ROOM] = {
+      stage: "synthesizing",
+      missing: { [RESOURCE_UTRIUM]: 800 },
+    } as any;
+
+    // Already 800 U incoming to SAT_ROOM
+    createResourceTransferTask("W3N1", SAT_ROOM, RESOURCE_UTRIUM, 800, "synthesis:test");
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, reservePerRoom);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("deduplicates partial incoming", () => {
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
+    const reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+
+    Memory.runtime!.synthesisControl!.rooms![SAT_ROOM] = {
+      stage: "synthesizing",
+      missing: { [RESOURCE_UTRIUM]: 800 },
+    } as any;
+
+    // 300 U already incoming to SAT_ROOM
+    createResourceTransferTask("W3N1", SAT_ROOM, RESOURCE_UTRIUM, 300, "synthesis:test");
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, reservePerRoom);
+
+    expect(actions).toContainEqual(`resupply:${SAT_ROOM}:${RESOURCE_UTRIUM}=500`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const task = tasks.find(
+      (t) => t.reason === `synthesis:resupply:${RESOURCE_UTRIUM}`,
+    );
+    expect(task).toBeDefined();
+    expect(task!.amount).toBe(500);
+  });
+
+  it("skips hub room itself", () => {
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
+    const reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+
+    Memory.runtime!.synthesisControl!.rooms![HUB_ROOM_NAME] = {
+      stage: "synthesizing",
+      missing: { [RESOURCE_UTRIUM]: 800 },
+    } as any;
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, reservePerRoom);
+
+    expect(actions).toHaveLength(0);
+  });
+
+  it("skips rooms without terminal or storage", () => {
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
+    const reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+    // Room without terminal and storage
+    Game.rooms[SAT_ROOM] = {
+      name: SAT_ROOM,
+      controller: { my: true, level: 8 },
+      find: () => [],
+    } as unknown as Room;
+
+    Memory.runtime!.synthesisControl!.rooms![SAT_ROOM] = {
+      stage: "synthesizing",
+      missing: { [RESOURCE_UTRIUM]: 800 },
+    } as any;
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, reservePerRoom);
+
+    expect(actions).toHaveLength(0);
   });
 });

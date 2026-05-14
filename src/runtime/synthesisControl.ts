@@ -988,6 +988,7 @@ function maybeGenerateSupplyTasks(
     if (!donor) {
       failed += 1;
       actions.push(`synthesis-task-failed:${room.name}:${reagent}:no_donor`);
+      signalHubNeedsPlan(room.name);
       continue;
     }
 

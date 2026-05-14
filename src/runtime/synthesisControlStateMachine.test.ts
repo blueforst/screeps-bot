@@ -2656,4 +2656,34 @@ describe("loading-stage timeout", () => {
     const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
     expect(roomState.stage).not.toBe("idle");
   });
+
+  it("signals needsPlan when no donor available for reagent", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [{ product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 }],
+    });
+    setRoomStage("loading", { loadingSinceTick: 50 });
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+      planInterval: 50,
+    };
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 100;
+    Memory.runtime!.hub = { needsPlan: false, updatedAt: 5 };
+
+    runSynthesisControl();
+
+    const lastActions = Memory.runtime!.synthesisControl!.lastActions;
+    expect(lastActions.some((a) => a.includes("no_donor"))).toBe(true);
+    expect(Memory.runtime!.hub!.needsPlan).toBe(true);
+  });
 });
