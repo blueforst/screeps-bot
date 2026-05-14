@@ -297,6 +297,7 @@ function selectAutoOhProducerRoom(cfg: SynthesisControlConfig, rooms: Room[]): R
 }
 
 function getAutoOhPlan(cfg: SynthesisControlConfig): AutoOhPlanSelection | null {
+  if (Memory.cfg?.hub?.enabled) return null;
   const logisticsRooms = getLogisticsRooms();
   const targetAmount = logisticsRooms.length * 2000;
   if (targetAmount <= 0) {
