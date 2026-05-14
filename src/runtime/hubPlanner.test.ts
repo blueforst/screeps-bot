@@ -15,9 +15,12 @@ import {
   planHubDistribution,
   planHubImports,
   runHubPlanner,
+  scoreRoomForStep,
+  DependencyGraph,
 } from "@/runtime/hubPlanner";
 import type {
   DistributedSynthesisPlan,
+  ChainStep,
 } from "@/runtime/hubPlanner";
 import type {
   SynthesisRoomCapability,
@@ -3913,5 +3916,295 @@ describe("planDistributedSynthesis", () => {
       expect(entry.totalAmount).toBeGreaterThanOrEqual(0);
       expect(entry.roomCommitments).toBeDefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Logistics-cost-aware dispatch scoring tests
+// ---------------------------------------------------------------------------
+
+const SCORE_HUB = "SH1";
+const SCORE_AUX = "SH2";
+const SCORE_AUX2 = "SH3";
+
+describe("logistics-cost-aware dispatch scoring", () => {
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: SCORE_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = { hub: getDefaultHubRuntime() };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  describe("T1 source-room preference", () => {
+    it("assigns OH to room with both H and O locally over hub with only H", () => {
+      const hubRoom = createSynthesisCapableRoom(SCORE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_UTRIUM]: 10000,
+          [RESOURCE_CATALYST]: 5000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(SCORE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      Game.rooms[SCORE_HUB] = hubRoom;
+      Game.rooms[SCORE_AUX] = auxRoom;
+
+      const plan = planDistributedSynthesis(
+        SCORE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+      );
+
+      const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
+      expect(ohAssignment).toBeDefined();
+      expect(ohAssignment!.roomName).toBe(SCORE_AUX);
+    });
+
+    it("scoreRoomForStep gives +100 bonus when both reagents are fully local", () => {
+      const ledger: Record<string, AllocationLedgerEntry> = {
+        [RESOURCE_HYDROGEN]: { resource: RESOURCE_HYDROGEN, totalAmount: 5000, roomCommitments: { [SCORE_AUX]: 5000 } },
+        [RESOURCE_OXYGEN]: { resource: RESOURCE_OXYGEN, totalAmount: 5000, roomCommitments: { [SCORE_AUX]: 5000 } },
+      };
+      const step: ChainStep = { product: RESOURCE_HYDROXIDE, targetAmount: 3000, reagents: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN] };
+      const caps: SynthesisRoomCapability[] = [
+        { roomName: SCORE_AUX, labCount: 3, hasTerminal: true, hasStorage: true, boostLabExclusive: false, mineralInventory: {} },
+      ];
+
+      const score = scoreRoomForStep(SCORE_AUX, step, ledger, SCORE_HUB, caps);
+      expect(score.score).toBeGreaterThanOrEqual(100);
+    });
+  });
+
+  describe("stage guard", () => {
+    it("room in synthesizing stage is deprioritised for new assignments", () => {
+      const hubRoom = createSynthesisCapableRoom(SCORE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(SCORE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      Game.rooms[SCORE_HUB] = hubRoom;
+      Game.rooms[SCORE_AUX] = auxRoom;
+
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[SCORE_HUB] = { stage: "synthesizing" };
+
+      const plan = planDistributedSynthesis(
+        SCORE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+      );
+
+      const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
+      expect(ohAssignment).toBeDefined();
+      expect(ohAssignment!.roomName).toBe(SCORE_AUX);
+    });
+
+    it("scoreRoomForStep gives -200 penalty for busy stage", () => {
+      const ledger: Record<string, AllocationLedgerEntry> = {
+        [RESOURCE_HYDROGEN]: { resource: RESOURCE_HYDROGEN, totalAmount: 5000, roomCommitments: { [SCORE_HUB]: 5000 } },
+        [RESOURCE_OXYGEN]: { resource: RESOURCE_OXYGEN, totalAmount: 5000, roomCommitments: { [SCORE_HUB]: 5000 } },
+      };
+      const step: ChainStep = { product: RESOURCE_HYDROXIDE, targetAmount: 1000, reagents: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN] };
+      const caps: SynthesisRoomCapability[] = [
+        { roomName: SCORE_HUB, labCount: 3, hasTerminal: true, hasStorage: true, boostLabExclusive: false, mineralInventory: {} },
+      ];
+
+      (Memory.runtime as any).synthesisControl = { rooms: { [SCORE_HUB]: { stage: "synthesizing" } } };
+      const scoreBusy = scoreRoomForStep(SCORE_HUB, step, ledger, SCORE_HUB, caps);
+
+      (Memory.runtime as any).synthesisControl = { rooms: { [SCORE_HUB]: { stage: "idle" } } };
+      const scoreIdle = scoreRoomForStep(SCORE_HUB, step, ledger, SCORE_HUB, caps);
+
+      expect(scoreBusy.score).toBeLessThan(scoreIdle.score);
+      expect(scoreIdle.score - scoreBusy.score).toBeGreaterThanOrEqual(200);
+    });
+  });
+
+  describe("terminal-load deprioritisation", () => {
+    it("room with heavy terminal load is deprioritised", () => {
+      const hubRoom = createSynthesisCapableRoom(SCORE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(SCORE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      Game.rooms[SCORE_HUB] = hubRoom;
+      Game.rooms[SCORE_AUX] = auxRoom;
+
+      createResourceTransferTask(SCORE_HUB, "W9N9", RESOURCE_HYDROGEN, 4000, "other");
+
+      const plan = planDistributedSynthesis(
+        SCORE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+      );
+
+      const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
+      expect(ohAssignment).toBeDefined();
+      expect(ohAssignment!.roomName).toBe(SCORE_AUX);
+    });
+
+    it("scoreRoomForStep penalises terminal load", () => {
+      const ledger: Record<string, AllocationLedgerEntry> = {
+        [RESOURCE_HYDROGEN]: { resource: RESOURCE_HYDROGEN, totalAmount: 5000, roomCommitments: { [SCORE_HUB]: 5000 } },
+        [RESOURCE_OXYGEN]: { resource: RESOURCE_OXYGEN, totalAmount: 5000, roomCommitments: { [SCORE_HUB]: 5000 } },
+      };
+      const step: ChainStep = { product: RESOURCE_HYDROXIDE, targetAmount: 1000, reagents: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN] };
+      const caps: SynthesisRoomCapability[] = [
+        { roomName: SCORE_HUB, labCount: 3, hasTerminal: true, hasStorage: true, boostLabExclusive: false, mineralInventory: {} },
+      ];
+
+      const scoreNoLoad = scoreRoomForStep(SCORE_HUB, step, ledger, SCORE_HUB, caps);
+
+      createResourceTransferTask(SCORE_HUB, "W9N9", RESOURCE_HYDROGEN, 4000, "load-test");
+
+      const scoreWithLoad = scoreRoomForStep(SCORE_HUB, step, ledger, SCORE_HUB, caps);
+
+      expect(scoreWithLoad.score).toBeLessThan(scoreNoLoad.score);
+    });
+  });
+
+  describe("cycle rejection", () => {
+    it("DependencyGraph detects direct cycle", () => {
+      const graph = new DependencyGraph();
+      graph.add("A", "B");
+      expect(graph.wouldCreateCycle("B", "A")).toBe(true);
+    });
+
+    it("DependencyGraph detects transitive cycle", () => {
+      const graph = new DependencyGraph();
+      graph.add("A", "B");
+      graph.add("B", "C");
+      expect(graph.wouldCreateCycle("C", "A")).toBe(true);
+    });
+
+    it("DependencyGraph allows non-cyclic dependency", () => {
+      const graph = new DependencyGraph();
+      graph.add("A", "B");
+      expect(graph.wouldCreateCycle("C", "A")).toBe(false);
+    });
+
+    it("DependencyGraph detects complex transitive cycle", () => {
+      const graph = new DependencyGraph();
+      graph.add("A", "B");
+      graph.add("B", "C");
+      graph.add("C", "D");
+      expect(graph.wouldCreateCycle("D", "A")).toBe(true);
+    });
+
+    it("DependencyGraph allows adding new edge when no cycle formed", () => {
+      const graph = new DependencyGraph();
+      graph.add("A", "B");
+      graph.add("A", "C");
+      expect(graph.wouldCreateCycle("D", "A")).toBe(false);
+      expect(graph.wouldCreateCycle("D", "B")).toBe(false);
+    });
+
+    it("planDistributedSynthesis avoids cyclic cross-room routing", () => {
+      const hubRoom = createSynthesisCapableRoom(SCORE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_UTRIUM]: 5000,
+          [RESOURCE_CATALYST]: 5000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(SCORE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      const aux2Room = createSynthesisCapableRoom(SCORE_AUX2, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      Game.rooms[SCORE_HUB] = hubRoom;
+      Game.rooms[SCORE_AUX] = auxRoom;
+      Game.rooms[SCORE_AUX2] = aux2Room;
+
+      const plan = planDistributedSynthesis(
+        SCORE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+      );
+
+      for (const route of plan.routeDecisions) {
+        expect(route.fromRoom).not.toBe(route.toRoom);
+      }
+
+      const depPairs: Array<[string, string]> = [];
+      const roomsWithDeps = new Set<string>();
+      const roomsDependedOn = new Set<string>();
+      for (const route of plan.routeDecisions) {
+        depPairs.push([route.toRoom, route.fromRoom]);
+        roomsWithDeps.add(route.toRoom);
+        roomsDependedOn.add(route.fromRoom);
+      }
+
+      const visited = new Map<string, boolean>();
+      const hasCycle = (room: string, path: Set<string>): boolean => {
+        if (path.has(room)) return true;
+        if (visited.has(room)) return visited.get(room)!;
+        path.add(room);
+        for (const [to, from] of depPairs) {
+          if (to === room && hasCycle(from, path)) {
+            visited.set(room, true);
+            return true;
+          }
+        }
+        path.delete(room);
+        visited.set(room, false);
+        return false;
+      };
+      for (const room of roomsWithDeps) {
+        expect(hasCycle(room, new Set())).toBe(false);
+      }
+    });
   });
 });

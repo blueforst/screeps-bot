@@ -823,24 +823,24 @@ export function planDistributedSynthesis(
   // 4. Get chain demands using planHubChains
   const chainResult = planHubChains(globalInventory, {}, hubReservePerCompound, targetCompounds);
 
-  // 5. Assign steps to rooms, decrementing ledger atomically
+  // 5. Assign steps to rooms using logistics-cost-aware scoring, decrementing ledger atomically
   const assignments: SynthesisDispatchAssignment[] = [];
   const routeDecisions: DirectRouteDecision[] = [];
   const blockedTargets: ResourceConstant[] = [];
 
-  // Prefer hub room first, then auxiliary rooms in eligibility order
   const roomOrder = [
     hubRoomName,
     ...rooms.filter(r => r.roomName !== hubRoomName).map(r => r.roomName),
   ];
 
+  const depGraph = new DependencyGraph();
+
   for (const step of chainResult.steps) {
-    const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName);
+    const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName, rooms, depGraph);
     if (result) {
       assignments.push(result.assignment);
       routeDecisions.push(...result.routes);
     }
-    // Steps that can't be assigned are skipped; their T3 targets may be blocked
   }
 
   // 6. Blocked targets: only when planHubChains reports global resource shortage
@@ -851,22 +851,120 @@ export function planDistributedSynthesis(
   return { dispatchAssignments: assignments, allocationLedger: ledger, routeDecisions, blockedTargets };
 }
 
-/**
- * Try to assign a chain step to a room. Attempts direct assignment first
- * (room has both reagents locally), then cross-room routing.
- * Returns null if the step cannot be assigned.
- */
+const BUSY_STAGES = new Set(["loading", "synthesizing", "unloading", "cleanup"]);
+
+interface RoomDispatchScore {
+  roomName: string;
+  score: number;
+}
+
+export function scoreRoomForStep(
+  roomName: string,
+  step: ChainStep,
+  ledger: Record<string, AllocationLedgerEntry>,
+  hubRoomName: string,
+  roomCapabilities: SynthesisRoomCapability[],
+): RoomDispatchScore {
+  const [reagentA, reagentB] = step.reagents;
+  const needed = step.targetAmount;
+  let score = 0;
+
+  if (roomName === hubRoomName) {
+    score += 1;
+  }
+
+  const localA = ledger[reagentA]?.roomCommitments[roomName] ?? 0;
+  const localB = ledger[reagentB]?.roomCommitments[roomName] ?? 0;
+  if (localA >= needed && localB >= needed) {
+    score += 100;
+  } else if (localA > 0 && localB > 0) {
+    score += 20 + Math.min(localA, localB) / needed * 30;
+  } else if (localA > 0 || localB > 0) {
+    score += 10;
+  }
+
+  const needsExternalA = localA < needed;
+  const needsExternalB = localB < needed;
+  if (roomName !== hubRoomName && (needsExternalA || needsExternalB)) {
+    if (typeof Game.market?.calcTransactionCost === "function") {
+      const feeDirect = Game.market.calcTransactionCost(needed, hubRoomName, roomName);
+      score -= feeDirect / needed * 5;
+    } else {
+      score -= 5;
+    }
+  }
+
+  const stage = Memory.runtime?.synthesisControl?.rooms?.[roomName]?.stage;
+  if (stage && BUSY_STAGES.has(stage)) {
+    score -= 200;
+  }
+
+  const cap = roomCapabilities.find(r => r.roomName === roomName);
+  if (cap) {
+    let loadA = 0;
+    let loadB = 0;
+    for (const res of [reagentA, reagentB] as ResourceConstant[]) {
+      const outgoing = getOutgoingResourceTransferAmount(roomName, res);
+      const incoming = getIncomingResourceTransferAmount(roomName, res);
+      if (res === reagentA) loadA = outgoing + incoming;
+      if (res === reagentB) loadB = outgoing + incoming;
+    }
+    const totalLoad = loadA + loadB;
+    score -= totalLoad / (needed * 2 + 1) * 10;
+  }
+
+  return { roomName, score };
+}
+
+export class DependencyGraph {
+  private deps: Map<string, Set<string>> = new Map();
+
+  add(room: string, dependsOn: string): void {
+    if (!this.deps.has(room)) {
+      this.deps.set(room, new Set());
+    }
+    this.deps.get(room)!.add(dependsOn);
+  }
+
+  wouldCreateCycle(room: string, dependsOn: string): boolean {
+    return this.reachable(dependsOn, room);
+  }
+
+  private reachable(from: string, target: string): boolean {
+    const visited = new Set<string>();
+    const stack = [from];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current === target) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      const depSet = this.deps.get(current);
+      if (depSet) {
+        for (const d of depSet) {
+          stack.push(d);
+        }
+      }
+    }
+    return false;
+  }
+}
+
 function assignStepToRoom(
   ledger: Record<string, AllocationLedgerEntry>,
   step: ChainStep,
   roomOrder: string[],
   hubRoomName: string,
+  roomCapabilities: SynthesisRoomCapability[],
+  depGraph: DependencyGraph,
 ): { assignment: SynthesisDispatchAssignment; routes: DirectRouteDecision[] } | null {
   const [reagentA, reagentB] = step.reagents;
   const needed = step.targetAmount;
 
-  // Try direct assignment: room has both reagents locally
-  for (const roomName of roomOrder) {
+  const scored = roomOrder
+    .map(r => scoreRoomForStep(r, step, ledger, hubRoomName, roomCapabilities))
+    .sort((a, b) => b.score - a.score);
+
+  for (const { roomName } of scored) {
     const availA = ledger[reagentA]?.roomCommitments[roomName] ?? 0;
     const availB = ledger[reagentB]?.roomCommitments[roomName] ?? 0;
     if (availA >= needed && availB >= needed) {
@@ -879,43 +977,43 @@ function assignStepToRoom(
         routes: [],
       };
     }
-  }
 
-  // Try cross-room routing: consolidate reagents to a producer room
-  for (const producer of roomOrder) {
     const totalA = ledger[reagentA]?.totalAmount ?? 0;
     const totalB = ledger[reagentB]?.totalAmount ?? 0;
-    if (totalA < needed || totalB < needed) return null;
+    if (totalA < needed || totalB < needed) continue;
 
     const routes: DirectRouteDecision[] = [];
     const changes: Array<{ res: string; room: string; amt: number }> = [];
+    const newDeps = new Set<string>();
     let remA = needed;
     let remB = needed;
 
-    // Use local availability first (no route needed)
-    const localA = ledger[reagentA]?.roomCommitments[producer] ?? 0;
+    const localA = availA;
     if (localA > 0) {
       const use = Math.min(localA, remA);
-      changes.push({ res: reagentA, room: producer, amt: use });
+      changes.push({ res: reagentA, room: roomName, amt: use });
       remA -= use;
     }
-    const localB = ledger[reagentB]?.roomCommitments[producer] ?? 0;
+    const localB = availB;
     if (localB > 0) {
       const use = Math.min(localB, remB);
-      changes.push({ res: reagentB, room: producer, amt: use });
+      changes.push({ res: reagentB, room: roomName, amt: use });
       remB -= use;
     }
 
-    // Route from other rooms
     for (const from of roomOrder) {
       if (remA <= 0 && remB <= 0) break;
-      if (from === producer) continue;
+      if (from === roomName) continue;
+
+      if (depGraph.wouldCreateCycle(roomName, from)) continue;
+
       if (remA > 0) {
         const avail = ledger[reagentA]?.roomCommitments[from] ?? 0;
         if (avail > 0) {
           const send = Math.min(avail, remA);
-          routes.push({ fromRoom: from, toRoom: producer, resource: reagentA, amount: send, fee: 0 });
+          routes.push({ fromRoom: from, toRoom: roomName, resource: reagentA, amount: send, fee: 0 });
           changes.push({ res: reagentA, room: from, amt: send });
+          newDeps.add(from);
           remA -= send;
         }
       }
@@ -923,25 +1021,27 @@ function assignStepToRoom(
         const avail = ledger[reagentB]?.roomCommitments[from] ?? 0;
         if (avail > 0) {
           const send = Math.min(avail, remB);
-          routes.push({ fromRoom: from, toRoom: producer, resource: reagentB, amount: send, fee: 0 });
+          routes.push({ fromRoom: from, toRoom: roomName, resource: reagentB, amount: send, fee: 0 });
           changes.push({ res: reagentB, room: from, amt: send });
+          newDeps.add(from);
           remB -= send;
         }
       }
     }
 
     if (remA <= 0 && remB <= 0) {
-      // Feasible — commit ledger changes atomically
       for (const c of changes) {
         ledger[c.res]!.roomCommitments[c.room] -= c.amt;
         ledger[c.res]!.totalAmount -= c.amt;
       }
+      for (const dep of newDeps) {
+        depGraph.add(roomName, dep);
+      }
       return {
-        assignment: { roomName: producer, product: step.product, targetAmount: needed, isHubRoom: producer === hubRoomName },
+        assignment: { roomName, product: step.product, targetAmount: needed, isHubRoom: roomName === hubRoomName },
         routes,
       };
     }
-    // Not feasible for this producer, try next room
   }
 
   return null;
