@@ -361,6 +361,7 @@ declare global {
         storagePauseFreeCapacity?: number;
         surplusThreshold?: number;
         internalOnly?: boolean;
+        marketSellEnabled?: boolean;
       };
     };
     runtime?: {

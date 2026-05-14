@@ -2954,6 +2954,7 @@ describe("hub market protection for all 10 T3 compounds", () => {
     Memory.cfg!.hub = {
       hubRoomName: "W40N10",
       targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+      marketSellEnabled: true,
     };
     Memory.cfg!.resourceControl!.market!.enabled = true;
     Memory.runtime = {
@@ -3089,6 +3090,7 @@ describe("hub market protection for all 10 T3 compounds", () => {
     Memory.cfg!.hub = {
       hubRoomName: "W40N13",
       targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+      marketSellEnabled: true,
     };
     Memory.cfg!.resourceControl!.market!.enabled = true;
     Memory.cfg!.resourceControl!.market!.maxDealsPerRun = 5;

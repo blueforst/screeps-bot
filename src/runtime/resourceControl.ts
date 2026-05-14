@@ -1112,6 +1112,7 @@ function hasHubMarketSellSurplus(roomName: string): boolean {
 }
 
 function getHubMarketSellResources(): ResourceConstant[] {
+  if (!Memory.cfg?.hub?.marketSellEnabled) return [];
   const surplus = Memory.runtime?.hub?.marketSellSurplus;
   if (!surplus) return [];
   return (Object.entries(surplus) as [ResourceConstant, number][])
