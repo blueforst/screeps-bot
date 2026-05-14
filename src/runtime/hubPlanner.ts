@@ -877,6 +877,7 @@ export function planDistributedSynthesis(
   targetCompounds: ResourceConstant[],
   hubReservePerCompound: number,
   reservePerRoom: number,
+  hubInventory: Record<string, number>,
 ): DistributedSynthesisPlan {
   const rooms = getEligibleSynthesisRooms();
   const allResources = [...BASE_MINERALS, ...INTERMEDIATE_COMPOUNDS, ...T3_TARGETS];
@@ -916,14 +917,8 @@ export function planDistributedSynthesis(
     }
   }
 
-  // 3. Compute global inventory for planHubChains
-  const globalInventory: Record<string, number> = {};
-  for (const [, entry] of Object.entries(ledger)) {
-    globalInventory[entry.resource] = entry.totalAmount;
-  }
-
-  // 4. Get chain demands using planHubChains
-  const chainResult = planHubChains(globalInventory, {}, hubReservePerCompound, targetCompounds);
+  // 3-4. Hub inventory (not global sum) for T3 deficit — satellites' stock is remote.
+  const chainResult = planHubChains(hubInventory, {}, hubReservePerCompound, targetCompounds);
 
   // 5. Assign steps to rooms using logistics-cost-aware scoring, decrementing ledger atomically
   const assignments: SynthesisDispatchAssignment[] = [];
@@ -1260,6 +1255,7 @@ export function wireDistributedSynthesis(
     targetCompounds,
     hubReservePerCompound,
     reservePerRoom,
+    hubInventory,
   );
 
   if (!Memory.runtime?.hub) return true;

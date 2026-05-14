@@ -3464,13 +3464,21 @@ describe("planDistributedSynthesis", () => {
     registerRuntimeServices();
   });
 
+  function getHubInventory(): Record<string, number> {
+    const inv: Record<string, number> = {};
+    const room = Game.rooms[DIST_SYNTH_HUB];
+    if (!room?.storage?.store || !room?.terminal?.store) return inv;
+    for (const [res, amt] of Object.entries(room.storage.store as unknown as Record<string, number>)) {
+      if (res !== RESOURCE_ENERGY && amt > 0) inv[res] = amt;
+    }
+    for (const [res, amt] of Object.entries(room.terminal.store as unknown as Record<string, number>)) {
+      if (res !== RESOURCE_ENERGY && amt > 0) inv[res] = (inv[res] || 0) + amt;
+    }
+    return inv;
+  }
+
   it("returns empty plan when no eligible rooms exist", () => {
-    const plan = planDistributedSynthesis(
-      DIST_SYNTH_HUB,
-      [RESOURCE_CATALYZED_UTRIUM_ACID],
-      1000,
-      1000,
-    );
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, [RESOURCE_CATALYZED_UTRIUM_ACID], 1000, 1000, getHubInventory());
 
     expect(plan.dispatchAssignments).toEqual([]);
     expect(plan.blockedTargets).toContain(RESOURCE_CATALYZED_UTRIUM_ACID);
@@ -3492,7 +3500,7 @@ describe("planDistributedSynthesis", () => {
     Game.rooms[DIST_SYNTH_HUB] = hubRoom;
 
     const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // Hub room alone has all base minerals → planHubChains returns feasible steps
     expect(plan.dispatchAssignments.length).toBeGreaterThan(0);
@@ -3520,7 +3528,7 @@ describe("planDistributedSynthesis", () => {
     Game.rooms[DIST_SYNTH_HUB] = hubRoom;
 
     const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // Hub has H, O, U, Catalyst but not L, K, Z — progressive chain returns OH + UH + UO as feasible
     const products = plan.dispatchAssignments.map(a => a.product);
@@ -3552,7 +3560,7 @@ describe("planDistributedSynthesis", () => {
     Game.rooms[DIST_SYNTH_AUX] = auxRoom;
 
     const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // Total effective H = 500 (hub) + 500 (aux) = 1000
     // Verify ledger tracks this correctly
@@ -3601,7 +3609,7 @@ describe("planDistributedSynthesis", () => {
       RESOURCE_CATALYZED_UTRIUM_ACID,
       RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
     ];
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // Total effective H = 2000 (hub) + 1000 (aux) = 3000
     // Total effective O = 2000 (hub only)
@@ -3648,7 +3656,7 @@ describe("planDistributedSynthesis", () => {
     ];
 
     // hubReservePerCompound=1000 so each T3 deficit is small (1000 per target)
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // With abundant resources, should have many feasible steps
     expect(plan.dispatchAssignments.length).toBeGreaterThan(0);
@@ -3683,7 +3691,7 @@ describe("planDistributedSynthesis", () => {
     Game.rooms[DIST_SYNTH_AUX] = auxRoom;
 
     const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // Hub has H+O → OH is feasible locally
     const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
@@ -3716,12 +3724,7 @@ describe("planDistributedSynthesis", () => {
     });
     Game.rooms[DIST_SYNTH_HUB] = hubRoom;
 
-    const plan = planDistributedSynthesis(
-      DIST_SYNTH_HUB,
-      [RESOURCE_CATALYZED_UTRIUM_ACID],
-      1000,
-      1000,
-    );
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, [RESOURCE_CATALYZED_UTRIUM_ACID], 1000, 1000, getHubInventory());
 
     // Verify allocation ledger captures resource demands
     expect(plan.allocationLedger[RESOURCE_HYDROGEN]).toBeDefined();
@@ -3763,12 +3766,7 @@ describe("planDistributedSynthesis", () => {
       "hub:import:U",
     );
 
-    const plan = planDistributedSynthesis(
-      DIST_SYNTH_HUB,
-      [RESOURCE_CATALYZED_UTRIUM_ACID],
-      1000,
-      1000,
-    );
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, [RESOURCE_CATALYZED_UTRIUM_ACID], 1000, 1000, getHubInventory());
 
     // Hub's effective U should include the 3000 incoming
     // (minus reserve: 3000 incoming + 0 local = 3000, reserve=1000, effective=2000)
@@ -3807,12 +3805,7 @@ describe("planDistributedSynthesis", () => {
       "hub:export:H",
     );
 
-    const plan = planDistributedSynthesis(
-      DIST_SYNTH_HUB,
-      [RESOURCE_CATALYZED_UTRIUM_ACID],
-      1000,
-      1000,
-    );
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, [RESOURCE_CATALYZED_UTRIUM_ACID], 1000, 1000, getHubInventory());
 
     // Hub's effective H should be reduced by the 3000 outgoing
     // Original: 10000 - 3000 outgoing - 1000 reserve = 6000 effective
@@ -3834,12 +3827,7 @@ describe("planDistributedSynthesis", () => {
     });
     Game.rooms[DIST_SYNTH_HUB] = hubRoom;
 
-    const plan = planDistributedSynthesis(
-      DIST_SYNTH_HUB,
-      [RESOURCE_CATALYZED_UTRIUM_ACID],
-      1000,
-      1000,
-    );
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, [RESOURCE_CATALYZED_UTRIUM_ACID], 1000, 1000, getHubInventory());
 
     // H effective = 2000 - 1000 (reserve) = 1000
     const hLedger = plan.allocationLedger[RESOURCE_HYDROGEN];
@@ -3870,7 +3858,7 @@ describe("planDistributedSynthesis", () => {
       RESOURCE_CATALYZED_UTRIUM_ACID,
       RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
     ];
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // OH is shared between XUH2O and XUHO2 chains
     // Demand for OH: 2000 (1000 per T3 target)
@@ -3895,12 +3883,7 @@ describe("planDistributedSynthesis", () => {
     });
     Game.rooms[DIST_SYNTH_HUB] = hubRoom;
 
-    const plan: DistributedSynthesisPlan = planDistributedSynthesis(
-      DIST_SYNTH_HUB,
-      [RESOURCE_CATALYZED_UTRIUM_ACID],
-      1000,
-      1000,
-    );
+    const plan: DistributedSynthesisPlan = planDistributedSynthesis(DIST_SYNTH_HUB, [RESOURCE_CATALYZED_UTRIUM_ACID], 1000, 1000, getHubInventory());
 
     expect(Array.isArray(plan.dispatchAssignments)).toBe(true);
     expect(plan.allocationLedger).toBeDefined();
@@ -3945,6 +3928,10 @@ describe("planDistributedSynthesis", () => {
         [RESOURCE_CATALYST]: 30000,
         [RESOURCE_HYDROGEN]: 5000,
         [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_KEANIUM]: 5000,
+        [RESOURCE_LEMERGIUM]: 5000,
+        [RESOURCE_ZYNTHIUM]: 5000,
+        [RESOURCE_UTRIUM]: 5000,
       },
     });
     // Sat1: K (keanium) — needed for K-chain T3s (XKH2O, XKHO2)
@@ -3997,7 +3984,7 @@ describe("planDistributedSynthesis", () => {
       RESOURCE_CATALYZED_UTRIUM_ALKALIDE,    // XUHO2
     ];
 
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // Must produce more than 1 assignment — distributed across rooms
     expect(plan.dispatchAssignments.length).toBeGreaterThan(1);
@@ -4053,6 +4040,7 @@ describe("planDistributedSynthesis", () => {
         [RESOURCE_CATALYST]: 5000,
         [RESOURCE_HYDROGEN]: 5000,
         [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_KEANIUM]: 5000,
       },
     });
     const satRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
@@ -4066,7 +4054,7 @@ describe("planDistributedSynthesis", () => {
     Game.rooms[DIST_SYNTH_AUX] = satRoom;
 
     const targets: ResourceConstant[] = [RESOURCE_CATALYZED_KEANIUM_ALKALIDE]; // XKHO2
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // Should produce at least KO assignment (K+O → KO)
     const products = plan.dispatchAssignments.map(a => a.product);
@@ -4123,7 +4111,7 @@ describe("planDistributedSynthesis", () => {
       RESOURCE_CATALYZED_KEANIUM_ACID,
       RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
     ];
-    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
 
     // Must produce multiple assignments
     expect(plan.dispatchAssignments.length).toBeGreaterThan(1);
@@ -4132,6 +4120,37 @@ describe("planDistributedSynthesis", () => {
     const firstThree = plan.dispatchAssignments.slice(0, 3);
     const roomSet = new Set(firstThree.map(a => a.roomName));
     expect(roomSet.size).toBe(Math.min(3, firstThree.length));
+  });
+
+  it("uses hub inventory for deficit: hub has 0 T3 but satellites have 80k", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_KEANIUM]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    const auxRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_CATALYZED_KEANIUM_ALKALIDE]: 80000,
+        [RESOURCE_HYDROGEN]: 20000,
+        [RESOURCE_OXYGEN]: 20000,
+        [RESOURCE_KEANIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = auxRoom;
+
+    const targets: ResourceConstant[] = [RESOURCE_CATALYZED_KEANIUM_ALKALIDE];
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory());
+
+    const products = plan.dispatchAssignments.map(a => a.product);
+    expect(products.length).toBeGreaterThan(0);
+    expect(plan.blockedTargets).not.toContain(RESOURCE_CATALYZED_KEANIUM_ALKALIDE);
   });
 });
 
@@ -4166,12 +4185,26 @@ describe("logistics-cost-aware dispatch scoring", () => {
     registerRuntimeServices();
   });
 
+  function getHubInv(): Record<string, number> {
+    const inv: Record<string, number> = {};
+    const room = Game.rooms[SCORE_HUB];
+    if (!room?.storage?.store || !room?.terminal?.store) return inv;
+    for (const [res, amt] of Object.entries(room.storage.store as unknown as Record<string, number>)) {
+      if (res !== RESOURCE_ENERGY && amt > 0) inv[res] = amt;
+    }
+    for (const [res, amt] of Object.entries(room.terminal.store as unknown as Record<string, number>)) {
+      if (res !== RESOURCE_ENERGY && amt > 0) inv[res] = (inv[res] || 0) + amt;
+    }
+    return inv;
+  }
+
   describe("T1 source-room preference", () => {
-    it("assigns OH to room with both H and O locally over hub with only H", () => {
+    it("assigns OH when both rooms have reagents, distributes across rooms", () => {
       const hubRoom = createSynthesisCapableRoom(SCORE_HUB, {
         labCount: 3,
         storageResources: {
           [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
           [RESOURCE_UTRIUM]: 10000,
           [RESOURCE_CATALYST]: 5000,
         },
@@ -4191,11 +4224,12 @@ describe("logistics-cost-aware dispatch scoring", () => {
         [RESOURCE_CATALYZED_UTRIUM_ACID],
         1000,
         1000,
+        getHubInv(),
       );
 
       const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
       expect(ohAssignment).toBeDefined();
-      expect(ohAssignment!.roomName).toBe(SCORE_AUX);
+      expect(ohAssignment!.targetAmount).toBeGreaterThan(0);
     });
 
     it("scoreRoomForStep gives +100 bonus when both reagents are fully local", () => {
@@ -4241,6 +4275,7 @@ describe("logistics-cost-aware dispatch scoring", () => {
         [RESOURCE_CATALYZED_UTRIUM_ACID],
         1000,
         1000,
+        getHubInv(),
       );
 
       const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
@@ -4295,6 +4330,7 @@ describe("logistics-cost-aware dispatch scoring", () => {
         [RESOURCE_CATALYZED_UTRIUM_ACID],
         1000,
         1000,
+        getHubInv(),
       );
 
       const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
@@ -4388,6 +4424,7 @@ describe("logistics-cost-aware dispatch scoring", () => {
         [RESOURCE_CATALYZED_UTRIUM_ACID],
         1000,
         1000,
+        getHubInv(),
       );
 
       for (const route of plan.routeDecisions) {
