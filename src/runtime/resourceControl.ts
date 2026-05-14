@@ -809,11 +809,13 @@ function getNativeMineralAutoSellTerminalTarget(
 
 function getSellResourcesForRoom(room: ResourceControlSnapshot, marketCfg: ResourceControlMarketConfig): ResourceConstant[] {
   const sellResources = marketCfg.sellResources.filter((resource) => resource !== RESOURCE_ENERGY);
+  const hubSellResources = room.roomName === Memory.cfg?.hub?.hubRoomName ? getHubMarketSellResources() : [];
+  const combined = [...new Set([...hubSellResources, ...sellResources])];
   if (!room.canMineNative || !room.nativeMineralType) {
-    return sellResources;
+    return combined;
   }
 
-  return [room.nativeMineralType, ...sellResources.filter((resource) => resource !== room.nativeMineralType)];
+  return [room.nativeMineralType, ...combined.filter((resource) => resource !== room.nativeMineralType)];
 }
 
 function getReservedTerminalEnergyForPendingSends(
@@ -1074,6 +1076,11 @@ function isHubProtectedResource(resource: ResourceConstant, roomName: string): b
     return false;
   }
 
+  const surplus = Memory.runtime?.hub?.marketSellSurplus?.[resource];
+  if (surplus != null && surplus > 0) {
+    return false;
+  }
+
   return targetCompounds.includes(resource)
     || HUB_INTERMEDIATES.includes(resource)
     || BASE_MINERALS.includes(resource);
@@ -1094,6 +1101,22 @@ function isResourceCommittedToDistributedSynthesis(roomName: string, resource: R
   }
 
   return false;
+}
+
+function hasHubMarketSellSurplus(roomName: string): boolean {
+  const hubCfg = Memory.cfg?.hub;
+  if (!hubCfg || hubCfg.hubRoomName !== roomName) return false;
+  const surplus = Memory.runtime?.hub?.marketSellSurplus;
+  if (!surplus) return false;
+  return Object.values(surplus).some(v => v != null && v > 0);
+}
+
+function getHubMarketSellResources(): ResourceConstant[] {
+  const surplus = Memory.runtime?.hub?.marketSellSurplus;
+  if (!surplus) return [];
+  return (Object.entries(surplus) as [ResourceConstant, number][])
+    .filter(([, amount]) => amount > 0)
+    .map(([resource]) => resource);
 }
 
 function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: ResourceControlMarketConfig, terminalBusy: Set<string>): string[] {
@@ -1127,7 +1150,9 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
       }
 
       const isNativeAutoSell = room.canMineNative && room.nativeMineralType === resource;
-      if (room.state !== "export" && !isNativeAutoSell) {
+      const hubSurplusAmount = Memory.runtime?.hub?.marketSellSurplus?.[resource];
+      const isHubSurplusSell = room.roomName === Memory.cfg?.hub?.hubRoomName && hubSurplusAmount != null && hubSurplusAmount > 0;
+      if (room.state !== "export" && !isNativeAutoSell && !isHubSurplusSell) {
         continue;
       }
 
@@ -1135,10 +1160,12 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
       const outgoingReserved = resource === RESOURCE_ENERGY ? 0 : getOutgoingResourceTransferAmount(room.roomName, resource);
       const effectiveTotal = Math.max(0, total - outgoingReserved);
       const exportStart = resource === RESOURCE_ENERGY ? room.energyExportStart : room.mineralExportStart[resource] || 0;
-      const sellThreshold = isNativeAutoSell
-        ? Math.min(exportStart, marketCfg.nativeMineralAutoSellThreshold)
-        : exportStart;
-      const surplus = Math.max(0, effectiveTotal - sellThreshold);
+      const sellThreshold = isHubSurplusSell
+        ? Math.max(0, effectiveTotal - hubSurplusAmount!)
+        : isNativeAutoSell
+          ? Math.min(exportStart, marketCfg.nativeMineralAutoSellThreshold)
+          : exportStart;
+      const surplus = isHubSurplusSell ? hubSurplusAmount! : Math.max(0, effectiveTotal - sellThreshold);
       if (surplus < marketCfg.minDealAmount) {
         continue;
       }
@@ -1188,6 +1215,40 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
       dealsDone += 1;
       actions.push(`market-sell:${room.roomName}:${resource}=${amount}:price=${order.price.toFixed(3)}:cost=${cost}`);
       break;
+    }
+  }
+
+  const hubCfg = Memory.cfg?.hub;
+  if (hubCfg?.hubRoomName && dealsDone < marketCfg.maxDealsPerRun) {
+    const hubSnapshot = snapshots.find(s => s.roomName === hubCfg.hubRoomName);
+    if (hubSnapshot && hubSnapshot.terminal.cooldown === 0 && !terminalBusy.has(hubSnapshot.roomName)) {
+      for (const resource of getHubMarketSellResources()) {
+        if (dealsDone >= marketCfg.maxDealsPerRun) break;
+        if (resource === RESOURCE_ENERGY || resource === RESOURCE_POWER || resource === RESOURCE_OPS) continue;
+
+        const surplusAmount = Memory.runtime?.hub?.marketSellSurplus?.[resource];
+        if (surplusAmount == null || surplusAmount < marketCfg.minDealAmount) continue;
+
+        const terminalResource = hubSnapshot.terminal.store.getUsedCapacity(resource);
+        const amount = Math.min(surplusAmount, terminalResource, marketCfg.maxDealAmount);
+        if (amount < marketCfg.minDealAmount) continue;
+
+        const order = findBestBuyOrder(ORDER_BUY, resource, hubSnapshot.roomName, amount, marketCfg.maxDealEnergyCostRatio, undefined, marketCfg.minSellPrice[resource]);
+        if (!order || !order.roomName) continue;
+
+        const actualCost = Game.market.calcTransactionCost(amount, hubSnapshot.roomName, order.roomName);
+        if (actualCost > hubSnapshot.terminalEnergy) continue;
+
+        const code = Game.market.deal(order.id, amount, hubSnapshot.roomName);
+        if (code !== OK) {
+          actions.push(`hub-surplus-sell-failed:${hubSnapshot.roomName}:${resource}:code=${code}`);
+          continue;
+        }
+
+        hubSnapshot.terminalEnergy = Math.max(0, hubSnapshot.terminalEnergy - actualCost);
+        dealsDone += 1;
+        actions.push(`hub-surplus-sell:${hubSnapshot.roomName}:${resource}=${amount}:price=${order.price.toFixed(3)}:cost=${actualCost}`);
+      }
     }
   }
 

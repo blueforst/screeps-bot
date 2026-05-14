@@ -1549,4 +1549,44 @@ export function runHubPlanner(): void {
   if (room.storage && room.terminal) {
     planHubDistribution(cfg);
   }
+
+  computeAndStoreMarketSellSurplus(cfg, hubInventory, chainTarget, targetCompounds);
+}
+
+function computeAndStoreMarketSellSurplus(
+  cfg: NonNullable<Memory["cfg"]>["hub"],
+  hubInventory: Record<string, number>,
+  chainTarget: number,
+  targetCompounds: ResourceConstant[],
+): void {
+  const surplus: Partial<Record<ResourceConstant, number>> = {};
+  const hubRoomName = cfg.hubRoomName;
+
+  for (const [res, amount] of Object.entries(hubInventory)) {
+    if (res === RESOURCE_ENERGY || res === RESOURCE_POWER || res === RESOURCE_OPS) {
+      continue;
+    }
+    if (amount <= 0) continue;
+    const resource = res as ResourceConstant;
+
+    const outgoing = getOutgoingResourceTransferAmount(hubRoomName, resource);
+    const effective = Math.max(0, amount - outgoing);
+
+    if (targetCompounds.includes(resource)) {
+      const sellable = Math.max(0, effective - chainTarget);
+      if (sellable >= 100) {
+        surplus[resource] = sellable;
+      }
+    } else {
+      const reserve = 5000;
+      const sellable = Math.max(0, effective - reserve);
+      if (sellable >= 100) {
+        surplus[resource] = sellable;
+      }
+    }
+  }
+
+  if (!Memory.runtime) Memory.runtime = {};
+  if (!Memory.runtime.hub) Memory.runtime.hub = {};
+  Memory.runtime.hub.marketSellSurplus = surplus;
 }

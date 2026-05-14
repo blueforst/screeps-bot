@@ -528,6 +528,7 @@ declare global {
         needsPlan?: boolean;
         lastPlanTick?: number;
         lastError?: string;
+        marketSellSurplus?: Partial<Record<ResourceConstant, number>>;
         distributedSynthesis?: {
           roomCapabilities?: Record<string, SynthesisRoomCapability>;
           dispatchAssignments?: SynthesisDispatchAssignment[];
