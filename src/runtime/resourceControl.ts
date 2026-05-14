@@ -1069,12 +1069,31 @@ function isHubProtectedResource(resource: ResourceConstant, roomName: string): b
   const targetCompounds = hubCfg.targetCompounds || [];
 
   if (!isHubRoom) {
-    return targetCompounds.includes(resource);
+    if (targetCompounds.includes(resource)) return true;
+    if (isResourceCommittedToDistributedSynthesis(roomName, resource)) return true;
+    return false;
   }
 
   return targetCompounds.includes(resource)
     || HUB_INTERMEDIATES.includes(resource)
     || BASE_MINERALS.includes(resource);
+}
+
+function isResourceCommittedToDistributedSynthesis(roomName: string, resource: ResourceConstant): boolean {
+  const assignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments;
+  if (!assignments) return false;
+
+  const assignment = assignments.find(a => a.roomName === roomName);
+  if (!assignment) return false;
+
+  const routeDecisions = Memory.runtime?.hub?.distributedSynthesis?.routeDecisions ?? [];
+  for (const route of routeDecisions) {
+    if (route.fromRoom === roomName && route.resource === resource && route.amount > 0) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: ResourceControlMarketConfig, terminalBusy: Set<string>): string[] {

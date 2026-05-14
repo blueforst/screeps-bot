@@ -2949,4 +2949,70 @@ describe("hub market protection for all 10 T3 compounds", () => {
 
     expect(Game.market.deal).not.toHaveBeenCalled();
   });
+
+  it("satellite room does not sell OH committed to distributed synthesis on the market", () => {
+    Memory.cfg!.hub = {
+      hubRoomName: "W50N1",
+      targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+    };
+    Memory.cfg!.resourceControl!.market!.enabled = true;
+    Memory.cfg!.resourceControl!.market!.sellResources = [RESOURCE_HYDROXIDE];
+    Memory.runtime = {
+      hub: {
+        distributedSynthesis: {
+          dispatchAssignments: [
+            {
+              roomName: "W50N2",
+              product: RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+              targetAmount: 5000,
+              isHubRoom: false,
+            },
+          ],
+          routeDecisions: [
+            {
+              fromRoom: "W50N2",
+              toRoom: "W50N3",
+              resource: RESOURCE_HYDROXIDE,
+              amount: 2000,
+              fee: 0,
+            },
+          ],
+        },
+      },
+    };
+
+    const room = createRoom({
+      name: "W50N2",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300000,
+        [RESOURCE_HYDROXIDE]: 5000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_HYDROXIDE]: 3000,
+      },
+      nativeMineralType: RESOURCE_HYDROGEN,
+    });
+    Game.rooms[room.name] = room;
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_BUY && filter.resourceType === RESOURCE_HYDROXIDE) {
+        return [
+          {
+            id: "buy-oh",
+            type: ORDER_BUY,
+            resourceType: RESOURCE_HYDROXIDE,
+            price: 1.0,
+            amount: 5000,
+            roomName: "W9N9",
+          } as Order,
+        ];
+      }
+      return [];
+    });
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
 });

@@ -4477,3 +4477,192 @@ describe("logistics-cost-aware dispatch scoring", () => {
     });
   });
 });
+
+describe("planHubImports: local reserve and direct-supply protection", () => {
+  const HUB_ROOM = "W1N1";
+  const SAT_ROOM = "W2N1";
+  const XGHO2 = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
+
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 20000,
+        targetCompounds: [XGHO2],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = { hub: getDefaultHubRuntime() };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("satellite with 800 T3 and reservePerRoom=1000 produces no reclaim task", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 800 });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).not.toContainEqual(expect.stringContaining(`reclaim:${SAT_ROOM}:${XGHO2}`));
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const t3Task = tasks.find(t => t.reason === `hub:reclaim:${XGHO2}`);
+    expect(t3Task).toBeUndefined();
+  });
+
+  it("satellite with 2000 T3 and reservePerRoom=1000 reclaims 1000", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 2000 });
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toContainEqual(`reclaim:${SAT_ROOM}:${XGHO2}=1000`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const t3Task = tasks.find(t => t.reason === `hub:reclaim:${XGHO2}`);
+    expect(t3Task).toBeDefined();
+    expect(t3Task!.amount).toBe(1000);
+  });
+
+  it("satellite with active synthesis assignment keeps local reserve for T3 product", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 2000 });
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: SAT_ROOM, product: XGHO2, targetAmount: 5000, isHubRoom: false },
+      ],
+      allocationLedger: {},
+      routeDecisions: [],
+    };
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).toContainEqual(`reclaim:${SAT_ROOM}:${XGHO2}=1000`);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const t3Task = tasks.find(t => t.reason === `hub:reclaim:${XGHO2}`);
+    expect(t3Task).toBeDefined();
+    expect(t3Task!.amount).toBe(1000);
+  });
+
+  it("satellite with active synthesis and only 800 T3 produces no reclaim task", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 800 });
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: SAT_ROOM, product: XGHO2, targetAmount: 5000, isHubRoom: false },
+      ],
+      allocationLedger: {},
+      routeDecisions: [],
+    };
+    const actions = planHubImports(Memory.cfg!.hub!);
+    expect(actions).not.toContainEqual(expect.stringContaining(`reclaim:${SAT_ROOM}:${XGHO2}`));
+  });
+
+  it("upstream room with direct downstream demand keeps committed amount", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROXIDE]: 2000,
+    });
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: SAT_ROOM, product: XGHO2, targetAmount: 5000, isHubRoom: false },
+      ],
+      allocationLedger: {},
+      routeDecisions: [
+        { fromRoom: SAT_ROOM, toRoom: "W3N1", resource: RESOURCE_HYDROXIDE, amount: 800, fee: 0 },
+      ],
+    };
+    const actions = planHubImports(Memory.cfg!.hub!);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const ohTask = tasks.find(t => t.reason === `hub:import:${RESOURCE_HYDROXIDE}`);
+    expect(ohTask).toBeDefined();
+    expect(ohTask!.amount).toBeLessThanOrEqual(2000 - 800);
+  });
+
+  it("direct-supply and hub-storage conflict resolves with direct-supply first", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROXIDE]: 3000,
+    });
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: SAT_ROOM, product: XGHO2, targetAmount: 5000, isHubRoom: false },
+      ],
+      allocationLedger: {},
+      routeDecisions: [
+        { fromRoom: SAT_ROOM, toRoom: HUB_ROOM, resource: RESOURCE_HYDROXIDE, amount: 3000, fee: 0 },
+        { fromRoom: SAT_ROOM, toRoom: "W3N1", resource: RESOURCE_HYDROXIDE, amount: 1800, fee: 5 },
+      ],
+    };
+    const actions = planHubImports(Memory.cfg!.hub!);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const ohTask = tasks.find(t => t.reason === `hub:import:${RESOURCE_HYDROXIDE}`);
+    if (ohTask) {
+      expect(ohTask!.amount).toBeLessThanOrEqual(3000 - 1800);
+    }
+  });
+
+  it("hub distribution still fills rooms below target", () => {
+    const hubStorageEntries: Record<string, number> = {
+      [RESOURCE_ENERGY]: 200000,
+      [XGHO2]: 21000,
+    };
+    const hubRoom = {
+      name: HUB_ROOM,
+      controller: { my: true, level: 8 },
+      storage: {
+        id: "hub-storage",
+        structureType: STRUCTURE_STORAGE,
+        store: {
+          ...hubStorageEntries,
+          getUsedCapacity: (resource?: string) => {
+            if (resource) return hubStorageEntries[resource] || 0;
+            return Object.values(hubStorageEntries).reduce((a: number, b: number) => a + b, 0);
+          },
+          getFreeCapacity: () => 500000,
+        },
+      },
+      terminal: {
+        id: "hub-terminal",
+        structureType: STRUCTURE_TERMINAL,
+        store: {
+          [RESOURCE_ENERGY]: 20000,
+          getUsedCapacity: () => 20000,
+          getFreeCapacity: () => 280000,
+          cooldown: 0,
+        },
+      },
+      find: () => [],
+    } as unknown as Room;
+    Game.rooms[HUB_ROOM] = hubRoom;
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [],
+      allocationLedger: {},
+      routeDecisions: [],
+    };
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+    expect(actions.some(a => a.includes("export") && a.includes(XGHO2))).toBe(true);
+  });
+
+  it("market protection for committed satellite resources", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROXIDE]: 2000,
+    });
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: SAT_ROOM, product: XGHO2, targetAmount: 5000, isHubRoom: false },
+      ],
+      allocationLedger: {},
+      routeDecisions: [
+        { fromRoom: SAT_ROOM, toRoom: "W3N1", resource: RESOURCE_HYDROXIDE, amount: 800, fee: 0 },
+      ],
+    };
+    const actions = planHubImports(Memory.cfg!.hub!);
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const ohTask = tasks.find(t => t.reason === `hub:import:${RESOURCE_HYDROXIDE}`);
+    expect(ohTask).toBeDefined();
+    expect(ohTask!.amount).toBeLessThanOrEqual(1200);
+  });
+});

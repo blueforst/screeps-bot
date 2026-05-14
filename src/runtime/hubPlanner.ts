@@ -424,6 +424,100 @@ function countLabs(room: Room): number {
   }).length;
 }
 
+/**
+ * Compute direct-supply commitment for a satellite room's resource.
+ * This is the sum of outgoing direct-supply transfers (synthesis:direct:*)
+ * and route-decision demands from the active distributed synthesis plan.
+ */
+function getDirectSupplyCommitment(satelliteName: string, resource: string): number {
+  let commitment = 0;
+
+  const taskStore = ensureResourceTransferTaskStore();
+  for (const task of Object.values(taskStore)) {
+    if (
+      task.status === "pending" &&
+      task.fromRoomName === satelliteName &&
+      task.resource === resource &&
+      (task.reason?.startsWith("synthesis:direct:") || task.reason?.startsWith("synthesis:hub-route:"))
+    ) {
+      commitment += task.remainingAmount;
+    }
+  }
+
+  const routeDecisions = Memory.runtime?.hub?.distributedSynthesis?.routeDecisions;
+  if (routeDecisions) {
+    for (const route of routeDecisions) {
+      if (route.fromRoom === satelliteName && route.resource === resource) {
+        commitment += route.amount;
+      }
+    }
+  }
+
+  return commitment;
+}
+
+/**
+ * Compute the local reserve for a satellite room's resource based on
+ * active distributed synthesis assignments. For T3 products, uses
+ * reservePerRoom. For intermediates/base minerals needed by an active
+ * reaction, returns the reagent demand for the assigned product's batch.
+ */
+function getLocalReserveForSynthesis(
+  satelliteName: string,
+  resource: string,
+  reservePerRoom: number,
+  targetCompounds: ResourceConstant[],
+): number {
+  if (targetCompounds.includes(resource as ResourceConstant)) {
+    return reservePerRoom;
+  }
+
+  const assignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments;
+  if (!assignments) return 0;
+
+  const assignment = assignments.find(a => a.roomName === satelliteName);
+  if (!assignment) return 0;
+
+  const product = assignment.product as string;
+
+  const batchSize = getBatchSizeForRoom(satelliteName);
+  if (isReagentInChain(product, resource)) {
+    return batchSize;
+  }
+
+  return 0;
+}
+
+/** Get the configured batch size for a room's synthesis reaction, default 5. */
+function getBatchSizeForRoom(roomName: string): number {
+  const roomCfg = Memory.cfg?.synthesisControl?.rooms?.[roomName];
+  const reactions = roomCfg?.reactions;
+  if (reactions && reactions.length > 0 && reactions[0].batchSize) {
+    return reactions[0].batchSize;
+  }
+  return roomCfg?.batchSize ?? 5;
+}
+
+/** Check if a resource appears as a reagent anywhere in the reaction chain for a product. */
+function isReagentInChain(product: string, resource: string): boolean {
+  const visited = new Set<string>();
+  const stack: string[] = [product];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const reagents = REACTION_MAP[current];
+    if (!reagents) continue;
+
+    if (reagents[0] === resource || reagents[1] === resource) return true;
+    stack.push(reagents[0], reagents[1]);
+  }
+
+  return false;
+}
+
 export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[] {
   if (!cfg?.hubRoomName) return [];
 
@@ -473,7 +567,9 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
     for (const mineral of BASE_MINERALS) {
       const amount = satResources[mineral] || 0;
       if (amount <= BASE_MINERAL_SAFETY_FLOOR) continue;
-      const sendAmount = amount - BASE_MINERAL_SAFETY_FLOOR;
+      const directCommitment = getDirectSupplyCommitment(satellite.name, mineral);
+      const localReserve = getLocalReserveForSynthesis(satellite.name, mineral, reservePerRoom, targetCompounds);
+      const sendAmount = amount - BASE_MINERAL_SAFETY_FLOOR - directCommitment - localReserve;
       if (sendAmount < MIN_HUB_IMPORT_AMOUNT) continue;
       const reason = `hub:import:${mineral}`;
       const key = `${satellite.name}:${mineral}:${reason}`;
@@ -487,20 +583,26 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
     for (const compound of INTERMEDIATE_COMPOUNDS) {
       const amount = satResources[compound] || 0;
       if (amount <= 0) continue;
-      if (amount < MIN_HUB_IMPORT_AMOUNT) continue;
+      const directCommitment = getDirectSupplyCommitment(satellite.name, compound);
+      const localReserve = getLocalReserveForSynthesis(satellite.name, compound, reservePerRoom, targetCompounds);
+      const sendAmount = amount - directCommitment - localReserve;
+      if (sendAmount < MIN_HUB_IMPORT_AMOUNT) continue;
       const reason = `hub:import:${compound}`;
       const key = `${satellite.name}:${compound}:${reason}`;
       if (existingKeys.has(key)) continue;
-      const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, compound, amount, reason);
+      const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, compound, sendAmount, reason);
       if (typeof result === "object" && result.ok) {
-        actions.push(`import:${satellite.name}:${compound}=${amount}`);
+        actions.push(`import:${satellite.name}:${compound}=${sendAmount}`);
       }
     }
 
     for (const t3 of targetCompounds) {
       const amount = satResources[t3] || 0;
       if (amount <= surplusThreshold) continue;
-      const sendAmount = amount - reservePerRoom;
+      const directCommitment = getDirectSupplyCommitment(satellite.name, t3);
+      const localReserve = getLocalReserveForSynthesis(satellite.name, t3, reservePerRoom, targetCompounds);
+      const sendAmount = amount - directCommitment - localReserve;
+      if (sendAmount <= 0) continue;
       const reason = `hub:reclaim:${t3}`;
       const key = `${satellite.name}:${t3}:${reason}`;
       if (existingKeys.has(key)) continue;
