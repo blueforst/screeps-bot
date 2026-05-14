@@ -339,6 +339,7 @@ describe("buildHubOverlayLines", () => {
       hubLabInventory: {},
       hubCarrierCargo: {},
       productionRooms: [],
+      t3ReserveStatus: { hubSurplus: 0, satellites: [] },
       ...overrides,
     };
   }
@@ -678,6 +679,7 @@ describe("buildHubVisualModel", () => {
       hubLabInventory: {},
       hubCarrierCargo: {},
       productionRooms: [],
+      t3ReserveStatus: { hubSurplus: 0, satellites: [] },
       ...overrides,
     };
   }
@@ -762,6 +764,7 @@ describe("drawHubVisualPanel", () => {
       activeProduct: null,
       progressPercent: 0,
       progressText: "idle",
+      t3Reserve: { hubSurplus: 0, satellites: [] },
       ...overrides,
     };
   }
@@ -1246,6 +1249,272 @@ describe("buildHubProgressSnapshot productionRooms (distributed synthesis)", () 
     });
 
     expect(snapshot.productionRooms[0].currentAmount).toBe(80);
+  });
+});
+
+describe("buildHubProgressSnapshot t3ReserveStatus", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    registerRuntimeServices();
+  });
+
+  it("returns empty t3ReserveStatus when hub is disabled", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: false },
+      hubRuntime: null,
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 100,
+    });
+
+    expect(snapshot.t3ReserveStatus).toEqual({ hubSurplus: 0, satellites: [] });
+  });
+
+  it("returns empty t3ReserveStatus when no targetCompounds configured", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: { XGH2O: 5000 } as Record<string, number>,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 200,
+      satelliteStores: [
+        { roomName: "W2N1", storage: { XGH2O: 500 }, terminal: null },
+      ],
+    });
+
+    expect(snapshot.t3ReserveStatus.hubSurplus).toBe(0);
+    expect(snapshot.t3ReserveStatus.satellites).toEqual([]);
+  });
+
+  it("computes hub surplus for compounds above hubReservePerCompound", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: ["XGH2O" as ResourceConstant, "XUHO2" as ResourceConstant],
+        hubReservePerCompound: 2000,
+      },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: { XGH2O: 5000, XUHO2: 3000 },
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 300,
+    });
+
+    expect(snapshot.t3ReserveStatus.hubSurplus).toBe(4000);
+  });
+
+  it("computes satellite deficit per room", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: ["XGH2O" as ResourceConstant],
+        reservePerRoom: 2000,
+      },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 400,
+      satelliteStores: [
+        { roomName: "W2N1", storage: { XGH2O: 500 }, terminal: { XGH2O: 200 } },
+        { roomName: "W3N1", storage: { XGH2O: 2000 }, terminal: null },
+      ],
+    });
+
+    expect(snapshot.t3ReserveStatus.satellites).toHaveLength(1);
+    expect(snapshot.t3ReserveStatus.satellites[0].room).toBe("W2N1");
+    expect(snapshot.t3ReserveStatus.satellites[0].deficit).toBe(1300);
+    expect(snapshot.t3ReserveStatus.satellites[0].details).toEqual([
+      { compound: "XGH2O", needed: 1300 },
+    ]);
+  });
+
+  it("sorts satellites by deficit descending and caps at display time", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: ["XGH2O" as ResourceConstant],
+        reservePerRoom: 2000,
+      },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 500,
+      satelliteStores: [
+        { roomName: "W2N1", storage: { XGH2O: 1500 }, terminal: null },
+        { roomName: "W3N1", storage: { XGH2O: 0 }, terminal: null },
+        { roomName: "W4N1", storage: { XGH2O: 1000 }, terminal: null },
+      ],
+    });
+
+    expect(snapshot.t3ReserveStatus.satellites).toHaveLength(3);
+    expect(snapshot.t3ReserveStatus.satellites[0].room).toBe("W3N1");
+    expect(snapshot.t3ReserveStatus.satellites[0].deficit).toBe(2000);
+    expect(snapshot.t3ReserveStatus.satellites[1].room).toBe("W4N1");
+    expect(snapshot.t3ReserveStatus.satellites[1].deficit).toBe(1000);
+    expect(snapshot.t3ReserveStatus.satellites[2].room).toBe("W2N1");
+    expect(snapshot.t3ReserveStatus.satellites[2].deficit).toBe(500);
+  });
+
+  it("excludes rooms with no deficit", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: ["XGH2O" as ResourceConstant],
+        reservePerRoom: 2000,
+      },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 600,
+      satelliteStores: [
+        { roomName: "W2N1", storage: { XGH2O: 3000 }, terminal: null },
+        { roomName: "W3N1", storage: { XGH2O: 2000 }, terminal: null },
+      ],
+    });
+
+    expect(snapshot.t3ReserveStatus.satellites).toEqual([]);
+  });
+
+  it("computes multi-compound deficit per satellite", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: ["XGH2O" as ResourceConstant, "XUHO2" as ResourceConstant],
+        reservePerRoom: 2000,
+      },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 700,
+      satelliteStores: [
+        { roomName: "W2N1", storage: { XGH2O: 500, XUHO2: 1800 }, terminal: null },
+      ],
+    });
+
+    expect(snapshot.t3ReserveStatus.satellites).toHaveLength(1);
+    expect(snapshot.t3ReserveStatus.satellites[0].deficit).toBe(1700);
+    expect(snapshot.t3ReserveStatus.satellites[0].details).toEqual([
+      { compound: "XGH2O", needed: 1500 },
+      { compound: "XUHO2", needed: 200 },
+    ]);
+  });
+});
+
+describe("drawHubVisualPanel T3 Reserve section", () => {
+  function makeModel(overrides: Partial<HubVisualModel> = {}): HubVisualModel {
+    return {
+      totalTasks: 0,
+      roomBreakdown: [],
+      activeProduct: null,
+      progressPercent: 0,
+      progressText: "idle",
+      t3Reserve: { hubSurplus: 0, satellites: [] },
+      ...overrides,
+    };
+  }
+
+  function getCalls(): Array<{ roomName: string; method: string; args: any[] }> {
+    return (global as any).__roomVisualCalls;
+  }
+
+  function findCalls(method: string, predicate?: (args: any[]) => boolean): Array<{ roomName: string; method: string; args: any[] }> {
+    return getCalls().filter(c => c.method === method && (!predicate || predicate(c.args)));
+  }
+
+  beforeEach(() => {
+    (global as any).__resetRoomVisualCalls();
+  });
+
+  it("renders T3 Reserve section header", () => {
+    const rv = new RoomVisual("W1N1");
+    drawHubVisualPanel(rv, makeModel());
+
+    const headerTexts = findCalls("text", args => args[0] === "T3 Reserve");
+    expect(headerTexts).toHaveLength(1);
+  });
+
+  it("renders hub surplus text when positive", () => {
+    const rv = new RoomVisual("W1N1");
+    drawHubVisualPanel(rv, makeModel({
+      t3Reserve: { hubSurplus: 45000, satellites: [] },
+    }));
+
+    const hubTexts = findCalls("text", args => typeof args[0] === "string" && args[0].includes("Hub:"));
+    expect(hubTexts).toHaveLength(1);
+    expect(hubTexts[0].args[0]).toBe("Hub: 45K surplus");
+  });
+
+  it("renders all rooms stocked when no deficits and surplus >= 0", () => {
+    const rv = new RoomVisual("W1N1");
+    drawHubVisualPanel(rv, makeModel({
+      t3Reserve: { hubSurplus: 100, satellites: [] },
+    }));
+
+    const textCalls = findCalls("text");
+    const stockedText = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("all rooms stocked"));
+    expect(stockedText).toBeDefined();
+  });
+
+  it("renders satellite deficits sorted by descending deficit", () => {
+    const rv = new RoomVisual("W1N1");
+    drawHubVisualPanel(rv, makeModel({
+      t3Reserve: {
+        hubSurplus: 0,
+        satellites: [
+          { room: "E7N58", deficit: 3500, details: [{ compound: "XGH2O", needed: 3500 }] },
+          { room: "E8N58", deficit: 1000, details: [{ compound: "XUHO2", needed: 1000 }] },
+        ],
+      },
+    }));
+
+    const textCalls = findCalls("text");
+    const sat1 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("E7N58"));
+    const sat2 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("E8N58"));
+    expect(sat1).toBeDefined();
+    expect(sat1!.args[0]).toBe("E7N58: -3.5K");
+    expect(sat2).toBeDefined();
+    expect(sat2!.args[0]).toBe("E8N58: -1K");
+  });
+
+  it("caps satellite display at 5", () => {
+    const satellites = Array.from({ length: 8 }, (_, i) => ({
+      room: `R${i}`,
+      deficit: (8 - i) * 500,
+      details: [{ compound: "XGH2O", needed: (8 - i) * 500 }],
+    }));
+    const rv = new RoomVisual("W1N1");
+    drawHubVisualPanel(rv, makeModel({
+      t3Reserve: { hubSurplus: 0, satellites },
+    }));
+
+    const textCalls = findCalls("text");
+    const satLines = textCalls.filter(c => typeof c.args[0] === "string" && /^R\d+:/.test(c.args[0]));
+    expect(satLines).toHaveLength(5);
   });
 });
 

@@ -15,6 +15,8 @@ export interface HubProgressInput {
     enabled?: boolean;
     hubRoomName?: string;
     targetCompounds?: ResourceConstant[];
+    reservePerRoom?: number;
+    hubReservePerCompound?: number;
   } | null;
   hubRuntime: {
     status?: "idle" | "importing" | "synthesizing" | "distributing" | "blocked";
@@ -70,6 +72,11 @@ export interface HubProgressInput {
   }>;
   synthesisControlCfgRooms?: Record<string, {
     reactions?: Array<{ product?: ResourceConstant; targetAmount?: number }>;
+  }>;
+  satelliteStores?: Array<{
+    roomName: string;
+    storage: Record<string, number> | null;
+    terminal: Record<string, number> | null;
   }>;
 }
 
@@ -136,12 +143,21 @@ export interface HubProgressSnapshot {
   synthesisTargetAmount?: number;
   /** Distributed production rooms with chain linkage data. */
   productionRooms: ProductionRoomEntry[];
+  t3ReserveStatus: {
+    hubSurplus: number;
+    satellites: Array<{
+      room: string;
+      deficit: number;
+      details: Array<{ compound: string; needed: number }>;
+    }>;
+  };
 }
 
 const ANALYTICS_SAMPLE_INTERVAL = 5;
 const MAX_LAST_PLAN_ACTIONS = 8;
 const MAX_INVENTORY_EXTRA = 10;
 const MAX_OVERLAY_LINES = 8;
+const DEFAULT_RESERVE_PER_ROOM = 2000;
 
 // Visual layout constants
 const HUB_VISUAL_X = 1;
@@ -173,6 +189,14 @@ export interface HubVisualModel {
   activeProduct: string | null;
   progressPercent: number;
   progressText: string;
+  t3Reserve: {
+    hubSurplus: number;
+    satellites: Array<{
+      room: string;
+      deficit: number;
+      details: Array<{ compound: string; needed: number }>;
+    }>;
+  };
 }
 
 const MAX_INBOUND_ROWS = 2;
@@ -216,7 +240,7 @@ export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualMod
     progressText = `${activeProduct} ${formatEnergy(inventoryAmount)}/${HUB_PROGRESS_TARGET}`;
   }
 
-  return { totalTasks, roomBreakdown, activeProduct, progressPercent, progressText };
+  return { totalTasks, roomBreakdown, activeProduct, progressPercent, progressText, t3Reserve: snapshot.t3ReserveStatus };
 }
 
 function formatCompactAmount(amount: number): string {
@@ -297,6 +321,21 @@ export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, pro
 
   if (model.roomBreakdown.length === 0) {
     p.textRow("none", { font: 0.35, color: VIS_MUTED });
+  }
+
+  p.sectionHeader("T3 Reserve");
+  const { hubSurplus, satellites } = model.t3Reserve;
+  const hubLabel = hubSurplus >= 0 ? `Hub: ${formatCompactAmount(hubSurplus)} surplus` : `Hub: -${formatCompactAmount(-hubSurplus)} deficit`;
+  const hubColor = hubSurplus > 0 ? VIS_OK : hubSurplus < 0 ? VIS_ERROR : VIS_MUTED;
+  p.textRow(hubLabel, { color: hubColor });
+
+  const displaySatellites = satellites.slice(0, 5);
+  if (displaySatellites.length === 0 && hubSurplus >= 0) {
+    p.textRow("all rooms stocked", { font: 0.35, color: VIS_MUTED });
+  }
+  for (const sat of displaySatellites) {
+    const deficitColor = sat.deficit >= 5000 ? VIS_ERROR : VIS_WARN;
+    p.textRow(`${sat.room}: -${formatCompactAmount(sat.deficit)}`, { font: 0.35, color: deficitColor });
   }
 }
 
@@ -591,6 +630,45 @@ function buildProductionRooms(
   });
 }
 
+function buildT3ReserveStatus(
+  hubStorageStore: Record<string, number> | null,
+  hubTerminalStore: Record<string, number> | null,
+  hubLabInventory: Record<string, number>,
+  targetCompounds: ResourceConstant[],
+  reservePerRoom: number,
+  hubReservePerCompound: number,
+  satelliteStores: HubProgressInput["satelliteStores"],
+): { hubSurplus: number; satellites: Array<{ room: string; deficit: number; details: Array<{ compound: string; needed: number }> }> } {
+  let hubSurplus = 0;
+  for (const compound of targetCompounds) {
+    const hubAmount = (hubStorageStore?.[compound] || 0) + (hubTerminalStore?.[compound] || 0) + (hubLabInventory[compound] || 0);
+    hubSurplus += Math.max(0, hubAmount - hubReservePerCompound);
+  }
+
+  const satellites: Array<{ room: string; deficit: number; details: Array<{ compound: string; needed: number }> }> = [];
+  if (satelliteStores) {
+    for (const sat of satelliteStores) {
+      const details: Array<{ compound: string; needed: number }> = [];
+      let totalDeficit = 0;
+      for (const compound of targetCompounds) {
+        const current = (sat.storage?.[compound] || 0) + (sat.terminal?.[compound] || 0);
+        const needed = Math.max(0, reservePerRoom - current);
+        if (needed > 0) {
+          details.push({ compound, needed });
+          totalDeficit += needed;
+        }
+      }
+      if (totalDeficit > 0) {
+        satellites.push({ room: sat.roomName, deficit: totalDeficit, details });
+      }
+    }
+  }
+
+  satellites.sort((a, b) => b.deficit - a.deficit);
+
+  return { hubSurplus, satellites };
+}
+
 export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSnapshot {
   const { hubConfig, hubRuntime, synthesisRuntime, currentTick } = input;
 
@@ -618,6 +696,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       hubLabInventory: {},
       hubCarrierCargo: {},
       productionRooms: [],
+      t3ReserveStatus: { hubSurplus: 0, satellites: [] },
     };
   }
 
@@ -653,6 +732,19 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
     hubRoomName,
   );
 
+  const targetCompounds = hubConfig.targetCompounds?.length ? hubConfig.targetCompounds : [];
+  const reservePerRoom = hubConfig.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
+  const hubReservePerCompound = hubConfig.hubReservePerCompound ?? 0;
+  const t3ReserveStatus = buildT3ReserveStatus(
+    input.hubStorageStore,
+    input.hubTerminalStore,
+    input.hubLabInventory ?? {},
+    targetCompounds,
+    reservePerRoom,
+    hubReservePerCompound,
+    input.satelliteStores,
+  );
+
   return {
     updatedAt: currentTick,
     enabled: true,
@@ -682,6 +774,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       input.synthesisControlCfgRooms,
       hubRoomName,
     ),
+    t3ReserveStatus,
   };
 }
 
@@ -718,6 +811,24 @@ export function collectHubProgressSnapshot(): HubProgressSnapshot {
 
   const hubCarrierCargo = collectCarrierCargoInventory(hubRoomName);
 
+  const satelliteStores: Array<{
+    roomName: string;
+    storage: Record<string, number> | null;
+    terminal: Record<string, number> | null;
+  }> = [];
+  if (hubRoomName) {
+    for (const [roomName, room] of Object.entries(Game.rooms)) {
+      if (roomName === hubRoomName) continue;
+      if (!room.controller?.my) continue;
+      if (!room.storage || !room.terminal) continue;
+      satelliteStores.push({
+        roomName,
+        storage: room.storage.store as unknown as Record<string, number>,
+        terminal: room.terminal.store as unknown as Record<string, number>,
+      });
+    }
+  }
+
   return buildHubProgressSnapshot({
     hubConfig,
     hubRuntime,
@@ -732,6 +843,7 @@ export function collectHubProgressSnapshot(): HubProgressSnapshot {
     distributedSynthesis: Memory.runtime?.hub?.distributedSynthesis,
     synthesisControlRooms: Memory.runtime?.synthesisControl?.rooms,
     synthesisControlCfgRooms: Memory.cfg?.synthesisControl?.rooms,
+    satelliteStores,
   });
 }
 
