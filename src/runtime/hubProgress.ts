@@ -1,4 +1,4 @@
-import { getMemoryService } from "@/runtime/runtimeServices";
+import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
 import type { ResourceTransferTask } from "@/runtime/logistics/resourceTransferTasks";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { Panel, type VisualSurface } from "@/visual/panel";
@@ -43,6 +43,7 @@ export interface HubProgressInput {
       minerals: Partial<Record<ResourceConstant, number>>;
     }
   > | null;
+  hubCarrierCargo?: Record<string, number>;
   transferTasks: Record<string, ResourceTransferTask> | null;
   currentTick: number;
 }
@@ -62,6 +63,7 @@ export interface HubProgressSnapshot {
   hubStorageEnergy: number;
   hubTerminalEnergy: number;
   hubInventory: Record<string, number>;
+  hubCarrierCargo: Record<string, number>;
   pendingImports: number;
   pendingReclaims: number;
   pendingExports: number;
@@ -279,6 +281,25 @@ function classifyTransferTask(
   return null;
 }
 
+export function collectCarrierCargoInventory(hubRoomName: string): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const creep of Object.values(Game.creeps)) {
+    if (creep.memory.role !== "carrier") continue;
+    const configName = creep.memory.configName;
+    const assignedRoom = configName
+      ? getCreepConfigService().get(configName)?.roomName || creep.room.name
+      : creep.room.name;
+    if (assignedRoom !== hubRoomName) continue;
+    const store = creep.store as unknown as Record<string, number>;
+    for (const [resource, amount] of Object.entries(store)) {
+      if (resource !== RESOURCE_ENERGY && amount > 0) {
+        result[resource] = (result[resource] || 0) + amount;
+      }
+    }
+  }
+  return result;
+}
+
 function buildCompactInventory(
   storageStore: Record<string, number> | null,
   terminalStore: Record<string, number> | null,
@@ -286,6 +307,7 @@ function buildCompactInventory(
   activeProduct: string | null,
   missingResources: string[],
   lastPlanActions: string[],
+  carrierCargo: Record<string, number>,
 ): Record<string, number> {
   const combined: Record<string, number> = {};
 
@@ -298,6 +320,9 @@ function buildCompactInventory(
     for (const [resource, amount] of Object.entries(terminalStore)) {
       if (amount > 0) combined[resource] = (combined[resource] || 0) + amount;
     }
+  }
+  for (const [resource, amount] of Object.entries(carrierCargo)) {
+    if (amount > 0) combined[resource] = (combined[resource] || 0) + amount;
   }
 
   const priorityResources = new Set<string>();
@@ -423,6 +448,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       pendingTasks: [],
       roomTerminalBlockers: [],
       hubLabInventory: {},
+      hubCarrierCargo: {},
     };
   }
 
@@ -436,6 +462,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
   const hubStorageEnergy = input.hubStorageStore?.[RESOURCE_ENERGY] || 0;
   const hubTerminalEnergy = input.hubTerminalStore?.[RESOURCE_ENERGY] || 0;
 
+  const hubCarrierCargo = input.hubCarrierCargo ?? {};
   const hubInventory = buildCompactInventory(
     input.hubStorageStore,
     input.hubTerminalStore,
@@ -443,6 +470,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
     activeProduct,
     missingResources,
     lastPlanActions,
+    hubCarrierCargo,
   );
 
   const { pendingImports, pendingReclaims, pendingExports, pendingTasks } = countPendingHubTasks(
@@ -477,6 +505,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
     pendingTasks,
     roomTerminalBlockers,
     hubLabInventory: input.hubLabInventory ?? {},
+    hubCarrierCargo,
     synthesisTargetAmount: input.synthesisRuntime?.targetAmount,
   };
 }
@@ -512,6 +541,8 @@ export function collectHubProgressSnapshot(): HubProgressSnapshot {
 
   const transferTasks = ensureResourceTransferTaskStore();
 
+  const hubCarrierCargo = collectCarrierCargoInventory(hubRoomName);
+
   return buildHubProgressSnapshot({
     hubConfig,
     hubRuntime,
@@ -519,6 +550,7 @@ export function collectHubProgressSnapshot(): HubProgressSnapshot {
     hubStorageStore,
     hubTerminalStore,
     hubLabInventory,
+    hubCarrierCargo,
     resourceControlRooms,
     transferTasks,
     currentTick: Game.time,

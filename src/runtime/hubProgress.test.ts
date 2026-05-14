@@ -1,7 +1,7 @@
-import { buildHubProgressSnapshot, buildHubVisualModel, collectHubProgressSnapshot, runHubProgressAnalytics, buildHubOverlayLines, renderHubProgressOverlays, drawHubVisualPanel, buildInboundTransferRows } from "@/runtime/hubProgress";
+import { buildHubProgressSnapshot, buildHubVisualModel, collectHubProgressSnapshot, collectCarrierCargoInventory, runHubProgressAnalytics, buildHubOverlayLines, renderHubProgressOverlays, drawHubVisualPanel, buildInboundTransferRows } from "@/runtime/hubProgress";
 import type { HubProgressSnapshot, HubVisualModel } from "@/runtime/hubProgress";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
-import { registerRuntimeServices } from "@/runtime/runtimeServices";
+import { getCreepConfigService, registerRuntimeServices } from "@/runtime/runtimeServices";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -337,6 +337,7 @@ describe("buildHubOverlayLines", () => {
       pendingTasks: [],
       roomTerminalBlockers: [],
       hubLabInventory: {},
+      hubCarrierCargo: {},
       ...overrides,
     };
   }
@@ -549,6 +550,7 @@ describe("buildHubVisualModel", () => {
         { room: "W2N1", terminalEnergy: 0, reserve: 20000, pendingNonEnergy: 0 },
       ],
       hubLabInventory: {},
+      hubCarrierCargo: {},
       ...overrides,
     };
   }
@@ -1026,6 +1028,7 @@ describe("buildInboundTransferRows", () => {
       pendingTasks: [],
       roomTerminalBlockers: [],
       hubLabInventory: {},
+      hubCarrierCargo: {},
       ...overrides,
     };
   }
@@ -1107,5 +1110,109 @@ describe("buildInboundTransferRows", () => {
     expect(result.rows).toHaveLength(2);
     expect(result.rows[0].room).toBe("W2N1");
     expect(result.rows[1].room).toBe("W3N1");
+  });
+});
+
+describe("collectCarrierCargoInventory", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    registerRuntimeServices();
+    Game.creeps = {};
+  });
+
+  it("counts non-energy cargo from carriers assigned to hub room", () => {
+    getCreepConfigService().upsert("W8N1:carrier:0", "carrier", [], "W8N1");
+
+    Game.creeps = {
+      c1: {
+        memory: { role: "carrier", configName: "W8N1:carrier:0" },
+        room: { name: "W8N1" },
+        store: { [RESOURCE_UTRIUM]: 500, [RESOURCE_ENERGY]: 100 } as unknown as StoreDefinition,
+      } as any,
+    };
+
+    const result = collectCarrierCargoInventory("W8N1");
+    expect(result).toEqual({ U: 500 });
+  });
+
+  it("excludes carriers assigned to other rooms", () => {
+    getCreepConfigService().upsert("W8N2:carrier:0", "carrier", [], "W8N2");
+
+    Game.creeps = {
+      c2: {
+        memory: { role: "carrier", configName: "W8N2:carrier:0" },
+        room: { name: "W8N1" },
+        store: { [RESOURCE_KEANIUM]: 300 } as unknown as StoreDefinition,
+      } as any,
+    };
+
+    const result = collectCarrierCargoInventory("W8N1");
+    expect(result).toEqual({});
+  });
+
+  it("excludes non-carrier creeps", () => {
+    Game.creeps = {
+      c3: {
+        memory: { role: "worker", configName: undefined },
+        room: { name: "W8N1" },
+        store: { [RESOURCE_UTRIUM]: 200 } as unknown as StoreDefinition,
+      } as any,
+    };
+
+    const result = collectCarrierCargoInventory("W8N1");
+    expect(result).toEqual({});
+  });
+
+  it("returns empty record when no matching carriers", () => {
+    Game.creeps = {};
+    const result = collectCarrierCargoInventory("W8N1");
+    expect(result).toEqual({});
+  });
+});
+
+describe("buildCompactInventory carrier cargo merge", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    registerRuntimeServices();
+  });
+
+  it("merges carrier cargo with storage in buildHubProgressSnapshot", () => {
+    getCreepConfigService().upsert("W8N1:carrier:0", "carrier", [], "W8N1");
+
+    Game.creeps = {
+      c1: {
+        memory: { role: "carrier", configName: "W8N1:carrier:0" },
+        room: { name: "W8N1" },
+        store: { U: 500, energy: 0 } as unknown as StoreDefinition,
+      } as any,
+    };
+
+    // We cannot call buildHubProgressSnapshot directly with hubCarrierCargo
+    // because it's an input field. Test the merge via the snapshot builder.
+    const storageStore: Record<string, number> = {
+      energy: 500000,
+      U: 1000,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W8N1" },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: storageStore,
+      hubTerminalStore: null,
+      hubCarrierCargo: { U: 500, K: 200 },
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 100,
+    });
+
+    // U should be merged: 1000 (storage) + 500 (carrier) = 1500
+    expect(snapshot.hubInventory.U).toBe(1500);
+    // K comes only from carrier cargo
+    expect(snapshot.hubInventory.K).toBe(200);
+    // Energy is excluded from compact inventory
+    expect(snapshot.hubInventory.energy).toBeUndefined();
+    // hubCarrierCargo is passed through
+    expect(snapshot.hubCarrierCargo).toEqual({ U: 500, K: 200 });
   });
 });

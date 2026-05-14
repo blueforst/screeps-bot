@@ -14,6 +14,7 @@
 
 import { createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
 import { getTickContextService } from "@/runtime/runtimeServices";
+import { collectCarrierCargoInventory } from "@/runtime/hubProgress";
 
 const DEFAULT_TARGET_COMPOUNDS: ResourceConstant[] = [
   RESOURCE_CATALYZED_UTRIUM_ACID, // XUH2O
@@ -713,6 +714,13 @@ export function runHubPlanner(): void {
       if (res !== RESOURCE_ENERGY && amt > 0) {
         hubInventory[res] = (hubInventory[res] || 0) + amt;
       }
+    }
+  }
+
+  const carrierCargo = collectCarrierCargoInventory(cfg.hubRoomName);
+  for (const [res, amt] of Object.entries(carrierCargo)) {
+    if (amt > 0) {
+      hubInventory[res] = (hubInventory[res] || 0) + amt;
     }
   }
 
