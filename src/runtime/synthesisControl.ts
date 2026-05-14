@@ -990,6 +990,26 @@ function maybeGenerateSupplyTasks(
   };
 }
 
+function signalHubNeedsPlan(roomName: string): void {
+  const hubRoomName = Memory.cfg?.hub?.hubRoomName;
+  const isHub = hubRoomName === roomName;
+
+  if (!isHub) {
+    if (!Memory.cfg?.synthesisControl?.rooms?.[roomName]) return;
+
+    const lastPlanTick = Memory.runtime?.hub?.lastPlanTick ?? 0;
+    const planInterval = Memory.cfg?.hub?.planInterval ?? 50;
+    if (Game.time - lastPlanTick < planInterval) return;
+  }
+
+  if (!Memory.runtime) Memory.runtime = {} as any;
+  if (!Memory.runtime.hub) {
+    Memory.runtime.hub = { needsPlan: true, updatedAt: Game.time };
+  } else {
+    Memory.runtime.hub.needsPlan = true;
+  }
+}
+
 function handleRoom(
   roomName: string,
   roomCfg: SynthesisRoomConfig,
@@ -1098,24 +1118,12 @@ function handleRoom(
       productLabIds: topology.productLabs.map((lab) => lab.id),
     };
 
-    if (!hasAnyCleanup && roomState.stage === "unloading" && Memory.cfg.hub?.hubRoomName === room.name) {
-      if (!Memory.runtime.hub) {
-        Memory.runtime.hub = { needsPlan: true, updatedAt: Game.time };
-      } else {
-        Memory.runtime.hub.needsPlan = true;
-      }
+    if (!hasAnyCleanup && roomState.stage === "unloading") {
+      signalHubNeedsPlan(room.name);
     }
 
-    // Signal hub planner when an actively synthesizing room runs out of reactions.
-    // Do NOT signal during product-unload (stage="unloading"): hubPlanner uses
-    // storage+terminal inventory, which hasn't changed yet — signalling would
-    // cause an infinite needsPlan loop (hub rewrites same step every tick).
-    if (roomState.stage !== "idle" && roomState.stage !== "unloading" && Memory.cfg.hub?.hubRoomName === room.name) {
-      if (!Memory.runtime.hub) {
-        Memory.runtime.hub = { needsPlan: true, updatedAt: Game.time };
-      } else {
-        Memory.runtime.hub.needsPlan = true;
-      }
+    if (roomState.stage !== "idle" && roomState.stage !== "unloading") {
+      signalHubNeedsPlan(room.name);
     }
 
     return { generated, failed, runs };
@@ -1246,14 +1254,7 @@ function handleRoom(
     stage = "idle";
     roomState.lastTransitionAt = Game.time;
 
-    // Signal hub planner to plan next step immediately
-    if (Memory.cfg.hub?.hubRoomName === room.name) {
-      if (!Memory.runtime.hub) {
-        Memory.runtime.hub = { needsPlan: true, updatedAt: Game.time };
-      } else {
-        Memory.runtime.hub.needsPlan = true;
-      }
-    }
+    signalHubNeedsPlan(room.name);
   } else if (!reagentReady && !hasContamination) {
     stage = "loading";
   }

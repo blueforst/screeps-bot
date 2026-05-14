@@ -525,6 +525,7 @@ declare global {
         missingResources?: string[];
         lastPlanActions?: string[];
         needsPlan?: boolean;
+        lastPlanTick?: number;
         lastError?: string;
         distributedSynthesis?: {
           roomCapabilities?: Record<string, SynthesisRoomCapability>;

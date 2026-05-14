@@ -16,6 +16,7 @@ import {
   planHubImports,
   runHubPlanner,
   scoreRoomForStep,
+  wireDistributedSynthesis,
   DependencyGraph,
 } from "@/runtime/hubPlanner";
 import type {
@@ -4205,6 +4206,179 @@ describe("logistics-cost-aware dispatch scoring", () => {
       for (const room of roomsWithDeps) {
         expect(hasCycle(room, new Set())).toBe(false);
       }
+    });
+  });
+
+  describe("wireDistributedSynthesis", () => {
+    const WIRE_HUB = "W1N1";
+    const WIRE_AUX = "W2N1";
+
+    beforeEach(() => {
+      Game.time = DIST_PLAN_INTERVAL;
+      Game.rooms = {};
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: WIRE_HUB,
+          planInterval: DIST_PLAN_INTERVAL,
+          reservePerRoom: 1000,
+          hubReservePerCompound: 1000,
+          targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: getDefaultHubRuntime(),
+      };
+      Memory.data = {};
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+    });
+
+    it("returns false (hub-only fallback) when no auxiliary rooms are eligible", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+
+      const result = wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 5000, [RESOURCE_OXYGEN]: 5000 },
+        [{ product: RESOURCE_HYDROXIDE, targetAmount: 1000, reagents: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN] }],
+      );
+
+      expect(result).toBe(false);
+    });
+
+    it("writes distinct reactions per room for multi-room assignment", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_ZYNTHIUM]: 10000,
+          [RESOURCE_KEANIUM]: 10000,
+          [RESOURCE_UTRIUM]: 10000,
+          [RESOURCE_LEMERGIUM]: 10000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      const result = wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+        1000,
+        1000,
+        {
+          [RESOURCE_HYDROGEN]: 10000, [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_ZYNTHIUM]: 10000, [RESOURCE_KEANIUM]: 10000,
+          [RESOURCE_UTRIUM]: 10000, [RESOURCE_LEMERGIUM]: 10000,
+        },
+        [],
+      );
+
+      expect(result).toBe(true);
+      expect(Memory.cfg?.synthesisControl?.rooms).toBeDefined();
+      const rooms = Memory.cfg!.synthesisControl!.rooms!;
+
+      const hubProducts = (rooms[WIRE_HUB]?.reactions || []).map(r => r.product);
+      const auxProducts = (rooms[WIRE_AUX]?.reactions || []).map(r => r.product);
+
+      expect(hubProducts.length).toBeGreaterThanOrEqual(1);
+      expect(auxProducts.length).toBeGreaterThanOrEqual(1);
+
+      expect(hubProducts).toEqual(expect.not.arrayContaining(auxProducts));
+    });
+
+    it("preserves active non-idle room and does not overwrite its reaction", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_UTRIUM]: 5000,
+          [RESOURCE_CATALYST]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = { stage: "synthesizing" };
+
+      const existingProduct = RESOURCE_HYDROXIDE;
+      if (!Memory.cfg!.synthesisControl) Memory.cfg!.synthesisControl = {};
+      if (!Memory.cfg!.synthesisControl.rooms) Memory.cfg!.synthesisControl.rooms = {};
+      Memory.cfg!.synthesisControl.rooms[WIRE_AUX] = {
+        enabled: true,
+        reactions: [{ product: existingProduct, targetAmount: 5000, batchSize: 100, donorRoomNames: [] }],
+        donorRoomNames: [],
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 10000, [RESOURCE_OXYGEN]: 10000, [RESOURCE_UTRIUM]: 5000, [RESOURCE_CATALYST]: 5000 },
+        [],
+      );
+
+      const auxRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_AUX];
+      expect(auxRoomCfg).toBeDefined();
+      expect(auxRoomCfg.reactions![0].product).toBe(existingProduct);
+    });
+
+    it("stores distributed plan in runtime memory", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_UTRIUM]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 10000, [RESOURCE_OXYGEN]: 10000, [RESOURCE_UTRIUM]: 5000 },
+        [],
+      );
+
+      expect(Memory.runtime?.hub?.distributedSynthesis).toBeDefined();
+      expect(Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments).toBeDefined();
+      expect(Memory.runtime!.hub!.distributedSynthesis!.roomCapabilities).toBeDefined();
     });
   });
 });

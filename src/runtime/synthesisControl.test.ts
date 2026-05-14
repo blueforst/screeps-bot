@@ -278,3 +278,259 @@ describe("runSynthesisControl hub import guard", () => {
     expect(utriumSynthesisTasks[0].amount).toBe(300);
   });
 });
+
+describe("non-hub synthesis completion signals hub needsPlan with debounce", () => {
+  const HUB_ROOM = "W1N1";
+  const AUX_ROOM = "W2N1";
+  const PLAN_INTERVAL = 50;
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time = 100;
+    Memory.cfg = {
+      synthesisControl: {
+        enabled: true,
+        sampleInterval: 10,
+        rooms: {
+          [HUB_ROOM]: {
+            reactions: [],
+          },
+          [AUX_ROOM]: {
+            enabled: true,
+            reactions: [
+              { product: RESOURCE_UTRIUM_HYDRIDE, targetAmount: 100, batchSize: 100, donorRoomNames: [] },
+            ],
+          },
+        },
+      },
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: PLAN_INTERVAL,
+      },
+    };
+    Memory.runtime = undefined;
+    Memory.rooms = {};
+    Memory.data = undefined;
+    Game.rooms = {};
+    Game.spawns = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: () => 0,
+    };
+  });
+
+  it("sets needsPlan for non-hub room when product reaches target", () => {
+    const auxRoom = createRoomWithResources({
+      name: AUX_ROOM,
+      mineralType: RESOURCE_KEANIUM,
+      storageEnergy: 300000,
+      terminalResources: {
+        [RESOURCE_UTRIUM_HYDRIDE]: 200,
+      },
+    });
+    const hubRoom = createRoomWithResources({
+      name: HUB_ROOM,
+      mineralType: RESOURCE_UTRIUM,
+      storageEnergy: 300000,
+    });
+    Game.rooms[AUX_ROOM] = auxRoom;
+    Game.rooms[HUB_ROOM] = hubRoom;
+
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        needsPlan: false,
+        lastPlanTick: 10,
+      },
+      synthesisControl: {
+        updatedAt: 0,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          [AUX_ROOM]: {
+            stage: "synthesizing" as const,
+            activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+            targetAmount: 100,
+            batchSize: 100,
+            reagentLabIds: [`${AUX_ROOM}-lab-1`, `${AUX_ROOM}-lab-2`],
+            productLabIds: [`${AUX_ROOM}-lab-3`],
+            successfulRuns: 5,
+            pendingTasks: 0,
+            lastTransitionAt: 90,
+          },
+        },
+      },
+    };
+
+    runSynthesisControl();
+
+    expect(Memory.runtime?.hub?.needsPlan).toBe(true);
+  });
+
+  it("does NOT set needsPlan for non-hub room within debounce window", () => {
+    Game.time = 55;
+    const auxRoom = createRoomWithResources({
+      name: AUX_ROOM,
+      mineralType: RESOURCE_KEANIUM,
+      storageEnergy: 300000,
+      terminalResources: {
+        [RESOURCE_UTRIUM_HYDRIDE]: 200,
+      },
+    });
+    const hubRoom = createRoomWithResources({
+      name: HUB_ROOM,
+      mineralType: RESOURCE_UTRIUM,
+      storageEnergy: 300000,
+    });
+    Game.rooms[AUX_ROOM] = auxRoom;
+    Game.rooms[HUB_ROOM] = hubRoom;
+
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        needsPlan: false,
+        lastPlanTick: 50,
+      },
+      synthesisControl: {
+        updatedAt: 0,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          [AUX_ROOM]: {
+            stage: "synthesizing" as const,
+            activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+            targetAmount: 100,
+            batchSize: 100,
+            reagentLabIds: [`${AUX_ROOM}-lab-1`, `${AUX_ROOM}-lab-2`],
+            productLabIds: [`${AUX_ROOM}-lab-3`],
+            successfulRuns: 5,
+            pendingTasks: 0,
+            lastTransitionAt: 30,
+          },
+        },
+      },
+    };
+
+    runSynthesisControl();
+
+    expect(Memory.runtime?.hub?.needsPlan).toBeFalsy();
+  });
+
+  it("does NOT set needsPlan for non-hub room not in synthesis config", () => {
+    Memory.cfg!.synthesisControl!.rooms = {
+      [HUB_ROOM]: { reactions: [] },
+    };
+
+    const auxRoom = createRoomWithResources({
+      name: AUX_ROOM,
+      mineralType: RESOURCE_KEANIUM,
+      storageEnergy: 300000,
+      terminalResources: {
+        [RESOURCE_UTRIUM_HYDRIDE]: 200,
+      },
+    });
+    const hubRoom = createRoomWithResources({
+      name: HUB_ROOM,
+      mineralType: RESOURCE_UTRIUM,
+      storageEnergy: 300000,
+    });
+    Game.rooms[AUX_ROOM] = auxRoom;
+    Game.rooms[HUB_ROOM] = hubRoom;
+
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        needsPlan: false,
+        lastPlanTick: 10,
+      },
+      synthesisControl: {
+        updatedAt: 0,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          [AUX_ROOM]: {
+            stage: "synthesizing" as const,
+            activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+            targetAmount: 100,
+            batchSize: 100,
+            reagentLabIds: [`${AUX_ROOM}-lab-1`, `${AUX_ROOM}-lab-2`],
+            productLabIds: [`${AUX_ROOM}-lab-3`],
+            successfulRuns: 5,
+            pendingTasks: 0,
+            lastTransitionAt: 90,
+          },
+        },
+      },
+    };
+
+    runSynthesisControl();
+
+    expect(Memory.runtime?.hub?.needsPlan).toBeFalsy();
+  });
+
+  it("hub room signals needsPlan immediately without debounce", () => {
+    Game.time = 51;
+    const hubRoom = createRoomWithResources({
+      name: HUB_ROOM,
+      mineralType: RESOURCE_UTRIUM,
+      storageEnergy: 300000,
+      terminalResources: {
+        [RESOURCE_UTRIUM_HYDRIDE]: 200,
+      },
+    });
+    Game.rooms[HUB_ROOM] = hubRoom;
+
+    Memory.cfg!.synthesisControl!.rooms![HUB_ROOM] = {
+      enabled: true,
+      reactions: [
+        { product: RESOURCE_UTRIUM_HYDRIDE, targetAmount: 100, batchSize: 100, donorRoomNames: [] },
+      ],
+    };
+
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        needsPlan: false,
+        lastPlanTick: 50,
+      },
+      synthesisControl: {
+        updatedAt: 0,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          [HUB_ROOM]: {
+            stage: "synthesizing" as const,
+            activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+            targetAmount: 100,
+            batchSize: 100,
+            reagentLabIds: [`${HUB_ROOM}-lab-1`, `${HUB_ROOM}-lab-2`],
+            productLabIds: [`${HUB_ROOM}-lab-3`],
+            successfulRuns: 5,
+            pendingTasks: 0,
+            lastTransitionAt: 30,
+          },
+        },
+      },
+    };
+
+    runSynthesisControl();
+
+    expect(Memory.runtime?.hub?.needsPlan).toBe(true);
+  });
+});

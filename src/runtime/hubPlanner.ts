@@ -1047,6 +1047,110 @@ function assignStepToRoom(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Distributed synthesis config writer — multi-room reaction assignment
+// ---------------------------------------------------------------------------
+
+const ACCEPT_REASSIGN_STAGES = new Set<string>(["idle", "blocked"]);
+
+/**
+ * Write distributed synthesis reaction configs to multiple rooms.
+ *
+ * For each dispatch assignment, writes a reaction config to the target room
+ * only if its runtime stage is idle, blocked, or undefined (never written to).
+ * Preserves active reactions for rooms in loading/synthesizing/unloading/cleanup.
+ *
+ * Returns true if distributed mode was used (multiple rooms assigned),
+ * false if hub-only fallback should be used instead.
+ */
+export function wireDistributedSynthesis(
+  hubRoomName: string,
+  targetCompounds: ResourceConstant[],
+  hubReservePerCompound: number,
+  reservePerRoom: number,
+  hubInventory: Record<string, number>,
+  steps: ChainStep[],
+): boolean {
+  const eligibleRooms = getEligibleSynthesisRooms();
+  const auxRooms = eligibleRooms.filter(r => r.roomName !== hubRoomName);
+
+  if (auxRooms.length === 0) {
+    return false;
+  }
+
+  const plan = planDistributedSynthesis(
+    hubRoomName,
+    targetCompounds,
+    hubReservePerCompound,
+    reservePerRoom,
+  );
+
+  if (!Memory.runtime?.hub) return true;
+  Memory.runtime.hub.distributedSynthesis = {
+    roomCapabilities: {},
+    dispatchAssignments: plan.dispatchAssignments,
+    allocationLedger: plan.allocationLedger,
+    routeDecisions: plan.routeDecisions,
+  };
+
+  for (const room of eligibleRooms) {
+    Memory.runtime.hub.distributedSynthesis.roomCapabilities![room.roomName] = room;
+  }
+
+  if (!Memory.cfg) return true;
+  if (!Memory.cfg.synthesisControl) {
+    Memory.cfg.synthesisControl = {};
+  }
+  Memory.cfg.synthesisControl.enabled = true;
+  if (!Memory.cfg.synthesisControl.rooms) {
+    Memory.cfg.synthesisControl.rooms = {};
+  }
+
+  for (const assignment of plan.dispatchAssignments) {
+    const roomName = assignment.roomName;
+
+    const stage = Memory.runtime?.synthesisControl?.rooms?.[roomName]?.stage;
+    if (stage && !ACCEPT_REASSIGN_STAGES.has(stage)) {
+      continue;
+    }
+
+    const reagents = REACTION_MAP[assignment.product];
+    if (!reagents) continue;
+
+    if (!Memory.cfg.synthesisControl.rooms[roomName]) {
+      Memory.cfg.synthesisControl.rooms[roomName] = {
+        enabled: true,
+        donorRoomNames: [],
+      };
+    }
+
+    const roomCfg = Memory.cfg.synthesisControl.rooms[roomName];
+    roomCfg.enabled = true;
+
+    const roomObj = Game.rooms[roomName];
+    let existingAmount = 0;
+    if (roomObj?.storage) {
+      const s = roomObj.storage.store as unknown as Record<string, number>;
+      existingAmount += (s[assignment.product] || 0);
+    }
+    if (roomObj?.terminal) {
+      const t = roomObj.terminal.store as unknown as Record<string, number>;
+      existingAmount += (t[assignment.product] || 0);
+    }
+
+    roomCfg.reactions = [
+      {
+        product: assignment.product,
+        targetAmount: existingAmount + assignment.targetAmount,
+        batchSize: Math.min(3000, Math.max(5, Math.ceil(assignment.targetAmount / 5) * 5)),
+        donorRoomNames: [],
+      },
+    ];
+  }
+
+  return true;
+}
+
 export function runHubPlanner(): void {
   let cfg = Memory.cfg?.hub;
   if (cfg?.enabled !== true || !cfg.hubRoomName) {
@@ -1154,6 +1258,7 @@ export function runHubPlanner(): void {
   const importActions = planHubImports(cfg);
 
   rt.needsPlan = false;
+  rt.lastPlanTick = Game.time;
   rt.updatedAt = Game.time;
   rt.missingResources = result.missingResources.slice(0, HUB_RUNTIME_ARRAY_CAP);
 
@@ -1176,7 +1281,22 @@ export function runHubPlanner(): void {
   }
 
   if (!result.blocked) {
-    writeSynthesisConfig(cfg.hubRoomName, result.steps, hubInventory);
+    const hubReservePerCompound2 = cfg.hubReservePerCompound ?? 20000;
+    const reservePerRoom2 = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
+    const targetCompounds2 = cfg.targetCompounds?.length ? cfg.targetCompounds : DEFAULT_TARGET_COMPOUNDS;
+
+    const distributed = wireDistributedSynthesis(
+      cfg.hubRoomName,
+      targetCompounds2,
+      hubReservePerCompound2,
+      reservePerRoom2,
+      hubInventory,
+      result.steps,
+    );
+
+    if (!distributed) {
+      writeSynthesisConfig(cfg.hubRoomName, result.steps, hubInventory);
+    }
   }
 
   if (room.storage && room.terminal) {
