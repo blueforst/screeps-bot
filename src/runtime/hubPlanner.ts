@@ -1428,7 +1428,8 @@ export function wireDistributedSynthesis(
   }
 
   // Second pass: ensure busy rooms (not in ACCEPT_REASSIGN_STAGES) with active
-  // reactions are included in dispatchAssignments so analytics displays them.
+  // reactions are included in dispatchAssignments so analytics displays them,
+  // and preserve their synthesisControl config so they continue running.
   const existing = Memory.runtime.hub.distributedSynthesis.dispatchAssignments;
   for (const room of eligibleRooms) {
     if (existing.some(a => a.roomName === room.roomName)) continue;
@@ -1446,6 +1447,14 @@ export function wireDistributedSynthesis(
       targetAmount: runtimeRoom?.targetAmount ?? 0,
       isHubRoom: room.roomName === hubRoomName,
     });
+
+    const reagents = REACTION_MAP[activeProduct as ResourceConstant];
+    if (reagents && !Memory.cfg.synthesisControl.rooms[room.roomName]) {
+      Memory.cfg.synthesisControl.rooms[room.roomName] = {
+        enabled: true,
+        donorRoomNames: [],
+      };
+    }
   }
 
   wireRouteTransferTasks(plan.routeDecisions, hubRoomName, reservePerRoom);
