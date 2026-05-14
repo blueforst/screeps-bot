@@ -29,7 +29,7 @@ const DEFAULT_TARGET_COMPOUNDS: ResourceConstant[] = [
   RESOURCE_CATALYZED_GHODIUM_ALKALIDE, // XGHO2
 ];
 
-const DEFAULT_RESERVE_PER_ROOM = 1000;
+const DEFAULT_RESERVE_PER_ROOM = 2000;
 
 export function getDefaultHubConfig(): NonNullable<Memory["cfg"]>["hub"] {
   return {

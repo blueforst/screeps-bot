@@ -51,9 +51,9 @@ describe("hubPlanner defaults", () => {
       ]);
     });
 
-    it("sets reservePerRoom to 1000", () => {
+    it("sets reservePerRoom to 2000", () => {
       const config = getDefaultHubConfig();
-      expect(config.reservePerRoom).toBe(1000);
+      expect(config.reservePerRoom).toBe(2000);
     });
 
     it("is disabled by default", () => {
