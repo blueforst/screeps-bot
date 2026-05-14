@@ -608,10 +608,16 @@ function buildProductionRooms(
   const allocationLedger = distributedSynthesis.allocationLedger ?? {};
 
   return assignments.map((assignment) => {
-    const { roomName, product, targetAmount, isHubRoom } = assignment;
+    const { roomName, targetAmount, isHubRoom } = assignment;
 
     const runtimeRoom = synthesisControlRooms?.[roomName];
     const stage = runtimeRoom?.stage ?? "idle";
+
+    // Show the actual configured product when the room is busy with a reaction,
+    // not the planner's intended assignment (which may differ until reassignment).
+    const cfgProduct = synthesisControlCfgRooms?.[roomName]?.reactions?.[0]?.product;
+    const busyStages = new Set(["loading", "synthesizing", "unloading"]);
+    const product = (cfgProduct && busyStages.has(stage)) ? cfgProduct as ResourceConstant : assignment.product;
 
     const room = Game.rooms[roomName];
     let currentAmount = 0;
