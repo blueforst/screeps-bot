@@ -745,6 +745,208 @@ export function getEligibleSynthesisRooms(): SynthesisRoomCapability[] {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// Distributed synthesis: concurrent chain demand + global allocation ledger
+// ---------------------------------------------------------------------------
+
+/** Result of distributed synthesis planning across multiple rooms. */
+export interface DistributedSynthesisPlan {
+  /** Room → product assignments for concurrent synthesis. */
+  dispatchAssignments: SynthesisDispatchAssignment[];
+  /** Per-resource allocation ledger tracking committed amounts per room. */
+  allocationLedger: Record<string, AllocationLedgerEntry>;
+  /** Terminal transfer decisions for cross-room reagent routing. */
+  routeDecisions: DirectRouteDecision[];
+  /** T3 targets that cannot be produced due to insufficient global resources. */
+  blockedTargets: ResourceConstant[];
+}
+
+/**
+ * Compute concurrent chain demand for all configured T3 targets across
+ * multiple synthesis-capable rooms and build a global allocation ledger.
+ *
+ * Leverages `planHubChains()` for demand propagation. The allocation ledger
+ * is populated from room inventories (accounting for pending transfers and
+ * local reserves) and decremented atomically as assignments are proposed,
+ * ensuring two rooms cannot consume the same mineral stock.
+ */
+export function planDistributedSynthesis(
+  hubRoomName: string,
+  targetCompounds: ResourceConstant[],
+  hubReservePerCompound: number,
+  reservePerRoom: number,
+): DistributedSynthesisPlan {
+  const rooms = getEligibleSynthesisRooms();
+  const allResources = [...BASE_MINERALS, ...INTERMEDIATE_COMPOUNDS, ...T3_TARGETS];
+
+  // 1. Build per-room effective inventories (with pending transfers and reserves)
+  const roomEffective: Record<string, Record<string, number>> = {};
+  for (const room of rooms) {
+    const effective: Record<string, number> = {};
+    for (const [res, amt] of Object.entries(room.mineralInventory)) {
+      effective[res] = amt;
+    }
+    for (const res of allResources) {
+      const rc = res as ResourceConstant;
+      const incoming = getIncomingResourceTransferAmount(room.roomName, rc);
+      const outgoing = getOutgoingResourceTransferAmount(room.roomName, rc);
+      effective[res] = (effective[res] || 0) + incoming - outgoing;
+    }
+    // Subtract local reserve for base minerals
+    for (const base of BASE_MINERALS) {
+      const have = effective[base] || 0;
+      effective[base] = have > reservePerRoom ? have - reservePerRoom : 0;
+    }
+    roomEffective[room.roomName] = effective;
+  }
+
+  // 2. Build allocation ledger from per-room effective inventories
+  const ledger: Record<string, AllocationLedgerEntry> = {};
+  for (const room of rooms) {
+    for (const res of allResources) {
+      const amt = roomEffective[room.roomName][res] || 0;
+      if (amt <= 0) continue;
+      if (!ledger[res]) {
+        ledger[res] = { resource: res as ResourceConstant, totalAmount: 0, roomCommitments: {} };
+      }
+      ledger[res].totalAmount += amt;
+      ledger[res].roomCommitments[room.roomName] = amt;
+    }
+  }
+
+  // 3. Compute global inventory for planHubChains
+  const globalInventory: Record<string, number> = {};
+  for (const [, entry] of Object.entries(ledger)) {
+    globalInventory[entry.resource] = entry.totalAmount;
+  }
+
+  // 4. Get chain demands using planHubChains
+  const chainResult = planHubChains(globalInventory, {}, hubReservePerCompound, targetCompounds);
+
+  // 5. Assign steps to rooms, decrementing ledger atomically
+  const assignments: SynthesisDispatchAssignment[] = [];
+  const routeDecisions: DirectRouteDecision[] = [];
+  const blockedTargets: ResourceConstant[] = [];
+
+  // Prefer hub room first, then auxiliary rooms in eligibility order
+  const roomOrder = [
+    hubRoomName,
+    ...rooms.filter(r => r.roomName !== hubRoomName).map(r => r.roomName),
+  ];
+
+  for (const step of chainResult.steps) {
+    const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName);
+    if (result) {
+      assignments.push(result.assignment);
+      routeDecisions.push(...result.routes);
+    }
+    // Steps that can't be assigned are skipped; their T3 targets may be blocked
+  }
+
+  // 6. Blocked targets: only when planHubChains reports global resource shortage
+  if (chainResult.blocked) {
+    blockedTargets.push(...targetCompounds);
+  }
+
+  return { dispatchAssignments: assignments, allocationLedger: ledger, routeDecisions, blockedTargets };
+}
+
+/**
+ * Try to assign a chain step to a room. Attempts direct assignment first
+ * (room has both reagents locally), then cross-room routing.
+ * Returns null if the step cannot be assigned.
+ */
+function assignStepToRoom(
+  ledger: Record<string, AllocationLedgerEntry>,
+  step: ChainStep,
+  roomOrder: string[],
+  hubRoomName: string,
+): { assignment: SynthesisDispatchAssignment; routes: DirectRouteDecision[] } | null {
+  const [reagentA, reagentB] = step.reagents;
+  const needed = step.targetAmount;
+
+  // Try direct assignment: room has both reagents locally
+  for (const roomName of roomOrder) {
+    const availA = ledger[reagentA]?.roomCommitments[roomName] ?? 0;
+    const availB = ledger[reagentB]?.roomCommitments[roomName] ?? 0;
+    if (availA >= needed && availB >= needed) {
+      ledger[reagentA]!.roomCommitments[roomName] -= needed;
+      ledger[reagentA]!.totalAmount -= needed;
+      ledger[reagentB]!.roomCommitments[roomName] -= needed;
+      ledger[reagentB]!.totalAmount -= needed;
+      return {
+        assignment: { roomName, product: step.product, targetAmount: needed, isHubRoom: roomName === hubRoomName },
+        routes: [],
+      };
+    }
+  }
+
+  // Try cross-room routing: consolidate reagents to a producer room
+  for (const producer of roomOrder) {
+    const totalA = ledger[reagentA]?.totalAmount ?? 0;
+    const totalB = ledger[reagentB]?.totalAmount ?? 0;
+    if (totalA < needed || totalB < needed) return null;
+
+    const routes: DirectRouteDecision[] = [];
+    const changes: Array<{ res: string; room: string; amt: number }> = [];
+    let remA = needed;
+    let remB = needed;
+
+    // Use local availability first (no route needed)
+    const localA = ledger[reagentA]?.roomCommitments[producer] ?? 0;
+    if (localA > 0) {
+      const use = Math.min(localA, remA);
+      changes.push({ res: reagentA, room: producer, amt: use });
+      remA -= use;
+    }
+    const localB = ledger[reagentB]?.roomCommitments[producer] ?? 0;
+    if (localB > 0) {
+      const use = Math.min(localB, remB);
+      changes.push({ res: reagentB, room: producer, amt: use });
+      remB -= use;
+    }
+
+    // Route from other rooms
+    for (const from of roomOrder) {
+      if (remA <= 0 && remB <= 0) break;
+      if (from === producer) continue;
+      if (remA > 0) {
+        const avail = ledger[reagentA]?.roomCommitments[from] ?? 0;
+        if (avail > 0) {
+          const send = Math.min(avail, remA);
+          routes.push({ fromRoom: from, toRoom: producer, resource: reagentA, amount: send, fee: 0 });
+          changes.push({ res: reagentA, room: from, amt: send });
+          remA -= send;
+        }
+      }
+      if (remB > 0) {
+        const avail = ledger[reagentB]?.roomCommitments[from] ?? 0;
+        if (avail > 0) {
+          const send = Math.min(avail, remB);
+          routes.push({ fromRoom: from, toRoom: producer, resource: reagentB, amount: send, fee: 0 });
+          changes.push({ res: reagentB, room: from, amt: send });
+          remB -= send;
+        }
+      }
+    }
+
+    if (remA <= 0 && remB <= 0) {
+      // Feasible — commit ledger changes atomically
+      for (const c of changes) {
+        ledger[c.res]!.roomCommitments[c.room] -= c.amt;
+        ledger[c.res]!.totalAmount -= c.amt;
+      }
+      return {
+        assignment: { roomName: producer, product: step.product, targetAmount: needed, isHubRoom: producer === hubRoomName },
+        routes,
+      };
+    }
+    // Not feasible for this producer, try next room
+  }
+
+  return null;
+}
+
 export function runHubPlanner(): void {
   let cfg = Memory.cfg?.hub;
   if (cfg?.enabled !== true || !cfg.hubRoomName) {

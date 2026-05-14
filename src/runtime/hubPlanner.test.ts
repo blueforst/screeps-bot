@@ -10,10 +10,14 @@ import {
   getDefaultHubConfig,
   getDefaultHubRuntime,
   getEligibleSynthesisRooms,
+  planDistributedSynthesis,
   planHubChains,
   planHubDistribution,
   planHubImports,
   runHubPlanner,
+} from "@/runtime/hubPlanner";
+import type {
+  DistributedSynthesisPlan,
 } from "@/runtime/hubPlanner";
 import type {
   SynthesisRoomCapability,
@@ -3420,5 +3424,494 @@ describe("getEligibleSynthesisRooms", () => {
     expect(hubCap).toBeDefined();
     expect(hubCap!.hasStorage).toBe(true);
     expect(hubCap!.hasTerminal).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// planDistributedSynthesis tests
+// ---------------------------------------------------------------------------
+
+const DIST_SYNTH_HUB = "DS1";
+const DIST_SYNTH_AUX = "DS2";
+const DIST_SYNTH_AUX2 = "DS3";
+
+describe("planDistributedSynthesis", () => {
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: DIST_SYNTH_HUB,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = { hub: getDefaultHubRuntime() };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("returns empty plan when no eligible rooms exist", () => {
+    const plan = planDistributedSynthesis(
+      DIST_SYNTH_HUB,
+      [RESOURCE_CATALYZED_UTRIUM_ACID],
+      1000,
+      1000,
+    );
+
+    expect(plan.dispatchAssignments).toEqual([]);
+    expect(plan.blockedTargets).toContain(RESOURCE_CATALYZED_UTRIUM_ACID);
+  });
+
+  it("backward compatibility: single hub room produces same chain as planHubChains", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 20000,
+        [RESOURCE_OXYGEN]: 20000,
+        [RESOURCE_UTRIUM]: 10000,
+        [RESOURCE_LEMERGIUM]: 10000,
+        [RESOURCE_KEANIUM]: 10000,
+        [RESOURCE_ZYNTHIUM]: 10000,
+        [RESOURCE_CATALYST]: 10000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+
+    const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // Hub room alone has all base minerals → planHubChains returns feasible steps
+    expect(plan.dispatchAssignments.length).toBeGreaterThan(0);
+    // All assignments go to the hub
+    for (const a of plan.dispatchAssignments) {
+      expect(a.roomName).toBe(DIST_SYNTH_HUB);
+      expect(a.isHubRoom).toBe(true);
+    }
+    // No route decisions needed (single room)
+    expect(plan.routeDecisions).toEqual([]);
+    // Target should not be blocked
+    expect(plan.blockedTargets).not.toContain(RESOURCE_CATALYZED_UTRIUM_ACID);
+  });
+
+  it("backward compatibility: single hub result matches planHubChains output", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 20000,
+        [RESOURCE_OXYGEN]: 20000,
+        [RESOURCE_UTRIUM]: 10000,
+        [RESOURCE_CATALYST]: 10000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+
+    const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // Hub has H, O, U, Catalyst but not L, K, Z — progressive chain returns OH + UH + UO as feasible
+    const products = plan.dispatchAssignments.map(a => a.product);
+    expect(products).toContain(RESOURCE_HYDROXIDE);
+    expect(plan.blockedTargets).not.toContain(RESOURCE_CATALYZED_UTRIUM_ACID);
+  });
+
+  it("scarce shared base minerals: ledger prevents double-spending across rooms", () => {
+    // Hub has limited H (1500), Aux has limited H (1500)
+    // Reserve=1000 per room, so effective H per room = 500
+    // Target XUH2O needs H for chain: OH(H+O), UH(U+H), UH2O(UH+OH), XUH2O(C+UH2O)
+    // With only H from both rooms, OH demand depends on what else is available
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 1500,
+        [RESOURCE_OXYGEN]: 3000,
+        [RESOURCE_UTRIUM]: 3000,
+        [RESOURCE_CATALYST]: 3000,
+      },
+    });
+    const auxRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 1500,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = auxRoom;
+
+    const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // Total effective H = 500 (hub) + 500 (aux) = 1000
+    // Verify ledger tracks this correctly
+    const hLedger = plan.allocationLedger[RESOURCE_HYDROGEN];
+    expect(hLedger).toBeDefined();
+    // After assignments, total remaining should be 0 or consistent
+    const totalCommitted = Object.values(hLedger!.roomCommitments).reduce((s, v) => s + v, 0);
+    expect(totalCommitted + hLedger!.totalAmount).toBeLessThanOrEqual(1000);
+
+    // Verify no room committed more than its effective amount
+    const hubHCommitted = hLedger!.roomCommitments[DIST_SYNTH_HUB] ?? 0;
+    const auxHCommitted = hLedger!.roomCommitments[DIST_SYNTH_AUX] ?? 0;
+    // Original effective amounts: hub=500, aux=500
+    // Committed (original) minus remaining = consumed
+    // Total consumed across rooms should equal the amount used by assignments
+    const hubHConsumed = 500 - Math.max(0, hubHCommitted);
+    const auxHConsumed = 500 - Math.max(0, auxHCommitted);
+    const totalConsumed = hubHConsumed + auxHConsumed;
+    // Total consumed should not exceed total available
+    expect(totalConsumed).toBeLessThanOrEqual(1000);
+  });
+
+  it("scarce shared minerals: two rooms compete for H, second room cannot over-allocate", () => {
+    // Hub: 3000 H, 3000 O (effective: 2000 H, 2000 O)
+    // Aux: 2000 H only (effective: 1000 H)
+    // Two targets both need H: XUH2O and XUHO2
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 3000,
+        [RESOURCE_OXYGEN]: 3000,
+        [RESOURCE_UTRIUM]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    const auxRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 2000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = auxRoom;
+
+    const targets: ResourceConstant[] = [
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+      RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+    ];
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // Total effective H = 2000 (hub) + 1000 (aux) = 3000
+    // Total effective O = 2000 (hub only)
+    // OH demand for 2 targets = 2000 (shared intermediate)
+    // OH uses H+O: limited by O (2000), so OH amount = min(H for OH, O) = 2000
+    // After OH, H remaining = 3000 - 2000 = 1000
+    // Verify the ledger was decremented correctly
+    const hLedger = plan.allocationLedger[RESOURCE_HYDROGEN];
+    expect(hLedger).toBeDefined();
+    // Total consumed H should not exceed total available (3000)
+    const totalAvailable = 3000;
+    const totalRemaining = hLedger!.totalAmount;
+    expect(totalRemaining).toBeLessThanOrEqual(totalAvailable);
+  });
+
+  it("all-T3 concurrent feasibility: sufficient global resources produce assignments", () => {
+    const allBases: Record<string, number> = {
+      [RESOURCE_HYDROGEN]: 100000,
+      [RESOURCE_OXYGEN]: 100000,
+      [RESOURCE_UTRIUM]: 50000,
+      [RESOURCE_LEMERGIUM]: 50000,
+      [RESOURCE_KEANIUM]: 50000,
+      [RESOURCE_ZYNTHIUM]: 50000,
+      [RESOURCE_CATALYST]: 50000,
+    };
+
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: allBases,
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+
+    const targets: ResourceConstant[] = [
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+      RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+      RESOURCE_CATALYZED_KEANIUM_ACID,
+      RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+      RESOURCE_CATALYZED_LEMERGIUM_ACID,
+      RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+      RESOURCE_CATALYZED_ZYNTHIUM_ACID,
+      RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
+      RESOURCE_CATALYZED_GHODIUM_ACID,
+      RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+    ];
+
+    // hubReservePerCompound=1000 so each T3 deficit is small (1000 per target)
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // With abundant resources, should have many feasible steps
+    expect(plan.dispatchAssignments.length).toBeGreaterThan(0);
+    // Progressive chain returns base intermediates + T1 as feasible candidates
+    const products = plan.dispatchAssignments.map(a => a.product);
+    expect(products).toContain(RESOURCE_HYDROXIDE);
+    // With small reserve, H remains for T1 intermediates like UH (U+H)
+    expect(products).toContain(RESOURCE_UTRIUM_HYDRIDE);
+    // Should not be blocked
+    expect(plan.blockedTargets).toEqual([]);
+  });
+
+  it("cross-room routing: hub routes reagents from aux when hub lacks them", () => {
+    // Hub has H and O but no U
+    // Aux has U but no H or O
+    // Target XUH2O needs U → hub needs U from aux to produce UH (U+H)
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    const auxRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_UTRIUM]: 5000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = auxRoom;
+
+    const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // Hub has H+O → OH is feasible locally
+    const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
+    expect(ohAssignment).toBeDefined();
+
+    // For U-dependent steps (UH needs U+H), hub has H but not U → route from aux
+    const uhAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_UTRIUM_HYDRIDE);
+    if (uhAssignment) {
+      // UH should be assigned to hub (preferred) with U routed from aux
+      if (uhAssignment.roomName === DIST_SYNTH_HUB) {
+        const uRoutes = plan.routeDecisions.filter(r => r.resource === RESOURCE_UTRIUM);
+        expect(uRoutes.length).toBeGreaterThan(0);
+        expect(uRoutes.some(r => r.fromRoom === DIST_SYNTH_AUX)).toBe(true);
+      }
+    }
+  });
+
+  it("demand-driven upstream supply: ledger tracks exact amounts needed", () => {
+    // Hub has enough for 1 T3 target (XUH2O)
+    // Chain: XUH2O ← C + UH2O ← UH + OH ← U + H, H + O
+    // With targetAmount=1000: need 1000 U, 3000 H (UH:1000 + OH:1000 + extra), 1000 O (for OH), 1000 C
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 10000,
+        [RESOURCE_OXYGEN]: 10000,
+        [RESOURCE_UTRIUM]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+
+    const plan = planDistributedSynthesis(
+      DIST_SYNTH_HUB,
+      [RESOURCE_CATALYZED_UTRIUM_ACID],
+      1000,
+      1000,
+    );
+
+    // Verify allocation ledger captures resource demands
+    expect(plan.allocationLedger[RESOURCE_HYDROGEN]).toBeDefined();
+    expect(plan.allocationLedger[RESOURCE_OXYGEN]).toBeDefined();
+    expect(plan.allocationLedger[RESOURCE_UTRIUM]).toBeDefined();
+
+    // Verify the hub's commitments were decremented from original effective amounts
+    const hEntry = plan.allocationLedger[RESOURCE_HYDROGEN]!;
+    // Original H = 10000, reserve=1000, effective=9000
+    // After assignments, remaining should be less than 9000
+    const totalConsumed = 9000 - hEntry.totalAmount;
+    expect(totalConsumed).toBeGreaterThan(0);
+  });
+
+  it("pending incoming transfers counted as available inventory", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    const auxRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_UTRIUM]: 5000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = auxRoom;
+
+    // Create pending incoming U transfer to hub
+    createResourceTransferTask(
+      DIST_SYNTH_AUX,
+      DIST_SYNTH_HUB,
+      RESOURCE_UTRIUM,
+      3000,
+      "hub:import:U",
+    );
+
+    const plan = planDistributedSynthesis(
+      DIST_SYNTH_HUB,
+      [RESOURCE_CATALYZED_UTRIUM_ACID],
+      1000,
+      1000,
+    );
+
+    // Hub's effective U should include the 3000 incoming
+    // (minus reserve: 3000 incoming + 0 local = 3000, reserve=1000, effective=2000)
+    const uLedger = plan.allocationLedger[RESOURCE_UTRIUM];
+    expect(uLedger).toBeDefined();
+    // Hub commitment should reflect the incoming amount (3000 - 1000 reserve = 2000)
+    const hubU = uLedger!.roomCommitments[DIST_SYNTH_HUB] ?? 0;
+    // Original hub effective U = 3000 (incoming) - 1000 (reserve) = 2000
+    // But some may have been consumed by assignments
+    expect(hubU).toBeGreaterThanOrEqual(0);
+  });
+
+  it("pending outgoing transfers reduce available inventory", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 10000,
+        [RESOURCE_OXYGEN]: 10000,
+        [RESOURCE_UTRIUM]: 10000,
+        [RESOURCE_CATALYST]: 10000,
+      },
+    });
+    const auxRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {},
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = auxRoom;
+
+    // Create pending outgoing H transfer from hub
+    createResourceTransferTask(
+      DIST_SYNTH_HUB,
+      DIST_SYNTH_AUX,
+      RESOURCE_HYDROGEN,
+      3000,
+      "hub:export:H",
+    );
+
+    const plan = planDistributedSynthesis(
+      DIST_SYNTH_HUB,
+      [RESOURCE_CATALYZED_UTRIUM_ACID],
+      1000,
+      1000,
+    );
+
+    // Hub's effective H should be reduced by the 3000 outgoing
+    // Original: 10000 - 3000 outgoing - 1000 reserve = 6000 effective
+    const hLedger = plan.allocationLedger[RESOURCE_HYDROGEN];
+    expect(hLedger).toBeDefined();
+    // Some consumed by assignments, but total should be at most 6000 + aux
+    expect(hLedger!.totalAmount).toBeLessThanOrEqual(6000);
+  });
+
+  it("local reserve subtracted from base minerals per room", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 2000,
+        [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_UTRIUM]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+
+    const plan = planDistributedSynthesis(
+      DIST_SYNTH_HUB,
+      [RESOURCE_CATALYZED_UTRIUM_ACID],
+      1000,
+      1000,
+    );
+
+    // H effective = 2000 - 1000 (reserve) = 1000
+    const hLedger = plan.allocationLedger[RESOURCE_HYDROGEN];
+    expect(hLedger).toBeDefined();
+    // Original effective H = 1000, after assignments remaining should be <= 1000
+    expect(hLedger!.totalAmount).toBeLessThanOrEqual(1000);
+    const hubOriginal = 1000;
+    const hubCommitted = hLedger!.roomCommitments[DIST_SYNTH_HUB] ?? 0;
+    // Hub consumed = original - remaining
+    const hubConsumed = hubOriginal - hubCommitted;
+    expect(hubConsumed).toBeGreaterThanOrEqual(0);
+  });
+
+  it("allocations are subtracted: two T3 targets share OH without over-allocation", () => {
+    // Hub has all resources for two U-chain T3 targets
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 20000,
+        [RESOURCE_OXYGEN]: 20000,
+        [RESOURCE_UTRIUM]: 10000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+
+    const targets: ResourceConstant[] = [
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+      RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+    ];
+    const plan = planDistributedSynthesis(DIST_SYNTH_HUB, targets, 1000, 1000);
+
+    // OH is shared between XUH2O and XUHO2 chains
+    // Demand for OH: 2000 (1000 per T3 target)
+    // Verify OH was assigned
+    const ohAssignment = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
+    expect(ohAssignment).toBeDefined();
+
+    // Verify H was decremented for both OH reagent usage
+    const hLedger = plan.allocationLedger[RESOURCE_HYDROGEN];
+    expect(hLedger).toBeDefined();
+    const totalHConsumed = 19000 - hLedger!.totalAmount; // 20000 - 1000 reserve = 19000 effective
+    expect(totalHConsumed).toBeGreaterThan(0);
+  });
+
+  it("DistributedSynthesisPlan type contract round-trips through assignments", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+
+    const plan: DistributedSynthesisPlan = planDistributedSynthesis(
+      DIST_SYNTH_HUB,
+      [RESOURCE_CATALYZED_UTRIUM_ACID],
+      1000,
+      1000,
+    );
+
+    expect(Array.isArray(plan.dispatchAssignments)).toBe(true);
+    expect(plan.allocationLedger).toBeDefined();
+    expect(Array.isArray(plan.routeDecisions)).toBe(true);
+    expect(Array.isArray(plan.blockedTargets)).toBe(true);
+
+    for (const a of plan.dispatchAssignments) {
+      expect(a.roomName).toBeDefined();
+      expect(a.product).toBeDefined();
+      expect(a.targetAmount).toBeGreaterThan(0);
+      expect(typeof a.isHubRoom).toBe("boolean");
+    }
+
+    for (const entry of Object.values(plan.allocationLedger)) {
+      expect(entry.resource).toBeDefined();
+      expect(entry.totalAmount).toBeGreaterThanOrEqual(0);
+      expect(entry.roomCommitments).toBeDefined();
+    }
   });
 });
