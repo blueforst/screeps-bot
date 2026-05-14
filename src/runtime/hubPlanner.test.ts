@@ -5136,24 +5136,203 @@ describe("planHubImports: local reserve and direct-supply protection", () => {
     expect(actions.some(a => a.includes("export") && a.includes(XGHO2))).toBe(true);
   });
 
-  it("market protection for committed satellite resources", () => {
-    Game.rooms[HUB_ROOM] = createHubRoomForImports();
-    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
-      [RESOURCE_HYDROXIDE]: 2000,
-    });
-    Memory.runtime!.hub!.distributedSynthesis = {
-      dispatchAssignments: [
-        { roomName: SAT_ROOM, product: XGHO2, targetAmount: 5000, isHubRoom: false },
-      ],
-      allocationLedger: {},
-      routeDecisions: [
-        { fromRoom: SAT_ROOM, toRoom: "W3N1", resource: RESOURCE_HYDROXIDE, amount: 800, fee: 0 },
-      ],
+   it("market protection for committed satellite resources", () => {
+     Game.rooms[HUB_ROOM] = createHubRoomForImports();
+     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+       [RESOURCE_HYDROXIDE]: 2000,
+     });
+     Memory.runtime!.hub!.distributedSynthesis = {
+       dispatchAssignments: [
+         { roomName: SAT_ROOM, product: XGHO2, targetAmount: 5000, isHubRoom: false },
+       ],
+       allocationLedger: {},
+       routeDecisions: [
+         { fromRoom: SAT_ROOM, toRoom: "W3N1", resource: RESOURCE_HYDROXIDE, amount: 800, fee: 0 },
+       ],
+     };
+     const actions = planHubImports(Memory.cfg!.hub!);
+     const tasks = Object.values(ensureResourceTransferTaskStore());
+     const ohTask = tasks.find(t => t.reason === `hub:import:${RESOURCE_HYDROXIDE}`);
+     expect(ohTask).toBeDefined();
+     expect(ohTask!.amount).toBeLessThanOrEqual(1200);
+   });
+});
+
+// ---------------------------------------------------------------------------
+// computeAndStoreMarketSellSurplus tests (tested via runHubPlanner)
+// ---------------------------------------------------------------------------
+
+describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
+  const SURPLUS_HUB = "S1N1";
+  const PLAN_INTERVAL = 50;
+
+  beforeEach(() => {
+    Game.time = PLAN_INTERVAL;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: SURPLUS_HUB,
+        planInterval: PLAN_INTERVAL,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 20000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
     };
-    const actions = planHubImports(Memory.cfg!.hub!);
-    const tasks = Object.values(ensureResourceTransferTaskStore());
-    const ohTask = tasks.find(t => t.reason === `hub:import:${RESOURCE_HYDROXIDE}`);
-    expect(ohTask).toBeDefined();
-    expect(ohTask!.amount).toBeLessThanOrEqual(1200);
+    Memory.runtime = {
+      hub: getDefaultHubRuntime(),
+    };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  function createSurplusHubRoom(storageResources: Record<string, number>): Room {
+    const storageEntries: Record<string, number> = {
+      [RESOURCE_ENERGY]: 200000,
+      ...storageResources,
+    };
+    const terminalEntries: Record<string, number> = {
+      [RESOURCE_ENERGY]: 20000,
+    };
+    const labs: Structure[] = [];
+    for (let i = 0; i < 3; i++) {
+      labs.push({ id: `hub-lab-${i}`, structureType: STRUCTURE_LAB } as Structure);
+    }
+    return {
+      name: SURPLUS_HUB,
+      controller: { my: true, level: 8 },
+      storage: {
+        id: "hub-storage",
+        structureType: STRUCTURE_STORAGE,
+        store: {
+          ...storageEntries,
+          getUsedCapacity: (resource?: string) => {
+            if (resource) return storageEntries[resource] || 0;
+            return Object.values(storageEntries).reduce((a: number, b: number) => a + b, 0);
+          },
+          getFreeCapacity: () => 500000,
+        },
+      },
+      terminal: {
+        id: "hub-terminal",
+        structureType: STRUCTURE_TERMINAL,
+        store: {
+          ...terminalEntries,
+          getUsedCapacity: (resource?: string) => {
+            if (resource) return terminalEntries[resource] || 0;
+            return Object.values(terminalEntries).reduce((a: number, b: number) => a + b, 0);
+          },
+          getFreeCapacity: () => 300000,
+          cooldown: 0,
+        },
+      },
+      find: (type: FindConstant, opts?: { filter?: ((s: Structure) => boolean) | { structureType: string } }) => {
+        if (type === FIND_MY_STRUCTURES) {
+          if (!opts?.filter) return labs;
+          if (typeof opts.filter === "function") return labs.filter(opts.filter);
+          const targetType = (opts.filter as { structureType: string }).structureType;
+          return labs.filter((s) => s.structureType === targetType);
+        }
+        return [] as Structure[];
+      },
+    } as unknown as Room;
+  }
+
+  it("T3 compound above chainTarget creates surplus entry", () => {
+    // hubReservePerCompound=20000, no satellites → chainTarget=20000
+    // Hub has 25000 XUH2O → sellable = 25000 - 20000 = 5000
+    Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 25000,
+    });
+
+    runHubPlanner();
+
+    const surplus = Memory.runtime.hub.marketSellSurplus;
+    expect(surplus).toBeDefined();
+    expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBe(5000);
+  });
+
+  it("T3 compound at chainTarget creates no surplus entry", () => {
+    // hubReservePerCompound=20000, no satellites → chainTarget=20000
+    // Hub has exactly 20000 XUH2O → sellable = 0
+    Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 20000,
+    });
+
+    runHubPlanner();
+
+    const surplus = Memory.runtime.hub.marketSellSurplus;
+    expect(surplus).toBeDefined();
+    expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBeUndefined();
+  });
+
+  it("non-target compound above 5000 creates surplus entry", () => {
+    // RESOURCE_HYDROXIDE is not a T3 target, reserve=5000
+    // Hub has 8000 OH → sellable = 8000 - 5000 = 3000
+    Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
+      [RESOURCE_HYDROXIDE]: 8000,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 20000,
+    });
+
+    runHubPlanner();
+
+    const surplus = Memory.runtime.hub.marketSellSurplus;
+    expect(surplus).toBeDefined();
+    expect(surplus![RESOURCE_HYDROXIDE]).toBe(3000);
+  });
+
+  it("non-target compound at 5000 creates no surplus entry", () => {
+    // OH at exactly 5000 → sellable = 0
+    Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
+      [RESOURCE_HYDROXIDE]: 5000,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 20000,
+    });
+
+    runHubPlanner();
+
+    const surplus = Memory.runtime.hub.marketSellSurplus;
+    expect(surplus).toBeDefined();
+    expect(surplus![RESOURCE_HYDROXIDE]).toBeUndefined();
+  });
+
+  it("energy, power, ops are excluded from surplus", () => {
+    Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 20000,
+    });
+    // Manually add energy, power, ops to storage to check exclusion
+    const store = Game.rooms[SURPLUS_HUB].storage!.store as unknown as Record<string, number>;
+    store[RESOURCE_ENERGY] = 300000;
+    store[RESOURCE_POWER] = 10000;
+    store[RESOURCE_OPS] = 5000;
+
+    runHubPlanner();
+
+    const surplus = Memory.runtime.hub.marketSellSurplus;
+    expect(surplus).toBeDefined();
+    expect(surplus![RESOURCE_ENERGY]).toBeUndefined();
+    expect(surplus![RESOURCE_POWER]).toBeUndefined();
+    expect(surplus![RESOURCE_OPS]).toBeUndefined();
+  });
+
+  it("outgoing transfer amounts reduce surplus", () => {
+    // Hub has 25000 XUH2O, chainTarget=20000 → would be 5000 surplus
+    // But create an outgoing transfer of 3000 XUH2O
+    // Effective = 25000 - 3000 = 22000, surplus = 22000 - 20000 = 2000
+    Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 25000,
+    });
+    createResourceTransferTask(
+      SURPLUS_HUB, "W2N1", RESOURCE_CATALYZED_UTRIUM_ACID, 3000, "hub:export:XUH2O",
+    );
+
+    runHubPlanner();
+
+    const surplus = Memory.runtime.hub.marketSellSurplus;
+    expect(surplus).toBeDefined();
+    expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBe(2000);
   });
 });
