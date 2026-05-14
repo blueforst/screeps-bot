@@ -930,28 +930,27 @@ export function planDistributedSynthesis(
     ...rooms.filter(r => r.roomName !== hubRoomName).map(r => r.roomName),
   ];
 
-  // 5a. Cap each step's targetAmount so base minerals are shared across steps.
-  // Without this, the first step consuming a shared base mineral (e.g. OH consuming
-  // all O) starves subsequent steps that also need it (UO, KO, ZO, etc.).
-  const baseSet = new Set<ResourceConstant>(BASE_MINERALS);
+  // 5a. Cap each step's targetAmount so shared reagents are distributed fairly.
+  // Without this, the first step consuming a shared reagent (e.g. OH consuming
+  // all O, or the first T2 step consuming all OH) starves subsequent steps.
+  // Applies to ALL reagents (base minerals, T1 intermediates like OH/UO, etc.)
+  // because any can be a bottleneck shared across multiple chain steps.
 
-  // Count how many steps need each base mineral
-  const baseDemandCount: Record<string, number> = {};
+  // Count how many steps need each reagent
+  const reagentDemandCount: Record<string, number> = {};
   for (const step of chainResult.steps) {
     for (const reagent of step.reagents) {
-      if (baseSet.has(reagent)) {
-        baseDemandCount[reagent] = (baseDemandCount[reagent] || 0) + 1;
-      }
+      reagentDemandCount[reagent] = (reagentDemandCount[reagent] || 0) + 1;
     }
   }
 
-  // Cap each step's targetAmount to its fair share of any base mineral reagent
+  // Cap each step's targetAmount to its fair share of any reagent
   const cappedSteps = chainResult.steps.map(step => {
     let cap = step.targetAmount;
     for (const reagent of step.reagents) {
-      if (!baseSet.has(reagent)) continue;
+      const demandCount = reagentDemandCount[reagent] || 1;
+      if (demandCount <= 1) continue; // no contention, skip
       const available = ledger[reagent]?.totalAmount ?? 0;
-      const demandCount = baseDemandCount[reagent] || 1;
       const share = Math.floor(available / demandCount);
       cap = Math.min(cap, share);
     }
