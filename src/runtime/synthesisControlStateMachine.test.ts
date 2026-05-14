@@ -2554,3 +2554,106 @@ describe("resolveLabTopology – room planner layout preference", () => {
     );
   });
 });
+
+describe("loading-stage timeout", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  function setupLoadingRoom(loadingSinceTick: number, stageOverride?: "loading" | "acquiring") {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage(stageOverride ?? "loading", { loadingSinceTick });
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    Game.rooms["W1N1"] = room;
+    return { room, labs };
+  }
+
+  it("aborts and signals needsPlan when stuck in loading for >500 ticks", () => {
+    const { labs } = setupLoadingRoom(1000);
+    Game.time = 1600;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("idle");
+    expect(roomState.activeProduct).toBeUndefined();
+    expect(roomState.loadingSinceTick).toBeUndefined();
+    expect(Memory.runtime!.hub!.needsPlan).toBe(true);
+
+    const lastActions = Memory.runtime!.synthesisControl!.lastActions;
+    expect(lastActions.some((a) => a.includes("loading-timeout:abort:"))).toBe(true);
+  });
+
+  it("does NOT timeout when loading for ≤500 ticks", () => {
+    setupLoadingRoom(1000);
+    Game.time = 1499;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).not.toBe("idle");
+  });
+
+  it("aborts when stuck in acquiring stage for >500 ticks", () => {
+    setupLoadingRoom(1000, "acquiring");
+    Game.time = 1600;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("idle");
+    expect(roomState.loadingSinceTick).toBeUndefined();
+    expect(Memory.runtime!.hub!.needsPlan).toBe(true);
+  });
+
+  it("clears loadingSinceTick when transitioning to synthesizing", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("loading", { loadingSinceTick: 1000 });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 1010;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("synthesizing");
+    expect(roomState.loadingSinceTick).toBeUndefined();
+  });
+
+  it("does NOT timeout when loadingSinceTick equals Game.time", () => {
+    setupLoadingRoom(1000);
+    Game.time = 1000;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).not.toBe("idle");
+  });
+});

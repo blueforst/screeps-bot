@@ -514,6 +514,7 @@ declare global {
             }>;
             lastError?: string;
             lastTransitionAt: number;
+            loadingSinceTick?: number;
           }
         >;
       };

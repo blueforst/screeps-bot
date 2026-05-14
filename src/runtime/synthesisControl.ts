@@ -71,6 +71,7 @@ interface SynthesisRoomRuntimeState {
   }>;
   lastError?: string;
   lastTransitionAt: number;
+  loadingSinceTick?: number;
 }
 
 interface SynthesisRuntimeState {
@@ -1145,6 +1146,7 @@ function handleRoom(
       missing: undefined,
       cleanupTasks: undefined,
       lastError: undefined,
+      loadingSinceTick: undefined,
       pendingTasks: countPendingToRoom(roomName),
       reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
       productLabIds: topology.productLabs.map((lab) => lab.id),
@@ -1195,6 +1197,10 @@ function handleRoom(
     roomState.lastTransitionAt = Game.time;
   }
 
+  if ((stage === "acquiring" || stage === "loading") && !roomState.loadingSinceTick) {
+    roomState.loadingSinceTick = Game.time;
+  }
+
   const orderedReagentLabs = orderReagentLabs(topology.reagentLabs, reagents);
   const hasContamination =
     isLabContaminatedForExpected(orderedReagentLabs[0], reagents[0]) ||
@@ -1230,6 +1236,22 @@ function handleRoom(
     roomState.lastTransitionAt = Game.time;
   }
 
+  const LOADING_TIMEOUT = 500;
+  if ((stage === "loading" || stage === "acquiring") && roomState.loadingSinceTick && Game.time - roomState.loadingSinceTick > LOADING_TIMEOUT) {
+    const abortedProduct = roomState.activeProduct || activePlan.product;
+    runtime.rooms[roomName] = {
+      ...roomState,
+      stage: "idle",
+      activeProduct: undefined,
+      loadingSinceTick: undefined,
+      lastTransitionAt: Game.time,
+      lastError: undefined,
+    };
+    actions.push(`loading-timeout:abort:${abortedProduct}`);
+    signalHubNeedsPlan(roomName);
+    return { generated, failed, runs };
+  }
+
   if (planningTick && (stage === "acquiring" || stage === "loading")) {
     const taskResult = maybeGenerateSupplyTasks(room, roomCfg, activePlan, reagents, topology, runtime, actions);
     generated += taskResult.generated;
@@ -1245,15 +1267,18 @@ function handleRoom(
   if (stage === "acquiring" && reagentReady && productLabAvailable && !hasContamination) {
     stage = "synthesizing";
     roomState.lastTransitionAt = Game.time;
+    roomState.loadingSinceTick = undefined;
   } else if (stage === "loading" && reagentReady && productLabAvailable && !hasContamination) {
     stage = "synthesizing";
     roomState.lastTransitionAt = Game.time;
+    roomState.loadingSinceTick = undefined;
   } else if (stage === "synthesizing" && hasContamination) {
     stage = "unloading";
     roomState.lastTransitionAt = Game.time;
   } else if (stage === "unloading" && !hasContamination) {
     stage = "loading";
     roomState.lastTransitionAt = Game.time;
+    if (!roomState.loadingSinceTick) roomState.loadingSinceTick = Game.time;
   }
 
   if (stage === "synthesizing") {
@@ -1285,10 +1310,12 @@ function handleRoom(
   if (productCurrent >= activePlan.targetAmount && !hasContamination) {
     stage = "idle";
     roomState.lastTransitionAt = Game.time;
+    roomState.loadingSinceTick = undefined;
 
     signalHubNeedsPlan(room.name);
   } else if (!reagentReady && !hasContamination) {
     stage = "loading";
+    if (!roomState.loadingSinceTick) roomState.loadingSinceTick = Game.time;
   }
 
   runtime.rooms[roomName] = {
