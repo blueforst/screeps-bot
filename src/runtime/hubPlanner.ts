@@ -930,10 +930,40 @@ export function planDistributedSynthesis(
     ...rooms.filter(r => r.roomName !== hubRoomName).map(r => r.roomName),
   ];
 
+  // 5a. Cap each step's targetAmount so base minerals are shared across steps.
+  // Without this, the first step consuming a shared base mineral (e.g. OH consuming
+  // all O) starves subsequent steps that also need it (UO, KO, ZO, etc.).
+  const baseSet = new Set<ResourceConstant>(BASE_MINERALS);
+
+  // Count how many steps need each base mineral
+  const baseDemandCount: Record<string, number> = {};
+  for (const step of chainResult.steps) {
+    for (const reagent of step.reagents) {
+      if (baseSet.has(reagent)) {
+        baseDemandCount[reagent] = (baseDemandCount[reagent] || 0) + 1;
+      }
+    }
+  }
+
+  // Cap each step's targetAmount to its fair share of any base mineral reagent
+  const cappedSteps = chainResult.steps.map(step => {
+    let cap = step.targetAmount;
+    for (const reagent of step.reagents) {
+      if (!baseSet.has(reagent)) continue;
+      const available = ledger[reagent]?.totalAmount ?? 0;
+      const demandCount = baseDemandCount[reagent] || 1;
+      const share = Math.floor(available / demandCount);
+      cap = Math.min(cap, share);
+    }
+    return { ...step, targetAmount: Math.max(0, cap) };
+  });
+
+  // 5b. Assign capped steps to rooms
   const depGraph = new DependencyGraph();
   const usedRooms = new Set<string>();
 
-  for (const step of chainResult.steps) {
+  for (const step of cappedSteps) {
+    if (step.targetAmount <= 0) continue; // skip steps that cannot produce anything
     const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName, rooms, depGraph, usedRooms);
     if (result) {
       assignments.push(result.assignment);

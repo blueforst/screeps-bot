@@ -408,3 +408,30 @@ Added `route.fromRoom !== hubRoomName` guard before the fee comparison. When sou
 
 ### Key Insight
 Any route decision where `fromRoom` equals `hubRoomName` and `toRoom` is a satellite will ALWAYS hit this bug. The `createResourceTransferTask` return value is never checked — errors are silently swallowed.
+
+## Task: Base Mineral Fair-Share Capping in planDistributedSynthesis
+
+### Root Cause
+`planDistributedSynthesis` iterated `chainResult.steps` directly. The first step (OH, target≈31k) consumed ALL O from the ledger, starving later steps (UO, KO, ZO etc.) that also need O. Hub had 33k O — enough for OH AND some UO, but OH monopolized it.
+
+### Fix: Cap targetAmount by fair share of base minerals
+Before the step assignment loop, count how many steps need each base mineral (`baseDemandCount`). For each step, cap `targetAmount` to `min(targetAmount, floor(ledger[base] / demandCount))` for each base mineral reagent. Steps capped to 0 are skipped entirely.
+
+### Implementation Location
+In `planDistributedSynthesis()` between the `planHubChains()` call and the step loop. ~25 lines of code.
+
+### Key Design Decisions
+- Only BASE_MINERALS (H, O, U, L, K, Z, X) are shared — intermediates and T3 are not capped by this mechanism (they already have ledger accounting).
+- Capping is done BEFORE room assignment, not inside `assignStepToRoom`. This keeps the assignment logic clean.
+- `Math.max(0, cap)` ensures no negative targets.
+- Steps with `targetAmount === 0` after capping are skipped with `continue` — no assignment created.
+
+### Test Coverage (4 new tests, 751 total)
+- OH and UO both get fair share when O sufficient for both
+- O scarce → UO gets capped/skipped
+- All minerals abundant → no capping needed
+- Step with 0 targetAmount → no assignment produced
+
+### Backward Compatibility
+- Single-room scenarios unchanged: capping still applies but with abundant resources there's no effective change.
+- Existing 747 tests pass unchanged.

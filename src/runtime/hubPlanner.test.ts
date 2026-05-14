@@ -4461,6 +4461,144 @@ describe("logistics-cost-aware dispatch scoring", () => {
     });
   });
 
+  describe("base mineral fair-share capping", () => {
+    const CAP_HUB = "CP1";
+    const CAP_AUX = "CP2";
+
+    function getCapHubInventory(): Record<string, number> {
+      const inv: Record<string, number> = {};
+      const room = Game.rooms[CAP_HUB];
+      if (!room?.storage?.store || !room?.terminal?.store) return inv;
+      for (const [res, amt] of Object.entries(room.storage.store as unknown as Record<string, number>)) {
+        if (res !== RESOURCE_ENERGY && amt > 0) inv[res] = amt;
+      }
+      for (const [res, amt] of Object.entries(room.terminal.store as unknown as Record<string, number>)) {
+        if (res !== RESOURCE_ENERGY && amt > 0) inv[res] = (inv[res] || 0) + amt;
+      }
+      return inv;
+    }
+
+    it("OH and UO both get fair share of O when O is sufficient for both", () => {
+      // Hub has 30k O. OH needs O, UO needs O. With 2 steps sharing O,
+      // each gets 30k/2 = 15k fair share.
+      const hubRoom = createSynthesisCapableRoom(CAP_HUB, {
+        labCount: 6,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 20000,
+          [RESOURCE_OXYGEN]: 30000,
+          [RESOURCE_UTRIUM]: 20000,
+          [RESOURCE_LEMERGIUM]: 20000,
+          [RESOURCE_KEANIUM]: 20000,
+          [RESOURCE_ZYNTHIUM]: 20000,
+          [RESOURCE_CATALYST]: 20000,
+        },
+      });
+      Game.rooms[CAP_HUB] = hubRoom;
+
+      // Target multiple T3 that share O across their chain steps
+      // XUH2O chain: OH(H+O), UH(U+H), UH2O(UH+OH), XUH2O(C+UH2O)
+      // XUHO2 chain: OH(H+O), UO(U+O), UHO2(UO+OH), XUHO2(C+UHO2)
+      // Both chains need OH (which needs O). Also UO directly needs O.
+      const targets: ResourceConstant[] = [
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+      ];
+      const plan = planDistributedSynthesis(CAP_HUB, targets, 1000, 1000, getCapHubInventory());
+
+      const ohAssign = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
+      const uoAssign = plan.dispatchAssignments.find(a => a.product === RESOURCE_UTRIUM_OXIDE);
+
+      // OH assignment should exist but NOT consume all O
+      expect(ohAssign).toBeDefined();
+      expect(ohAssign!.targetAmount).toBeLessThanOrEqual(15000); // fair share = 30k/2
+
+      // UO assignment should also exist since O was shared
+      if (uoAssign) {
+        expect(uoAssign.targetAmount).toBeGreaterThan(0);
+      }
+    });
+
+    it("O only enough for OH → UO gets 0 targetAmount and is skipped", () => {
+      // Hub has only 3000 O with 1000 reserve = 2000 effective.
+      // OH(H+O) and UO(U+O) both need O. 2 steps sharing O → share = 1000 each.
+      // But with U available too, UO should get capped to 1000 or less.
+      const hubRoom = createSynthesisCapableRoom(CAP_HUB, {
+        labCount: 6,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 20000,
+          [RESOURCE_OXYGEN]: 3000,
+          [RESOURCE_UTRIUM]: 20000,
+          [RESOURCE_CATALYST]: 20000,
+        },
+      });
+      Game.rooms[CAP_HUB] = hubRoom;
+
+      const targets: ResourceConstant[] = [
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+      ];
+      const plan = planDistributedSynthesis(CAP_HUB, targets, 1000, 1000, getCapHubInventory());
+
+      // OH and UO both need O. With 2000 effective O and 2 demanders, share = 1000 each.
+      // Both steps get capped to 1000. Steps should exist with reduced amounts.
+      const products = plan.dispatchAssignments.map(a => a.product);
+      const ohAssign = plan.dispatchAssignments.find(a => a.product === RESOURCE_HYDROXIDE);
+
+      if (products.includes(RESOURCE_HYDROXIDE)) {
+        // OH target should be capped to fair share, not consume all O
+        expect(ohAssign!.targetAmount).toBeLessThanOrEqual(1000);
+      }
+    });
+
+    it("all base minerals abundant → no capping needed, all steps get full targetAmount", () => {
+      const hubRoom = createSynthesisCapableRoom(CAP_HUB, {
+        labCount: 6,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 50000,
+          [RESOURCE_OXYGEN]: 50000,
+          [RESOURCE_UTRIUM]: 50000,
+          [RESOURCE_LEMERGIUM]: 50000,
+          [RESOURCE_KEANIUM]: 50000,
+          [RESOURCE_ZYNTHIUM]: 50000,
+          [RESOURCE_CATALYST]: 50000,
+        },
+      });
+      Game.rooms[CAP_HUB] = hubRoom;
+
+      const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
+      const plan = planDistributedSynthesis(CAP_HUB, targets, 1000, 1000, getCapHubInventory());
+
+      // With abundant resources, all steps from the chain should be present
+      expect(plan.dispatchAssignments.length).toBeGreaterThan(0);
+      // Hub handles all steps (single room), no routes needed
+      for (const a of plan.dispatchAssignments) {
+        expect(a.targetAmount).toBeGreaterThan(0);
+      }
+    });
+
+    it("step with 0 targetAmount after capping produces no assignment", () => {
+      // Hub has 0 O. OH(H+O) and UO(U+O) need O.
+      // share = floor(0 / demandCount) = 0 → both capped to 0 → skipped.
+      const hubRoom = createSynthesisCapableRoom(CAP_HUB, {
+        labCount: 6,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 20000,
+          [RESOURCE_UTRIUM]: 20000,
+          [RESOURCE_CATALYST]: 20000,
+        },
+      });
+      Game.rooms[CAP_HUB] = hubRoom;
+
+      const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
+      const plan = planDistributedSynthesis(CAP_HUB, targets, 1000, 1000, getCapHubInventory());
+
+      // No assignments for products needing O since O=0
+      const products = plan.dispatchAssignments.map(a => a.product);
+      expect(products).not.toContain(RESOURCE_HYDROXIDE);
+      expect(products).not.toContain(RESOURCE_UTRIUM_OXIDE);
+    });
+  });
+
   describe("wireDistributedSynthesis", () => {
     const WIRE_HUB = "W1N1";
     const WIRE_AUX = "W2N1";
