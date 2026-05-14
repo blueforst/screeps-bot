@@ -5270,9 +5270,8 @@ describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
     expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBeUndefined();
   });
 
-  it("non-target compound above 5000 creates surplus entry", () => {
-    // RESOURCE_HYDROXIDE is not a T3 target, reserve=5000
-    // Hub has 8000 OH → sellable = 8000 - 5000 = 3000
+  it("non-target compounds are never sold (only T3 targets)", () => {
+    // RESOURCE_HYDROXIDE is not a T3 target → no surplus even above 5000
     Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
       [RESOURCE_HYDROXIDE]: 8000,
       [RESOURCE_CATALYZED_UTRIUM_ACID]: 20000,
@@ -5282,11 +5281,10 @@ describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
 
     const surplus = Memory.runtime.hub.marketSellSurplus;
     expect(surplus).toBeDefined();
-    expect(surplus![RESOURCE_HYDROXIDE]).toBe(3000);
+    expect(surplus![RESOURCE_HYDROXIDE]).toBeUndefined();
   });
 
   it("non-target compound at 5000 creates no surplus entry", () => {
-    // OH at exactly 5000 → sellable = 0
     Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
       [RESOURCE_HYDROXIDE]: 5000,
       [RESOURCE_CATALYZED_UTRIUM_ACID]: 20000,

@@ -1569,20 +1569,16 @@ function computeAndStoreMarketSellSurplus(
     if (amount <= 0) continue;
     const resource = res as ResourceConstant;
 
+    if (!targetCompounds.includes(resource)) {
+      continue;
+    }
+
     const outgoing = getOutgoingResourceTransferAmount(hubRoomName, resource);
     const effective = Math.max(0, amount - outgoing);
 
-    if (targetCompounds.includes(resource)) {
-      const sellable = Math.max(0, effective - chainTarget);
-      if (sellable >= 100) {
-        surplus[resource] = sellable;
-      }
-    } else {
-      const reserve = 5000;
-      const sellable = Math.max(0, effective - reserve);
-      if (sellable >= 100) {
-        surplus[resource] = sellable;
-      }
+    const sellable = Math.max(0, effective - chainTarget);
+    if (sellable >= 100) {
+      surplus[resource] = sellable;
     }
   }
 
