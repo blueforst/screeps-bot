@@ -289,6 +289,48 @@ describe("cleanupResourceTransferTaskStore", () => {
     expect(removed).toBe(1);
   });
 
+  it("removes pending tasks with blocking errors past TTL", () => {
+    const r = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
+    if (typeof r === "string") throw new Error("unexpected error");
+    const store = ensureResourceTransferTaskStore();
+    store[r.task.id].lastError = "insufficient_terminal_resource_or_fee";
+    store[r.task.id].updatedAt = 50; // 50 ticks ago, TTL=10
+
+    const ownedRooms = new Set(["W1N1", "W2N1"]);
+    const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);
+
+    expect(removed).toBe(1);
+    expect(store[r.task.id]).toBeUndefined();
+  });
+
+  it("keeps pending tasks with blocking errors within TTL", () => {
+    const r = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
+    if (typeof r === "string") throw new Error("unexpected error");
+    const store = ensureResourceTransferTaskStore();
+    store[r.task.id].lastError = "remaining_below_transfer_min";
+    store[r.task.id].updatedAt = 95; // 5 ticks ago, TTL=10
+
+    const ownedRooms = new Set(["W1N1", "W2N1"]);
+    const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);
+
+    expect(removed).toBe(0);
+    expect(store[r.task.id]).toBeDefined();
+  });
+
+  it("keeps pending tasks with non-blocking errors regardless of age", () => {
+    const r = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
+    if (typeof r === "string") throw new Error("unexpected error");
+    const store = ensureResourceTransferTaskStore();
+    store[r.task.id].lastError = "some_other_error";
+    store[r.task.id].updatedAt = 1; // very old
+
+    const ownedRooms = new Set(["W1N1", "W2N1"]);
+    const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);
+
+    expect(removed).toBe(0);
+    expect(store[r.task.id]).toBeDefined();
+  });
+
   it("returns 0 when store is empty", () => {
     const ownedRooms = new Set(["W1N1"]);
     const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);

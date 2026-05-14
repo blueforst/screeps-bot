@@ -239,7 +239,12 @@ export function cleanupResourceTransferTaskStore(ownedRooms: Set<string>, taskTt
     const terminalStale =
       (task.status === "done" || task.status === "cancelled" || task.status === "failed") &&
       Game.time - task.updatedAt > taskTtl;
-    if (sourceOrTargetLost || terminalStale) {
+    const blockingStale =
+      task.status === "pending" &&
+      task.lastError != null &&
+      BLOCKING_ERRORS.has(task.lastError) &&
+      Game.time - task.updatedAt > taskTtl;
+    if (sourceOrTargetLost || terminalStale || blockingStale) {
       delete tasks[taskId];
       removed += 1;
     }
