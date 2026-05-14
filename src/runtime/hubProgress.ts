@@ -145,11 +145,7 @@ export interface HubProgressSnapshot {
   productionRooms: ProductionRoomEntry[];
   t3ReserveStatus: {
     hubSurplus: number;
-    satellites: Array<{
-      room: string;
-      deficit: number;
-      details: Array<{ compound: string; needed: number }>;
-    }>;
+    totalDeficit: Array<{ compound: string; needed: number }>;
   };
 }
 
@@ -191,11 +187,7 @@ export interface HubVisualModel {
   progressText: string;
   t3Reserve: {
     hubSurplus: number;
-    satellites: Array<{
-      room: string;
-      deficit: number;
-      details: Array<{ compound: string; needed: number }>;
-    }>;
+    totalDeficit: Array<{ compound: string; needed: number }>;
   };
 }
 
@@ -324,18 +316,18 @@ export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, pro
   }
 
   p.sectionHeader("T3 Reserve");
-  const { hubSurplus, satellites } = model.t3Reserve;
+  const { hubSurplus, totalDeficit } = model.t3Reserve;
   const hubLabel = hubSurplus >= 0 ? `Hub: ${formatCompactAmount(hubSurplus)} surplus` : `Hub: -${formatCompactAmount(-hubSurplus)} deficit`;
   const hubColor = hubSurplus > 0 ? VIS_OK : hubSurplus < 0 ? VIS_ERROR : VIS_MUTED;
   p.textRow(hubLabel, { color: hubColor });
 
-  const displaySatellites = satellites.slice(0, 5);
-  if (displaySatellites.length === 0 && hubSurplus >= 0) {
+  const totalNeeded = totalDeficit.reduce((sum, d) => sum + d.needed, 0);
+  if (totalNeeded === 0) {
     p.textRow("all rooms stocked", { font: 0.35, color: VIS_MUTED });
   }
-  for (const sat of displaySatellites) {
-    const deficitColor = sat.deficit >= 5000 ? VIS_ERROR : VIS_WARN;
-    p.textRow(`${sat.room}: -${formatCompactAmount(sat.deficit)}`, { font: 0.35, color: deficitColor });
+  for (const d of totalDeficit.slice(0, 3)) {
+    const deficitColor = d.needed >= 5000 ? VIS_ERROR : VIS_WARN;
+    p.textRow(`${d.compound}: -${formatCompactAmount(d.needed)}`, { font: 0.35, color: deficitColor });
   }
 }
 
@@ -638,35 +630,31 @@ function buildT3ReserveStatus(
   reservePerRoom: number,
   hubReservePerCompound: number,
   satelliteStores: HubProgressInput["satelliteStores"],
-): { hubSurplus: number; satellites: Array<{ room: string; deficit: number; details: Array<{ compound: string; needed: number }> }> } {
+): { hubSurplus: number; totalDeficit: Array<{ compound: string; needed: number }> } {
   let hubSurplus = 0;
   for (const compound of targetCompounds) {
     const hubAmount = (hubStorageStore?.[compound] || 0) + (hubTerminalStore?.[compound] || 0) + (hubLabInventory[compound] || 0);
     hubSurplus += Math.max(0, hubAmount - hubReservePerCompound);
   }
 
-  const satellites: Array<{ room: string; deficit: number; details: Array<{ compound: string; needed: number }> }> = [];
+  const compoundDeficit: Record<string, number> = {};
   if (satelliteStores) {
     for (const sat of satelliteStores) {
-      const details: Array<{ compound: string; needed: number }> = [];
-      let totalDeficit = 0;
       for (const compound of targetCompounds) {
         const current = (sat.storage?.[compound] || 0) + (sat.terminal?.[compound] || 0);
         const needed = Math.max(0, reservePerRoom - current);
         if (needed > 0) {
-          details.push({ compound, needed });
-          totalDeficit += needed;
+          compoundDeficit[compound] = (compoundDeficit[compound] || 0) + needed;
         }
-      }
-      if (totalDeficit > 0) {
-        satellites.push({ room: sat.roomName, deficit: totalDeficit, details });
       }
     }
   }
 
-  satellites.sort((a, b) => b.deficit - a.deficit);
+  const totalDeficit = Object.entries(compoundDeficit)
+    .map(([compound, needed]) => ({ compound, needed }))
+    .sort((a, b) => b.needed - a.needed);
 
-  return { hubSurplus, satellites };
+  return { hubSurplus, totalDeficit };
 }
 
 export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSnapshot {
@@ -696,7 +684,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       hubLabInventory: {},
       hubCarrierCargo: {},
       productionRooms: [],
-      t3ReserveStatus: { hubSurplus: 0, satellites: [] },
+      t3ReserveStatus: { hubSurplus: 0, totalDeficit: [] },
     };
   }
 

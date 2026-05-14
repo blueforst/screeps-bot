@@ -339,7 +339,7 @@ describe("buildHubOverlayLines", () => {
       hubLabInventory: {},
       hubCarrierCargo: {},
       productionRooms: [],
-      t3ReserveStatus: { hubSurplus: 0, satellites: [] },
+      t3ReserveStatus: { hubSurplus: 0, totalDeficit: [] },
       ...overrides,
     };
   }
@@ -679,7 +679,7 @@ describe("buildHubVisualModel", () => {
       hubLabInventory: {},
       hubCarrierCargo: {},
       productionRooms: [],
-      t3ReserveStatus: { hubSurplus: 0, satellites: [] },
+      t3ReserveStatus: { hubSurplus: 0, totalDeficit: [] },
       ...overrides,
     };
   }
@@ -764,7 +764,7 @@ describe("drawHubVisualPanel", () => {
       activeProduct: null,
       progressPercent: 0,
       progressText: "idle",
-      t3Reserve: { hubSurplus: 0, satellites: [] },
+      t3Reserve: { hubSurplus: 0, totalDeficit: [] },
       ...overrides,
     };
   }
@@ -1270,7 +1270,7 @@ describe("buildHubProgressSnapshot t3ReserveStatus", () => {
       currentTick: 100,
     });
 
-    expect(snapshot.t3ReserveStatus).toEqual({ hubSurplus: 0, satellites: [] });
+    expect(snapshot.t3ReserveStatus).toEqual({ hubSurplus: 0, totalDeficit: [] });
   });
 
   it("returns empty t3ReserveStatus when no targetCompounds configured", () => {
@@ -1289,7 +1289,7 @@ describe("buildHubProgressSnapshot t3ReserveStatus", () => {
     });
 
     expect(snapshot.t3ReserveStatus.hubSurplus).toBe(0);
-    expect(snapshot.t3ReserveStatus.satellites).toEqual([]);
+    expect(snapshot.t3ReserveStatus.totalDeficit).toEqual([]);
   });
 
   it("computes hub surplus for compounds above hubReservePerCompound", () => {
@@ -1312,7 +1312,7 @@ describe("buildHubProgressSnapshot t3ReserveStatus", () => {
     expect(snapshot.t3ReserveStatus.hubSurplus).toBe(4000);
   });
 
-  it("computes satellite deficit per room", () => {
+  it("computes total deficit per compound across satellites", () => {
     const snapshot = buildHubProgressSnapshot({
       hubConfig: {
         enabled: true,
@@ -1333,15 +1333,12 @@ describe("buildHubProgressSnapshot t3ReserveStatus", () => {
       ],
     });
 
-    expect(snapshot.t3ReserveStatus.satellites).toHaveLength(1);
-    expect(snapshot.t3ReserveStatus.satellites[0].room).toBe("W2N1");
-    expect(snapshot.t3ReserveStatus.satellites[0].deficit).toBe(1300);
-    expect(snapshot.t3ReserveStatus.satellites[0].details).toEqual([
-      { compound: "XGH2O", needed: 1300 },
-    ]);
+    expect(snapshot.t3ReserveStatus.totalDeficit).toHaveLength(1);
+    expect(snapshot.t3ReserveStatus.totalDeficit[0].compound).toBe("XGH2O");
+    expect(snapshot.t3ReserveStatus.totalDeficit[0].needed).toBe(1300);
   });
 
-  it("sorts satellites by deficit descending and caps at display time", () => {
+  it("sorts totalDeficit by needed descending", () => {
     const snapshot = buildHubProgressSnapshot({
       hubConfig: {
         enabled: true,
@@ -1363,13 +1360,10 @@ describe("buildHubProgressSnapshot t3ReserveStatus", () => {
       ],
     });
 
-    expect(snapshot.t3ReserveStatus.satellites).toHaveLength(3);
-    expect(snapshot.t3ReserveStatus.satellites[0].room).toBe("W3N1");
-    expect(snapshot.t3ReserveStatus.satellites[0].deficit).toBe(2000);
-    expect(snapshot.t3ReserveStatus.satellites[1].room).toBe("W4N1");
-    expect(snapshot.t3ReserveStatus.satellites[1].deficit).toBe(1000);
-    expect(snapshot.t3ReserveStatus.satellites[2].room).toBe("W2N1");
-    expect(snapshot.t3ReserveStatus.satellites[2].deficit).toBe(500);
+    // totalDeficit aggregates per compound: XGH2O = 500 + 2000 + 1000 = 3500
+    expect(snapshot.t3ReserveStatus.totalDeficit).toHaveLength(1);
+    expect(snapshot.t3ReserveStatus.totalDeficit[0].compound).toBe("XGH2O");
+    expect(snapshot.t3ReserveStatus.totalDeficit[0].needed).toBe(3500);
   });
 
   it("excludes rooms with no deficit", () => {
@@ -1393,10 +1387,10 @@ describe("buildHubProgressSnapshot t3ReserveStatus", () => {
       ],
     });
 
-    expect(snapshot.t3ReserveStatus.satellites).toEqual([]);
+    expect(snapshot.t3ReserveStatus.totalDeficit).toEqual([]);
   });
 
-  it("computes multi-compound deficit per satellite", () => {
+  it("computes multi-compound totalDeficit across satellites", () => {
     const snapshot = buildHubProgressSnapshot({
       hubConfig: {
         enabled: true,
@@ -1416,12 +1410,12 @@ describe("buildHubProgressSnapshot t3ReserveStatus", () => {
       ],
     });
 
-    expect(snapshot.t3ReserveStatus.satellites).toHaveLength(1);
-    expect(snapshot.t3ReserveStatus.satellites[0].deficit).toBe(1700);
-    expect(snapshot.t3ReserveStatus.satellites[0].details).toEqual([
-      { compound: "XGH2O", needed: 1500 },
-      { compound: "XUHO2", needed: 200 },
-    ]);
+    expect(snapshot.t3ReserveStatus.totalDeficit).toHaveLength(2);
+    // sorted by needed desc: XGH2O=1500 > XUHO2=200
+    expect(snapshot.t3ReserveStatus.totalDeficit[0].compound).toBe("XGH2O");
+    expect(snapshot.t3ReserveStatus.totalDeficit[0].needed).toBe(1500);
+    expect(snapshot.t3ReserveStatus.totalDeficit[1].compound).toBe("XUHO2");
+    expect(snapshot.t3ReserveStatus.totalDeficit[1].needed).toBe(200);
   });
 });
 
@@ -1433,7 +1427,7 @@ describe("drawHubVisualPanel T3 Reserve section", () => {
       activeProduct: null,
       progressPercent: 0,
       progressText: "idle",
-      t3Reserve: { hubSurplus: 0, satellites: [] },
+      t3Reserve: { hubSurplus: 0, totalDeficit: [] },
       ...overrides,
     };
   }
@@ -1461,7 +1455,7 @@ describe("drawHubVisualPanel T3 Reserve section", () => {
   it("renders hub surplus text when positive", () => {
     const rv = new RoomVisual("W1N1");
     drawHubVisualPanel(rv, makeModel({
-      t3Reserve: { hubSurplus: 45000, satellites: [] },
+      t3Reserve: { hubSurplus: 45000, totalDeficit: [] },
     }));
 
     const hubTexts = findCalls("text", args => typeof args[0] === "string" && args[0].includes("Hub:"));
@@ -1472,7 +1466,7 @@ describe("drawHubVisualPanel T3 Reserve section", () => {
   it("renders all rooms stocked when no deficits and surplus >= 0", () => {
     const rv = new RoomVisual("W1N1");
     drawHubVisualPanel(rv, makeModel({
-      t3Reserve: { hubSurplus: 100, satellites: [] },
+      t3Reserve: { hubSurplus: 100, totalDeficit: [] },
     }));
 
     const textCalls = findCalls("text");
@@ -1480,41 +1474,40 @@ describe("drawHubVisualPanel T3 Reserve section", () => {
     expect(stockedText).toBeDefined();
   });
 
-  it("renders satellite deficits sorted by descending deficit", () => {
+  it("renders totalDeficit lines sorted by needed descending", () => {
     const rv = new RoomVisual("W1N1");
     drawHubVisualPanel(rv, makeModel({
       t3Reserve: {
         hubSurplus: 0,
-        satellites: [
-          { room: "E7N58", deficit: 3500, details: [{ compound: "XGH2O", needed: 3500 }] },
-          { room: "E8N58", deficit: 1000, details: [{ compound: "XUHO2", needed: 1000 }] },
+        totalDeficit: [
+          { compound: "XGH2O", needed: 3500 },
+          { compound: "XUHO2", needed: 1000 },
         ],
       },
     }));
 
     const textCalls = findCalls("text");
-    const sat1 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("E7N58"));
-    const sat2 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("E8N58"));
-    expect(sat1).toBeDefined();
-    expect(sat1!.args[0]).toBe("E7N58: -3.5K");
-    expect(sat2).toBeDefined();
-    expect(sat2!.args[0]).toBe("E8N58: -1K");
+    const def1 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("XGH2O"));
+    const def2 = textCalls.find(c => typeof c.args[0] === "string" && c.args[0].includes("XUHO2"));
+    expect(def1).toBeDefined();
+    expect(def1!.args[0]).toBe("XGH2O: -3.5K");
+    expect(def2).toBeDefined();
+    expect(def2!.args[0]).toBe("XUHO2: -1K");
   });
 
-  it("caps satellite display at 5", () => {
-    const satellites = Array.from({ length: 8 }, (_, i) => ({
-      room: `R${i}`,
-      deficit: (8 - i) * 500,
-      details: [{ compound: "XGH2O", needed: (8 - i) * 500 }],
+  it("caps totalDeficit display at 3 compounds", () => {
+    const totalDeficit = Array.from({ length: 8 }, (_, i) => ({
+      compound: `C${i}`,
+      needed: (8 - i) * 500,
     }));
     const rv = new RoomVisual("W1N1");
     drawHubVisualPanel(rv, makeModel({
-      t3Reserve: { hubSurplus: 0, satellites },
+      t3Reserve: { hubSurplus: 0, totalDeficit },
     }));
 
     const textCalls = findCalls("text");
-    const satLines = textCalls.filter(c => typeof c.args[0] === "string" && /^R\d+:/.test(c.args[0]));
-    expect(satLines).toHaveLength(5);
+    const deficitLines = textCalls.filter(c => typeof c.args[0] === "string" && /^C\d+:/.test(c.args[0]));
+    expect(deficitLines).toHaveLength(3);
   });
 });
 
