@@ -391,6 +391,54 @@ export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, pro
   }
 }
 
+/** Satellite visual panel position constants. */
+const SATELLITE_VISUAL_X = 38;
+const SATELLITE_VISUAL_Y = 0;
+const SATELLITE_VISUAL_WIDTH = 12;
+
+/** Render a compact production panel in a satellite room. */
+function drawSatellitePanel(rv: VisualSurface, room: ProductionRoomEntry): void {
+  const p = new Panel({ rv, x: SATELLITE_VISUAL_X, y: SATELLITE_VISUAL_Y, width: SATELLITE_VISUAL_WIDTH });
+
+  p.sectionHeader(`Production: ${room.product} [${room.stage}]`);
+
+  const pct = room.progressPercent;
+  const progressLabel = `${formatCompactAmount(room.currentAmount)}/${formatCompactAmount(room.targetAmount)} ${Math.round(pct * 100)}%`;
+  const barColor = room.stage === "blocked" ? VIS_ERROR
+    : room.stage === "synthesizing" ? VIS_OK
+    : pct >= 1 ? VIS_OK
+    : VIS_MUTED;
+  p.progressBar(pct, barColor, progressLabel);
+
+  const upstreamLabels = room.upstream
+    .slice(0, MAX_LINK_LABELS)
+    .map(u => u.roomName);
+  const upstreamStr = upstreamLabels.length > 0
+    ? `←${upstreamLabels.join(",")}${room.upstream.length > MAX_LINK_LABELS ? `+${room.upstream.length - MAX_LINK_LABELS}` : ""}`
+    : "";
+
+  const downstreamLabels = room.downstream
+    .slice(0, MAX_LINK_LABELS)
+    .map(d => d.roomName);
+  const downstreamStr = downstreamLabels.length > 0
+    ? `→${downstreamLabels.join(",")}${room.downstream.length > MAX_LINK_LABELS ? `+${room.downstream.length - MAX_LINK_LABELS}` : ""}`
+    : "";
+
+  const supplyParts: string[] = [];
+  if (upstreamStr) supplyParts.push(upstreamStr);
+  if (downstreamStr) supplyParts.push(downstreamStr);
+  if (room.directSupplyAmount > 0) supplyParts.push(`direct:${formatCompactAmount(room.directSupplyAmount)}`);
+  if (room.hubSurplusAmount > 0) supplyParts.push(`hub:${formatCompactAmount(room.hubSurplusAmount)}`);
+
+  if (supplyParts.length > 0) {
+    p.textRow(supplyParts.join(" "), { font: 0.35, color: VIS_MUTED });
+  }
+
+  if (room.blocker) {
+    p.textRow(`⚠ ${room.blocker}`, { font: 0.35, color: VIS_ERROR });
+  }
+}
+
 function classifyTransferTask(
   reason: string | undefined,
 ): "import" | "reclaim" | "export" | null {
@@ -845,7 +893,6 @@ export function renderHubProgressOverlays(): void {
   if (typeof RoomVisual === "undefined") return;
   if (!Memory.cfg?.hub?.enabled) return;
 
-  // CPU guard
   if (Game.cpu.bucket < 100) return;
 
   const snapshot = collectHubProgressSnapshot();
@@ -860,11 +907,17 @@ export function renderHubProgressOverlays(): void {
 
   const callsBefore = (global as any).__roomVisualCalls?.length ?? 0;
   drawHubVisualPanel(rv, model, snapshot.productionRooms);
+
+  for (const room of snapshot.productionRooms) {
+    if (room.isHubRoom) continue;
+    if (!Game.rooms[room.roomName]) continue;
+    const satelliteRv = new RoomVisual(room.roomName);
+    drawSatellitePanel(satelliteRv, room);
+  }
+
   const callsAfter = (global as any).__roomVisualCalls?.length ?? 0;
   const callsUsed = callsAfter - callsBefore;
 
-  // Production RoomVisual has no __roomVisualCalls global, so callsUsed=0 and this never fires.
-  // Budget warning only triggers in test mock environment where __roomVisualCalls is recorded.
   if (callsUsed > MAX_HUB_VISUAL_CALLS) {
     console.log(`[hub-visual] WARNING: panel used ${callsUsed} visual calls (max ${MAX_HUB_VISUAL_CALLS})`);
   }

@@ -524,6 +524,147 @@ describe("renderHubProgressOverlays", () => {
       (global as any).__roomVisualCalls;
     expect(calls.length).toBeLessThanOrEqual(40);
   });
+
+  it("renders satellite panel in non-hub production rooms", () => {
+    (global as any).__resetRoomVisualCalls();
+
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.rooms = {
+      W1N1: { name: "W1N1", controller: { my: true } } as any,
+      W2N1: { name: "W2N1", controller: { my: true } } as any,
+    };
+
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: "W1N1", product: "XGH2O" as ResourceConstant, targetAmount: 3000, isHubRoom: true },
+        { roomName: "W2N1", product: "OH" as ResourceConstant, targetAmount: 5000, isHubRoom: false },
+      ],
+      routeDecisions: [],
+      progressEdges: [],
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: 0,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        W2N1: { stage: "synthesizing", activeProduct: "OH" as ResourceConstant, reagentLabIds: [], productLabIds: [], successfulRuns: 0, pendingTasks: 0, lastTransitionAt: 0 },
+      },
+    };
+    Memory.cfg!.synthesisControl = {
+      rooms: {
+        W2N1: { reactions: [{ product: "OH", targetAmount: 5000 }] },
+      },
+    };
+    Memory.data!.resourceControl = Memory.data!.resourceControl || { tasks: {} };
+
+    renderHubProgressOverlays();
+
+    const calls: Array<{ roomName: string; method: string; args: any[] }> =
+      (global as any).__roomVisualCalls;
+    expect(calls.some(c => c.roomName === "W2N1")).toBe(true);
+  });
+
+  it("skips satellite panel for rooms without visibility", () => {
+    (global as any).__resetRoomVisualCalls();
+
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.rooms = {
+      W1N1: { name: "W1N1", controller: { my: true } } as any,
+    };
+
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: "W1N1", product: "XGH2O" as ResourceConstant, targetAmount: 3000, isHubRoom: true },
+        { roomName: "W3N1", product: "OH" as ResourceConstant, targetAmount: 5000, isHubRoom: false },
+      ],
+      routeDecisions: [],
+      progressEdges: [],
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: 0,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        W3N1: { stage: "idle", reagentLabIds: [], productLabIds: [], successfulRuns: 0, pendingTasks: 0, lastTransitionAt: 0 },
+      },
+    };
+    Memory.cfg!.synthesisControl = {
+      rooms: {
+        W3N1: { reactions: [{ product: "OH", targetAmount: 5000 }] },
+      },
+    };
+
+    renderHubProgressOverlays();
+
+    const calls: Array<{ roomName: string; method: string; args: any[] }> =
+      (global as any).__roomVisualCalls;
+    expect(calls.every(c => c.roomName !== "W3N1")).toBe(true);
+  });
+
+  it("renders no satellite panels when productionRooms is empty", () => {
+    (global as any).__resetRoomVisualCalls();
+
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.rooms = {
+      W1N1: { name: "W1N1", controller: { my: true } } as any,
+      W2N1: { name: "W2N1", controller: { my: true } } as any,
+    };
+
+    renderHubProgressOverlays();
+
+    const calls: Array<{ roomName: string; method: string; args: any[] }> =
+      (global as any).__roomVisualCalls;
+    expect(calls.every(c => c.roomName === "W1N1")).toBe(true);
+  });
+
+  it("satellite panel shows product, stage, and progress", () => {
+    (global as any).__resetRoomVisualCalls();
+
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.rooms = {
+      W1N1: { name: "W1N1", controller: { my: true } } as any,
+      W2N1: { name: "W2N1", controller: { my: true } } as any,
+    };
+
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: "W1N1", product: "XGH2O" as ResourceConstant, targetAmount: 3000, isHubRoom: true },
+        { roomName: "W2N1", product: "OH" as ResourceConstant, targetAmount: 1000, isHubRoom: false },
+      ],
+      routeDecisions: [],
+      progressEdges: [],
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: 0,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        W2N1: { stage: "synthesizing", activeProduct: "OH" as ResourceConstant, reagentLabIds: [], productLabIds: [], successfulRuns: 0, pendingTasks: 0, lastTransitionAt: 0 },
+      },
+    };
+    Memory.cfg!.synthesisControl = {
+      rooms: {
+        W2N1: { reactions: [{ product: "OH", targetAmount: 1000 }] },
+      },
+    };
+
+    renderHubProgressOverlays();
+
+    const satelliteTexts: Array<{ roomName: string; method: string; args: any[] }> =
+      (global as any).__roomVisualCalls.filter(c => c.roomName === "W2N1" && c.method === "text");
+    const headerText = satelliteTexts.find(c => typeof c.args[0] === "string" && c.args[0].includes("OH"));
+    expect(headerText).toBeDefined();
+    expect(headerText!.args[0]).toContain("synthesizing");
+  });
 });
 
 describe("buildHubVisualModel", () => {
