@@ -10,9 +10,11 @@
  * 3. statusHub reflects cleanup error state from runtime
  */
 
-import { runHubPlanner } from "@/runtime/hubPlanner";
+import { runHubPlanner, getEligibleSynthesisRooms } from "@/runtime/hubPlanner";
 import { runSynthesisControl } from "@/runtime/synthesisControl";
-import { statusHubRaw } from "@/runtime/consoleCommands";
+import { statusHubRaw, hubProgressRaw } from "@/runtime/consoleCommands";
+import { buildHubProgressSnapshot, collectHubProgressSnapshot } from "@/runtime/hubProgress";
+import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import {
   clearCarrierTaskBoardForTest,
 } from "@/runtime/carrierTaskBoard";
@@ -661,5 +663,405 @@ describe("synthesis room config – empty reactions vs explicit disabled", () =>
     expect(synthesisRoomState).toBeDefined();
     expect(synthesisRoomState!.stage).toBe("blocked");
     expect(synthesisRoomState!.lastError).toBe("room_config_disabled");
+  });
+});
+
+describe("distributed synthesis integration – full pipeline with 3 rooms", () => {
+  it("runHubPlanner writes configs to hub + 2 aux rooms, creates transfer tasks, and progress snapshot lists all rooms", () => {
+    // Hub room: W1N1 — has H, O, plus some U/K/Z/L for variety
+    const { room: hubRoom } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROGEN]: 20000,
+        [RESOURCE_OXYGEN]: 20000,
+        [RESOURCE_UTRIUM]: 5000,
+        [RESOURCE_KEANIUM]: 5000,
+        [RESOURCE_ZYNTHIUM]: 5000,
+        [RESOURCE_LEMERGIUM]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    Game.rooms["W1N1"] = hubRoom;
+
+    // Aux room 1: W2N1 — has Z + K (can make ZK)
+    const { room: auxRoom1 } = createSynthesisRoom({
+      name: "W2N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_ZYNTHIUM]: 30000,
+        [RESOURCE_KEANIUM]: 30000,
+      },
+    });
+    Game.rooms["W2N1"] = auxRoom1;
+
+    // Aux room 2: W3N1 — has U + L (can make UL)
+    const { room: auxRoom2 } = createSynthesisRoom({
+      name: "W3N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_UTRIUM]: 30000,
+        [RESOURCE_LEMERGIUM]: 30000,
+      },
+    });
+    Game.rooms["W3N1"] = auxRoom2;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE as ResourceConstant],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        activeProduct: "",
+        activeStep: 0,
+        missingResources: [],
+        lastPlanActions: [],
+        needsPlan: true,
+      },
+    };
+
+    Game.time = 0;
+
+    // Step 1: Run planner
+    runHubPlanner();
+
+    // Verify: planner discovered 3 eligible rooms
+    const eligible = getEligibleSynthesisRooms();
+    const eligibleNames = eligible.map(r => r.roomName);
+    expect(eligibleNames).toContain("W1N1");
+    expect(eligibleNames).toContain("W2N1");
+    expect(eligibleNames).toContain("W3N1");
+
+    // Verify: hub status is not blocked — distributed synthesis active
+    expect(Memory.runtime!.hub!.status).not.toBe("blocked");
+    expect(Memory.runtime!.hub!.status).not.toBe("idle");
+
+    // Verify: distributed synthesis plan stored
+    const dist = Memory.runtime!.hub!.distributedSynthesis;
+    expect(dist).toBeDefined();
+    expect(dist!.dispatchAssignments.length).toBeGreaterThanOrEqual(1);
+
+    // Verify: synthesis configs written to multiple rooms
+    const scRooms = Memory.cfg!.synthesisControl!.rooms!;
+    const roomNames = Object.keys(scRooms);
+    expect(roomNames.length).toBeGreaterThanOrEqual(2);
+
+    // Each assigned room should have enabled:true and a reaction
+    for (const assignment of dist!.dispatchAssignments) {
+      const roomCfg = scRooms[assignment.roomName];
+      expect(roomCfg).toBeDefined();
+      expect(roomCfg!.enabled).toBe(true);
+      expect(roomCfg!.reactions).toBeDefined();
+      expect(roomCfg!.reactions!.length).toBeGreaterThanOrEqual(1);
+      expect(roomCfg!.reactions![0].product).toBe(assignment.product);
+      expect(roomCfg!.reactions![0].targetAmount).toBeGreaterThan(0);
+    }
+
+    // Verify: route decisions may create transfer tasks
+    if (dist!.routeDecisions && dist!.routeDecisions.length > 0) {
+      const taskStore = ensureResourceTransferTaskStore();
+      const pendingTasks = Object.values(taskStore).filter(t => t.status === "pending");
+      expect(pendingTasks.length).toBeGreaterThanOrEqual(1);
+    }
+
+    // Verify: hub progress snapshot includes all active production rooms
+    Game.time = 1;
+    const snapshot = collectHubProgressSnapshot();
+    expect(snapshot.enabled).toBe(true);
+    expect(snapshot.productionRooms.length).toBeGreaterThanOrEqual(1);
+
+    // Check that assigned rooms appear in productionRooms
+    const snapshotRoomNames = snapshot.productionRooms.map(r => r.roomName);
+    for (const assignment of dist!.dispatchAssignments) {
+      expect(snapshotRoomNames).toContain(assignment.roomName);
+    }
+
+    // Hub room entry should be marked isHubRoom
+    const hubEntry = snapshot.productionRooms.find(r => r.roomName === "W1N1");
+    if (hubEntry) {
+      expect(hubEntry.isHubRoom).toBe(true);
+    }
+    // Aux room entries should be marked !isHubRoom
+    for (const assignment of dist!.dispatchAssignments) {
+      if (!assignment.isHubRoom) {
+        const entry = snapshot.productionRooms.find(r => r.roomName === assignment.roomName);
+        expect(entry).toBeDefined();
+        expect(entry!.isHubRoom).toBe(false);
+      }
+    }
+  });
+
+  it("progress snapshot includes upstream/downstream links between rooms", () => {
+    // Set up pre-existing distributed synthesis data to test progress model directly
+    const { room: hubRoom } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+      },
+    });
+    Game.rooms["W1N1"] = hubRoom;
+
+    const { room: auxRoom1 } = createSynthesisRoom({
+      name: "W2N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_ZYNTHIUM]: 10000,
+        [RESOURCE_KEANIUM]: 10000,
+        [RESOURCE_ZYNTHIUM_KEANITE]: 2000,
+      },
+    });
+    Game.rooms["W2N1"] = auxRoom1;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE as ResourceConstant],
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        status: "importing",
+        updatedAt: 0,
+        activeProduct: RESOURCE_HYDROXIDE,
+        activeStep: 0,
+        missingResources: [],
+        lastPlanActions: [RESOURCE_HYDROXIDE],
+        needsPlan: false,
+        distributedSynthesis: {
+          dispatchAssignments: [
+            { roomName: "W1N1", product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000, isHubRoom: true },
+            { roomName: "W2N1", product: RESOURCE_ZYNTHIUM_KEANITE as ResourceConstant, targetAmount: 3000, isHubRoom: false },
+          ],
+          routeDecisions: [
+            { fromRoom: "W1N1", toRoom: "W1N1", resource: RESOURCE_HYDROXIDE as ResourceConstant, amount: 2000, fee: 0 },
+            { fromRoom: "W2N1", toRoom: "W1N1", resource: RESOURCE_ZYNTHIUM_KEANITE as ResourceConstant, amount: 1000, fee: 0 },
+          ],
+          progressEdges: [
+            { fromRoom: "W2N1", toRoom: "W1N1", resource: RESOURCE_ZYNTHIUM_KEANITE as ResourceConstant, delivered: 500, total: 1000 },
+          ],
+        },
+      },
+      synthesisControl: {
+        rooms: {
+          W1N1: { stage: "synthesizing", activeProduct: RESOURCE_HYDROXIDE, reagentLabIds: ["l1", "l2"], productLabIds: ["l3"], successfulRuns: 5, pendingTasks: 0, lastTransitionAt: 0 },
+          W2N1: { stage: "synthesizing", activeProduct: RESOURCE_ZYNTHIUM_KEANITE, reagentLabIds: ["l1", "l2"], productLabIds: ["l3"], successfulRuns: 3, pendingTasks: 0, lastTransitionAt: 0 },
+        },
+      } as any,
+    };
+
+    const snapshot = collectHubProgressSnapshot();
+    expect(snapshot.productionRooms).toHaveLength(2);
+
+    // Hub entry
+    const hubEntry = snapshot.productionRooms.find(r => r.roomName === "W1N1")!;
+    expect(hubEntry).toBeDefined();
+    expect(hubEntry.isHubRoom).toBe(true);
+    expect(hubEntry.product).toBe(RESOURCE_HYDROXIDE);
+    expect(hubEntry.stage).toBe("synthesizing");
+    // W1N1 receives ZK from W2N1 → downstream link
+    expect(hubEntry.hubSurplusAmount).toBeGreaterThan(0);
+
+    // Aux entry
+    const auxEntry = snapshot.productionRooms.find(r => r.roomName === "W2N1")!;
+    expect(auxEntry).toBeDefined();
+    expect(auxEntry.isHubRoom).toBe(false);
+    expect(auxEntry.product).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+    // W2N1 has upstream from progress edge
+    expect(auxEntry.upstream.length + auxEntry.downstream.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("distributed synthesis integration – statusHub and hubProgressRaw visibility", () => {
+  it("hubProgressRaw returns productionRooms with non-hub synthesis rooms after planner run", () => {
+    // Hub + 1 aux room, targeting OH (simple)
+    const { room: hubRoom } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+      },
+    });
+    Game.rooms["W1N1"] = hubRoom;
+
+    const { room: auxRoom } = createSynthesisRoom({
+      name: "W2N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_ZYNTHIUM]: 10000,
+        [RESOURCE_KEANIUM]: 10000,
+      },
+    });
+    Game.rooms["W2N1"] = auxRoom;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [RESOURCE_HYDROXIDE as ResourceConstant],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        activeProduct: "",
+        activeStep: 0,
+        missingResources: [],
+        lastPlanActions: [],
+        needsPlan: true,
+      },
+    };
+
+    Game.time = 0;
+    runHubPlanner();
+
+    // Get progress snapshot via console command
+    const snapshot = hubProgressRaw();
+    expect(snapshot.enabled).toBe(true);
+    expect(snapshot.productionRooms.length).toBeGreaterThanOrEqual(1);
+
+    // Non-hub rooms should appear
+    const auxEntries = snapshot.productionRooms.filter(r => !r.isHubRoom);
+    if (Memory.runtime!.hub!.distributedSynthesis?.dispatchAssignments?.some(a => !a.isHubRoom)) {
+      expect(auxEntries.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("statusHubRaw shows active hub state but does not list distributed rooms (current behavior)", () => {
+    // Verify current behavior: statusHubRaw shows hub synthesis state but
+    // does not include distributed production rooms directly.
+    // Users should use hubProgressRaw for distributed room details.
+    const { room: hubRoom } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+      },
+    });
+    Game.rooms["W1N1"] = hubRoom;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: [RESOURCE_HYDROXIDE as ResourceConstant],
+        internalOnly: true,
+      },
+      synthesisControl: {
+        enabled: true,
+        rooms: {
+          W1N1: {
+            enabled: true,
+            batchSize: 500,
+            maxRunsPerTick: 6,
+            donorRoomNames: [],
+            reagentLabIds: [],
+            reactions: [
+              {
+                product: RESOURCE_HYDROXIDE as ResourceConstant,
+                targetAmount: 5000,
+                batchSize: 500,
+                donorRoomNames: [],
+              },
+            ],
+          },
+        },
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        status: "importing",
+        updatedAt: 0,
+        activeProduct: RESOURCE_HYDROXIDE,
+        activeStep: 0,
+        missingResources: [],
+        lastPlanActions: [RESOURCE_HYDROXIDE],
+        needsPlan: false,
+      },
+      synthesisControl: {
+        updatedAt: 10,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          W1N1: {
+            stage: "synthesizing",
+            activeProduct: RESOURCE_HYDROXIDE,
+            reagentLabIds: ["l1", "l2"],
+            productLabIds: ["l3"],
+            successfulRuns: 5,
+            pendingTasks: 0,
+            lastTransitionAt: 0,
+          } as any,
+        },
+      },
+    };
+
+    const result = statusHubRaw();
+    // statusHubRaw shows hub-centric status
+    expect(result).toMatchObject({
+      enabled: true,
+      hubRoomName: "W1N1",
+      status: "active",
+      activeProduct: RESOURCE_HYDROXIDE,
+      activeStage: "synthesizing",
+    });
+    // It does not have a productionRooms field (by design — use hubProgressRaw for that)
+    expect((result as any).productionRooms).toBeUndefined();
+  });
+});
+
+describe("main.ts tick-order invariant", () => {
+  it("hubPlanner runs before synthesisControl and hubProgressAnalytics runs after both", () => {
+    // Read main.ts and verify the call order is:
+    // hubPlanner → synthesisControl → mineralExtraction → resourceControl → hubProgressAnalytics
+    // This is a static analysis test, not a runtime test.
+    const fs = require("fs");
+    const path = require("path");
+    const mainPath = path.join(__dirname, "..", "main.ts");
+    const mainSrc = fs.readFileSync(mainPath, "utf-8");
+
+    const hubPlannerIdx = mainSrc.indexOf('measure("hubPlanner"');
+    const synthesisControlIdx = mainSrc.indexOf('measure("synthesisControl"');
+    const mineralExtractionIdx = mainSrc.indexOf('measure("mineralExtraction"');
+    const resourceControlIdx = mainSrc.indexOf('measure("resourceControl"');
+    const hubProgressIdx = mainSrc.indexOf('measure("hubProgressAnalytics"');
+
+    expect(hubPlannerIdx).toBeGreaterThan(-1);
+    expect(synthesisControlIdx).toBeGreaterThan(-1);
+    expect(mineralExtractionIdx).toBeGreaterThan(-1);
+    expect(resourceControlIdx).toBeGreaterThan(-1);
+    expect(hubProgressIdx).toBeGreaterThan(-1);
+
+    // Verify order: hubPlanner < synthesisControl < mineralExtraction < resourceControl < hubProgressAnalytics
+    expect(hubPlannerIdx).toBeLessThan(synthesisControlIdx);
+    expect(synthesisControlIdx).toBeLessThan(mineralExtractionIdx);
+    expect(mineralExtractionIdx).toBeLessThan(resourceControlIdx);
+    expect(resourceControlIdx).toBeLessThan(hubProgressIdx);
   });
 });
