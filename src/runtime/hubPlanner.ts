@@ -1063,6 +1063,70 @@ const ACCEPT_REASSIGN_STAGES = new Set<string>(["idle", "blocked"]);
  * Returns true if distributed mode was used (multiple rooms assigned),
  * false if hub-only fallback should be used instead.
  */
+export function wireRouteTransferTasks(
+  routeDecisions: DirectRouteDecision[],
+  hubRoomName: string,
+  reservePerRoom: number,
+): void {
+  const directRoutes = routeDecisions.filter(r => r.toRoom !== hubRoomName);
+  const hubRoutes = routeDecisions.filter(r => r.toRoom === hubRoomName);
+
+  const directCommitment: Record<string, number> = {};
+  for (const route of directRoutes) {
+    const key = `${route.fromRoom}:${route.resource}`;
+    directCommitment[key] = (directCommitment[key] || 0) + route.amount;
+  }
+
+  for (const route of directRoutes) {
+    if (route.amount <= 0) continue;
+
+    let preferDirect = true;
+    if (typeof Game.market?.calcTransactionCost === "function") {
+      const directFee = Game.market.calcTransactionCost(route.amount, route.fromRoom, route.toRoom);
+      const feeToHub = Game.market.calcTransactionCost(route.amount, route.fromRoom, hubRoomName);
+      const feeHubToTarget = Game.market.calcTransactionCost(route.amount, hubRoomName, route.toRoom);
+      if (directFee >= feeToHub + feeHubToTarget) {
+        preferDirect = false;
+      }
+    }
+
+    if (preferDirect) {
+      createResourceTransferTask(
+        route.fromRoom,
+        route.toRoom,
+        route.resource,
+        route.amount,
+        `synthesis:direct:${route.resource}`,
+      );
+    } else {
+      createResourceTransferTask(
+        route.fromRoom,
+        hubRoomName,
+        route.resource,
+        route.amount,
+        `synthesis:hub-route:${route.resource}`,
+      );
+    }
+  }
+
+  for (const route of hubRoutes) {
+    if (route.amount <= 0) continue;
+
+    const key = `${route.fromRoom}:${route.resource}`;
+    const committed = directCommitment[key] || 0;
+    const effectiveAmount = route.amount - committed - reservePerRoom;
+    if (effectiveAmount <= 0) continue;
+
+    createResourceTransferTask(
+      route.fromRoom,
+      hubRoomName,
+      route.resource,
+      effectiveAmount,
+      `synthesis:surplus:${route.resource}`,
+    );
+  }
+}
+
 export function wireDistributedSynthesis(
   hubRoomName: string,
   targetCompounds: ResourceConstant[],
@@ -1147,6 +1211,8 @@ export function wireDistributedSynthesis(
       },
     ];
   }
+
+  wireRouteTransferTasks(plan.routeDecisions, hubRoomName, reservePerRoom);
 
   return true;
 }

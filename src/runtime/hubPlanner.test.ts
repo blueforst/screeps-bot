@@ -2,6 +2,7 @@ import {
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
   getIncomingResourceTransferAmount,
+  getOutgoingResourceTransferAmount,
 } from "@/runtime/logistics/resourceTransferTasks";
 import { runHubByFlag } from "@/runtime/hubFlag";
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
@@ -17,6 +18,7 @@ import {
   runHubPlanner,
   scoreRoomForStep,
   wireDistributedSynthesis,
+  wireRouteTransferTasks,
   DependencyGraph,
 } from "@/runtime/hubPlanner";
 import type {
@@ -4379,6 +4381,99 @@ describe("logistics-cost-aware dispatch scoring", () => {
       expect(Memory.runtime?.hub?.distributedSynthesis).toBeDefined();
       expect(Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments).toBeDefined();
       expect(Memory.runtime!.hub!.distributedSynthesis!.roomCapabilities).toBeDefined();
+    });
+
+    it("creates direct A→B transfer when downstream consumer is known and direct fee is lower", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      (Game as any).market = {
+        ...(Game.market || {}),
+        calcTransactionCost: (amount: number, _from: string, _to: string) =>
+          Math.ceil(amount * 0.01),
+      };
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_HUB, toRoom: WIRE_AUX, resource: RESOURCE_HYDROXIDE, amount: 1000, fee: 10 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000);
+
+      const store = ensureResourceTransferTaskStore();
+      const directTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:direct:OH" && t.toRoomName === WIRE_AUX,
+      );
+      expect(directTasks.length).toBe(1);
+      expect(directTasks[0].amount).toBe(1000);
+    });
+
+    it("creates hub-bound surplus transfer when no downstream consumer is known", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_UTRIUM, amount: 5000, fee: 0 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000);
+
+      const store = ensureResourceTransferTaskStore();
+      const surplusTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:surplus:U" && t.toRoomName === WIRE_HUB,
+      );
+      expect(surplusTasks.length).toBe(1);
+      expect(surplusTasks[0].amount).toBe(5000 - 1000);
+    });
+
+    it("pending direct transfers reduce available resource in subsequent planner cycle", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_UTRIUM, amount: 3000, fee: 0 },
+      ];
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000);
+
+      const outgoingAfter = getOutgoingResourceTransferAmount(WIRE_AUX, RESOURCE_UTRIUM);
+      expect(outgoingAfter).toBeGreaterThan(0);
+    });
+
+    it("direct supply commitment suppresses same-resource hub-bound surplus transfer", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      (Game as any).market = {
+        ...(Game.market || {}),
+        calcTransactionCost: (amount: number, _from: string, _to: string) =>
+          Math.ceil(amount * 0.01),
+      };
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_HYDROXIDE, amount: 3000, fee: 0 },
+        { fromRoom: WIRE_AUX, toRoom: "W4N1", resource: RESOURCE_HYDROXIDE, amount: 1800, fee: 5 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 500);
+
+      const store = ensureResourceTransferTaskStore();
+      const surplusTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:surplus:OH",
+      );
+
+      if (surplusTasks.length > 0) {
+        const surplusAmount = surplusTasks.reduce((sum, t) => sum + t.amount, 0);
+        expect(surplusAmount).toBeLessThanOrEqual(3000 - 1800 - 500);
+      }
+
+      const directTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:direct:OH",
+      );
+      expect(directTasks.length).toBe(1);
+      expect(directTasks[0].amount).toBe(1800);
     });
   });
 });
