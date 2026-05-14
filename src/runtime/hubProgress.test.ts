@@ -338,6 +338,7 @@ describe("buildHubOverlayLines", () => {
       roomTerminalBlockers: [],
       hubLabInventory: {},
       hubCarrierCargo: {},
+      productionRooms: [],
       ...overrides,
     };
   }
@@ -551,6 +552,7 @@ describe("buildHubVisualModel", () => {
       ],
       hubLabInventory: {},
       hubCarrierCargo: {},
+      productionRooms: [],
       ...overrides,
     };
   }
@@ -1029,6 +1031,7 @@ describe("buildInboundTransferRows", () => {
       roomTerminalBlockers: [],
       hubLabInventory: {},
       hubCarrierCargo: {},
+      productionRooms: [],
       ...overrides,
     };
   }
@@ -1214,5 +1217,317 @@ describe("buildCompactInventory carrier cargo merge", () => {
     expect(snapshot.hubInventory.energy).toBeUndefined();
     // hubCarrierCargo is passed through
     expect(snapshot.hubCarrierCargo).toEqual({ U: 500, K: 200 });
+  });
+});
+
+describe("buildHubProgressSnapshot productionRooms (distributed synthesis)", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    registerRuntimeServices();
+    Game.rooms = {};
+  });
+
+  it("returns empty productionRooms when no distributed synthesis data", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 100,
+    });
+
+    expect(snapshot.productionRooms).toEqual([]);
+  });
+
+  it("returns empty productionRooms when no dispatch assignments", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 100,
+      distributedSynthesis: {
+        dispatchAssignments: [],
+        routeDecisions: [],
+        progressEdges: [],
+      },
+    });
+
+    expect(snapshot.productionRooms).toEqual([]);
+  });
+
+  it("populates productionRooms with hub and auxiliary room entries", () => {
+    Game.rooms = {
+      W1N1: {
+        name: "W1N1",
+        storage: { store: { UH: 200, energy: 50000 } as unknown as StoreDefinition },
+        terminal: { store: { UH: 50, energy: 10000 } as unknown as StoreDefinition },
+        find: () => [],
+      } as any,
+      W2N1: {
+        name: "W2N1",
+        storage: { store: { OH: 300, energy: 40000 } as unknown as StoreDefinition },
+        terminal: { store: { energy: 5000 } as unknown as StoreDefinition },
+        find: () => [],
+      } as any,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "synthesizing" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 200,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "W1N1", product: "UH" as ResourceConstant, targetAmount: 1000, isHubRoom: true },
+          { roomName: "W2N1", product: "OH" as ResourceConstant, targetAmount: 500, isHubRoom: false },
+        ],
+        routeDecisions: [],
+        progressEdges: [],
+      },
+      synthesisControlRooms: {
+        W1N1: { stage: "synthesizing" },
+        W2N1: { stage: "loading" },
+      },
+    });
+
+    expect(snapshot.productionRooms).toHaveLength(2);
+
+    const hubEntry = snapshot.productionRooms.find(r => r.roomName === "W1N1");
+    expect(hubEntry).toBeDefined();
+    expect(hubEntry!.product).toBe("UH");
+    expect(hubEntry!.stage).toBe("synthesizing");
+    expect(hubEntry!.currentAmount).toBe(250);
+    expect(hubEntry!.targetAmount).toBe(1000);
+    expect(hubEntry!.progressPercent).toBeCloseTo(0.25);
+    expect(hubEntry!.isHubRoom).toBe(true);
+
+    const auxEntry = snapshot.productionRooms.find(r => r.roomName === "W2N1");
+    expect(auxEntry).toBeDefined();
+    expect(auxEntry!.product).toBe("OH");
+    expect(auxEntry!.stage).toBe("loading");
+    expect(auxEntry!.currentAmount).toBe(300);
+    expect(auxEntry!.targetAmount).toBe(500);
+    expect(auxEntry!.progressPercent).toBeCloseTo(0.6);
+    expect(auxEntry!.isHubRoom).toBe(false);
+  });
+
+  it("shows producer→consumer links for direct-routed intermediates", () => {
+    Game.rooms = {
+      W1N1: { name: "W1N1", storage: { store: {} as unknown as StoreDefinition }, terminal: { store: {} as unknown as StoreDefinition }, find: () => [] } as any,
+      W2N1: { name: "W2N1", storage: { store: {} as unknown as StoreDefinition }, terminal: { store: {} as unknown as StoreDefinition }, find: () => [] } as any,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "synthesizing" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 300,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "W2N1", product: "OH" as ResourceConstant, targetAmount: 500, isHubRoom: false },
+          { roomName: "W1N1", product: "UH2O" as ResourceConstant, targetAmount: 200, isHubRoom: true },
+        ],
+        routeDecisions: [
+          { fromRoom: "W2N1", toRoom: "W1N1", resource: "OH" as ResourceConstant, amount: 400, fee: 20 },
+        ],
+        progressEdges: [
+          { fromRoom: "W2N1", toRoom: "W1N1", resource: "OH" as ResourceConstant, delivered: 100, total: 400 },
+        ],
+      },
+      synthesisControlRooms: {
+        W1N1: { stage: "acquiring" },
+        W2N1: { stage: "synthesizing" },
+      },
+    });
+
+    const w2n1 = snapshot.productionRooms.find(r => r.roomName === "W2N1");
+    expect(w2n1!.upstream).toEqual([]);
+    expect(w2n1!.downstream).toEqual([{ roomName: "W1N1", resource: "OH" }]);
+    expect(w2n1!.directSupplyAmount).toBe(0);
+    expect(w2n1!.hubSurplusAmount).toBe(400);
+
+    const w1n1 = snapshot.productionRooms.find(r => r.roomName === "W1N1");
+    expect(w1n1!.upstream).toEqual([{ roomName: "W2N1", resource: "OH" }]);
+    expect(w1n1!.downstream).toEqual([]);
+  });
+
+  it("distinguishes direct-supply amount from hub-bound surplus", () => {
+    Game.rooms = {
+      W1N1: { name: "W1N1", storage: { store: {} as unknown as StoreDefinition }, terminal: { store: {} as unknown as StoreDefinition }, find: () => [] } as any,
+      W2N1: { name: "W2N1", storage: { store: {} as unknown as StoreDefinition }, terminal: { store: {} as unknown as StoreDefinition }, find: () => [] } as any,
+      W3N1: { name: "W3N1", storage: { store: {} as unknown as StoreDefinition }, terminal: { store: {} as unknown as StoreDefinition }, find: () => [] } as any,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "distributing" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 400,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "W2N1", product: "OH" as ResourceConstant, targetAmount: 1000, isHubRoom: false },
+        ],
+        routeDecisions: [
+          { fromRoom: "W2N1", toRoom: "W3N1", resource: "OH" as ResourceConstant, amount: 300, fee: 15 },
+          { fromRoom: "W2N1", toRoom: "W1N1", resource: "OH" as ResourceConstant, amount: 500, fee: 25 },
+        ],
+        progressEdges: [],
+      },
+      synthesisControlRooms: {
+        W2N1: { stage: "unloading" },
+      },
+    });
+
+    const w2n1 = snapshot.productionRooms.find(r => r.roomName === "W2N1");
+    expect(w2n1!.directSupplyAmount).toBe(300);
+    expect(w2n1!.hubSurplusAmount).toBe(500);
+  });
+
+  it("includes blocker from synthesisControl runtime lastError", () => {
+    Game.rooms = {
+      W1N1: { name: "W1N1", storage: { store: {} as unknown as StoreDefinition }, terminal: { store: {} as unknown as StoreDefinition }, find: () => [] } as any,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "blocked" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 500,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "W1N1", product: "XGH2O" as ResourceConstant, targetAmount: 500, isHubRoom: true },
+        ],
+        routeDecisions: [],
+        progressEdges: [],
+      },
+      synthesisControlRooms: {
+        W1N1: { stage: "blocked", lastError: "lab_contaminated" },
+      },
+    });
+
+    const hubEntry = snapshot.productionRooms[0];
+    expect(hubEntry.blocker).toBe("lab_contaminated");
+    expect(hubEntry.stage).toBe("blocked");
+  });
+
+  it("uses idle stage and zero amounts for invisible rooms", () => {
+    Game.rooms = {};
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 600,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "W2N1", product: "UO" as ResourceConstant, targetAmount: 500, isHubRoom: false },
+        ],
+        routeDecisions: [],
+        progressEdges: [],
+      },
+    });
+
+    const entry = snapshot.productionRooms[0];
+    expect(entry.stage).toBe("idle");
+    expect(entry.currentAmount).toBe(0);
+    expect(entry.progressPercent).toBe(0);
+    expect(entry.blocker).toBeNull();
+  });
+
+  it("progressPercent capped at 1 when currentAmount exceeds target", () => {
+    Game.rooms = {
+      W1N1: {
+        name: "W1N1",
+        storage: { store: { UO: 600 } as unknown as StoreDefinition },
+        terminal: { store: {} as unknown as StoreDefinition },
+        find: () => [],
+      } as any,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "synthesizing" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 700,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "W1N1", product: "UO" as ResourceConstant, targetAmount: 500, isHubRoom: true },
+        ],
+        routeDecisions: [],
+        progressEdges: [],
+      },
+      synthesisControlRooms: {
+        W1N1: { stage: "unloading" },
+      },
+    });
+
+    expect(snapshot.productionRooms[0].progressPercent).toBe(1);
+  });
+
+  it("includes lab product in currentAmount calculation", () => {
+    Game.rooms = {
+      W1N1: {
+        name: "W1N1",
+        storage: { store: { UH: 50 } as unknown as StoreDefinition },
+        terminal: { store: {} as unknown as StoreDefinition },
+        find: () => [
+          { store: { UH: 30, energy: 500 } as unknown as StoreDefinition, structureType: STRUCTURE_LAB },
+        ],
+      } as any,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "synthesizing" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 800,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "W1N1", product: "UH" as ResourceConstant, targetAmount: 200, isHubRoom: true },
+        ],
+        routeDecisions: [],
+        progressEdges: [],
+      },
+      synthesisControlRooms: {
+        W1N1: { stage: "synthesizing" },
+      },
+    });
+
+    expect(snapshot.productionRooms[0].currentAmount).toBe(80);
   });
 });

@@ -752,6 +752,20 @@ declare global {
           reserve: number;
           pendingNonEnergy: number;
         }>;
+        productionRooms: Array<{
+          roomName: string;
+          product: ResourceConstant;
+          stage: string;
+          progressPercent: number;
+          currentAmount: number;
+          targetAmount: number;
+          isHubRoom: boolean;
+          upstream: Array<{ roomName: string; resource: ResourceConstant }>;
+          downstream: Array<{ roomName: string; resource: ResourceConstant }>;
+          directSupplyAmount: number;
+          hubSurplusAmount: number;
+          blocker: string | null;
+        }>;
       };
     };
   }

@@ -1,6 +1,13 @@
 import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
 import type { ResourceTransferTask } from "@/runtime/logistics/resourceTransferTasks";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import type {
+  SynthesisRoomCapability,
+  SynthesisDispatchAssignment,
+  AllocationLedgerEntry,
+  DirectRouteDecision,
+  ProgressEdge,
+} from "@/runtime/hubPlanner";
 import { Panel, type VisualSurface } from "@/visual/panel";
 
 export interface HubProgressInput {
@@ -46,6 +53,51 @@ export interface HubProgressInput {
   hubCarrierCargo?: Record<string, number>;
   transferTasks: Record<string, ResourceTransferTask> | null;
   currentTick: number;
+  distributedSynthesis?: {
+    roomCapabilities?: Record<string, SynthesisRoomCapability>;
+    dispatchAssignments?: SynthesisDispatchAssignment[];
+    allocationLedger?: Record<string, AllocationLedgerEntry>;
+    routeDecisions?: DirectRouteDecision[];
+    progressEdges?: ProgressEdge[];
+  };
+  synthesisControlRooms?: Record<string, {
+    stage?: string;
+    activeProduct?: ResourceConstant;
+    reagentA?: ResourceConstant;
+    reagentB?: ResourceConstant;
+    targetAmount?: number;
+    lastError?: string;
+  }>;
+  synthesisControlCfgRooms?: Record<string, {
+    reactions?: Array<{ product?: ResourceConstant; targetAmount?: number }>;
+  }>;
+}
+
+/** Represents a production room in the distributed synthesis chain. */
+export interface ProductionRoomEntry {
+  roomName: string;
+  /** The compound this room is assigned to produce. */
+  product: ResourceConstant;
+  /** Current synthesis stage from synthesisControl runtime. */
+  stage: string;
+  /** currentAmount / targetAmount, capped at 1. */
+  progressPercent: number;
+  /** Current amount of product available (labs + storage + terminal). */
+  currentAmount: number;
+  /** Target amount for this assignment. */
+  targetAmount: number;
+  /** Whether this is the hub room itself. */
+  isHubRoom: boolean;
+  /** Upstream suppliers: rooms feeding resources into this room. */
+  upstream: Array<{ roomName: string; resource: ResourceConstant }>;
+  /** Downstream consumers: rooms receiving this room's product. */
+  downstream: Array<{ roomName: string; resource: ResourceConstant }>;
+  /** Amount committed to direct-routed transfers (not via hub). */
+  directSupplyAmount: number;
+  /** Amount designated to flow through the hub. */
+  hubSurplusAmount: number;
+  /** Reason the room is blocked, if any. */
+  blocker: string | null;
 }
 
 export interface HubProgressSnapshot {
@@ -82,6 +134,8 @@ export interface HubProgressSnapshot {
   }>;
   hubLabInventory: Record<string, number>;
   synthesisTargetAmount?: number;
+  /** Distributed production rooms with chain linkage data. */
+  productionRooms: ProductionRoomEntry[];
 }
 
 const ANALYTICS_SAMPLE_INTERVAL = 5;
@@ -423,6 +477,90 @@ function buildRoomTerminalBlockers(
   return result;
 }
 
+function buildProductionRooms(
+  distributedSynthesis: HubProgressInput["distributedSynthesis"],
+  synthesisControlRooms: HubProgressInput["synthesisControlRooms"],
+  synthesisControlCfgRooms: HubProgressInput["synthesisControlCfgRooms"],
+  hubRoomName: string,
+): ProductionRoomEntry[] {
+  if (!distributedSynthesis?.dispatchAssignments?.length) return [];
+
+  const assignments = distributedSynthesis.dispatchAssignments;
+  const routeDecisions = distributedSynthesis.routeDecisions ?? [];
+  const progressEdges = distributedSynthesis.progressEdges ?? [];
+  const allocationLedger = distributedSynthesis.allocationLedger ?? {};
+
+  return assignments.map((assignment) => {
+    const { roomName, product, targetAmount, isHubRoom } = assignment;
+
+    const runtimeRoom = synthesisControlRooms?.[roomName];
+    const stage = runtimeRoom?.stage ?? "idle";
+
+    const room = Game.rooms[roomName];
+    let currentAmount = 0;
+    if (room) {
+      const storageAmount = (room.storage?.store as unknown as Record<string, number>)?.[product] ?? 0;
+      const terminalAmount = (room.terminal?.store as unknown as Record<string, number>)?.[product] ?? 0;
+      let labAmount = 0;
+      if (typeof room.find === "function") {
+        const labs = room.find(FIND_MY_STRUCTURES, {
+          filter: (s: AnyStructure) => s.structureType === STRUCTURE_LAB,
+        }) as StructureLab[];
+        for (const lab of labs) {
+          const store = lab.store as unknown as Record<string, number>;
+          labAmount += store[product] ?? 0;
+        }
+      }
+      currentAmount = storageAmount + terminalAmount + labAmount;
+    }
+
+    const progressPercent = targetAmount > 0 ? Math.min(currentAmount / targetAmount, 1) : 0;
+
+    const upstream: Array<{ roomName: string; resource: ResourceConstant }> = [];
+    const downstream: Array<{ roomName: string; resource: ResourceConstant }> = [];
+
+    for (const edge of progressEdges) {
+      if (edge.toRoom === roomName) {
+        upstream.push({ roomName: edge.fromRoom, resource: edge.resource });
+      }
+      if (edge.fromRoom === roomName) {
+        downstream.push({ roomName: edge.toRoom, resource: edge.resource });
+      }
+    }
+
+    let directSupplyAmount = 0;
+    for (const route of routeDecisions) {
+      if (route.fromRoom === roomName && route.toRoom !== hubRoomName) {
+        directSupplyAmount += route.amount;
+      }
+    }
+
+    let hubSurplusAmount = 0;
+    for (const route of routeDecisions) {
+      if (route.fromRoom === roomName && route.toRoom === hubRoomName) {
+        hubSurplusAmount += route.amount;
+      }
+    }
+
+    const blocker = runtimeRoom?.lastError ?? null;
+
+    return {
+      roomName,
+      product,
+      stage,
+      progressPercent,
+      currentAmount,
+      targetAmount,
+      isHubRoom,
+      upstream,
+      downstream,
+      directSupplyAmount,
+      hubSurplusAmount,
+      blocker,
+    };
+  });
+}
+
 export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSnapshot {
   const { hubConfig, hubRuntime, synthesisRuntime, currentTick } = input;
 
@@ -449,6 +587,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       roomTerminalBlockers: [],
       hubLabInventory: {},
       hubCarrierCargo: {},
+      productionRooms: [],
     };
   }
 
@@ -507,6 +646,12 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
     hubLabInventory: input.hubLabInventory ?? {},
     hubCarrierCargo,
     synthesisTargetAmount: input.synthesisRuntime?.targetAmount,
+    productionRooms: buildProductionRooms(
+      input.distributedSynthesis,
+      input.synthesisControlRooms,
+      input.synthesisControlCfgRooms,
+      hubRoomName,
+    ),
   };
 }
 
@@ -554,6 +699,9 @@ export function collectHubProgressSnapshot(): HubProgressSnapshot {
     resourceControlRooms,
     transferTasks,
     currentTick: Game.time,
+    distributedSynthesis: Memory.runtime?.hub?.distributedSynthesis,
+    synthesisControlRooms: Memory.runtime?.synthesisControl?.rooms,
+    synthesisControlCfgRooms: Memory.cfg?.synthesisControl?.rooms,
   });
 }
 
