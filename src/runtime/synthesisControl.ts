@@ -759,6 +759,7 @@ function generateProductUnloadTask(
   productLabs: StructureLab[],
   product: ResourceConstant,
   targetAmount: number,
+  minLabAmount: number = 700,
 ): CarrierTaskDraft | null {
   const transferableCurrent = roomTransferableAmount(room, product);
   if (transferableCurrent >= targetAmount) {
@@ -771,7 +772,7 @@ function generateProductUnloadTask(
       continue;
     }
     const amount = lab.store.getUsedCapacity(product);
-    if (amount < 700) {
+    if (amount < minLabAmount) {
       continue;
     }
 
@@ -812,6 +813,7 @@ function generateStrandedProductUnloadTask(
   productLabs: StructureLab[],
   roomCfg: SynthesisRoomConfig,
   autoPlan?: SynthesisReactionPlan | null,
+  minLabAmount: number = 700,
 ): { task: CarrierTaskDraft; product: ResourceConstant; targetAmount?: number } | null {
   const steps: CarrierTaskStep[] = [];
   let firstDetectedMineral: ResourceConstant | undefined;
@@ -820,7 +822,7 @@ function generateStrandedProductUnloadTask(
     const mineralType = lab.mineralType;
     if (!mineralType) continue;
     const amount = lab.store.getUsedCapacity(mineralType);
-    if (amount < 700) continue;
+    if (amount < minLabAmount) continue;
 
     const target = resolveProductUnloadTargetStructure(room, mineralType);
     if (!target) continue;
@@ -1140,12 +1142,12 @@ function handleRoom(
     const unloadProduct = roomState.activeProduct as ResourceConstant | undefined;
     const unloadTarget = roomState.targetAmount as number | undefined;
     let productUnloadTask = unloadProduct && unloadTarget
-      ? generateProductUnloadTask(room, topology.productLabs, unloadProduct, unloadTarget)
+      ? generateProductUnloadTask(room, topology.productLabs, unloadProduct, unloadTarget, 1)
       : null;
 
     let strandedResult: ReturnType<typeof generateStrandedProductUnloadTask> = null;
     if (!productUnloadTask && (!unloadProduct || !unloadTarget)) {
-      strandedResult = generateStrandedProductUnloadTask(room, topology.productLabs, roomCfg, autoPlan);
+      strandedResult = generateStrandedProductUnloadTask(room, topology.productLabs, roomCfg, autoPlan, 1);
       if (strandedResult) {
         productUnloadTask = strandedResult.task;
       }
@@ -1256,13 +1258,13 @@ function handleRoom(
   const supplyTask = hasContamination
     ? null
     : generateSupplyTask(room, orderedReagentLabs, reagents, activePlan.batchSize, activePlan.product, activePlan.targetAmount);
-  // Only generate product unload when NOT actively synthesizing.
-  // During synthesis the product lab accumulates; unload after batch completes.
-  const productUnloadTask = !hasContamination && stage !== "synthesizing" && stage !== "acquiring" && stage !== "loading"
-    ? generateProductUnloadTask(room, topology.productLabs, activePlan.product, activePlan.targetAmount)
+  // Generate product unload unless acquiring/loading (suppressed to avoid disrupting reagent supply).
+  // During synthesizing, only unload when lab amount exceeds 700 to avoid interrupting active reactions.
+  const productUnloadTask = !hasContamination && stage !== "acquiring" && stage !== "loading"
+    ? generateProductUnloadTask(room, topology.productLabs, activePlan.product, activePlan.targetAmount, stage === "synthesizing" ? 701 : 1)
     : null;
   const prevProductUnloadTask = roomState.activeProduct && roomState.activeProduct !== activePlan.product && roomState.targetAmount
-    ? generateProductUnloadTask(room, topology.productLabs, roomState.activeProduct as ResourceConstant, roomState.targetAmount as number)
+    ? generateProductUnloadTask(room, topology.productLabs, roomState.activeProduct as ResourceConstant, roomState.targetAmount as number, 1)
     : null;
   const boardTasks = hasContamination
     ? [...(cleanupTask ? [cleanupTask] : []), ...(prevProductUnloadTask ? [prevProductUnloadTask] : [])]
