@@ -66,6 +66,8 @@ const OLD_DEFAULT_TARGET_COMPOUNDS = new Set<ResourceConstant>([
 ]);
 
 export function normalizeHubConfig(cfg: NonNullable<Memory["cfg"]>["hub"]): NonNullable<Memory["cfg"]>["hub"] {
+  let migrated = { ...cfg };
+
   const compounds = cfg?.targetCompounds;
   if (compounds && compounds.length === OLD_DEFAULT_TARGET_COMPOUNDS.size) {
     const compoundSet = new Set(compounds);
@@ -77,10 +79,15 @@ export function normalizeHubConfig(cfg: NonNullable<Memory["cfg"]>["hub"]): NonN
       }
     }
     if (matchesOldDefault) {
-      return { ...cfg, targetCompounds: [...DEFAULT_TARGET_COMPOUNDS] };
+      migrated = { ...migrated, targetCompounds: [...DEFAULT_TARGET_COMPOUNDS] };
     }
   }
-  return cfg;
+
+  if ((migrated.reservePerRoom ?? 0) < DEFAULT_RESERVE_PER_ROOM) {
+    migrated = { ...migrated, reservePerRoom: DEFAULT_RESERVE_PER_ROOM };
+  }
+
+  return migrated;
 }
 
 export interface ChainStep {

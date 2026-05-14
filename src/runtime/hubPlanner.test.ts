@@ -1940,7 +1940,7 @@ describe("HUB lifecycle integration", () => {
     expect(exportTask!.fromRoomName).toBe(INTEGRATION_HUB);
     expect(exportTask!.toRoomName).toBe(INTEGRATION_SAT);
     expect(exportTask!.resource).toBe(RESOURCE_CATALYZED_UTRIUM_ACID);
-    expect(exportTask!.amount).toBe(1000);
+    expect(exportTask!.amount).toBe(2000);
   });
 
   // 4. No terminal → blocked safely (flag → planner integration)
@@ -2220,7 +2220,7 @@ describe("HUB lifecycle integration", () => {
     expect(exportTask).toBeDefined();
     expect(exportTask!.fromRoomName).toBe(INTEGRATION_HUB);
     expect(exportTask!.toRoomName).toBe(INTEGRATION_SAT);
-    expect(exportTask!.amount).toBe(1000);
+    expect(exportTask!.amount).toBe(2000);
   });
 
   // Progressive: H+O → OH is feasible → importing (not distributing).
