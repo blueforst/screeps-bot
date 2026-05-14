@@ -1233,7 +1233,10 @@ function applyMarketOps(snapshots: ResourceControlSnapshot[], marketCfg: Resourc
         const amount = Math.min(surplusAmount, terminalResource, marketCfg.maxDealAmount);
         if (amount < marketCfg.minDealAmount) continue;
 
-        const order = findBestBuyOrder(ORDER_BUY, resource, hubSnapshot.roomName, amount, marketCfg.maxDealEnergyCostRatio, undefined, marketCfg.minSellPrice[resource]);
+        const sellOrders = Game.market.getAllOrders({ type: ORDER_SELL, resourceType: resource });
+        const referencePrice = sellOrders.length > 0 ? Math.min(...sellOrders.map(o => o.price)) : 0;
+        const priceFloor = referencePrice > 0 ? referencePrice * 0.5 : marketCfg.minSellPrice[resource];
+        const order = findBestBuyOrder(ORDER_BUY, resource, hubSnapshot.roomName, amount, marketCfg.maxDealEnergyCostRatio, undefined, priceFloor);
         if (!order || !order.roomName) continue;
 
         const actualCost = Game.market.calcTransactionCost(amount, hubSnapshot.roomName, order.roomName);
