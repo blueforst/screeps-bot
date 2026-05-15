@@ -1341,6 +1341,13 @@ export function resupplyBusySynthesisRooms(
   return actions;
 }
 
+function getDirectReagents(product: ResourceConstant | undefined): Set<ResourceConstant> {
+  if (!product) return new Set();
+  const pair = REACTION_MAP[product];
+  if (!pair) return new Set();
+  return new Set(pair as ResourceConstant[]);
+}
+
 export function wireDistributedSynthesis(
   hubRoomName: string,
   targetCompounds: ResourceConstant[],
@@ -1427,37 +1434,67 @@ export function wireDistributedSynthesis(
     ];
   }
 
-  // Second pass: ensure busy rooms (not in ACCEPT_REASSIGN_STAGES) with active
-  // reactions are included in dispatchAssignments so analytics displays them,
-  // and preserve their synthesisControl config so they continue running.
+  // Second pass: reconcile busy rooms with dispatch assignments.
+  // Three cases: absent (add), matching (no-op), mismatched (replace).
   const existing = Memory.runtime.hub.distributedSynthesis.dispatchAssignments;
-  for (const room of eligibleRooms) {
-    if (existing.some(a => a.roomName === room.roomName)) continue;
+  const mismatches: Array<{ roomName: string; oldProduct: ResourceConstant; actualProduct: ResourceConstant }> = [];
 
+  for (const room of eligibleRooms) {
     const runtimeRoom = Memory.runtime?.synthesisControl?.rooms?.[room.roomName];
     const stage = runtimeRoom?.stage;
     if (!stage || ACCEPT_REASSIGN_STAGES.has(stage)) continue;
 
-    const activeProduct = runtimeRoom?.activeProduct;
+    const activeProduct = runtimeRoom?.activeProduct as ResourceConstant | undefined;
     if (!activeProduct) continue;
 
-    existing.push({
-      roomName: room.roomName,
-      product: activeProduct as ResourceConstant,
-      targetAmount: runtimeRoom?.targetAmount ?? 0,
-      isHubRoom: room.roomName === hubRoomName,
-    });
+    const existingIndex = existing.findIndex(a => a.roomName === room.roomName);
 
-    const reagents = REACTION_MAP[activeProduct as ResourceConstant];
-    if (reagents && !Memory.cfg.synthesisControl.rooms[room.roomName]) {
-      Memory.cfg.synthesisControl.rooms[room.roomName] = {
-        enabled: true,
-        donorRoomNames: [],
+    if (existingIndex < 0) {
+      // Absent: push runtime product (preserves existing behavior)
+      existing.push({
+        roomName: room.roomName,
+        product: activeProduct,
+        targetAmount: runtimeRoom?.targetAmount ?? 0,
+        isHubRoom: room.roomName === hubRoomName,
+      });
+
+      const reagents = REACTION_MAP[activeProduct];
+      if (reagents && !Memory.cfg.synthesisControl.rooms[room.roomName]) {
+        Memory.cfg.synthesisControl.rooms[room.roomName] = {
+          enabled: true,
+          donorRoomNames: [],
+        };
+      }
+    } else if (existing[existingIndex].product !== activeProduct) {
+      // Mismatched: planner assigned new product but room is busy with different one
+      const oldProduct = existing[existingIndex].product as ResourceConstant;
+      mismatches.push({ roomName: room.roomName, oldProduct, actualProduct: activeProduct });
+
+      existing[existingIndex] = {
+        ...existing[existingIndex],
+        product: activeProduct,
+        targetAmount: runtimeRoom?.targetAmount ?? 0,
       };
     }
+    // else: matching — no change needed
   }
 
-  wireRouteTransferTasks(plan.routeDecisions, hubRoomName, reservePerRoom);
+  // Filter stale route decisions for mismatched rooms
+  let filteredRouteDecisions = plan.routeDecisions;
+  if (mismatches.length > 0) {
+    const mismatchMap = new Map(mismatches.map(m => [m.roomName, m]));
+    filteredRouteDecisions = plan.routeDecisions.filter(route => {
+      const mismatch = mismatchMap.get(route.toRoom);
+      if (!mismatch) return true;
+      const oldReagents = getDirectReagents(mismatch.oldProduct);
+      const actualReagents = getDirectReagents(mismatch.actualProduct);
+      // Drop if resource is old-only direct reagent (not shared with actual product)
+      return !(oldReagents.has(route.resource as ResourceConstant) && !actualReagents.has(route.resource as ResourceConstant));
+    });
+    Memory.runtime.hub.distributedSynthesis.routeDecisions = filteredRouteDecisions;
+  }
+
+  wireRouteTransferTasks(filteredRouteDecisions, hubRoomName, reservePerRoom);
 
   return true;
 }

@@ -4847,6 +4847,210 @@ describe("logistics-cost-aware dispatch scoring", () => {
       expect(auxCount).toBeLessThanOrEqual(1);
     });
 
+    it("corrects dispatch entry when busy room product differs from plan", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_ZYNTHIUM]: 10000,
+          [RESOURCE_KEANIUM]: 10000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = {
+        stage: "synthesizing",
+        activeProduct: RESOURCE_CATALYZED_ZYNTHIUM_ACID,
+        targetAmount: 40792,
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 10000, [RESOURCE_OXYGEN]: 10000, [RESOURCE_ZYNTHIUM]: 10000, [RESOURCE_KEANIUM]: 10000 },
+        [],
+      );
+
+      const assignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+      const auxAssignment = assignments.find(a => a.roomName === WIRE_AUX);
+      expect(auxAssignment).toBeDefined();
+      expect(auxAssignment!.product).toBe(RESOURCE_CATALYZED_ZYNTHIUM_ACID);
+      expect(auxAssignment!.targetAmount).toBe(40792);
+    });
+
+    it("does not modify dispatch entry when busy room product matches plan", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_ZYNTHIUM]: 5000,
+          [RESOURCE_KEANIUM]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = {
+        stage: "synthesizing",
+        activeProduct: RESOURCE_ZYNTHIUM_KEANITE,
+        targetAmount: 5000,
+      };
+
+      if (!Memory.cfg!.synthesisControl) Memory.cfg!.synthesisControl = {};
+      if (!Memory.cfg!.synthesisControl.rooms) Memory.cfg!.synthesisControl.rooms = {};
+      Memory.cfg!.synthesisControl.rooms[WIRE_AUX] = {
+        enabled: true,
+        reactions: [{ product: RESOURCE_ZYNTHIUM_KEANITE, targetAmount: 5000, batchSize: 100, donorRoomNames: [] }],
+        donorRoomNames: [],
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 10000, [RESOURCE_OXYGEN]: 10000, [RESOURCE_ZYNTHIUM]: 5000, [RESOURCE_KEANIUM]: 5000 },
+        [],
+      );
+
+      const assignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+      const auxAssignment = assignments.find(a => a.roomName === WIRE_AUX);
+      expect(auxAssignment).toBeDefined();
+      expect(auxAssignment!.product).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+      // First pass skips busy room — config reactions remain unchanged
+      const auxRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_AUX];
+      expect(auxRoomCfg.reactions![0].product).toBe(RESOURCE_ZYNTHIUM_KEANITE);
+    });
+
+    it("preserves shared reagent routes when correcting mismatched dispatch", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_CATALYST]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_ZYNTHIUM]: 10000,
+          [RESOURCE_OXYGEN]: 5000,
+          [RESOURCE_HYDROGEN]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      // Runtime says aux is synthesizing XUHO2 (catalyst + UTRIUM_ALKALIDE)
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = {
+        stage: "synthesizing",
+        activeProduct: RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+        targetAmount: 3000,
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE],
+        1000,
+        1000,
+        {
+          [RESOURCE_HYDROGEN]: 15000, [RESOURCE_OXYGEN]: 15000,
+          [RESOURCE_CATALYST]: 10000, [RESOURCE_ZYNTHIUM]: 10000,
+        },
+        [],
+      );
+
+      const assignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+      const auxAssignment = assignments.find(a => a.roomName === WIRE_AUX);
+      expect(auxAssignment).toBeDefined();
+      // Dispatch corrected to runtime's actual product
+      expect(auxAssignment!.product).toBe(RESOURCE_CATALYZED_UTRIUM_ALKALIDE);
+      expect(auxAssignment!.targetAmount).toBe(3000);
+
+      // Verify no stale (old-only) reagent routes survive for WIRE_AUX.
+      // XUHO2 direct reagents: catalyst + UTRIUM_ALKALIDE.
+      // Any surviving routes to WIRE_AUX must be for actual-product reagents only.
+      const routes = Memory.runtime!.hub!.distributedSynthesis!.routeDecisions ?? [];
+      const routesToAux = routes.filter(r => r.toRoom === WIRE_AUX);
+      const actualReagents = new Set<ResourceConstant>([RESOURCE_CATALYST, RESOURCE_UTRIUM_ALKALIDE]);
+      for (const route of routesToAux) {
+        expect(actualReagents.has(route.resource as ResourceConstant)).toBe(true);
+      }
+    });
+
+    it("corrects hub room dispatch entry when busy with different product", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_UTRIUM]: 10000,
+          [RESOURCE_HYDROGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_ZYNTHIUM]: 5000,
+          [RESOURCE_KEANIUM]: 5000,
+          [RESOURCE_CATALYST]: 10000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      // Hub is busy synthesizing OH (but hub has no O, so planner assigns something else)
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_HUB] = {
+        stage: "synthesizing",
+        activeProduct: RESOURCE_HYDROXIDE,
+        targetAmount: 2000,
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        {
+          [RESOURCE_HYDROGEN]: 15000, [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_UTRIUM]: 10000, [RESOURCE_CATALYST]: 10000,
+          [RESOURCE_ZYNTHIUM]: 5000, [RESOURCE_KEANIUM]: 5000,
+        },
+        [],
+      );
+
+      const assignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+      const hubAssignment = assignments.find(a => a.roomName === WIRE_HUB);
+      expect(hubAssignment).toBeDefined();
+      expect(hubAssignment!.product).toBe(RESOURCE_HYDROXIDE);
+      expect(hubAssignment!.targetAmount).toBe(2000);
+      expect(hubAssignment!.isHubRoom).toBe(true);
+    });
+
     it("creates direct A→B transfer when downstream consumer is known and direct fee is lower", () => {
       (global as any).__runtimeServices = undefined;
       registerRuntimeServices();
