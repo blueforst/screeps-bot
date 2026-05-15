@@ -297,7 +297,7 @@ function drawDistributedProductionSection(
   }
 }
 
-export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel, productionRooms?: ProductionRoomEntry[]): void {
+export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel): void {
   const p = new Panel({ rv, x: HUB_VISUAL_X, y: HUB_VISUAL_Y, width: HUB_VISUAL_WIDTH });
 
   p.sectionHeader("Progress");
@@ -545,7 +545,41 @@ function buildProductionRooms(
   const progressEdges = distributedSynthesis.progressEdges ?? [];
   const allocationLedger = distributedSynthesis.allocationLedger ?? {};
 
-  return assignments.map((assignment) => {
+  const busyStages = new Set(["loading", "synthesizing", "unloading"]);
+
+  // Group assignments by roomName, preserving first-seen order.
+  const roomGroups = new Map<string, typeof assignments>();
+  const roomOrder: string[] = [];
+  for (const a of assignments) {
+    if (!roomGroups.has(a.roomName)) {
+      roomGroups.set(a.roomName, []);
+      roomOrder.push(a.roomName);
+    }
+    roomGroups.get(a.roomName)!.push(a);
+  }
+
+  // For each room, select the best assignment and build exactly one entry.
+  const selectedAssignments: typeof assignments = [];
+  for (const roomName of roomOrder) {
+    const group = roomGroups.get(roomName)!;
+    if (group.length === 1) {
+      selectedAssignments.push(group[0]);
+      continue;
+    }
+
+    const runtimeRoom = synthesisControlRooms?.[roomName];
+    const activeProduct = runtimeRoom?.activeProduct;
+    const stage = runtimeRoom?.stage ?? "idle";
+
+    let selected = group[0];
+    if (activeProduct && busyStages.has(stage)) {
+      const match = group.find(a => a.product === activeProduct);
+      if (match) selected = match;
+    }
+    selectedAssignments.push(selected);
+  }
+
+  return selectedAssignments.map((assignment) => {
     const { roomName, targetAmount, isHubRoom } = assignment;
 
     const runtimeRoom = synthesisControlRooms?.[roomName];
@@ -554,7 +588,6 @@ function buildProductionRooms(
     // Show the actual configured product when the room is busy with a reaction,
     // not the planner's intended assignment (which may differ until reassignment).
     const cfgProduct = synthesisControlCfgRooms?.[roomName]?.reactions?.[0]?.product;
-    const busyStages = new Set(["loading", "synthesizing", "unloading"]);
     const product = (cfgProduct && busyStages.has(stage)) ? cfgProduct as ResourceConstant : assignment.product;
 
     const room = Game.rooms[roomName];
@@ -887,11 +920,14 @@ export function renderHubProgressOverlays(): void {
   const model = buildHubVisualModel(snapshot);
 
   const callsBefore = (global as any).__roomVisualCalls?.length ?? 0;
-  drawHubVisualPanel(rv, model, snapshot.productionRooms);
+  drawHubVisualPanel(rv, model);
+
+  const seenRooms = new Set<string>();
+  seenRooms.add(snapshot.hubRoomName);
 
   for (const room of snapshot.productionRooms) {
-    if (room.isHubRoom) continue;
-    if (!Game.rooms[room.roomName]) continue;
+    if (room.isHubRoom || room.roomName === snapshot.hubRoomName || seenRooms.has(room.roomName) || !Game.rooms[room.roomName]) continue;
+    seenRooms.add(room.roomName);
     const satelliteRv = new RoomVisual(room.roomName);
     drawSatellitePanel(satelliteRv, room);
   }

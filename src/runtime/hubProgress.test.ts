@@ -652,6 +652,102 @@ describe("renderHubProgressOverlays", () => {
     expect(headerText).toBeDefined();
     expect(headerText!.args[0]).toContain("synthesizing");
   });
+
+  it("duplicate production entries render only one satellite panel for E6N59", () => {
+    (global as any).__resetRoomVisualCalls();
+
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.rooms = {
+      E4N58: { name: "E4N58", controller: { my: true } } as any,
+      E6N59: { name: "E6N59", controller: { my: true } } as any,
+    };
+
+    Memory.cfg!.hub!.hubRoomName = "E4N58";
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: "E4N58", product: "XGH2O" as ResourceConstant, targetAmount: 3000, isHubRoom: true },
+        { roomName: "E6N59", product: "UO" as ResourceConstant, targetAmount: 5000, isHubRoom: false },
+        { roomName: "E6N59", product: "UHO2" as ResourceConstant, targetAmount: 5000, isHubRoom: false },
+        { roomName: "E6N59", product: "XZHO2" as ResourceConstant, targetAmount: 5000, isHubRoom: false },
+      ],
+      routeDecisions: [],
+      progressEdges: [],
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: 0,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        E6N59: { stage: "synthesizing", activeProduct: "UO" as ResourceConstant, reagentLabIds: [], productLabIds: [], successfulRuns: 0, pendingTasks: 0, lastTransitionAt: 0 },
+      },
+    };
+    Memory.cfg!.synthesisControl = {
+      rooms: {
+        E6N59: { reactions: [{ product: "UO", targetAmount: 5000 }, { product: "UHO2", targetAmount: 5000 }, { product: "XZHO2", targetAmount: 5000 }] },
+      },
+    };
+    Memory.data!.resourceControl = Memory.data!.resourceControl || { tasks: {} };
+
+    renderHubProgressOverlays();
+
+    const calls: Array<{ roomName: string; method: string; args: any[] }> =
+      (global as any).__roomVisualCalls;
+    const e6n59ProdHeaders = calls.filter(
+      c => c.roomName === "E6N59" && c.method === "text" && String(c.args[0]).startsWith("Production:"),
+    );
+    expect(e6n59ProdHeaders.length).toBe(1);
+  });
+
+  it("hub room never gets satellite panel even when misflagged as isHubRoom false", () => {
+    (global as any).__resetRoomVisualCalls();
+
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.rooms = {
+      E4N58: { name: "E4N58", controller: { my: true } } as any,
+      W2N1: { name: "W2N1", controller: { my: true } } as any,
+    };
+
+    Memory.cfg!.hub!.hubRoomName = "E4N58";
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: [
+        { roomName: "E4N58", product: "XGH2O" as ResourceConstant, targetAmount: 3000, isHubRoom: false },
+        { roomName: "E4N58", product: "XUHO2" as ResourceConstant, targetAmount: 3000, isHubRoom: false },
+        { roomName: "W2N1", product: "OH" as ResourceConstant, targetAmount: 5000, isHubRoom: false },
+      ],
+      routeDecisions: [],
+      progressEdges: [],
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: 0,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        W2N1: { stage: "synthesizing", activeProduct: "OH" as ResourceConstant, reagentLabIds: [], productLabIds: [], successfulRuns: 0, pendingTasks: 0, lastTransitionAt: 0 },
+      },
+    };
+    Memory.cfg!.synthesisControl = {
+      rooms: {
+        W2N1: { reactions: [{ product: "OH", targetAmount: 5000 }] },
+      },
+    };
+    Memory.data!.resourceControl = Memory.data!.resourceControl || { tasks: {} };
+
+    renderHubProgressOverlays();
+
+    const calls: Array<{ roomName: string; method: string; args: any[] }> =
+      (global as any).__roomVisualCalls;
+    const hubSatelliteHeaders = calls.filter(
+      c => c.roomName === "E4N58" && c.method === "text" && String(c.args[0]).startsWith("Production:"),
+    );
+    expect(hubSatelliteHeaders.length).toBe(0);
+    expect(calls.some(c => c.roomName === "E4N58" && c.method === "text")).toBe(true);
+  });
 });
 
 describe("buildHubVisualModel", () => {
@@ -1249,6 +1345,95 @@ describe("buildHubProgressSnapshot productionRooms (distributed synthesis)", () 
     });
 
     expect(snapshot.productionRooms[0].currentAmount).toBe(80);
+  });
+
+  it("dedupes busy room duplicate assignments to active product", () => {
+    Game.rooms = {
+      E6N59: {
+        name: "E6N59",
+        storage: { store: { UO: 3000, energy: 50000 } as unknown as StoreDefinition },
+        terminal: { store: { UO: 500, energy: 10000 } as unknown as StoreDefinition },
+        find: () => [],
+      } as any,
+      E4N58: {
+        name: "E4N58",
+        storage: { store: { energy: 50000 } as unknown as StoreDefinition },
+        terminal: { store: { energy: 10000 } as unknown as StoreDefinition },
+        find: () => [],
+      } as any,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "E4N58" },
+      hubRuntime: { status: "distributing" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 1000,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "E6N59", product: "UO" as ResourceConstant, targetAmount: 6904, isHubRoom: false },
+          { roomName: "E6N59", product: "UHO2" as ResourceConstant, targetAmount: 5000, isHubRoom: false },
+          { roomName: "E6N59", product: "XZHO2" as ResourceConstant, targetAmount: 3000, isHubRoom: false },
+          { roomName: "E4N58", product: "XUHO2" as ResourceConstant, targetAmount: 2000, isHubRoom: true },
+          { roomName: "E4N58", product: "XGHO2" as ResourceConstant, targetAmount: 1500, isHubRoom: true },
+        ],
+        routeDecisions: [],
+        progressEdges: [],
+      },
+      synthesisControlRooms: {
+        E6N59: { stage: "synthesizing", activeProduct: "UO" as ResourceConstant },
+        E4N58: { stage: "idle" },
+      },
+    });
+
+    const e6n59Entries = snapshot.productionRooms.filter(r => r.roomName === "E6N59");
+    expect(e6n59Entries).toHaveLength(1);
+    expect(e6n59Entries[0].product).toBe("UO");
+    expect(e6n59Entries[0].targetAmount).toBe(6904);
+
+    const e4n58Entries = snapshot.productionRooms.filter(r => r.roomName === "E4N58");
+    expect(e4n58Entries).toHaveLength(1);
+  });
+
+  it("dedupes idle room duplicate assignments keeping first", () => {
+    Game.rooms = {
+      E6N59: {
+        name: "E6N59",
+        storage: { store: { energy: 50000 } as unknown as StoreDefinition },
+        terminal: { store: { energy: 10000 } as unknown as StoreDefinition },
+        find: () => [],
+      } as any,
+    };
+
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "E4N58" },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 1100,
+      distributedSynthesis: {
+        dispatchAssignments: [
+          { roomName: "E6N59", product: "UHO2" as ResourceConstant, targetAmount: 5000, isHubRoom: false },
+          { roomName: "E6N59", product: "XZHO2" as ResourceConstant, targetAmount: 3000, isHubRoom: false },
+        ],
+        routeDecisions: [],
+        progressEdges: [],
+      },
+      synthesisControlRooms: {
+        E6N59: { stage: "idle" },
+      },
+    });
+
+    const e6n59Entries = snapshot.productionRooms.filter(r => r.roomName === "E6N59");
+    expect(e6n59Entries).toHaveLength(1);
+    expect(e6n59Entries[0].product).toBe("UHO2");
+    expect(e6n59Entries[0].targetAmount).toBe(5000);
   });
 });
 
