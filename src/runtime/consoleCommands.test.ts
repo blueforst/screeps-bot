@@ -1,4 +1,4 @@
-import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand, hubProgressRaw, hubProgressCommand } from "@/runtime/consoleCommands";
+import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand, hubProgressRaw, hubProgressCommand, memoryAuditRaw, memoryAudit } from "@/runtime/consoleCommands";
 
 describe("cpuMonitor", () => {
   it("returns empty monitor data when no cpu snapshot exists", () => {
@@ -362,5 +362,38 @@ describe("hubProgress commands", () => {
     const result = hubProgressCommand();
     const parsed = JSON.parse(result);
     expect(parsed).toMatchObject({ enabled: true, hubRoomName: "W1N1" });
+  });
+});
+
+describe("memoryAudit commands", () => {
+  beforeEach(() => {
+    Memory.cfg = {};
+    Memory.runtime = { hub: { status: "idle", updatedAt: 0, activeProduct: null, missingResources: [], lastPlanActions: [], needsPlan: false } };
+    Memory.data = {};
+  });
+
+  it("memoryAuditRaw returns snapshot with totalBytes > 0", () => {
+    const result = memoryAuditRaw();
+    expect(result.totalBytes).toBeGreaterThan(0);
+    expect(Array.isArray(result.top)).toBe(true);
+    expect(Array.isArray(result.branches)).toBe(true);
+  });
+
+  it("memoryAudit returns a string containing totalBytes", () => {
+    const result = memoryAudit();
+    expect(typeof result).toBe("string");
+    expect(result).toContain("totalBytes");
+    const parsed = JSON.parse(result);
+    expect(parsed).toHaveProperty("totalBytes");
+    expect(parsed).toHaveProperty("top");
+    expect(parsed).toHaveProperty("branches");
+  });
+
+  it("neither function mutates Memory", () => {
+    const before = JSON.stringify(Memory);
+    memoryAuditRaw();
+    memoryAudit();
+    const after = JSON.stringify(Memory);
+    expect(after).toBe(before);
   });
 });

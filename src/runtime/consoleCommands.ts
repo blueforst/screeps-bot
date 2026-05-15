@@ -42,6 +42,7 @@ import {
 } from "@/runtime/console/resourceTransferCommands";
 import { clearHubSynthesisReactions } from "@/runtime/hubPlanner";
 import { collectHubProgressSnapshot } from "@/runtime/hubProgress";
+import { buildMemoryAuditSnapshot, MemoryAuditSnapshot } from "@/runtime/memoryAudit";
 
 interface SynthesisControlStatusResult {
   ok: true;
@@ -123,6 +124,14 @@ export function hubProgressCommand(): string {
   return JSON.stringify(hubProgressRaw(), null, 2);
 }
 
+export function memoryAuditRaw(): MemoryAuditSnapshot {
+  return buildMemoryAuditSnapshot(Memory);
+}
+
+export function memoryAudit(): string {
+  return JSON.stringify(memoryAuditRaw(), null, 2);
+}
+
 export function registerConsoleCommands(): void {
   registerOperationsConsoleCommands();
   registerTelemetryConsoleCommands();
@@ -135,6 +144,8 @@ export function registerConsoleCommands(): void {
   global.stopHubRaw = stopHubRaw;
   global.hubProgress = hubProgressCommand;
   global.hubProgressRaw = hubProgressRaw;
+  global.memoryAudit = memoryAudit;
+  global.memoryAuditRaw = memoryAuditRaw;
   registerResourceTransferConsoleCommands();
 }
 
