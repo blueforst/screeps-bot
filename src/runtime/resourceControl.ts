@@ -625,7 +625,7 @@ function executeTransferTasks(
     if (terminalBusy.has(donor.roomName) || donor.terminal.cooldown > 0) {
       continue;
     }
-    if (task.resource !== RESOURCE_ENERGY && (receiver.storageEnergy ?? 0) < 100_000) {
+    if (task.resource !== RESOURCE_ENERGY && (receiver.storage?.store.getFreeCapacity() ?? 0) < 100_000) {
       continue;
     }
     if (task.remainingAmount < donor.transferMinAmount) {
