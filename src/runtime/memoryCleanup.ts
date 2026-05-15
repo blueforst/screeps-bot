@@ -518,6 +518,7 @@ function cleanupRescueMemory(ownedRooms: Set<string>): number {
 }
 
 const HUB_RUNTIME_ARRAY_CAP = 20;
+const HUB_DISTRIBUTED_SYNTHESIS_ARRAY_CAP = 100;
 
 function cleanupHubRuntimeMemory(ownedRooms: Set<string>): number {
   const rt = Memory.runtime?.hub;
@@ -541,6 +542,26 @@ function cleanupHubRuntimeMemory(ownedRooms: Set<string>): number {
 
   if (rt.missingResources && rt.missingResources.length > HUB_RUNTIME_ARRAY_CAP) {
     rt.missingResources = rt.missingResources.slice(0, HUB_RUNTIME_ARRAY_CAP);
+  }
+
+  const ds = rt.distributedSynthesis;
+  if (ds) {
+    if (ds.dispatchAssignments && ds.dispatchAssignments.length > HUB_DISTRIBUTED_SYNTHESIS_ARRAY_CAP) {
+      ds.dispatchAssignments = ds.dispatchAssignments.slice(-HUB_DISTRIBUTED_SYNTHESIS_ARRAY_CAP);
+    }
+    if (ds.routeDecisions && ds.routeDecisions.length > HUB_DISTRIBUTED_SYNTHESIS_ARRAY_CAP) {
+      ds.routeDecisions = ds.routeDecisions.slice(-HUB_DISTRIBUTED_SYNTHESIS_ARRAY_CAP);
+    }
+    if (ds.progressEdges && ds.progressEdges.length > HUB_DISTRIBUTED_SYNTHESIS_ARRAY_CAP) {
+      ds.progressEdges = ds.progressEdges.slice(-HUB_DISTRIBUTED_SYNTHESIS_ARRAY_CAP);
+    }
+    if (ds.roomCapabilities) {
+      for (const roomName of Object.keys(ds.roomCapabilities)) {
+        if (!ownedRooms.has(roomName)) {
+          delete ds.roomCapabilities[roomName];
+        }
+      }
+    }
   }
 
   return roomLost ? 1 : 0;

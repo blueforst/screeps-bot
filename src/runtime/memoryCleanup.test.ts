@@ -391,4 +391,144 @@ describe("runMemoryCleanup", () => {
       expect(Memory.runtime?.hub?.status).toBe("idle");
     });
   });
+
+  describe("hub distributed synthesis cleanup", () => {
+    function setupHubWithDistributedSynthesis(
+      ds: Record<string, unknown>,
+      ownedRoomNames: string[] = ["W1N1"],
+    ): void {
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W1N1",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "importing",
+          updatedAt: 100,
+          activeProduct: "OH",
+          activeStep: 0,
+          missingResources: [],
+          lastPlanActions: [],
+          needsPlan: false,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          distributedSynthesis: ds as any,
+        },
+      };
+      for (const name of ownedRoomNames) {
+        Game.rooms[name] = createOwnedRoom(name);
+      }
+    }
+
+    it("caps oversized dispatchAssignments to 100", () => {
+      const many = Array.from({ length: 150 }, (_, i) => ({ fromRoom: `W${i}N0`, toRoom: "W1N1" }));
+      setupHubWithDistributedSynthesis({ dispatchAssignments: many });
+
+      runMemoryCleanup();
+
+      const ds = Memory.runtime?.hub?.distributedSynthesis;
+      expect(ds?.dispatchAssignments!.length).toBe(100);
+    });
+
+    it("caps oversized routeDecisions to 100", () => {
+      const many = Array.from({ length: 130 }, (_, i) => ({ fromRoom: `W${i}N0`, toRoom: "W1N1" }));
+      setupHubWithDistributedSynthesis({ routeDecisions: many });
+
+      runMemoryCleanup();
+
+      expect(Memory.runtime?.hub?.distributedSynthesis?.routeDecisions!.length).toBe(100);
+    });
+
+    it("caps oversized progressEdges to 100", () => {
+      const many = Array.from({ length: 120 }, (_, i) => ({ product: `XOH${i}`, status: "done" }));
+      setupHubWithDistributedSynthesis({ progressEdges: many });
+
+      runMemoryCleanup();
+
+      expect(Memory.runtime?.hub?.distributedSynthesis?.progressEdges!.length).toBe(100);
+    });
+
+    it("does not truncate arrays at or below cap", () => {
+      const arr = Array.from({ length: 50 }, (_, i) => ({ idx: i }));
+      setupHubWithDistributedSynthesis({
+        dispatchAssignments: [...arr],
+        routeDecisions: [...arr],
+        progressEdges: [...arr],
+      });
+
+      runMemoryCleanup();
+
+      const ds = Memory.runtime?.hub?.distributedSynthesis;
+      expect(ds?.dispatchAssignments!.length).toBe(50);
+      expect(ds?.routeDecisions!.length).toBe(50);
+      expect(ds?.progressEdges!.length).toBe(50);
+    });
+
+    it("removes roomCapabilities for non-owned rooms", () => {
+      setupHubWithDistributedSynthesis({
+        roomCapabilities: {
+          W1N1: { labs: 3 },
+          W2N2: { labs: 2 },
+        },
+      });
+
+      runMemoryCleanup();
+
+      const rc = Memory.runtime?.hub?.distributedSynthesis?.roomCapabilities;
+      expect(rc).toBeDefined();
+      expect(Object.keys(rc!)).toEqual(["W1N1"]);
+    });
+
+    it("preserves roomCapabilities for owned rooms", () => {
+      setupHubWithDistributedSynthesis(
+        {
+          roomCapabilities: {
+            W1N1: { labs: 3 },
+            W9N9: { labs: 2 },
+          },
+        },
+        ["W1N1", "W9N9"],
+      );
+
+      runMemoryCleanup();
+
+      const rc = Memory.runtime?.hub?.distributedSynthesis?.roomCapabilities;
+      expect(Object.keys(rc!)).toEqual(["W1N1", "W9N9"]);
+    });
+
+    it("does not crash when distributedSynthesis is absent", () => {
+      Memory.cfg = {
+        hub: {
+          enabled: true,
+          hubRoomName: "W1N1",
+          planInterval: 50,
+          reservePerRoom: 1000,
+          targetCompounds: [],
+          storagePauseFreeCapacity: 100_000,
+          surplusThreshold: 1500,
+          internalOnly: true,
+        },
+      };
+      Memory.runtime = {
+        hub: {
+          status: "idle",
+          updatedAt: 100,
+          activeProduct: "",
+          activeStep: 0,
+          missingResources: [],
+          lastPlanActions: [],
+          needsPlan: false,
+        },
+      };
+
+      expect(() => runMemoryCleanup()).not.toThrow();
+    });
+  });
 });
