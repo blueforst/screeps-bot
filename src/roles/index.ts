@@ -15,12 +15,11 @@ import { mineralHarvesterRole } from "@/roles/mineralHarvester";
 import { powerBankAttackerRole } from "@/roles/powerBankAttacker";
 import { powerBankHaulerRole } from "@/roles/powerBankHauler";
 import { powerBankHealerRole } from "@/roles/powerBankHealer";
+import { powerBankScoutRole } from "@/roles/powerBankScout";
 import { remoteCarrierRole } from "@/roles/remoteCarrier";
 import { scoutRole } from "@/roles/scout";
 import { workerRole } from "@/roles/worker";
 import type { RoleFactory, RoleName } from "@/types/system";
-
-const powerBankStubRole: RoleFactory = () => ({ target: () => false });
 
 export const roleRegistry: Record<RoleName, RoleFactory> = {
   harvester: harvesterRole,
@@ -40,7 +39,7 @@ export const roleRegistry: Record<RoleName, RoleFactory> = {
   crossShardClaimer: crossShardClaimerRole,
   flagScout: flagScoutRole,
   remoteCarrier: remoteCarrierRole,
-  powerBankScout: powerBankStubRole,
+  powerBankScout: powerBankScoutRole,
   powerBankAttacker: powerBankAttackerRole,
   powerBankHealer: powerBankHealerRole,
   powerBankHauler: powerBankHaulerRole,
