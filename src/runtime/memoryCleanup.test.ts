@@ -1,5 +1,6 @@
 import { runMemoryCleanup } from "@/runtime/memoryCleanup";
 import { clearPickupReservationStoreForTest, getPickupReservationsByRoom } from "@/runtime/energyPickupReservation";
+import { reserveProductionResource, listProductionReservations } from "@/runtime/resourceReservation";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -58,6 +59,20 @@ describe("runMemoryCleanup", () => {
     runMemoryCleanup();
 
     expect(getPickupReservationsByRoom("W2N2")).toEqual({});
+  });
+
+  it("removes expired production reservations via gcProductionReservations", () => {
+    reserveProductionResource("W1N1", "energy" as ResourceConstant, 500, "expiredCarrier");
+    const store = Memory.runtime!.resourceReservations!;
+    store["W1N1:energy:expiredCarrier"].expiresAt = Game.time - 1;
+
+    reserveProductionResource("W1N1", "energy" as ResourceConstant, 300, "activeCarrier");
+
+    runMemoryCleanup();
+
+    const remaining = listProductionReservations();
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].holderId).toBe("activeCarrier");
   });
 
   it("removes stale spawn planner, illegal structure cleanup, and rescue entries", () => {

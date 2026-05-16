@@ -1,4 +1,9 @@
 import type { RoleName } from "@/types/system";
+import {
+  POWER_BANK_BODY_RCL6,
+  POWER_BANK_BODY_RCL7,
+  POWER_BANK_BODY_RCL8,
+} from "@/runtime/powerBankConstants";
 
 type SpawnBodyGenerator = (room: Room) => BodyPartConstant[];
 
@@ -130,6 +135,28 @@ function healerBody(room: Room): BodyPartConstant[] {
   return clampByCapacity(parts, room);
 }
 
+function powerBankScoutBody(): BodyPartConstant[] {
+  return [MOVE];
+}
+
+function powerBankAttackerBody(room: Room): BodyPartConstant[] {
+  const rcl = room.controller?.level ?? 0;
+  if (rcl >= 8) return [...POWER_BANK_BODY_RCL8.attacker];
+  if (rcl >= 7) return [...POWER_BANK_BODY_RCL7.attacker];
+  return [...POWER_BANK_BODY_RCL6.attacker];
+}
+
+function powerBankHealerBody(room: Room): BodyPartConstant[] {
+  const rcl = room.controller?.level ?? 0;
+  if (rcl >= 8) return [...POWER_BANK_BODY_RCL8.healer];
+  if (rcl >= 7) return [...POWER_BANK_BODY_RCL7.healer];
+  return [...POWER_BANK_BODY_RCL6.healer];
+}
+
+function powerBankHaulerBody(room: Room): BodyPartConstant[] {
+  return carryMoveBody(room);
+}
+
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => getHarvesterBody(room),
   mineralHarvester: twoToOneWorkMoveBody,
@@ -148,4 +175,8 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   crossShardColonizerWorker: oneOneOneBody,
   flagScout: () => [MOVE],
   remoteCarrier: carryMoveBody,
+  powerBankScout: powerBankScoutBody,
+  powerBankAttacker: powerBankAttackerBody,
+  powerBankHealer: powerBankHealerBody,
+  powerBankHauler: powerBankHaulerBody,
 };

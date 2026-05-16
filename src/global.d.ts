@@ -238,6 +238,55 @@ declare global {
     }>;
   };
 
+  type PowerBankHarvestStatus =
+    | "discovered"
+    | "preparing_boosts"
+    | "spawning"
+    | "boosting"
+    | "renewing"
+    | "travelling"
+    | "attacking"
+    | "hauling"
+    | "complete"
+    | "failed"
+    | "aborted";
+
+  interface PowerBankHarvestTask {
+    id: string;
+    status: PowerBankHarvestStatus;
+    sourceRoom: string;
+    targetRoom: string;
+    bankId: string;
+    bankPos: { x: number; y: number };
+    hits: number;
+    power: number;
+    ticksToDecay: number;
+    freeTiles: number;
+    discoveredTick: number;
+    lastSeenTick: number;
+    attackerId?: string;
+    healerId?: string;
+    haulerIds: string[];
+    boostLabs: string[];
+    compoundTransferTaskIds: string[];
+  }
+
+  interface PowerBankScoutMemory {
+    taskId: string;
+  }
+
+  interface PowerBankAttackerMemory {
+    taskId: string;
+  }
+
+  interface PowerBankHealerMemory {
+    taskId: string;
+  }
+
+  interface PowerBankHaulerMemory {
+    taskId: string;
+  }
+
   interface Memory {
     cfg?: {
       rooms?: Record<
@@ -321,7 +370,6 @@ declare global {
             energyExportStart?: number;
             terminalEnergyReserve?: number;
             transferBatchSize?: number;
-            transferMinAmount?: number;
             mineralFloor?: Partial<Record<ResourceConstant, number>>;
             mineralExportStart?: Partial<Record<ResourceConstant, number>>;
           }
@@ -538,6 +586,17 @@ declare global {
           progressEdges?: ProgressEdge[];
         };
       };
+      resourceReservations?: Record<
+        string,
+        {
+          roomName: string;
+          resource: ResourceConstant;
+          holderId: string;
+          amount: number;
+          updatedAt: number;
+          expiresAt: number;
+        }
+      >;
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
@@ -681,6 +740,7 @@ declare global {
           ticksToDecay?: number;
         }
       >;
+      powerBankHarvest?: Record<string, PowerBankHarvestTask>;
     };
     analytics?: {
       production?: {

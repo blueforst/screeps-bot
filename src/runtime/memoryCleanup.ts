@@ -6,6 +6,7 @@ import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
 import { cleanupPickupReservationStore } from "@/runtime/energyPickupReservation";
 import { cleanupResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { cleanupWorkerTaskBoard } from "@/runtime/workerTaskPool";
+import { gcProductionReservations } from "@/runtime/resourceReservation";
 
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
@@ -26,6 +27,10 @@ const VALID_ROLES = new Set([
   "crossShardColonizerWorker",
   "flagScout",
   "remoteCarrier",
+  "powerBankScout",
+  "powerBankAttacker",
+  "powerBankHealer",
+  "powerBankHauler",
 ]);
 const ROOM_PLANNER_TTL = 50000;
 const INTER_SHARD_PORTAL_TTL = 10000;
@@ -613,6 +618,7 @@ export function runMemoryCleanup(): void {
   cleanupResourceControlMemory(ownedRooms);
   cleanupSynthesisControlMemory(ownedRooms);
   cleanupPickupReservationStore(ownedRooms);
+  gcProductionReservations();
   cleanupWarMemory(ownedRooms);
   cleanupInterShardPortalMemory();
   cleanupCrossShardRuntimeMemory();
