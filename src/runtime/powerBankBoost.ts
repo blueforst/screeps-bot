@@ -225,7 +225,7 @@ export function releaseBoostLabs(taskId: string, sourceRoomName: string): void {
  */
 export function findBestDonorRoom(
   resource: ResourceConstant,
-  _amount: number,
+  amount: number,
   excludeRooms: string[],
 ): string | null {
   const hubRoomName = Memory.cfg?.hub?.hubRoomName;
@@ -236,10 +236,9 @@ export function findBestDonorRoom(
     if (!room.terminal) continue;
     if (room.terminal.cooldown > 0) continue;
 
-    const terminalAmount = room.terminal.store.getUsedCapacity(resource);
-    const surplus = terminalAmount;
+    const surplus = room.terminal.store.getUsedCapacity(resource);
 
-    if (surplus <= 0) continue;
+    if (surplus < amount) continue;
 
     candidates.push({
       roomName: room.name,
@@ -255,10 +254,7 @@ export function findBestDonorRoom(
     return b.surplus - a.surplus;
   });
 
-  const best = candidates[0];
-  if (best.surplus <= 0) return null;
-
-  return best.roomName;
+  return candidates[0].roomName;
 }
 
 function resolveBoostSupplySource(
