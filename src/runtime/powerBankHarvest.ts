@@ -203,7 +203,7 @@ function processSpawning(task: PowerBankHarvestTask): void {
     body: tierBodies.healer,
   };
 
-  task.status = POWER_BANK_STATUS.BOOSTING;
+  task.status = POWER_BANK_STATUS.RENEWING;
 }
 
 function isCreepBoosted(creep: Creep): boolean {
@@ -238,24 +238,17 @@ function processBoosting(task: PowerBankHarvestTask): void {
   const healer = healerCreeps[0];
   const tier = task.tier ?? 8;
 
-  if (!task.attackerReady) {
-    if (isBoostRequiredForRole(tier, "attacker")) {
-      task.attackerReady = isCreepBoosted(attacker);
-    } else {
-      task.attackerReady = true;
-    }
-  }
+  // Recompute boost readiness every tick from actual body state
+  const attackerBoostReady = !isBoostRequiredForRole(tier, "attacker") || isCreepBoosted(attacker);
+  const healerBoostReady = !isBoostRequiredForRole(tier, "healer") || isCreepBoosted(healer);
 
-  if (!task.healerReady) {
-    if (isBoostRequiredForRole(tier, "healer")) {
-      task.healerReady = isCreepBoosted(healer);
-    } else {
-      task.healerReady = true;
-    }
-  }
+  task.attackerReady = attackerBoostReady;
+  task.healerReady = healerBoostReady;
 
-  if (task.attackerReady && task.healerReady) {
-    task.status = POWER_BANK_STATUS.RENEWING;
+  if (attackerBoostReady && healerBoostReady) {
+    task.attackerId = attacker.id as string;
+    task.healerId = healer.id as string;
+    task.status = POWER_BANK_STATUS.TRAVELLING;
   }
 }
 
@@ -271,13 +264,19 @@ function processRenewing(task: PowerBankHarvestTask): void {
   const attackerCreeps = getTickContextService().getCreepsByConfigName(attackerConfigName);
   const healerCreeps = getTickContextService().getCreepsByConfigName(healerConfigName);
 
+  // Wait patiently if either creep is missing (may still be spawning)
   if (attackerCreeps.length === 0 || healerCreeps.length === 0) {
-    transitionToTerminal(task, "aborted", "creep_died_during_renewing");
     return;
   }
 
   const attacker = attackerCreeps[0];
   const healer = healerCreeps[0];
+
+  // Regression guard: creeps should not be boosted at this stage
+  if (isCreepBoosted(attacker) || isCreepBoosted(healer)) {
+    transitionToTerminal(task, "aborted", "invalid_lifecycle_already_boosted");
+    return;
+  }
 
   const distance = task.routeDistance ?? 5;
   const MIN_TTL = distance * 2 + 50;
@@ -303,9 +302,9 @@ function processRenewing(task: PowerBankHarvestTask): void {
   }
 
   if (task.attackerReady && task.healerReady) {
-    task.attackerId = attacker.id as string;
-    task.healerId = healer.id as string;
-    task.status = POWER_BANK_STATUS.TRAVELLING;
+    task.attackerReady = false;
+    task.healerReady = false;
+    task.status = POWER_BANK_STATUS.BOOSTING;
   }
 }
 

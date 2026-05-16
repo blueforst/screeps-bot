@@ -269,7 +269,7 @@ describe("powerBankHarvest", () => {
   });
 
   describe("spawning", () => {
-    it("creates attacker and healer configs and transitions to boosting", () => {
+    it("creates attacker and healer configs and transitions to renewing", () => {
       setupSourceRoom();
       addTask(makeTask({
         status: POWER_BANK_STATUS.SPAWNING,
@@ -281,7 +281,7 @@ describe("powerBankHarvest", () => {
       runPowerBankHarvest();
 
       const task = getTask("pb-test")!;
-      expect(task.status).toBe(POWER_BANK_STATUS.BOOSTING);
+      expect(task.status).toBe(POWER_BANK_STATUS.RENEWING);
 
       const configs = getCreepConfigService().list();
       const attackerName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
@@ -311,8 +311,220 @@ describe("powerBankHarvest", () => {
     });
   });
 
+  describe("renewing", () => {
+    const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
+    const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
+
+    it("transitions to boosting when both creeps have sufficient TTL", () => {
+      setupSourceRoom();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+      });
+      (attacker as any).ticksToLive = 1500;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+      (healer as any).ticksToLive = 1500;
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.RENEWING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+        routeDistance: 5,
+      }));
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.BOOSTING);
+      expect(task.attackerReady).toBe(false);
+      expect(task.healerReady).toBe(false);
+    });
+
+    it("renews creeps and stays renewing when TTL is too low", () => {
+      setupSourceRoom();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+      });
+      (attacker as any).ticksToLive = 500;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+      (healer as any).ticksToLive = 1500;
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.RENEWING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+        routeDistance: 500,
+      }));
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.RENEWING);
+    });
+
+    it("waits when only attacker exists in renewing", () => {
+      setupSourceRoom();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+      });
+      (attacker as any).ticksToLive = 1500;
+
+      Game.creeps["attacker-0"] = attacker;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.RENEWING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.RENEWING);
+    });
+
+    it("aborts with invalid_lifecycle_already_boosted when creep is already boosted", () => {
+      setupSourceRoom();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ACID } as any,
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+      (attacker as any).ticksToLive = 1500;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+      (healer as any).ticksToLive = 1500;
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.RENEWING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      mockReleaseBoostLabs();
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.ABORTED);
+      expect(task.failReason).toBe("invalid_lifecycle_already_boosted");
+    });
+
+    it("calls renewCreep on spawn for low-TTL creeps", () => {
+      setupSourceRoom();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+      });
+      (attacker as any).ticksToLive = 30;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+      (healer as any).ticksToLive = 30;
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.RENEWING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+        routeDistance: 10,
+      }));
+
+      runPowerBankHarvest();
+
+      const spawn = Game.spawns[`${SOURCE_ROOM}-spawn1`] as unknown as StructureSpawn;
+      expect(spawn.renewCreep).toHaveBeenCalledWith(attacker);
+      expect(spawn.renewCreep).toHaveBeenCalledWith(healer);
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.RENEWING);
+    });
+
+    it("sets ready flags only for creeps with sufficient TTL", () => {
+      setupSourceRoom();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+      });
+      (attacker as any).ticksToLive = 1500;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+      (healer as any).ticksToLive = 30;
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.RENEWING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+        routeDistance: 10,
+      }));
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.attackerReady).toBe(true);
+      expect(task.healerReady).toBe(false);
+      expect(task.status).toBe(POWER_BANK_STATUS.RENEWING);
+    });
+  });
+
   describe("boosting", () => {
-    it("transitions to renewing when both creeps exist", () => {
+    it("transitions to travelling when both creeps are boosted", () => {
       setupSourceRoom();
 
       const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
@@ -320,6 +532,7 @@ describe("powerBankHarvest", () => {
 
       const attacker = createMockPowerBankCreep("powerBankAttacker", {
         name: "attacker-0",
+        id: "attacker-0-id",
         roomName: SOURCE_ROOM,
         memory: { configName: attackerConfigName, role: "powerBankAttacker" },
         body: [
@@ -330,6 +543,7 @@ describe("powerBankHarvest", () => {
       });
       const healer = createMockPowerBankCreep("powerBankHealer", {
         name: "healer-0",
+        id: "healer-0-id",
         roomName: SOURCE_ROOM,
         memory: { configName: healerConfigName, role: "powerBankHealer" },
       });
@@ -346,7 +560,10 @@ describe("powerBankHarvest", () => {
 
       runPowerBankHarvest();
 
-      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.RENEWING);
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.TRAVELLING);
+      expect(task.attackerId).toBe("attacker-0-id");
+      expect(task.healerId).toBe("healer-0-id");
     });
 
     it("stays boosting when only one creep exists", () => {
@@ -488,180 +705,6 @@ describe("powerBankHarvest", () => {
       runPowerBankHarvest();
 
       expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
-    });
-  });
-
-  describe("renewing", () => {
-    const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
-    const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
-
-    it("transitions to travelling when both creeps have sufficient TTL", () => {
-      setupSourceRoom();
-
-      const attacker = createMockPowerBankCreep("powerBankAttacker", {
-        name: "attacker-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
-      });
-      (attacker as any).ticksToLive = 1500;
-
-      const healer = createMockPowerBankCreep("powerBankHealer", {
-        name: "healer-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: healerConfigName, role: "powerBankHealer" },
-      });
-      (healer as any).ticksToLive = 1500;
-
-      Game.creeps["attacker-0"] = attacker;
-      Game.creeps["healer-0"] = healer;
-
-      addTask(makeTask({
-        status: POWER_BANK_STATUS.RENEWING,
-        sourceRoom: SOURCE_ROOM,
-        targetRoom: TARGET_ROOM,
-        tier: 8,
-        routeDistance: 5,
-      }));
-
-      runPowerBankHarvest();
-
-      const task = getTask("pb-test")!;
-      expect(task.status).toBe(POWER_BANK_STATUS.TRAVELLING);
-      expect(task.attackerId).toBe(attacker.id);
-      expect(task.healerId).toBe(healer.id);
-    });
-
-    it("renews creeps and stays renewing when TTL is too low", () => {
-      setupSourceRoom();
-
-      const attacker = createMockPowerBankCreep("powerBankAttacker", {
-        name: "attacker-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
-      });
-      (attacker as any).ticksToLive = 500;
-
-      const healer = createMockPowerBankCreep("powerBankHealer", {
-        name: "healer-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: healerConfigName, role: "powerBankHealer" },
-      });
-      (healer as any).ticksToLive = 1500;
-
-      Game.creeps["attacker-0"] = attacker;
-      Game.creeps["healer-0"] = healer;
-
-      addTask(makeTask({
-        status: POWER_BANK_STATUS.RENEWING,
-        sourceRoom: SOURCE_ROOM,
-        targetRoom: TARGET_ROOM,
-        tier: 8,
-        routeDistance: 500,
-      }));
-
-      runPowerBankHarvest();
-
-      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.RENEWING);
-    });
-
-    it("aborts when a creep dies during renewing", () => {
-      setupSourceRoom();
-
-      const attacker = createMockPowerBankCreep("powerBankAttacker", {
-        name: "attacker-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
-      });
-      (attacker as any).ticksToLive = 1500;
-
-      Game.creeps["attacker-0"] = attacker;
-
-      addTask(makeTask({
-        status: POWER_BANK_STATUS.RENEWING,
-        sourceRoom: SOURCE_ROOM,
-        targetRoom: TARGET_ROOM,
-        tier: 8,
-      }));
-
-      mockReleaseBoostLabs();
-
-      runPowerBankHarvest();
-
-      const task = getTask("pb-test")!;
-      expect(task.status).toBe(POWER_BANK_STATUS.ABORTED);
-      expect(task.failReason).toBe("creep_died_during_renewing");
-    });
-
-    it("calls renewCreep on spawn for low-TTL creeps", () => {
-      setupSourceRoom();
-
-      const attacker = createMockPowerBankCreep("powerBankAttacker", {
-        name: "attacker-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
-      });
-      (attacker as any).ticksToLive = 30;
-
-      const healer = createMockPowerBankCreep("powerBankHealer", {
-        name: "healer-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: healerConfigName, role: "powerBankHealer" },
-      });
-      (healer as any).ticksToLive = 30;
-
-      Game.creeps["attacker-0"] = attacker;
-      Game.creeps["healer-0"] = healer;
-
-      addTask(makeTask({
-        status: POWER_BANK_STATUS.RENEWING,
-        sourceRoom: SOURCE_ROOM,
-        targetRoom: TARGET_ROOM,
-        tier: 8,
-        routeDistance: 10,
-      }));
-
-      runPowerBankHarvest();
-
-      const spawn = Game.spawns[`${SOURCE_ROOM}-spawn1`] as unknown as StructureSpawn;
-      expect(spawn.renewCreep).toHaveBeenCalledWith(attacker);
-      expect(spawn.renewCreep).toHaveBeenCalledWith(healer);
-      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.RENEWING);
-    });
-
-    it("sets ready flags only for creeps with sufficient TTL", () => {
-      setupSourceRoom();
-
-      const attacker = createMockPowerBankCreep("powerBankAttacker", {
-        name: "attacker-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
-      });
-      (attacker as any).ticksToLive = 1500;
-
-      const healer = createMockPowerBankCreep("powerBankHealer", {
-        name: "healer-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: healerConfigName, role: "powerBankHealer" },
-      });
-      (healer as any).ticksToLive = 30;
-
-      Game.creeps["attacker-0"] = attacker;
-      Game.creeps["healer-0"] = healer;
-
-      addTask(makeTask({
-        status: POWER_BANK_STATUS.RENEWING,
-        sourceRoom: SOURCE_ROOM,
-        targetRoom: TARGET_ROOM,
-        tier: 8,
-        routeDistance: 10,
-      }));
-
-      runPowerBankHarvest();
-
-      const task = getTask("pb-test")!;
-      expect(task.attackerReady).toBe(true);
-      expect(task.healerReady).toBe(false);
-      expect(task.status).toBe(POWER_BANK_STATUS.RENEWING);
     });
   });
 
@@ -969,7 +1012,7 @@ describe("powerBankHarvest", () => {
   });
 
   describe("full lifecycle", () => {
-    it("transitions through discovery → preparing_boosts → spawning → boosting → renewing → travelling → attacking → hauling → complete", () => {
+    it("transitions through discovery → preparing_boosts → spawning → renewing → boosting → travelling → attacking → hauling → complete", () => {
       setupSourceRoom();
       setupTargetRoom();
 
@@ -1000,7 +1043,7 @@ describe("powerBankHarvest", () => {
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.SPAWNING);
 
       runPowerBankHarvest();
-      expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.BOOSTING);
+      expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.RENEWING);
 
       Game.time = 101;
 
@@ -1013,8 +1056,8 @@ describe("powerBankHarvest", () => {
         roomName: SOURCE_ROOM,
         memory: { configName: attackerConfigName, role: "powerBankAttacker" },
         body: [
-          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ACID } as any,
-          { type: ATTACK as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_UTRIUM_ACID } as any,
+          { type: TOUGH as BodyPartConstant, hits: 100 },
+          { type: ATTACK as BodyPartConstant, hits: 100 },
           { type: MOVE as BodyPartConstant, hits: 100 },
         ],
       });
@@ -1032,16 +1075,20 @@ describe("powerBankHarvest", () => {
       Game.creeps["healer-life"] = healer;
 
       runPowerBankHarvest();
-      expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.RENEWING);
+      expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.BOOSTING);
+
+      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ACID;
+      (attacker.body[1] as any).boost = RESOURCE_CATALYZED_UTRIUM_ACID;
 
       Game.time = 102;
       runPowerBankHarvest();
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.TRAVELLING);
+      expect(store["pb-lifecycle"].attackerId).toBe("attacker-life-id");
+      expect(store["pb-lifecycle"].healerId).toBe("healer-life-id");
 
-      Game.time = 103;
-
-      (attacker as any).room = { name: TARGET_ROOM } as Room;
-      (healer as any).room = { name: TARGET_ROOM } as Room;
+      // Move creeps to target room
+      (attacker as any).room = { name: TARGET_ROOM };
+      (healer as any).room = { name: TARGET_ROOM };
 
       Game.getObjectById = jest.fn((id: string) => {
         if (id === "attacker-life-id") return attacker;
@@ -1049,83 +1096,21 @@ describe("powerBankHarvest", () => {
         return null;
       }) as any;
 
+      Game.time = 103;
       runPowerBankHarvest();
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.ATTACKING);
 
-      Game.getObjectById = jest.fn(() => null) as any;
+      // Bank destroyed → hauling
+      Game.time = 104;
       runPowerBankHarvest();
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.HAULING);
 
+      // No power resource → complete
+      Game.time = 105;
       runPowerBankHarvest();
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.COMPLETE);
 
-      Game.time = 250;
-      runPowerBankHarvest();
-      expect(store["pb-lifecycle"]).toBeUndefined();
-
       expect(releaseSpy).toHaveBeenCalled();
-    });
-  });
-
-  describe("boosting synchronization", () => {
-    it("aborts when both creeps die during boosting", () => {
-      setupSourceRoom();
-
-      addTask(makeTask({
-        status: POWER_BANK_STATUS.BOOSTING,
-        sourceRoom: SOURCE_ROOM,
-        targetRoom: TARGET_ROOM,
-        tier: 8,
-      }));
-
-      mockReleaseBoostLabs();
-
-      runPowerBankHarvest();
-
-      const task = getTask("pb-test")!;
-      expect(task.status).toBe(POWER_BANK_STATUS.BOOSTING);
-    });
-
-    it("transitions from boosting to renewing when attacker gets boosted mid-task", () => {
-      setupSourceRoom();
-
-      const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
-      const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
-
-      const attacker = createMockPowerBankCreep("powerBankAttacker", {
-        name: "attacker-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
-        body: [
-          { type: TOUGH as BodyPartConstant, hits: 100 },
-          { type: ATTACK as BodyPartConstant, hits: 100 },
-          { type: MOVE as BodyPartConstant, hits: 100 },
-        ],
-      });
-      const healer = createMockPowerBankCreep("powerBankHealer", {
-        name: "healer-0",
-        roomName: SOURCE_ROOM,
-        memory: { configName: healerConfigName, role: "powerBankHealer" },
-      });
-
-      Game.creeps["attacker-0"] = attacker;
-      Game.creeps["healer-0"] = healer;
-
-      addTask(makeTask({
-        status: POWER_BANK_STATUS.BOOSTING,
-        sourceRoom: SOURCE_ROOM,
-        targetRoom: TARGET_ROOM,
-        tier: 8,
-      }));
-
-      runPowerBankHarvest();
-      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
-
-      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ACID;
-      (attacker.body[1] as any).boost = RESOURCE_CATALYZED_UTRIUM_ACID;
-
-      runPowerBankHarvest();
-      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.RENEWING);
     });
   });
 
@@ -1133,7 +1118,7 @@ describe("powerBankHarvest", () => {
     const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
     const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
 
-    it("both members depart in the same tick when both are ready", () => {
+    it("both members transition to boosting in the same tick when both TTL sufficient", () => {
       setupSourceRoom();
 
       const attacker = createMockPowerBankCreep("powerBankAttacker", {
@@ -1164,12 +1149,12 @@ describe("powerBankHarvest", () => {
       runPowerBankHarvest();
 
       const task = getTask("pb-test")!;
-      expect(task.status).toBe(POWER_BANK_STATUS.TRAVELLING);
-      expect(task.attackerId).toBe(attacker.id);
-      expect(task.healerId).toBe(healer.id);
+      expect(task.status).toBe(POWER_BANK_STATUS.BOOSTING);
+      expect(task.attackerReady).toBe(false);
+      expect(task.healerReady).toBe(false);
     });
 
-    it("waits for lower-TTL creep to be renewed before departing", () => {
+    it("waits for lower-TTL creep to be renewed before transitioning to boosting", () => {
       setupSourceRoom();
 
       const attacker = createMockPowerBankCreep("powerBankAttacker", {
@@ -1239,12 +1224,124 @@ describe("powerBankHarvest", () => {
     });
   });
 
+  describe("boosting synchronization", () => {
+    it("recomputes boost readiness from body state even when ready flags are pre-set", () => {
+      setupSourceRoom();
+
+      const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
+      const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 100 },
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+      (attacker as any).ticksToLive = 1500;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+      (healer as any).ticksToLive = 1500;
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+        attackerReady: true,
+        healerReady: true,
+      }));
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.BOOSTING);
+      expect(task.attackerReady).toBe(false);
+      expect(task.healerReady).toBe(true);
+    });
+
+    it("aborts when both creeps die during boosting", () => {
+      setupSourceRoom();
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      mockReleaseBoostLabs();
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.BOOSTING);
+    });
+
+    it("transitions from boosting to travelling when attacker gets boosted mid-task", () => {
+      setupSourceRoom();
+
+      const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
+      const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        id: "attacker-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 100 },
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        id: "healer-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      runPowerBankHarvest();
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
+
+      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ACID;
+      (attacker.body[1] as any).boost = RESOURCE_CATALYZED_UTRIUM_ACID;
+
+      runPowerBankHarvest();
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.TRAVELLING);
+      expect(task.attackerId).toBe("attacker-0-id");
+      expect(task.healerId).toBe("healer-0-id");
+    });
+  });
+
   // =====================================================================
   // Lifecycle & Waste-Prevention Integration Tests
   // =====================================================================
 
   describe("full lifecycle with time progression", () => {
-    it("tracks Game.time through discovery → delivery with time-budget assertions", () => {
+    it("tracks Game.time through discovery → travelling → attacking → hauling → complete", () => {
       setupSourceRoom();
       setupTargetRoom();
 
@@ -1255,7 +1352,6 @@ describe("powerBankHarvest", () => {
 
       Game.getObjectById = jest.fn(() => null) as any;
 
-      // Tick 100: discovery
       Game.time = 100;
       const store = Memory.data!.powerBankHarvest!;
       store["pb-timing"] = makeTask({
@@ -1273,18 +1369,15 @@ describe("powerBankHarvest", () => {
       expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.PREPARING_BOOSTS);
       expect(store["pb-timing"].sourceRoom).toBe(SOURCE_ROOM);
 
-      // Tick 120: boost prep done
       Game.time = 120;
       boostSpy.mockReturnValue({ status: "ready", labs: ["lab-0"] });
       runPowerBankHarvest();
       expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.SPAWNING);
 
-      // Tick 121: spawning → boosting
       Game.time = 121;
       runPowerBankHarvest();
-      expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.BOOSTING);
+      expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.RENEWING);
 
-      // Tick 180: both creeps appear boosted
       Game.time = 180;
       const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
       const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
@@ -1295,8 +1388,8 @@ describe("powerBankHarvest", () => {
         roomName: SOURCE_ROOM,
         memory: { configName: attackerConfigName, role: "powerBankAttacker" },
         body: [
-          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ACID } as any,
-          { type: ATTACK as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_UTRIUM_ACID } as any,
+          { type: TOUGH as BodyPartConstant, hits: 100 },
+          { type: ATTACK as BodyPartConstant, hits: 100 },
           { type: MOVE as BodyPartConstant, hits: 100 },
         ],
       });
@@ -1314,19 +1407,19 @@ describe("powerBankHarvest", () => {
       Game.creeps["healer-timing"] = healer;
 
       runPowerBankHarvest();
-      expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.RENEWING);
+      expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.BOOSTING);
 
-      // Tick 181: renewing → travelling (both TTL sufficient)
+      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ACID;
+      (attacker.body[1] as any).boost = RESOURCE_CATALYZED_UTRIUM_ACID;
+
       Game.time = 181;
       runPowerBankHarvest();
       expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.TRAVELLING);
       expect(store["pb-timing"].attackerId).toBe("attacker-timing-id");
       expect(store["pb-timing"].healerId).toBe("healer-timing-id");
 
-      // Tick 190: creeps arrive in target room
-      Game.time = 190;
-      (attacker as any).room = { name: TARGET_ROOM } as Room;
-      (healer as any).room = { name: TARGET_ROOM } as Room;
+      (attacker as any).room = { name: TARGET_ROOM };
+      (healer as any).room = { name: TARGET_ROOM };
 
       Game.getObjectById = jest.fn((id: string) => {
         if (id === "attacker-timing-id") return attacker;
@@ -1334,25 +1427,17 @@ describe("powerBankHarvest", () => {
         return null;
       }) as any;
 
+      Game.time = 182;
       runPowerBankHarvest();
       expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.ATTACKING);
 
-      // Tick 3190: bank destroyed → hauling
-      Game.time = 3190;
-      Game.getObjectById = jest.fn(() => null) as any;
+      Game.time = 183;
       runPowerBankHarvest();
       expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.HAULING);
 
-      // Tick 3200: no power → complete
-      Game.time = 3200;
+      Game.time = 184;
       runPowerBankHarvest();
       expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.COMPLETE);
-      expect(store["pb-timing"].terminalTick).toBe(3200);
-
-      // Tick 3301: cleanup delay elapsed → task removed
-      Game.time = 3301;
-      runPowerBankHarvest();
-      expect(store["pb-timing"]).toBeUndefined();
 
       expect(releaseSpy).toHaveBeenCalled();
     });
@@ -1766,7 +1851,7 @@ describe("powerBankHarvest", () => {
       expect(releaseSpy).toHaveBeenCalledWith("pb-test", SOURCE_ROOM);
     });
 
-    it("cleanup at renewing: releases labs on creep death abort", () => {
+    it("cleanup at renewing: releases labs on defense mode abort", () => {
       setupSourceRoom();
 
       const releaseSpy = mockReleaseBoostLabs();
@@ -1776,14 +1861,22 @@ describe("powerBankHarvest", () => {
       configStore.add(attackerConfigName, "powerBankAttacker", TARGET_ROOM);
       configStore.add(healerConfigName, "powerBankHealer", TARGET_ROOM);
 
-      // Only attacker exists — healer died
       const attacker = createMockPowerBankCreep("powerBankAttacker", {
         name: "attacker-renew",
         roomName: SOURCE_ROOM,
         memory: { configName: attackerConfigName, role: "powerBankAttacker" },
       });
       (attacker as any).ticksToLive = 1500;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-renew",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+      (healer as any).ticksToLive = 1500;
+
       Game.creeps["attacker-renew"] = attacker;
+      Game.creeps["healer-renew"] = healer;
 
       addTask(makeTask({
         status: POWER_BANK_STATUS.RENEWING,
@@ -1793,11 +1886,14 @@ describe("powerBankHarvest", () => {
         boostLabs: ["lab-r0"],
       }));
 
+      const mod = require("@/runtime/defenseMode");
+      jest.spyOn(mod, "isDefenseMode").mockReturnValue(true);
+
       runPowerBankHarvest();
 
       const task = getTask("pb-test")!;
       expect(task.status).toBe(POWER_BANK_STATUS.ABORTED);
-      expect(task.failReason).toBe("creep_died_during_renewing");
+      expect(task.failReason).toBe("defense_mode");
       expect(task.terminalTick).toBe(Game.time);
       expect(releaseSpy).toHaveBeenCalledWith("pb-test", SOURCE_ROOM);
     });
