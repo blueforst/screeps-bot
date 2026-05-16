@@ -341,4 +341,119 @@ describe("powerBankAttackerRole", () => {
     expect(result).toBe(false);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
+
+  it("formation - attacker moves toward same-room healer instead of target room when range > 1 (source phase)", () => {
+    setupTask({ status: "travelling" });
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      name: "healer-0",
+      roomName: "W1N1",
+      x: 10,
+      y: 10,
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+    Game.creeps = { "healer-0": healer };
+
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: "W1N1",
+      x: 40,
+      y: 40,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.source?.(creep);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      creep,
+      healer,
+      1,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("formation - attacker moves toward same-room healer instead of target room when range > 1 (target phase)", () => {
+    setupTask({ status: "travelling" });
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      name: "healer-0",
+      roomName: "W1N1",
+      x: 10,
+      y: 10,
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+    Game.creeps = { "healer-0": healer };
+
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: "W1N1",
+      x: 40,
+      y: 40,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      creep,
+      healer,
+      1,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("boundary - attacker waits when healer is in different room during travelling (target phase)", () => {
+    setupTask({ status: "travelling" });
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      name: "healer-0",
+      roomName: "W1N1",
+      x: 24,
+      y: 24,
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+    Game.creeps = { "healer-0": healer };
+
+    // Attacker is already in target room, healer is in source room
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: TARGET_ROOM,
+      x: 25,
+      y: 25,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    // Should NOT attack or move to target room — just wait for healer
+    expect(creep.attack).not.toHaveBeenCalled();
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("formation does NOT apply during attacking status", () => {
+    setupTask({ status: "attacking" });
+    setupBank();
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      name: "healer-0",
+      roomName: TARGET_ROOM,
+      x: 10,
+      y: 10,
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+    Game.creeps = { "healer-0": healer };
+
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: TARGET_ROOM,
+      x: 24,
+      y: 25,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    // During attacking, attacker fights independently — no formation check
+    expect(creep.attack).toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
+  });
 });

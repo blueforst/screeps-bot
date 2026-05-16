@@ -41,7 +41,15 @@ export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRou
     const task = getTaskForCreep(creep);
     if (task?.status && BLOCKED_STATUSES.has(task.status)) return false;
 
-    if (task?.status === "travelling" && !findPairedAttacker(creep)) return false;
+    if (task?.status === "travelling") {
+      const attacker = findPairedAttacker(creep);
+      if (!attacker) return false;
+
+      if (attacker.room.name === creep.room.name && creep.pos.getRangeTo(attacker.pos) > 1) {
+        moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+        return false;
+      }
+    }
 
     if (targetRoom && creep.room.name !== targetRoom) {
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 8 });
@@ -54,9 +62,21 @@ export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRou
     const task = getTaskForCreep(creep);
     if (task?.status && BLOCKED_STATUSES.has(task.status)) return false;
 
-    if (task?.status === "travelling" && !findPairedAttacker(creep)) return false;
-
     const attacker = findPairedAttacker(creep);
+
+    if (task?.status === "travelling") {
+      if (!attacker) return false;
+
+      const sameRoom = attacker.room.name === creep.room.name;
+      if (sameRoom && creep.pos.getRangeTo(attacker.pos) > 1) {
+        moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+        return false;
+      }
+      if (!sameRoom) {
+        moveToTargetRoom(creep, attacker.room.name, undefined, { plainCost: 2, swampCost: 8 });
+        return false;
+      }
+    }
 
     if (!attacker) {
       if (creep.hits < creep.hitsMax) {

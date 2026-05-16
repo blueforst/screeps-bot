@@ -368,4 +368,110 @@ describe("powerBankHealerRole", () => {
     expect(result).toBe(false);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
+
+  it("formation - healer moves toward same-room attacker instead of target room when range > 1 (source phase)", () => {
+    setupTask();
+    Memory.data!.powerBankHarvest![TASK_ID].status = "travelling";
+    const attacker = createAttacker({ roomName: "W1N1", x: 10, y: 10 });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === ATTACKER_ID) return attacker;
+      return null;
+    });
+
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      roomName: "W1N1",
+      x: 40,
+      y: 40,
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankHealerRole(TARGET_ROOM);
+    role.source?.(healer);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      healer,
+      attacker,
+      1,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("formation - healer moves toward same-room attacker during travelling target phase", () => {
+    setupTask();
+    Memory.data!.powerBankHarvest![TASK_ID].status = "travelling";
+    const attacker = createAttacker({ roomName: "W1N1", x: 10, y: 10 });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === ATTACKER_ID) return attacker;
+      return null;
+    });
+
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      roomName: "W1N1",
+      x: 40,
+      y: 40,
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankHealerRole(TARGET_ROOM);
+    role.target(healer);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      healer,
+      attacker,
+      1,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+  });
+
+  it("boundary - healer follows attacker into target room during travelling", () => {
+    setupTask();
+    Memory.data!.powerBankHarvest![TASK_ID].status = "travelling";
+    const attacker = createAttacker({ roomName: TARGET_ROOM });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === ATTACKER_ID) return attacker;
+      return null;
+    });
+
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      roomName: "W1N1",
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankHealerRole(TARGET_ROOM);
+    role.target(healer);
+
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      healer,
+      TARGET_ROOM,
+      undefined,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+  });
+
+  it("formation does NOT override healing behavior during attacking status", () => {
+    setupTask();
+    const attacker = createAttacker({ roomName: TARGET_ROOM, x: 10, y: 10, hits: 500, hitsMax: 1000 });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === ATTACKER_ID) return attacker;
+      return null;
+    });
+
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      roomName: TARGET_ROOM,
+      x: 5,
+      y: 5,
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankHealerRole(TARGET_ROOM);
+    role.target(healer);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      healer,
+      attacker,
+      1,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+  });
 });
