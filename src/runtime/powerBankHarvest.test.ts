@@ -93,6 +93,7 @@ function setupTargetRoom(): void {
 function setupGameMap(): void {
   if (!Game.map) (Game as any).map = {} as GameMap;
   Game.map.getRoomLinearDistance = jest.fn(() => 5);
+  Game.map.findRoute = jest.fn(() => [{ room: "corridor", exit: FIND_EXIT_RIGHT }]);
 }
 
 function setupStore(): Record<string, PowerBankHarvestTask> {
@@ -2308,6 +2309,13 @@ describe("powerBankHarvest", () => {
           if (from === "E8N55") return 8;
         }
         return 5;
+      });
+      Game.map.findRoute = jest.fn((from: string, to: string) => {
+        if (to === "E0N60") {
+          if (from === "E1N55") return [{ room: "E0N60", exit: FIND_EXIT_LEFT }];
+          if (from === "E8N55") return Array.from({ length: 8 }, (_, i) => ({ room: `E${7 - i}N60`, exit: FIND_EXIT_RIGHT }));
+        }
+        return [{ room: "corridor", exit: FIND_EXIT_RIGHT }];
       });
 
       runPowerBankHarvest();

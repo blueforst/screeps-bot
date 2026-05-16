@@ -67,6 +67,12 @@ function transitionToTerminal(task: PowerBankHarvestTask, status: "failed" | "ab
   task.terminalTick = Game.time;
 }
 
+function getRouteDistance(fromRoom: string, toRoom: string): number {
+  const route = Game.map.findRoute(fromRoom, toRoom);
+  if (route === ERR_NO_PATH) return Infinity;
+  return route.length;
+}
+
 function findNearestEligibleRoom(targetRoom: string): { roomName: string; energyCapacity: number; distance: number } | null {
   let best: { roomName: string; energyCapacity: number; distance: number } | null = null;
   const tickContext = getTickContextService();
@@ -80,7 +86,7 @@ function findNearestEligibleRoom(targetRoom: string): { roomName: string; energy
     if (isDefenseMode(room.name)) continue;
 
     const energyCapacity = room.energyCapacityAvailable;
-    const distance = Game.map.getRoomLinearDistance(room.name, targetRoom);
+    const distance = getRouteDistance(room.name, targetRoom);
 
     if (!best || distance < best.distance) {
       best = { roomName: room.name, energyCapacity, distance };
@@ -446,8 +452,8 @@ function maintainPatrolScout(): void {
 
   const firstPatrolRoom = POWER_BANK_PATROL_ROOMS[0];
   const sourceRoom = eligibleRooms.reduce((best, room) => {
-    const dist = Game.map.getRoomLinearDistance(room.name, firstPatrolRoom);
-    const bestDist = Game.map.getRoomLinearDistance(best.name, firstPatrolRoom);
+    const dist = getRouteDistance(room.name, firstPatrolRoom);
+    const bestDist = getRouteDistance(best.name, firstPatrolRoom);
     return dist < bestDist ? room : best;
   }).name;
 
