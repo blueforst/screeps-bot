@@ -4,6 +4,11 @@ import {
   releaseBoostLabs,
   findBestDonorRoom,
 } from "@/runtime/powerBankBoost";
+import {
+  getActivePowerBankBoostLabIds,
+  getAssignedPowerBankBoostLabId,
+  ensurePowerBankBoostPrepStore,
+} from "@/runtime/powerBankBoostMemory";
 import { isSynthesisPaused } from "@/runtime/synthesisControl";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { createMockStore, MockPos } from "@mock/powerBank";
@@ -567,6 +572,81 @@ describe("powerBankBoost", () => {
       prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
 
       expect(isSynthesisPaused(SOURCE_ROOM)).toBe(true);
+    });
+  });
+
+  describe("getActivePowerBankBoostLabIds", () => {
+    it("returns only lab IDs for matching source room", () => {
+      Memory.runtime = {};
+      const store = ensurePowerBankBoostPrepStore();
+      store["task-a"] = {
+        taskId: "task-a",
+        sourceRoomName: "roomA",
+        labs: {
+          "lab-1": { labId: "lab-1", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+          "lab-2": { labId: "lab-2", compound: RESOURCE_CATALYZED_UTRIUM_ACID },
+        },
+      };
+      store["task-b"] = {
+        taskId: "task-b",
+        sourceRoomName: "roomB",
+        labs: {
+          "lab-3": { labId: "lab-3", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+        },
+      };
+
+      const result = getActivePowerBankBoostLabIds("roomA");
+      expect(result).toEqual(new Set(["lab-1", "lab-2"]));
+    });
+
+    it("returns empty Set when no matching prep entries", () => {
+      Memory.runtime = {};
+      const store = ensurePowerBankBoostPrepStore();
+      store["task-c"] = {
+        taskId: "task-c",
+        sourceRoomName: "roomC",
+        labs: {
+          "lab-4": { labId: "lab-4", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+        },
+      };
+
+      const result = getActivePowerBankBoostLabIds("roomX");
+      expect(result).toEqual(new Set());
+    });
+  });
+
+  describe("getAssignedPowerBankBoostLabId", () => {
+    it("returns lab ID for matching compound", () => {
+      Memory.runtime = {};
+      const store = ensurePowerBankBoostPrepStore();
+      store["task-d"] = {
+        taskId: "task-d",
+        sourceRoomName: SOURCE_ROOM,
+        labs: {
+          "lab-10": { labId: "lab-10", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+          "lab-11": { labId: "lab-11", compound: RESOURCE_CATALYZED_UTRIUM_ACID },
+        },
+      };
+
+      expect(getAssignedPowerBankBoostLabId("task-d", RESOURCE_CATALYZED_UTRIUM_ACID)).toBe("lab-11");
+    });
+
+    it("returns undefined when task not found", () => {
+      expect(getAssignedPowerBankBoostLabId("nonexistent", RESOURCE_CATALYZED_GHODIUM_ACID)).toBeUndefined();
+    });
+
+    it("returns undefined when compound not assigned", () => {
+      Memory.runtime = {};
+      const store = ensurePowerBankBoostPrepStore();
+      store["task-e"] = {
+        taskId: "task-e",
+        sourceRoomName: SOURCE_ROOM,
+        labs: {
+          "lab-20": { labId: "lab-20", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+        },
+      };
+
+      expect(getAssignedPowerBankBoostLabId("task-e", RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE)).toBeUndefined();
     });
   });
 });

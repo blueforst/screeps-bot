@@ -12,32 +12,19 @@ import {
   type CarrierTaskDraft,
 } from "@/runtime/carrierTaskBoard";
 import { getTickContextService } from "@/runtime/runtimeServices";
+import {
+  ensurePowerBankBoostPrepStore,
+  type BoostLabAssignment,
+  type BoostPrepMemory,
+} from "@/runtime/powerBankBoostMemory";
 
 const POWER_BANK_BOOST_PRODUCER = "powerBankBoost";
 const BOOST_LAB_SUPPLY_PRIORITY = 140;
-
-interface BoostLabAssignment {
-  labId: string;
-  compound: ResourceConstant;
-}
 
 export interface BoostPrepResult {
   status: "preparing" | "ready" | "failed";
   reason?: string;
   labs: string[];
-}
-
-interface BoostPrepMemory {
-  labs: Record<string, BoostLabAssignment>;
-  taskId: string;
-  sourceRoomName: string;
-}
-
-function ensureBoostPrepStore(): Record<string, BoostPrepMemory> {
-  const runtime = Memory.runtime;
-  if (!runtime) return {};
-  runtime.powerBankBoost = runtime.powerBankBoost || {};
-  return runtime.powerBankBoost;
 }
 
 function getRequiredCompounds(tier: number): ResourceConstant[] {
@@ -102,7 +89,7 @@ export function prepareBoosts(
     };
   }
 
-  const prepStore = ensureBoostPrepStore();
+  const prepStore = ensurePowerBankBoostPrepStore();
   const assignments: Record<string, BoostLabAssignment> = {};
   const drafts: CarrierTaskDraft[] = [];
 
@@ -194,7 +181,7 @@ export function checkBoostReadiness(
 ): boolean {
   if (requiredCompounds.length === 0) return true;
 
-  const prepStore = ensureBoostPrepStore();
+  const prepStore = ensurePowerBankBoostPrepStore();
   const activePrep = Object.values(prepStore).find(
     (p) => p.sourceRoomName === sourceRoomName,
   );
@@ -226,7 +213,7 @@ export function releaseBoostLabs(taskId: string, sourceRoomName: string): void {
     [],
   );
 
-  const prepStore = ensureBoostPrepStore();
+  const prepStore = ensurePowerBankBoostPrepStore();
   delete prepStore[taskId];
 
   resumeSynthesisAfterBoost(sourceRoomName);
