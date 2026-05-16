@@ -1,6 +1,7 @@
 import { POWER_BANK_STATUS, POWER_BANK_BODY_TIERS, POWER_BANK_BOOST_REQUIREMENTS, POWER_BANK_PATROL_ROOMS, getPowerBankConfigName } from "@/runtime/powerBankConstants";
 import { selectBodyTier, assessViability } from "@/runtime/powerBankViability";
 import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
+import { getAssignedPowerBankBoostLabId } from "@/runtime/powerBankBoostMemory";
 import { ensureDiscoveryStore } from "@/runtime/powerBankDiscovery";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
@@ -225,14 +226,50 @@ function processSpawning(task: PowerBankHarvestTask): void {
   task.status = POWER_BANK_STATUS.RENEWING;
 }
 
-function isCreepBoosted(creep: Creep): boolean {
-  return creep.body.some((part) => !!part.boost);
+function getRequiredBoostsForRole(tier: number, role: "attacker" | "healer"): ResourceConstant[] {
+  const requirements = POWER_BANK_BOOST_REQUIREMENTS[tier];
+  if (!requirements) return [];
+  return requirements[role];
 }
 
-function isBoostRequiredForRole(tier: number, role: "attacker" | "healer"): boolean {
-  const requirements = POWER_BANK_BOOST_REQUIREMENTS[tier];
-  if (!requirements) return false;
-  return requirements[role].length > 0;
+function isBoostSatisfied(creep: Creep, requiredCompounds: ResourceConstant[]): boolean {
+  if (requiredCompounds.length === 0) return true;
+  return requiredCompounds.every((compound) =>
+    creep.body.some((part) => part.boost === compound),
+  );
+}
+
+function getNextMissingBoost(creep: Creep, requiredCompounds: ResourceConstant[]): ResourceConstant | undefined {
+  return requiredCompounds.find((compound) =>
+    !creep.body.some((part) => part.boost === compound),
+  );
+}
+
+function applyNextBoost(
+  creep: Creep,
+  taskId: string,
+  requiredCompounds: ResourceConstant[],
+): "boosted" | "moving" | "waiting" | "no_lab" | "no_compound" {
+  if (isBoostSatisfied(creep, requiredCompounds)) return "boosted";
+
+  const nextCompound = getNextMissingBoost(creep, requiredCompounds);
+  if (!nextCompound) return "boosted";
+
+  const labId = getAssignedPowerBankBoostLabId(taskId, nextCompound);
+  if (!labId) return "no_lab";
+
+  const lab = Game.getObjectById(labId as Id<StructureLab>);
+  if (!lab) return "no_lab";
+
+  if ((lab.store.getUsedCapacity(nextCompound) ?? 0) < LAB_BOOST_MINERAL) return "no_compound";
+
+  if (creep.pos.isNearTo(lab)) {
+    lab.boostCreep(creep);
+    return "boosted";
+  } else {
+    creep.moveTo(lab, { reusePath: 3, maxRooms: 1 });
+    return "moving";
+  }
 }
 
 function processBoosting(task: PowerBankHarvestTask): void {
@@ -253,28 +290,33 @@ function processBoosting(task: PowerBankHarvestTask): void {
   const attackerCreeps = getTickContextService().getCreepsByConfigName(attackerConfigName);
   const healerCreeps = getTickContextService().getCreepsByConfigName(healerConfigName);
 
-  if (attackerCreeps.length === 0 && healerCreeps.length === 0) return;
-
-  if (attackerCreeps.length === 0 || healerCreeps.length === 0) {
-    return;
-  }
+  if (attackerCreeps.length === 0 || healerCreeps.length === 0) return;
 
   const attacker = attackerCreeps[0];
   const healer = healerCreeps[0];
   const tier = task.tier ?? 8;
 
-  // Recompute boost readiness every tick from actual body state
-  const attackerBoostReady = !isBoostRequiredForRole(tier, "attacker") || isCreepBoosted(attacker);
-  const healerBoostReady = !isBoostRequiredForRole(tier, "healer") || isCreepBoosted(healer);
+  const attackerCompounds = getRequiredBoostsForRole(tier, "attacker");
+  const healerCompounds = getRequiredBoostsForRole(tier, "healer");
 
-  task.attackerReady = attackerBoostReady;
-  task.healerReady = healerBoostReady;
+  applyNextBoost(attacker, task.id, attackerCompounds);
+  applyNextBoost(healer, task.id, healerCompounds);
 
-  if (attackerBoostReady && healerBoostReady) {
+  const attackerReady = isBoostSatisfied(attacker, attackerCompounds);
+  const healerReady = isBoostSatisfied(healer, healerCompounds);
+
+  task.attackerReady = attackerReady;
+  task.healerReady = healerReady;
+
+  if (attackerReady && healerReady) {
     task.attackerId = attacker.id as string;
     task.healerId = healer.id as string;
     task.status = POWER_BANK_STATUS.TRAVELLING;
   }
+}
+
+function isCreepBoosted(creep: Creep): boolean {
+  return creep.body.some((part) => !!part.boost);
 }
 
 function processRenewing(task: PowerBankHarvestTask): void {

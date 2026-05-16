@@ -2,7 +2,8 @@ import { runPowerBankHarvest } from "@/runtime/powerBankHarvest";
 import { POWER_BANK_STATUS, getPowerBankConfigName } from "@/runtime/powerBankConstants";
 import { getCreepConfigService, registerRuntimeServices } from "@/runtime/runtimeServices";
 import { clearDefenseModeCacheForTest } from "@/runtime/defenseMode";
-import { createMockStore, createMockPowerBankCreep, createMockPowerBank } from "@mock/powerBank";
+import { createMockStore, createMockPowerBankCreep, createMockPowerBank, createMockLab } from "@mock/powerBank";
+import { MockPos } from "@mock/powerBank";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -2453,6 +2454,260 @@ describe("powerBankHarvest", () => {
       const configs = getCreepConfigService().list();
       expect(configs[SCOUT_CONFIG_NAME]).toBeDefined();
       expect(configs[SCOUT_CONFIG_NAME].roomName).toBe("E1N55");
+    });
+  });
+
+  describe("active boost lab interaction", () => {
+    const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
+    const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
+
+    function mockGetAssignedLab(map: Record<string, string>): jest.SpyInstance {
+      const mod = require("@/runtime/powerBankBoostMemory");
+      return jest.spyOn(mod, "getAssignedPowerBankBoostLabId").mockImplementation(
+        (_taskId: string, compound: ResourceConstant) => map[compound] ?? undefined,
+      );
+    }
+
+    it("multi-boost attacker: moves to labs and receives sequential boosts", () => {
+      setupSourceRoom();
+
+      const xgho2Lab = createMockLab({
+        id: "lab-xgho2",
+        x: 24,
+        y: 24,
+        roomName: SOURCE_ROOM,
+        store: { [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 100 },
+      });
+      const xuh2oLab = createMockLab({
+        id: "lab-xuh2o",
+        x: 30,
+        y: 30,
+        roomName: SOURCE_ROOM,
+        store: { [RESOURCE_CATALYZED_UTRIUM_ACID]: 100 },
+      });
+
+      mockGetAssignedLab({
+        [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: "lab-xgho2",
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: "lab-xuh2o",
+      });
+
+      const originalGetObjectById = Game.getObjectById;
+      Game.getObjectById = jest.fn((id: string) => {
+        if (id === "lab-xgho2") return xgho2Lab;
+        if (id === "lab-xuh2o") return xuh2oLab;
+        return null;
+      }) as any;
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        id: "attacker-0-id",
+        x: 24,
+        y: 24,
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 100 },
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        id: "healer-0-id",
+        x: 25,
+        y: 25,
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      // Tick 1: attacker adjacent to XGHO2 lab, gets first boost
+      runPowerBankHarvest();
+      expect(xgho2Lab.boostCreep).toHaveBeenCalledWith(attacker);
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
+
+      // Simulate XGHO2 applied to body (effective next tick)
+      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
+
+      // Tick 2: attacker needs XUH2O, not near that lab → moveTo called
+      runPowerBankHarvest();
+      expect(attacker.moveTo).toHaveBeenCalled();
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
+
+      // Simulate attacker now adjacent to XUH2O lab
+      (attacker as any).pos = new MockPos(30, 29, SOURCE_ROOM) as unknown as RoomPosition;
+
+      // Tick 3: attacker gets XUH2O boost applied
+      runPowerBankHarvest();
+      expect(xuh2oLab.boostCreep).toHaveBeenCalledWith(attacker);
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
+
+      // Simulate XUH2O applied to body (effective next tick)
+      (attacker.body[1] as any).boost = RESOURCE_CATALYZED_UTRIUM_ACID;
+
+      // Tick 4: all boosts satisfied → TRAVELLING
+      runPowerBankHarvest();
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.TRAVELLING);
+
+      Game.getObjectById = originalGetObjectById;
+    });
+
+    it("lab not ready blocks travel — empty compound store", () => {
+      setupSourceRoom();
+
+      const xgho2Lab = createMockLab({
+        id: "lab-xgho2",
+        x: 24,
+        y: 24,
+        roomName: SOURCE_ROOM,
+        store: { [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 0 },
+      });
+
+      mockGetAssignedLab({
+        [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: "lab-xgho2",
+      });
+
+      const originalGetObjectById = Game.getObjectById;
+      Game.getObjectById = jest.fn((id: string) => {
+        if (id === "lab-xgho2") return xgho2Lab;
+        return null;
+      }) as any;
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        id: "attacker-0-id",
+        x: 24,
+        y: 24,
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 100 },
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        id: "healer-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 6,
+      }));
+
+      runPowerBankHarvest();
+
+      // Lab has 0 compound → no boost, stays BOOSTING
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
+      expect(xgho2Lab.boostCreep).not.toHaveBeenCalled();
+
+      Game.getObjectById = originalGetObjectById;
+    });
+
+    it("RCL8 healer fast path — empty requirements, immediately boost-satisfied", () => {
+      setupSourceRoom();
+
+      mockGetAssignedLab({});
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        id: "attacker-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ALKALIDE } as any,
+          { type: ATTACK as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_UTRIUM_ACID } as any,
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        id: "healer-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      runPowerBankHarvest();
+
+      // Healer has empty requirements at tier 8 → immediately satisfied
+      // Attacker is already fully boosted → both ready → TRAVELLING
+      const task = getTask("pb-test")!;
+      expect(task.healerReady).toBe(true);
+      expect(task.attackerReady).toBe(true);
+      expect(task.status).toBe(POWER_BANK_STATUS.TRAVELLING);
+    });
+
+    it("missing lab assignment stays in BOOSTING", () => {
+      setupSourceRoom();
+
+      // No lab assigned for any compound
+      mockGetAssignedLab({});
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        id: "attacker-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 100 },
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        id: "healer-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.BOOSTING);
+      expect(task.attackerReady).toBe(false);
+      expect(task.healerReady).toBe(true);
     });
   });
 });
