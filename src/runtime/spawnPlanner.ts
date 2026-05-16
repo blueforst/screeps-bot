@@ -34,6 +34,14 @@ function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
     return 2;
   }
 
+  if (role === "powerBankAttacker" || role === "powerBankHealer") {
+    return 2;
+  }
+
+  if (role === "powerBankHauler") {
+    return 0;
+  }
+
   return 3;
 }
 
@@ -350,7 +358,11 @@ function isOutboundNonWarRole(role: CreepConfig["role"]): boolean {
     role === "crossShardClaimer" ||
     role === "remoteCarrier" ||
     role === "claimer" ||
-    role === "scout";
+    role === "scout" ||
+    role === "powerBankScout" ||
+    role === "powerBankAttacker" ||
+    role === "powerBankHealer" ||
+    role === "powerBankHauler";
 }
 
 function isWorkPositionOutsideSafeZone(roomName: string, workPos: RoomPosition | null): boolean {
