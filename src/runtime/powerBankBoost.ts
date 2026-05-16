@@ -116,7 +116,7 @@ export function prepareBoosts(
         const transferAmt = Math.min(amount, usableFree);
         if (transferAmt > 0) {
           drafts.push({
-            id: `powerBankBoost:lab_supply:${sourceRoomName}:${compound}`,
+            id: `powerBankBoost:lab_supply:${taskId}:${compound}`,
             type: "lab_supply",
             priority: BOOST_LAB_SUPPLY_PRIORITY,
             steps: [
@@ -160,7 +160,7 @@ export function prepareBoosts(
   };
 
   replaceCarrierTasksForProducerRoom(
-    POWER_BANK_BOOST_PRODUCER,
+    `${POWER_BANK_BOOST_PRODUCER}:${taskId}`,
     sourceRoomName,
     drafts,
   );
@@ -208,7 +208,7 @@ export function checkBoostReadiness(
  */
 export function releaseBoostLabs(taskId: string, sourceRoomName: string): void {
   replaceCarrierTasksForProducerRoom(
-    POWER_BANK_BOOST_PRODUCER,
+    `${POWER_BANK_BOOST_PRODUCER}:${taskId}`,
     sourceRoomName,
     [],
   );
