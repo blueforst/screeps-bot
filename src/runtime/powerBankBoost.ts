@@ -109,10 +109,9 @@ export function prepareBoosts(
       const source = resolveBoostSupplySource(room, compound);
       if (source) {
         const amount = Math.min(deficit, localStock, source.store.getUsedCapacity(compound));
-        const labFree = lab.store.getFreeCapacity();
-        // lab.store.getFreeCapacity(resource) returns null when mineralType is not set;
-        // use total free capacity instead
-        const usableFree = labFree ?? 0;
+        // lab.store.getFreeCapacity() returns null when mineralType is not set;
+        // use resource-specific free capacity instead
+        const usableFree = lab.store.getFreeCapacity(compound) ?? 0;
         const transferAmt = Math.min(amount, usableFree);
         if (transferAmt > 0) {
           drafts.push({
