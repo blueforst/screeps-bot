@@ -50,7 +50,10 @@ export const powerBankAttackerRole: RoleFactory = (targetRoom?: string, encodedR
       const healer = findPairedHealer(creep);
       if (!healer) return false;
 
-      if (healer.room.name !== creep.room.name) return false;
+      if (healer.room.name !== creep.room.name) {
+        moveToTargetRoom(creep, healer.room.name, "", { plainCost: 2, swampCost: 8 });
+        return false;
+      }
 
       if (creep.pos.getRangeTo(healer.pos) > 1) {
         moveToTarget(creep, healer, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
@@ -73,7 +76,10 @@ export const powerBankAttackerRole: RoleFactory = (targetRoom?: string, encodedR
       const healer = findPairedHealer(creep);
       if (!healer) return false;
 
-      if (healer.room.name !== creep.room.name) return false;
+      if (healer.room.name !== creep.room.name) {
+        moveToTargetRoom(creep, healer.room.name, "", { plainCost: 2, swampCost: 8 });
+        return false;
+      }
 
       if (creep.pos.getRangeTo(healer.pos) > 1) {
         moveToTarget(creep, healer, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });

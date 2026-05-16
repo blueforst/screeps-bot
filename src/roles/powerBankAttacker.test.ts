@@ -402,7 +402,7 @@ describe("powerBankAttackerRole", () => {
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 
-  it("boundary - attacker waits when healer is in different room during travelling (target phase)", () => {
+  it("boundary - attacker rejoins healer in different room during travelling (target phase)", () => {
     setupTask({ status: "travelling" });
     const healer = createMockPowerBankCreep("powerBankHealer", {
       name: "healer-0",
@@ -424,10 +424,47 @@ describe("powerBankAttackerRole", () => {
     const role = powerBankAttackerRole(TARGET_ROOM);
     role.target(creep);
 
-    // Should NOT attack or move to target room — just wait for healer
+    // Should move toward healer's room (W1N1), NOT toward targetRoom or attack
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      creep,
+      "W1N1",
+      "",
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
     expect(creep.attack).not.toHaveBeenCalled();
-    expect(moveToTargetRoom).not.toHaveBeenCalled();
     expect(moveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("boundary - attacker rejoins healer in different room during travelling (source phase)", () => {
+    setupTask({ status: "travelling" });
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      name: "healer-0",
+      roomName: "W0N1",
+      x: 24,
+      y: 24,
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+    Game.creeps = { "healer-0": healer };
+
+    // Attacker in W1N1, healer in W0N1 — attacker should move toward healer
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: "W1N1",
+      x: 25,
+      y: 25,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    const result = role.source?.(creep);
+
+    // Should move toward healer's room, NOT toward targetRoom
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      creep,
+      "W0N1",
+      "",
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+    expect(result).toBe(false);
   });
 
   it("formation does NOT apply during attacking status", () => {

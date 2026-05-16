@@ -45,7 +45,12 @@ export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRou
       const attacker = findPairedAttacker(creep);
       if (!attacker) return false;
 
-      if (attacker.room.name === creep.room.name && creep.pos.getRangeTo(attacker.pos) > 1) {
+      if (attacker.room.name !== creep.room.name) {
+        moveToTargetRoom(creep, attacker.room.name, "", { plainCost: 2, swampCost: 8 });
+        return false;
+      }
+
+      if (creep.pos.getRangeTo(attacker.pos) > 1) {
         moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
         return false;
       }

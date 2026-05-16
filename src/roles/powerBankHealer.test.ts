@@ -424,6 +424,32 @@ describe("powerBankHealerRole", () => {
     );
   });
 
+  it("boundary - healer rejoins attacker in different room during travelling (source phase)", () => {
+    setupTask();
+    Memory.data!.powerBankHarvest![TASK_ID].status = "travelling";
+    const attacker = createAttacker({ roomName: "W0N1" });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === ATTACKER_ID) return attacker;
+      return null;
+    });
+
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      roomName: "W1N1",
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankHealerRole(TARGET_ROOM);
+    const result = role.source?.(healer);
+
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      healer,
+      "W0N1",
+      "",
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+    expect(result).toBe(false);
+  });
+
   it("boundary - healer follows attacker into target room during travelling", () => {
     setupTask();
     Memory.data!.powerBankHarvest![TASK_ID].status = "travelling";
