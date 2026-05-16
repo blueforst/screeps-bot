@@ -1,10 +1,12 @@
-import { POWER_BANK_STATUS, POWER_BANK_BODY_TIERS, POWER_BANK_BOOST_REQUIREMENTS, getPowerBankConfigName } from "@/runtime/powerBankConstants";
+import { POWER_BANK_STATUS, POWER_BANK_BODY_TIERS, POWER_BANK_BOOST_REQUIREMENTS, POWER_BANK_PATROL_ROOMS, getPowerBankConfigName } from "@/runtime/powerBankConstants";
 import { selectBodyTier, assessViability } from "@/runtime/powerBankViability";
 import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
 import { ensureDiscoveryStore } from "@/runtime/powerBankDiscovery";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
+
+const PATROL_SCOUT_CONFIG_NAME = "powerbank:patrol:scout:0";
 
 const TERMINAL_STATE_CLEANUP_DELAY = 100;
 
@@ -418,7 +420,48 @@ function processTask(task: PowerBankHarvestTask): void {
   }
 }
 
+function maintainPatrolScout(): void {
+  const configStore = getConfigStore();
+
+  const existingScouts = getTickContextService().getCreepsByConfigName(PATROL_SCOUT_CONFIG_NAME);
+  if (existingScouts.length > 0) return;
+
+  if (configStore[PATROL_SCOUT_CONFIG_NAME]) {
+    const creepMemory = Memory.creeps || {};
+    for (const room of getTickContextService().getMyRooms()) {
+      for (const spawn of getTickContextService().getSpawnsByRoom(room.name)) {
+        if (!spawn.spawning) continue;
+        if (creepMemory[spawn.spawning.name]?.configName === PATROL_SCOUT_CONFIG_NAME) return;
+      }
+    }
+    delete configStore[PATROL_SCOUT_CONFIG_NAME];
+  }
+
+  const eligibleRooms = getTickContextService().getMyRooms().filter(r => {
+    if ((r.controller?.level ?? 0) < 6) return false;
+    const spawns = getTickContextService().getSpawnsByRoom(r.name);
+    return spawns.length > 0;
+  });
+
+  if (eligibleRooms.length === 0) return;
+
+  const firstPatrolRoom = POWER_BANK_PATROL_ROOMS[0];
+  const sourceRoom = eligibleRooms.reduce((best, room) => {
+    const dist = Game.map.getRoomLinearDistance(room.name, firstPatrolRoom);
+    const bestDist = Game.map.getRoomLinearDistance(best.name, firstPatrolRoom);
+    return dist < bestDist ? room : best;
+  }).name;
+
+  configStore[PATROL_SCOUT_CONFIG_NAME] = {
+    role: "powerBankScout",
+    args: [],
+    roomName: sourceRoom,
+  };
+}
+
 export function runPowerBankHarvest(): void {
+  maintainPatrolScout();
+
   const store = getTaskStore();
   const tasks = Object.values(store);
 

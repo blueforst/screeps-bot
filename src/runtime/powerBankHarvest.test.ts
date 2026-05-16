@@ -14,6 +14,7 @@ function resetRuntimeServices(): void {
 
 const SOURCE_ROOM = "E5N55";
 const TARGET_ROOM = "E0N60";
+const PATROL_SCOUT_CONFIG_NAME = "powerbank:patrol:scout:0";
 
 function makeTask(overrides: Partial<PowerBankHarvestTask> = {}): PowerBankHarvestTask {
   return {
@@ -1001,6 +1002,8 @@ describe("powerBankHarvest", () => {
       runPowerBankHarvest();
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.BOOSTING);
 
+      Game.time = 101;
+
       const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
       const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
 
@@ -1031,8 +1034,11 @@ describe("powerBankHarvest", () => {
       runPowerBankHarvest();
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.RENEWING);
 
+      Game.time = 102;
       runPowerBankHarvest();
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.TRAVELLING);
+
+      Game.time = 103;
 
       (attacker as any).room = { name: TARGET_ROOM } as Room;
       (healer as any).room = { name: TARGET_ROOM } as Room;
@@ -1426,7 +1432,7 @@ describe("powerBankHarvest", () => {
       expect(task.sourceRoom).toBeFalsy();
 
       const configs = getCreepConfigService().list();
-      const powerBankConfigs = Object.keys(configs).filter(k => k.includes("powerbank"));
+      const powerBankConfigs = Object.keys(configs).filter(k => k.includes("powerbank") && k !== PATROL_SCOUT_CONFIG_NAME);
       expect(powerBankConfigs).toHaveLength(0);
     });
 
@@ -1521,7 +1527,7 @@ describe("powerBankHarvest", () => {
       expect(task.failReason).toContain("insufficient_boost_compound");
 
       const configs = getCreepConfigService().list();
-      const pbConfigs = Object.keys(configs).filter(k => k.includes("powerbank"));
+      const pbConfigs = Object.keys(configs).filter(k => k.includes("powerbank") && k !== PATROL_SCOUT_CONFIG_NAME);
       expect(pbConfigs).toHaveLength(0);
     });
   });
@@ -1558,7 +1564,7 @@ describe("powerBankHarvest", () => {
       expect(task.failReason).toContain("insufficient_hauler_timing");
 
       const configs = getCreepConfigService().list();
-      expect(Object.keys(configs).filter(k => k.includes("powerbank"))).toHaveLength(0);
+      expect(Object.keys(configs).filter(k => k.includes("powerbank") && k !== PATROL_SCOUT_CONFIG_NAME)).toHaveLength(0);
     });
   });
 
@@ -1849,7 +1855,7 @@ describe("powerBankHarvest", () => {
       expect(task.failReason).toBe("defense_mode");
 
       const configs = getCreepConfigService().list();
-      const pbConfigs = Object.keys(configs).filter(k => k.includes("powerbank"));
+      const pbConfigs = Object.keys(configs).filter(k => k.includes("powerbank") && k !== PATROL_SCOUT_CONFIG_NAME);
       expect(pbConfigs).toHaveLength(0);
 
       expect(releaseSpy).toHaveBeenCalledWith("pb-test", SOURCE_ROOM);
@@ -2061,6 +2067,158 @@ describe("powerBankHarvest", () => {
       for (let i = 0; i < statuses.length; i++) {
         expect(getTask(`pb-cleanup-${i}`)).toBeUndefined();
       }
+    });
+  });
+
+  describe("patrol scout maintenance", () => {
+    const SCOUT_CONFIG_NAME = "powerbank:patrol:scout:0";
+
+    it("creates scout config when no scout exists and eligible room available", () => {
+      setupSourceRoom();
+
+      runPowerBankHarvest();
+
+      const configs = getCreepConfigService().list();
+      expect(configs[SCOUT_CONFIG_NAME]).toBeDefined();
+      expect(configs[SCOUT_CONFIG_NAME].role).toBe("powerBankScout");
+      expect(configs[SCOUT_CONFIG_NAME].roomName).toBe(SOURCE_ROOM);
+      expect(configs[SCOUT_CONFIG_NAME].args).toEqual([]);
+    });
+
+    it("does not create config when scout is alive", () => {
+      setupSourceRoom();
+
+      const scoutConfig = getCreepConfigService();
+      scoutConfig.add(SCOUT_CONFIG_NAME, "powerBankScout", SOURCE_ROOM);
+
+      const scout = createMockPowerBankCreep("powerBankScout", {
+        name: "scout-alive",
+        roomName: SOURCE_ROOM,
+        memory: { configName: SCOUT_CONFIG_NAME, role: "powerBankScout" },
+      });
+      Game.creeps["scout-alive"] = scout;
+
+      runPowerBankHarvest();
+
+      const configs = getCreepConfigService().list();
+      const scoutConfigs = Object.keys(configs).filter(k => k === SCOUT_CONFIG_NAME);
+      expect(scoutConfigs).toHaveLength(1);
+    });
+
+    it("does not create config when scout is being spawned", () => {
+      setupSourceRoom();
+
+      const configStore = getCreepConfigService();
+      configStore.add(SCOUT_CONFIG_NAME, "powerBankScout", SOURCE_ROOM);
+
+      const spawn = Game.spawns[`${SOURCE_ROOM}-spawn1`] as unknown as StructureSpawn;
+      (spawn as any).spawning = {
+        name: "scout-spawning",
+        remainingTime: 10,
+        needTime: 20,
+      };
+      Memory.creeps["scout-spawning"] = { configName: SCOUT_CONFIG_NAME } as any;
+
+      runPowerBankHarvest();
+
+      const configs = getCreepConfigService().list();
+      expect(configs[SCOUT_CONFIG_NAME]).toBeDefined();
+    });
+
+    it("does not create config when no eligible rooms exist", () => {
+      const room = {
+        name: "lowRCLRoom",
+        controller: { my: true, level: 3 },
+        energyCapacityAvailable: 300,
+        find: () => [],
+      } as unknown as Room;
+
+      Game.rooms["lowRCLRoom"] = room;
+
+      const spawn = {
+        name: "lowRCLRoom-spawn1",
+        room,
+        memory: { spawnList: [] },
+        spawning: null,
+        isActive: () => true,
+      } as unknown as StructureSpawn;
+
+      Game.spawns[spawn.name] = spawn;
+
+      runPowerBankHarvest();
+
+      const configs = getCreepConfigService().list();
+      expect(configs[SCOUT_CONFIG_NAME]).toBeUndefined();
+    });
+
+    it("cleans stale config when scout is dead and not spawning", () => {
+      setupSourceRoom();
+
+      const configStore = getCreepConfigService();
+      configStore.add(SCOUT_CONFIG_NAME, "powerBankScout", SOURCE_ROOM);
+
+      runPowerBankHarvest();
+
+      const configs = getCreepConfigService().list();
+      const scoutConfigs = Object.keys(configs).filter(k => k === SCOUT_CONFIG_NAME);
+      expect(scoutConfigs).toHaveLength(1);
+      expect(configs[SCOUT_CONFIG_NAME].role).toBe("powerBankScout");
+    });
+
+    it("picks nearest room to first patrol room", () => {
+      const room1 = {
+        name: "E8N55",
+        controller: { my: true, level: 8 },
+        energyCapacityAvailable: 12_000,
+        storage: { store: createMockStore({}) },
+        terminal: { store: createMockStore({}), cooldown: 0 },
+        find: () => [],
+      } as unknown as Room;
+      Game.rooms["E8N55"] = room1;
+
+      const spawn1 = {
+        name: "E8N55-spawn1",
+        room: room1,
+        memory: { spawnList: [] },
+        spawning: null,
+        isActive: () => true,
+        renewCreep: jest.fn(() => OK),
+      } as unknown as StructureSpawn;
+      Game.spawns["E8N55-spawn1"] = spawn1;
+
+      const room2 = {
+        name: "E1N55",
+        controller: { my: true, level: 8 },
+        energyCapacityAvailable: 12_000,
+        storage: { store: createMockStore({}) },
+        terminal: { store: createMockStore({}), cooldown: 0 },
+        find: () => [],
+      } as unknown as Room;
+      Game.rooms["E1N55"] = room2;
+
+      const spawn2 = {
+        name: "E1N55-spawn1",
+        room: room2,
+        memory: { spawnList: [] },
+        spawning: null,
+        isActive: () => true,
+        renewCreep: jest.fn(() => OK),
+      } as unknown as StructureSpawn;
+      Game.spawns["E1N55-spawn1"] = spawn2;
+
+      Game.map.getRoomLinearDistance = jest.fn((from: string, to: string) => {
+        if (to === "E0N60") {
+          if (from === "E1N55") return 1;
+          if (from === "E8N55") return 8;
+        }
+        return 5;
+      });
+
+      runPowerBankHarvest();
+
+      const configs = getCreepConfigService().list();
+      expect(configs[SCOUT_CONFIG_NAME]).toBeDefined();
+      expect(configs[SCOUT_CONFIG_NAME].roomName).toBe("E1N55");
     });
   });
 });
