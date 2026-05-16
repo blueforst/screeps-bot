@@ -267,7 +267,8 @@ function applyNextBoost(
     lab.boostCreep(creep);
     return "boosted";
   } else {
-    creep.moveTo(lab, { reusePath: 3, maxRooms: 1 });
+    const sameRoom = creep.pos.roomName === lab.pos.roomName;
+    creep.moveTo(lab, { reusePath: 3, maxRooms: sameRoom ? 1 : 16 });
     return "moving";
   }
 }
