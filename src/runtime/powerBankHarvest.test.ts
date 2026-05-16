@@ -159,6 +159,7 @@ describe("powerBankHarvest", () => {
     setupStore();
     jest.restoreAllMocks();
     clearDefenseModeCacheForTest();
+    mockPrepareBoosts("ready");
   });
 
   describe("discovered -> viability", () => {
@@ -220,7 +221,7 @@ describe("powerBankHarvest", () => {
       expect(task.boostLabs).toEqual(["lab-0", "lab-1"]);
     });
 
-    it("stays preparing_boosts while preparing", () => {
+    it("transitions to spawning when boost prep is still preparing (parallel pipeline)", () => {
       setupSourceRoom();
       addTask(makeTask({
         status: POWER_BANK_STATUS.PREPARING_BOOSTS,
@@ -229,6 +230,21 @@ describe("powerBankHarvest", () => {
       }));
 
       mockPrepareBoosts("preparing", ["lab-0"]);
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.SPAWNING);
+    });
+
+    it("stays preparing_boosts when preparing returns no labs", () => {
+      setupSourceRoom();
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.PREPARING_BOOSTS,
+        sourceRoom: SOURCE_ROOM,
+        tier: 8,
+      }));
+
+      mockPrepareBoosts("preparing", []);
 
       runPowerBankHarvest();
 
@@ -1337,6 +1353,119 @@ describe("powerBankHarvest", () => {
     });
   });
 
+  describe("parallel boost preparation", () => {
+    const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
+    const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
+
+    it("processPreparingBoosts advances to SPAWNING when prepareBoosts returns 'preparing'", () => {
+      setupSourceRoom();
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.PREPARING_BOOSTS,
+        sourceRoom: SOURCE_ROOM,
+        tier: 8,
+      }));
+
+      mockPrepareBoosts("preparing", ["lab-1", "lab-2"]);
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.SPAWNING);
+      expect(task.boostLabs).toEqual(["lab-1", "lab-2"]);
+    });
+
+    it("processSpawning aborts to failed when boost prep fails mid-spawn", () => {
+      setupSourceRoom();
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.SPAWNING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      mockPrepareBoosts("failed", []);
+      mockReleaseBoostLabs();
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.FAILED);
+      expect(task.failReason).toBe("boost_prep_failed_during_spawning");
+    });
+
+    it("processRenewing aborts to failed when boost prep fails", () => {
+      setupSourceRoom();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+      });
+      (attacker as any).ticksToLive = 1500;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+      (healer as any).ticksToLive = 1500;
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.RENEWING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+        routeDistance: 5,
+      }));
+
+      mockPrepareBoosts("failed", []);
+      mockReleaseBoostLabs();
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.FAILED);
+      expect(task.failReason).toBe("boost_prep_failed_during_renewing");
+    });
+
+    it("processBoosting aborts to failed when boost prep fails", () => {
+      setupSourceRoom();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+      });
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      mockPrepareBoosts("failed", []);
+      mockReleaseBoostLabs();
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.FAILED);
+      expect(task.failReason).toBe("boost_prep_failed_during_boosting");
+    });
+  });
+
   // =====================================================================
   // Lifecycle & Waste-Prevention Integration Tests
   // =====================================================================
@@ -1962,6 +2091,7 @@ describe("powerBankHarvest", () => {
       setupSourceRoom();
 
       const releaseSpy = mockReleaseBoostLabs();
+      mockPrepareBoosts("ready", ["lab-d2"]);
 
       addTask(makeTask({
         status: POWER_BANK_STATUS.SPAWNING,

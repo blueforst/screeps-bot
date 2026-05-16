@@ -152,6 +152,13 @@ function processDiscovered(task: PowerBankHarvestTask): void {
   task.status = POWER_BANK_STATUS.PREPARING_BOOSTS;
 }
 
+function refreshPowerBankBoostPrep(task: PowerBankHarvestTask): "preparing" | "ready" | "failed" {
+  if (!task.tier) return "ready";
+  const result = prepareBoosts(task.id, task.sourceRoom, task.tier);
+  task.boostLabs = result.labs;
+  return result.status;
+}
+
 function processPreparingBoosts(task: PowerBankHarvestTask): void {
   if (isDefenseMode(task.sourceRoom)) {
     transitionToTerminal(task, "aborted", "defense_mode");
@@ -166,7 +173,7 @@ function processPreparingBoosts(task: PowerBankHarvestTask): void {
   const result = prepareBoosts(task.id, task.sourceRoom, task.tier);
   task.boostLabs = result.labs;
 
-  if (result.status === "ready") {
+  if (result.status === "ready" || (result.status === "preparing" && result.labs.length > 0)) {
     task.status = POWER_BANK_STATUS.SPAWNING;
   } else if (result.status === "failed") {
     transitionToTerminal(task, "failed", result.reason ?? "boost_prep_failed");
@@ -181,6 +188,12 @@ function processSpawning(task: PowerBankHarvestTask): void {
 
   if (!task.tier) {
     transitionToTerminal(task, "failed", "missing_tier");
+    return;
+  }
+
+  const boostStatus = refreshPowerBankBoostPrep(task);
+  if (boostStatus === "failed") {
+    transitionToTerminal(task, "failed", "boost_prep_failed_during_spawning");
     return;
   }
 
@@ -228,6 +241,12 @@ function processBoosting(task: PowerBankHarvestTask): void {
     return;
   }
 
+  const boostStatus = refreshPowerBankBoostPrep(task);
+  if (boostStatus === "failed") {
+    transitionToTerminal(task, "failed", "boost_prep_failed_during_boosting");
+    return;
+  }
+
   const attackerConfigName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "attacker", 0);
   const healerConfigName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "healer", 0);
 
@@ -261,6 +280,12 @@ function processBoosting(task: PowerBankHarvestTask): void {
 function processRenewing(task: PowerBankHarvestTask): void {
   if (isDefenseMode(task.sourceRoom)) {
     transitionToTerminal(task, "aborted", "defense_mode");
+    return;
+  }
+
+  const boostStatus = refreshPowerBankBoostPrep(task);
+  if (boostStatus === "failed") {
+    transitionToTerminal(task, "failed", "boost_prep_failed_during_renewing");
     return;
   }
 
