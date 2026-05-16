@@ -269,6 +269,12 @@ declare global {
     haulerIds: string[];
     boostLabs: string[];
     compoundTransferTaskIds: string[];
+    /** Body tier (RCL number) selected by viability assessment. */
+    tier?: number;
+    /** Viability failure reason(s), set when status becomes failed. */
+    failReason?: string;
+    /** Tick when task entered a terminal state (complete/failed/aborted). */
+    terminalTick?: number;
   }
 
   interface PowerBankScoutMemory {
