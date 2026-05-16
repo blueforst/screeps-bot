@@ -17,6 +17,7 @@ import {
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getReservedProductionAmountExcludingHolder } from "@/runtime/resourceReservation";
+import { getActivePowerBankBoostLabIds } from "@/runtime/powerBankBoostMemory";
 
 type SynthesisStage = "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
 
@@ -825,10 +826,12 @@ function generateStrandedProductUnloadTask(
 function generateReagentCleanupTask(
   room: Room,
   allLabs: StructureLab[],
+  excludedLabIds: Set<string> = new Set(),
 ): CarrierTaskDraft | null {
   const steps: CarrierTaskStep[] = [];
 
   for (const lab of allLabs) {
+    if (excludedLabIds.has(lab.id)) continue;
     const mineralType = lab.mineralType;
     if (!mineralType) continue;
     const amount = lab.store.getUsedCapacity(mineralType);
@@ -1113,7 +1116,8 @@ function handleRoom(
 
   if (roomState.boostPause) {
     const allLabs = [...topology.reagentLabs, ...topology.productLabs];
-    const reagentCleanupTask = generateReagentCleanupTask(room, allLabs);
+    const excludedLabIds = getActivePowerBankBoostLabIds(roomName);
+    const reagentCleanupTask = generateReagentCleanupTask(room, allLabs, excludedLabIds);
     replaceCarrierTasksForProducerRoom(
       SYNTHESIS_CARRIER_TASK_PRODUCER,
       roomName,

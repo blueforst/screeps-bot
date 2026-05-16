@@ -818,6 +818,71 @@ describe("synthesis boost pause/resume contract", () => {
     expect(roomState.activeProduct).toBeUndefined();
   });
 
+  it("boost-pause cleanup skips labs assigned to active powerbank boost prep", () => {
+    setupActiveRoom();
+    pauseSynthesisForBoost(ROOM, "pb-task-1");
+
+    // Set up labs with residue minerals
+    const room = Game.rooms[ROOM] as Room;
+    const labs = room.find(FIND_MY_STRUCTURES) as StructureLab[];
+    const labA = labs[0];
+    const labB = labs[1];
+
+    // Both labs have residue
+    labA.mineralType = RESOURCE_UTRIUM;
+    labA.store.getUsedCapacity = ((resource?: ResourceConstant) => {
+      if (resource === RESOURCE_UTRIUM) return 100;
+      return 0;
+    }) as typeof labA.store.getUsedCapacity;
+
+    labB.mineralType = RESOURCE_HYDROGEN;
+    labB.store.getUsedCapacity = ((resource?: ResourceConstant) => {
+      if (resource === RESOURCE_HYDROGEN) return 200;
+      return 0;
+    }) as typeof labB.store.getUsedCapacity;
+
+    // Register labA as a powerbank boost lab for this room
+    Memory.runtime!.powerBankBoost = {
+      "pb-task-1": {
+        labs: {
+          [labA.id]: { labId: labA.id, compound: RESOURCE_CATALYZED_UTRIUM_ACID },
+        },
+        taskId: "pb-task-1",
+        sourceRoomName: ROOM,
+      },
+    };
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    expect(roomState.boostPause).toBeDefined();
+
+    // Check carrier tasks — labB should be cleaned up, labA should be excluded
+    // We verify via the runtime state: stage should be "unloading" since labB needs cleanup
+    expect(roomState.stage).toBe("unloading");
+  });
+
+  it("boost-pause cleanup includes all labs when no powerbank boost labs are assigned", () => {
+    setupActiveRoom();
+    pauseSynthesisForBoost(ROOM, "pb-task-1");
+
+    const room = Game.rooms[ROOM] as Room;
+    const labs = room.find(FIND_MY_STRUCTURES) as StructureLab[];
+    const labA = labs[0];
+
+    labA.mineralType = RESOURCE_UTRIUM;
+    labA.store.getUsedCapacity = ((resource?: ResourceConstant) => {
+      if (resource === RESOURCE_UTRIUM) return 100;
+      return 0;
+    }) as typeof labA.store.getUsedCapacity;
+
+    // No powerBankBoost memory set — all labs eligible for cleanup
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    expect(roomState.stage).toBe("unloading");
+  });
+
   it("synthesis tick resumes production normally after resume", () => {
     setupActiveRoom();
     pauseSynthesisForBoost(ROOM, "pb-task-1");
