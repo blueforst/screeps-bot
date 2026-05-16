@@ -312,6 +312,8 @@ function processBoosting(task: PowerBankHarvestTask): void {
   if (attackerReady && healerReady) {
     task.attackerId = attacker.id as string;
     task.healerId = healer.id as string;
+    (attacker.memory as any).taskId = task.id;
+    (healer.memory as any).taskId = task.id;
     task.status = POWER_BANK_STATUS.TRAVELLING;
   }
 }
@@ -458,6 +460,15 @@ function processTerminalCleanup(task: PowerBankHarvestTask): void {
   }
 
   cleanupTaskConfigs(task);
+
+  const creepIds = [task.attackerId, task.healerId].filter(Boolean);
+  for (const creepId of creepIds) {
+    const creep = Game.getObjectById(creepId as Id<Creep>);
+    if (creep) {
+      delete (creep.memory as any).taskId;
+      creep.memory.working = false;
+    }
+  }
 }
 
 function processTask(task: PowerBankHarvestTask): void {

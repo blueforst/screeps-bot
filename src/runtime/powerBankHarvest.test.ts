@@ -584,6 +584,53 @@ describe("powerBankHarvest", () => {
       expect(task.healerId).toBe("healer-0-id");
     });
 
+    it("writes taskId into attacker and healer creep memory when transitioning to travelling", () => {
+      setupSourceRoom();
+
+      const attackerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
+      const healerConfigName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-0",
+        id: "attacker-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerConfigName, role: "powerBankAttacker" },
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ALKALIDE } as any,
+          { type: ATTACK as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_UTRIUM_ACID } as any,
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-0",
+        id: "healer-0-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: healerConfigName, role: "powerBankHealer" },
+      });
+
+      // Remove taskId pre-populated by mock factory
+      delete (attacker.memory as any).taskId;
+      delete (healer.memory as any).taskId;
+
+      Game.creeps["attacker-0"] = attacker;
+      Game.creeps["healer-0"] = healer;
+
+      addTask(makeTask({
+        id: "pb-taskid-test",
+        status: POWER_BANK_STATUS.BOOSTING,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        tier: 8,
+      }));
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-taskid-test")!;
+      expect(task.status).toBe(POWER_BANK_STATUS.TRAVELLING);
+      expect((attacker.memory as any).taskId).toBe("pb-taskid-test");
+      expect((healer.memory as any).taskId).toBe("pb-taskid-test");
+    });
+
     it("stays boosting when only one creep exists", () => {
       setupSourceRoom();
 
@@ -3272,6 +3319,115 @@ describe("powerBankHarvest", () => {
       expect(getTask("pb-conc-ready")!.status).toBe(POWER_BANK_STATUS.TRAVELLING);
       expect(getTask("pb-conc-ready")!.attackerId).toBe("attacker-conc-b-id");
       expect(getTask("pb-conc-ready")!.healerId).toBe("healer-conc-b-id");
+    });
+  });
+
+  describe("terminal cleanup neutralizes task-bound creeps", () => {
+    it("clears taskId and working on attacker/healer when task enters terminal state", () => {
+      mockReleaseBoostLabs();
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-cleanup",
+        id: "attacker-cleanup-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: "test", role: "powerBankAttacker" } as any,
+      });
+      (attacker.memory as any).taskId = "pb-cleanup-test";
+      (attacker.memory as any).working = true;
+
+      const healer = createMockPowerBankCreep("powerBankHealer", {
+        name: "healer-cleanup",
+        id: "healer-cleanup-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: "test", role: "powerBankHealer" } as any,
+      });
+      (healer.memory as any).taskId = "pb-cleanup-test";
+      (healer.memory as any).working = true;
+
+      Game.getObjectById = jest.fn((id: string) => {
+        if (id === "attacker-cleanup-id") return attacker;
+        if (id === "healer-cleanup-id") return healer;
+        return null;
+      }) as any;
+
+      addTask(makeTask({
+        id: "pb-cleanup-test",
+        status: POWER_BANK_STATUS.FAILED,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        attackerId: "attacker-cleanup-id",
+        healerId: "healer-cleanup-id",
+        boostLabs: ["lab-0"],
+        failReason: "test_fail",
+        terminalTick: 100,
+      }));
+
+      runPowerBankHarvest();
+
+      // Creeps should be neutralized
+      expect((attacker.memory as any).taskId).toBeUndefined();
+      expect((attacker.memory as any).working).toBe(false);
+      expect((healer.memory as any).taskId).toBeUndefined();
+      expect((healer.memory as any).working).toBe(false);
+    });
+
+    it("is a no-op when attackerId/healerId are not set", () => {
+      mockReleaseBoostLabs();
+
+      addTask(makeTask({
+        id: "pb-no-ids",
+        status: POWER_BANK_STATUS.FAILED,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        failReason: "early_fail",
+        terminalTick: 100,
+      }));
+
+      // Should not throw
+      runPowerBankHarvest();
+
+      expect(getTask("pb-no-ids")).toBeDefined();
+    });
+
+    it("still releases boost labs and cleans up configs alongside creep neutralization", () => {
+      const releaseSpy = mockReleaseBoostLabs();
+      const configStore = getCreepConfigService();
+      const attackerName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
+      configStore.add(attackerName, "powerBankAttacker", TARGET_ROOM);
+
+      const attacker = createMockPowerBankCreep("powerBankAttacker", {
+        name: "attacker-regression",
+        id: "attacker-regression-id",
+        roomName: SOURCE_ROOM,
+        memory: { configName: attackerName, role: "powerBankAttacker" } as any,
+      });
+      (attacker.memory as any).taskId = "pb-regression";
+      (attacker.memory as any).working = true;
+
+      Game.getObjectById = jest.fn((id: string) => {
+        if (id === "attacker-regression-id") return attacker;
+        return null;
+      }) as any;
+
+      addTask(makeTask({
+        id: "pb-regression",
+        status: POWER_BANK_STATUS.FAILED,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        attackerId: "attacker-regression-id",
+        boostLabs: ["lab-r0", "lab-r1"],
+        failReason: "test",
+        terminalTick: 100,
+      }));
+
+      runPowerBankHarvest();
+
+      // Boost labs released
+      expect(releaseSpy).toHaveBeenCalledWith("pb-regression", SOURCE_ROOM);
+
+      // Creep neutralized
+      expect((attacker.memory as any).taskId).toBeUndefined();
+      expect((attacker.memory as any).working).toBe(false);
     });
   });
 });
