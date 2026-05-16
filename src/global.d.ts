@@ -609,6 +609,14 @@ declare global {
           expiresAt: number;
         }
       >;
+      powerBankBoost?: Record<
+        string,
+        {
+          labs: Record<string, { labId: string; compound: ResourceConstant }>;
+          taskId: string;
+          sourceRoomName: string;
+        }
+      >;
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
@@ -859,6 +867,7 @@ declare global {
     colonizationLastHadHostileCreepAttack?: boolean;
     colonizationDeathHandled?: boolean;
     scoutVisitedRooms?: string[];
+    _patrol?: { patrolIndex?: number };
     _move?: {
       dest?: {
         x: number;

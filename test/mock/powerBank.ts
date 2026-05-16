@@ -26,6 +26,25 @@ export class MockPos {
     return this.x === target.x && this.y === target.y && (!target.roomName || this.roomName === target.roomName);
   }
 
+  public isNearTo(target: { pos?: { x: number; y: number }; x?: number; y?: number }): boolean {
+    return this.getRangeTo(target) <= 1;
+  }
+
+  public getDirectionTo(target: { pos?: { x: number; y: number }; x?: number; y?: number }): DirectionConstant | null {
+    const tp = "pos" in target && target.pos ? target.pos : target;
+    const dx = (tp.x ?? 0) - this.x;
+    const dy = (tp.y ?? 0) - this.y;
+    if (dx === 0 && dy === 0) return null;
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    if (adx >= 2 * ady) return dx > 0 ? RIGHT : LEFT;
+    if (ady >= 2 * adx) return dy > 0 ? BOTTOM : TOP;
+    if (dx > 0 && dy > 0) return BOTTOM_RIGHT;
+    if (dx > 0 && dy < 0) return TOP_RIGHT;
+    if (dx < 0 && dy > 0) return BOTTOM_LEFT;
+    return TOP_LEFT;
+  }
+
   public findClosestByRange<T extends { pos: { x: number; y: number } }>(targets: T[]): T | null {
     let best: T | null = null;
     let bestRange = Number.POSITIVE_INFINITY;
