@@ -2,6 +2,13 @@ import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
+const BLOCKED_STATUSES: ReadonlySet<string> = new Set([
+  "preparing_boosts",
+  "spawning",
+  "renewing",
+  "boosting",
+]);
+
 function getTaskForCreep(creep: Creep): PowerBankHarvestTask | null {
   const taskId = (creep.memory as any).taskId as string | undefined;
   if (!taskId) return null;
@@ -32,7 +39,9 @@ function findPairedAttacker(creep: Creep): Creep | null {
 export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: string) => ({
   source: (creep): boolean => {
     const task = getTaskForCreep(creep);
-    if (task?.status === "boosting") return false;
+    if (task?.status && BLOCKED_STATUSES.has(task.status)) return false;
+
+    if (task?.status === "travelling" && !findPairedAttacker(creep)) return false;
 
     if (targetRoom && creep.room.name !== targetRoom) {
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 8 });
@@ -42,6 +51,11 @@ export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRou
     return true;
   },
   target: (creep): boolean => {
+    const task = getTaskForCreep(creep);
+    if (task?.status && BLOCKED_STATUSES.has(task.status)) return false;
+
+    if (task?.status === "travelling" && !findPairedAttacker(creep)) return false;
+
     const attacker = findPairedAttacker(creep);
 
     if (!attacker) {

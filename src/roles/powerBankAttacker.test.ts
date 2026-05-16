@@ -219,4 +219,126 @@ describe("powerBankAttackerRole", () => {
 
     expect(result).toBe(true);
   });
+
+  it("boosting creep cannot depart - target phase blocks when status is boosting", () => {
+    setupTask({ status: "boosting" });
+    setupBank();
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: TARGET_ROOM,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    expect(creep.attack).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("boosting creep cannot depart - target phase blocks when status is preparing_boosts", () => {
+    setupTask({ status: "preparing_boosts" });
+    setupBank();
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: TARGET_ROOM,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    expect(creep.attack).not.toHaveBeenCalled();
+  });
+
+  it("boosting creep cannot depart - target phase blocks when status is spawning", () => {
+    setupTask({ status: "spawning" });
+    setupBank();
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: TARGET_ROOM,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    expect(creep.attack).not.toHaveBeenCalled();
+  });
+
+  it("boosting creep cannot depart - target phase blocks when status is renewing", () => {
+    setupTask({ status: "renewing" });
+    setupBank();
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: TARGET_ROOM,
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    expect(creep.attack).not.toHaveBeenCalled();
+  });
+
+  it("boosting creep cannot depart - source phase blocks when status is preparing_boosts", () => {
+    setupTask({ status: "preparing_boosts" });
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: "W1N1",
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    const result = role.source?.(creep);
+
+    expect(result).toBe(false);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("partner - missing healer blocks travel in target phase during travelling", () => {
+    setupTask({ status: "travelling" });
+    Game.creeps = {};
+
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: "W1N1",
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("partner - present healer allows travel in target phase during travelling", () => {
+    setupTask({ status: "travelling" });
+    const healer = createMockPowerBankCreep("powerBankHealer", {
+      name: "healer-0",
+      roomName: "W1N1",
+      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+    Game.creeps = { "healer-0": healer };
+
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: "W1N1",
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    role.target(creep);
+
+    expect(moveToTargetRoom).toHaveBeenCalled();
+  });
+
+  it("partner - missing healer blocks travel in source phase during travelling", () => {
+    setupTask({ status: "travelling" });
+    Game.creeps = {};
+
+    const creep = createMockPowerBankCreep("powerBankAttacker", {
+      roomName: "W1N1",
+      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
+    });
+
+    const role = powerBankAttackerRole(TARGET_ROOM);
+    const result = role.source?.(creep);
+
+    expect(result).toBe(false);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
 });
