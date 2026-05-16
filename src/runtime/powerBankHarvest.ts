@@ -133,7 +133,7 @@ function processDiscovered(task: PowerBankHarvestTask): void {
     routeDistance: nearest.distance,
     currentTick: Game.time,
     hasCompounds: {
-      xgho2: getLocalCompoundStock(room, RESOURCE_CATALYZED_GHODIUM_ACID) > 0,
+      xgho2: getLocalCompoundStock(room, RESOURCE_CATALYZED_GHODIUM_ALKALIDE) > 0,
       xuh2o: getLocalCompoundStock(room, RESOURCE_CATALYZED_UTRIUM_ACID) > 0,
       xlho2: getLocalCompoundStock(room, RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE) > 0,
     },

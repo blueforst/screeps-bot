@@ -150,7 +150,7 @@ describe("powerBankBoost", () => {
     describe("with local stock sufficient", () => {
       it("returns preparing and creates carrier tasks for tier 6", () => {
         const compounds = [
-          RESOURCE_CATALYZED_GHODIUM_ACID,
+          RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
           RESOURCE_CATALYZED_UTRIUM_ACID,
           RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
         ];
@@ -215,7 +215,7 @@ describe("powerBankBoost", () => {
         const hubRoom = createRoomWithInfrastructure({
           name: HUB_ROOM,
           terminalResources: {
-            [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000,
+            [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000,
             [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
             [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 5000,
           },
@@ -257,7 +257,7 @@ describe("powerBankBoost", () => {
         const donorRoom = createRoomWithInfrastructure({
           name: DONOR_ROOM,
           terminalResources: {
-            [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000,
+            [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000,
             [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
             [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 5000,
           },
@@ -283,12 +283,12 @@ describe("powerBankBoost", () => {
     });
 
     it("returns false when no prep memory exists", () => {
-      expect(checkBoostReadiness(SOURCE_ROOM, [RESOURCE_CATALYZED_GHODIUM_ACID])).toBe(false);
+      expect(checkBoostReadiness(SOURCE_ROOM, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE])).toBe(false);
     });
 
     it("returns true when all compounds loaded in labs", () => {
       const compounds: ResourceConstant[] = [
-        RESOURCE_CATALYZED_GHODIUM_ACID,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
         RESOURCE_CATALYZED_UTRIUM_ACID,
         RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
       ];
@@ -321,7 +321,7 @@ describe("powerBankBoost", () => {
 
     it("returns false when compounds still loading", () => {
       const compounds: ResourceConstant[] = [
-        RESOURCE_CATALYZED_GHODIUM_ACID,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
         RESOURCE_CATALYZED_UTRIUM_ACID,
         RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
       ];
@@ -352,12 +352,12 @@ describe("powerBankBoost", () => {
   describe("releaseBoostLabs", () => {
     it("resumes synthesis after release", () => {
       const storageResources: Record<string, number> = {};
-      storageResources[RESOURCE_CATALYZED_GHODIUM_ACID] = 5000;
+      storageResources[RESOURCE_CATALYZED_GHODIUM_ALKALIDE] = 5000;
       storageResources[RESOURCE_CATALYZED_UTRIUM_ACID] = 5000;
       storageResources[RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE] = 5000;
 
       const compounds: ResourceConstant[] = [
-        RESOURCE_CATALYZED_GHODIUM_ACID,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
         RESOURCE_CATALYZED_UTRIUM_ACID,
         RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
       ];
@@ -414,12 +414,12 @@ describe("powerBankBoost", () => {
 
     it("clears prep memory", () => {
       const storageResources: Record<string, number> = {};
-      storageResources[RESOURCE_CATALYZED_GHODIUM_ACID] = 5000;
+      storageResources[RESOURCE_CATALYZED_GHODIUM_ALKALIDE] = 5000;
       storageResources[RESOURCE_CATALYZED_UTRIUM_ACID] = 5000;
       storageResources[RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE] = 5000;
 
       const compounds: ResourceConstant[] = [
-        RESOURCE_CATALYZED_GHODIUM_ACID,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
         RESOURCE_CATALYZED_UTRIUM_ACID,
         RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
       ];
@@ -445,7 +445,7 @@ describe("powerBankBoost", () => {
 
   describe("findBestDonorRoom", () => {
     it("returns null when no rooms have the resource", () => {
-      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ACID, 1000, [SOURCE_ROOM]);
+      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 1000, [SOURCE_ROOM]);
       expect(result).toBeNull();
     });
 
@@ -454,17 +454,17 @@ describe("powerBankBoost", () => {
 
       const hubRoom = createRoomWithInfrastructure({
         name: HUB_ROOM,
-        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 2000 },
+        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 2000 },
       });
       Game.rooms[HUB_ROOM] = hubRoom;
 
       const donorRoom = createRoomWithInfrastructure({
         name: DONOR_ROOM,
-        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000 },
+        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000 },
       });
       Game.rooms[DONOR_ROOM] = donorRoom;
 
-      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ACID, 1000, [SOURCE_ROOM]);
+      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 1000, [SOURCE_ROOM]);
       expect(result).toBe(HUB_ROOM);
     });
 
@@ -479,34 +479,34 @@ describe("powerBankBoost", () => {
 
       const donorRoom = createRoomWithInfrastructure({
         name: DONOR_ROOM,
-        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000 },
+        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000 },
       });
       Game.rooms[DONOR_ROOM] = donorRoom;
 
-      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ACID, 1000, [SOURCE_ROOM]);
+      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 1000, [SOURCE_ROOM]);
       expect(result).toBe(DONOR_ROOM);
     });
 
     it("excludes specified rooms", () => {
       const room = createRoomWithInfrastructure({
         name: DONOR_ROOM,
-        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000 },
+        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000 },
       });
       Game.rooms[DONOR_ROOM] = room;
 
-      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ACID, 1000, [DONOR_ROOM]);
+      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 1000, [DONOR_ROOM]);
       expect(result).toBeNull();
     });
 
     it("returns null when terminal has cooldown", () => {
       const room = createRoomWithInfrastructure({
         name: DONOR_ROOM,
-        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000 },
+        terminalResources: { [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000 },
         terminalCooldown: 5,
       });
       Game.rooms[DONOR_ROOM] = room;
 
-      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ACID, 1000, [SOURCE_ROOM]);
+      const result = findBestDonorRoom(RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 1000, [SOURCE_ROOM]);
       expect(result).toBeNull();
     });
   });
@@ -546,12 +546,12 @@ describe("powerBankBoost", () => {
       };
 
       const storageResources: Record<string, number> = {};
-      storageResources[RESOURCE_CATALYZED_GHODIUM_ACID] = 5000;
+      storageResources[RESOURCE_CATALYZED_GHODIUM_ALKALIDE] = 5000;
       storageResources[RESOURCE_CATALYZED_UTRIUM_ACID] = 5000;
       storageResources[RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE] = 5000;
 
       const compounds: ResourceConstant[] = [
-        RESOURCE_CATALYZED_GHODIUM_ACID,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
         RESOURCE_CATALYZED_UTRIUM_ACID,
         RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
       ];
@@ -583,7 +583,7 @@ describe("powerBankBoost", () => {
         taskId: "task-a",
         sourceRoomName: "roomA",
         labs: {
-          "lab-1": { labId: "lab-1", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+          "lab-1": { labId: "lab-1", compound: RESOURCE_CATALYZED_GHODIUM_ALKALIDE },
           "lab-2": { labId: "lab-2", compound: RESOURCE_CATALYZED_UTRIUM_ACID },
         },
       };
@@ -591,7 +591,7 @@ describe("powerBankBoost", () => {
         taskId: "task-b",
         sourceRoomName: "roomB",
         labs: {
-          "lab-3": { labId: "lab-3", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+          "lab-3": { labId: "lab-3", compound: RESOURCE_CATALYZED_GHODIUM_ALKALIDE },
         },
       };
 
@@ -606,7 +606,7 @@ describe("powerBankBoost", () => {
         taskId: "task-c",
         sourceRoomName: "roomC",
         labs: {
-          "lab-4": { labId: "lab-4", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+          "lab-4": { labId: "lab-4", compound: RESOURCE_CATALYZED_GHODIUM_ALKALIDE },
         },
       };
 
@@ -623,7 +623,7 @@ describe("powerBankBoost", () => {
         taskId: "task-d",
         sourceRoomName: SOURCE_ROOM,
         labs: {
-          "lab-10": { labId: "lab-10", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+          "lab-10": { labId: "lab-10", compound: RESOURCE_CATALYZED_GHODIUM_ALKALIDE },
           "lab-11": { labId: "lab-11", compound: RESOURCE_CATALYZED_UTRIUM_ACID },
         },
       };
@@ -632,7 +632,7 @@ describe("powerBankBoost", () => {
     });
 
     it("returns undefined when task not found", () => {
-      expect(getAssignedPowerBankBoostLabId("nonexistent", RESOURCE_CATALYZED_GHODIUM_ACID)).toBeUndefined();
+      expect(getAssignedPowerBankBoostLabId("nonexistent", RESOURCE_CATALYZED_GHODIUM_ALKALIDE)).toBeUndefined();
     });
 
     it("returns undefined when compound not assigned", () => {
@@ -642,7 +642,7 @@ describe("powerBankBoost", () => {
         taskId: "task-e",
         sourceRoomName: SOURCE_ROOM,
         labs: {
-          "lab-20": { labId: "lab-20", compound: RESOURCE_CATALYZED_GHODIUM_ACID },
+          "lab-20": { labId: "lab-20", compound: RESOURCE_CATALYZED_GHODIUM_ALKALIDE },
         },
       };
 

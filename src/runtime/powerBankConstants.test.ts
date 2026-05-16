@@ -147,7 +147,7 @@ describe("powerBankConstants", () => {
   describe("POWER_BANK_BOOST_REQUIREMENTS", () => {
     it("RCL6 attacker uses catalyzed ghodium acid + catalyzed utrium acid", () => {
       expect(POWER_BANK_BOOST_REQUIREMENTS[6].attacker).toEqual([
-        RESOURCE_CATALYZED_GHODIUM_ACID,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
         RESOURCE_CATALYZED_UTRIUM_ACID,
       ]);
     });

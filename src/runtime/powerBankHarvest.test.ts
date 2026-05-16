@@ -50,7 +50,7 @@ function setupSourceRoom(opts: { rcl?: number; energyCapacity?: number; hasStora
   const storage = opts.hasStorage !== false
     ? {
         store: createMockStore({
-          [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000,
+          [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000,
           [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
           [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 5000,
         }),
@@ -418,7 +418,7 @@ describe("powerBankHarvest", () => {
         roomName: SOURCE_ROOM,
         memory: { configName: attackerConfigName, role: "powerBankAttacker" },
         body: [
-          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ACID } as any,
+          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ALKALIDE } as any,
           { type: ATTACK as BodyPartConstant, hits: 100 },
           { type: MOVE as BodyPartConstant, hits: 100 },
         ],
@@ -537,7 +537,7 @@ describe("powerBankHarvest", () => {
         roomName: SOURCE_ROOM,
         memory: { configName: attackerConfigName, role: "powerBankAttacker" },
         body: [
-          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ACID } as any,
+          { type: TOUGH as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ALKALIDE } as any,
           { type: ATTACK as BodyPartConstant, hits: 100, boost: RESOURCE_CATALYZED_UTRIUM_ACID } as any,
           { type: MOVE as BodyPartConstant, hits: 100 },
         ],
@@ -1078,7 +1078,7 @@ describe("powerBankHarvest", () => {
       runPowerBankHarvest();
       expect(store["pb-lifecycle"].status).toBe(POWER_BANK_STATUS.BOOSTING);
 
-      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ACID;
+      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
       (attacker.body[1] as any).boost = RESOURCE_CATALYZED_UTRIUM_ACID;
 
       Game.time = 102;
@@ -1326,7 +1326,7 @@ describe("powerBankHarvest", () => {
       runPowerBankHarvest();
       expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
 
-      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ACID;
+      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
       (attacker.body[1] as any).boost = RESOURCE_CATALYZED_UTRIUM_ACID;
 
       runPowerBankHarvest();
@@ -1410,7 +1410,7 @@ describe("powerBankHarvest", () => {
       runPowerBankHarvest();
       expect(store["pb-timing"].status).toBe(POWER_BANK_STATUS.BOOSTING);
 
-      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ACID;
+      (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
       (attacker.body[1] as any).boost = RESOURCE_CATALYZED_UTRIUM_ACID;
 
       Game.time = 181;
@@ -1559,7 +1559,7 @@ describe("powerBankHarvest", () => {
     it("fails task before spawn when no XUH2O available in any room", () => {
       const storage = {
         store: createMockStore({
-          [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000,
+          [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000,
           [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 5000,
         }),
       };
