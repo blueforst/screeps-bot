@@ -16,6 +16,7 @@ import {
 } from "@/runtime/carrierTaskBoard";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { getCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import { getReservedProductionAmountExcludingHolder } from "@/runtime/resourceReservation";
 
 type SynthesisStage = "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
 
@@ -51,6 +52,14 @@ interface SynthesisBinding {
 
 type SynthesisBindingStore = Record<string, SynthesisBinding>;
 
+interface BoostPauseState {
+  reason: "powerBankBoost";
+  taskId: string;
+  createdTick: number;
+  pausedPlan: SynthesisReactionPlan | null;
+  pausedStage: SynthesisStage;
+}
+
 interface SynthesisRoomRuntimeState {
   stage: SynthesisStage;
   activeProduct?: ResourceConstant;
@@ -72,6 +81,7 @@ interface SynthesisRoomRuntimeState {
   lastError?: string;
   lastTransitionAt: number;
   loadingSinceTick?: number;
+  boostPause?: BoostPauseState;
 }
 
 interface SynthesisRuntimeState {
@@ -375,7 +385,9 @@ function selectDonor(
     const total = roomResourceAmount(room, resource);
     const reserve = getResourceReserve(room.name, resource);
     const outgoing = getOutgoingResourceTransferAmount(room.name, resource);
-    const exportable = Math.max(0, total - reserve - outgoing);
+    const holderId = `synthesis:${targetRoom.name}:${resource}`;
+    const reserved = getReservedProductionAmountExcludingHolder(room.name, resource, holderId);
+    const exportable = Math.max(0, total - reserve - outgoing - reserved);
     if (exportable <= 0) {
       continue;
     }
@@ -1099,6 +1111,24 @@ function handleRoom(
     return { generated, failed, runs };
   }
 
+  if (roomState.boostPause) {
+    const allLabs = [...topology.reagentLabs, ...topology.productLabs];
+    const reagentCleanupTask = generateReagentCleanupTask(room, allLabs);
+    replaceCarrierTasksForProducerRoom(
+      SYNTHESIS_CARRIER_TASK_PRODUCER,
+      roomName,
+      reagentCleanupTask ? [reagentCleanupTask] : [],
+    );
+    runtime.rooms[roomName] = {
+      ...roomState,
+      stage: reagentCleanupTask ? "unloading" : "idle",
+      pendingTasks: countPendingToRoom(roomName),
+      reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
+      productLabIds: topology.productLabs.map((lab) => lab.id),
+    };
+    return { generated, failed, runs };
+  }
+
   const activePlan = chooseActivePlan(room, roomCfg, autoPlan);
   if (!activePlan) {
     const unloadProduct = roomState.activeProduct as ResourceConstant | undefined;
@@ -1337,6 +1367,90 @@ function handleRoom(
   };
 
   return { generated, failed, runs };
+}
+
+export function isSynthesisPaused(roomName: string): boolean {
+  const runtime = getRuntimeState();
+  const roomState = runtime.rooms[roomName];
+  return !!roomState?.boostPause;
+}
+
+export function pauseSynthesisForBoost(roomName: string, taskId: string): boolean {
+  const runtime = getRuntimeState();
+  const roomState = runtime.rooms[roomName];
+  if (!roomState || roomState.boostPause) {
+    return false;
+  }
+
+  // Only pause if there is an active production (not idle/blocked)
+  if (roomState.stage === "idle" || roomState.stage === "blocked") {
+    return false;
+  }
+
+  const pausedPlan: SynthesisReactionPlan | null = roomState.activeProduct
+    ? {
+        product: roomState.activeProduct,
+        targetAmount: roomState.targetAmount ?? 0,
+        batchSize: roomState.batchSize ?? DEFAULT_BATCH_SIZE,
+        donorRoomNames: [],
+      }
+    : null;
+
+  roomState.boostPause = {
+    reason: "powerBankBoost",
+    taskId,
+    createdTick: Game.time,
+    pausedPlan,
+    pausedStage: roomState.stage,
+  };
+
+  // Clear active production — this triggers reagent cleanup on next tick
+  roomState.stage = "idle";
+  roomState.activeProduct = undefined;
+  roomState.reagentA = undefined;
+  roomState.reagentB = undefined;
+  roomState.targetAmount = undefined;
+  roomState.batchSize = undefined;
+  roomState.loadingSinceTick = undefined;
+  roomState.lastTransitionAt = Game.time;
+
+  return true;
+}
+
+export function resumeSynthesisAfterBoost(roomName: string): void {
+  const runtime = getRuntimeState();
+  const roomState = runtime.rooms[roomName];
+  if (!roomState?.boostPause) {
+    return;
+  }
+
+  const pause = roomState.boostPause;
+
+  if (pause.pausedPlan) {
+    roomState.activeProduct = pause.pausedPlan.product;
+    roomState.targetAmount = pause.pausedPlan.targetAmount;
+    roomState.batchSize = pause.pausedPlan.batchSize;
+    const reagents = resolveReagents(pause.pausedPlan.product);
+    if (reagents) {
+      roomState.reagentA = reagents[0];
+      roomState.reagentB = reagents[1];
+    }
+  }
+
+  roomState.stage = pause.pausedStage === "idle" ? "acquiring" : pause.pausedStage;
+  roomState.lastTransitionAt = Game.time;
+  roomState.loadingSinceTick = Game.time;
+
+  delete roomState.boostPause;
+}
+
+export function clearBoostPause(roomName: string): void {
+  const runtime = getRuntimeState();
+  const roomState = runtime.rooms[roomName];
+  if (!roomState) {
+    return;
+  }
+  delete roomState.boostPause;
 }
 
 export function runSynthesisControl(): void {

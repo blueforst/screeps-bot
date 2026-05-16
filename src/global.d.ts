@@ -564,6 +564,18 @@ declare global {
             lastError?: string;
             lastTransitionAt: number;
             loadingSinceTick?: number;
+            boostPause?: {
+              reason: "powerBankBoost";
+              taskId: string;
+              createdTick: number;
+              pausedPlan: {
+                product: ResourceConstant;
+                targetAmount: number;
+                batchSize: number;
+                donorRoomNames: string[];
+              } | null;
+              pausedStage: "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
+            };
           }
         >;
       };

@@ -1,8 +1,9 @@
-import { runSynthesisControl } from "@/runtime/synthesisControl";
+import { runSynthesisControl, pauseSynthesisForBoost, resumeSynthesisAfterBoost, isSynthesisPaused, clearBoostPause } from "@/runtime/synthesisControl";
 import {
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
 } from "@/runtime/logistics/resourceTransferTasks";
+import { reserveProductionResource } from "@/runtime/resourceReservation";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -54,6 +55,7 @@ function createRoomWithResources(options: {
           }
           return 0;
         },
+        getFreeCapacity: () => 100000,
       },
     } as unknown as StructureStorage,
     terminal: {
@@ -532,5 +534,303 @@ describe("non-hub synthesis completion signals hub needsPlan with debounce", () 
     runSynthesisControl();
 
     expect(Memory.runtime?.hub?.needsPlan).toBe(true);
+  });
+});
+
+describe("selectDonor respects production locks from other holders", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time = 10;
+    Memory.cfg = {
+      synthesisControl: {
+        enabled: true,
+        sampleInterval: 10,
+        rooms: {
+          W1N1: {
+            reactions: [
+              {
+                product: RESOURCE_UTRIUM_HYDRIDE,
+                targetAmount: 5000,
+              },
+            ],
+          },
+        },
+      },
+    };
+    Memory.runtime = {};
+    Memory.rooms = {};
+    Memory.data = undefined;
+    Game.rooms = {};
+    Game.spawns = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: () => 0,
+    };
+  });
+
+  it("donor with 1000 resource and 700 locked by another holder exposes only 300 exportable", () => {
+    const hubRoom = createRoomWithResources({
+      name: "W1N1",
+      mineralType: RESOURCE_UTRIUM,
+      storageEnergy: 300000,
+    });
+    const donorRoom = createRoomWithResources({
+      name: "W2N1",
+      mineralType: RESOURCE_HYDROGEN,
+      storageEnergy: 300000,
+      terminalResources: {
+        [RESOURCE_UTRIUM]: 1000,
+        [RESOURCE_HYDROGEN]: 5000,
+      },
+    });
+    Game.rooms[hubRoom.name] = hubRoom;
+    Game.rooms[donorRoom.name] = donorRoom;
+
+    // Another holder (different target room) has reserved 700 U in the donor room
+    reserveProductionResource("W2N1", RESOURCE_UTRIUM, 700, "synthesis:W3N1:OH");
+
+    runSynthesisControl();
+
+    const tasks = ensureResourceTransferTaskStore();
+    const allTasks = Object.values(tasks);
+
+    const utriumSynthesisTasks = allTasks.filter(
+      (t) => t.status === "pending" && t.reason?.startsWith("synthesis:") && t.resource === RESOURCE_UTRIUM,
+    );
+    // Only 300 exportable (1000 - 700 locked), which is > LAB_REACTION_AMOUNT (5), so a task is created
+    expect(utriumSynthesisTasks.length).toBe(1);
+    expect(utriumSynthesisTasks[0].amount).toBeLessThanOrEqual(300);
+  });
+
+  it("same holder can still use its own locked amount", () => {
+    const hubRoom = createRoomWithResources({
+      name: "W1N1",
+      mineralType: RESOURCE_UTRIUM,
+      storageEnergy: 300000,
+    });
+    const donorRoom = createRoomWithResources({
+      name: "W2N1",
+      mineralType: RESOURCE_HYDROGEN,
+      storageEnergy: 300000,
+      terminalResources: {
+        [RESOURCE_UTRIUM]: 1000,
+        [RESOURCE_HYDROGEN]: 5000,
+      },
+    });
+    Game.rooms[hubRoom.name] = hubRoom;
+    Game.rooms[donorRoom.name] = donorRoom;
+
+    // The SAME holder (synthesis:W1N1:U) reserves 700 U in donor room
+    reserveProductionResource("W2N1", RESOURCE_UTRIUM, 700, `synthesis:W1N1:${RESOURCE_UTRIUM}`);
+
+    runSynthesisControl();
+
+    const tasks = ensureResourceTransferTaskStore();
+    const allTasks = Object.values(tasks);
+
+    const utriumSynthesisTasks = allTasks.filter(
+      (t) => t.status === "pending" && t.reason?.startsWith("synthesis:") && t.resource === RESOURCE_UTRIUM,
+    );
+    // The holder matches the current request, so the 700 reservation is excluded.
+    // Full 1000 is exportable.
+    expect(utriumSynthesisTasks.length).toBe(1);
+    expect(utriumSynthesisTasks[0].amount).toBeGreaterThanOrEqual(500);
+  });
+});
+
+describe("synthesis boost pause/resume contract", () => {
+  const ROOM = "W1N1";
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time = 100;
+    Memory.cfg = {
+      synthesisControl: {
+        enabled: true,
+        sampleInterval: 10,
+        rooms: {
+          [ROOM]: {
+            enabled: true,
+            reactions: [
+              { product: RESOURCE_UTRIUM_HYDRIDE, targetAmount: 5000, batchSize: 500 },
+            ],
+          },
+        },
+      },
+    };
+    Memory.runtime = undefined;
+    Memory.rooms = {};
+    Memory.data = undefined;
+    Game.rooms = {};
+    Game.spawns = {};
+    (Game as GameWithPartialMarket).market = {
+      calcTransactionCost: () => 0,
+    };
+  });
+
+  function setupActiveRoom(): void {
+    const room = createRoomWithResources({
+      name: ROOM,
+      mineralType: RESOURCE_UTRIUM,
+      storageEnergy: 300000,
+    });
+    Game.rooms[ROOM] = room;
+
+    Memory.runtime = {
+      synthesisControl: {
+        updatedAt: 0,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          [ROOM]: {
+            stage: "synthesizing",
+            activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+            reagentA: RESOURCE_UTRIUM,
+            reagentB: RESOURCE_HYDROGEN,
+            targetAmount: 5000,
+            batchSize: 500,
+            reagentLabIds: [`${ROOM}-lab-1`, `${ROOM}-lab-2`],
+            productLabIds: [`${ROOM}-lab-3`],
+            successfulRuns: 10,
+            pendingTasks: 0,
+            lastTransitionAt: 90,
+          },
+        },
+      },
+    };
+  }
+
+  it("pauseSynthesisForBoost saves plan, clears active production, returns true", () => {
+    setupActiveRoom();
+    expect(isSynthesisPaused(ROOM)).toBe(false);
+
+    const result = pauseSynthesisForBoost(ROOM, "pb-task-1");
+
+    expect(result).toBe(true);
+    expect(isSynthesisPaused(ROOM)).toBe(true);
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    expect(roomState.boostPause).toBeDefined();
+    expect(roomState.boostPause!.reason).toBe("powerBankBoost");
+    expect(roomState.boostPause!.taskId).toBe("pb-task-1");
+    expect(roomState.boostPause!.pausedPlan).toBeDefined();
+    expect(roomState.boostPause!.pausedPlan!.product).toBe(RESOURCE_UTRIUM_HYDRIDE);
+    expect(roomState.boostPause!.pausedPlan!.targetAmount).toBe(5000);
+    expect(roomState.boostPause!.pausedStage).toBe("synthesizing");
+
+    expect(roomState.activeProduct).toBeUndefined();
+    expect(roomState.stage).toBe("idle");
+  });
+
+  it("pausing when no active plan (idle stage) returns false", () => {
+    setupActiveRoom();
+    Memory.runtime!.synthesisControl!.rooms[ROOM].stage = "idle";
+    Memory.runtime!.synthesisControl!.rooms[ROOM].activeProduct = undefined;
+
+    const result = pauseSynthesisForBoost(ROOM, "pb-task-2");
+    expect(result).toBe(false);
+    expect(isSynthesisPaused(ROOM)).toBe(false);
+  });
+
+  it("double-pause returns false", () => {
+    setupActiveRoom();
+    const first = pauseSynthesisForBoost(ROOM, "pb-task-1");
+    expect(first).toBe(true);
+
+    const second = pauseSynthesisForBoost(ROOM, "pb-task-2");
+    expect(second).toBe(false);
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    expect(roomState.boostPause!.taskId).toBe("pb-task-1");
+  });
+
+  it("pauseSynthesisForBoost for unknown room returns false", () => {
+    const result = pauseSynthesisForBoost("W9N9", "pb-task-x");
+    expect(result).toBe(false);
+  });
+
+  it("resumeSynthesisAfterBoost restores plan and clears pause state", () => {
+    setupActiveRoom();
+    pauseSynthesisForBoost(ROOM, "pb-task-1");
+
+    resumeSynthesisAfterBoost(ROOM);
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    expect(roomState.boostPause).toBeUndefined();
+    expect(roomState.activeProduct).toBe(RESOURCE_UTRIUM_HYDRIDE);
+    expect(roomState.targetAmount).toBe(5000);
+    expect(roomState.batchSize).toBe(500);
+    expect(roomState.reagentA).toBe(RESOURCE_UTRIUM);
+    expect(roomState.reagentB).toBe(RESOURCE_HYDROGEN);
+    expect(roomState.stage).toBe("synthesizing");
+  });
+
+  it("resumeSynthesisAfterBoost is no-op when not paused", () => {
+    setupActiveRoom();
+    const before = { ...Memory.runtime!.synthesisControl!.rooms[ROOM] };
+    resumeSynthesisAfterBoost(ROOM);
+    const after = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    expect(after.stage).toBe(before.stage);
+    expect(after.activeProduct).toBe(before.activeProduct);
+  });
+
+  it("clearBoostPause removes pause without restoring", () => {
+    setupActiveRoom();
+    pauseSynthesisForBoost(ROOM, "pb-task-1");
+    expect(isSynthesisPaused(ROOM)).toBe(true);
+
+    clearBoostPause(ROOM);
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    expect(roomState.boostPause).toBeUndefined();
+    expect(roomState.activeProduct).toBeUndefined();
+    expect(roomState.stage).toBe("idle");
+  });
+
+  it("clearBoostPause is no-op for unknown room", () => {
+    expect(() => clearBoostPause("W9N9")).not.toThrow();
+  });
+
+  it("synthesis tick skips production when paused but still allows cleanup", () => {
+    setupActiveRoom();
+    pauseSynthesisForBoost(ROOM, "pb-task-1");
+
+    // The labs have residue minerals for cleanup to find
+    const room = Game.rooms[ROOM] as Room;
+    const labs = room.find(FIND_MY_STRUCTURES) as StructureLab[];
+    const labWithResidue = labs[0];
+    labWithResidue.mineralType = RESOURCE_UTRIUM;
+    labWithResidue.store.getUsedCapacity = ((resource?: ResourceConstant) => {
+      if (resource === RESOURCE_UTRIUM) return 100;
+      return 0;
+    }) as typeof labWithResidue.store.getUsedCapacity;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    // Should stay paused
+    expect(roomState.boostPause).toBeDefined();
+    // Stage should be unloading (cleanup) or idle — not synthesizing/acquiring
+    expect(roomState.stage === "unloading" || roomState.stage === "idle").toBe(true);
+    // Should not have picked a new active product
+    expect(roomState.activeProduct).toBeUndefined();
+  });
+
+  it("synthesis tick resumes production normally after resume", () => {
+    setupActiveRoom();
+    pauseSynthesisForBoost(ROOM, "pb-task-1");
+    resumeSynthesisAfterBoost(ROOM);
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
+    // Should not be paused
+    expect(roomState.boostPause).toBeUndefined();
+    // Should have picked up the product again
+    expect(roomState.activeProduct).toBe(RESOURCE_UTRIUM_HYDRIDE);
+    // Should be in an active stage (acquiring/loading/synthesizing, not idle/blocked)
+    expect(roomState.stage).not.toBe("blocked");
   });
 });
