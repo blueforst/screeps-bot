@@ -13,6 +13,7 @@ import { meleeAttackerRole } from "@/roles/meleeAttacker";
 import { minerRole } from "@/roles/miner";
 import { mineralHarvesterRole } from "@/roles/mineralHarvester";
 import { powerBankAttackerRole } from "@/roles/powerBankAttacker";
+import { powerBankHaulerRole } from "@/roles/powerBankHauler";
 import { powerBankHealerRole } from "@/roles/powerBankHealer";
 import { remoteCarrierRole } from "@/roles/remoteCarrier";
 import { scoutRole } from "@/roles/scout";
@@ -42,5 +43,5 @@ export const roleRegistry: Record<RoleName, RoleFactory> = {
   powerBankScout: powerBankStubRole,
   powerBankAttacker: powerBankAttackerRole,
   powerBankHealer: powerBankHealerRole,
-  powerBankHauler: powerBankStubRole,
+  powerBankHauler: powerBankHaulerRole,
 };

@@ -1,4 +1,4 @@
-import { POWER_BANK_STATUS, POWER_BANK_BODY_TIERS, getPowerBankConfigName } from "@/runtime/powerBankConstants";
+import { POWER_BANK_STATUS, POWER_BANK_BODY_TIERS, POWER_BANK_BOOST_REQUIREMENTS, getPowerBankConfigName } from "@/runtime/powerBankConstants";
 import { selectBodyTier, assessViability } from "@/runtime/powerBankViability";
 import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
 import { ensureDiscoveryStore } from "@/runtime/powerBankDiscovery";
@@ -140,6 +140,7 @@ function processDiscovered(task: PowerBankHarvestTask): void {
 
   task.sourceRoom = nearest.roomName;
   task.tier = tierKindToNumber(tierResult.attackerTier);
+  task.routeDistance = nearest.distance;
   task.status = POWER_BANK_STATUS.PREPARING_BOOSTS;
 }
 
@@ -203,6 +204,16 @@ function processSpawning(task: PowerBankHarvestTask): void {
   task.status = POWER_BANK_STATUS.BOOSTING;
 }
 
+function isCreepBoosted(creep: Creep): boolean {
+  return creep.body.some((part) => !!part.boost);
+}
+
+function isBoostRequiredForRole(tier: number, role: "attacker" | "healer"): boolean {
+  const requirements = POWER_BANK_BOOST_REQUIREMENTS[tier];
+  if (!requirements) return false;
+  return requirements[role].length > 0;
+}
+
 function processBoosting(task: PowerBankHarvestTask): void {
   if (isDefenseMode(task.sourceRoom)) {
     transitionToTerminal(task, "aborted", "defense_mode");
@@ -215,7 +226,33 @@ function processBoosting(task: PowerBankHarvestTask): void {
   const attackerCreeps = getTickContextService().getCreepsByConfigName(attackerConfigName);
   const healerCreeps = getTickContextService().getCreepsByConfigName(healerConfigName);
 
-  if (attackerCreeps.length > 0 && healerCreeps.length > 0) {
+  if (attackerCreeps.length === 0 && healerCreeps.length === 0) return;
+
+  if (attackerCreeps.length === 0 || healerCreeps.length === 0) {
+    return;
+  }
+
+  const attacker = attackerCreeps[0];
+  const healer = healerCreeps[0];
+  const tier = task.tier ?? 8;
+
+  if (!task.attackerReady) {
+    if (isBoostRequiredForRole(tier, "attacker")) {
+      task.attackerReady = isCreepBoosted(attacker);
+    } else {
+      task.attackerReady = true;
+    }
+  }
+
+  if (!task.healerReady) {
+    if (isBoostRequiredForRole(tier, "healer")) {
+      task.healerReady = isCreepBoosted(healer);
+    } else {
+      task.healerReady = true;
+    }
+  }
+
+  if (task.attackerReady && task.healerReady) {
     task.status = POWER_BANK_STATUS.RENEWING;
   }
 }
@@ -232,18 +269,42 @@ function processRenewing(task: PowerBankHarvestTask): void {
   const attackerCreeps = getTickContextService().getCreepsByConfigName(attackerConfigName);
   const healerCreeps = getTickContextService().getCreepsByConfigName(healerConfigName);
 
-  if (attackerCreeps.length === 0 || healerCreeps.length === 0) return;
+  if (attackerCreeps.length === 0 || healerCreeps.length === 0) {
+    transitionToTerminal(task, "aborted", "creep_died_during_renewing");
+    return;
+  }
 
   const attacker = attackerCreeps[0];
   const healer = healerCreeps[0];
 
-  const MIN_TTL = 1200;
-  if (attacker.ticksToLive !== undefined && attacker.ticksToLive < MIN_TTL) return;
-  if (healer.ticksToLive !== undefined && healer.ticksToLive < MIN_TTL) return;
+  const distance = task.routeDistance ?? 5;
+  const MIN_TTL = distance * 2 + 50;
 
-  task.attackerId = attacker.id as string;
-  task.healerId = healer.id as string;
-  task.status = POWER_BANK_STATUS.TRAVELLING;
+  const spawn = getTickContextService().getPrimarySpawnByRoom(task.sourceRoom);
+  if (!spawn) return;
+
+  const attackerTTL = attacker.ticksToLive ?? 1500;
+  const healerTTL = healer.ticksToLive ?? 1500;
+
+  if (attackerTTL < MIN_TTL) {
+    spawn.renewCreep(attacker);
+    task.attackerReady = false;
+  } else {
+    task.attackerReady = true;
+  }
+
+  if (healerTTL < MIN_TTL) {
+    spawn.renewCreep(healer);
+    task.healerReady = false;
+  } else {
+    task.healerReady = true;
+  }
+
+  if (task.attackerReady && task.healerReady) {
+    task.attackerId = attacker.id as string;
+    task.healerId = healer.id as string;
+    task.status = POWER_BANK_STATUS.TRAVELLING;
+  }
 }
 
 function processTravelling(task: PowerBankHarvestTask): void {

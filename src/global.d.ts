@@ -271,10 +271,16 @@ declare global {
     compoundTransferTaskIds: string[];
     /** Body tier (RCL number) selected by viability assessment. */
     tier?: number;
+    /** Linear distance from source room to target room. */
+    routeDistance?: number;
     /** Viability failure reason(s), set when status becomes failed. */
     failReason?: string;
     /** Tick when task entered a terminal state (complete/failed/aborted). */
     terminalTick?: number;
+    /** Whether the attacker has been fully boosted and is ready. */
+    attackerReady?: boolean;
+    /** Whether the healer has been fully boosted and is ready. */
+    healerReady?: boolean;
   }
 
   interface PowerBankScoutMemory {
