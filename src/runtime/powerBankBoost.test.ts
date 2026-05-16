@@ -279,11 +279,11 @@ describe("powerBankBoost", () => {
 
   describe("checkBoostReadiness", () => {
     it("returns true when no compounds required", () => {
-      expect(checkBoostReadiness(SOURCE_ROOM, [])).toBe(true);
+      expect(checkBoostReadiness(TASK_ID, [])).toBe(true);
     });
 
-    it("returns false when no prep memory exists", () => {
-      expect(checkBoostReadiness(SOURCE_ROOM, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE])).toBe(false);
+    it("returns false when no prep memory exists for task", () => {
+      expect(checkBoostReadiness(TASK_ID, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE])).toBe(false);
     });
 
     it("returns true when all compounds loaded in labs", () => {
@@ -315,7 +315,7 @@ describe("powerBankBoost", () => {
 
       prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
 
-      const result = checkBoostReadiness(SOURCE_ROOM, compounds);
+      const result = checkBoostReadiness(TASK_ID, compounds);
       expect(result).toBe(true);
     });
 
@@ -344,8 +344,50 @@ describe("powerBankBoost", () => {
 
       prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
 
-      const result = checkBoostReadiness(SOURCE_ROOM, compounds);
+      const result = checkBoostReadiness(TASK_ID, compounds);
       expect(result).toBe(false);
+    });
+
+    it("returns independent readiness for concurrent powerbank boost tasks", () => {
+      const compounds: ResourceConstant[] = [
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+      ];
+
+      const storageResources: Record<string, number> = {};
+      for (const c of compounds) {
+        storageResources[c] = 5000;
+      }
+
+      // Task A gets labs 4-6 (empty, preferred by selectAvailableLabs), Task B gets labs 1-3 (loaded with compounds)
+      const labsA = compounds.map((_c, i) =>
+        createLabWithCompound(`${SOURCE_ROOM}-lab-${i + 4}`, SOURCE_ROOM, null, 0)
+      );
+      const labsB = compounds.map((c, i) =>
+        createLabWithCompound(`${SOURCE_ROOM}-lab-${i + 1}`, SOURCE_ROOM, c, LAB_BOOST_MINERAL)
+      );
+
+      const room = createRoomWithInfrastructure({
+        name: SOURCE_ROOM,
+        storageResources,
+        labs: [...labsA, ...labsB],
+      });
+      Game.rooms[SOURCE_ROOM] = room;
+
+      (Game.getObjectById as jest.Mock).mockImplementation((id: string) => {
+        const allLabs = [...labsA, ...labsB];
+        return allLabs.find((l) => l.id === id) ?? null;
+      });
+
+      const taskIdA = "pb-task-a";
+      const taskIdB = "pb-task-b";
+
+      prepareBoosts(taskIdA, SOURCE_ROOM, 6);
+      prepareBoosts(taskIdB, SOURCE_ROOM, 6);
+
+      expect(checkBoostReadiness(taskIdA, compounds)).toBe(false);
+      expect(checkBoostReadiness(taskIdB, compounds)).toBe(true);
     });
   });
 
@@ -572,6 +614,73 @@ describe("powerBankBoost", () => {
       prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
 
       expect(isSynthesisPaused(SOURCE_ROOM)).toBe(true);
+    });
+  });
+
+  describe("concurrent task-scoped lab reservation", () => {
+    it("assigns different labs to concurrent powerbank boost tasks", () => {
+      const compounds: ResourceConstant[] = [
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+      ];
+
+      const storageResources: Record<string, number> = {};
+      for (const c of compounds) {
+        storageResources[c] = 5000;
+      }
+
+      const labs = compounds.flatMap((_, i) => [
+        createLabWithCompound(`${SOURCE_ROOM}-lab-${i + 1}`, SOURCE_ROOM, null, 0),
+        createLabWithCompound(`${SOURCE_ROOM}-lab-${i + 4}`, SOURCE_ROOM, null, 0),
+      ]);
+
+      const room = createRoomWithInfrastructure({
+        name: SOURCE_ROOM,
+        storageResources,
+        labs,
+      });
+      Game.rooms[SOURCE_ROOM] = room;
+
+      const resultA = prepareBoosts("pb-task-a", SOURCE_ROOM, 6);
+      const resultB = prepareBoosts("pb-task-b", SOURCE_ROOM, 6);
+
+      expect(resultA.status).not.toBe("failed");
+      expect(resultB.status).not.toBe("failed");
+
+      const overlap = resultA.labs.filter((l) => resultB.labs.includes(l));
+      expect(overlap).toEqual([]);
+    });
+
+    it("returns insufficient_labs when powerbank boost labs are reserved", () => {
+      const compounds: ResourceConstant[] = [
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+      ];
+
+      const storageResources: Record<string, number> = {};
+      for (const c of compounds) {
+        storageResources[c] = 5000;
+      }
+
+      const labs = compounds.map((_c, i) =>
+        createLabWithCompound(`${SOURCE_ROOM}-lab-${i + 1}`, SOURCE_ROOM, null, 0)
+      );
+
+      const room = createRoomWithInfrastructure({
+        name: SOURCE_ROOM,
+        storageResources,
+        labs,
+      });
+      Game.rooms[SOURCE_ROOM] = room;
+
+      const resultA = prepareBoosts("pb-task-a", SOURCE_ROOM, 6);
+      expect(resultA.status).not.toBe("failed");
+
+      const resultB = prepareBoosts("pb-task-b", SOURCE_ROOM, 6);
+      expect(resultB.status).toBe("failed");
+      expect(resultB.reason).toBe("insufficient_labs");
     });
   });
 

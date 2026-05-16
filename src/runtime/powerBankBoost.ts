@@ -14,6 +14,7 @@ import {
 import { getTickContextService } from "@/runtime/runtimeServices";
 import {
   ensurePowerBankBoostPrepStore,
+  getActivePowerBankBoostLabIds,
   type BoostLabAssignment,
   type BoostPrepMemory,
 } from "@/runtime/powerBankBoostMemory";
@@ -48,17 +49,19 @@ function getLocalStock(room: Room, resource: ResourceConstant): number {
   return total;
 }
 
-function selectAvailableLabs(room: Room, count: number): StructureLab[] {
+function selectAvailableLabs(room: Room, sourceRoomName: string, count: number): StructureLab[] {
   const labs = room.find(FIND_MY_STRUCTURES, {
     filter: (s): s is StructureLab => s.structureType === STRUCTURE_LAB,
   });
+  const reservedLabIds = getActivePowerBankBoostLabIds(sourceRoomName);
   const preferred = labs.filter((lab) => {
+    if (reservedLabIds.has(lab.id)) return false;
     const mineralType = lab.mineralType as ResourceConstant | undefined;
     if (!mineralType) return true;
     if (lab.store.getUsedCapacity(mineralType) <= 0) return true;
     return false;
   });
-  const pool = preferred.length >= count ? preferred : labs;
+  const pool = preferred.length >= count ? preferred : labs.filter((lab) => !reservedLabIds.has(lab.id));
   return pool.slice(0, count);
 }
 
@@ -80,7 +83,7 @@ export function prepareBoosts(
 
   pauseSynthesisForBoost(sourceRoomName, taskId);
 
-  const labs = selectAvailableLabs(room, compounds.length);
+  const labs = selectAvailableLabs(room, sourceRoomName, compounds.length);
   if (labs.length < compounds.length) {
     return {
       status: "failed",
@@ -164,7 +167,7 @@ export function prepareBoosts(
     drafts,
   );
 
-  if (checkBoostReadiness(sourceRoomName, compounds)) {
+  if (checkBoostReadiness(taskId, compounds)) {
     return { status: "ready", labs: labs.map((l) => l.id) };
   }
 
@@ -172,18 +175,16 @@ export function prepareBoosts(
 }
 
 /**
- * Checks if all required compounds are loaded in reserved boost labs.
+ * Checks if all required compounds are loaded in reserved boost labs for a specific task.
  */
 export function checkBoostReadiness(
-  sourceRoomName: string,
+  taskId: string,
   requiredCompounds: ResourceConstant[],
 ): boolean {
   if (requiredCompounds.length === 0) return true;
 
   const prepStore = ensurePowerBankBoostPrepStore();
-  const activePrep = Object.values(prepStore).find(
-    (p) => p.sourceRoomName === sourceRoomName,
-  );
+  const activePrep = prepStore[taskId];
   if (!activePrep) return false;
 
   for (const compound of requiredCompounds) {
