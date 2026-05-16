@@ -24,7 +24,7 @@ function signalAbort(creep: Creep): void {
 export const powerBankAttackerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: string) => ({
   source: (creep): boolean => {
     const task = getTaskForCreep(creep);
-    if (task?.status === "boosting") return true;
+    if (task?.status === "boosting") return false;
 
     if (targetRoom && creep.room.name !== targetRoom) {
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 8 });
