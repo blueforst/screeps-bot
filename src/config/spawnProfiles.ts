@@ -154,7 +154,15 @@ function powerBankHealerBody(room: Room): BodyPartConstant[] {
 }
 
 function powerBankHaulerBody(room: Room): BodyPartConstant[] {
-  return carryMoveBody(room);
+  const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
+  const pairCount = Math.max(1, Math.min(25, Math.floor(room.energyCapacityAvailable / pairCost)));
+  const parts: BodyPartConstant[] = [];
+
+  for (let i = 0; i < pairCount; i++) {
+    parts.push(CARRY, MOVE);
+  }
+
+  return clampByCapacity(parts, room);
 }
 
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {

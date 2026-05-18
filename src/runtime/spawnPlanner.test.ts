@@ -87,7 +87,7 @@ function createSource(id: string, x = 10, y = 10, roomName = "W1N1"): Source {
   } as Source;
 }
 
-function createSpawn(room: Room, pathLength = 2): StructureSpawn {
+function createSpawn(room: Room, pathLength = 2, name = `${room.name}-spawn`): StructureSpawn {
   const findPathTo = jest.fn(() =>
     Array.from({ length: pathLength }, (_, index) => ({
       x: 20 + index,
@@ -111,8 +111,8 @@ function createSpawn(room: Room, pathLength = 2): StructureSpawn {
   }
 
   return {
-    name: `${room.name}-spawn`,
-    id: `${room.name}-spawn-id` as Id<StructureSpawn>,
+    name,
+    id: `${name}-id` as Id<StructureSpawn>,
     room,
     memory: {
       spawnList: [],
@@ -549,5 +549,86 @@ describe("spawnPlanner source-role cutover queueing", () => {
 
     expect(spawn.memory.spawnList).toContain(minerConfigName);
     expect(spawn.memory.spawnList).not.toContain(harvesterConfigName);
+  });
+});
+
+describe("spawnPlanner powerbank hauler distribution", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  it("distributes powerbank haulers across all room spawns", () => {
+    const room = createRoom("W3N3");
+    const spawnA = createSpawn(room, 2, "W3N3-spawn-a");
+    const spawnB = createSpawn(room, 2, "W3N3-spawn-b");
+    const spawnC = createSpawn(room, 2, "W3N3-spawn-c");
+    Game.rooms[room.name] = room;
+    Game.spawns[spawnA.name] = spawnA;
+    Game.spawns[spawnB.name] = spawnB;
+    Game.spawns[spawnC.name] = spawnC;
+    Game.creeps.carrier = {
+      name: "carrier",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+
+    Memory.data = {
+      creepConfigs: Object.fromEntries(
+        Array.from({ length: 5 }, (_, index) => [
+          `W3N3:powerbank:E3N60:hauler:${index}`,
+          {
+            role: "powerBankHauler",
+            args: ["E3N60", ""],
+            roomName: room.name,
+          },
+        ]),
+      ),
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawnA.memory.spawnList).toEqual([
+      "W3N3:powerbank:E3N60:hauler:0",
+      "W3N3:powerbank:E3N60:hauler:3",
+    ]);
+    expect(spawnB.memory.spawnList).toEqual([
+      "W3N3:powerbank:E3N60:hauler:1",
+      "W3N3:powerbank:E3N60:hauler:4",
+    ]);
+    expect(spawnC.memory.spawnList).toEqual([
+      "W3N3:powerbank:E3N60:hauler:2",
+    ]);
+  });
+
+  it("does not queue the same powerbank hauler on multiple spawns", () => {
+    const room = createRoom("W3N4");
+    const spawnA = createSpawn(room, 2, "W3N4-spawn-a");
+    const spawnB = createSpawn(room, 2, "W3N4-spawn-b");
+    const configName = "W3N4:powerbank:E3N60:hauler:0";
+    spawnB.memory.spawnList = [configName];
+    Game.rooms[room.name] = room;
+    Game.spawns[spawnA.name] = spawnA;
+    Game.spawns[spawnB.name] = spawnB;
+    Game.creeps.carrier = {
+      name: "carrier",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "powerBankHauler",
+          args: ["E3N60", ""],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawnA.memory.spawnList).toEqual([]);
+    expect(spawnB.memory.spawnList).toEqual([configName]);
   });
 });

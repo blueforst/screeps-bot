@@ -35,11 +35,11 @@ function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
   }
 
   if (role === "powerBankAttacker" || role === "powerBankHealer") {
-    return 2;
+    return 0;
   }
 
   if (role === "powerBankHauler") {
-    return 0;
+    return 1;
   }
 
   return 3;
@@ -420,6 +420,34 @@ function queueMissingConfig(
   }
 }
 
+function isConfigQueuedInSpawns(spawns: StructureSpawn[], configName: string): boolean {
+  return spawns.some((spawn) => isConfigQueued(spawn, configName));
+}
+
+function getSpawnQueueLoad(spawn: StructureSpawn): number {
+  return (spawn.spawning ? 1 : 0) + (spawn.memory.spawnList?.length ?? 0);
+}
+
+function queuePowerBankHaulerConfig(
+  spawns: StructureSpawn[],
+  configName: string,
+  config: CreepConfig,
+  context: SpawnPlanningContext,
+): void {
+  if (spawns.length === 0) return;
+  if (isConfigQueuedInSpawns(spawns, configName)) return;
+  if (isConfigSpawning(configName, context)) return;
+  if (config.roomName && shouldSkipConfigInDefenseMode(config)) return;
+  if (getConfigCreeps(configName, context).length > 0) return;
+
+  const targetSpawn = [...spawns].sort((left, right) => {
+    const loadDiff = getSpawnQueueLoad(left) - getSpawnQueueLoad(right);
+    if (loadDiff !== 0) return loadDiff;
+    return left.name.localeCompare(right.name);
+  })[0];
+  queueConfig(targetSpawn, configName);
+}
+
 function prioritizeSpawnQueue(spawn: StructureSpawn): void {
   const queue = ensureQueue(spawn);
   if (queue.length < 2) {
@@ -522,7 +550,9 @@ export function scheduleSpawnTasks(): void {
   const tickContext = getTickContextService();
   const planningContext = createSpawnPlanningContext();
   const spawnByRoom = new Map<string, StructureSpawn>();
+  const spawnsByRoom = new Map<string, StructureSpawn[]>();
   for (const room of tickContext.getMyRooms()) {
+    spawnsByRoom.set(room.name, tickContext.getSpawnsByRoom(room.name));
     const spawn = tickContext.getPrimarySpawnByRoom(room.name);
     if (spawn) {
       spawnByRoom.set(room.name, spawn);
@@ -554,6 +584,11 @@ export function scheduleSpawnTasks(): void {
       continue;
     }
 
+    if (config.role === "powerBankHauler") {
+      queuePowerBankHaulerConfig(spawnsByRoom.get(config.roomName) ?? [], configName, config, planningContext);
+      continue;
+    }
+
     const spawn = spawnByRoom.get(config.roomName);
     if (!spawn) {
       continue;
@@ -562,7 +597,7 @@ export function scheduleSpawnTasks(): void {
     queueMissingConfig(spawn, configName, config, planningContext);
   }
 
-  for (const spawn of spawnByRoom.values()) {
+  for (const spawn of Array.from(spawnsByRoom.values()).flat()) {
     prioritizeSpawnQueue(spawn);
   }
 }
