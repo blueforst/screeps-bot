@@ -308,7 +308,7 @@ describe("cleanupResourceTransferTaskStore", () => {
     const r = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
     if (typeof r === "string") throw new Error("unexpected error");
     const store = ensureResourceTransferTaskStore();
-    store[r.task.id].lastError = "remaining_below_transfer_min";
+    store[r.task.id].lastError = "insufficient_terminal_resource_or_fee";
     // createdAt=95, Game.time=100, diff=5 < TTL=10
     store[r.task.id].createdAt = 95;
     store[r.task.id].updatedAt = 99;
@@ -359,13 +359,13 @@ describe("getIncomingResourceTransferAmount blocked task filter", () => {
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(0);
   });
 
-  it("excludes pending task blocked by remaining below transfer minimum", () => {
+  it("includes pending task with legacy remaining-below-minimum lastError", () => {
     createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
     const store = ensureResourceTransferTaskStore();
     const task = Object.values(store)[0];
     task.lastError = "remaining_below_transfer_min";
 
-    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(0);
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(500);
   });
 
   it("includes healthy pending incoming task", () => {

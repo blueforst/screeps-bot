@@ -2387,6 +2387,47 @@ describe("in-flight synthesis cargo suppresses duplicate supply demand", () => {
     // Oxygen lab has effectiveCurrentAmount=2996 > 2200, so no supply step is generated
     expect(oxygenStep).toBeUndefined();
   });
+
+  it("treats a product deficit smaller than one reaction as complete", () => {
+    setConfig({
+      sampleInterval: 100,
+      reactions: [
+        { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
+      ],
+    });
+    setRoomStage("loading", {
+      activeProduct: RESOURCE_HYDROXIDE,
+      reagentA: RESOURCE_OXYGEN,
+      reagentB: RESOURCE_HYDROGEN,
+      targetAmount: 5000,
+      batchSize: 500,
+      loadingSinceTick: 1,
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 4998,
+      },
+    });
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 2;
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 5;
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("unloading");
+
+    const carrierTasks = getCarrierTasksByRoom("W1N1");
+    expect(Object.values(carrierTasks).some((task) => task.type === "lab_supply")).toBe(false);
+    expect(Object.values(carrierTasks).some((task) => task.type === "lab_cleanup")).toBe(true);
+  });
 });
 
 describe("resolveLabTopology – room planner layout preference", () => {

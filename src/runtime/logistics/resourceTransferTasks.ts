@@ -187,7 +187,6 @@ export function getOutgoingResourceTransferAmount(roomName: string, resource: Re
 
 export const BLOCKING_ERRORS = new Set([
   "insufficient_terminal_resource_or_fee",
-  "remaining_below_transfer_min",
 ]);
 
 export function getIncomingResourceTransferAmount(roomName: string, resource: ResourceConstant): number {

@@ -198,10 +198,6 @@ function scoreDonorCandidate(
   return stockScore - costPenalty - pendingPenalty + stickyBonus;
 }
 
-function snapshotMinAmount(snapshot: ResourceControlSnapshot): number {
-  return snapshot.transferMinAmount;
-}
-
 function generateSynthesisTransferTasks(snapshots: ResourceControlSnapshot[]): { actions: string[]; bindings: SynthesisBindingStore } {
   if (Memory.cfg?.synthesisControl?.enabled === true) {
     return {
@@ -263,7 +259,7 @@ function generateSynthesisTransferTasks(snapshots: ResourceControlSnapshot[]): {
             available,
           };
         })
-        .filter((entry) => entry.available >= snapshotMinAmount(entry.snapshot))
+        .filter((entry) => entry.available > 0)
         .sort((left, right) => right.available - left.available);
 
       if (donorCandidates.length === 0) {
@@ -280,7 +276,7 @@ function generateSynthesisTransferTasks(snapshots: ResourceControlSnapshot[]): {
             score: scoreDonorCandidate(entry.snapshot, targetRoomName, resource, amountForScore, binding),
           };
         })
-        .filter((item) => item.amountForScore >= snapshotMinAmount(item.entry.snapshot))
+        .filter((item) => item.amountForScore > 0)
         .sort((left, right) => right.score - left.score);
       if (scored.length === 0) {
         continue;
@@ -298,7 +294,7 @@ function generateSynthesisTransferTasks(snapshots: ResourceControlSnapshot[]): {
       const donor = selected.entry.snapshot;
       const suggested = Math.min(deficit, selected.entry.available, donor.transferBatchSize);
       const amount = Math.max(0, Math.floor(suggested));
-      if (amount < snapshotMinAmount(donor)) {
+      if (amount <= 0) {
         continue;
       }
 

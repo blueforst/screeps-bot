@@ -119,6 +119,10 @@ const MAX_MAX_RUNS_PER_TICK = 20;
 function roundUpReactionAmount(amount: number): number {
   return Math.ceil(amount / LAB_REACTION_AMOUNT) * LAB_REACTION_AMOUNT;
 }
+
+function isTargetSatisfiedByReactionGranularity(current: number, targetAmount: number): boolean {
+  return current >= targetAmount || (current > 0 && targetAmount - current < LAB_REACTION_AMOUNT);
+}
 const SYNTHESIS_BINDING_LEASE_TICKS = 200;
 const SYNTHESIS_BINDING_STICKY_BONUS = 5;
 const SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO = 1.2;
@@ -395,7 +399,7 @@ function selectDonor(
 
     const terminalAmount = room.terminal.store.getUsedCapacity(resource);
     const sendable = Math.min(exportable, terminalAmount);
-    if (sendable < LAB_REACTION_AMOUNT) {
+    if (sendable <= 0) {
       continue;
     }
 
@@ -936,14 +940,14 @@ function generateSupplyTask(
 function chooseActivePlan(room: Room, roomCfg: SynthesisRoomConfig, autoPlan?: SynthesisReactionPlan | null): SynthesisReactionPlan | null {
   for (const plan of roomCfg.reactions) {
     const current = roomResourceAmount(room, plan.product);
-    if (current < plan.targetAmount) {
+    if (!isTargetSatisfiedByReactionGranularity(current, plan.targetAmount)) {
       return plan;
     }
   }
 
   if (autoPlan) {
     const current = roomResourceAmount(room, autoPlan.product);
-    if (current < autoPlan.targetAmount) {
+    if (!isTargetSatisfiedByReactionGranularity(current, autoPlan.targetAmount)) {
       return autoPlan;
     }
   }
@@ -1008,9 +1012,7 @@ function maybeGenerateSupplyTasks(
     }
 
     const amount = Math.min(deficit, donor.sendable, reactionPlan.batchSize);
-    if (amount < LAB_REACTION_AMOUNT) {
-      failed += 1;
-      actions.push(`synthesis-task-failed:${room.name}:${reagent}:amount_too_small`);
+    if (amount <= 0) {
       continue;
     }
 
@@ -1342,7 +1344,7 @@ function handleRoom(
   }
 
   const productCurrent = roomResourceAmount(room, activePlan.product);
-  if (productCurrent >= activePlan.targetAmount && !hasContamination) {
+  if (isTargetSatisfiedByReactionGranularity(productCurrent, activePlan.targetAmount) && !hasContamination) {
     stage = "idle";
     roomState.lastTransitionAt = Game.time;
     roomState.loadingSinceTick = undefined;

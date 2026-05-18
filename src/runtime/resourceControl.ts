@@ -51,7 +51,6 @@ interface ResourceControlRoomConfig {
   energyExportStart: number;
   terminalEnergyReserve: number;
   transferBatchSize: number;
-  transferMinAmount: number;
   mineralFloor: ResourceThresholdMap;
   mineralExportStart: ResourceThresholdMap;
 }
@@ -88,7 +87,6 @@ export interface ResourceControlSnapshot {
   energyExportStart: number;
   terminalEnergyReserve: number;
   transferBatchSize: number;
-  transferMinAmount: number;
   nativeMineralType?: MineralConstant;
   canMineNative: boolean;
   mineralFloor: ResourceThresholdMap;
@@ -107,6 +105,7 @@ const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";
 const RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY = 80;
 const RESOURCE_CONTROL_TERMINAL_OFFLOAD_PRIORITY = 90;
 const TERMINAL_TOTAL_STORAGE_CAP = 250_000;
+const RECEIVER_STORAGE_FREE_BUFFER = 100_000;
 
 const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
   energyFloor: 120_000,
@@ -114,7 +113,6 @@ const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
   energyExportStart: 250_000,
   terminalEnergyReserve: 20_000,
   transferBatchSize: 10_000,
-  transferMinAmount: 1_000,
   mineralFloor: {
     [RESOURCE_HYDROGEN]: 5_000,
     [RESOURCE_OXYGEN]: 5_000,
@@ -231,7 +229,6 @@ function normalizeRoomConfig(value: unknown): ResourceControlRoomConfig {
     300_000,
   );
   const transferBatchSize = normalizeNumber(config.transferBatchSize, DEFAULT_ROOM_CONFIG.transferBatchSize, 100, 50_000);
-  const transferMinAmount = normalizeNumber(config.transferMinAmount, DEFAULT_ROOM_CONFIG.transferMinAmount, 100, 10_000);
   const mineralFloor = normalizeResourceThresholdMap(config.mineralFloor, DEFAULT_ROOM_CONFIG.mineralFloor, 0, 500_000);
   const mineralExportStart = normalizeResourceThresholdMap(
     config.mineralExportStart,
@@ -254,7 +251,6 @@ function normalizeRoomConfig(value: unknown): ResourceControlRoomConfig {
     energyExportStart: Math.max(energyTarget, energyExportStart),
     terminalEnergyReserve,
     transferBatchSize,
-    transferMinAmount,
     mineralFloor,
     mineralExportStart,
   };
@@ -354,7 +350,6 @@ export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
       energyExportStart: config.energyExportStart,
       terminalEnergyReserve: config.terminalEnergyReserve,
       transferBatchSize: config.transferBatchSize,
-      transferMinAmount: config.transferMinAmount,
       nativeMineralType: mineral?.mineralType,
       canMineNative: !!mineral && !!extractor,
       mineralFloor: config.mineralFloor,
@@ -411,11 +406,7 @@ function computeSendAmount(
   }
 
   let candidate = Math.min(targetAmount, donor.transferBatchSize, availableResource);
-  if (candidate < donor.transferMinAmount) {
-    return 0;
-  }
-
-  while (candidate >= donor.transferMinAmount) {
+  while (candidate > 0) {
     const transferCost = Game.market.calcTransactionCost(candidate, donor.roomName, receiverRoomName);
     if (resource === RESOURCE_ENERGY) {
       if (candidate + transferCost <= getEnergyAvailableForFees(donor)) {
@@ -448,11 +439,7 @@ function computeTransferAmount(from: ResourceControlSnapshot, to: ResourceContro
   }
 
   let candidate = Math.min(from.transferBatchSize, receiverNeed, donorStorageSurplus, terminalFreeForSend);
-  if (candidate < from.transferMinAmount) {
-    return 0;
-  }
-
-  while (candidate >= from.transferMinAmount) {
+  while (candidate > 0) {
     const transferCost = Game.market.calcTransactionCost(candidate, from.roomName, to.roomName);
     if (candidate + transferCost <= terminalFreeForSend) {
       return candidate;
@@ -520,7 +507,15 @@ function applyInternalBalancing(snapshots: ResourceControlSnapshot[], terminalBu
   return actions;
 }
 
-function getTransferTaskPriority(task: ResourceTransferTask, survivalRooms: Set<string>): number {
+function isStorageConstrained(snapshot: ResourceControlSnapshot | undefined): boolean {
+  return (snapshot?.storage?.store.getFreeCapacity() ?? 0) < RECEIVER_STORAGE_FREE_BUFFER;
+}
+
+function getTransferTaskPriority(
+  task: ResourceTransferTask,
+  survivalRooms: Set<string>,
+  storageConstrainedRooms: Set<string>,
+): number {
   if (task.resource === RESOURCE_ENERGY && survivalRooms.has(task.toRoomName)) {
     return 0;
   }
@@ -530,10 +525,21 @@ function getTransferTaskPriority(task: ResourceTransferTask, survivalRooms: Set<
     return 5;
   }
 
+  if (reason.startsWith("hub:export:") && storageConstrainedRooms.has(task.fromRoomName)) return 1;
   if (reason.startsWith("hub:import:")) return 2;
   if (reason.startsWith("hub:reclaim:")) return 3;
   if (reason.startsWith("hub:export:")) return 4;
   return 1;
+}
+
+function getReceiverTerminalFreeCapacity(receiver: ResourceControlSnapshot, resource: ResourceConstant): number {
+  const resourceFree = receiver.terminal.store.getFreeCapacity(resource);
+  if (typeof resourceFree === "number") {
+    return Math.max(0, resourceFree);
+  }
+
+  const totalFree = receiver.terminal.store.getFreeCapacity();
+  return typeof totalFree === "number" ? Math.max(0, totalFree) : 0;
 }
 
 function getHubPendingImportResources(): Map<string, Set<string>> {
@@ -570,11 +576,14 @@ function executeTransferTasks(
   const survivalRooms = new Set(
     snapshots.filter((s) => s.state === "survival").map((s) => s.roomName),
   );
+  const storageConstrainedRooms = new Set(
+    snapshots.filter((snapshot) => isStorageConstrained(snapshot)).map((snapshot) => snapshot.roomName),
+  );
   const hubPendingImportResources = getHubPendingImportResources();
 
   const tasks = getResourceTransferTaskListSorted().sort((a, b) => {
-    const pa = getTransferTaskPriority(a, survivalRooms);
-    const pb = getTransferTaskPriority(b, survivalRooms);
+    const pa = getTransferTaskPriority(a, survivalRooms, storageConstrainedRooms);
+    const pb = getTransferTaskPriority(b, survivalRooms, storageConstrainedRooms);
     if (pa !== pb) return pa - pb;
     return a.createdAt - b.createdAt;
   });
@@ -593,7 +602,7 @@ function executeTransferTasks(
     if (taskReason.startsWith("hub:export:")) {
       const exportResource = taskReason.split(":").pop()!;
       const pendingResources = hubPendingImportResources.get(task.fromRoomName);
-      if (pendingResources && pendingResources.has(exportResource)) {
+      if (pendingResources && pendingResources.has(exportResource) && !storageConstrainedRooms.has(task.fromRoomName)) {
         continue;
       }
     }
@@ -625,13 +634,11 @@ function executeTransferTasks(
     if (terminalBusy.has(donor.roomName) || donor.terminal.cooldown > 0) {
       continue;
     }
-    if (task.resource !== RESOURCE_ENERGY && (receiver.storage?.store.getFreeCapacity() ?? 0) < 100_000) {
+    const receiverTerminalFree = getReceiverTerminalFreeCapacity(receiver, task.resource);
+    if (receiverTerminalFree <= 0) {
       continue;
     }
-    if (task.remainingAmount < donor.transferMinAmount) {
-      task.updatedAt = Game.time;
-      task.lastError = "remaining_below_transfer_min";
-      actions.push(`task-blocked:${task.id}:remaining_below_transfer_min`);
+    if (task.resource !== RESOURCE_ENERGY && isStorageConstrained(receiver)) {
       continue;
     }
 
@@ -639,7 +646,7 @@ function executeTransferTasks(
       donor,
       receiver.roomName,
       task.resource,
-      Math.min(task.remainingAmount, donor.transferBatchSize),
+      Math.min(task.remainingAmount, donor.transferBatchSize, receiverTerminalFree),
     );
     if (amount <= 0) {
       task.updatedAt = Game.time;
