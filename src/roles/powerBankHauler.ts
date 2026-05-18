@@ -19,6 +19,17 @@ function getSourceRoomName(creep: Creep): string {
   return creep.memory.configName?.split(":")[0] || creep.room.name;
 }
 
+function getTargetRoomName(creep: Creep, targetRoom?: string): string | undefined {
+  if (targetRoom) return targetRoom;
+
+  const parts = creep.memory.configName?.split(":") || [];
+  if (parts[1] === "powerbank" && parts[2]) {
+    return parts[2];
+  }
+
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Terminal state helpers
 // ---------------------------------------------------------------------------
@@ -49,6 +60,122 @@ function findDroppedPower(room: Room, bankPos: { x: number; y: number }): Resour
   });
 
   return resources[0];
+}
+
+function findAnyDroppedPower(room: Room): Resource | null {
+  if (typeof room.find !== "function") {
+    return null;
+  }
+
+  const resources = room.find(FIND_DROPPED_RESOURCES, {
+    filter: (r) => r.resourceType === RESOURCE_POWER,
+  });
+  if (resources.length === 0) return null;
+
+  resources.sort((a, b) => b.amount - a.amount);
+  return resources[0];
+}
+
+function findPowerBank(room: Room): StructurePowerBank | null {
+  if (typeof room.find !== "function") {
+    return null;
+  }
+
+  const banks = room.find(FIND_STRUCTURES, {
+    filter: (structure): structure is StructurePowerBank => structure.structureType === STRUCTURE_POWER_BANK,
+  });
+
+  return banks[0] || null;
+}
+
+function waitAwayFromBank(creep: Creep, bankPos: { x: number; y: number }): void {
+  const range = Math.max(
+    Math.abs(creep.pos.x - bankPos.x),
+    Math.abs(creep.pos.y - bankPos.y),
+  );
+  if (range >= 5) {
+    return;
+  }
+
+  const dx = creep.pos.x - bankPos.x;
+  const dy = creep.pos.y - bankPos.y;
+  let dir: DirectionConstant | null = null;
+  const adx = Math.abs(dx);
+  const ady = Math.abs(dy);
+  if (adx === 0 && ady === 0) {
+    dir = BOTTOM as DirectionConstant;
+  } else if (adx >= 2 * ady) {
+    dir = dx > 0 ? (RIGHT as DirectionConstant) : (LEFT as DirectionConstant);
+  } else if (ady >= 2 * adx) {
+    dir = dy > 0 ? (BOTTOM as DirectionConstant) : (TOP as DirectionConstant);
+  } else if (dx > 0 && dy > 0) {
+    dir = BOTTOM_RIGHT as DirectionConstant;
+  } else if (dx > 0 && dy < 0) {
+    dir = TOP_RIGHT as DirectionConstant;
+  } else if (dx < 0 && dy > 0) {
+    dir = BOTTOM_LEFT as DirectionConstant;
+  } else {
+    dir = TOP_LEFT as DirectionConstant;
+  }
+
+  measureCreepIntent(() => creep.move(dir));
+}
+
+function isExitCoordinate(x: number, y: number): boolean {
+  return x <= 0 || x >= 49 || y <= 0 || y >= 49;
+}
+
+function getRangeToPosition(left: RoomPosition, right: { x: number; y: number }): number {
+  return Math.max(Math.abs(left.x - right.x), Math.abs(left.y - right.y));
+}
+
+function findBankStagingPosition(creep: Creep, bankPos: RoomPosition): RoomPosition {
+  const terrain = Game.map.getRoomTerrain(bankPos.roomName);
+  let best: RoomPosition | null = null;
+  let bestScore = Infinity;
+
+  for (let x = Math.max(1, bankPos.x - 6); x <= Math.min(48, bankPos.x + 6); x += 1) {
+    for (let y = Math.max(1, bankPos.y - 6); y <= Math.min(48, bankPos.y + 6); y += 1) {
+      const range = Math.max(Math.abs(x - bankPos.x), Math.abs(y - bankPos.y));
+      if (range < 5 || range > 6) continue;
+      if (terrain.get(x, y) === TERRAIN_MASK_WALL) continue;
+
+      const score = Math.abs(creep.pos.x - x) + Math.abs(creep.pos.y - y) + (range - 5) * 20;
+      if (score >= bestScore) continue;
+
+      bestScore = score;
+      best = new RoomPosition(x, y, bankPos.roomName);
+    }
+  }
+
+  return best ?? new RoomPosition(
+    Math.min(48, Math.max(1, bankPos.x)),
+    Math.min(48, Math.max(1, bankPos.y + 5)),
+    bankPos.roomName,
+  );
+}
+
+function moveToBankVicinity(creep: Creep, bankPos: RoomPosition | { x: number; y: number; roomName?: string }): void {
+  const roomName = bankPos.roomName || creep.room.name;
+  const targetPos = bankPos.roomName ? bankPos as RoomPosition : new RoomPosition(bankPos.x, bankPos.y, roomName);
+  const range = getRangeToPosition(creep.pos, targetPos);
+
+  if (creep.room.name === targetPos.roomName && range < 5) {
+    waitAwayFromBank(creep, targetPos);
+    return;
+  }
+  if (creep.room.name === targetPos.roomName && range <= 6 && !isExitCoordinate(creep.pos.x, creep.pos.y)) {
+    return;
+  }
+
+  const stagingPos = findBankStagingPosition(creep, targetPos);
+
+  measureCreepIntent(() => creep.moveTo(stagingPos, {
+    range: 0,
+    reusePath: 10,
+    ignoreCreeps: true,
+    visualizePathStyle: { stroke: "#ffaa00" },
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +213,45 @@ function deliverPower(creep: Creep): boolean {
   return false;
 }
 
+function retireIfEmpty(creep: Creep): boolean {
+  if (creep.store.getUsedCapacity() > 0) return false;
+  creep.suicide();
+  return true;
+}
+
+function salvagePower(creep: Creep, targetRoom?: string): boolean {
+  const resolvedTargetRoom = getTargetRoomName(creep, targetRoom);
+  if (!resolvedTargetRoom) {
+    return true;
+  }
+
+  if (creep.store.getUsedCapacity() > 0) {
+    return deliverPower(creep);
+  }
+
+  if (creep.room.name !== resolvedTargetRoom) {
+    moveToTargetRoom(creep, resolvedTargetRoom, undefined, { travelRange: 3, reusePath: 10 });
+    return false;
+  }
+
+  const dropped = findAnyDroppedPower(creep.room);
+  if (dropped) {
+    const code = measureCreepIntent(() => creep.pickup(dropped));
+    if (code === ERR_NOT_IN_RANGE) {
+      moveToTarget(creep, dropped);
+    }
+    return creep.store.getFreeCapacity() <= 0;
+  }
+
+  const bank = findPowerBank(creep.room);
+  if (bank) {
+    moveToBankVicinity(creep, bank.pos);
+    return false;
+  }
+
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Role lifecycle
 // ---------------------------------------------------------------------------
@@ -95,16 +261,16 @@ export const powerBankHaulerRole: RoleFactory = (targetRoom?: string, _encodedRo
     // Haulers are task-bound — skip generic energy assignments
     const task = getTaskForCreep(creep);
     if (!task) {
-      // No task — deliver anything held, then signal done
-      if (creep.store.getUsedCapacity() > 0) {
-        return true;
-      }
-      return true;
+      return salvagePower(creep, targetRoom);
     }
 
     // If terminal status and holding power, go deliver
     if (isTerminalStatus(task.status) && creep.store.getUsedCapacity() > 0) {
       return true;
+    }
+
+    if (isTerminalStatus(task.status)) {
+      return retireIfEmpty(creep);
     }
 
     return true;
@@ -113,12 +279,11 @@ export const powerBankHaulerRole: RoleFactory = (targetRoom?: string, _encodedRo
   source: (creep): boolean => {
     const task = getTaskForCreep(creep);
 
-    // No task — deliver any held resources then mark done
+    // No task — salvage dropped power for aborted/replaced squads.
     if (!task) {
-      if (creep.store.getUsedCapacity() > 0) {
-        return deliverPower(creep);
-      }
-      return true;
+      const done = salvagePower(creep, targetRoom);
+      if (done) retireIfEmpty(creep);
+      return done;
     }
 
     // Terminal status — deliver held power, then done
@@ -126,7 +291,7 @@ export const powerBankHaulerRole: RoleFactory = (targetRoom?: string, _encodedRo
       if (creep.store.getUsedCapacity() > 0) {
         return deliverPower(creep);
       }
-      return true;
+      return retireIfEmpty(creep);
     }
 
     // Travel to target room
@@ -135,38 +300,10 @@ export const powerBankHaulerRole: RoleFactory = (targetRoom?: string, _encodedRo
       return false;
     }
 
-    // In target room — wait at safe range while bank is being attacked
-    if (task.status === POWER_BANK_STATUS.ATTACKING) {
+    // In target room before pickup — stage near the bank at a safe range.
+    if (task.status !== POWER_BANK_STATUS.HAULING) {
       const bankPos = task.bankPos;
-      const range = Math.max(
-        Math.abs(creep.pos.x - bankPos.x),
-        Math.abs(creep.pos.y - bankPos.y),
-      );
-      if (range < 5) {
-        const dx = creep.pos.x - bankPos.x;
-        const dy = creep.pos.y - bankPos.y;
-        let dir: DirectionConstant | null = null;
-        const adx = Math.abs(dx);
-        const ady = Math.abs(dy);
-        if (adx === 0 && ady === 0) {
-          dir = BOTTOM as DirectionConstant;
-        } else if (adx >= 2 * ady) {
-          dir = dx > 0 ? (RIGHT as DirectionConstant) : (LEFT as DirectionConstant);
-        } else if (ady >= 2 * adx) {
-          dir = dy > 0 ? (BOTTOM as DirectionConstant) : (TOP as DirectionConstant);
-        } else if (dx > 0 && dy > 0) {
-          dir = BOTTOM_RIGHT as DirectionConstant;
-        } else if (dx > 0 && dy < 0) {
-          dir = TOP_RIGHT as DirectionConstant;
-        } else if (dx < 0 && dy > 0) {
-          dir = BOTTOM_LEFT as DirectionConstant;
-        } else {
-          dir = TOP_LEFT as DirectionConstant;
-        }
-        if (dir) {
-          measureCreepIntent(() => creep.move(dir));
-        }
-      }
+      moveToBankVicinity(creep, { ...bankPos, roomName: task.targetRoom });
       return false;
     }
 
@@ -208,7 +345,7 @@ export const powerBankHaulerRole: RoleFactory = (targetRoom?: string, _encodedRo
     const task = getTaskForCreep(creep);
 
     if (!task || isTerminalStatus(task.status)) {
-      return true;
+      return retireIfEmpty(creep);
     }
 
     // Still in hauling phase — go back for more power

@@ -9,7 +9,7 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
 }));
 
 import { powerBankHaulerRole } from "@/roles/powerBankHauler";
-import { createMockPowerBankCreep, createMockDroppedPower, createMockStore } from "@mock/powerBank";
+import { createMockPowerBankCreep, createMockDroppedPower, createMockStore, MockPos } from "@mock/powerBank";
 
 const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
   moveToTarget: jest.Mock;
@@ -68,6 +68,10 @@ describe("powerBankHaulerRole", () => {
     (Memory as any).data = {};
     Game.creeps = {} as Record<string, Creep>;
     (Game.getObjectById as jest.Mock) = jest.fn(() => null);
+    Game.map = {
+      getRoomTerrain: jest.fn(() => ({ get: jest.fn(() => 0) } as unknown as RoomTerrain)),
+    } as unknown as GameMap;
+    (global as typeof global & { RoomPosition: typeof MockPos }).RoomPosition = MockPos;
   });
 
   describe("travel to target room", () => {
@@ -107,6 +111,54 @@ describe("powerBankHaulerRole", () => {
       const result = role.source(hauler);
 
       expect(hauler.move).not.toHaveBeenCalled();
+      expect(result).toBe(false);
+    });
+
+    it("moves to power bank vicinity instead of idling at room edge", () => {
+      setupTask("attacking");
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 10, y: 10 });
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      const result = role.source(hauler);
+
+      expect(hauler.moveTo).toHaveBeenCalledWith(
+        expect.objectContaining({ roomName: TARGET_ROOM }),
+        expect.objectContaining({ range: 0, reusePath: 10 }),
+      );
+      const [stagingPos] = (hauler.moveTo as jest.Mock).mock.calls[0];
+      expect(stagingPos.getRangeTo(BANK_POS)).toBeGreaterThanOrEqual(5);
+      expect(stagingPos.getRangeTo(BANK_POS)).toBeLessThanOrEqual(6);
+      expect(result).toBe(false);
+    });
+
+    it("does not stage on an exit tile when the bank is near a room edge", () => {
+      const task = setupTask("attacking");
+      task.bankPos = { x: 7, y: 5 };
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 14, y: 49 });
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      const result = role.source(hauler);
+
+      const [stagingPos] = (hauler.moveTo as jest.Mock).mock.calls[0];
+      expect(stagingPos.x).toBeGreaterThan(0);
+      expect(stagingPos.x).toBeLessThan(49);
+      expect(stagingPos.y).toBeGreaterThan(0);
+      expect(stagingPos.y).toBeLessThan(49);
+      expect(stagingPos.getRangeTo(task.bankPos)).toBeGreaterThanOrEqual(5);
+      expect(result).toBe(false);
+    });
+
+    it("moves to power bank vicinity before attacking starts", () => {
+      setupTask("travelling");
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 10, y: 10 });
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      const result = role.source(hauler);
+
+      expect(hauler.moveTo).toHaveBeenCalledWith(
+        expect.objectContaining({ roomName: TARGET_ROOM }),
+        expect.objectContaining({ range: 0, reusePath: 10 }),
+      );
       expect(result).toBe(false);
     });
   });
@@ -294,7 +346,7 @@ describe("powerBankHaulerRole", () => {
       );
     });
 
-    it("returns true when task aborted and empty", () => {
+    it("suicides when task aborted and empty", () => {
       setupTask("aborted");
       const hauler = createHauler({ roomName: TARGET_ROOM });
 
@@ -302,9 +354,10 @@ describe("powerBankHaulerRole", () => {
       const result = role.source(hauler);
 
       expect(result).toBe(true);
+      expect(hauler.suicide).toHaveBeenCalled();
     });
 
-    it("returns true in target when aborted and empty", () => {
+    it("suicides in target when aborted and empty", () => {
       setupTask("aborted");
       const hauler = createHauler({ roomName: TARGET_ROOM });
 
@@ -312,6 +365,7 @@ describe("powerBankHaulerRole", () => {
       const result = role.target(hauler);
 
       expect(result).toBe(true);
+      expect(hauler.suicide).toHaveBeenCalled();
     });
   });
 
@@ -389,6 +443,83 @@ describe("powerBankHaulerRole", () => {
   });
 
   describe("no task", () => {
+    it("salvages dropped power from remembered target room", () => {
+      const dropped = createMockDroppedPower({ x: 25, y: 25, roomName: TARGET_ROOM, amount: 1000 });
+      const hauler = createMockPowerBankCreep("powerBankHauler", {
+        roomName: TARGET_ROOM,
+        carryCapacity: 1600,
+        memory: {
+          role: "powerBankHauler",
+          roleArgs: [TARGET_ROOM, ""],
+          configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:0`,
+        } as Partial<CreepMemory>,
+      });
+      (hauler.room.find as jest.Mock) = jest.fn((type: number, opts: any) => {
+        if (type === FIND_DROPPED_RESOURCES) {
+          return opts.filter(dropped) ? [dropped] : [];
+        }
+        return [];
+      });
+
+      const role = powerBankHaulerRole();
+      const result = role.source(hauler);
+
+      expect(hauler.pickup).toHaveBeenCalledWith(dropped);
+      expect(result).toBe(false);
+    });
+
+    it("travels to remembered target room to salvage when empty", () => {
+      const hauler = createMockPowerBankCreep("powerBankHauler", {
+        roomName: SOURCE_ROOM,
+        carryCapacity: 1600,
+        memory: {
+          role: "powerBankHauler",
+          roleArgs: [TARGET_ROOM, ""],
+          configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:0`,
+        } as Partial<CreepMemory>,
+      });
+
+      const role = powerBankHaulerRole();
+      const result = role.source(hauler);
+
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        hauler,
+        TARGET_ROOM,
+        undefined,
+        expect.objectContaining({ travelRange: 3, reusePath: 10 }),
+      );
+      expect(result).toBe(false);
+    });
+
+    it("waits away from a live bank while salvaging before power drops", () => {
+      const bank = {
+        structureType: STRUCTURE_POWER_BANK,
+        pos: new (require("@mock/powerBank").MockPos)(25, 25, TARGET_ROOM) as unknown as RoomPosition,
+      } as StructurePowerBank;
+      const hauler = createMockPowerBankCreep("powerBankHauler", {
+        roomName: TARGET_ROOM,
+        x: 26,
+        y: 25,
+        carryCapacity: 1600,
+        memory: {
+          role: "powerBankHauler",
+          roleArgs: [TARGET_ROOM, ""],
+          configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:0`,
+        } as Partial<CreepMemory>,
+      });
+      (hauler.room.find as jest.Mock) = jest.fn((type: number, opts?: any) => {
+        if (type === FIND_DROPPED_RESOURCES) return [];
+        if (type === FIND_STRUCTURES) return opts.filter(bank) ? [bank] : [];
+        return [];
+      });
+
+      const role = powerBankHaulerRole();
+      const result = role.source(hauler);
+
+      expect(hauler.move).toHaveBeenCalled();
+      expect(result).toBe(false);
+    });
+
     it("delivers held power and returns true when no task", () => {
       const hauler = createMockPowerBankCreep("powerBankHauler", {
         roomName: TARGET_ROOM,
@@ -403,7 +534,7 @@ describe("powerBankHaulerRole", () => {
       expect(moveToTargetRoom).toHaveBeenCalled();
     });
 
-    it("returns true when no task and empty", () => {
+    it("suicides when no task and empty after salvage scan", () => {
       const hauler = createMockPowerBankCreep("powerBankHauler", {
         roomName: TARGET_ROOM,
         carryCapacity: 1600,
@@ -414,6 +545,7 @@ describe("powerBankHaulerRole", () => {
       const result = role.source(hauler);
 
       expect(result).toBe(true);
+      expect(hauler.suicide).toHaveBeenCalled();
     });
   });
 });
