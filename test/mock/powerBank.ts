@@ -272,7 +272,6 @@ export function createMockPowerBankCreep(role: string, overrides: Partial<MockCr
     store: createMockStore(storeRes, overrides.carryCapacity ?? 1600),
     memory: {
       role,
-      taskId: `${role}:task-0`,
       ...overrides.memory,
     } as CreepMemory,
     owner: { username: "player" } as Owner,
@@ -285,6 +284,7 @@ export function createMockPowerBankCreep(role: string, overrides: Partial<MockCr
     pickup: jest.fn((_resource: Resource) => OK),
     withdraw: jest.fn((_target: Structure | Tombstone | Ruin, _type: ResourceConstant, _amount?: number) => OK),
     transfer: jest.fn((_target: Structure | Creep, _type: ResourceConstant, _amount?: number) => OK),
+    suicide: jest.fn(() => OK),
     move: jest.fn((_direction: DirectionConstant) => OK),
     moveTo: jest.fn((_target: RoomPosition | { pos: RoomPosition }, _opts?: MoveToOpts) => OK),
     renewCreep: jest.fn((_spawn: StructureSpawn) => OK),

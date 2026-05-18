@@ -38,7 +38,7 @@ Options:
 
 Shard behavior:
   Without --shard, the monitor tries all --shards candidates and selects the
-  one with the most recent hub analytics or latest tick.
+  one with the most recent hub analytics, deploy tag timestamp, or latest tick.
 
 Environment variables:
   SCREEPS_TOKEN
@@ -693,6 +693,40 @@ async function fetchMemorySnapshot(config) {
   };
 }
 
+function extractDeployTime(lastDeployTag) {
+  if (typeof lastDeployTag !== "string") {
+    return -1;
+  }
+
+  const markerIndex = lastDeployTag.lastIndexOf("@");
+  if (markerIndex < 0) {
+    return -1;
+  }
+
+  const parsed = Date.parse(lastDeployTag.slice(markerIndex + 1));
+  return Number.isFinite(parsed) ? parsed : -1;
+}
+
+async function fetchRuntimeInfo(config, shard) {
+  try {
+    const { payload } = await fetchApiJson(config, "/api/user/memory", {
+      shard,
+      path: "runtime",
+    });
+    const runtime = parseMemoryBody(payload);
+    const lastDeployTag = runtime && typeof runtime === "object" ? runtime.lastDeployTag ?? null : null;
+    return {
+      lastDeployTag,
+      deployTime: extractDeployTime(lastDeployTag),
+    };
+  } catch {
+    return {
+      lastDeployTag: null,
+      deployTime: -1,
+    };
+  }
+}
+
 async function fetchSegmentSnapshot(config, segmentId) {
   const { payload, rateLimit } = await fetchApiJson(config, "/api/user/memory-segment", {
     segment: segmentId,
@@ -895,19 +929,33 @@ async function fetchWithShardFallback(config) {
   let bestResult = null;
   let bestShard = null;
   let bestHubTime = -1;
+  let bestDeployTime = -1;
   let bestTick = -1;
   const shardResults = [];
 
   for (const shard of candidates) {
     try {
       const result = await fetchMemorySnapshot({ ...config, shard, memoryFixture: config.memoryFixture });
+      const runtimeInfo = await fetchRuntimeInfo(config, shard);
       const hubTime = result.memory?.hub?.updatedAt ?? result.hub?.updatedAt ?? -1;
       const tick = result.memory?.summary?.latestTick ?? result.summary?.latestTick ?? -1;
-      shardResults.push({ shard: shard ?? "(default)", ok: true, hubTime, tick });
-      if (hubTime > bestHubTime || (hubTime === bestHubTime && tick > bestTick)) {
+      shardResults.push({
+        shard: shard ?? "(default)",
+        ok: true,
+        hubTime,
+        deployTime: runtimeInfo.deployTime,
+        lastDeployTag: runtimeInfo.lastDeployTag,
+        tick,
+      });
+      if (
+        hubTime > bestHubTime ||
+        (hubTime === bestHubTime && runtimeInfo.deployTime > bestDeployTime) ||
+        (hubTime === bestHubTime && runtimeInfo.deployTime === bestDeployTime && tick > bestTick)
+      ) {
         bestResult = result;
         bestShard = shard ?? "(default)";
         bestHubTime = hubTime;
+        bestDeployTime = runtimeInfo.deployTime;
         bestTick = tick;
       }
     } catch (e) {
