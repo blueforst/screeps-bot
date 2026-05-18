@@ -5,6 +5,7 @@ export const POWER_BANK_HIT_BACK = 0.5;
 export const BOOST_ATTACK_MULTIPLIER = 4;
 export const BOOST_HEAL_MULTIPLIER = 4;
 export const BOOST_TOUGH_DAMAGE_FACTOR = 0.3;
+export const POWER_BANK_ROOM_TRAVEL_TICKS = 50;
 
 const TOUGH_HITS = 100;
 
@@ -92,7 +93,7 @@ export function computeTimeBudget(params: {
   ttk: number;
   haulTime: number;
 }): number {
-  const routeTravel = params.routeDistance * 1.5 * 2;
+  const routeTravel = params.routeDistance * POWER_BANK_ROOM_TRAVEL_TICKS;
   return (
     params.spawnTime +
     params.boostPrepTime +
@@ -111,8 +112,19 @@ export function computeHaulerDepartureTick(
   ttk: number,
   haulTravelTime: number,
   currentTick: number,
+  haulerBatchSpawnTime = 0,
 ): number {
-  return currentTick + Math.max(0, ttk - haulTravelTime);
+  return currentTick + Math.max(0, ttk - haulTravelTime - haulerBatchSpawnTime);
+}
+
+function computeHaulerSpawnTime(haulerCapacity: number): number {
+  const carryParts = Math.max(1, Math.ceil(haulerCapacity / CARRY_CAPACITY));
+  return carryParts * 2 * CREEP_SPAWN_TIME;
+}
+
+function computeHaulerBatchSpawnTime(haulerCount: number, haulerCapacity: number, spawnCount: number): number {
+  const activeSpawnCount = Math.max(1, spawnCount);
+  return Math.ceil((haulerCount * computeHaulerSpawnTime(haulerCapacity)) / activeSpawnCount);
 }
 
 export interface TimeEstimates {
@@ -136,6 +148,7 @@ export interface ViabilityInput {
   hasCompounds: { xgho2: boolean; xuh2o: boolean; xlho2: boolean };
   isDefenseMode: boolean;
   haulerCapacity: number;
+  spawnCount?: number;
 }
 
 export interface ViabilityResult {
@@ -199,7 +212,7 @@ export function assessViability(params: ViabilityInput): ViabilityResult {
     }
   }
 
-  const haulTravelTime = params.routeDistance * 1.5;
+  const haulTravelTime = params.routeDistance * POWER_BANK_ROOM_TRAVEL_TICKS;
   const timeBudget = computeTimeBudget({
     routeDistance: params.routeDistance,
     spawnTime,
@@ -214,18 +227,24 @@ export function assessViability(params: ViabilityInput): ViabilityResult {
   }
 
   const haulerCount = computeHaulerCount(params.bankPower, params.haulerCapacity);
+  const haulerBatchSpawnTime = computeHaulerBatchSpawnTime(
+    haulerCount,
+    params.haulerCapacity,
+    params.spawnCount ?? 1,
+  );
   const haulDepartTick = computeHaulerDepartureTick(
     ttk === Infinity ? 0 : ttk,
     haulTravelTime,
     params.currentTick,
+    haulerBatchSpawnTime,
   );
-  const haulArrivalTick = haulDepartTick + haulTravelTime;
+  const haulArrivalTick = haulDepartTick + haulerBatchSpawnTime + haulTravelTime;
   const killTick =
     params.currentTick +
     spawnTime +
     20 +
     50 +
-    params.routeDistance * 1.5 +
+    params.routeDistance * POWER_BANK_ROOM_TRAVEL_TICKS +
     (ttk === Infinity ? 0 : ttk);
 
   const bankDespawnTick = params.currentTick + params.ticksToDecay;

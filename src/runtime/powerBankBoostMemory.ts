@@ -21,11 +21,12 @@ export function getPowerBankBoostPrep(taskId: string): BoostPrepMemory | undefin
   return store[taskId];
 }
 
-export function getActivePowerBankBoostLabIds(sourceRoomName: string): Set<string> {
+export function getActivePowerBankBoostLabIds(sourceRoomName: string, excludeTaskId?: string): Set<string> {
   const store = ensurePowerBankBoostPrepStore();
   const labIds = new Set<string>();
   for (const prep of Object.values(store)) {
     if (prep.sourceRoomName !== sourceRoomName) continue;
+    if (excludeTaskId && prep.taskId === excludeTaskId) continue;
     for (const assignment of Object.values(prep.labs)) {
       labIds.add(assignment.labId);
     }

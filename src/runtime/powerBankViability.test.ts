@@ -6,6 +6,7 @@ import {
   BOOST_ATTACK_MULTIPLIER,
   BOOST_HEAL_MULTIPLIER,
   BOOST_TOUGH_DAMAGE_FACTOR,
+  POWER_BANK_ROOM_TRAVEL_TICKS,
   selectBodyTier,
   computeBoostedDPS,
   computeHealerHPS,
@@ -37,6 +38,10 @@ describe("powerBankViability", () => {
       expect(BOOST_ATTACK_MULTIPLIER).toBe(4);
       expect(BOOST_HEAL_MULTIPLIER).toBe(4);
       expect(BOOST_TOUGH_DAMAGE_FACTOR).toBe(0.3);
+    });
+
+    it("budgets power bank travel per room, not per linear step", () => {
+      expect(POWER_BANK_ROOM_TRAVEL_TICKS).toBe(50);
     });
   });
 
@@ -145,7 +150,7 @@ describe("powerBankViability", () => {
   });
 
   describe("computeTimeBudget", () => {
-    it("sums all phases including round-trip route travel", () => {
+    it("sums all phases including room-route travel", () => {
       const budget = computeTimeBudget({
         routeDistance: 5,
         spawnTime: 114,
@@ -154,7 +159,7 @@ describe("powerBankViability", () => {
         ttk: 1112,
         haulTime: 100,
       });
-      expect(budget).toBe(1411);
+      expect(budget).toBe(1646);
     });
 
     it("handles zero-distance routes", () => {
@@ -192,6 +197,10 @@ describe("powerBankViability", () => {
 
     it("departs immediately when haul time exceeds TTK", () => {
       expect(computeHaulerDepartureTick(100, 200, 500)).toBe(500);
+    });
+
+    it("starts spawning early enough for the hauler batch to finish before travel", () => {
+      expect(computeHaulerDepartureTick(1000, 200, 500, 300)).toBe(1000);
     });
   });
 
@@ -280,6 +289,32 @@ describe("powerBankViability", () => {
       );
       expect(result.viable).toBe(false);
       expect(result.reasons).toContain("insufficient_hauler_timing");
+    });
+
+    it("accounts for parallel spawns when estimating hauler timing", () => {
+      const singleSpawn = assessViability(
+        viableInput({
+          bankHits: 100_000,
+          bankPower: 5000,
+          haulerCapacity: 800,
+          routeDistance: 3,
+          ticksToDecay: 600,
+          spawnCount: 1,
+        }),
+      );
+      const threeSpawns = assessViability(
+        viableInput({
+          bankHits: 100_000,
+          bankPower: 5000,
+          haulerCapacity: 800,
+          routeDistance: 3,
+          ticksToDecay: 600,
+          spawnCount: 3,
+        }),
+      );
+
+      expect(singleSpawn.reasons).toContain("insufficient_hauler_timing");
+      expect(threeSpawns.reasons).not.toContain("insufficient_hauler_timing");
     });
   });
 });

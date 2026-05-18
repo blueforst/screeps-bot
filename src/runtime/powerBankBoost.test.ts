@@ -12,7 +12,7 @@ import {
 import { isSynthesisPaused } from "@/runtime/synthesisControl";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { createMockStore, MockPos } from "@mock/powerBank";
-import { clearCarrierTaskBoardForTest } from "@/runtime/carrierTaskBoard";
+import { clearCarrierTaskBoardForTest, listCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -175,6 +175,191 @@ describe("powerBankBoost", () => {
         expect(result.status).toBe("preparing");
         expect(result.labs).toHaveLength(3);
         expect(result.reason).toBeUndefined();
+
+        const supplyAmounts = Object.fromEntries(
+          listCarrierTasksByRoom(SOURCE_ROOM)
+            .filter((task) => task.producer === `powerBankBoost:${TASK_ID}`)
+            .map((task) => [task.steps[0].resource, task.steps[0].amount]),
+        );
+        expect(supplyAmounts).toEqual({
+          [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 120,
+          [RESOURCE_CATALYZED_UTRIUM_ACID]: 450,
+          [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 210,
+        });
+        expect(Object.values(supplyAmounts)).not.toContain(900);
+      });
+
+      it("uses local stock for boost lab supply even when stale incoming transfer exists", () => {
+        const compounds = [
+          RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+          RESOURCE_CATALYZED_UTRIUM_ACID,
+          RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        ];
+        const labs = compounds.map((_, i) =>
+          createLabWithCompound(`${SOURCE_ROOM}-lab-${i + 1}`, SOURCE_ROOM, null, 0)
+        );
+        const room = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          storageResources: {
+            [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000,
+            [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
+            [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 5000,
+          },
+          labs,
+        });
+        Game.rooms[SOURCE_ROOM] = room;
+        ensureResourceTransferTaskStore()["stale-incoming-xuh2o"] = {
+          id: "stale-incoming-xuh2o",
+          resource: RESOURCE_CATALYZED_UTRIUM_ACID,
+          fromRoomName: DONOR_ROOM,
+          toRoomName: SOURCE_ROOM,
+          amount: 1200,
+          remainingAmount: 1200,
+          status: "pending",
+          createdAt: 1,
+          updatedAt: 1,
+        };
+
+        const result = prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
+
+        expect(result.status).toBe("preparing");
+        const xuh2oTask = listCarrierTasksByRoom(SOURCE_ROOM).find(
+          (task) => task.id === `powerBankBoost:lab_supply:${TASK_ID}:${RESOURCE_CATALYZED_UTRIUM_ACID}`,
+        );
+        expect(xuh2oTask?.steps[0]).toMatchObject({
+          resource: RESOURCE_CATALYZED_UTRIUM_ACID,
+          amount: 450,
+          fromId: `${SOURCE_ROOM}-storage`,
+          toId: `${SOURCE_ROOM}-lab-2`,
+        });
+      });
+
+      it("does not resupply compounds whose remaining boost demand is zero", () => {
+        const compounds = [
+          RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+          RESOURCE_CATALYZED_UTRIUM_ACID,
+          RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        ];
+        const labs = compounds.map((_, i) =>
+          createLabWithCompound(`${SOURCE_ROOM}-lab-${i + 1}`, SOURCE_ROOM, null, 0)
+        );
+        const room = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          storageResources: {
+            [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000,
+            [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
+            [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 5000,
+          },
+          labs,
+        });
+        Game.rooms[SOURCE_ROOM] = room;
+
+        const remainingAmounts = new Map<ResourceConstant, number>([
+          [RESOURCE_CATALYZED_UTRIUM_ACID, 450],
+          [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, 210],
+        ]);
+
+        const result = prepareBoosts(TASK_ID, SOURCE_ROOM, 6, remainingAmounts);
+
+        expect(result.status).toBe("preparing");
+        const supplyResources = listCarrierTasksByRoom(SOURCE_ROOM)
+          .filter((task) => task.producer === `powerBankBoost:${TASK_ID}`)
+          .map((task) => task.steps[0].resource);
+        expect(supplyResources).not.toContain(RESOURCE_CATALYZED_GHODIUM_ALKALIDE);
+        expect(supplyResources).toEqual(expect.arrayContaining([
+          RESOURCE_CATALYZED_UTRIUM_ACID,
+          RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        ]));
+      });
+
+      it("clears old boost carrier tasks when no remaining boost demand exists", () => {
+        const lab = createLabWithCompound(`${SOURCE_ROOM}-lab-1`, SOURCE_ROOM, null, 0);
+        const room = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          storageResources: {
+            [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000,
+            [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
+            [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 5000,
+          },
+          labs: [lab, createLabWithCompound(`${SOURCE_ROOM}-lab-2`, SOURCE_ROOM, null, 0), createLabWithCompound(`${SOURCE_ROOM}-lab-3`, SOURCE_ROOM, null, 0)],
+        });
+        Game.rooms[SOURCE_ROOM] = room;
+
+        prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
+        expect(listCarrierTasksByRoom(SOURCE_ROOM).some((task) => task.producer === `powerBankBoost:${TASK_ID}`)).toBe(true);
+
+        const result = prepareBoosts(TASK_ID, SOURCE_ROOM, 6, new Map());
+
+        expect(result.status).toBe("ready");
+        expect(listCarrierTasksByRoom(SOURCE_ROOM).filter((task) => task.producer === `powerBankBoost:${TASK_ID}`)).toHaveLength(0);
+      });
+
+      it("reuses its own reserved labs on repeated preparation", () => {
+        const compounds = [
+          RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+          RESOURCE_CATALYZED_UTRIUM_ACID,
+          RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        ];
+        const labs = compounds.map((_, i) =>
+          createLabWithCompound(`${SOURCE_ROOM}-lab-${i + 1}`, SOURCE_ROOM, null, 0)
+        );
+
+        const storageResources: Record<string, number> = {};
+        for (const c of compounds) {
+          storageResources[c] = 5000;
+        }
+
+        const room = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          storageResources,
+          labs,
+        });
+        Game.rooms[SOURCE_ROOM] = room;
+
+        const first = prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
+        const second = prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
+
+        expect(first.status).toBe("preparing");
+        expect(second.status).toBe("preparing");
+        expect(second.reason).toBeUndefined();
+        expect(second.labs).toEqual(first.labs);
+      });
+
+      it("cleans wrong minerals from reserved boost labs before supplying boosts", () => {
+        const compounds = [
+          RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+          RESOURCE_CATALYZED_UTRIUM_ACID,
+          RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        ];
+        const labs = [
+          createLabWithCompound(`${SOURCE_ROOM}-lab-1`, SOURCE_ROOM, RESOURCE_LEMERGIUM, 80),
+          createLabWithCompound(`${SOURCE_ROOM}-lab-2`, SOURCE_ROOM, RESOURCE_HYDROGEN, 80),
+          createLabWithCompound(`${SOURCE_ROOM}-lab-3`, SOURCE_ROOM, RESOURCE_LEMERGIUM_HYDRIDE, 165),
+        ];
+
+        const terminalResources: Record<string, number> = {};
+        for (const c of compounds) {
+          terminalResources[c] = 5000;
+        }
+
+        const room = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          terminalResources,
+          labs,
+        });
+        Game.rooms[SOURCE_ROOM] = room;
+
+        const result = prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
+
+        expect(result.status).toBe("preparing");
+        const tasks = listCarrierTasksByRoom(SOURCE_ROOM).filter((task) => task.producer === `powerBankBoost:${TASK_ID}`);
+        expect(tasks).toHaveLength(3);
+        expect(tasks.every((task) => task.type === "lab_cleanup")).toBe(true);
+        expect(tasks.map((task) => task.steps[0].resource).sort()).toEqual([
+          RESOURCE_HYDROGEN,
+          RESOURCE_LEMERGIUM,
+          RESOURCE_LEMERGIUM_HYDRIDE,
+        ].sort());
       });
     });
 
