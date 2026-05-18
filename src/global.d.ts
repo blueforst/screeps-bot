@@ -251,6 +251,17 @@ declare global {
     | "failed"
     | "aborted";
 
+  type PowerBankReinforcementStage = "spawning" | "renewing" | "boosting" | "travelling" | "attacking";
+
+  interface PowerBankReinforcementState {
+    index: number;
+    stage: PowerBankReinforcementStage;
+    attackerId?: string;
+    healerId?: string;
+    attackerReady?: boolean;
+    healerReady?: boolean;
+  }
+
   interface PowerBankHarvestTask {
     id: string;
     status: PowerBankHarvestStatus;
@@ -273,6 +284,8 @@ declare global {
     tier?: number;
     /** Linear distance from source room to target room. */
     routeDistance?: number;
+    /** Number of haulers needed to collect the dropped power. */
+    haulerCount?: number;
     /** Viability failure reason(s), set when status becomes failed. */
     failReason?: string;
     /** Tick when task entered a terminal state (complete/failed/aborted). */
@@ -281,6 +294,10 @@ declare global {
     attackerReady?: boolean;
     /** Whether the healer has been fully boosted and is ready. */
     healerReady?: boolean;
+    /** Tick when the task entered hauling after the bank disappeared. */
+    haulingStartedTick?: number;
+    /** Optional replacement combat pair prepared while the active pair keeps attacking. */
+    reinforcement?: PowerBankReinforcementState;
   }
 
   interface PowerBankScoutMemory {
@@ -629,6 +646,12 @@ declare global {
           sourceRoomName: string;
         }
       >;
+      powerBankObserver?: {
+        patrolIndex: number;
+        updatedAt: number;
+        lastObservedRooms: string[];
+        coveredRooms: string[];
+      };
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;

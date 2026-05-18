@@ -24,6 +24,7 @@ import { registerConsoleCommands } from "@/runtime/consoleCommands";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { runTowerControl } from "@/runtime/towerControl";
 import { runWarControl } from "@/runtime/warControl";
+import { runPowerBankObserver } from "@/runtime/powerBankObserver";
 import { runPowerBankHarvest } from "@/runtime/powerBankHarvest";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 import { createTickCpuProfiler, setActiveTickCpuProfiler } from "@/runtime/cpuPhaseProfiler";
@@ -69,6 +70,7 @@ function gameLoop(): void {
   cpuProfiler.measure("crossShardSignals", runCrossShardSignals);
   cpuProfiler.measure("interShardControl", runInterShardControl);
   cpuProfiler.measure("warControl", runWarControl);
+  cpuProfiler.measure("powerBankObserver", runPowerBankObserver);
   cpuProfiler.measure("powerBankHarvest", runPowerBankHarvest);
   cpuProfiler.measure("roomPlannerConstruction", runRoomPlannerConstruction);
   cpuProfiler.measure("linkControl", runLinkControl);
