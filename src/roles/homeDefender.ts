@@ -1,24 +1,10 @@
 import { getSafeZone } from "@/runtime/safeZone";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
-import { DEFENSE_BOOST_COMPOUND } from "@/runtime/boostControl";
 import { getAssignedDefenseFront, getDefenderRole, getTowerFocusFront, type DefenseFrontSummary } from "@/runtime/defenseCoordination";
 import { getPlayerHostiles } from "@/runtime/defenseMode";
 import { chooseBoundaryBurstEngagement, chooseInsideBurstTarget } from "@/runtime/hostilePriorities";
 import { createSafeZoneCostCallback, getBoundaryRamparts } from "@/runtime/safeZoneHelpers";
 import type { RoleFactory } from "@/types/system";
-
-function isAttackBoosted(creep: Creep): boolean {
-  return creep.body.some((part) => part.type === ATTACK && !!part.boost);
-}
-
-function findBoostLab(room: Room): StructureLab | null {
-  const labs = room.find(FIND_MY_STRUCTURES, {
-    filter: (s): s is StructureLab =>
-      s.structureType === STRUCTURE_LAB &&
-      (s as StructureLab).store.getUsedCapacity(DEFENSE_BOOST_COMPOUND) >= LAB_BOOST_MINERAL,
-  });
-  return labs[0] ?? null;
-}
 
 function findEngagedHostileIdByOtherDefenders(creep: Creep, hostiles: Creep[]): Id<Creep> | null {
   for (const other of creep.room.find(FIND_MY_CREEPS)) {
@@ -78,23 +64,6 @@ export const homeDefenderRole: RoleFactory = (roomName: string, slot?: string) =
 
     const safeZone = getSafeZone(roomName);
     if (safeZone.size === 0) return false;
-
-    // Boost phase: seek lab before engaging if boost compound is available
-    if (!isAttackBoosted(creep)) {
-      const lab = measureCreepDecision(() => findBoostLab(creep.room));
-      if (lab) {
-        if (!creep.pos.isNearTo(lab)) {
-          creep.moveTo(lab, {
-            costCallback: createSafeZoneCostCallback(safeZone),
-            reusePath: 3,
-            maxRooms: 1,
-          });
-        } else {
-          measureCreepIntent(() => lab.boostCreep(creep));
-        }
-        return false;
-      }
-    }
 
     const allHostiles = measureCreepDecision(() => getPlayerHostiles(creep.room));
     const assignedFront = getAssignedDefenseFront(roomName, slot) || getTowerFocusFront(roomName);

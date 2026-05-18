@@ -13,10 +13,6 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
   measureCreepIntent: jest.fn((fn: () => unknown) => fn()),
 }));
 
-jest.mock("@/runtime/boostControl", () => ({
-  DEFENSE_BOOST_COMPOUND: "XUH2O",
-}));
-
 jest.mock("@/runtime/defenseCoordination", () => ({
   getAssignedDefenseFront: jest.fn(),
   getDefenderRole: jest.fn(),

@@ -195,6 +195,65 @@ describe("runTowerControl", () => {
     expect(towerB.attack).not.toHaveBeenCalled();
   });
 
+  it("does not probe-spread into an ineffective focus target while waiting for defenders", () => {
+    const roomName = "W1N6";
+    const ineffectiveLowHitsTarget = createHostile(roomName, "immune-low", 30, 30, {
+      body: createBody(HEAL, 30),
+      hits: 100,
+    });
+    const barelyEffectiveHighHitsTarget = createHostile(roomName, "barely-effective-high", 45, 45, {
+      body: [...createBody(HEAL, 12), ...createBody(MOVE, 388)],
+      hits: 40000,
+    });
+    const tower = createTower(roomName, "tower-a", 10, 10);
+    const room = createRoom(roomName, {
+      towers: [tower],
+      hostiles: [ineffectiveLowHitsTarget, barelyEffectiveHighHitsTarget],
+    });
+
+    Game.rooms[room.name] = room;
+
+    runTowerControl();
+
+    expect(tower.attack).toHaveBeenCalledWith(barelyEffectiveHighHitsTarget);
+    expect(tower.attack).not.toHaveBeenCalledWith(ineffectiveLowHitsTarget);
+  });
+
+  it("stops tower fire when no tower-only target has positive net damage", () => {
+    const roomName = "W1N7";
+    const healerA = createHostile(roomName, "healer-a", 30, 30, {
+      body: createBody(HEAL, 30),
+      hits: 3000,
+    });
+    const healerB = createHostile(roomName, "healer-b", 31, 30, {
+      body: createBody(HEAL, 30),
+      hits: 3000,
+    });
+    const tower = createTower(roomName, "tower-a", 10, 10);
+    const room = createRoom(roomName, {
+      towers: [tower],
+      hostiles: [healerA, healerB],
+    });
+
+    Memory.runtime = {
+      towerCombat: {
+        [roomName]: {
+          focusTargetId: healerA.id,
+          lastFocusHits: healerA.hits,
+          stalledTicks: 3,
+          spreadUntil: Game.time + 3,
+        },
+      },
+    } as Memory["runtime"];
+    Game.rooms[room.name] = room;
+
+    runTowerControl();
+
+    expect(tower.attack).not.toHaveBeenCalled();
+    expect(Memory.runtime?.towerCombat?.[roomName]?.focusTargetId).toBeUndefined();
+    expect(Memory.runtime?.towerCombat?.[roomName]?.spreadUntil).toBeUndefined();
+  });
+
   it("spreads attacks after focus fire stalls across consecutive ticks", () => {
     const roomName = "W1N3";
     const focusTarget = createHostile(roomName, "hostile-focus", 11, 10, {
@@ -271,6 +330,47 @@ describe("runTowerControl", () => {
     expect(towerB.attack).toHaveBeenCalledWith(frontHostile);
     expect(towerA.attack).not.toHaveBeenCalledWith(offFrontHostile);
     expect(towerB.attack).not.toHaveBeenCalledWith(offFrontHostile);
+  });
+
+  it("counts healers outside the active front before spending tower energy", () => {
+    const roomName = "W9N5";
+    const frontAttacker = createHostile(roomName, "front-attacker", 48, 12, {
+      body: [...createBody(TOUGH, 16), ...createBody(RANGED_ATTACK, 3), ...createBody(WORK, 4), ...createBody(ATTACK, 2)],
+      hits: 5000,
+    });
+    const adjacentHealer = createHostile(roomName, "adjacent-healer", 49, 13, {
+      body: createBody(HEAL, 25),
+      hits: 5000,
+    });
+    const towerA = createTower(roomName, "tower-a", 6, 6);
+    const towerB = createTower(roomName, "tower-b", 6, 7);
+    const room = createRoom(roomName, {
+      towers: [towerA, towerB],
+      hostiles: [frontAttacker, adjacentHealer],
+    });
+    Game.rooms[room.name] = room;
+
+    writeDefenseFronts(roomName, [
+      {
+        id: "front:0",
+        hostiles: [frontAttacker],
+        hostileIds: [frontAttacker.id],
+        centroid: { x: frontAttacker.pos.x, y: frontAttacker.pos.y },
+        threatScore: 57,
+      },
+      {
+        id: "front:1",
+        hostiles: [adjacentHealer],
+        hostileIds: [adjacentHealer.id],
+        centroid: { x: adjacentHealer.pos.x, y: adjacentHealer.pos.y },
+        threatScore: 25,
+      },
+    ]);
+
+    runTowerControl();
+
+    expect(towerA.attack).not.toHaveBeenCalled();
+    expect(towerB.attack).not.toHaveBeenCalled();
   });
 
   it("bursts the same front-line target as a rampart defender when that burst is effective", () => {

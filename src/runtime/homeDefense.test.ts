@@ -3,15 +3,12 @@ jest.mock("@/runtime/safeZone", () => ({
 }));
 
 jest.mock("@/runtime/boostControl", () => ({
-  buyBoostIfNeeded: jest.fn(),
   clearBoostLabTasks: jest.fn(),
-  shouldBoostDefender: jest.fn(() => false),
-  syncBoostLabTask: jest.fn(),
 }));
 
 import { runHomeDefense } from "@/runtime/homeDefense";
 import { getRoomDefenseCoordination } from "@/runtime/defenseCoordination";
-import { buyBoostIfNeeded, clearBoostLabTasks, shouldBoostDefender, syncBoostLabTask } from "@/runtime/boostControl";
+import { clearBoostLabTasks } from "@/runtime/boostControl";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 
 type RuntimeGlobal = typeof global & {
@@ -158,9 +155,6 @@ describe("runHomeDefense", () => {
     expect(spawn.memory.spawnList).toEqual([]);
     expect(getCreepConfigService().get(configName)).toBeUndefined();
     expect(clearBoostLabTasks).toHaveBeenCalledWith(roomName);
-    expect(shouldBoostDefender).not.toHaveBeenCalled();
-    expect(buyBoostIfNeeded).not.toHaveBeenCalled();
-    expect(syncBoostLabTask).not.toHaveBeenCalled();
   });
 
   it("queues a defender when towers cannot handle the hostile", () => {
@@ -183,7 +177,6 @@ describe("runHomeDefense", () => {
       args: [roomName, "0"],
       roomName,
     });
-    expect(shouldBoostDefender).toHaveBeenCalledWith(room, [hostile]);
     expect(clearBoostLabTasks).toHaveBeenCalledWith(roomName);
   });
 

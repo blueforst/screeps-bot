@@ -104,6 +104,27 @@ describe("isDefenseMode", () => {
     expect(isDefenseMode(ROOM_W1N1)).toBe(true);
   });
 
+  test("treats heal-only invaders as defense hostiles", () => {
+    const safeZone = new Set([25 * 50 + 25]);
+    (getSafeZone as jest.Mock).mockReturnValue(safeZone);
+
+    const healer = makeHostile({ owner: { username: "Invader" } });
+    (healer.getActiveBodyparts as jest.Mock).mockImplementation((part: BodyPartConstant) =>
+      part === HEAL ? 25 : 0,
+    );
+    const room = makeRoomWithFind([healer], ROOM_W1N1);
+
+    (getTickContextService as jest.Mock).mockReturnValue({
+      getMyRooms: jest.fn(() => [room]),
+      getCreepsByConfigName: jest.fn(() => []),
+    });
+
+    runDefenseMode();
+
+    expect(isDefenseMode(ROOM_W1N1)).toBe(true);
+    expect(getPlayerHostiles(room)).toEqual([healer]);
+  });
+
   test("returns true when hostiles present and the safe zone exists", () => {
     const safeZone = new Set([25 * 50 + 25]);
     (getSafeZone as jest.Mock).mockReturnValue(safeZone);

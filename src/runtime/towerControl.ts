@@ -172,6 +172,10 @@ function chooseFocusTarget(hostiles: Creep[], analysis: TowerCombatAnalysis): Cr
     const totalDamage = analysis.totalTowerAttackByHostileId.get(hostile.id) || 0;
     const heal = analysis.incomingHealByHostileId.get(hostile.id) || 0;
     const net = totalDamage - heal;
+    if (net <= 0) {
+      continue;
+    }
+
     const score = net * 1000 - hostile.hits * 0.2;
     if (score > bestScore) {
       best = hostile;
@@ -417,7 +421,7 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[],
   setTowerFocusFront(room.name, activeFront?.id);
 
   const state = ensureTowerCombatRoomState(room.name);
-  const analysis = createTowerCombatAnalysis(attackTowers, combatHostiles);
+  const analysis = createTowerCombatAnalysis(attackTowers, hostiles);
   const coordinatedBurstTarget = chooseCoordinatedBurstTarget(room, combatHostiles, analysis);
 
   if (!coordinatedBurstTarget && isAllHostilesImmune(analysis, combatHostiles)) {
@@ -430,16 +434,10 @@ function runTowerCombat(room: Room, towers: StructureTower[], hostiles: Creep[],
 
   const focusTarget = coordinatedBurstTarget || chooseFocusTarget(combatHostiles, analysis);
   if (!focusTarget) {
-    const spreadAssignments = assignSpreadTargets(attackTowers, combatHostiles, analysis);
-    for (const tower of attackTowers) {
-      const target = spreadAssignments.get(tower.id);
-      if (target) {
-        const code = tower.attack(target);
-        if (code === OK) {
-          recordFixedCpuAction("towerControl");
-        }
-      }
-    }
+    delete state.focusTargetId;
+    delete state.lastFocusHits;
+    delete state.stalledTicks;
+    delete state.spreadUntil;
     return true;
   }
 

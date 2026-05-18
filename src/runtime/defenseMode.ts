@@ -1,7 +1,7 @@
 import { getSafeZone } from "@/runtime/safeZone";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 
-const DANGEROUS_BODY_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, WORK];
+const DANGEROUS_BODY_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, WORK, HEAL];
 
 let defenseModeCacheTick = -1;
 const defenseModeCache = new Map<string, boolean>();
@@ -12,7 +12,7 @@ export function getPlayerHostiles(room: Room): Creep[] {
   return hostiles.filter(
     (creep) =>
       creep.owner.username !== "Source Keeper" &&
-      (creep.owner.username !== "Invader" || creep.getActiveBodyparts(WORK) > 0) &&
+      (creep.owner.username !== "Invader" || creep.getActiveBodyparts(WORK) > 0 || creep.getActiveBodyparts(HEAL) > 0) &&
       DANGEROUS_BODY_PARTS.some((part) => creep.getActiveBodyparts(part) > 0),
   );
 }
