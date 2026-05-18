@@ -1395,6 +1395,118 @@ describe("carrierRole mineral hauling", () => {
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-task");
   });
 
+  it("prioritizes powerBankBoost carrier tasks over generic room energy demand", () => {
+    const room = createRoom("W4N9");
+    const spawn = {
+      id: "spawn-energy-demand",
+      structureType: STRUCTURE_SPAWN,
+      pos: { x: 20, y: 20, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300,
+      },
+    } as unknown as StructureSpawn;
+    const terminal = room.terminal as StructureTerminal;
+    const lab = {
+      id: "powerbank-boost-lab-cleanup",
+      pos: { x: 10, y: 10, roomName: room.name },
+      structureType: STRUCTURE_LAB,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_LEMERGIUM ? 220 : 0),
+        getFreeCapacity: () => 2780,
+      },
+    } as unknown as StructureLab;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(spawn);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === lab.id) return lab;
+      if (id === terminal.id) return terminal;
+      if (id === spawn.id) return spawn;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("powerBankBoost:task-1", room.name, [
+      {
+        id: "powerbank-boost-cleanup-task",
+        type: "lab_cleanup",
+        priority: 141,
+        steps: [
+          {
+            id: "L:lab->terminal",
+            resource: RESOURCE_LEMERGIUM,
+            fromKind: "lab",
+            toKind: "terminal",
+            fromId: lab.id,
+            toId: terminal.id,
+            amount: 220,
+          },
+        ],
+      },
+    ]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(lab, RESOURCE_LEMERGIUM, 220);
+    expect(getEnergyStoreTarget).not.toHaveBeenCalled();
+    expect(switched).toBe(true);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("powerbank-boost-cleanup-task");
+  });
+
+  it("prioritizes synthesis lab cleanup over generic room energy demand", () => {
+    const room = createRoom("W4N8");
+    const spawn = {
+      id: "spawn-energy-demand-normal-cleanup",
+      structureType: STRUCTURE_SPAWN,
+      pos: { x: 20, y: 20, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300,
+      },
+    } as unknown as StructureSpawn;
+    const terminal = room.terminal as StructureTerminal;
+    const lab = {
+      id: "synthesis-lab-cleanup",
+      pos: { x: 10, y: 10, roomName: room.name },
+      structureType: STRUCTURE_LAB,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_CATALYZED_GHODIUM_ALKALIDE ? 120 : 0),
+        getFreeCapacity: () => 2880,
+      },
+    } as unknown as StructureLab;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(spawn);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === lab.id) return lab;
+      if (id === terminal.id) return terminal;
+      if (id === spawn.id) return spawn;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [
+      {
+        id: "synthesis-cleanup-task",
+        type: "lab_cleanup",
+        priority: 200,
+        steps: [
+          {
+            id: "XGHO2:lab->terminal",
+            resource: RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+            fromKind: "lab",
+            toKind: "terminal",
+            fromId: lab.id,
+            toId: terminal.id,
+            amount: 120,
+          },
+        ],
+      },
+    ]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(lab, RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 120);
+    expect(getEnergyStoreTarget).not.toHaveBeenCalled();
+    expect(switched).toBe(true);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("synthesis-cleanup-task");
+  });
+
   it("preserves assigned terminal_offload task across board refresh when still runnable", () => {
     const room = createRoom("W4N4");
     const terminal = {

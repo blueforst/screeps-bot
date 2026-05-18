@@ -20,6 +20,9 @@ import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/s
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
 type RuinPickupAssignment = { target: Ruin; resource: ResourceConstant };
+type CarrierTaskFilter = (task: CarrierTask) => boolean;
+
+const POWER_BANK_BOOST_PRODUCER_PREFIX = "powerBankBoost:";
 
 interface CarrierPickupOptions {
   includeStorage?: boolean;
@@ -426,10 +429,30 @@ function isCarrierTaskRunnable(task: CarrierTask): boolean {
   return task.steps.some((step) => isCarrierTaskStepRunnable(step));
 }
 
-function assignSynthesisCarrierTask(creep: Creep): { task: CarrierTask; step: CarrierTaskStep } | null {
+function isPowerBankBoostCarrierTask(task: CarrierTask): boolean {
+  return task.producer.startsWith(POWER_BANK_BOOST_PRODUCER_PREFIX);
+}
+
+function hasRunnablePowerBankBoostCarrierTask(roomName: string): boolean {
+  return getSynthesisCarrierTasks(roomName).some((task) => isPowerBankBoostCarrierTask(task) && isCarrierTaskRunnable(task));
+}
+
+function isUrgentLabCleanupCarrierTask(task: CarrierTask): boolean {
+  return task.type === "lab_cleanup" || task.type === "lab_product_unload";
+}
+
+function hasRunnableUrgentLabCleanupCarrierTask(roomName: string): boolean {
+  return getSynthesisCarrierTasks(roomName).some((task) => isUrgentLabCleanupCarrierTask(task) && isCarrierTaskRunnable(task));
+}
+
+function assignSynthesisCarrierTask(
+  creep: Creep,
+  taskFilter?: CarrierTaskFilter,
+  clearWhenNoCandidate = true,
+): { task: CarrierTask; step: CarrierTaskStep } | null {
   return measureCreepDecision(() => {
     const assigned = getAssignedSynthesisCarrierTask(creep);
-    if (assigned) {
+    if (assigned && (!taskFilter || taskFilter(assigned))) {
       const assignedStep = selectPickupStep(assigned, creep);
       if (assignedStep) {
         return { task: assigned, step: assignedStep };
@@ -437,6 +460,7 @@ function assignSynthesisCarrierTask(creep: Creep): { task: CarrierTask; step: Ca
     }
 
     const candidates = getSynthesisCarrierTasks(getAssignedCarrierRoomName(creep))
+      .filter((task) => !taskFilter || taskFilter(task))
       .filter((task) => isCarrierTaskRunnable(task))
       .map((task) => ({
         task,
@@ -452,10 +476,12 @@ function assignSynthesisCarrierTask(creep: Creep): { task: CarrierTask; step: Ca
         const leftRange = leftFrom ? creep.pos.getRangeTo(leftFrom.pos) : 99;
         const rightRange = rightFrom ? creep.pos.getRangeTo(rightFrom.pos) : 99;
         return leftRange - rightRange;
-      });
+    });
 
     if (candidates.length <= 0) {
-      clearSynthesisCarrierTaskPlan(creep);
+      if (clearWhenNoCandidate) {
+        clearSynthesisCarrierTaskPlan(creep);
+      }
       return null;
     }
 
@@ -464,12 +490,16 @@ function assignSynthesisCarrierTask(creep: Creep): { task: CarrierTask; step: Ca
   });
 }
 
-function pickupSynthesisCarrierResource(creep: Creep): { picked: boolean; outOfRange: boolean } {
+function pickupSynthesisCarrierResource(
+  creep: Creep,
+  taskFilter?: CarrierTaskFilter,
+  clearWhenNoCandidate = true,
+): { picked: boolean; outOfRange: boolean } {
   if (creep.store.getUsedCapacity() > 0) {
     return { picked: false, outOfRange: false };
   }
 
-  const assignment = assignSynthesisCarrierTask(creep);
+  const assignment = assignSynthesisCarrierTask(creep, taskFilter, clearWhenNoCandidate);
   if (!assignment) {
     return { picked: false, outOfRange: false };
   }
@@ -786,10 +816,35 @@ export const carrierRole: RoleFactory = () => ({
       return true;
     }
 
+    const assignedRoomName = getAssignedCarrierRoomName(creep);
+    if (hasRunnablePowerBankBoostCarrierTask(assignedRoomName)) {
+      const powerBankBoostPickup = pickupSynthesisCarrierResource(creep, isPowerBankBoostCarrierTask, false);
+      if (powerBankBoostPickup.picked || powerBankBoostPickup.outOfRange) {
+        delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+        if (powerBankBoostPickup.picked) {
+          releasePickupReservation(creep);
+        }
+        return creep.store.getUsedCapacity() > 0 ||
+          ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time;
+      }
+    }
+
+    if (hasRunnableUrgentLabCleanupCarrierTask(assignedRoomName)) {
+      const urgentLabCleanupPickup = pickupSynthesisCarrierResource(creep, isUrgentLabCleanupCarrierTask, false);
+      if (urgentLabCleanupPickup.picked || urgentLabCleanupPickup.outOfRange) {
+        delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+        if (urgentLabCleanupPickup.picked) {
+          releasePickupReservation(creep);
+        }
+        return creep.store.getUsedCapacity() > 0 ||
+          ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time;
+      }
+    }
+
     const energyDemandTarget = getEnergyStoreTarget(creep, {
       includeTerminal: false,
       includeStorage: false,
-      roomName: getAssignedCarrierRoomName(creep),
+      roomName: assignedRoomName,
     });
 
     if (energyDemandTarget) {
