@@ -4696,6 +4696,44 @@ describe("logistics-cost-aware dispatch scoring", () => {
       expect(hubProducts).toEqual(expect.not.arrayContaining(auxProducts));
     });
 
+    it("rounds written synthesis targets up to full lab reaction amounts", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_LEMERGIUM_ACID]: 23,
+          [RESOURCE_CATALYST]: 1000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_LEMERGIUM_ACID]: 22,
+          [RESOURCE_CATALYST]: 1000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_LEMERGIUM_ACID],
+        1000,
+        1000,
+        {
+          [RESOURCE_LEMERGIUM_ACID]: 45,
+          [RESOURCE_CATALYST]: 2000,
+        },
+        [],
+      );
+
+      for (const roomCfg of Object.values(Memory.cfg!.synthesisControl!.rooms!)) {
+        for (const reaction of roomCfg.reactions || []) {
+          expect(reaction.targetAmount % LAB_REACTION_AMOUNT).toBe(0);
+          expect(reaction.batchSize % LAB_REACTION_AMOUNT).toBe(0);
+        }
+      }
+    });
+
     it("preserves active non-idle room and does not overwrite its reaction", () => {
       const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
         labCount: 3,

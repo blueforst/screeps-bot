@@ -308,6 +308,46 @@ function cleanupSynthesisControlMemory(ownedRooms: Set<string>): number {
   return removed;
 }
 
+function cleanupPowerBankBoostMemory(): number {
+  const runtime = Memory.runtime;
+  if (!runtime) {
+    return 0;
+  }
+
+  const activeTaskIds = new Set(Object.keys(Memory.data?.powerBankHarvest || {}));
+  let removed = 0;
+
+  if (runtime.powerBankBoost) {
+    for (const taskId of Object.keys(runtime.powerBankBoost)) {
+      if (activeTaskIds.has(taskId)) {
+        continue;
+      }
+      delete runtime.powerBankBoost[taskId];
+      removed += 1;
+    }
+
+    if (Object.keys(runtime.powerBankBoost).length === 0) {
+      delete runtime.powerBankBoost;
+    }
+  }
+
+  const synthesisRooms = runtime.synthesisControl?.rooms;
+  if (!synthesisRooms) {
+    return removed;
+  }
+
+  for (const roomState of Object.values(synthesisRooms)) {
+    const pause = roomState.boostPause;
+    if (!pause || activeTaskIds.has(pause.taskId)) {
+      continue;
+    }
+    delete roomState.boostPause;
+    removed += 1;
+  }
+
+  return removed;
+}
+
 function cleanupSpawnPlannerMemory(ownedRooms: Set<string>): number {
   const commutes = Memory.runtime?.spawnPlanner?.sourceWorkerCommutes;
   if (!commutes) {
@@ -617,6 +657,7 @@ export function runMemoryCleanup(): void {
   cleanupTowerEmergencyMemory(ownedRooms);
   cleanupResourceControlMemory(ownedRooms);
   cleanupSynthesisControlMemory(ownedRooms);
+  cleanupPowerBankBoostMemory();
   cleanupPickupReservationStore(ownedRooms);
   gcProductionReservations();
   cleanupWarMemory(ownedRooms);

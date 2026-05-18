@@ -164,6 +164,116 @@ describe("runMemoryCleanup", () => {
     });
   });
 
+  it("removes stale powerbank boost prep and boost pause when task no longer exists", () => {
+    Memory.runtime = {
+      powerBankBoost: {
+        "pb-ghost": {
+          taskId: "pb-ghost",
+          sourceRoomName: "W1N1",
+          labs: {
+            [RESOURCE_CATALYZED_UTRIUM_ACID]: {
+              labId: "W1N1-lab-1",
+              compound: RESOURCE_CATALYZED_UTRIUM_ACID,
+            },
+          },
+        },
+      },
+      synthesisControl: {
+        updatedAt: Game.time,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          W1N1: {
+            stage: "idle",
+            lastTransitionAt: Game.time,
+            boostPause: {
+              reason: "powerBankBoost",
+              taskId: "pb-ghost",
+              createdTick: Game.time - 200,
+              pausedPlan: null,
+              pausedStage: "synthesizing",
+            },
+          },
+        },
+      },
+    } as unknown as Memory["runtime"];
+    Memory.data = {
+      powerBankHarvest: {},
+    } as Memory["data"];
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.powerBankBoost?.["pb-ghost"]).toBeUndefined();
+    expect((Memory.runtime as any).synthesisControl.rooms.W1N1.boostPause).toBeUndefined();
+  });
+
+  it("keeps powerbank boost prep and boost pause while task exists", () => {
+    Memory.runtime = {
+      powerBankBoost: {
+        "pb-active": {
+          taskId: "pb-active",
+          sourceRoomName: "W1N1",
+          labs: {
+            [RESOURCE_CATALYZED_UTRIUM_ACID]: {
+              labId: "W1N1-lab-1",
+              compound: RESOURCE_CATALYZED_UTRIUM_ACID,
+            },
+          },
+        },
+      },
+      synthesisControl: {
+        updatedAt: Game.time,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          W1N1: {
+            stage: "idle",
+            lastTransitionAt: Game.time,
+            boostPause: {
+              reason: "powerBankBoost",
+              taskId: "pb-active",
+              createdTick: Game.time - 10,
+              pausedPlan: null,
+              pausedStage: "synthesizing",
+            },
+          },
+        },
+      },
+    } as unknown as Memory["runtime"];
+    Memory.data = {
+      powerBankHarvest: {
+        "pb-active": {
+          id: "pb-active",
+          status: "boosting",
+          sourceRoom: "W1N1",
+          targetRoom: "W2N2",
+          bankId: "bank-1",
+          bankPos: { x: 25, y: 25 },
+          hits: 2_000_000,
+          power: 5000,
+          ticksToDecay: 4000,
+          freeTiles: 8,
+          discoveredTick: Game.time - 100,
+          lastSeenTick: Game.time - 10,
+          haulerIds: [],
+          boostLabs: [],
+          compoundTransferTaskIds: [],
+        },
+      },
+    } as Memory["data"];
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.powerBankBoost?.["pb-active"]).toBeDefined();
+    expect((Memory.runtime as any).synthesisControl.rooms.W1N1.boostPause).toBeDefined();
+  });
+
   describe("hub runtime cleanup", () => {
     it("sets hub runtime to blocked when hub room no longer owned", () => {
       Memory.cfg = {

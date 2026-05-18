@@ -293,6 +293,10 @@ const MIN_HUB_IMPORT_AMOUNT = 100;
 
 const HUB_RUNTIME_ARRAY_CAP = 20;
 
+function roundUpReactionAmount(amount: number): number {
+  return Math.ceil(amount / LAB_REACTION_AMOUNT) * LAB_REACTION_AMOUNT;
+}
+
 export function planHubChains(
   hubInventory: Record<string, number>,
   incomingResources: Record<string, number>,
@@ -743,8 +747,8 @@ export function writeSynthesisConfig(
   roomCfg.reactions = [
     {
       product: nextStep.product,
-      targetAmount: (hubInventory[nextStep.product] || 0) + nextStep.targetAmount,
-      batchSize: Math.min(3000, Math.max(5, Math.ceil(nextStep.targetAmount / 5) * 5)),
+      targetAmount: roundUpReactionAmount((hubInventory[nextStep.product] || 0) + nextStep.targetAmount),
+      batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(nextStep.targetAmount))),
       donorRoomNames: [],
     },
   ];
@@ -1427,8 +1431,8 @@ export function wireDistributedSynthesis(
     roomCfg.reactions = [
       {
         product: assignment.product,
-        targetAmount: existingAmount + assignment.targetAmount,
-        batchSize: Math.min(3000, Math.max(5, Math.ceil(assignment.targetAmount / 5) * 5)),
+        targetAmount: roundUpReactionAmount(existingAmount + assignment.targetAmount),
+        batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(assignment.targetAmount))),
         donorRoomNames: [],
       },
     ];
