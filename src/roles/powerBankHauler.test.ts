@@ -10,6 +10,7 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
 
 import { powerBankHaulerRole } from "@/roles/powerBankHauler";
 import { createMockPowerBankCreep, createMockDroppedPower, createMockStore, MockPos } from "@mock/powerBank";
+import { clearCreepMovementStateForTest, ensureCreepMovementState } from "@/movement/creepState";
 
 const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
   moveToTarget: jest.Mock;
@@ -72,6 +73,8 @@ describe("powerBankHaulerRole", () => {
       getRoomTerrain: jest.fn(() => ({ get: jest.fn(() => 0) } as unknown as RoomTerrain)),
     } as unknown as GameMap;
     (global as typeof global & { RoomPosition: typeof MockPos }).RoomPosition = MockPos;
+    delete (global as any).__runtimeServices;
+    clearCreepMovementStateForTest();
   });
 
   describe("travel to target room", () => {
@@ -121,11 +124,13 @@ describe("powerBankHaulerRole", () => {
       const role = powerBankHaulerRole(TARGET_ROOM);
       const result = role.source(hauler);
 
-      expect(hauler.moveTo).toHaveBeenCalledWith(
+      expect(moveToTarget).toHaveBeenCalledWith(
+        hauler,
         expect.objectContaining({ roomName: TARGET_ROOM }),
-        expect.objectContaining({ range: 0, reusePath: 10 }),
+        0,
+        expect.objectContaining({ reusePath: 10, ignoreCreeps: true, avoidExitTiles: true }),
       );
-      const [stagingPos] = (hauler.moveTo as jest.Mock).mock.calls[0];
+      const [, stagingPos] = (moveToTarget as jest.Mock).mock.calls[0];
       expect(stagingPos.getRangeTo(BANK_POS)).toBeGreaterThanOrEqual(5);
       expect(stagingPos.getRangeTo(BANK_POS)).toBeLessThanOrEqual(6);
       expect(result).toBe(false);
@@ -139,7 +144,7 @@ describe("powerBankHaulerRole", () => {
       const role = powerBankHaulerRole(TARGET_ROOM);
       const result = role.source(hauler);
 
-      const [stagingPos] = (hauler.moveTo as jest.Mock).mock.calls[0];
+      const [, stagingPos] = (moveToTarget as jest.Mock).mock.calls[0];
       expect(stagingPos.x).toBeGreaterThan(0);
       expect(stagingPos.x).toBeLessThan(49);
       expect(stagingPos.y).toBeGreaterThan(0);
@@ -155,9 +160,11 @@ describe("powerBankHaulerRole", () => {
       const role = powerBankHaulerRole(TARGET_ROOM);
       const result = role.source(hauler);
 
-      expect(hauler.moveTo).toHaveBeenCalledWith(
+      expect(moveToTarget).toHaveBeenCalledWith(
+        hauler,
         expect.objectContaining({ roomName: TARGET_ROOM }),
-        expect.objectContaining({ range: 0, reusePath: 10 }),
+        0,
+        expect.objectContaining({ reusePath: 10, ignoreCreeps: true, avoidExitTiles: true }),
       );
       expect(result).toBe(false);
     });
@@ -546,6 +553,159 @@ describe("powerBankHaulerRole", () => {
 
       expect(result).toBe(true);
       expect(hauler.suicide).toHaveBeenCalled();
+    });
+  });
+
+  describe("flee traffic awareness (Task 3)", () => {
+    /**
+     * Helper to register creeps in Game.creeps and set up room.find(FIND_MY_CREEPS)
+     * so the tick context service / findMyCreepAt can discover them.
+     */
+    function registerCreepsInRoom(creeps: Creep[], roomName: string): void {
+      for (const c of creeps) {
+        Game.creeps[c.name] = c;
+      }
+      if (!Game.rooms[roomName]) {
+        (Game.rooms as Record<string, Room>)[roomName] = creeps[0].room;
+      }
+      const room = Game.rooms[roomName];
+      (room as any).find = jest.fn((constant: number, opts?: any) => {
+        if (constant === FIND_MY_CREEPS) return creeps;
+        if (constant === FIND_STRUCTURES) return [];
+        if (constant === FIND_DROPPED_RESOURCES) return [];
+        return [];
+      });
+    }
+
+    it("does not flee when movementPushedAt equals Game.time (pushed cooldown)", () => {
+      setupTask("attacking");
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 26, y: 25 });
+
+      // Mark the hauler as pushed this tick
+      ensureCreepMovementState(hauler.name).movementPushedAt = Game.time;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      role.source(hauler);
+
+      expect(hauler.move).not.toHaveBeenCalled();
+    });
+
+    it("flees normally when movementPushedAt is from a previous tick", () => {
+      setupTask("attacking");
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 26, y: 25 });
+
+      // Mark pushed last tick
+      ensureCreepMovementState(hauler.name).movementPushedAt = Game.time - 1;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      role.source(hauler);
+
+      expect(hauler.move).toHaveBeenCalled();
+    });
+
+    it("side-steps when intended flee tile is occupied by another hauler", () => {
+      setupTask("attacking");
+      // Hauler at (26, 25), bank at (25, 25). Radial flee direction = RIGHT (x increases).
+      // Intended flee tile: (27, 25). Block it with another hauler.
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 26, y: 25 });
+      const blocker = createMockPowerBankCreep("powerBankHauler", {
+        name: "hauler-blocker",
+        roomName: TARGET_ROOM,
+        x: 27,
+        y: 25,
+        carryCapacity: 1600,
+        memory: { role: "powerBankHauler", taskId: TASK_ID, configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:1` } as Partial<CreepMemory>,
+      });
+
+      registerCreepsInRoom([hauler, blocker], TARGET_ROOM);
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      role.source(hauler);
+
+      // Should have moved but NOT in the RIGHT direction (6) since (27,25) is blocked
+      expect(hauler.move).toHaveBeenCalled();
+      const moveDir = (hauler.move as jest.Mock).mock.calls[0][0] as DirectionConstant;
+      expect(moveDir).not.toBe(RIGHT as DirectionConstant);
+    });
+
+    it("does not move when flee tile occupied and no safe side direction", () => {
+      setupTask("attacking");
+      // Hauler at (26, 25), bank at (25, 25). Flee direction = RIGHT → (27, 25).
+      // Place haulers on (27,25), (27,24), (27,26) — the intended tile + two side tiles.
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 26, y: 25 });
+      const blockerCenter = createMockPowerBankCreep("powerBankHauler", {
+        name: "hauler-center",
+        roomName: TARGET_ROOM,
+        x: 27,
+        y: 25,
+        carryCapacity: 1600,
+        memory: { role: "powerBankHauler", taskId: TASK_ID, configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:1` } as Partial<CreepMemory>,
+      });
+      const blockerTop = createMockPowerBankCreep("powerBankHauler", {
+        name: "hauler-top",
+        roomName: TARGET_ROOM,
+        x: 27,
+        y: 24,
+        carryCapacity: 1600,
+        memory: { role: "powerBankHauler", taskId: TASK_ID, configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:2` } as Partial<CreepMemory>,
+      });
+      const blockerBottom = createMockPowerBankCreep("powerBankHauler", {
+        name: "hauler-bottom",
+        roomName: TARGET_ROOM,
+        x: 27,
+        y: 26,
+        carryCapacity: 1600,
+        memory: { role: "powerBankHauler", taskId: TASK_ID, configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:3` } as Partial<CreepMemory>,
+      });
+
+      registerCreepsInRoom([hauler, blockerCenter, blockerTop, blockerBottom], TARGET_ROOM);
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      role.source(hauler);
+
+      expect(hauler.move).not.toHaveBeenCalled();
+    });
+
+    it("prefers original radial direction when target tile is not blocked by another hauler", () => {
+      setupTask("attacking");
+      // Hauler at (26, 25), bank at (25, 25). Radial = RIGHT.
+      // No other hauler on (27, 25) — should flee RIGHT.
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 26, y: 25 });
+
+      // Register only the hauler itself in the room
+      registerCreepsInRoom([hauler], TARGET_ROOM);
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      role.source(hauler);
+
+      expect(hauler.move).toHaveBeenCalledWith(RIGHT as DirectionConstant);
+    });
+
+    it("does not move when side directions are wall terrain", () => {
+      setupTask("attacking");
+      // Hauler at (26, 25), bank at (25, 25). Flee direction = RIGHT → (27, 25).
+      // Block (27, 25) with a hauler. Make (27, 24) and (27, 26) wall terrain.
+      const hauler = createHauler({ roomName: TARGET_ROOM, x: 26, y: 25 });
+      const blocker = createMockPowerBankCreep("powerBankHauler", {
+        name: "hauler-blocker",
+        roomName: TARGET_ROOM,
+        x: 27,
+        y: 25,
+        carryCapacity: 1600,
+        memory: { role: "powerBankHauler", taskId: TASK_ID, configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:1` } as Partial<CreepMemory>,
+      });
+
+      registerCreepsInRoom([hauler, blocker], TARGET_ROOM);
+
+      const wallCoords = new Set(["27:24", "27:26"]);
+      Game.map.getRoomTerrain = jest.fn(() => ({
+        get: (x: number, y: number) => wallCoords.has(`${x}:${y}`) ? TERRAIN_MASK_WALL : 0,
+      }));
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      role.source(hauler);
+
+      expect(hauler.move).not.toHaveBeenCalled();
     });
   });
 });

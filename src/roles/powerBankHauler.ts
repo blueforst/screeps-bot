@@ -1,6 +1,9 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { POWER_BANK_STATUS } from "@/runtime/powerBankConstants";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { getCreepMovementState } from "@/movement/creepState";
+import { getPositionAtDirection } from "@/movement/common";
+import { findMyCreepAt } from "@/movement/traffic";
 import type { RoleFactory } from "@/types/system";
 
 // ---------------------------------------------------------------------------
@@ -88,12 +91,33 @@ function findPowerBank(room: Room): StructurePowerBank | null {
   return banks[0] || null;
 }
 
+function isWalkableTile(pos: RoomPosition): boolean {
+  return Game.map.getRoomTerrain(pos.roomName).get(pos.x, pos.y) !== TERRAIN_MASK_WALL;
+}
+
+function isPowerBankHaulerAt(pos: RoomPosition, excludeName: string): boolean {
+  const occupant = findMyCreepAt(pos, excludeName);
+  return occupant !== null && occupant.memory.role === "powerBankHauler";
+}
+
+function getSideDirections(dir: DirectionConstant): [DirectionConstant, DirectionConstant] {
+  const cw: DirectionConstant[] = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
+  const idx = cw.indexOf(dir);
+  const prev = (idx + 7) % 8;
+  const next = (idx + 1) % 8;
+  return [cw[prev], cw[next]];
+}
+
 function waitAwayFromBank(creep: Creep, bankPos: { x: number; y: number }): void {
   const range = Math.max(
     Math.abs(creep.pos.x - bankPos.x),
     Math.abs(creep.pos.y - bankPos.y),
   );
   if (range >= 5) {
+    return;
+  }
+
+  if (getCreepMovementState(creep.name)?.movementPushedAt === Game.time) {
     return;
   }
 
@@ -118,7 +142,28 @@ function waitAwayFromBank(creep: Creep, bankPos: { x: number; y: number }): void
     dir = TOP_LEFT as DirectionConstant;
   }
 
-  measureCreepIntent(() => creep.move(dir));
+  const targetPos = getPositionAtDirection(creep.pos, dir);
+  if (!targetPos) {
+    return;
+  }
+
+  if (!isPowerBankHaulerAt(targetPos, creep.name)) {
+    measureCreepIntent(() => creep.move(dir!));
+    return;
+  }
+
+  const [sideA, sideB] = getSideDirections(dir!);
+  const sideAPos = getPositionAtDirection(creep.pos, sideA);
+  if (sideAPos && isWalkableTile(sideAPos) && !isPowerBankHaulerAt(sideAPos, creep.name)) {
+    measureCreepIntent(() => creep.move(sideA));
+    return;
+  }
+
+  const sideBPos = getPositionAtDirection(creep.pos, sideB);
+  if (sideBPos && isWalkableTile(sideBPos) && !isPowerBankHaulerAt(sideBPos, creep.name)) {
+    measureCreepIntent(() => creep.move(sideB));
+    return;
+  }
 }
 
 function isExitCoordinate(x: number, y: number): boolean {
@@ -170,12 +215,11 @@ function moveToBankVicinity(creep: Creep, bankPos: RoomPosition | { x: number; y
 
   const stagingPos = findBankStagingPosition(creep, targetPos);
 
-  measureCreepIntent(() => creep.moveTo(stagingPos, {
-    range: 0,
+  moveToTarget(creep, stagingPos, 0, {
     reusePath: 10,
     ignoreCreeps: true,
-    visualizePathStyle: { stroke: "#ffaa00" },
-  }));
+    avoidExitTiles: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
