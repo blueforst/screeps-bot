@@ -71,6 +71,11 @@ describe("hubPlanner defaults", () => {
       const config = getDefaultHubConfig();
       expect(config.internalOnly).toBe(true);
     });
+
+    it("sets distributedStorage to true by default", () => {
+      const config = getDefaultHubConfig();
+      expect(config.distributedStorage).toBe(true);
+    });
   });
 
   describe("getDefaultHubRuntime", () => {
@@ -1171,6 +1176,235 @@ describe("planHubImports", () => {
     );
     expect(ohTask).toBeDefined();
     expect(ohTask!.amount).toBe(150);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TDD: distributedStorage policy — hub import ON/OFF behavior
+// ---------------------------------------------------------------------------
+
+describe("distributedStorage off", () => {
+  const HUB_ROOM = "W1N1";
+  const SAT_ROOM = "W2N1";
+
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+        distributedStorage: false,
+      },
+    };
+    Memory.runtime = { hub: getDefaultHubRuntime() };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("creates hub:import:H base mineral task from satellite with surplus H", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROGEN]: 1000 });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const hTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROGEN && t.reason === `hub:import:${RESOURCE_HYDROGEN}`,
+    );
+    expect(hTask).toBeDefined();
+    expect(hTask!.fromRoomName).toBe(SAT_ROOM);
+    expect(hTask!.toRoomName).toBe(HUB_ROOM);
+    expect(hTask!.reason).toBe("hub:import:H");
+    expect(hTask!.amount).toBeGreaterThan(0);
+  });
+
+  it("creates hub:import:OH intermediate task from satellite with surplus OH", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROXIDE]: 150 });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const ohTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROXIDE && t.reason === `hub:import:${RESOURCE_HYDROXIDE}`,
+    );
+    expect(ohTask).toBeDefined();
+    expect(ohTask!.fromRoomName).toBe(SAT_ROOM);
+    expect(ohTask!.toRoomName).toBe(HUB_ROOM);
+    expect(ohTask!.reason).toBe("hub:import:OH");
+    expect(ohTask!.amount).toBe(150);
+  });
+
+  it("creates hub:reclaim:XUH2O T3 reclaim task from satellite with surplus T3", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 1501,
+    });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const t3Task = tasks.find(
+      (t) =>
+        t.resource === RESOURCE_CATALYZED_UTRIUM_ACID &&
+        t.reason === `hub:reclaim:${RESOURCE_CATALYZED_UTRIUM_ACID}`,
+    );
+    expect(t3Task).toBeDefined();
+    expect(t3Task!.fromRoomName).toBe(SAT_ROOM);
+    expect(t3Task!.toRoomName).toBe(HUB_ROOM);
+    expect(t3Task!.reason).toBe("hub:reclaim:XUH2O");
+    expect(t3Task!.amount).toBe(501);
+  });
+
+  it("creates all three task types simultaneously (H + OH + XUH2O reclaim)", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROGEN]: 2000,
+      [RESOURCE_HYDROXIDE]: 500,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 2000,
+    });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const hTask = tasks.find((t) => t.reason === "hub:import:H");
+    const ohTask = tasks.find((t) => t.reason === "hub:import:OH");
+    const t3Task = tasks.find((t) => t.reason === "hub:reclaim:XUH2O");
+
+    expect(hTask).toBeDefined();
+    expect(ohTask).toBeDefined();
+    expect(t3Task).toBeDefined();
+  });
+});
+
+describe("distributedStorage on", () => {
+  const HUB_ROOM = "W1N1";
+  const SAT_ROOM = "W2N1";
+
+  beforeEach(() => {
+    Game.time = 50;
+    Game.rooms = {};
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: HUB_ROOM,
+        planInterval: 50,
+        reservePerRoom: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+        distributedStorage: true,
+      },
+    };
+    Memory.runtime = { hub: getDefaultHubRuntime() };
+    Memory.data = {};
+    (global as any).__runtimeServices = undefined;
+    registerRuntimeServices();
+  });
+
+  it("does NOT create hub:import:H base mineral task (suppressed by distributed storage)", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROGEN]: 2000 });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const hTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROGEN && t.reason === `hub:import:${RESOURCE_HYDROGEN}`,
+    );
+    // distributedStorage=true suppresses base mineral imports to hub
+    expect(hTask).toBeUndefined();
+  });
+
+  it("does NOT create hub:import:OH intermediate task (suppressed by distributed storage)", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [RESOURCE_HYDROXIDE]: 500 });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const ohTask = tasks.find(
+      (t) => t.resource === RESOURCE_HYDROXIDE && t.reason === `hub:import:${RESOURCE_HYDROXIDE}`,
+    );
+    // distributedStorage=true suppresses intermediate compound imports to hub
+    expect(ohTask).toBeUndefined();
+  });
+
+  it("still creates hub:reclaim:XUH2O T3 reclaim task (reclaims preserved)", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 1501,
+    });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const t3Task = tasks.find(
+      (t) =>
+        t.resource === RESOURCE_CATALYZED_UTRIUM_ACID &&
+        t.reason === `hub:reclaim:${RESOURCE_CATALYZED_UTRIUM_ACID}`,
+    );
+    expect(t3Task).toBeDefined();
+    expect(t3Task!.fromRoomName).toBe(SAT_ROOM);
+    expect(t3Task!.toRoomName).toBe(HUB_ROOM);
+    expect(t3Task!.reason).toBe("hub:reclaim:XUH2O");
+    expect(t3Task!.amount).toBe(501);
+  });
+
+  it("creates hub:import:power task for POWER resource", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_POWER]: 3000,
+    });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+    const powerTask = tasks.find(
+      (t) => t.resource === RESOURCE_POWER && t.reason === "hub:import:power",
+    );
+    // TDD RED: planHubImports does not yet create hub:import:power tasks
+    expect(powerTask).toBeDefined();
+    expect(powerTask!.fromRoomName).toBe(SAT_ROOM);
+    expect(powerTask!.toRoomName).toBe(HUB_ROOM);
+    expect(powerTask!.amount).toBeGreaterThan(0);
+  });
+
+  it("suppressed state: no base or intermediate imports, only reclaim and power", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROGEN]: 2000,
+      [RESOURCE_HYDROXIDE]: 500,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 2000,
+      [RESOURCE_POWER]: 3000,
+    });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    const tasks = Object.values(ensureResourceTransferTaskStore());
+
+    // Base mineral and intermediate imports must be suppressed
+    const hTask = tasks.find((t) => t.reason === "hub:import:H");
+    const ohTask = tasks.find((t) => t.reason === "hub:import:OH");
+    expect(hTask).toBeUndefined();
+    expect(ohTask).toBeUndefined();
+
+    // T3 reclaim preserved
+    const t3Task = tasks.find((t) => t.reason === "hub:reclaim:XUH2O");
+    expect(t3Task).toBeDefined();
+
+    // POWER route present
+    const powerTask = tasks.find((t) => t.reason === "hub:import:power");
+    expect(powerTask).toBeDefined();
   });
 });
 
@@ -2625,6 +2859,24 @@ describe("hub config migration (TDD RED)", () => {
     ];
     const result = normalizeHubConfig({ targetCompounds: customList });
     expect(result.targetCompounds).toEqual(customList);
+  });
+
+  it("normalizeHubConfig defaults missing distributedStorage to true", () => {
+    const { normalizeHubConfig } = require("@/runtime/hubPlanner") as { normalizeHubConfig: (cfg: any) => any };
+    const result = normalizeHubConfig({});
+    expect(result.distributedStorage).toBe(true);
+  });
+
+  it("normalizeHubConfig preserves explicit distributedStorage false", () => {
+    const { normalizeHubConfig } = require("@/runtime/hubPlanner") as { normalizeHubConfig: (cfg: any) => any };
+    const result = normalizeHubConfig({ distributedStorage: false });
+    expect(result.distributedStorage).toBe(false);
+  });
+
+  it("normalizeHubConfig preserves explicit distributedStorage true", () => {
+    const { normalizeHubConfig } = require("@/runtime/hubPlanner") as { normalizeHubConfig: (cfg: any) => any };
+    const result = normalizeHubConfig({ distributedStorage: true });
+    expect(result.distributedStorage).toBe(true);
   });
 });
 
@@ -4153,6 +4405,421 @@ describe("planDistributedSynthesis", () => {
     expect(products.length).toBeGreaterThan(0);
     expect(plan.blockedTargets).not.toContain(RESOURCE_CATALYZED_KEANIUM_ALKALIDE);
   });
+
+  describe("final-T3 uniqueness", () => {
+    /**
+     * Maps an intermediate product to its ultimate T3 target.
+     * T1/T2 intermediates each feed exactly one T3.
+     * Returns null for ambiguous base intermediates (OH, ZK, UL, G) that serve multiple chains.
+     */
+    function traceProductToFinalT3(product: ResourceConstant): ResourceConstant | null {
+      const T3_LIST: ResourceConstant[] = [
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+        RESOURCE_CATALYZED_KEANIUM_ACID,
+        RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+        RESOURCE_CATALYZED_LEMERGIUM_ACID,
+        RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        RESOURCE_CATALYZED_ZYNTHIUM_ACID,
+        RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
+        RESOURCE_CATALYZED_GHODIUM_ACID,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+      ];
+      if (T3_LIST.includes(product)) return product;
+
+      const T2_TO_T3: Record<string, ResourceConstant> = {
+        [RESOURCE_UTRIUM_ACID]: RESOURCE_CATALYZED_UTRIUM_ACID,
+        [RESOURCE_UTRIUM_ALKALIDE]: RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+        [RESOURCE_KEANIUM_ACID]: RESOURCE_CATALYZED_KEANIUM_ACID,
+        [RESOURCE_KEANIUM_ALKALIDE]: RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+        [RESOURCE_LEMERGIUM_ACID]: RESOURCE_CATALYZED_LEMERGIUM_ACID,
+        [RESOURCE_LEMERGIUM_ALKALIDE]: RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        [RESOURCE_ZYNTHIUM_ACID]: RESOURCE_CATALYZED_ZYNTHIUM_ACID,
+        [RESOURCE_ZYNTHIUM_ALKALIDE]: RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
+        [RESOURCE_GHODIUM_ACID]: RESOURCE_CATALYZED_GHODIUM_ACID,
+        [RESOURCE_GHODIUM_ALKALIDE]: RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+      };
+      if (T2_TO_T3[product]) return T2_TO_T3[product];
+
+      const T1_TO_T3: Record<string, ResourceConstant> = {
+        [RESOURCE_UTRIUM_HYDRIDE]: RESOURCE_CATALYZED_UTRIUM_ACID,
+        [RESOURCE_UTRIUM_OXIDE]: RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+        [RESOURCE_KEANIUM_HYDRIDE]: RESOURCE_CATALYZED_KEANIUM_ACID,
+        [RESOURCE_KEANIUM_OXIDE]: RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+        [RESOURCE_LEMERGIUM_HYDRIDE]: RESOURCE_CATALYZED_LEMERGIUM_ACID,
+        [RESOURCE_LEMERGIUM_OXIDE]: RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        [RESOURCE_ZYNTHIUM_HYDRIDE]: RESOURCE_CATALYZED_ZYNTHIUM_ACID,
+        [RESOURCE_ZYNTHIUM_OXIDE]: RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
+        [RESOURCE_GHODIUM_HYDRIDE]: RESOURCE_CATALYZED_GHODIUM_ACID,
+        [RESOURCE_GHODIUM_OXIDE]: RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+      };
+      if (T1_TO_T3[product]) return T1_TO_T3[product];
+
+      return null;
+    }
+
+    it("assigns unique final T3 targets to each room when enough distinct targets are feasible", () => {
+      // Hub has partial UH2O (300) + full base minerals (H,O,U,K,L,Z,Catalyst).
+      // planHubChains generates T1 steps for all chains AND an XUH2O T3 step
+      // (partial UH2O covers some demand). Both UH→XUH2O and XUH2O→XUH2O
+      // trace to the same final T3 target — a duplicate. With 5 rooms and 6
+      // feasible distinct final T3 targets, this duplicate is invalid because
+      // feasible targets exceed assignable rooms (no fallback needed).
+      const DS4 = "DS4";
+      const DS5 = "DS5";
+
+      const RESOURCES: Record<string, number> = {
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_UTRIUM]: 20000,
+        [RESOURCE_KEANIUM]: 20000,
+        [RESOURCE_LEMERGIUM]: 20000,
+        [RESOURCE_ZYNTHIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+        [RESOURCE_UTRIUM_ACID]: 300,
+      };
+
+      Game.rooms[DIST_SYNTH_HUB] = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DIST_SYNTH_AUX] = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DIST_SYNTH_AUX2] = createSynthesisCapableRoom(DIST_SYNTH_AUX2, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DS4] = createSynthesisCapableRoom(DS4, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DS5] = createSynthesisCapableRoom(DS5, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+
+      const targets: ResourceConstant[] = [
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+        RESOURCE_CATALYZED_KEANIUM_ACID,
+        RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+        RESOURCE_CATALYZED_LEMERGIUM_ACID,
+        RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+      ];
+
+      const plan = planDistributedSynthesis(
+        DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory(),
+      );
+
+      expect(plan.dispatchAssignments.length).toBeGreaterThan(1);
+
+      const assignedT3s: ResourceConstant[] = [];
+      for (const a of plan.dispatchAssignments) {
+        const t3 = traceProductToFinalT3(a.product);
+        if (t3) assignedT3s.push(t3);
+      }
+
+      const uniqueT3s = new Set(assignedT3s);
+      const duplicateT3s = assignedT3s.filter(
+        (t3, i) => assignedT3s.indexOf(t3) !== i,
+      );
+      expect({
+        feasibleTargets: targets.length,
+        rooms: 5,
+        uniqueCount: uniqueT3s.size,
+        assignedCount: assignedT3s.length,
+        duplicates: [...new Set(duplicateT3s)],
+        details: plan.dispatchAssignments.map(a =>
+          `${a.roomName}→${a.product}→${traceProductToFinalT3(a.product) ?? "?"}`,
+        ),
+      }).toEqual({
+        feasibleTargets: targets.length,
+        rooms: 5,
+        uniqueCount: assignedT3s.length,
+        assignedCount: assignedT3s.length,
+        duplicates: [],
+        details: plan.dispatchAssignments.map(a =>
+          `${a.roomName}→${a.product}→${traceProductToFinalT3(a.product) ?? "?"}`,
+        ),
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Task 2: final-T3 mapping contract tests
+    //
+    // These tests define the contract that each dispatch assignment must carry
+    // candidate-context-aware final-target metadata. The production type
+    // `SynthesisDispatchAssignment` currently lacks a `finalTarget` field.
+    // Until Task 3 adds it, these are intentionally RED tests.
+    //
+    // A test-local helper `candidateFinalTarget()` is used to express the
+    // expected behavior; it does NOT reflect production reality yet.
+    // -----------------------------------------------------------------------
+
+    /**
+     * TEST-LOCAL helper: resolves the final T3 target for an assignment.
+     *
+     * Contract: if the assignment carries a `finalTarget` field (added in
+     * Task 3), use it. Otherwise fall back to the global `traceProductToFinalT3()`
+     * which returns null for shared intermediates like OH.
+     *
+     * Once production adds `finalTarget` to SynthesisDispatchAssignment,
+     * this helper becomes `(a) => a.finalTarget`.
+     */
+    function candidateFinalTarget(
+      a: SynthesisDispatchAssignment,
+    ): ResourceConstant | null {
+      // Task 3 will add `finalTarget` to the assignment type.
+      // Until then, use the narrow traceProductToFinalT3 which cannot
+      // resolve shared intermediates.
+      const anyA = a as unknown as Record<string, unknown>;
+      if ("finalTarget" in anyA && anyA.finalTarget != null) {
+        return anyA.finalTarget as ResourceConstant;
+      }
+      return traceProductToFinalT3(a.product);
+    }
+
+    it("final T3 product maps to itself when assigned directly", () => {
+      const RESOURCES: Record<string, number> = {
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_UTRIUM]: 20000,
+        [RESOURCE_KEANIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+        [RESOURCE_UTRIUM_ACID]: 500,
+      };
+
+      Game.rooms[DIST_SYNTH_HUB] = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DIST_SYNTH_AUX] = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+
+      const targets: ResourceConstant[] = [RESOURCE_CATALYZED_UTRIUM_ACID];
+      const plan = planDistributedSynthesis(
+        DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory(),
+      );
+
+      const t3Assignments = plan.dispatchAssignments.filter(
+        a => a.product === RESOURCE_CATALYZED_UTRIUM_ACID,
+      );
+
+      expect(t3Assignments.length).toBeGreaterThan(0);
+
+      for (const a of t3Assignments) {
+        expect({
+          product: a.product,
+          finalTarget: candidateFinalTarget(a),
+        }).toEqual({
+          product: RESOURCE_CATALYZED_UTRIUM_ACID,
+          finalTarget: RESOURCE_CATALYZED_UTRIUM_ACID,
+        });
+      }
+    });
+
+    it("intermediate product maps to its chain's final T3 target, not global lookup", () => {
+      // Given: XUH2O and XKH2O targets. Hub has H, O, U, K, Catalyst.
+      // When: planDistributedSynthesis generates UH (→XUH2O) and KH (→XKH2O).
+      // Then: UH's finalTarget is XUH2O, KH's finalTarget is XKH2O.
+      const RESOURCES: Record<string, number> = {
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_UTRIUM]: 20000,
+        [RESOURCE_KEANIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+      };
+
+      Game.rooms[DIST_SYNTH_HUB] = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DIST_SYNTH_AUX] = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+
+      const targets: ResourceConstant[] = [
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_KEANIUM_ACID,
+      ];
+      const plan = planDistributedSynthesis(
+        DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory(),
+      );
+
+      const uhAssignment = plan.dispatchAssignments.find(
+        a => a.product === RESOURCE_UTRIUM_HYDRIDE,
+      );
+
+      expect(uhAssignment).toBeDefined();
+      const ft = candidateFinalTarget(uhAssignment!);
+      expect(ft).toBe(RESOURCE_CATALYZED_UTRIUM_ACID);
+    });
+
+    it("shared intermediate OH is associated with a specific final T3 target via candidate context, not arbitrarily", () => {
+      // This is the key test: OH is shared across ALL mineral-based chains.
+      // Current production lacks per-candidate final-target metadata.
+      // With the future implementation, each OH assignment should carry
+      // the finalTarget of its planning candidate (e.g., XUH2O for one room,
+      // XKH2O for another).
+      //
+      // Setup: Hub + 3 satellites, requesting XUH2O, XUHO2, XKH2O.
+      // planHubChains will generate OH as a shared intermediate.
+      // Without candidate-context metadata, OH gets assigned to one room
+      // with no indication of which T3 it serves.
+      //
+      // The contract: every assignment that produces OH must have a
+      // finalTarget field indicating which T3 chain it belongs to.
+      const DS4 = "DS4";
+
+      const RESOURCES: Record<string, number> = {
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_UTRIUM]: 20000,
+        [RESOURCE_KEANIUM]: 20000,
+        [RESOURCE_LEMERGIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+      };
+
+      Game.rooms[DIST_SYNTH_HUB] = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DIST_SYNTH_AUX] = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DIST_SYNTH_AUX2] = createSynthesisCapableRoom(DIST_SYNTH_AUX2, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DS4] = createSynthesisCapableRoom(DS4, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+
+      const targets: ResourceConstant[] = [
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+        RESOURCE_CATALYZED_KEANIUM_ACID,
+        RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+      ];
+      const plan = planDistributedSynthesis(
+        DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory(),
+      );
+
+      const ohAssignments = plan.dispatchAssignments.filter(
+        a => a.product === RESOURCE_HYDROXIDE,
+      );
+
+      if (ohAssignments.length === 0) {
+        // If no OH assignments (unlikely with these inputs), skip.
+        return;
+      }
+
+      // CONTRACT: every OH assignment MUST have a resolvable finalTarget
+      // (i.e., candidateFinalTarget must NOT return null for OH).
+      // Currently traceProductToFinalT3("OH") returns null because OH
+      // is ambiguous — this test will FAIL until Task 3 adds finalTarget
+      // metadata to assignments.
+      for (const a of ohAssignments) {
+        const ft = candidateFinalTarget(a);
+        expect({
+          roomName: a.roomName,
+          product: a.product,
+          finalTarget: ft,
+          hasFinalTarget: ft !== null,
+        }).toEqual(
+          expect.objectContaining({
+            product: RESOURCE_HYDROXIDE,
+            hasFinalTarget: true,
+          }),
+        );
+      }
+    });
+
+    it("assignments for intermediates from different chains resolve to distinct final T3 targets", () => {
+      // With 5 rooms and 6 targets, assignments include UH (→XUH2O chain)
+      // and KH (→XKH2O chain). Their finalTargets must be different:
+      // UH→XUH2O, KH→XKH2O. This verifies candidate-context awareness
+      // rather than a global product→T3 map (which already works for
+      // non-shared T1 products). The real value: if future code refactors
+      // use a global map, this test catches the regression for shared cases.
+      const DS4 = "DS4";
+      const DS5 = "DS5";
+
+      const RESOURCES: Record<string, number> = {
+        [RESOURCE_HYDROGEN]: 50000,
+        [RESOURCE_OXYGEN]: 50000,
+        [RESOURCE_UTRIUM]: 20000,
+        [RESOURCE_KEANIUM]: 20000,
+        [RESOURCE_LEMERGIUM]: 20000,
+        [RESOURCE_ZYNTHIUM]: 20000,
+        [RESOURCE_CATALYST]: 20000,
+      };
+
+      Game.rooms[DIST_SYNTH_HUB] = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DIST_SYNTH_AUX] = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DIST_SYNTH_AUX2] = createSynthesisCapableRoom(DIST_SYNTH_AUX2, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DS4] = createSynthesisCapableRoom(DS4, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[DS5] = createSynthesisCapableRoom(DS5, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+
+      const targets: ResourceConstant[] = [
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+        RESOURCE_CATALYZED_UTRIUM_ALKALIDE,
+        RESOURCE_CATALYZED_KEANIUM_ACID,
+        RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+        RESOURCE_CATALYZED_LEMERGIUM_ACID,
+        RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+      ];
+      const plan = planDistributedSynthesis(
+        DIST_SYNTH_HUB, targets, 1000, 1000, getHubInventory(),
+      );
+
+      // Collect all assignments with their finalTargets via the contract helper
+      const withFinalTargets = plan.dispatchAssignments.map(a => ({
+        roomName: a.roomName,
+        product: a.product,
+        finalTarget: candidateFinalTarget(a),
+      }));
+
+      // Find UH and KH assignments
+      const uhEntry = withFinalTargets.find(e => e.product === RESOURCE_UTRIUM_HYDRIDE);
+      const khEntry = withFinalTargets.find(e => e.product === RESOURCE_KEANIUM_HYDRIDE);
+
+      // Both must exist and have distinct finalTargets
+      expect({
+        hasUH: !!uhEntry,
+        hasKH: !!khEntry,
+        uhFinalTarget: uhEntry?.finalTarget ?? null,
+        khFinalTarget: khEntry?.finalTarget ?? null,
+      }).toEqual({
+        hasUH: true,
+        hasKH: true,
+        uhFinalTarget: RESOURCE_CATALYZED_UTRIUM_ACID,
+        khFinalTarget: RESOURCE_CATALYZED_KEANIUM_ACID,
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5208,6 +5875,340 @@ describe("logistics-cost-aware dispatch scoring", () => {
       expect(kTasks[0].toRoomName).toBe(WIRE_AUX);
       expect(kTasks[0].amount).toBe(20000);
       expect(kTasks[0].reason).toBe("synthesis:direct:K");
+    });
+
+    it("suppresses synthesis:surplus:X (catalyst) when distributedStorage is true", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_CATALYST, amount: 5000, fee: 0 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000, true);
+
+      const store = ensureResourceTransferTaskStore();
+      const surplusTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:surplus:X",
+      );
+      expect(surplusTasks.length).toBe(0);
+    });
+
+    it("creates synthesis:surplus:XUH2O (T3) hub-route when distributedStorage is true", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_CATALYZED_UTRIUM_ACID, amount: 5000, fee: 0 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000, true);
+
+      const store = ensureResourceTransferTaskStore();
+      const surplusTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:surplus:XUH2O",
+      );
+      expect(surplusTasks.length).toBe(1);
+      expect(surplusTasks[0].amount).toBe(5000 - 1000);
+    });
+
+    // -----------------------------------------------------------------------
+    // Task 4: duplicate fallback, busy-room reconciliation, reassignment,
+    // and stability tests
+    // -----------------------------------------------------------------------
+
+    it("allows duplicate final T3 assignments only after distinct targets are exhausted (third-pass fallback)", () => {
+      // Only XUH2O chain feasible: H, O, U, Catalyst. No K, L, Z.
+      // 3 rooms, 1 feasible target → third-pass fallback allows duplicates.
+      const WIRE_AUX2 = "W3N1";
+
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_UTRIUM]: 10000,
+          [RESOURCE_CATALYST]: 5000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+          [RESOURCE_UTRIUM]: 5000,
+          [RESOURCE_CATALYST]: 2000,
+        },
+      });
+      const auxRoom2 = createSynthesisCapableRoom(WIRE_AUX2, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+          [RESOURCE_UTRIUM]: 5000,
+          [RESOURCE_CATALYST]: 2000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+      Game.rooms[WIRE_AUX2] = auxRoom2;
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 20000, [RESOURCE_OXYGEN]: 20000, [RESOURCE_UTRIUM]: 20000, [RESOURCE_CATALYST]: 9000 },
+        [],
+      );
+
+      const assignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+
+      // All assignments carry finalTarget (Task 3 contract)
+      for (const a of assignments) {
+        expect(a.finalTarget).toBeDefined();
+      }
+
+      // All finalTargets are XUH2O — only feasible target
+      const finalTargets = assignments.map(a => a.finalTarget!);
+      const uniqueTargets = new Set(finalTargets);
+      expect(uniqueTargets.size).toBe(1);
+      expect([...uniqueTargets][0]).toBe(RESOURCE_CATALYZED_UTRIUM_ACID);
+
+      // Multiple assignments across different rooms → fallback duplicates
+      expect(assignments.length).toBeGreaterThan(1);
+      const roomNames = new Set(assignments.map(a => a.roomName));
+      expect(roomNames.size).toBeGreaterThan(1);
+
+      // Relationship: feasibleTargets(1) < rooms(3), so duplicates are valid
+      // after first-pass distinct assignment is made.
+      expect(assignments.length).toBeGreaterThan(1);
+    });
+
+    it("preserves busy rooms in loading, unloading, and cleanup stages without overwriting reactions", () => {
+      // Synthesizing stage is already covered by existing tests above.
+      // This test covers the remaining non-reassignable stages.
+      const busyStages = ["loading", "unloading", "cleanup"] as const;
+      const busyProduct = RESOURCE_UTRIUM_HYDRIDE;
+
+      for (const stage of busyStages) {
+        // Reset synthesis control per iteration
+        Memory.cfg!.synthesisControl = { enabled: true, rooms: {} };
+        if (!Memory.runtime!.synthesisControl) {
+          (Memory.runtime as any).synthesisControl = { rooms: {} };
+        }
+        if (!(Memory.runtime as any).synthesisControl.rooms) {
+          (Memory.runtime as any).synthesisControl.rooms = {};
+        }
+        delete (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX];
+
+        // Recreate rooms
+        Game.rooms = {};
+        const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+          labCount: 3,
+          storageResources: {
+            [RESOURCE_HYDROGEN]: 10000,
+            [RESOURCE_OXYGEN]: 10000,
+          },
+        });
+        const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+          labCount: 3,
+          storageResources: {
+            [RESOURCE_UTRIUM]: 5000,
+            [RESOURCE_CATALYST]: 5000,
+          },
+        });
+        Game.rooms[WIRE_HUB] = hubRoom;
+        Game.rooms[WIRE_AUX] = auxRoom;
+
+        // Aux room is busy with UH in the given stage
+        (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = {
+          stage,
+          activeProduct: busyProduct,
+          targetAmount: 3000,
+        };
+
+        // Pre-existing reaction config for aux
+        Memory.cfg!.synthesisControl.rooms[WIRE_AUX] = {
+          enabled: true,
+          reactions: [{ product: busyProduct, targetAmount: 3000, batchSize: 100, donorRoomNames: [] }],
+          donorRoomNames: [],
+        };
+
+        wireDistributedSynthesis(
+          WIRE_HUB,
+          [RESOURCE_CATALYZED_UTRIUM_ACID],
+          1000,
+          1000,
+          { [RESOURCE_HYDROGEN]: 10000, [RESOURCE_OXYGEN]: 10000, [RESOURCE_UTRIUM]: 5000, [RESOURCE_CATALYST]: 5000 },
+          [],
+        );
+
+        // Reaction config preserved (not overwritten)
+        const auxRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_AUX];
+        expect({
+          stage,
+          reactionProduct: auxRoomCfg?.reactions?.[0]?.product,
+        }).toEqual({
+          stage,
+          reactionProduct: busyProduct,
+        });
+
+        // Dispatch entry includes busy room with active product
+        const assignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+        const auxAssignment = assignments.find(a => a.roomName === WIRE_AUX);
+        expect({
+          stage,
+          found: !!auxAssignment,
+          product: auxAssignment?.product,
+        }).toEqual({
+          stage,
+          found: true,
+          product: busyProduct,
+        });
+      }
+    });
+
+    it("reassigns idle room to different final T3 target after previous product completes", () => {
+      const RESOURCES: Record<string, number> = {
+        [RESOURCE_HYDROGEN]: 10000,
+        [RESOURCE_OXYGEN]: 10000,
+        [RESOURCE_UTRIUM]: 10000,
+        [RESOURCE_KEANIUM]: 10000,
+        [RESOURCE_CATALYST]: 5000,
+      };
+
+      // Phase 1: aux is busy synthesizing UH (XUH2O chain)
+      Game.rooms = {};
+      Game.rooms[WIRE_HUB] = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[WIRE_AUX] = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+
+      (Memory.runtime as any).synthesisControl = { rooms: {} };
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = {
+        stage: "synthesizing",
+        activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+        targetAmount: 3000,
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID, RESOURCE_CATALYZED_KEANIUM_ACID],
+        1000,
+        1000,
+        { ...RESOURCES },
+        [],
+      );
+
+      const firstAssignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+      const firstAux = firstAssignments.find(a => a.roomName === WIRE_AUX);
+      expect(firstAux).toBeDefined();
+      // Reconciliation preserves active product for busy room
+      expect(firstAux!.product).toBe(RESOURCE_UTRIUM_HYDRIDE);
+
+      // Phase 2: aux completes, returns to idle
+      Game.rooms = {};
+      Game.rooms[WIRE_HUB] = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[WIRE_AUX] = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+
+      // Reset synthesis control — aux is now idle
+      (Memory.runtime as any).synthesisControl = { rooms: {} };
+      Memory.cfg!.synthesisControl = { enabled: true, rooms: {} };
+      // Clear transfer tasks so effective inventories are clean
+      Memory.data = {};
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID, RESOURCE_CATALYZED_KEANIUM_ACID],
+        1000,
+        1000,
+        { ...RESOURCES },
+        [],
+      );
+
+      const secondAssignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+      const secondAux = secondAssignments.find(a => a.roomName === WIRE_AUX);
+      expect(secondAux).toBeDefined();
+      expect(secondAux!.finalTarget).toBeDefined();
+
+      // Aux now has a different final T3 target (diversified from XUH2O)
+      expect({
+        previousProduct: firstAux!.product,
+        newFinalTarget: secondAux!.finalTarget,
+        diversified: secondAux!.finalTarget !== RESOURCE_CATALYZED_UTRIUM_ACID,
+      }).toEqual(
+        expect.objectContaining({ diversified: true }),
+      );
+    });
+
+    it("produces identical dispatch assignments when called twice with unchanged state", () => {
+      const RESOURCES: Record<string, number> = {
+        [RESOURCE_HYDROGEN]: 10000,
+        [RESOURCE_OXYGEN]: 10000,
+        [RESOURCE_UTRIUM]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      };
+
+      // First call
+      Game.rooms = {};
+      Game.rooms[WIRE_HUB] = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+      Game.rooms[WIRE_AUX] = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: { ...RESOURCES },
+      });
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { ...RESOURCES },
+        [],
+      );
+
+      const firstAssignments = JSON.parse(JSON.stringify(
+        Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!,
+      ));
+
+      // Reset transfer tasks and synthesis control for clean second call
+      Memory.data = {};
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      delete (Memory.runtime as any).synthesisControl;
+      Memory.cfg!.synthesisControl = { enabled: true, rooms: {} };
+
+      // Second call — same rooms, same inventory
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { ...RESOURCES },
+        [],
+      );
+
+      const secondAssignments = Memory.runtime!.hub!.distributedSynthesis!.dispatchAssignments!;
+
+      // Deterministic: identical structure
+      expect(secondAssignments).toEqual(firstAssignments);
     });
   });
 });

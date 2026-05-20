@@ -42,6 +42,7 @@ export function getDefaultHubConfig(): NonNullable<Memory["cfg"]>["hub"] {
     storagePauseFreeCapacity: 100_000,
     surplusThreshold: DEFAULT_RESERVE_PER_ROOM + 500,
     internalOnly: true,
+    distributedStorage: true,
   };
 }
 
@@ -87,6 +88,10 @@ export function normalizeHubConfig(cfg: NonNullable<Memory["cfg"]>["hub"]): NonN
     migrated = { ...migrated, reservePerRoom: DEFAULT_RESERVE_PER_ROOM };
   }
 
+  if (migrated.distributedStorage === undefined) {
+    migrated = { ...migrated, distributedStorage: true };
+  }
+
   return migrated;
 }
 
@@ -119,6 +124,8 @@ export interface SynthesisDispatchAssignment {
   targetAmount: number;
   /** Whether this is the hub room itself or an auxiliary room. */
   isHubRoom: boolean;
+  /** The final T3 target this assignment contributes to. Optional/backward-compatible. */
+  finalTarget?: ResourceConstant;
 }
 
 /** Tracks resource allocation commitments across rooms. */
@@ -288,6 +295,13 @@ const INTERMEDIATE_COMPOUNDS: ResourceConstant[] = [
 ];
 
 const BASE_MINERAL_SAFETY_FLOOR = 500;
+
+const SHARED_BASE_INTERMEDIATES = new Set<ResourceConstant>([
+  RESOURCE_HYDROXIDE,
+  RESOURCE_ZYNTHIUM_KEANITE,
+  RESOURCE_UTRIUM_LEMERGITE,
+  RESOURCE_GHODIUM,
+]);
 
 const MIN_HUB_IMPORT_AMOUNT = 100;
 
@@ -577,35 +591,39 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
       }
     }
 
-    for (const mineral of BASE_MINERALS) {
-      const amount = satResources[mineral] || 0;
-      if (amount <= BASE_MINERAL_SAFETY_FLOOR) continue;
-      const directCommitment = getDirectSupplyCommitment(satellite.name, mineral);
-      const localReserve = getLocalReserveForSynthesis(satellite.name, mineral, reservePerRoom, targetCompounds);
-      const sendAmount = amount - BASE_MINERAL_SAFETY_FLOOR - directCommitment - localReserve;
-      if (sendAmount < MIN_HUB_IMPORT_AMOUNT) continue;
-      const reason = `hub:import:${mineral}`;
-      const key = `${satellite.name}:${mineral}:${reason}`;
-      if (existingKeys.has(key)) continue;
-      const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, mineral, sendAmount, reason);
-      if (typeof result === "object" && result.ok) {
-        actions.push(`import:${satellite.name}:${mineral}=${sendAmount}`);
+    // Distributed storage keeps base/intermediate surplus local; T3 reclaim and POWER
+    // centralization stay hub-bound.
+    if (cfg.distributedStorage !== true) {
+      for (const mineral of BASE_MINERALS) {
+        const amount = satResources[mineral] || 0;
+        if (amount <= BASE_MINERAL_SAFETY_FLOOR) continue;
+        const directCommitment = getDirectSupplyCommitment(satellite.name, mineral);
+        const localReserve = getLocalReserveForSynthesis(satellite.name, mineral, reservePerRoom, targetCompounds);
+        const sendAmount = amount - BASE_MINERAL_SAFETY_FLOOR - directCommitment - localReserve;
+        if (sendAmount < MIN_HUB_IMPORT_AMOUNT) continue;
+        const reason = `hub:import:${mineral}`;
+        const key = `${satellite.name}:${mineral}:${reason}`;
+        if (existingKeys.has(key)) continue;
+        const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, mineral, sendAmount, reason);
+        if (typeof result === "object" && result.ok) {
+          actions.push(`import:${satellite.name}:${mineral}=${sendAmount}`);
+        }
       }
-    }
 
-    for (const compound of INTERMEDIATE_COMPOUNDS) {
-      const amount = satResources[compound] || 0;
-      if (amount <= 0) continue;
-      const directCommitment = getDirectSupplyCommitment(satellite.name, compound);
-      const localReserve = getLocalReserveForSynthesis(satellite.name, compound, reservePerRoom, targetCompounds);
-      const sendAmount = amount - directCommitment - localReserve;
-      if (sendAmount < MIN_HUB_IMPORT_AMOUNT) continue;
-      const reason = `hub:import:${compound}`;
-      const key = `${satellite.name}:${compound}:${reason}`;
-      if (existingKeys.has(key)) continue;
-      const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, compound, sendAmount, reason);
-      if (typeof result === "object" && result.ok) {
-        actions.push(`import:${satellite.name}:${compound}=${sendAmount}`);
+      for (const compound of INTERMEDIATE_COMPOUNDS) {
+        const amount = satResources[compound] || 0;
+        if (amount <= 0) continue;
+        const directCommitment = getDirectSupplyCommitment(satellite.name, compound);
+        const localReserve = getLocalReserveForSynthesis(satellite.name, compound, reservePerRoom, targetCompounds);
+        const sendAmount = amount - directCommitment - localReserve;
+        if (sendAmount < MIN_HUB_IMPORT_AMOUNT) continue;
+        const reason = `hub:import:${compound}`;
+        const key = `${satellite.name}:${compound}:${reason}`;
+        if (existingKeys.has(key)) continue;
+        const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, compound, sendAmount, reason);
+        if (typeof result === "object" && result.ok) {
+          actions.push(`import:${satellite.name}:${compound}=${sendAmount}`);
+        }
       }
     }
 
@@ -622,6 +640,19 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
       const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, t3, sendAmount, reason);
       if (typeof result === "object" && result.ok) {
         actions.push(`reclaim:${satellite.name}:${t3}=${sendAmount}`);
+      }
+    }
+
+    // POWER import: route all POWER from satellites to hub (no local reserve)
+    const powerAmount = satResources[RESOURCE_POWER] || 0;
+    if (powerAmount > 0) {
+      const reason = "hub:import:power";
+      const key = `${satellite.name}:${RESOURCE_POWER}:${reason}`;
+      if (!existingKeys.has(key)) {
+        const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, RESOURCE_POWER, powerAmount, reason);
+        if (typeof result === "object" && result.ok) {
+          actions.push(`import:${satellite.name}:power=${powerAmount}`);
+        }
       }
     }
   }
@@ -970,17 +1001,100 @@ export function planDistributedSynthesis(
     return { ...step, targetAmount: Math.max(0, cap) };
   });
 
-  // 5b. Assign capped steps to rooms
+  // 5b. Tag capped steps with their possible final T3 targets, then
+  // assign using first-pass diversification (one assignment per distinct
+  // final T3 target) before allowing duplicate targets.
+
+  interface TaggedStep {
+    step: ChainStep;
+    possibleTargets: ResourceConstant[];
+    originalIndex: number;
+  }
+
+  const taggedSteps: TaggedStep[] = cappedSteps
+    .filter(step => step.targetAmount > 0)
+    .map((step, idx) => ({
+      step,
+      possibleTargets: getPossibleT3Targets(step.product, targetCompounds),
+      originalIndex: idx,
+    }));
+
+  // Sort by specificity (fewer possible targets first) with original order
+  // as tiebreaker. This ensures unique intermediates (UH→XUH2O) are assigned
+  // before shared ones (OH→[XUH2O,XUHO2,...]), preventing shared intermediates
+  // from claiming a target that a specific intermediate needs.
+  taggedSteps.sort((a, b) => {
+    const diff = a.possibleTargets.length - b.possibleTargets.length;
+    return diff !== 0 ? diff : a.originalIndex - b.originalIndex;
+  });
+
   const depGraph = new DependencyGraph();
   const usedRooms = new Set<string>();
+  const assignedTargets = new Set<ResourceConstant>();
+  const assignedIndices = new Set<number>();
+  const deferredIndices: number[] = [];
 
-  for (const step of cappedSteps) {
-    if (step.targetAmount <= 0) continue; // skip steps that cannot produce anything
+  // First pass: one assignment per distinct final T3 target
+  for (let i = 0; i < taggedSteps.length; i++) {
+    const { step, possibleTargets } = taggedSteps[i];
+    const target = possibleTargets.find(t => !assignedTargets.has(t));
+
+    if (target) {
+      const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName, rooms, depGraph, usedRooms);
+      if (result) {
+        result.assignment.finalTarget = target;
+        assignments.push(result.assignment);
+        routeDecisions.push(...result.routes);
+        usedRooms.add(result.assignment.roomName);
+        assignedTargets.add(target);
+        assignedIndices.add(i);
+      } else {
+        deferredIndices.push(i);
+      }
+    } else {
+      deferredIndices.push(i);
+    }
+  }
+
+  // Second pass: assign shared intermediates (OH, ZK, UL, G) and steps
+  // with uncovered targets. Skip uniquely-traceable steps (T1/T2/T3) whose
+  // single target is already covered — those would create traceProductToFinalT3
+  // duplicates without providing diversification value.
+  for (const i of deferredIndices) {
+    const { step, possibleTargets } = taggedSteps[i];
+    if (
+      possibleTargets.length === 1 &&
+      !SHARED_BASE_INTERMEDIATES.has(step.product) &&
+      assignedTargets.has(possibleTargets[0])
+    ) continue;
+
+    const target = possibleTargets.find(t => !assignedTargets.has(t)) ?? possibleTargets[0];
     const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName, rooms, depGraph, usedRooms);
     if (result) {
+      result.assignment.finalTarget = target;
       assignments.push(result.assignment);
       routeDecisions.push(...result.routes);
       usedRooms.add(result.assignment.roomName);
+      if (!assignedTargets.has(target)) assignedTargets.add(target);
+      assignedIndices.add(i);
+    }
+  }
+
+  // Third pass: fallback — allow duplicate uniquely-traceable steps when
+  // unused rooms remain after diversification (feasibleTargets < rooms).
+  const unusedRoomCount = roomOrder.filter(r => !usedRooms.has(r)).length;
+  if (unusedRoomCount > 0) {
+    for (let i = 0; i < taggedSteps.length; i++) {
+      if (assignedIndices.has(i)) continue;
+      const { step, possibleTargets } = taggedSteps[i];
+      const result = assignStepToRoom(ledger, step, roomOrder, hubRoomName, rooms, depGraph, usedRooms);
+      if (result) {
+        result.assignment.finalTarget = possibleTargets[0] ?? undefined;
+        assignments.push(result.assignment);
+        routeDecisions.push(...result.routes);
+        usedRooms.add(result.assignment.roomName);
+        assignedIndices.add(i);
+      }
     }
   }
 
@@ -990,6 +1104,42 @@ export function planDistributedSynthesis(
   }
 
   return { dispatchAssignments: assignments, allocationLedger: ledger, routeDecisions, blockedTargets };
+}
+
+/**
+ * Trace a product upward through REACTION_MAP consumers to find which
+ * configured T3 targets it ultimately feeds into.
+ * T3 products map to themselves. T1/T2 intermediates map to their unique T3.
+ * Shared intermediates (OH, ZK, UL, G) map to all configured T3 targets that
+ * consume them through any chain path.
+ */
+function getPossibleT3Targets(product: ResourceConstant, targetCompounds: ResourceConstant[]): ResourceConstant[] {
+  if (targetCompounds.includes(product)) return [product];
+
+  const results: ResourceConstant[] = [];
+  const visited = new Set<string>();
+  const stack: string[] = [product];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    for (const [consumer, reagents] of Object.entries(REACTION_MAP)) {
+      if (reagents[0] === current || reagents[1] === current) {
+        const consumerRC = consumer as ResourceConstant;
+        if (targetCompounds.includes(consumerRC)) {
+          if (!results.includes(consumerRC)) {
+            results.push(consumerRC);
+          }
+        } else {
+          stack.push(consumer);
+        }
+      }
+    }
+  }
+
+  return results;
 }
 
 const BUSY_STAGES = new Set(["loading", "synthesizing", "unloading", "cleanup"]);
@@ -1217,6 +1367,7 @@ export function wireRouteTransferTasks(
   routeDecisions: DirectRouteDecision[],
   hubRoomName: string,
   reservePerRoom: number,
+  distributedStorage?: boolean,
 ): void {
   const directRoutes = routeDecisions.filter(r => r.toRoom !== hubRoomName);
   const hubRoutes = routeDecisions.filter(r => r.toRoom === hubRoomName);
@@ -1262,6 +1413,12 @@ export function wireRouteTransferTasks(
 
   for (const route of hubRoutes) {
     if (route.amount <= 0) continue;
+
+    const isT3 = T3_TARGETS.includes(route.resource);
+    const isPower = route.resource === RESOURCE_POWER;
+    // Hub-bound route decisions without active downstream demand are surplus returns.
+    // In distributed storage mode, only T3 and POWER surplus remain hub-central.
+    if (distributedStorage === true && !isT3 && !isPower) continue;
 
     const key = `${route.fromRoom}:${route.resource}`;
     const committed = directCommitment[key] || 0;
@@ -1359,6 +1516,7 @@ export function wireDistributedSynthesis(
   reservePerRoom: number,
   hubInventory: Record<string, number>,
   steps: ChainStep[],
+  distributedStorage?: boolean,
 ): boolean {
   const eligibleRooms = getEligibleSynthesisRooms();
   const auxRooms = eligibleRooms.filter(r => r.roomName !== hubRoomName);
@@ -1498,7 +1656,7 @@ export function wireDistributedSynthesis(
     Memory.runtime.hub.distributedSynthesis.routeDecisions = filteredRouteDecisions;
   }
 
-  wireRouteTransferTasks(filteredRouteDecisions, hubRoomName, reservePerRoom);
+  wireRouteTransferTasks(filteredRouteDecisions, hubRoomName, reservePerRoom, distributedStorage);
 
   return true;
 }
@@ -1646,6 +1804,7 @@ export function runHubPlanner(): void {
       reservePerRoom2,
       hubInventory,
       result.steps,
+      cfg.distributedStorage,
     );
 
     if (!distributed) {
