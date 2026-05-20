@@ -50,10 +50,14 @@ function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: Roo
 
 function getYieldCandidatePositions(pusher: Creep, blocker: Creep): RoomPosition[] {
   const candidates: Array<{ pos: RoomPosition; score: number }> = [];
+  const haulerPair = isPowerBankHauler(pusher) && isPowerBankHauler(blocker);
 
   for (const direction of ALL_DIRECTIONS) {
     const pos = getPositionAtDirection(blocker.pos, direction);
     if (!pos || !isYieldTileWalkable(pos, blocker)) {
+      continue;
+    }
+    if (haulerPair && pos.x === pusher.pos.x && pos.y === pusher.pos.y) {
       continue;
     }
     let score = scoreYieldPosition(pos, blocker, pusher);
@@ -67,10 +71,13 @@ function getYieldCandidatePositions(pusher: Creep, blocker: Creep): RoomPosition
   return candidates.sort((a, b) => b.score - a.score).map((e) => e.pos);
 }
 
+function isPowerBankHauler(creep: Creep): boolean {
+  return creep.memory.role === "powerBankHauler";
+}
+
 function scoreYieldPosition(pos: RoomPosition, blocker: Creep, pusher: Creep): number {
   let score = 0;
 
-  // Swap: blocker moves onto pusher's tile while pusher moves into blocker's.
   if (pos.x === pusher.pos.x && pos.y === pusher.pos.y) {
     score += 20;
   }

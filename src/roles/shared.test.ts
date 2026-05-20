@@ -412,6 +412,90 @@ describe("moveToTarget yielding", () => {
     expect(topExitCost).toBe(0xff);
     expect(targetExitCost).toBe(0);
   });
+
+  it("hauler pair: blocker yields laterally instead of swapping onto pusher tile", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N6A", creeps);
+    const pusher = createCreep("hauler-a", "powerBankHauler", 10, 10, room);
+    const blocker = createCreep("hauler-b", "powerBankHauler", 11, 10, room);
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    const target = new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition;
+    const result = moveToTarget(pusher, { pos: target });
+
+    expect(result).toBe(OK);
+    expect(blocker.move).toHaveBeenCalled();
+    const moveDir = (blocker.move as jest.Mock).mock.calls[0][0] as DirectionConstant;
+    expect(moveDir).not.toBe(LEFT);
+    expect(pusher.move).toHaveBeenCalledWith(RIGHT);
+  });
+
+  it("hauler pair: no swap when only pusher tile is available", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N6B", creeps);
+    const pusher = createCreep("hauler-c", "powerBankHauler", 25, 25, room);
+    const blocker = createCreep("hauler-d", "powerBankHauler", 26, 25, room);
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+
+    // All 8 tiles around blocker (26,25) are walls EXCEPT pusher tile (25,25)
+    const wallCoords = new Set([
+      "26:24", "27:24", "27:25", "27:26", "26:26", "25:26", "25:24",
+    ]);
+    const originalGetRoomTerrain = Game.map.getRoomTerrain;
+    Game.map.getRoomTerrain = (_roomName: string) => ({
+      get: (x: number, y: number) => {
+        if (wallCoords.has(`${x}:${y}`)) return TERRAIN_MASK_WALL;
+        return 0;
+      },
+    });
+
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 26, y: 25, dx: 1, dy: 0, direction: RIGHT },
+      { x: 27, y: 25, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    try {
+      const target = new MockRoomPosition(27, 25, room.name) as unknown as RoomPosition;
+      const result = moveToTarget(pusher, { pos: target });
+
+      expect(blocker.move).not.toHaveBeenCalled();
+      expect(pusher.move).not.toHaveBeenCalled();
+      expect(result).toBe(ERR_BUSY);
+    } finally {
+      Game.map.getRoomTerrain = originalGetRoomTerrain;
+    }
+  });
+
+  it("non-hauler pusher still swaps with hauler blocker normally", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N6C", creeps);
+    const pusher = createCreep("worker-push", "worker", 10, 10, room);
+    const blocker = createCreep("hauler-block", "powerBankHauler", 11, 10, room);
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    const target = new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition;
+    const result = moveToTarget(pusher, { pos: target });
+
+    expect(result).toBe(OK);
+    expect(blocker.move).toHaveBeenCalledWith(LEFT);
+    expect(pusher.move).toHaveBeenCalledWith(RIGHT);
+  });
 });
 
 describe("moveToTargetRoom", () => {
