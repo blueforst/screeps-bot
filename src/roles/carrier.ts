@@ -19,7 +19,8 @@ import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeS
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
-type RuinPickupAssignment = { target: Ruin; resource: ResourceConstant };
+type DeadStorePickupTarget = Tombstone | Ruin;
+type DeadStorePickupAssignment = { target: DeadStorePickupTarget; resource: ResourceConstant };
 type CarrierTaskFilter = (task: CarrierTask) => boolean;
 
 const POWER_BANK_BOOST_PRODUCER_PREFIX = "powerBankBoost:";
@@ -37,13 +38,13 @@ function getStoredResources(store: StoreDefinition): ResourceConstant[] {
   return (Object.keys(store) as ResourceConstant[]).filter((resource) => store.getUsedCapacity(resource) > 0);
 }
 
-function getBestRuinResource(ruin: Ruin): ResourceConstant | null {
-  const resources = getStoredResources(ruin.store);
+function getBestStoredResource(target: DeadStorePickupTarget): ResourceConstant | null {
+  const resources = getStoredResources(target.store);
   if (resources.length === 0) {
     return null;
   }
 
-  return resources.sort((left, right) => ruin.store.getUsedCapacity(right) - ruin.store.getUsedCapacity(left))[0];
+  return resources.sort((left, right) => target.store.getUsedCapacity(right) - target.store.getUsedCapacity(left))[0];
 }
 
 function isTombstonePickupTarget(target: Resource | AnyStoreStructure | Tombstone | Ruin): target is Tombstone {
@@ -540,20 +541,23 @@ function pickupSynthesisCarrierResource(
   };
 }
 
-function pickupOwnedRoomRuinResource(creep: Creep): { picked: boolean; outOfRange: boolean } {
+function pickupOwnedRoomDeadStoreResource(creep: Creep): { picked: boolean; outOfRange: boolean } {
   if (!creep.room.controller?.my || creep.store.getUsedCapacity() > 0) {
     return { picked: false, outOfRange: false };
   }
 
-  const assignment = measureCreepDecision((): RuinPickupAssignment | null => {
+  const assignment = measureCreepDecision((): DeadStorePickupAssignment | null => {
     const roomContext = getTickContextService().getRoomContext(creep.room);
+    const tombstones = (roomContext?.room.find(FIND_TOMBSTONES, {
+      filter: (tombstone) => tombstone.store.getUsedCapacity() > 0,
+    }) || []) as Tombstone[];
     const ruins = (roomContext?.room.find(FIND_RUINS, {
       filter: (ruin) => ruin.store.getUsedCapacity() > 0,
     }) || []) as Ruin[];
 
-    const candidates = ruins
-      .map((target) => ({ target, resource: getBestRuinResource(target) }))
-      .filter((entry): entry is RuinPickupAssignment => !!entry.resource)
+    const candidates = [...tombstones, ...ruins]
+      .map((target) => ({ target, resource: getBestStoredResource(target) }))
+      .filter((entry): entry is DeadStorePickupAssignment => !!entry.resource)
       .sort((left, right) => creep.pos.getRangeTo(left.target.pos) - creep.pos.getRangeTo(right.target.pos));
 
     return candidates[0] || null;
@@ -577,16 +581,6 @@ function getFirstNonEnergyResource(creep: Creep): ResourceConstant | null {
     if (resource === RESOURCE_ENERGY) {
       continue;
     }
-    if (creep.store.getUsedCapacity(resource) > 0) {
-      return resource;
-    }
-  }
-
-  return null;
-}
-
-function getFirstCarriedResource(creep: Creep): ResourceConstant | null {
-  for (const resource of Object.keys(creep.store) as ResourceConstant[]) {
     if (creep.store.getUsedCapacity(resource) > 0) {
       return resource;
     }
@@ -902,10 +896,10 @@ export const carrierRole: RoleFactory = () => ({
       return true;
     }
 
-    const ownedRoomRuinPickup = pickupOwnedRoomRuinResource(creep);
-    if (ownedRoomRuinPickup.picked || ownedRoomRuinPickup.outOfRange) {
+    const ownedRoomDeadStorePickup = pickupOwnedRoomDeadStoreResource(creep);
+    if (ownedRoomDeadStorePickup.picked || ownedRoomDeadStorePickup.outOfRange) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
-      if (ownedRoomRuinPickup.picked) {
+      if (ownedRoomDeadStorePickup.picked) {
         releasePickupReservation(creep);
       }
       return creep.store.getUsedCapacity() > 0;

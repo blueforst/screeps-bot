@@ -1065,6 +1065,51 @@ describe("carrierRole mineral hauling", () => {
     expect(switched).toBe(true);
   });
 
+  it("uses existing owned-room carriers to collect non-energy tombstone resources", () => {
+    const room = createRoom("W3N8");
+    const tombstone = {
+      id: "owned-tombstone-1",
+      deathTime: Game.time,
+      pos: {
+        getRangeTo: () => 1,
+      },
+      store: {
+        [RESOURCE_CATALYZED_GHODIUM_ACID]: 800,
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) {
+            return 800;
+          }
+          return resource === RESOURCE_CATALYZED_GHODIUM_ACID ? 800 : 0;
+        },
+      },
+    } as unknown as Tombstone;
+    room.find = jest.fn((type: FindConstant) => (type === FIND_TOMBSTONES ? [tombstone] : [])) as Room["find"];
+    let carried = 0;
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) {
+            return carried;
+          }
+          return resource === RESOURCE_CATALYZED_GHODIUM_ACID ? carried : 0;
+        },
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn(() => {
+        carried = 800;
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(tombstone, RESOURCE_CATALYZED_GHODIUM_ACID);
+    expect(switched).toBe(true);
+  });
+
   it("clears synthesis task when cleanup carrier holds non-energy cargo and storage/terminal are full", () => {
     const room = createRoom("W5N1", {
       storage: {
@@ -1546,7 +1591,7 @@ describe("carrierRole mineral hauling", () => {
         ],
       },
     ]);
-    const switched1 = carrierRole().source?.(creep);
+    carrierRole().source?.(creep);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("terminal-offload-assigned");
 
     // Board refresh: replace tasks (simulates next tick refresh with same task id/producer)
@@ -2181,7 +2226,7 @@ describe("carrierRole lab logistics", () => {
         structureType: STRUCTURE_TERMINAL,
         store: {
           getUsedCapacity: () => 300000,
-          getFreeCapacity: (resource?: ResourceConstant) => 0,
+          getFreeCapacity: () => 0,
         },
       } as unknown as StructureTerminal,
       storage: {
@@ -2189,7 +2234,7 @@ describe("carrierRole lab logistics", () => {
         structureType: STRUCTURE_STORAGE,
         store: {
           getUsedCapacity: () => 900000,
-          getFreeCapacity: (resource?: ResourceConstant) => 0,
+          getFreeCapacity: () => 0,
         },
       } as unknown as StructureStorage,
     });
