@@ -327,13 +327,14 @@ export function planHubChains(
   merge(hubInventory);
   merge(incomingResources);
 
-  // 2. Seed demand only for the target compounds parameter
+  // 2. Seed demand only for the target compounds parameter. Store the reserve
+  // target here, not the deficit: the propagation pass subtracts current
+  // inventory once for every product, including T3 targets.
   const needed: Record<string, number> = {};
   for (const t3 of targetCompounds) {
     const have = available[t3] || 0;
-    const deficit = Math.max(0, targetReserve - have);
-    if (deficit > 0) {
-      needed[t3] = deficit;
+    if (have < targetReserve) {
+      needed[t3] = targetReserve;
     }
   }
 
@@ -961,8 +962,17 @@ export function planDistributedSynthesis(
     }
   }
 
-  // 3-4. Hub inventory (not global sum) for T3 deficit — satellites' stock is remote.
-  const chainResult = planHubChains(hubInventory, {}, hubReservePerCompound, targetCompounds);
+  // 3-4. T3 reserve demand is hub-centric, but distributed synthesis can use
+  // reagents held outside the hub. Use hub inventory for T3 target accounting
+  // and the allocation ledger for base/intermediate feasibility.
+  const chainInventory: Record<string, number> = {};
+  for (const res of allResources) {
+    const resource = res as ResourceConstant;
+    chainInventory[res] = T3_TARGETS.includes(resource)
+      ? hubInventory[res] || 0
+      : ledger[res]?.totalAmount ?? 0;
+  }
+  const chainResult = planHubChains(chainInventory, {}, hubReservePerCompound, targetCompounds);
 
   // 5. Assign steps to rooms using logistics-cost-aware scoring, decrementing ledger atomically
   const assignments: SynthesisDispatchAssignment[] = [];
@@ -1269,6 +1279,8 @@ function assignStepToRoom(
     .sort((a, b) => b.score - a.score);
 
   for (const { roomName } of scored) {
+    if (shouldSkipStalledActiveProduct(roomName, step.product)) continue;
+
     const availA = ledger[reagentA]?.roomCommitments[roomName] ?? 0;
     const availB = ledger[reagentB]?.roomCommitments[roomName] ?? 0;
     if (availA >= needed && availB >= needed) {
@@ -1353,6 +1365,32 @@ function assignStepToRoom(
 
 const ACCEPT_REASSIGN_STAGES = new Set<string>(["idle", "blocked"]);
 
+function isMissingInputUnserved(roomName: string): boolean {
+  const roomState = Memory.runtime?.synthesisControl?.rooms?.[roomName];
+  const missing = roomState?.missing;
+  if (!missing) return false;
+  if ((roomState.pendingTasks ?? 0) > 0) return false;
+
+  const deficits = Object.entries(missing)
+    .filter(([, deficit]) => (deficit ?? 0) > 0) as Array<[ResourceConstant, number]>;
+  if (deficits.length === 0) return false;
+
+  return deficits.every(([resource]) => getIncomingResourceTransferAmount(roomName, resource) <= 0);
+}
+
+function canRewriteSynthesisRoom(roomName: string, stage: string | undefined): boolean {
+  if (!stage || ACCEPT_REASSIGN_STAGES.has(stage)) return true;
+  return (stage === "acquiring" || stage === "loading") && isMissingInputUnserved(roomName);
+}
+
+function shouldSkipStalledActiveProduct(roomName: string, product: ResourceConstant): boolean {
+  const roomState = Memory.runtime?.synthesisControl?.rooms?.[roomName];
+  if (roomState?.activeProduct !== product) return false;
+  const stage = roomState.stage;
+  if (stage !== "acquiring" && stage !== "loading") return false;
+  return isMissingInputUnserved(roomName);
+}
+
 /**
  * Write distributed synthesis reaction configs to multiple rooms.
  *
@@ -1371,6 +1409,27 @@ export function wireRouteTransferTasks(
 ): void {
   const directRoutes = routeDecisions.filter(r => r.toRoom !== hubRoomName);
   const hubRoutes = routeDecisions.filter(r => r.toRoom === hubRoomName);
+  const plannedRoutes = new Map<string, DirectRouteDecision & { reason: string }>();
+
+  function addPlannedRoute(
+    fromRoom: string,
+    toRoom: string,
+    resource: ResourceConstant,
+    amount: number,
+    fee: number,
+    reason: string,
+  ): void {
+    if (amount <= 0) return;
+
+    const key = getSynthesisRouteTaskKey(fromRoom, toRoom, resource, reason);
+    const existing = plannedRoutes.get(key);
+    if (existing) {
+      existing.amount += amount;
+      return;
+    }
+
+    plannedRoutes.set(key, { fromRoom, toRoom, resource, amount, fee, reason });
+  }
 
   const directCommitment: Record<string, number> = {};
   for (const route of directRoutes) {
@@ -1393,19 +1452,21 @@ export function wireRouteTransferTasks(
     }
 
     if (preferDirect) {
-      createResourceTransferTask(
+      addPlannedRoute(
         route.fromRoom,
         route.toRoom,
         route.resource,
         route.amount,
+        route.fee,
         `synthesis:direct:${route.resource}`,
       );
     } else {
-      createResourceTransferTask(
+      addPlannedRoute(
         route.fromRoom,
         hubRoomName,
         route.resource,
         route.amount,
+        route.fee,
         `synthesis:hub-route:${route.resource}`,
       );
     }
@@ -1425,24 +1486,68 @@ export function wireRouteTransferTasks(
     const effectiveAmount = route.amount - committed - reservePerRoom;
     if (effectiveAmount <= 0) continue;
 
-    createResourceTransferTask(
+    addPlannedRoute(
       route.fromRoom,
       hubRoomName,
       route.resource,
       effectiveAmount,
+      route.fee,
       `synthesis:surplus:${route.resource}`,
     );
   }
+
+  cancelStaleSynthesisRouteTasks(new Set(plannedRoutes.keys()));
+  for (const route of plannedRoutes.values()) {
+    upsertSynthesisRouteTask(route.fromRoom, route.toRoom, route.resource, route.amount, route.reason);
+  }
 }
 
-function cancelStaleSynthesisRouteTasks(): number {
+function getSynthesisRouteTaskKey(
+  fromRoomName: string,
+  toRoomName: string,
+  resource: ResourceConstant,
+  reason: string,
+): string {
+  return `${fromRoomName}->${toRoomName}:${resource}:${reason}`;
+}
+
+function upsertSynthesisRouteTask(
+  fromRoomName: string,
+  toRoomName: string,
+  resource: ResourceConstant,
+  amount: number,
+  reason: string,
+): void {
+  const taskStore = ensureResourceTransferTaskStore();
+  for (const task of Object.values(taskStore)) {
+    if (
+      task.status === "pending" &&
+      task.fromRoomName === fromRoomName &&
+      task.toRoomName === toRoomName &&
+      task.resource === resource &&
+      task.reason === reason
+    ) {
+      const normalizedAmount = Math.floor(amount);
+      task.amount = normalizedAmount;
+      task.remainingAmount = normalizedAmount;
+      return;
+    }
+  }
+
+  createResourceTransferTask(fromRoomName, toRoomName, resource, amount, reason);
+}
+
+function cancelStaleSynthesisRouteTasks(activeRouteKeys: Set<string>): number {
   const taskStore = ensureResourceTransferTaskStore();
   let cancelled = 0;
   for (const task of Object.values(taskStore)) {
     if (
       task.status === "pending" &&
-      (task.reason?.startsWith("synthesis:direct:") || task.reason?.startsWith("synthesis:hub-route:") || task.reason?.startsWith("synthesis:resupply:"))
+      (task.reason?.startsWith("synthesis:direct:") || task.reason?.startsWith("synthesis:hub-route:") || task.reason?.startsWith("synthesis:surplus:"))
     ) {
+      const key = getSynthesisRouteTaskKey(task.fromRoomName, task.toRoomName, task.resource, task.reason);
+      if (activeRouteKeys.has(key)) continue;
+
       task.status = "cancelled";
       task.updatedAt = Game.time;
       task.lastError = "cancelled_by_replan";
@@ -1558,7 +1663,7 @@ export function wireDistributedSynthesis(
     const roomName = assignment.roomName;
 
     const stage = Memory.runtime?.synthesisControl?.rooms?.[roomName]?.stage;
-    if (stage && !ACCEPT_REASSIGN_STAGES.has(stage)) {
+    if (!canRewriteSynthesisRoom(roomName, stage)) {
       continue;
     }
 
@@ -1604,7 +1709,7 @@ export function wireDistributedSynthesis(
   for (const room of eligibleRooms) {
     const runtimeRoom = Memory.runtime?.synthesisControl?.rooms?.[room.roomName];
     const stage = runtimeRoom?.stage;
-    if (!stage || ACCEPT_REASSIGN_STAGES.has(stage)) continue;
+    if (canRewriteSynthesisRoom(room.roomName, stage)) continue;
 
     const activeProduct = runtimeRoom?.activeProduct as ResourceConstant | undefined;
     if (!activeProduct) continue;
@@ -1770,29 +1875,45 @@ export function runHubPlanner(): void {
   rt.needsPlan = false;
   rt.lastPlanTick = Game.time;
   rt.updatedAt = Game.time;
-  rt.missingResources = result.missingResources.slice(0, HUB_RUNTIME_ARRAY_CAP);
 
-  if (result.blocked) {
+  const distributedPreview = result.blocked
+    ? planDistributedSynthesis(
+        cfg.hubRoomName,
+        targetCompounds,
+        hubReservePerCompound,
+        cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM,
+        hubInventory,
+      )
+    : null;
+  const distributedAssignments = distributedPreview?.dispatchAssignments ?? [];
+  const distributedCanProceed = distributedAssignments.length > 0;
+
+  rt.missingResources = result.blocked && !distributedCanProceed
+    ? result.missingResources.slice(0, HUB_RUNTIME_ARRAY_CAP)
+    : [];
+
+  if (result.blocked && !distributedCanProceed) {
     rt.status = "blocked";
     rt.activeProduct = "";
     rt.activeStep = 0;
     rt.lastPlanActions = [];
     clearHubSynthesisReactions(cfg.hubRoomName);
-  } else if (result.steps.length === 0) {
+  } else if (result.steps.length === 0 && !distributedCanProceed) {
     rt.status = "distributing";
     rt.activeProduct = "";
     rt.activeStep = 0;
     rt.lastPlanActions = [];
   } else {
     rt.status = "importing";
-    rt.activeProduct = result.steps[0].product;
+    rt.activeProduct = result.steps[0]?.product ?? distributedAssignments[0]?.product ?? "";
     rt.activeStep = 0;
-    rt.lastPlanActions = result.steps.map((s) => s.product).slice(0, HUB_RUNTIME_ARRAY_CAP);
+    rt.lastPlanActions = (result.steps.length > 0
+      ? result.steps.map((s) => s.product)
+      : distributedAssignments.map((assignment) => assignment.product)
+    ).slice(0, HUB_RUNTIME_ARRAY_CAP);
   }
 
-  cancelStaleSynthesisRouteTasks();
-
-  if (!result.blocked) {
+  if (!result.blocked || distributedCanProceed) {
     const hubReservePerCompound2 = cfg.hubReservePerCompound ?? 20000;
     const reservePerRoom2 = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
     const targetCompounds2 = cfg.targetCompounds?.length ? cfg.targetCompounds : DEFAULT_TARGET_COMPOUNDS;

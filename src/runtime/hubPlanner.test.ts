@@ -188,9 +188,7 @@ describe("planHubChains", () => {
     expect(byProduct.get(RESOURCE_HYDROXIDE)!.targetAmount).toBe(9000);
   });
 
-  // Progressive: when T3 is partially at reserve (894/1000), the demand propagation
-  // zeroes out at the T3 level due to available > deficit. Instead, test that providing
-  // the exact intermediates allows the T3 step to appear when inventory is empty for it.
+  // Progressive: providing exact intermediates allows the T3 step to appear.
   it("produces XUHO2 step when intermediates are available and T3 is at zero", () => {
     const result = planHubChains(
       {
@@ -215,29 +213,21 @@ describe("planHubChains", () => {
     expect(xuho2Step!.targetAmount).toBe(1000);
   });
 
-  // Progressive: partial T3 inventory (500/1000) — T3 deficit=500 but demand propagation
-  // zeroes out (available T3=500 > deficit=500). Hub is blocked for this target.
-  // Verify the blocked state is correct.
-  it("reports blocked when T3 inventory partially covers reserve with no intermediates", () => {
+  it("produces the remaining T3 deficit when partial inventory and intermediates are available", () => {
     const result = planHubChains(
       {
         [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: 500,
-        [RESOURCE_HYDROGEN]: 20000,
-        [RESOURCE_OXYGEN]: 20000,
-        [RESOURCE_UTRIUM]: 10000,
-        [RESOURCE_LEMERGIUM]: 10000,
-        [RESOURCE_KEANIUM]: 10000,
-        [RESOURCE_ZYNTHIUM]: 10000,
-        [RESOURCE_CATALYST]: 10000,
+        [RESOURCE_UTRIUM_ALKALIDE]: 500,
+        [RESOURCE_CATALYST]: 500,
       },
       {},
       1000,
       [RESOURCE_CATALYZED_UTRIUM_ALKALIDE],
     );
-    // Demand propagation zeroes out the deficit: toProduce = max(0, 500-500) = 0
-    // No candidates → blocked
-    expect(result.blocked).toBe(true);
-    expect(result.steps).toHaveLength(0);
+    const xuho2Step = result.steps.find((s) => s.product === RESOURCE_CATALYZED_UTRIUM_ALKALIDE);
+    expect(result.blocked).toBe(false);
+    expect(xuho2Step).toBeDefined();
+    expect(xuho2Step!.targetAmount).toBe(500);
   });
 
   it("does not produce XUHO2 when inventory is at reserve (1000/1000)", () => {
@@ -246,9 +236,8 @@ describe("planHubChains", () => {
     expect(byProduct.has(RESOURCE_CATALYZED_UTRIUM_ALKALIDE)).toBe(false);
   });
 
-  // Progressive: XUHO2 at exactly half reserve with base minerals. Demand propagation
-  // zeroes out the T3 deficit, so no XUHO2 step appears. Test that the lower-level
-  // intermediates are correctly produced instead.
+  // Progressive: XUHO2 at exactly half reserve with base minerals still needs
+  // the remaining half, so lower-level intermediates are produced.
   it("produces intermediates when T3 is at half reserve (500/1000) and intermediates absent", () => {
     const result = planHubChains(
       {
@@ -265,10 +254,10 @@ describe("planHubChains", () => {
       1000,
       [RESOURCE_CATALYZED_UTRIUM_ALKALIDE],
     );
-    // Demand propagation: XUHO2 deficit=500, available=500, toProduce=0
-    // No intermediates propagated → no candidates → blocked
-    expect(result.blocked).toBe(true);
-    expect(result.steps).toHaveLength(0);
+    expect(result.blocked).toBe(false);
+    const products = result.steps.map((s) => s.product);
+    expect(products).toContain(RESOURCE_HYDROXIDE);
+    expect(products).toContain(RESOURCE_UTRIUM_OXIDE);
   });
 
   // Progressive: H+O available → OH is a feasible candidate → blocked=false.
@@ -569,6 +558,31 @@ describe("runHubPlanner", () => {
       expect(typeof Memory.runtime.hub.activeProduct).toBe("string");
       expect(Memory.runtime.hub.activeProduct.length).toBeGreaterThan(0);
     }
+  });
+
+  it("uses distributed synthesis when hub-only inventory lacks base reagents", () => {
+    Game.time = PLAN_INTERVAL;
+    Memory.cfg!.hub!.targetCompounds = [RESOURCE_CATALYZED_UTRIUM_ALKALIDE];
+    Memory.cfg!.hub!.hubReservePerCompound = 1000;
+    Memory.cfg!.hub!.reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM] = createSynthesisCapableRoom(HUB_ROOM, { labCount: 3 });
+    Game.rooms["W2N1"] = createSynthesisCapableRoom("W2N1", {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_UTRIUM]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).toBe("importing");
+    expect(Memory.runtime.hub.missingResources).toEqual([]);
+    expect(Memory.runtime.hub.distributedSynthesis?.dispatchAssignments.length).toBeGreaterThan(0);
+    expect(Memory.cfg!.synthesisControl!.rooms!["W2N1"].reactions!.length).toBe(1);
   });
 });
 
@@ -3962,6 +3976,37 @@ describe("planDistributedSynthesis", () => {
     }
   });
 
+  it("uses global distributed reagent inventory when hub has none", () => {
+    const hubRoom = createSynthesisCapableRoom(DIST_SYNTH_HUB, {
+      labCount: 3,
+      storageResources: {},
+    });
+    const auxRoom = createSynthesisCapableRoom(DIST_SYNTH_AUX, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_UTRIUM]: 5000,
+        [RESOURCE_CATALYST]: 5000,
+      },
+    });
+    Game.rooms[DIST_SYNTH_HUB] = hubRoom;
+    Game.rooms[DIST_SYNTH_AUX] = auxRoom;
+
+    const plan = planDistributedSynthesis(
+      DIST_SYNTH_HUB,
+      [RESOURCE_CATALYZED_UTRIUM_ALKALIDE],
+      1000,
+      1000,
+      getHubInventory(),
+    );
+
+    const products = plan.dispatchAssignments.map(a => a.product);
+    expect(plan.blockedTargets).toEqual([]);
+    expect(products).toContain(RESOURCE_HYDROXIDE);
+    expect(products).toContain(RESOURCE_UTRIUM_OXIDE);
+  });
+
   it("demand-driven upstream supply: ledger tracks exact amounts needed", () => {
     // Hub has enough for 1 T3 target (XUH2O)
     // Chain: XUH2O ← C + UH2O ← UH + OH ← U + H, H + O
@@ -5814,6 +5859,40 @@ describe("logistics-cost-aware dispatch scoring", () => {
       expect(outgoingAfter).toBeGreaterThan(0);
     });
 
+    it("keeps matching pending synthesis route tasks stable across replans", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      (Game as any).market = {
+        ...(Game.market || {}),
+        calcTransactionCost: (amount: number, _from: string, _to: string) =>
+          Math.ceil(amount * 0.01),
+      };
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_HUB, toRoom: WIRE_AUX, resource: RESOURCE_UTRIUM, amount: 3000, fee: 30 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000);
+      const firstTask = Object.values(ensureResourceTransferTaskStore()).find(
+        t => t.status === "pending" && t.reason === "synthesis:direct:U",
+      )!;
+      firstTask.lastError = "insufficient_terminal_resource_or_fee";
+      firstTask.updatedAt = Game.time + 1;
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000);
+
+      const tasks = Object.values(ensureResourceTransferTaskStore()).filter(
+        t => t.reason === "synthesis:direct:U",
+      );
+      expect(tasks.length).toBe(1);
+      expect(tasks[0].id).toBe(firstTask.id);
+      expect(tasks[0].status).toBe("pending");
+      expect(tasks[0].remainingAmount).toBe(3000);
+      expect(tasks[0].lastError).toBe("insufficient_terminal_resource_or_fee");
+    });
+
     it("direct supply commitment suppresses same-resource hub-bound surplus transfer", () => {
       (global as any).__runtimeServices = undefined;
       registerRuntimeServices();
@@ -6069,6 +6148,126 @@ describe("logistics-cost-aware dispatch scoring", () => {
           product: busyProduct,
         });
       }
+    });
+
+    it("reassigns loading room when missing inputs have no pending supply", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_UTRIUM]: 5000,
+          [RESOURCE_CATALYST]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = {
+        stage: "loading",
+        activeProduct: RESOURCE_ZYNTHIUM_KEANITE,
+        targetAmount: 3000,
+        pendingTasks: 0,
+        missing: {
+          [RESOURCE_ZYNTHIUM]: 3000,
+          [RESOURCE_KEANIUM]: 3000,
+        },
+      };
+
+      Memory.cfg!.synthesisControl = {
+        enabled: true,
+        rooms: {
+          [WIRE_AUX]: {
+            enabled: true,
+            reactions: [{ product: RESOURCE_ZYNTHIUM_KEANITE, targetAmount: 3000, batchSize: 3000, donorRoomNames: [] }],
+            donorRoomNames: [],
+          },
+        },
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_UTRIUM]: 5000,
+          [RESOURCE_CATALYST]: 5000,
+        },
+        [],
+      );
+
+      const auxRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_AUX];
+      expect(auxRoomCfg.reactions![0].product).not.toBe(RESOURCE_ZYNTHIUM_KEANITE);
+    });
+
+    it("does not keep a loading room on the same product when its inputs are unserved", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_KEANIUM]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_AUX] = {
+        stage: "loading",
+        activeProduct: RESOURCE_KEANIUM_ACID,
+        targetAmount: 3000,
+        pendingTasks: 0,
+        missing: {
+          [RESOURCE_KEANIUM_HYDRIDE]: 3000,
+          [RESOURCE_HYDROXIDE]: 3000,
+        },
+      };
+
+      Memory.cfg!.synthesisControl = {
+        enabled: true,
+        rooms: {
+          [WIRE_AUX]: {
+            enabled: true,
+            reactions: [{ product: RESOURCE_KEANIUM_ACID, targetAmount: 3000, batchSize: 3000, donorRoomNames: [] }],
+            donorRoomNames: [],
+          },
+        },
+      };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_KEANIUM_ACID],
+        1000,
+        1000,
+        {
+          [RESOURCE_HYDROGEN]: 15000,
+          [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_KEANIUM]: 5000,
+          [RESOURCE_CATALYST]: 5000,
+        },
+        [],
+      );
+
+      const auxRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_AUX];
+      expect(auxRoomCfg.reactions![0].product).not.toBe(RESOURCE_KEANIUM_ACID);
     });
 
     it("reassigns idle room to different final T3 target after previous product completes", () => {
