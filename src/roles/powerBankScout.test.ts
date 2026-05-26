@@ -113,6 +113,25 @@ describe("powerBankScoutRole", () => {
     expect(recordPowerBankDiscovery).toHaveBeenCalledWith(mockBank);
   });
 
+  it("does not record power banks while passing through non-patrol rooms", () => {
+    const mockBank = { id: "pb-outside", structureType: STRUCTURE_POWER_BANK, pos: { x: 25, y: 25, roomName: "W0N55" } };
+    const creep = {
+      room: {
+        name: "W0N55",
+        find: jest.fn((constant: number) => {
+          if (constant === FIND_STRUCTURES) return [mockBank];
+          return [];
+        }),
+      },
+      memory: { _patrol: { patrolIndex: 3 } },
+      pos: new MockRoomPosition(25, 25, "W0N55") as unknown as RoomPosition,
+    } as unknown as Creep;
+
+    powerBankScoutRole().source?.(creep);
+
+    expect(recordPowerBankDiscovery).not.toHaveBeenCalled();
+  });
+
   it("never returns true (never suicides)", () => {
     const creep = createMockCreep("E0N60");
 

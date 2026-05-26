@@ -116,13 +116,13 @@ describe("powerBankDiscovery", () => {
     it("updates lastSeenTick and stats on duplicate sightings", () => {
       Game.map.getRoomTerrain = jest.fn(() => createMockTerrain(Array.from({ length: 50 }, () => Array(50).fill(0))) as any);
 
-      const bank = createMockPowerBank({ id: "pb-1", hits: 2000000 });
+      const bank = createMockPowerBank({ id: "pb-1", roomName: "E3N60", hits: 2000000 });
 
       Game.time = 100;
       recordPowerBankDiscovery(bank);
 
       Game.time = 200;
-      const updatedBank = createMockPowerBank({ id: "pb-1", hits: 1500000, power: 5000, ticksToDecay: 3800 });
+      const updatedBank = createMockPowerBank({ id: "pb-1", roomName: "E3N60", hits: 1500000, power: 5000, ticksToDecay: 3800 });
       recordPowerBankDiscovery(updatedBank);
 
       const store = ensureDiscoveryStore();
@@ -136,11 +136,20 @@ describe("powerBankDiscovery", () => {
     it("records wall-blocked banks with 0 free tiles", () => {
       Game.map.getRoomTerrain = jest.fn(() => createMockTerrain(Array.from({ length: 50 }, () => Array(50).fill(1))) as any);
 
-      const bank = createMockPowerBank({ id: "pb-wall" });
+      const bank = createMockPowerBank({ id: "pb-wall", roomName: "E3N60" });
       recordPowerBankDiscovery(bank);
 
       const store = ensureDiscoveryStore();
       expect(store["pb-wall"].freeTiles).toBe(0);
+    });
+
+    it("ignores power banks outside configured patrol rooms", () => {
+      Game.map.getRoomTerrain = jest.fn(() => createMockTerrain(Array.from({ length: 50 }, () => Array(50).fill(0))) as any);
+
+      const bank = createMockPowerBank({ id: "pb-outside", roomName: "W0N55" });
+      recordPowerBankDiscovery(bank);
+
+      expect(ensureDiscoveryStore()["pb-outside"]).toBeUndefined();
     });
   });
 

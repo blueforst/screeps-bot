@@ -1,4 +1,4 @@
-import { POWER_BANK_STATUS } from "@/runtime/powerBankConstants";
+import { POWER_BANK_STATUS, isPowerBankPatrolRoom } from "@/runtime/powerBankConstants";
 
 export function ensureDiscoveryStore(): Record<string, PowerBankHarvestTask> {
   if (!Memory.data) {
@@ -32,6 +32,10 @@ export function countFreeAdjacentTiles(pos: RoomPosition): number {
 }
 
 export function recordPowerBankDiscovery(bank: StructurePowerBank): void {
+  if (!isPowerBankPatrolRoom(bank.pos.roomName)) {
+    return;
+  }
+
   const store = ensureDiscoveryStore();
   const existing = store[bank.id];
 

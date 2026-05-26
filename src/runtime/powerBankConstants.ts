@@ -61,6 +61,10 @@ export const POWER_BANK_PATROL_ROOMS: string[] = [
   "E5N60", "E6N60", "E7N60", "E8N60", "E9N60",
 ];
 
+export function isPowerBankPatrolRoom(roomName: string): boolean {
+  return POWER_BANK_PATROL_ROOMS.includes(roomName);
+}
+
 // ---------------------------------------------------------------------------
 // Task status constants
 // ---------------------------------------------------------------------------

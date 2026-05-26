@@ -1,5 +1,5 @@
 import type { RoleFactory } from "@/types/system";
-import { POWER_BANK_PATROL_ROOMS } from "@/runtime/powerBankConstants";
+import { POWER_BANK_PATROL_ROOMS, isPowerBankPatrolRoom } from "@/runtime/powerBankConstants";
 import { recordPowerBankDiscovery } from "@/runtime/powerBankDiscovery";
 import { moveToTargetRoom } from "@/roles/shared";
 
@@ -25,6 +25,10 @@ function advancePatrol(patrol: PatrolMemory): void {
 }
 
 function scanRoomForPowerBanks(creep: Creep): void {
+  if (!isPowerBankPatrolRoom(creep.room.name)) {
+    return;
+  }
+
   const banks = creep.room.find(FIND_STRUCTURES).filter(
     (s): s is StructurePowerBank => s.structureType === STRUCTURE_POWER_BANK,
   );
