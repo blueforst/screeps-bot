@@ -374,6 +374,32 @@ describe("getIncomingResourceTransferAmount blocked task filter", () => {
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(500);
   });
 
+  it("excludes visible-source pending task when source has none of the resource", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_HYDROGEN, 500, "test");
+    const task = Object.values(ensureResourceTransferTaskStore())[0];
+    task.createdAt = Game.time - 100;
+    Game.rooms.W1N1 = {
+      name: "W1N1",
+      terminal: { store: { getUsedCapacity: jest.fn(() => 0) } },
+      storage: { store: { getUsedCapacity: jest.fn(() => 0) } },
+    } as unknown as Room;
+
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_HYDROGEN)).toBe(0);
+  });
+
+  it("includes visible-source pending task when source storage can still feed terminal", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_HYDROGEN, 500, "test");
+    const task = Object.values(ensureResourceTransferTaskStore())[0];
+    task.createdAt = Game.time - 100;
+    Game.rooms.W1N1 = {
+      name: "W1N1",
+      terminal: { store: { getUsedCapacity: jest.fn(() => 0) } },
+      storage: { store: { getUsedCapacity: jest.fn(() => 500) } },
+    } as unknown as Room;
+
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_HYDROGEN)).toBe(500);
+  });
+
   it("includes pending task with non-blocking lastError", () => {
     createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
     const store = ensureResourceTransferTaskStore();

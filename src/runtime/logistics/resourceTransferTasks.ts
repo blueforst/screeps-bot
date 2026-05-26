@@ -189,6 +189,32 @@ export const BLOCKING_ERRORS = new Set([
   "insufficient_terminal_resource_or_fee",
 ]);
 
+const PHANTOM_INCOMING_SOURCE_CHECK_TICKS = 100;
+
+function getVisibleSourceRoomStock(task: ResourceTransferTask): number | null {
+  const room = Game.rooms[task.fromRoomName];
+  if (!room) {
+    return null;
+  }
+
+  const terminalAmount = room.terminal?.store.getUsedCapacity(task.resource) ?? 0;
+  const storageAmount = room.storage?.store.getUsedCapacity(task.resource) ?? 0;
+  return terminalAmount + storageAmount;
+}
+
+function isPendingTransferStillSupplyable(task: ResourceTransferTask): boolean {
+  if (BLOCKING_ERRORS.has(task.lastError ?? "")) {
+    return false;
+  }
+
+  if (Game.time - task.createdAt < PHANTOM_INCOMING_SOURCE_CHECK_TICKS) {
+    return true;
+  }
+
+  const visibleSourceStock = getVisibleSourceRoomStock(task);
+  return visibleSourceStock == null || visibleSourceStock > 0;
+}
+
 export function getIncomingResourceTransferAmount(roomName: string, resource: ResourceConstant): number {
   let total = 0;
   for (const task of Object.values(ensureResourceTransferTaskStore())) {
@@ -196,7 +222,7 @@ export function getIncomingResourceTransferAmount(roomName: string, resource: Re
       task.status === "pending" &&
       task.toRoomName === roomName &&
       task.resource === resource &&
-      !BLOCKING_ERRORS.has(task.lastError ?? "")
+      isPendingTransferStillSupplyable(task)
     ) {
       total += task.remainingAmount;
     }

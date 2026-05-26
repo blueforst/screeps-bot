@@ -1368,7 +1368,7 @@ function handleRoom(
     productLabIds: topology.productLabs.map((lab) => lab.id),
     successfulRuns: (roomState.successfulRuns || 0) + runs,
     lastError: stage === "unloading" ? "lab_contaminated_waiting_clear" : undefined,
-    missing: roomState.missing,
+    missing: stage === "acquiring" || stage === "loading" ? roomState.missing : undefined,
     cleanupTasks: stage === "unloading" ? cleanupTaskView : undefined,
   };
 

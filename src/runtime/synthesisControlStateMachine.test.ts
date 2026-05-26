@@ -243,6 +243,33 @@ describe("synthesisControl state machine – happy-path lifecycle", () => {
     expect(Object.keys(carrierTasks).length).toBe(0);
   });
 
+  it("clears stale missing reagents after transitioning to synthesizing", () => {
+    setConfig({ sampleInterval: 100 });
+    setRoomStage("loading", {
+      missing: {
+        [RESOURCE_OXYGEN]: 500,
+        [RESOURCE_HYDROGEN]: 500,
+      },
+    });
+
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+    });
+    labs[0].mineralType = RESOURCE_OXYGEN;
+    labs[0]._resourceMap[RESOURCE_OXYGEN] = 500;
+    labs[1].mineralType = RESOURCE_HYDROGEN;
+    labs[1]._resourceMap[RESOURCE_HYDROGEN] = 500;
+    Game.rooms["W1N1"] = room;
+
+    Game.time = 10;
+    runSynthesisControl();
+
+    const roomState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(roomState.stage).toBe("synthesizing");
+    expect(roomState.missing).toBeUndefined();
+  });
+
   it("calls runReaction on each product lab with correct reagent lab arguments", () => {
     setConfig({ sampleInterval: 100 });
     setRoomStage("synthesizing");
