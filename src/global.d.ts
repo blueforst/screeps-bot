@@ -296,6 +296,8 @@ declare global {
     healerReady?: boolean;
     /** Tick when the task entered hauling after the bank disappeared. */
     haulingStartedTick?: number;
+    /** Tick when the target room was visible with no dropped power remaining. */
+    haulingEmptySince?: number;
     /** Optional replacement combat pair prepared while the active pair keeps attacking. */
     reinforcement?: PowerBankReinforcementState;
   }

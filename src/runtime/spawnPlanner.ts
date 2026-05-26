@@ -435,6 +435,7 @@ function queuePowerBankHaulerConfig(
   context: SpawnPlanningContext,
 ): void {
   if (spawns.length === 0) return;
+  if (isPowerBankHaulingExhausted(configName)) return;
   if (isConfigQueuedInSpawns(spawns, configName)) return;
   if (isConfigSpawning(configName, context)) return;
   if (config.roomName && shouldSkipConfigInDefenseMode(config)) return;
@@ -446,6 +447,22 @@ function queuePowerBankHaulerConfig(
     return left.name.localeCompare(right.name);
   })[0];
   queueConfig(targetSpawn, configName);
+}
+
+function isPowerBankHaulingExhausted(configName: string): boolean {
+  const parts = configName.split(":");
+  if (parts.length < 5 || parts[1] !== "powerbank" || parts[3] !== "hauler") return false;
+
+  const [sourceRoom, , targetRoom] = parts;
+  const tasks = Memory.data?.powerBankHarvest;
+  if (!tasks) return false;
+
+  return Object.values(tasks).some((task) =>
+    task.sourceRoom === sourceRoom &&
+    task.targetRoom === targetRoom &&
+    task.status === "hauling" &&
+    task.haulingEmptySince !== undefined,
+  );
 }
 
 function prioritizeSpawnQueue(spawn: StructureSpawn): void {

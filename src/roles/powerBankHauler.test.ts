@@ -22,7 +22,10 @@ const TARGET_ROOM = "E3N60";
 const TASK_ID = "task-0";
 const BANK_POS = { x: 25, y: 25 };
 
-function setupTask(status: PowerBankHarvestStatus = "hauling"): PowerBankHarvestTask {
+function setupTask(
+  status: PowerBankHarvestStatus = "hauling",
+  overrides: Partial<PowerBankHarvestTask> = {},
+): PowerBankHarvestTask {
   const task: PowerBankHarvestTask = {
     id: TASK_ID,
     status,
@@ -39,6 +42,7 @@ function setupTask(status: PowerBankHarvestStatus = "hauling"): PowerBankHarvest
     haulerIds: [],
     boostLabs: [],
     compoundTransferTaskIds: [],
+    ...overrides,
   };
   if (!Memory.data) (Memory as any).data = {};
   if (!Memory.data.powerBankHarvest) Memory.data.powerBankHarvest = {};
@@ -343,7 +347,7 @@ describe("powerBankHaulerRole", () => {
       });
 
       const role = powerBankHaulerRole(TARGET_ROOM);
-      const result = role.source(hauler);
+      role.source(hauler);
 
       expect(moveToTargetRoom).toHaveBeenCalledWith(
         hauler,
@@ -401,8 +405,6 @@ describe("powerBankHaulerRole", () => {
       });
 
       const findAll = [dropped1, dropped2];
-      const filterFn = (r: Resource) => r.resourceType === RESOURCE_POWER;
-
       const role = powerBankHaulerRole(TARGET_ROOM);
       const result1 = role.source(hauler1);
       expect(result1).toBe(true);
@@ -414,7 +416,7 @@ describe("powerBankHaulerRole", () => {
         return [];
       });
 
-      const result2 = role.source(hauler2);
+      role.source(hauler2);
       expect(hauler2.pickup).toHaveBeenCalled();
     });
   });
@@ -446,6 +448,37 @@ describe("powerBankHaulerRole", () => {
       const result = role.target(hauler);
 
       expect(result).toBe(false);
+    });
+
+    it("empty hauler retires instead of returning after target room is exhausted", () => {
+      setupTask("hauling", { haulingEmptySince: 200 });
+      Game.time = 350;
+      const hauler = createHauler({ roomName: SOURCE_ROOM });
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      const result = role.target(hauler);
+
+      expect(result).toBe(true);
+      expect(hauler.suicide).toHaveBeenCalled();
+      expect(moveToTargetRoom).not.toHaveBeenCalled();
+    });
+
+    it("empty hauler waits during hauling empty confirmation window", () => {
+      setupTask("hauling", { haulingEmptySince: 200 });
+      Game.time = 250;
+      const hauler = createHauler({ roomName: SOURCE_ROOM });
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      const result = role.target(hauler);
+
+      expect(result).toBe(false);
+      expect(hauler.suicide).not.toHaveBeenCalled();
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        hauler,
+        TARGET_ROOM,
+        undefined,
+        expect.objectContaining({ travelRange: 3, reusePath: 10 }),
+      );
     });
   });
 
@@ -536,7 +569,7 @@ describe("powerBankHaulerRole", () => {
       });
 
       const role = powerBankHaulerRole(TARGET_ROOM);
-      const result = role.source(hauler);
+      role.source(hauler);
 
       expect(moveToTargetRoom).toHaveBeenCalled();
     });
@@ -554,6 +587,22 @@ describe("powerBankHaulerRole", () => {
       expect(result).toBe(true);
       expect(hauler.suicide).toHaveBeenCalled();
     });
+
+    it("retires instead of salvaging toward a non-patrol target room", () => {
+      const outsideTarget = "W0N55";
+      const hauler = createMockPowerBankCreep("powerBankHauler", {
+        roomName: SOURCE_ROOM,
+        carryCapacity: 1600,
+        memory: { role: "powerBankHauler", configName: `${SOURCE_ROOM}:powerbank:${outsideTarget}:hauler:0` } as Partial<CreepMemory>,
+      });
+
+      const role = powerBankHaulerRole(outsideTarget);
+      const result = role.source(hauler);
+
+      expect(result).toBe(true);
+      expect(moveToTargetRoom).not.toHaveBeenCalled();
+      expect(hauler.suicide).toHaveBeenCalled();
+    });
   });
 
   describe("flee traffic awareness (Task 3)", () => {
@@ -569,7 +618,7 @@ describe("powerBankHaulerRole", () => {
         (Game.rooms as Record<string, Room>)[roomName] = creeps[0].room;
       }
       const room = Game.rooms[roomName];
-      (room as any).find = jest.fn((constant: number, opts?: any) => {
+      (room as any).find = jest.fn((constant: number) => {
         if (constant === FIND_MY_CREEPS) return creeps;
         if (constant === FIND_STRUCTURES) return [];
         if (constant === FIND_DROPPED_RESOURCES) return [];

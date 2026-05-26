@@ -1,10 +1,12 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
-import { POWER_BANK_STATUS } from "@/runtime/powerBankConstants";
+import { POWER_BANK_STATUS, isPowerBankPatrolRoom } from "@/runtime/powerBankConstants";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { getCreepMovementState } from "@/movement/creepState";
 import { getPositionAtDirection } from "@/movement/common";
 import { findMyCreepAt } from "@/movement/traffic";
 import type { RoleFactory } from "@/types/system";
+
+const HAULING_EMPTY_CONFIRM_TICKS = 100;
 
 // ---------------------------------------------------------------------------
 // Task lookup
@@ -263,9 +265,17 @@ function retireIfEmpty(creep: Creep): boolean {
   return true;
 }
 
+function isHaulingEmptyConfirmed(task: PowerBankHarvestTask): boolean {
+  return task.haulingEmptySince !== undefined && Game.time - task.haulingEmptySince >= HAULING_EMPTY_CONFIRM_TICKS;
+}
+
 function salvagePower(creep: Creep, targetRoom?: string): boolean {
   const resolvedTargetRoom = getTargetRoomName(creep, targetRoom);
   if (!resolvedTargetRoom) {
+    return true;
+  }
+
+  if (!isPowerBankPatrolRoom(resolvedTargetRoom)) {
     return true;
   }
 
@@ -353,6 +363,10 @@ export const powerBankHaulerRole: RoleFactory = (targetRoom?: string, _encodedRo
 
     // Hauling phase — bank destroyed, pick up dropped power
     if (task.status === POWER_BANK_STATUS.HAULING) {
+      if (isHaulingEmptyConfirmed(task)) {
+        return retireIfEmpty(creep);
+      }
+
       // Already full — go deliver
       if (creep.store.getFreeCapacity() <= 0) {
         return true;
@@ -394,6 +408,10 @@ export const powerBankHaulerRole: RoleFactory = (targetRoom?: string, _encodedRo
 
     // Still in hauling phase — go back for more power
     if (task.status === POWER_BANK_STATUS.HAULING && targetRoom) {
+      if (isHaulingEmptyConfirmed(task)) {
+        return retireIfEmpty(creep);
+      }
+
       if (creep.room.name !== targetRoom) {
         moveToTargetRoom(creep, targetRoom, undefined, { travelRange: 3, reusePath: 10 });
         return false;

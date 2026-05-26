@@ -631,4 +631,52 @@ describe("spawnPlanner powerbank hauler distribution", () => {
     expect(spawnA.memory.spawnList).toEqual([]);
     expect(spawnB.memory.spawnList).toEqual([configName]);
   });
+
+  it("does not queue replacement haulers after hauling target is empty", () => {
+    const room = createRoom("W3N5");
+    const spawn = createSpawn(room, 2, "W3N5-spawn");
+    const configName = "W3N5:powerbank:E3N60:hauler:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.carrier = {
+      name: "carrier",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "powerBankHauler",
+          args: ["E3N60", ""],
+          roomName: room.name,
+        },
+      },
+      powerBankHarvest: {
+        task: {
+          id: "task",
+          status: "hauling",
+          sourceRoom: room.name,
+          targetRoom: "E3N60",
+          bankId: "bank",
+          bankPos: { x: 25, y: 25 },
+          hits: 0,
+          power: 1000,
+          ticksToDecay: 0,
+          freeTiles: 1,
+          discoveredTick: Game.time - 100,
+          lastSeenTick: Game.time - 10,
+          haulerIds: [],
+          boostLabs: [],
+          compoundTransferTaskIds: [],
+          haulingStartedTick: Game.time - 10,
+          haulingEmptySince: Game.time,
+        },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toEqual([]);
+  });
 });
