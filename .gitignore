@@ -7,3 +7,5 @@ monitor-data/
 graphify-out/
 .graphify*
 .DS_Store
+.sisyphus/
+.opencode/
