@@ -34,6 +34,8 @@ import {
 import {
   addResourceTransferTaskCommand,
   addResourceTransferTaskRaw,
+  addResourceTransferTasksCommand,
+  addResourceTransferTasksRaw,
   cancelResourceTransferTaskCommand,
   cancelResourceTransferTaskRaw,
   listResourceTransferTasksCommand,
@@ -152,6 +154,8 @@ export function registerConsoleCommands(): void {
 export {
   addResourceTransferTaskCommand,
   addResourceTransferTaskRaw,
+  addResourceTransferTasksCommand,
+  addResourceTransferTasksRaw,
   cpuMonitorCommand,
   cpuMonitorRaw,
   cancelResourceTransferTaskCommand,
