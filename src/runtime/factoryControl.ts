@@ -1,11 +1,12 @@
 /**
- * Factory target queue planning, surplus checks, and production state machine.
+ * Factory target queue planning, carrier logistics, production state machine,
+ * and guarded market sale of factory products.
  *
  * Normalizes config, enumerates eligible rooms, resolves the target queue with
- * recursive COMMODITIES decomposition, then drives the production lifecycle:
- * publishes factory_supply / factory_unload carrier tasks, calls
- * factory.produce() when gated conditions are met, and tracks stage transitions.
- * Market deals are NOT handled here.
+ * recursive COMMODITIES decomposition, drives the production lifecycle
+ * (carrier supply/unload tasks, factory.produce(), stage transitions), and
+ * sells surplus terminal products to conservative buy orders when market is
+ * enabled.
  */
 
 import { normalizeBoolean, normalizeNumber } from "@/runtime/configNormalize";
@@ -38,6 +39,20 @@ interface TargetEntry {
   cap: number;
 }
 
+interface MarketConfig {
+  enabled: boolean;
+  sellResources: ResourceConstant[];
+  minSellPrice: Partial<Record<ResourceConstant, number>>;
+  minNetCredits: number;
+  minOrderAmount: number;
+  minPriceRatio: number;
+  maxEnergyCostRatio: number;
+  orderBlacklist: Set<string>;
+  orderAllowlist: Set<string>;
+  roomAllowlist: Set<string>;
+  maxBatch: number;
+}
+
 interface RoomPlanConfig {
   enabled: boolean;
   targetQueue: TargetEntry[];
@@ -49,6 +64,7 @@ interface RoomPlanConfig {
 interface FactoryControlConfig {
   enabled: boolean;
   terminalEnergyReserve: number;
+  market: MarketConfig;
   targetQueue: TargetEntry[];
   resourceFloors: Partial<Record<ResourceConstant, number>>;
   productionCaps: Partial<Record<ResourceConstant, number>>;
@@ -133,6 +149,11 @@ function normalizeResourceMap(raw: unknown): Partial<Record<ResourceConstant, nu
   return result;
 }
 
+function normalizeStringSet(raw: unknown): Set<string> {
+  if (!Array.isArray(raw)) return new Set();
+  return new Set(raw.filter((v): v is string => typeof v === "string" && v.length > 0));
+}
+
 function normalizeSleepSettings(raw: unknown): FactoryControlConfig["sleepSettings"] {
   if (!raw || typeof raw !== "object") {
     return { cooldownOnError: 20, cooldownOnMissing: 10, maxSleepTicks: 500 };
@@ -145,12 +166,61 @@ function normalizeSleepSettings(raw: unknown): FactoryControlConfig["sleepSettin
   };
 }
 
+function normalizeSellPriceMap(raw: unknown): Partial<Record<ResourceConstant, number>> {
+  if (!raw || typeof raw !== "object") return {};
+  const result: Partial<Record<ResourceConstant, number>> = {};
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof val === "number" && Number.isFinite(val) && val >= 0) {
+      result[key as ResourceConstant] = val;
+    }
+  }
+  return result;
+}
+
+function normalizeResourceList(raw: unknown): ResourceConstant[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((v): v is ResourceConstant => typeof v === "string" && v.length > 0);
+}
+
+function normalizeMarketConfig(raw: unknown): MarketConfig {
+  if (!raw || typeof raw !== "object") {
+    return {
+      enabled: false,
+      sellResources: [],
+      minSellPrice: {},
+      minNetCredits: 0,
+      minOrderAmount: 100,
+      minPriceRatio: 0,
+      maxEnergyCostRatio: 1,
+      orderBlacklist: new Set(),
+      orderAllowlist: new Set(),
+      roomAllowlist: new Set(),
+      maxBatch: 5000,
+    };
+  }
+  const m = raw as Record<string, unknown>;
+  return {
+    enabled: normalizeBoolean(m.enabled, false),
+    sellResources: normalizeResourceList(m.sellResources),
+    minSellPrice: normalizeSellPriceMap(m.minSellPrice),
+    minNetCredits: normalizeNumber(m.minNetCredits, 0, 0, 1e9),
+    minOrderAmount: normalizeNumber(m.minOrderAmount, 100, 1, 1e6),
+    minPriceRatio: normalizeNumber(m.minPriceRatio, 0, 0, 100),
+    maxEnergyCostRatio: normalizeNumber(m.maxEnergyCostRatio, 1, 0, 100),
+    orderBlacklist: normalizeStringSet(m.orderBlacklist),
+    orderAllowlist: normalizeStringSet(m.orderAllowlist),
+    roomAllowlist: normalizeStringSet(m.roomAllowlist),
+    maxBatch: normalizeNumber(m.maxBatch, 5000, 1, 300000),
+  };
+}
+
 function parseConfig(): FactoryControlConfig {
   const raw = Memory.cfg?.factoryControl;
   if (!raw || typeof raw !== "object") {
     return {
       enabled: false,
       terminalEnergyReserve: 0,
+      market: normalizeMarketConfig(undefined),
       targetQueue: [],
       resourceFloors: {},
       productionCaps: {},
@@ -178,7 +248,8 @@ function parseConfig(): FactoryControlConfig {
 
   return {
     enabled: normalizeBoolean(raw.enabled, false),
-    terminalEnergyReserve: normalizeNumber(raw.terminalEnergyReserve, 0, 0, 500000),
+    terminalEnergyReserve: normalizeNumber(raw.terminalEnergyReserve, 10000, 0, 500000),
+    market: normalizeMarketConfig(raw.market),
     targetQueue: normalizeTargetEntries(raw.targetQueue ?? raw.targets),
     resourceFloors: normalizeResourceMap(raw.resourceFloors),
     productionCaps: normalizeResourceMap(raw.productionCaps),
@@ -645,6 +716,200 @@ function executeProductionCycle(
 }
 
 // ---------------------------------------------------------------------------
+// Market sale safeguards
+// ---------------------------------------------------------------------------
+
+interface SafeOrderSelection {
+  order: Order;
+  dealAmount: number;
+  energyCost: number;
+  netCredits: number;
+}
+
+function isOrderClaimed(
+  runtime: FactoryControlRuntime,
+  orderId: string,
+  currentTick: number,
+): boolean {
+  const claims = runtime.claimedOrders;
+  if (!claims) return false;
+  return claims.some(c => c.orderId === orderId && c.tick === currentTick);
+}
+
+function claimOrder(
+  runtime: FactoryControlRuntime,
+  orderId: string,
+  roomName: string,
+  currentTick: number,
+): void {
+  if (!runtime.claimedOrders) {
+    runtime.claimedOrders = [];
+  }
+  runtime.claimedOrders.push({ orderId, roomName, tick: currentTick, purpose: "sell" });
+}
+
+function findSafeBuyOrder(
+  resource: ResourceConstant,
+  terminalStock: number,
+  terminalEnergy: number,
+  energyReserve: number,
+  roomName: string,
+  marketCfg: MarketConfig,
+  runtime: FactoryControlRuntime,
+  currentTick: number,
+): SafeOrderSelection | null {
+  const allowlistHasEntries = marketCfg.orderAllowlist.size > 0;
+  const roomAllowlistHasEntries = marketCfg.roomAllowlist.size > 0;
+  const minSellPrice = marketCfg.minSellPrice[resource] ?? 0;
+
+  const orders = Game.market.getAllOrders({ type: ORDER_BUY, resourceType: resource });
+  let best: SafeOrderSelection | null = null;
+
+  for (const order of orders) {
+    if (!order.roomName) continue;
+    if (marketCfg.orderBlacklist.has(order.id)) continue;
+    if (allowlistHasEntries && !marketCfg.orderAllowlist.has(order.id)) continue;
+    if (roomAllowlistHasEntries && !marketCfg.roomAllowlist.has(order.roomName)) continue;
+    if (order.amount < marketCfg.minOrderAmount) continue;
+    if (isOrderClaimed(runtime, order.id, currentTick)) continue;
+
+    if (marketCfg.minPriceRatio > 0 && minSellPrice > 0) {
+      if (order.price / minSellPrice < marketCfg.minPriceRatio) continue;
+    } else if (order.price < minSellPrice) {
+      continue;
+    }
+
+    let dealAmount = Math.min(terminalStock, order.amount);
+    if (marketCfg.maxBatch > 0) {
+      dealAmount = Math.min(dealAmount, marketCfg.maxBatch);
+    }
+    if (dealAmount <= 0) continue;
+
+    let energyCost = Game.market.calcTransactionCost(dealAmount, roomName, order.roomName);
+    const affordableEnergy = Math.max(0, terminalEnergy - energyReserve);
+    if (energyCost > affordableEnergy && affordableEnergy >= 0 && dealAmount > 1) {
+      let lo = 1;
+      let hi = dealAmount;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        const midCost = Game.market.calcTransactionCost(mid, roomName, order.roomName);
+        if (midCost <= affordableEnergy) {
+          lo = mid;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      dealAmount = lo;
+      energyCost = Game.market.calcTransactionCost(dealAmount, roomName, order.roomName);
+    }
+    if (dealAmount <= 0 || energyCost > affordableEnergy) continue;
+    if (dealAmount < marketCfg.minOrderAmount) continue;
+    const energyCostRatio = dealAmount > 0 ? energyCost / dealAmount : Infinity;
+    if (energyCostRatio > marketCfg.maxEnergyCostRatio) continue;
+
+    const netCredits = order.price * dealAmount;
+    if (marketCfg.minNetCredits > 0 && netCredits < marketCfg.minNetCredits) continue;
+
+    if (!best || order.price > best.order.price) {
+      best = { order, dealAmount, energyCost, netCredits };
+    }
+  }
+
+  return best;
+}
+
+function attemptProductSale(
+  room: Room,
+  state: RoomRuntimeState,
+  config: FactoryControlConfig,
+  runtime: FactoryControlRuntime,
+  roomName: string,
+): void {
+  const marketCfg = config.market;
+  if (!marketCfg.enabled) return;
+
+  const product = state.activeTarget;
+  if (!product) return;
+
+  if (marketCfg.sellResources.length > 0 && !marketCfg.sellResources.includes(product)) return;
+
+  if (!room.terminal) return;
+  if (room.terminal.cooldown !== 0) return;
+
+  const terminalStock = room.terminal.store.getUsedCapacity(product) ?? 0;
+  if (terminalStock < marketCfg.minOrderAmount) return;
+
+  const terminalEnergy = room.terminal.store.getUsedCapacity(RESOURCE_ENERGY) ?? 0;
+
+  const selection = findSafeBuyOrder(
+    product,
+    terminalStock,
+    terminalEnergy,
+    config.terminalEnergyReserve,
+    roomName,
+    marketCfg,
+    runtime,
+    Game.time,
+  );
+
+  if (!selection) {
+    if (!state.sleepReason) {
+      state.sleepReason = "market_no_safe_order";
+      state.lastError = "no_safe_buy_order";
+    }
+    return;
+  }
+
+  if (typeof Game.market.getOrderById === "function") {
+    const freshOrder = Game.market.getOrderById(selection.order.id);
+    if (!freshOrder) {
+      state.lastError = "order_gone_before_deal";
+      return;
+    }
+    if (
+      freshOrder.type !== ORDER_BUY ||
+      freshOrder.resourceType !== product ||
+      freshOrder.roomName !== selection.order.roomName ||
+      freshOrder.price !== selection.order.price ||
+      freshOrder.amount < selection.dealAmount
+    ) {
+      state.lastError = "order_changed_before_deal";
+      return;
+    }
+  } else if (typeof Game.market.getAllOrders === "function") {
+    const freshOrders = Game.market.getAllOrders({ type: ORDER_BUY, resourceType: product });
+    const match = freshOrders.find(o => o.id === selection.order.id);
+    if (!match) {
+      state.lastError = "order_gone_before_deal";
+      return;
+    }
+    if (
+      match.type !== ORDER_BUY ||
+      match.resourceType !== product ||
+      match.roomName !== selection.order.roomName ||
+      match.price !== selection.order.price ||
+      match.amount < selection.dealAmount
+    ) {
+      state.lastError = "order_changed_before_deal";
+      return;
+    }
+  } else {
+    state.lastError = "no_revalidation_method";
+    return;
+  }
+
+  const code = Game.market.deal(selection.order.id, selection.dealAmount, roomName);
+  if (code !== OK) {
+    state.lastError = `market_deal_${code}`;
+    return;
+  }
+
+  claimOrder(runtime, selection.order.id, roomName, Game.time);
+  state.sleepReason = undefined;
+  state.lastError = undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Main planning function
 // ---------------------------------------------------------------------------
 
@@ -793,6 +1058,8 @@ export function runFactoryControl(): void {
     }
 
     executeProductionCycle(room, factory, state, config, roomName);
+
+    attemptProductSale(room, state, config, runtime, roomName);
   }
 }
 
@@ -810,10 +1077,13 @@ export {
   resolveTargetQueue,
   getRequiredFactoryLevel,
   isProducible,
+  findSafeBuyOrder,
+  attemptProductSale,
   type TargetEntry,
   type RoomPlanConfig,
   type FactoryControlConfig,
   type FactoryStage,
   type RoomRuntimeState,
   type FactoryControlRuntime,
+  type MarketConfig,
 };
