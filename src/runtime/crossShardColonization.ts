@@ -192,12 +192,22 @@ function getTaskConfigName(task: CrossShardColonizationTask, role: "claimer" | "
   return `${task.sourceRoom}:crossShard:${task.targetShard}:${task.targetRoom}:${role}:${index}`;
 }
 
-function getSpawnForRoom(roomName: string): StructureSpawn | null {
-  return Object.values(Game.spawns).find((spawn) => spawn.room.name === roomName) || null;
-}
-
 function getSpawnsForRoom(roomName: string): StructureSpawn[] {
   return Object.values(Game.spawns).filter((spawn) => spawn.room.name === roomName);
+}
+
+function getSpawnQueueLoad(spawn: StructureSpawn): number {
+  return (spawn.spawning ? 1 : 0) + (spawn.memory.spawnList?.length ?? 0);
+}
+
+function selectLeastLoadedSpawn(spawns: StructureSpawn[]): StructureSpawn | undefined {
+  if (spawns.length === 0) return undefined;
+
+  return [...spawns].sort((left, right) => {
+    const loadDiff = getSpawnQueueLoad(left) - getSpawnQueueLoad(right);
+    if (loadDiff !== 0) return loadDiff;
+    return left.name.localeCompare(right.name);
+  })[0];
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {
@@ -403,8 +413,8 @@ function ensureClaimer(task: CrossShardColonizationTask): void {
     name: task.claimerName,
   };
 
-  const spawn = getSpawnForRoom(task.sourceRoom);
-  if (!spawn) {
+  const spawns = getSpawnsForRoom(task.sourceRoom);
+  if (spawns.length === 0) {
     task.status = "blocked";
     task.reason = `source spawn missing in ${task.sourceRoom}`;
     return;
@@ -421,7 +431,7 @@ function ensureClaimer(task: CrossShardColonizationTask): void {
     return;
   }
 
-  if (isConfigSpawning(configName) || (spawn.memory.spawnList?.includes(configName) ?? false)) {
+  if (isConfigSpawning(configName) || isConfigQueued(task, configName)) {
     task.status = "spawning";
     task.reason = undefined;
     return;
@@ -438,7 +448,8 @@ function ensureClaimer(task: CrossShardColonizationTask): void {
     return;
   }
 
-  enqueueConfig(spawn, configName, true);
+  const targetSpawn = selectLeastLoadedSpawn(spawns);
+  if (targetSpawn) enqueueConfig(targetSpawn, configName, true);
   task.status = "ready";
   task.reason = undefined;
 }
@@ -450,12 +461,14 @@ function ensureBootstrapSquad(task: CrossShardColonizationTask): void {
     return;
   }
 
-  const spawn = getSpawnForRoom(task.sourceRoom);
-  if (!spawn) {
+  const spawns = getSpawnsForRoom(task.sourceRoom);
+  if (spawns.length === 0) {
     task.status = "blocked";
     task.reason = `source spawn missing in ${task.sourceRoom}`;
     return;
   }
+
+  const referenceSpawn = spawns[0];
 
   if (task.bootstrapDispatchedAt && Game.time - task.bootstrapDispatchedAt > BOOTSTRAP_RETRY_TTL) {
     for (const configName of task.bootstrapConfigNames || []) {
@@ -487,10 +500,11 @@ function ensureBootstrapSquad(task: CrossShardColonizationTask): void {
     configStore[configName] = {
       role: "crossShardColonizerHarvester",
       args: [task.targetShard, task.targetRoom, task.portalRoom, task.destinationRoom || ""],
-      body: spawnProfiles.crossShardColonizerHarvester(spawn.room),
+      body: spawnProfiles.crossShardColonizerHarvester(referenceSpawn.room),
       name: generateTravelerName("harvester", task, i),
     };
-    enqueueConfig(spawn, configName, false);
+    const targetSpawn = selectLeastLoadedSpawn(spawns);
+    if (targetSpawn) enqueueConfig(targetSpawn, configName, false);
   }
 
   for (let i = 0; i < BOOTSTRAP_WORKER_COUNT; i++) {
@@ -499,10 +513,11 @@ function ensureBootstrapSquad(task: CrossShardColonizationTask): void {
     configStore[configName] = {
       role: "crossShardColonizerWorker",
       args: [task.targetShard, task.targetRoom, task.portalRoom, task.destinationRoom || ""],
-      body: spawnProfiles.crossShardColonizerWorker(spawn.room),
+      body: spawnProfiles.crossShardColonizerWorker(referenceSpawn.room),
       name: generateTravelerName("worker", task, i),
     };
-    enqueueConfig(spawn, configName, false);
+    const targetSpawn = selectLeastLoadedSpawn(spawns);
+    if (targetSpawn) enqueueConfig(targetSpawn, configName, false);
   }
 
   task.bootstrapConfigNames = bootstrapConfigNames;

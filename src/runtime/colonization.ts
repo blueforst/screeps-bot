@@ -164,6 +164,28 @@ function getLiveCreepsByConfig(configName: string): Creep[] {
   return getTickContextService().getCreepsByConfigName(configName);
 }
 
+function getSpawnsForRoom(roomName: string): StructureSpawn[] {
+  return getTickContextService().getSpawnsByRoom(roomName);
+}
+
+function isConfigQueuedInSpawns(spawns: StructureSpawn[], configName: string): boolean {
+  return spawns.some((spawn) => spawn.memory.spawnList?.includes(configName) ?? false);
+}
+
+function getSpawnQueueLoad(spawn: StructureSpawn): number {
+  return (spawn.spawning ? 1 : 0) + (spawn.memory.spawnList?.length ?? 0);
+}
+
+function selectLeastLoadedSpawn(spawns: StructureSpawn[]): StructureSpawn | undefined {
+  if (spawns.length === 0) return undefined;
+
+  return [...spawns].sort((left, right) => {
+    const loadDiff = getSpawnQueueLoad(left) - getSpawnQueueLoad(right);
+    if (loadDiff !== 0) return loadDiff;
+    return left.name.localeCompare(right.name);
+  })[0];
+}
+
 function getSpawnForRoom(roomName: string): StructureSpawn | null {
   return getTickContextService().getPrimarySpawnByRoom(roomName) || null;
 }
@@ -219,12 +241,11 @@ function removeConfigWhenIdle(configName: string): void {
 }
 
 function removeQueuedConfigFromSourceRoom(sourceRoom: string, configName: string): void {
-  const spawn = getSpawnForRoom(sourceRoom);
-  if (!spawn?.memory.spawnList) {
-    return;
+  for (const spawn of getTickContextService().getSpawnsByRoom(sourceRoom)) {
+    if (spawn.memory.spawnList) {
+      spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+    }
   }
-
-  spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
 }
 
 function removeQueuedConfig(task: ColonizationTask, configName: string): void {
@@ -941,17 +962,18 @@ function ensureScout(task: ColonizationTask): void {
     body: SCOUT_BODY,
   });
 
-  const spawn = getSpawnForRoom(task.sourceRoom);
-  if (!spawn) {
+  const spawns = getSpawnsForRoom(task.sourceRoom);
+  if (spawns.length === 0) {
     return;
   }
 
   const hasLive = getLiveCreepsByConfig(configName).length > 0;
-  const queued = spawn.memory.spawnList?.includes(configName) ?? false;
+  const queued = isConfigQueuedInSpawns(spawns, configName);
   const spawning = isConfigSpawning(configName);
 
   if (!hasLive && !queued && !spawning) {
-    enqueueConfig(spawn, configName, true);
+    const targetSpawn = selectLeastLoadedSpawn(spawns);
+    if (targetSpawn) enqueueConfig(targetSpawn, configName, true);
   }
 }
 
@@ -1131,17 +1153,18 @@ function ensureClaimer(task: ColonizationTask): void {
     body: CLAIMER_BODY,
   });
 
-  const spawn = getSpawnForRoom(task.sourceRoom);
-  if (!spawn) {
+  const spawns = getSpawnsForRoom(task.sourceRoom);
+  if (spawns.length === 0) {
     return;
   }
 
   const hasLive = getLiveCreepsByConfig(configName).length > 0;
-  const queued = spawn.memory.spawnList?.includes(configName) ?? false;
+  const queued = isConfigQueuedInSpawns(spawns, configName);
   const spawning = isConfigSpawning(configName);
 
   if (!hasLive && !queued && !spawning) {
-    enqueueConfig(spawn, configName, true);
+    const targetSpawn = selectLeastLoadedSpawn(spawns);
+    if (targetSpawn) enqueueConfig(targetSpawn, configName, true);
   }
 }
 

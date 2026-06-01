@@ -196,4 +196,91 @@ describe("runCrossShardColonizationByFlag", () => {
     expect(task?.bootstrapConfigNames).toHaveLength(4);
     expect(Game.spawns.Spawn1.memory.spawnList).toEqual(task?.bootstrapConfigNames);
   });
+
+  it("enqueues claimer to the least-loaded spawn in a multi-spawn room", () => {
+    const sourceRoom = createRoom("W1N1");
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    const spawnA = createSpawn("SpawnA", sourceRoom);
+    spawnA.memory.spawnList = ["existing-task-1", "existing-task-2"];
+    const spawnB = createSpawn("SpawnB", sourceRoom);
+    Game.spawns.SpawnA = spawnA;
+    Game.spawns.SpawnB = spawnB;
+    Memory.data = {
+      creepConfigs: {},
+      interShardPortals: {
+        portal1: {
+          id: "portal1" as Id<StructurePortal>,
+          originRoom: "W1N2",
+          destinationShard: "shard1",
+          destinationRoom: "W9N8",
+          discoveredAt: Game.time,
+          lastSeenAt: Game.time,
+          ticksToDecay: 10000,
+        },
+      },
+      crossShardColonization: {
+        "shard1:W9N9": {
+          targetShard: "shard1",
+          targetRoom: "W9N9",
+          sourceRoom: "W1N1",
+          status: "planning",
+          flagName: "CLX_shard1_W9N9",
+          portalRoom: "W1N2",
+          destinationRoom: "W9N8",
+          createdAt: Game.time - 100,
+          updatedAt: Game.time - 1,
+        },
+      },
+    } as Memory["data"];
+
+    runCrossShardColonizationByFlag();
+
+    const configName = "W1N1:crossShard:shard1:W9N9:claimer:0";
+    expect(spawnB.memory.spawnList).toContain(configName);
+    expect(spawnA.memory.spawnList).not.toContain(configName);
+  });
+
+  it("does not duplicate a claimer already queued on a secondary spawn", () => {
+    const sourceRoom = createRoom("W1N1");
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    const configName = "W1N1:crossShard:shard1:W9N9:claimer:0";
+    const spawnA = createSpawn("SpawnA", sourceRoom);
+    const spawnB = createSpawn("SpawnB", sourceRoom);
+    spawnB.memory.spawnList = [configName];
+    Game.spawns.SpawnA = spawnA;
+    Game.spawns.SpawnB = spawnB;
+    Memory.data = {
+      creepConfigs: {},
+      interShardPortals: {
+        portal1: {
+          id: "portal1" as Id<StructurePortal>,
+          originRoom: "W1N2",
+          destinationShard: "shard1",
+          destinationRoom: "W9N8",
+          discoveredAt: Game.time,
+          lastSeenAt: Game.time,
+          ticksToDecay: 10000,
+        },
+      },
+      crossShardColonization: {
+        "shard1:W9N9": {
+          targetShard: "shard1",
+          targetRoom: "W9N9",
+          sourceRoom: "W1N1",
+          status: "planning",
+          flagName: "CLX_shard1_W9N9",
+          portalRoom: "W1N2",
+          destinationRoom: "W9N8",
+          claimerConfigName: configName,
+          createdAt: Game.time - 100,
+          updatedAt: Game.time - 1,
+        },
+      },
+    } as Memory["data"];
+
+    runCrossShardColonizationByFlag();
+
+    expect(spawnA.memory.spawnList).not.toContain(configName);
+    expect(spawnB.memory.spawnList).toContain(configName);
+  });
 });
