@@ -20,7 +20,8 @@ import { getReservedProductionAmountExcludingHolder } from "@/runtime/resourceRe
 import { getActivePowerBankBoostLabIds } from "@/runtime/powerBankBoostMemory";
 import { normalizeBoolean, normalizeNumber, normalizeRoomNameList } from "@/runtime/configNormalize";
 import { getProductReagents, roundUpReactionAmount } from "@/runtime/reactionMap";
-import { isTargetSatisfiedByReactionGranularity } from "@/runtime/productionStateMachine";
+import { isTargetSatisfiedByReactionGranularity, markLoadingStart, isLoadingTimedOut } from "@/runtime/productionStateMachine";
+import { resolveTerminalStorageTarget, terminalStorageKind } from "@/runtime/carrierTaskHelpers";
 
 type SynthesisStage = "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
 
@@ -562,14 +563,7 @@ function createCarrierTaskStepId(resource: ResourceConstant, fromId: string, toI
 }
 
 function resolveCleanupTargetStructure(room: Room, resource: ResourceConstant): StructureTerminal | StructureStorage | null {
-  if (room.terminal && room.terminal.store.getFreeCapacity(resource) > 0) {
-    return room.terminal;
-  }
-  if (room.storage && room.storage.store.getFreeCapacity(resource) > 0) {
-    return room.storage;
-  }
-
-  return null;
+  return resolveTerminalStorageTarget(room, resource, "terminal");
 }
 
 function resolveSupplySourceStructure(room: Room, resource: ResourceConstant): StructureTerminal | StructureStorage | null {
@@ -635,7 +629,7 @@ function generateCleanupTask(
       resource: mineralType,
       amount,
       fromKind: "lab",
-      toKind: target.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+      toKind: terminalStorageKind(target),
       fromId: lab.id,
       toId: target.id,
     });
@@ -654,13 +648,7 @@ function generateCleanupTask(
 }
 
 function resolveProductUnloadTargetStructure(room: Room, resource: ResourceConstant): StructureStorage | StructureTerminal | null {
-  if (room.storage && room.storage.store.getFreeCapacity(resource) > 0) {
-    return room.storage;
-  }
-  if (room.terminal && room.terminal.store.getFreeCapacity(resource) > 0) {
-    return room.terminal;
-  }
-  return null;
+  return resolveTerminalStorageTarget(room, resource, "storage");
 }
 
 function generateProductUnloadTask(
@@ -699,7 +687,7 @@ function generateProductUnloadTask(
       resource: product,
       amount,
       fromKind: "lab",
-      toKind: target.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+      toKind: terminalStorageKind(target),
       fromId: lab.id,
       toId: target.id,
     });
@@ -745,7 +733,7 @@ function generateStrandedProductUnloadTask(
       resource: mineralType,
       amount,
       fromKind: "lab",
-      toKind: target.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+      toKind: terminalStorageKind(target),
       fromId: lab.id,
       toId: target.id,
     });
@@ -800,7 +788,7 @@ function generateReagentCleanupTask(
       resource: mineralType,
       amount,
       fromKind: "lab",
-      toKind: target.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+      toKind: terminalStorageKind(target),
       fromId: lab.id,
       toId: target.id,
     });
@@ -869,7 +857,7 @@ function generateSupplyTask(
       id: createCarrierTaskStepId(reagent, source.id, lab.id),
       resource: reagent,
       amount,
-      fromKind: source.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+      fromKind: terminalStorageKind(source),
       toKind: "lab",
       fromId: source.id,
       toId: lab.id,
@@ -1185,8 +1173,8 @@ function handleRoom(
     roomState.lastTransitionAt = Game.time;
   }
 
-  if ((stage === "acquiring" || stage === "loading") && !roomState.loadingSinceTick) {
-    roomState.loadingSinceTick = Game.time;
+  if (stage === "acquiring" || stage === "loading") {
+    markLoadingStart(roomState, Game.time);
   }
 
   const orderedReagentLabs = orderReagentLabs(topology.reagentLabs, reagents);
@@ -1225,7 +1213,7 @@ function handleRoom(
   }
 
   const LOADING_TIMEOUT = 500;
-  if ((stage === "loading" || stage === "acquiring") && roomState.loadingSinceTick && Game.time - roomState.loadingSinceTick > LOADING_TIMEOUT) {
+  if ((stage === "loading" || stage === "acquiring") && isLoadingTimedOut(roomState.loadingSinceTick, Game.time, LOADING_TIMEOUT)) {
     const abortedProduct = roomState.activeProduct || activePlan.product;
     runtime.rooms[roomName] = {
       ...roomState,
@@ -1266,7 +1254,7 @@ function handleRoom(
   } else if (stage === "unloading" && !hasContamination) {
     stage = "loading";
     roomState.lastTransitionAt = Game.time;
-    if (!roomState.loadingSinceTick) roomState.loadingSinceTick = Game.time;
+    markLoadingStart(roomState, Game.time);
   }
 
   if (stage === "synthesizing") {
@@ -1303,7 +1291,7 @@ function handleRoom(
     signalHubNeedsPlan(room.name);
   } else if (!reagentReady && !hasContamination) {
     stage = "loading";
-    if (!roomState.loadingSinceTick) roomState.loadingSinceTick = Game.time;
+    markLoadingStart(roomState, Game.time);
   }
 
   runtime.rooms[roomName] = {
