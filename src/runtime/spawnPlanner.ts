@@ -308,12 +308,13 @@ function shouldPreSpawnSourceWorker(
 }
 
 function shouldQueueConfig(
-  spawn: StructureSpawn,
+  spawns: StructureSpawn[],
+  estimateSpawn: StructureSpawn,
   configName: string,
   config: CreepConfig,
   context?: SpawnPlanningContext,
 ): boolean {
-  if (isConfigQueued(spawn, configName) || isConfigSpawning(configName, context || createSpawnPlanningContext())) {
+  if (isConfigQueuedInSpawns(spawns, configName) || isConfigSpawning(configName, context || createSpawnPlanningContext())) {
     return false;
   }
 
@@ -332,7 +333,7 @@ function shouldQueueConfig(
       return false;
     }
 
-    return shouldPreSpawnSourceWorker(spawn, configName, config, context);
+    return shouldPreSpawnSourceWorker(estimateSpawn, configName, config, context);
   }
 
   if (
@@ -340,11 +341,11 @@ function shouldQueueConfig(
     config.role === "miner" ||
     config.role === "colonizerHarvester"
   ) {
-    return shouldPreSpawnSourceWorker(spawn, configName, config, context);
+    return shouldPreSpawnSourceWorker(estimateSpawn, configName, config, context);
   }
 
   if (config.role === "carrier") {
-    return shouldPreSpawnCarrier(spawn, configName, context);
+    return shouldPreSpawnCarrier(estimateSpawn, configName, context);
   }
 
   return getConfigCreeps(configName, context).length === 0;
@@ -409,14 +410,19 @@ function queueConfig(spawn: StructureSpawn, configName: string, options?: { toFr
 }
 
 function queueMissingConfig(
-  spawn: StructureSpawn,
+  spawns: StructureSpawn[],
   configName: string,
   config: CreepConfig,
   context: SpawnPlanningContext,
 ): void {
-  if (shouldQueueConfig(spawn, configName, config, context)) {
+  const targetSpawn = selectLeastLoadedSpawn(spawns);
+  if (!targetSpawn) {
+    return;
+  }
+
+  if (shouldQueueConfig(spawns, targetSpawn, configName, config, context)) {
     const shouldInsertCarrierAtFront = config.role === "carrier" && getConfigCreeps(configName, context).length === 0;
-    queueConfig(spawn, configName, { toFront: shouldInsertCarrierAtFront });
+    queueConfig(targetSpawn, configName, { toFront: shouldInsertCarrierAtFront });
   }
 }
 
@@ -426,6 +432,16 @@ function isConfigQueuedInSpawns(spawns: StructureSpawn[], configName: string): b
 
 function getSpawnQueueLoad(spawn: StructureSpawn): number {
   return (spawn.spawning ? 1 : 0) + (spawn.memory.spawnList?.length ?? 0);
+}
+
+function selectLeastLoadedSpawn(spawns: StructureSpawn[]): StructureSpawn | undefined {
+  if (spawns.length === 0) return undefined;
+
+  return [...spawns].sort((left, right) => {
+    const loadDiff = getSpawnQueueLoad(left) - getSpawnQueueLoad(right);
+    if (loadDiff !== 0) return loadDiff;
+    return left.name.localeCompare(right.name);
+  })[0];
 }
 
 function queuePowerBankHaulerConfig(
@@ -441,12 +457,10 @@ function queuePowerBankHaulerConfig(
   if (config.roomName && shouldSkipConfigInDefenseMode(config)) return;
   if (getConfigCreeps(configName, context).length > 0) return;
 
-  const targetSpawn = [...spawns].sort((left, right) => {
-    const loadDiff = getSpawnQueueLoad(left) - getSpawnQueueLoad(right);
-    if (loadDiff !== 0) return loadDiff;
-    return left.name.localeCompare(right.name);
-  })[0];
-  queueConfig(targetSpawn, configName);
+  const targetSpawn = selectLeastLoadedSpawn(spawns);
+  if (targetSpawn) {
+    queueConfig(targetSpawn, configName);
+  }
 }
 
 function isPowerBankHaulingExhausted(configName: string): boolean {
@@ -558,7 +572,7 @@ function tryQueueInitialHarvester(
 
   const [configName, config] = harvesterEntry;
   if (!isConfigQueued(spawn, configName)) {
-    queueMissingConfig(spawn, configName, config, context);
+    queueMissingConfig([spawn], configName, config, context);
   }
   return true;
 }
@@ -606,12 +620,7 @@ export function scheduleSpawnTasks(): void {
       continue;
     }
 
-    const spawn = spawnByRoom.get(config.roomName);
-    if (!spawn) {
-      continue;
-    }
-
-    queueMissingConfig(spawn, configName, config, planningContext);
+    queueMissingConfig(spawnsByRoom.get(config.roomName) ?? [], configName, config, planningContext);
   }
 
   for (const spawn of Array.from(spawnsByRoom.values()).flat()) {

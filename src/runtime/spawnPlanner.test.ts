@@ -680,3 +680,164 @@ describe("spawnPlanner powerbank hauler distribution", () => {
     expect(spawn.memory.spawnList).toEqual([]);
   });
 });
+
+describe("spawnPlanner no-spawn safety", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  it("does not throw and does not mutate any queue when a room has configs but no spawn", () => {
+    const room = createRoom("W5N1");
+    room.controller.level = 3;
+    room.energyCapacityAvailable = 800;
+    const source = createSource("source-y", 20, 20, room.name);
+    const configName = `${room.name}:harvester:${source.id}`;
+
+    Game.rooms[room.name] = room;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "harvester",
+          args: [source.id],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === source.id) {
+        return source;
+      }
+      return null;
+    }) as Game["getObjectById"];
+
+    expect(() => scheduleSpawnTasks()).not.toThrow();
+
+    const allQueues = Object.values(Game.spawns)
+      .map((s) => s.memory.spawnList ?? []);
+    expect(allQueues.every((q) => q.length === 0)).toBe(true);
+  });
+});
+
+describe("spawnPlanner standard managed config distribution", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  /** Helper: create a room with a live carrier to suppress emergency spawning. */
+  function setupRoomWithCarrier(roomName: string): { room: Room } {
+    const room = createRoom(roomName);
+    Game.rooms[room.name] = room;
+    Game.creeps[`carrier-${roomName}`] = {
+      name: `carrier-${roomName}`,
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    return { room };
+  }
+
+  /** Helper: add worker configs to Memory.data.creepConfigs. */
+  function addWorkerConfigs(roomName: string, count: number): string[] {
+    if (!Memory.data) {
+      Memory.data = {} as Memory["data"];
+    }
+    if (!Memory.data.creepConfigs) {
+      Memory.data.creepConfigs = {};
+    }
+    const names: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const name = `${roomName}:worker:${i}`;
+      Memory.data.creepConfigs[name] = { role: "worker", args: [], roomName };
+      names.push(name);
+    }
+    return names;
+  }
+
+  it("distributes four standard configs across two spawns with 2/2 split and no duplicates", () => {
+    const { room } = setupRoomWithCarrier("W6N1");
+    const spawnA = createSpawn(room, 2, "W6N1-spawn-a");
+    const spawnB = createSpawn(room, 2, "W6N1-spawn-b");
+    Game.spawns[spawnA.name] = spawnA;
+    Game.spawns[spawnB.name] = spawnB;
+
+    const configNames = addWorkerConfigs(room.name, 4);
+
+    scheduleSpawnTasks();
+
+    const allQueued = [
+      ...spawnA.memory.spawnList!,
+      ...spawnB.memory.spawnList!,
+    ];
+    for (const cn of configNames) {
+      expect(allQueued.filter((q) => q === cn)).toHaveLength(1);
+    }
+
+    expect(spawnA.memory.spawnList).toHaveLength(2);
+    expect(spawnB.memory.spawnList).toHaveLength(2);
+
+    expect(spawnA.memory.spawnList).toEqual([configNames[0], configNames[2]]);
+    expect(spawnB.memory.spawnList).toEqual([configNames[1], configNames[3]]);
+  });
+
+  it("distributes five standard configs across three spawns with 2/2/1 split", () => {
+    const { room } = setupRoomWithCarrier("W6N2");
+    const spawnA = createSpawn(room, 2, "W6N2-spawn-a");
+    const spawnB = createSpawn(room, 2, "W6N2-spawn-b");
+    const spawnC = createSpawn(room, 2, "W6N2-spawn-c");
+    Game.spawns[spawnA.name] = spawnA;
+    Game.spawns[spawnB.name] = spawnB;
+    Game.spawns[spawnC.name] = spawnC;
+
+    const configNames = addWorkerConfigs(room.name, 5);
+
+    scheduleSpawnTasks();
+
+    const allQueued = [
+      ...spawnA.memory.spawnList!,
+      ...spawnB.memory.spawnList!,
+      ...spawnC.memory.spawnList!,
+    ];
+    for (const cn of configNames) {
+      expect(allQueued.filter((q) => q === cn)).toHaveLength(1);
+    }
+
+    expect(spawnA.memory.spawnList).toHaveLength(2);
+    expect(spawnB.memory.spawnList).toHaveLength(2);
+    expect(spawnC.memory.spawnList).toHaveLength(1);
+
+    // Least-loaded/name-tiebreak: a(0)→0, b(0)→1, c(0)→2, a=b=c(1)→a→3, b→4
+    expect(spawnA.memory.spawnList).toEqual([configNames[0], configNames[3]]);
+    expect(spawnB.memory.spawnList).toEqual([configNames[1], configNames[4]]);
+    expect(spawnC.memory.spawnList).toEqual([configNames[2]]);
+  });
+
+  it("queues all standard configs on the single spawn in a single-spawn room", () => {
+    const { room } = setupRoomWithCarrier("W6N3");
+    const spawn = createSpawn(room, 2, "W6N3-spawn");
+    Game.spawns[spawn.name] = spawn;
+
+    const configNames = addWorkerConfigs(room.name, 3);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toEqual(configNames);
+  });
+
+  it("does not duplicate a config already queued on a secondary spawn", () => {
+    const { room } = setupRoomWithCarrier("W6N4");
+    const spawnA = createSpawn(room, 2, "W6N4-spawn-a");
+    const spawnB = createSpawn(room, 2, "W6N4-spawn-b");
+    Game.spawns[spawnA.name] = spawnA;
+    Game.spawns[spawnB.name] = spawnB;
+
+    const configNames = addWorkerConfigs(room.name, 2);
+    spawnB.memory.spawnList = [configNames[0]];
+
+    scheduleSpawnTasks();
+
+    expect(spawnA.memory.spawnList).not.toContain(configNames[0]);
+    expect(spawnB.memory.spawnList.filter((q) => q === configNames[0])).toHaveLength(1);
+    expect(spawnA.memory.spawnList).toContain(configNames[1]);
+  });
+});
