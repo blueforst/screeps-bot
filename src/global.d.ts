@@ -1,5 +1,5 @@
 import type { LoDashStatic } from "lodash";
-import type { CreepApi, CreepConfig, RoleName, RoomType, WorkerTaskType } from "@/types/system";
+import type { CreepApi, CreepConfig, RoleName, RoomType } from "@/types/system";
 import type { HubProgressSnapshot } from "@/runtime/hubProgress";
 import type {
   SynthesisRoomCapability,
@@ -10,6 +10,40 @@ import type {
 } from "@/runtime/hubPlanner";
 
 declare const _: LoDashStatic;
+
+type ResourceTransferTaskConsoleRecord = {
+  id: string;
+  resource: ResourceConstant;
+  fromRoomName: string;
+  toRoomName: string;
+  amount: number;
+  remainingAmount: number;
+  status: "pending" | "done" | "cancelled" | "failed";
+  createdAt: number;
+  updatedAt: number;
+  reason?: string;
+  lastError?: string;
+};
+
+type ManualResourceTransferRequest =
+  | [toRoomName: string, resource: ResourceConstant, amount: number, reason?: string]
+  | {
+      toRoomName: string;
+      resource: ResourceConstant;
+      amount: number;
+      reason?: string;
+    };
+
+type AddResourceTransferTasksResult = {
+  ok: true;
+  fromRoomName: string;
+  created: ResourceTransferTaskConsoleRecord[];
+  errors: Array<{
+    index: number;
+    request: ManualResourceTransferRequest;
+    error: string;
+  }>;
+};
 
 declare global {
   const __BUILD_VERSION__: string;
@@ -195,23 +229,21 @@ declare global {
     amount: number,
     reason?: string,
   ) =>
-    | {
-        ok: true;
-        task: {
-          id: string;
-          resource: ResourceConstant;
-          fromRoomName: string;
-          toRoomName: string;
-          amount: number;
-          remainingAmount: number;
-          status: "pending" | "done" | "cancelled" | "failed";
-          createdAt: number;
-          updatedAt: number;
-          reason?: string;
-          lastError?: string;
-        };
-      }
-    | string;
+      | {
+          ok: true;
+          task: ResourceTransferTaskConsoleRecord;
+        }
+      | string;
+  var addResourceTransferTasks: (
+    fromRoomName: string,
+    requests: ManualResourceTransferRequest[],
+    reason?: string,
+  ) => string;
+  var addResourceTransferTasksRaw: (
+    fromRoomName: string,
+    requests: ManualResourceTransferRequest[],
+    reason?: string,
+  ) => AddResourceTransferTasksResult | string;
   var cancelResourceTransferTask: (taskId: string) => string;
   var cancelResourceTransferTaskRaw: (taskId: string) =>
     | {
@@ -223,19 +255,7 @@ declare global {
   var listResourceTransferTasks: () => string;
   var listResourceTransferTasksRaw: () => {
     ok: true;
-    tasks: Array<{
-      id: string;
-      resource: ResourceConstant;
-      fromRoomName: string;
-      toRoomName: string;
-      amount: number;
-      remainingAmount: number;
-      status: "pending" | "done" | "cancelled" | "failed";
-      createdAt: number;
-      updatedAt: number;
-      reason?: string;
-      lastError?: string;
-    }>;
+    tasks: ResourceTransferTaskConsoleRecord[];
   };
 
   type PowerBankHarvestStatus =
@@ -1191,21 +1211,19 @@ declare namespace NodeJS {
     ) =>
       | {
           ok: true;
-          task: {
-            id: string;
-            resource: ResourceConstant;
-            fromRoomName: string;
-            toRoomName: string;
-            amount: number;
-            remainingAmount: number;
-            status: "pending" | "done" | "cancelled" | "failed";
-            createdAt: number;
-            updatedAt: number;
-            reason?: string;
-            lastError?: string;
-          };
+          task: ResourceTransferTaskConsoleRecord;
         }
       | string;
+    addResourceTransferTasks: (
+      fromRoomName: string,
+      requests: ManualResourceTransferRequest[],
+      reason?: string,
+    ) => string;
+    addResourceTransferTasksRaw: (
+      fromRoomName: string,
+      requests: ManualResourceTransferRequest[],
+      reason?: string,
+    ) => AddResourceTransferTasksResult | string;
     cancelResourceTransferTask: (taskId: string) => string;
     cancelResourceTransferTaskRaw: (taskId: string) =>
       | {
@@ -1217,19 +1235,7 @@ declare namespace NodeJS {
     listResourceTransferTasks: () => string;
     listResourceTransferTasksRaw: () => {
       ok: true;
-      tasks: Array<{
-        id: string;
-        resource: ResourceConstant;
-        fromRoomName: string;
-        toRoomName: string;
-        amount: number;
-        remainingAmount: number;
-        status: "pending" | "done" | "cancelled" | "failed";
-        createdAt: number;
-        updatedAt: number;
-        reason?: string;
-        lastError?: string;
-      }>;
+      tasks: ResourceTransferTaskConsoleRecord[];
     };
     __screepsMounted?: boolean;
   }
