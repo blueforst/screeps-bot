@@ -4853,4 +4853,46 @@ describe("powerBankHarvest", () => {
       expect((attacker.memory as any).working).toBe(false);
     });
   });
+
+  describe("multi-spawn queue cleanup", () => {
+    it("removes powerbank prefix entries from all source-room spawns and preserves unrelated entries", () => {
+      setupSourceRoom({ spawnCount: 2 });
+      mockReleaseBoostLabs();
+
+      const attackerConfig = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
+      const healerConfig = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "healer", 0);
+      const haulerConfig = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "hauler", 0);
+      const unrelatedConfig = `${SOURCE_ROOM}:worker:0`;
+
+      const configStore = getCreepConfigService();
+      configStore.add(attackerConfig, "powerBankAttacker", TARGET_ROOM);
+      configStore.add(healerConfig, "powerBankHealer", TARGET_ROOM);
+      configStore.add(haulerConfig, "powerBankHauler", TARGET_ROOM);
+
+      const spawnA = Game.spawns[`${SOURCE_ROOM}-spawn1`];
+      const spawnB = Game.spawns[`${SOURCE_ROOM}-spawn2`];
+
+      spawnA.memory.spawnList = [attackerConfig, unrelatedConfig];
+      spawnB.memory.spawnList = [healerConfig, haulerConfig, `${SOURCE_ROOM}:carrier:0`];
+
+      addTask(makeTask({
+        status: POWER_BANK_STATUS.FAILED,
+        sourceRoom: SOURCE_ROOM,
+        targetRoom: TARGET_ROOM,
+        failReason: "test",
+        terminalTick: Game.time - 200,
+      }));
+
+      runPowerBankHarvest();
+
+      expect(spawnA.memory.spawnList).not.toContain(attackerConfig);
+      expect(spawnA.memory.spawnList).not.toContain(healerConfig);
+      expect(spawnA.memory.spawnList).not.toContain(haulerConfig);
+      expect(spawnB.memory.spawnList).not.toContain(attackerConfig);
+      expect(spawnB.memory.spawnList).not.toContain(healerConfig);
+      expect(spawnB.memory.spawnList).not.toContain(haulerConfig);
+      expect(spawnA.memory.spawnList).toContain(unrelatedConfig);
+      expect(spawnB.memory.spawnList).toContain(`${SOURCE_ROOM}:carrier:0`);
+    });
+  });
 });

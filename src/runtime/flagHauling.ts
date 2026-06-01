@@ -210,12 +210,11 @@ function isConfigSpawning(configName: string): boolean {
 }
 
 function removeQueuedConfig(task: FlagHaulTask, configName: string): void {
-  const spawn = getTickContextService().getPrimarySpawnByRoom(task.sourceRoom);
-  if (!spawn?.memory.spawnList) {
-    return;
+  for (const spawn of getTickContextService().getSpawnsByRoom(task.sourceRoom)) {
+    if (spawn.memory.spawnList) {
+      spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+    }
   }
-
-  spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
 }
 
 function cleanupFlagHaulConfig(task: FlagHaulTask): boolean {

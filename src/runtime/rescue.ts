@@ -103,10 +103,6 @@ function getLiveCreepsByConfig(configName: string): Creep[] {
   return getTickContextService().getCreepsByConfigName(configName);
 }
 
-function getSpawnForRoom(roomName: string): StructureSpawn | null {
-  return getTickContextService().getPrimarySpawnByRoom(roomName) || null;
-}
-
 function isConfigSpawning(configName: string): boolean {
   const creepMemory = Memory.creeps || {};
   const tickContext = getTickContextService();
@@ -124,9 +120,11 @@ function upsertConfig(configName: string, config: import("@/types/system").Creep
 }
 
 function removeQueuedConfig(task: RescueTask, configName: string): void {
-  const spawn = getSpawnForRoom(task.sourceRoom);
-  if (!spawn?.memory.spawnList) return;
-  spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+  for (const spawn of getTickContextService().getSpawnsByRoom(task.sourceRoom)) {
+    if (spawn.memory.spawnList) {
+      spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+    }
+  }
 }
 
 function ensureRescueHarvester(task: RescueTask, sourceId: Id<Source>): void {

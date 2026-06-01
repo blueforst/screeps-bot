@@ -109,10 +109,11 @@ function ensureCombatTaskIds(task: PowerBankHarvestTask, index: number, stage?: 
 }
 
 function removeSpawnQueueEntries(task: PowerBankHarvestTask): void {
-  const spawn = getTickContextService().getPrimarySpawnByRoom(task.sourceRoom);
-  if (!spawn?.memory.spawnList) return;
   const prefix = `${task.sourceRoom}:powerbank:${task.targetRoom}:`;
-  spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => !name.startsWith(prefix));
+  for (const spawn of getTickContextService().getSpawnsByRoom(task.sourceRoom)) {
+    if (!spawn.memory.spawnList) continue;
+    spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => !name.startsWith(prefix));
+  }
 }
 
 function removeSpawnQueueEntry(configName: string): void {
