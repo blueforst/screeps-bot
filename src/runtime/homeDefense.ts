@@ -12,8 +12,26 @@ function getConfigName(roomName: string, index: number): string {
   return `${roomName}:homeDefense:defender:${index}`;
 }
 
-function getPrimarySpawn(roomName: string): StructureSpawn | null {
-  return getTickContextService().getPrimarySpawnByRoom(roomName) || null;
+function getSpawnsForRoom(roomName: string): StructureSpawn[] {
+  return getTickContextService().getSpawnsByRoom(roomName);
+}
+
+function isConfigQueuedInSpawns(spawns: StructureSpawn[], configName: string): boolean {
+  return spawns.some((spawn) => spawn.memory.spawnList?.includes(configName) ?? false);
+}
+
+function getSpawnQueueLoad(spawn: StructureSpawn): number {
+  return (spawn.spawning ? 1 : 0) + (spawn.memory.spawnList?.length ?? 0);
+}
+
+function selectLeastLoadedSpawn(spawns: StructureSpawn[]): StructureSpawn | undefined {
+  if (spawns.length === 0) return undefined;
+
+  return [...spawns].sort((left, right) => {
+    const loadDiff = getSpawnQueueLoad(left) - getSpawnQueueLoad(right);
+    if (loadDiff !== 0) return loadDiff;
+    return left.name.localeCompare(right.name);
+  })[0];
 }
 
 function isLiveOrSpawning(configName: string): boolean {
@@ -51,8 +69,8 @@ function calcDesiredDefenderCount(room: Room, hostiles: Creep[], frontCount: num
 
 function ensureDefenders(room: Room, desiredCount: number): void {
   const configStore = getMemoryService().getCreepConfigStore();
-  const spawn = getPrimarySpawn(room.name);
-  if (!spawn) return;
+  const spawns = getSpawnsForRoom(room.name);
+  if (spawns.length === 0) return;
 
   for (let i = 0; i < desiredCount; i++) {
     const configName = getConfigName(room.name, i);
@@ -63,9 +81,10 @@ function ensureDefenders(room: Room, desiredCount: number): void {
     };
 
     if (!isLiveOrSpawning(configName)) {
-      const queue = spawn.memory.spawnList || [];
-      if (!queue.includes(configName)) {
-        spawn.addTask(configName);
+      const queued = isConfigQueuedInSpawns(spawns, configName);
+      if (!queued) {
+        const targetSpawn = selectLeastLoadedSpawn(spawns);
+        if (targetSpawn) targetSpawn.addTask(configName);
       }
     }
   }
@@ -73,27 +92,31 @@ function ensureDefenders(room: Room, desiredCount: number): void {
 
 function removeDefendersAbove(roomName: string, startIndex: number): void {
   const configStore = getCreepConfigService();
-  const spawn = getPrimarySpawn(roomName);
+  const spawns = getTickContextService().getSpawnsByRoom(roomName);
 
   for (let i = startIndex; i < getMaxDefenders(); i++) {
     const configName = getConfigName(roomName, i);
     configStore.remove(configName);
 
-    if (spawn?.memory.spawnList) {
-      spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+    for (const spawn of spawns) {
+      if (spawn.memory.spawnList) {
+        spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+      }
     }
   }
 }
 
 function stopQueuedDefenderSpawning(roomName: string, desiredCount: number): void {
   const configStore = getCreepConfigService();
-  const spawn = getPrimarySpawn(roomName);
+  const spawns = getTickContextService().getSpawnsByRoom(roomName);
 
   for (let i = desiredCount; i < getMaxDefenders(); i++) {
     const configName = getConfigName(roomName, i);
 
-    if (spawn?.memory.spawnList) {
-      spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+    for (const spawn of spawns) {
+      if (spawn.memory.spawnList) {
+        spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => name !== configName);
+      }
     }
 
     if (!isLiveOrSpawning(configName)) {

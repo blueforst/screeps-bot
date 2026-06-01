@@ -251,4 +251,144 @@ describe("runHomeDefense", () => {
       },
     });
   });
+
+  describe("multi-spawn queue cleanup", () => {
+    it("removes defender configs from all room spawns when hostiles leave", () => {
+      const roomName = "W3N1";
+      const defender0 = `${roomName}:homeDefense:defender:0`;
+      const defender1 = `${roomName}:homeDefense:defender:1`;
+      const unrelatedConfig = `${roomName}:worker:0`;
+
+      const hostile = createHostile(roomName, 12, 12);
+      const room = createRoom(roomName, {
+        towers: [createTower(roomName, 25, 25, 0)],
+        hostiles: [hostile],
+      });
+
+      const spawnA = createSpawn(room, [unrelatedConfig]);
+      spawnA.name = `${roomName}-spawnA`;
+      const spawnB = createSpawn(room, [`${roomName}:carrier:0`, defender1]);
+      spawnB.name = `${roomName}-spawnB`;
+
+      Game.rooms[room.name] = room;
+      Game.spawns[spawnA.name] = spawnA;
+      Game.spawns[spawnB.name] = spawnB;
+      Memory.data = {
+        creepConfigs: {},
+      } as Memory["data"];
+
+      runHomeDefense();
+
+      expect(spawnA.memory.spawnList).toContain(defender0);
+
+      const roomNoHostiles = createRoom(roomName, {
+        towers: [createTower(roomName, 25, 25, 500)],
+      });
+      Game.rooms[roomName] = roomNoHostiles;
+      resetRuntimeServices();
+
+      runHomeDefense();
+
+      expect(spawnA.memory.spawnList).not.toContain(defender0);
+      expect(spawnA.memory.spawnList).not.toContain(defender1);
+      expect(spawnB.memory.spawnList).not.toContain(defender0);
+      expect(spawnB.memory.spawnList).not.toContain(defender1);
+      expect(spawnA.memory.spawnList).toContain(unrelatedConfig);
+      expect(spawnB.memory.spawnList).toContain(`${roomName}:carrier:0`);
+    });
+
+    it("removes excess defender configs from secondary spawn when desired count decreases", () => {
+      const roomName = "W3N2";
+      const defender0 = `${roomName}:homeDefense:defender:0`;
+      const defender1 = `${roomName}:homeDefense:defender:1`;
+      const unrelatedConfig = `${roomName}:worker:0`;
+
+      const hostile = createHostile(roomName, 12, 12);
+      const room = createRoom(roomName, {
+        towers: [createTower(roomName, 25, 25, 0)],
+        hostiles: [hostile],
+      });
+
+      const spawnA = createSpawn(room, [unrelatedConfig]);
+      spawnA.name = `${roomName}-spawnA`;
+      const spawnB = createSpawn(room, [`${roomName}:carrier:0`, defender1]);
+      spawnB.name = `${roomName}-spawnB`;
+
+      Game.rooms[room.name] = room;
+      Game.spawns[spawnA.name] = spawnA;
+      Game.spawns[spawnB.name] = spawnB;
+      Memory.data = {
+        creepConfigs: {},
+      } as Memory["data"];
+
+      runHomeDefense();
+
+      expect(spawnA.memory.spawnList).toContain(defender0);
+
+      runHomeDefense();
+
+      expect(spawnB.memory.spawnList).not.toContain(defender1);
+      expect(spawnA.memory.spawnList).toContain(defender0);
+      expect(spawnA.memory.spawnList).toContain(unrelatedConfig);
+      expect(spawnB.memory.spawnList).toContain(`${roomName}:carrier:0`);
+    });
+  });
+
+  describe("multi-spawn direct enqueue", () => {
+    it("does not duplicate a defender already queued on a secondary spawn", () => {
+      const roomName = "W4N1";
+      const defender0 = `${roomName}:homeDefense:defender:0`;
+
+      const hostile = createHostile(roomName, 12, 12);
+      const room = createRoom(roomName, {
+        towers: [createTower(roomName, 25, 25, 0)],
+        hostiles: [hostile],
+      });
+
+      const spawnA = createSpawn(room);
+      spawnA.name = `${roomName}-spawnA`;
+      const spawnB = createSpawn(room, [defender0]);
+      spawnB.name = `${roomName}-spawnB`;
+
+      Game.rooms[room.name] = room;
+      Game.spawns[spawnA.name] = spawnA;
+      Game.spawns[spawnB.name] = spawnB;
+      Memory.data = {
+        creepConfigs: {},
+      } as Memory["data"];
+
+      runHomeDefense();
+
+      expect(spawnA.memory.spawnList).not.toContain(defender0);
+      expect(spawnB.memory.spawnList).toContain(defender0);
+    });
+
+    it("enqueues defender to the least-loaded spawn", () => {
+      const roomName = "W4N2";
+      const defender0 = `${roomName}:homeDefense:defender:0`;
+
+      const hostile = createHostile(roomName, 12, 12);
+      const room = createRoom(roomName, {
+        towers: [createTower(roomName, 25, 25, 0)],
+        hostiles: [hostile],
+      });
+
+      const spawnA = createSpawn(room, ["existing-task-a", "existing-task-b"]);
+      spawnA.name = `${roomName}-spawnA`;
+      const spawnB = createSpawn(room);
+      spawnB.name = `${roomName}-spawnB`;
+
+      Game.rooms[room.name] = room;
+      Game.spawns[spawnA.name] = spawnA;
+      Game.spawns[spawnB.name] = spawnB;
+      Memory.data = {
+        creepConfigs: {},
+      } as Memory["data"];
+
+      runHomeDefense();
+
+      expect(spawnB.memory.spawnList).toContain(defender0);
+      expect(spawnA.memory.spawnList).not.toContain(defender0);
+    });
+  });
 });
