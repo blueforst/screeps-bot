@@ -7,11 +7,16 @@ import {
 
 type SpawnBodyGenerator = (room: Room) => BodyPartConstant[];
 
+const MAX_BODY_SIZE = 50;
+
 function clampByCapacity(parts: BodyPartConstant[], room: Room): BodyPartConstant[] {
   const result: BodyPartConstant[] = [];
   let total = 0;
 
   for (const part of parts) {
+    if (result.length >= MAX_BODY_SIZE) {
+      break;
+    }
     const cost = BODYPART_COST[part];
     if (total + cost > room.energyCapacityAvailable) {
       break;
