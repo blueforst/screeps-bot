@@ -15,6 +15,7 @@
 import { BLOCKING_ERRORS, createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount, getOutgoingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { collectCarrierCargoInventory } from "@/runtime/hubProgress";
+import { getProductReagentMap, roundUpReactionAmount } from "@/runtime/reactionMap";
 
 const DEFAULT_TARGET_COMPOUNDS: ResourceConstant[] = [
   RESOURCE_CATALYZED_UTRIUM_ACID, // XUH2O
@@ -160,49 +161,6 @@ export interface ProgressEdge {
   total: number;
 }
 
-const REACTION_MAP: Record<string, [ResourceConstant, ResourceConstant]> = {
-  // Base intermediates
-  [RESOURCE_HYDROXIDE]: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN],
-  [RESOURCE_ZYNTHIUM_KEANITE]: [RESOURCE_ZYNTHIUM, RESOURCE_KEANIUM],
-  [RESOURCE_UTRIUM_LEMERGITE]: [RESOURCE_UTRIUM, RESOURCE_LEMERGIUM],
-  [RESOURCE_GHODIUM]: [RESOURCE_ZYNTHIUM_KEANITE, RESOURCE_UTRIUM_LEMERGITE],
-  // U chains (Utrium)
-  [RESOURCE_UTRIUM_HYDRIDE]: [RESOURCE_UTRIUM, RESOURCE_HYDROGEN],
-  [RESOURCE_UTRIUM_OXIDE]: [RESOURCE_UTRIUM, RESOURCE_OXYGEN],
-  [RESOURCE_UTRIUM_ACID]: [RESOURCE_UTRIUM_HYDRIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_UTRIUM_ALKALIDE]: [RESOURCE_UTRIUM_OXIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_CATALYZED_UTRIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_UTRIUM_ACID],
-  [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_UTRIUM_ALKALIDE],
-  // K chains (Keanium)
-  [RESOURCE_KEANIUM_HYDRIDE]: [RESOURCE_KEANIUM, RESOURCE_HYDROGEN],
-  [RESOURCE_KEANIUM_OXIDE]: [RESOURCE_KEANIUM, RESOURCE_OXYGEN],
-  [RESOURCE_KEANIUM_ACID]: [RESOURCE_KEANIUM_HYDRIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_KEANIUM_ALKALIDE]: [RESOURCE_KEANIUM_OXIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_CATALYZED_KEANIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_KEANIUM_ACID],
-  [RESOURCE_CATALYZED_KEANIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_KEANIUM_ALKALIDE],
-  // L chains (Lemergium)
-  [RESOURCE_LEMERGIUM_HYDRIDE]: [RESOURCE_LEMERGIUM, RESOURCE_HYDROGEN],
-  [RESOURCE_LEMERGIUM_OXIDE]: [RESOURCE_LEMERGIUM, RESOURCE_OXYGEN],
-  [RESOURCE_LEMERGIUM_ACID]: [RESOURCE_LEMERGIUM_HYDRIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_LEMERGIUM_ALKALIDE]: [RESOURCE_LEMERGIUM_OXIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_CATALYZED_LEMERGIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_LEMERGIUM_ACID],
-  [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_LEMERGIUM_ALKALIDE],
-  // Z chains (Zynthium)
-  [RESOURCE_ZYNTHIUM_HYDRIDE]: [RESOURCE_ZYNTHIUM, RESOURCE_HYDROGEN],
-  [RESOURCE_ZYNTHIUM_OXIDE]: [RESOURCE_ZYNTHIUM, RESOURCE_OXYGEN],
-  [RESOURCE_ZYNTHIUM_ACID]: [RESOURCE_ZYNTHIUM_HYDRIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_ZYNTHIUM_ALKALIDE]: [RESOURCE_ZYNTHIUM_OXIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_CATALYZED_ZYNTHIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_ZYNTHIUM_ACID],
-  [RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_ZYNTHIUM_ALKALIDE],
-  // G chains (Ghodium)
-  [RESOURCE_GHODIUM_HYDRIDE]: [RESOURCE_GHODIUM, RESOURCE_HYDROGEN],
-  [RESOURCE_GHODIUM_OXIDE]: [RESOURCE_GHODIUM, RESOURCE_OXYGEN],
-  [RESOURCE_GHODIUM_ACID]: [RESOURCE_GHODIUM_HYDRIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_GHODIUM_ALKALIDE]: [RESOURCE_GHODIUM_OXIDE, RESOURCE_HYDROXIDE],
-  [RESOURCE_CATALYZED_GHODIUM_ACID]: [RESOURCE_CATALYST, RESOURCE_GHODIUM_ACID],
-  [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: [RESOURCE_CATALYST, RESOURCE_GHODIUM_ALKALIDE],
-};
-
 const PROCESS_ORDER: ResourceConstant[] = [
   // T3 products (catalyzed)
   RESOURCE_CATALYZED_UTRIUM_ACID,
@@ -307,10 +265,6 @@ const MIN_HUB_IMPORT_AMOUNT = 100;
 
 const HUB_RUNTIME_ARRAY_CAP = 20;
 
-function roundUpReactionAmount(amount: number): number {
-  return Math.ceil(amount / LAB_REACTION_AMOUNT) * LAB_REACTION_AMOUNT;
-}
-
 export function planHubChains(
   hubInventory: Record<string, number>,
   incomingResources: Record<string, number>,
@@ -353,7 +307,7 @@ export function planHubChains(
     needed[product] = toProduce;
 
     if (toProduce > 0) {
-      const reagents = REACTION_MAP[product];
+      const reagents = getProductReagentMap()[product];
       if (reagents) {
         for (const r of reagents) {
           needed[r] = (needed[r] || 0) + toProduce;
@@ -409,7 +363,7 @@ export function planHubChains(
     const demand = needed[product] || 0;
     if (demand <= 0) continue;
 
-    const reagents = REACTION_MAP[product];
+    const reagents = getProductReagentMap()[product];
     if (!reagents) continue;
 
     const availA = available[reagents[0]] || 0;
@@ -534,7 +488,7 @@ function isReagentInChain(product: string, resource: string): boolean {
     if (visited.has(current)) continue;
     visited.add(current);
 
-    const reagents = REACTION_MAP[current];
+    const reagents = getProductReagentMap()[current];
     if (!reagents) continue;
 
     if (reagents[0] === resource || reagents[1] === resource) return true;
@@ -1117,7 +1071,7 @@ export function planDistributedSynthesis(
 }
 
 /**
- * Trace a product upward through REACTION_MAP consumers to find which
+ * Trace a product upward through getProductReagentMap() consumers to find which
  * configured T3 targets it ultimately feeds into.
  * T3 products map to themselves. T1/T2 intermediates map to their unique T3.
  * Shared intermediates (OH, ZK, UL, G) map to all configured T3 targets that
@@ -1135,7 +1089,7 @@ function getPossibleT3Targets(product: ResourceConstant, targetCompounds: Resour
     if (visited.has(current)) continue;
     visited.add(current);
 
-    for (const [consumer, reagents] of Object.entries(REACTION_MAP)) {
+    for (const [consumer, reagents] of Object.entries(getProductReagentMap())) {
       if (reagents[0] === current || reagents[1] === current) {
         const consumerRC = consumer as ResourceConstant;
         if (targetCompounds.includes(consumerRC)) {
@@ -1609,7 +1563,7 @@ export function resupplyBusySynthesisRooms(
 
 function getDirectReagents(product: ResourceConstant | undefined): Set<ResourceConstant> {
   if (!product) return new Set();
-  const pair = REACTION_MAP[product];
+  const pair = getProductReagentMap()[product];
   if (!pair) return new Set();
   return new Set(pair as ResourceConstant[]);
 }
@@ -1667,7 +1621,7 @@ export function wireDistributedSynthesis(
       continue;
     }
 
-    const reagents = REACTION_MAP[assignment.product];
+    const reagents = getProductReagentMap()[assignment.product];
     if (!reagents) continue;
 
     if (!Memory.cfg.synthesisControl.rooms[roomName]) {
@@ -1725,7 +1679,7 @@ export function wireDistributedSynthesis(
         isHubRoom: room.roomName === hubRoomName,
       });
 
-      const reagents = REACTION_MAP[activeProduct];
+      const reagents = getProductReagentMap()[activeProduct];
       if (reagents && !Memory.cfg.synthesisControl.rooms[room.roomName]) {
         Memory.cfg.synthesisControl.rooms[room.roomName] = {
           enabled: true,

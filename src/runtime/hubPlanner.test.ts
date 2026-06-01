@@ -298,7 +298,7 @@ describe("planHubChains", () => {
       expect(result.steps.length).toBeGreaterThan(0);
       const ohStep = result.steps.find((s) => s.product === RESOURCE_HYDROXIDE);
       expect(ohStep).toBeDefined();
-      expect(ohStep!.reagents).toEqual([RESOURCE_HYDROGEN, RESOURCE_OXYGEN]);
+      expect(new Set(ohStep!.reagents)).toEqual(new Set([RESOURCE_HYDROGEN, RESOURCE_OXYGEN]));
     });
 
     it("(b) U+O/H available, K/Z unavailable, target XUHO2 → produces UO, blocked=false", () => {

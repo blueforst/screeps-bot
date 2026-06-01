@@ -19,6 +19,8 @@ import { getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getReservedProductionAmountExcludingHolder } from "@/runtime/resourceReservation";
 import { getActivePowerBankBoostLabIds } from "@/runtime/powerBankBoostMemory";
 import { normalizeBoolean, normalizeNumber, normalizeRoomNameList } from "@/runtime/configNormalize";
+import { getProductReagents, roundUpReactionAmount } from "@/runtime/reactionMap";
+import { isTargetSatisfiedByReactionGranularity } from "@/runtime/productionStateMachine";
 
 type SynthesisStage = "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
 
@@ -117,41 +119,10 @@ const MAX_BATCH_SIZE = 3000;
 const MIN_MAX_RUNS_PER_TICK = 1;
 const MAX_MAX_RUNS_PER_TICK = 20;
 
-function roundUpReactionAmount(amount: number): number {
-  return Math.ceil(amount / LAB_REACTION_AMOUNT) * LAB_REACTION_AMOUNT;
-}
-
-function isTargetSatisfiedByReactionGranularity(current: number, targetAmount: number): boolean {
-  return current >= targetAmount || (current > 0 && targetAmount - current < LAB_REACTION_AMOUNT);
-}
 const SYNTHESIS_BINDING_LEASE_TICKS = 200;
 const SYNTHESIS_BINDING_STICKY_BONUS = 5;
 const SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO = 1.2;
 const SYNTHESIS_CARRIER_TASK_PRODUCER = "synthesisControl";
-
-let productReagentCache: Partial<Record<ResourceConstant, [ResourceConstant, ResourceConstant]>> | undefined;
-
-function getProductReagentMap(): Partial<Record<ResourceConstant, [ResourceConstant, ResourceConstant]>> {
-  if (productReagentCache) {
-    return productReagentCache;
-  }
-
-  const map: Partial<Record<ResourceConstant, [ResourceConstant, ResourceConstant]>> = {};
-  const raw = REACTIONS as unknown as Record<string, Record<string, string>>;
-  for (const [reagentA, children] of Object.entries(raw)) {
-    for (const [reagentB, product] of Object.entries(children)) {
-      map[product as ResourceConstant] = [reagentA as ResourceConstant, reagentB as ResourceConstant];
-    }
-  }
-
-  productReagentCache = map;
-  return map;
-}
-
-function resolveReagents(product: ResourceConstant): [ResourceConstant, ResourceConstant] | null {
-  const map = getProductReagentMap();
-  return map[product] || null;
-}
 
 function normalizeReactionPlan(raw: unknown, roomCfg: SynthesisRoomConfig, defaultBatchSize: number): SynthesisReactionPlan | null {
   if (!raw || typeof raw !== "object") {
@@ -160,7 +131,7 @@ function normalizeReactionPlan(raw: unknown, roomCfg: SynthesisRoomConfig, defau
 
   const record = raw as Record<string, unknown>;
   const product = typeof record.product === "string" ? (record.product as ResourceConstant) : null;
-  if (!product || !resolveReagents(product)) {
+  if (!product || !getProductReagents(product)) {
     return null;
   }
 
@@ -1180,7 +1151,7 @@ function handleRoom(
     return { generated, failed, runs };
   }
 
-  const reagents = resolveReagents(activePlan.product);
+  const reagents = getProductReagents(activePlan.product);
   if (!reagents) {
     replaceCarrierTasksForProducerRoom(SYNTHESIS_CARRIER_TASK_PRODUCER, roomName, []);
     runtime.rooms[roomName] = {
@@ -1416,7 +1387,7 @@ export function resumeSynthesisAfterBoost(roomName: string): void {
     roomState.activeProduct = pause.pausedPlan.product;
     roomState.targetAmount = pause.pausedPlan.targetAmount;
     roomState.batchSize = pause.pausedPlan.batchSize;
-    const reagents = resolveReagents(pause.pausedPlan.product);
+    const reagents = getProductReagents(pause.pausedPlan.product);
     if (reagents) {
       roomState.reagentA = reagents[0];
       roomState.reagentB = reagents[1];
