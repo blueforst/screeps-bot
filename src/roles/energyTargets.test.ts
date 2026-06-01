@@ -243,6 +243,28 @@ describe("energyTargets", () => {
     expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
   });
 
+  it("does not use factories as generic energy store targets", () => {
+    const factory = {
+      id: "factory-1",
+      structureType: STRUCTURE_FACTORY,
+      pos: createPos(4),
+      store: createStore(0, 50000),
+    } as unknown as StructureFactory;
+    const storage = {
+      id: "storage-factory-fallback",
+      pos: createPos(6),
+      store: createStore(100000, 1000000),
+    } as unknown as StructureStorage;
+    const room = createRoom({
+      storage,
+      myStructures: [factory as unknown as Structure<StructureConstant>],
+    });
+    Game.rooms[room.name] = room;
+    const creep = createCreep(room);
+
+    expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
+  });
+
   it("prefers the proto storage container before the proto controller container", () => {
     const protoStorage = {
       id: "proto-storage-1",

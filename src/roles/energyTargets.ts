@@ -62,7 +62,6 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
     let bestSpawnOrExtension: AnyStoreStructure | null = null;
     let bestTower: AnyStoreStructure | null = null;
     let bestPowerSpawn: AnyStoreStructure | null = null;
-    let bestFactory: AnyStoreStructure | null = null;
     let bestLab: AnyStoreStructure | null = null;
 
     for (const structure of myStructures) {
@@ -100,14 +99,6 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
         continue;
       }
 
-      if (structure.structureType === STRUCTURE_FACTORY) {
-        const factory = structure as StructureFactory;
-        if (factory.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-          bestFactory = updateClosestTarget(creep, bestFactory, factory);
-        }
-        continue;
-      }
-
       if (structure.structureType === STRUCTURE_LAB) {
         const lab = structure as StructureLab;
         if (lab.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
@@ -126,10 +117,6 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
 
     if (bestPowerSpawn) {
       return bestPowerSpawn;
-    }
-
-    if (bestFactory) {
-      return bestFactory;
     }
 
     if (bestLab) {
