@@ -10,7 +10,9 @@ import {
   isProducible,
   parseConfig,
   findSafeBuyOrder,
+  findSafeSellOrder,
   attemptProductSale,
+  attemptRegionalRawPurchase,
   type MarketConfig,
   type FactoryControlRuntime,
 } from "@/runtime/factoryControl";
@@ -988,6 +990,12 @@ function makeMarketConfig(overrides: Partial<MarketConfig> = {}): MarketConfig {
     orderAllowlist: new Set(),
     roomAllowlist: new Set(),
     maxBatch: 5000,
+    purchaseEnabled: false,
+    maxBuyPrice: {},
+    buyMaxBatch: 5000,
+    dailyBudget: 0,
+    creditReserve: 10000,
+    buyResources: [],
     ...overrides,
   };
 }
@@ -1000,9 +1008,26 @@ function makeRuntime(claimedOrders?: FactoryControlRuntime["claimedOrders"]): Fa
   };
 }
 
+const PURCHASE_PRICE_CAP: Partial<Record<ResourceConstant, number>> = {
+  silicon: 1.0,
+  mist: 1.0,
+  biomass: 1.0,
+  metal: 1.0,
+};
+
+function makePurchaseMarketConfig(overrides: Partial<MarketConfig> = {}): MarketConfig {
+  return makeMarketConfig({
+    purchaseEnabled: true,
+    maxBuyPrice: { ...PURCHASE_PRICE_CAP },
+    dailyBudget: 100000,
+    ...overrides,
+  });
+}
+
 type TestSaleState = {
   stage: "idle" | "acquiring" | "loading" | "producing" | "unloading" | "blocked" | "sleeping";
   activeTarget?: ResourceConstant;
+  missing?: Partial<Record<ResourceConstant, number>>;
   lastTransitionAt: number;
   sleepReason?: string;
   lastError?: string;
@@ -1913,5 +1938,418 @@ describe("revalidation field checks", () => {
 
     expect(Game.market.deal).toHaveBeenCalledWith("buy-valid", 2000, "W1N1");
     expect(runtime.claimedOrders).toHaveLength(1);
+  });
+});
+
+function makeSellOrder(overrides: Partial<Order> & { id: string; price: number; amount: number; roomName: string }): Order {
+  return {
+    type: ORDER_SELL,
+    resourceType: "silicon" as ResourceConstant,
+    created: 0,
+    remainingAmount: overrides.amount,
+    ...overrides,
+  };
+}
+
+describe("regional raw purchase", () => {
+  beforeEach(() => {
+    const { clearCarrierTaskBoardForTest } = require("@/runtime/carrierTaskBoard");
+    clearCarrierTaskBoardForTest();
+    setupMarketMocks();
+    (Game.market as any).credits = 100000;
+  });
+
+  it("purchases missing regional raw from cheapest sell order", () => {
+    const { room, terminal } = createFactoryRoom({
+      terminalResources: { [RESOURCE_ENERGY]: 25000, silicon: 0 },
+    });
+    (terminal as any).store = createMockStore({ [RESOURCE_ENERGY]: 25000, silicon: 0 }, 300000);
+    setupGameRooms({ W1N1: room });
+    setupMarketMocks();
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn((filter: OrderFilter) => {
+      if (filter.type === ORDER_SELL) {
+        return [
+          makeSellOrder({ id: "sell-1", price: 0.1, amount: 5000, roomName: "W2N2", resourceType: "silicon" }),
+          makeSellOrder({ id: "sell-2", price: 0.2, amount: 5000, roomName: "W3N3", resourceType: "silicon" }),
+        ];
+      }
+      return [];
+    });
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    (Game as GameWithPartialMarket).market.getOrderById = jest.fn((id: string) => {
+      if (id === "sell-1") return makeSellOrder({ id: "sell-1", price: 0.1, amount: 5000, roomName: "W2N2", resourceType: "silicon" });
+      return null;
+    });
+    (Game.market as any).credits = 100000;
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "wire", targetAmount: 100 }],
+      market: { enabled: true, purchaseEnabled: true, maxBuyPrice: { silicon: 1.0 }, dailyBudget: 100000 },
+    });
+
+    runFactoryControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith("sell-1", expect.any(Number), "W1N1");
+    const dealCall = (Game.market.deal as jest.Mock).mock.calls[0];
+    expect(dealCall[1]).toBeGreaterThan(0);
+
+    const runtime = Memory.runtime?.factoryControl as FactoryControlRuntime | undefined;
+    expect(runtime?.claimedOrders).toBeDefined();
+    const buyClaim = runtime!.claimedOrders!.find(c => c.purpose === "buy");
+    expect(buyClaim).toBeDefined();
+    expect((buyClaim as any).credits).toBeGreaterThan(0);
+  });
+
+  it("findSafeSellOrder selects cheapest valid sell order", () => {
+    const marketCfg = makePurchaseMarketConfig();
+    const runtime = makeRuntime();
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-expensive", price: 0.5, amount: 5000, roomName: "W2N2" }),
+      makeSellOrder({ id: "sell-cheap", price: 0.1, amount: 5000, roomName: "W3N3" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+
+    const result = findSafeSellOrder(
+      "silicon" as ResourceConstant, 1000, 25000, 10000, 200000,
+      "W1N1", marketCfg, runtime, 1000, 100000,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.order.id).toBe("sell-cheap");
+    expect(result!.dealAmount).toBe(1000);
+  });
+
+  it("does not purchase when terminal energy is below reserve + cost", () => {
+    const marketCfg = makePurchaseMarketConfig();
+    const runtime = makeRuntime();
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-energy", price: 0.1, amount: 5000, roomName: "W2N2" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 20000);
+
+    const result = findSafeSellOrder(
+      "silicon" as ResourceConstant, 1000, 12000, 10000, 200000,
+      "W1N1", marketCfg, runtime, 1000, 100000,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not purchase when credits below creditReserve", () => {
+    const marketCfg = makePurchaseMarketConfig({ creditReserve: 50000 });
+    const runtime = makeRuntime();
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-credits", price: 0.1, amount: 5000, roomName: "W2N2" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+
+    const result = findSafeSellOrder(
+      "silicon" as ResourceConstant, 1000, 25000, 10000, 200000,
+      "W1N1", marketCfg, runtime, 1000, 40000,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("does not purchase when dailyBudget exhausted", () => {
+    const marketCfg = makePurchaseMarketConfig({ dailyBudget: 50 });
+    const runtime = makeRuntime([{
+      orderId: "prev-purchase", roomName: "W1N1", tick: 1000, purpose: "buy" as const, credits: 50,
+    }]);
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-budget", price: 0.1, amount: 5000, roomName: "W2N2" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+
+    const result = findSafeSellOrder(
+      "silicon" as ResourceConstant, 1000, 25000, 10000, 200000,
+      "W1N1", marketCfg, runtime, 1000, 100000,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("skips blacklisted sell order", () => {
+    const marketCfg = makePurchaseMarketConfig({ orderBlacklist: new Set(["sell-bad"]) });
+    const runtime = makeRuntime();
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-bad", price: 0.05, amount: 5000, roomName: "W2N2" }),
+      makeSellOrder({ id: "sell-ok", price: 0.1, amount: 5000, roomName: "W3N3" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+
+    const result = findSafeSellOrder(
+      "silicon" as ResourceConstant, 1000, 25000, 10000, 200000,
+      "W1N1", marketCfg, runtime, 1000, 100000,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.order.id).toBe("sell-ok");
+  });
+
+  it("skips same-tick claimed sell order", () => {
+    const marketCfg = makePurchaseMarketConfig();
+    const runtime = makeRuntime([{
+      orderId: "sell-claimed", roomName: "W1N1", tick: 1000, purpose: "buy" as const,
+    }]);
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-claimed", price: 0.1, amount: 5000, roomName: "W2N2" }),
+      makeSellOrder({ id: "sell-other", price: 0.2, amount: 5000, roomName: "W3N3" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+
+    const result = findSafeSellOrder(
+      "silicon" as ResourceConstant, 1000, 25000, 10000, 200000,
+      "W1N1", marketCfg, runtime, 1000, 100000,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.order.id).toBe("sell-other");
+  });
+
+  it("returns null when maxBuyPrice not configured for resource", () => {
+    const marketCfg = makePurchaseMarketConfig({ maxBuyPrice: {} });
+    const runtime = makeRuntime();
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-no-cap", price: 0.1, amount: 5000, roomName: "W2N2" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+
+    const result = findSafeSellOrder(
+      "silicon" as ResourceConstant, 1000, 25000, 10000, 200000,
+      "W1N1", marketCfg, runtime, 1000, 100000,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when dailyBudget is zero", () => {
+    const marketCfg = makePurchaseMarketConfig({ dailyBudget: 0 });
+    const runtime = makeRuntime();
+
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-no-budget", price: 0.1, amount: 5000, roomName: "W2N2" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+
+    const result = findSafeSellOrder(
+      "silicon" as ResourceConstant, 1000, 25000, 10000, 200000,
+      "W1N1", marketCfg, runtime, 1000, 100000,
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("rejects sell order via revalidation when order gone", () => {
+    const { room, terminal } = createFactoryRoom({
+      terminalResources: { [RESOURCE_ENERGY]: 25000, silicon: 0 },
+    });
+    (terminal as any).store = createMockStore({ [RESOURCE_ENERGY]: 25000, silicon: 0 }, 300000);
+    setupMarketMocks();
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-gone", price: 0.1, amount: 5000, roomName: "W2N2" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    (Game as GameWithPartialMarket).market.getOrderById = jest.fn(() => null);
+    (Game.market as any).credits = 100000;
+
+    const config = parseConfig();
+    config.market = makePurchaseMarketConfig();
+    const runtime = makeRuntime();
+    const state: TestSaleState = {
+      stage: "blocked",
+      activeTarget: "wire" as ResourceConstant,
+      missing: { silicon: 500 },
+      lastTransitionAt: 1000,
+    };
+
+    attemptRegionalRawPurchase(room, state, config, runtime, "W1N1");
+
+    expect(state.lastError).toBe("purchase_order_gone");
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("rejects sell order via revalidation when price changed", () => {
+    const { room, terminal } = createFactoryRoom({
+      terminalResources: { [RESOURCE_ENERGY]: 25000, silicon: 0 },
+    });
+    (terminal as any).store = createMockStore({ [RESOURCE_ENERGY]: 25000, silicon: 0 }, 300000);
+    setupMarketMocks();
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      makeSellOrder({ id: "sell-changed", price: 0.1, amount: 5000, roomName: "W2N2" }),
+    ]);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    (Game as GameWithPartialMarket).market.getOrderById = jest.fn(() =>
+      makeSellOrder({ id: "sell-changed", price: 5.0, amount: 5000, roomName: "W2N2" }),
+    );
+    (Game.market as any).credits = 100000;
+
+    const config = parseConfig();
+    config.market = makePurchaseMarketConfig();
+    const runtime = makeRuntime();
+    const state: TestSaleState = {
+      stage: "blocked",
+      activeTarget: "wire" as ResourceConstant,
+      missing: { silicon: 500 },
+      lastTransitionAt: 1000,
+    };
+
+    attemptRegionalRawPurchase(room, state, config, runtime, "W1N1");
+
+    expect(state.lastError).toBe("purchase_order_changed");
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+});
+
+describe("does not buy intermediates", () => {
+  beforeEach(() => {
+    const { clearCarrierTaskBoardForTest } = require("@/runtime/carrierTaskBoard");
+    clearCarrierTaskBoardForTest();
+    setupMarketMocks();
+    (Game.market as any).credits = 100000;
+  });
+
+  it("does not purchase missing utrium_bar (intermediate)", () => {
+    const { room } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+      factoryOverrides: { level: 1 },
+    });
+    setupGameRooms({ W1N1: room });
+    setupMarketMocks();
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => []);
+    (Game.market as any).credits = 100000;
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "composite", targetAmount: 20 }],
+      market: { enabled: true, purchaseEnabled: true, maxBuyPrice: { silicon: 1.0 }, dailyBudget: 100000 },
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.missing).toBeDefined();
+
+    const dealCalls = (Game.market.deal as jest.Mock).mock.calls;
+    expect(dealCalls.length).toBe(0);
+  });
+
+  it("does not purchase when active target dependency tree does not require the raw material", () => {
+    const { room } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+      factoryOverrides: { level: 0, store: createMockStore({ [RESOURCE_ENERGY]: 600 }, 50000) },
+    });
+    setupGameRooms({ W1N1: room });
+    setupMarketMocks();
+    (Game.market as any).credits = 100000;
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 1000 }],
+      market: { enabled: true, purchaseEnabled: true, maxBuyPrice: { silicon: 1.0 }, dailyBudget: 100000 },
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("does not purchase when purchaseEnabled is false", () => {
+    const { room } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000, silicon: 0 },
+      factoryOverrides: { level: 0 },
+    });
+    setupGameRooms({ W1N1: room });
+    setupMarketMocks();
+    (Game.market as any).credits = 100000;
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "wire", targetAmount: 100 }],
+      market: { enabled: true, purchaseEnabled: false },
+    });
+
+    runFactoryControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("does not purchase non-regional raw base resources (minerals)", () => {
+    const { room } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+      factoryOverrides: { level: 0 },
+    });
+    setupGameRooms({ W1N1: room });
+    setupMarketMocks();
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => []);
+    (Game.market as any).credits = 100000;
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "utrium_bar", targetAmount: 100 }],
+      market: { enabled: true, purchaseEnabled: true, maxBuyPrice: { silicon: 1.0 }, dailyBudget: 100000 },
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.missing).toBeDefined();
+    if (state!.missing) {
+      expect(state!.missing.U).toBeGreaterThan(0);
+    }
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+});
+
+describe("recursive intermediate purchase guard", () => {
+  beforeEach(() => {
+    const { clearCarrierTaskBoardForTest } = require("@/runtime/carrierTaskBoard");
+    clearCarrierTaskBoardForTest();
+    setupMarketMocks();
+    (Game.market as any).credits = 100000;
+  });
+
+  it("does not purchase missing bars needed for composite", () => {
+    const { room } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+      factoryOverrides: { level: 1 },
+    });
+    setupGameRooms({ W1N1: room });
+    setupMarketMocks();
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => []);
+    (Game.market as any).credits = 100000;
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "composite", targetAmount: 20 }],
+      market: { enabled: true, purchaseEnabled: true, maxBuyPrice: { silicon: 1.0 }, dailyBudget: 100000 },
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.missing).toBeDefined();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
   });
 });

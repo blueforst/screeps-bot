@@ -51,6 +51,12 @@ interface MarketConfig {
   orderAllowlist: Set<string>;
   roomAllowlist: Set<string>;
   maxBatch: number;
+  purchaseEnabled: boolean;
+  maxBuyPrice: Partial<Record<ResourceConstant, number>>;
+  buyMaxBatch: number;
+  dailyBudget: number;
+  creditReserve: number;
+  buyResources: ResourceConstant[];
 }
 
 interface RoomPlanConfig {
@@ -95,6 +101,7 @@ interface FactoryControlRuntime {
     roomName: string;
     tick: number;
     purpose: "sell" | "buy";
+    credits?: number;
   }>;
 }
 
@@ -196,6 +203,12 @@ function normalizeMarketConfig(raw: unknown): MarketConfig {
       orderAllowlist: new Set(),
       roomAllowlist: new Set(),
       maxBatch: 5000,
+      purchaseEnabled: false,
+      maxBuyPrice: {},
+      buyMaxBatch: 5000,
+      dailyBudget: 0,
+      creditReserve: 10000,
+      buyResources: [],
     };
   }
   const m = raw as Record<string, unknown>;
@@ -211,6 +224,12 @@ function normalizeMarketConfig(raw: unknown): MarketConfig {
     orderAllowlist: normalizeStringSet(m.orderAllowlist),
     roomAllowlist: normalizeStringSet(m.roomAllowlist),
     maxBatch: normalizeNumber(m.maxBatch, 5000, 1, 300000),
+    purchaseEnabled: normalizeBoolean(m.purchaseEnabled, false),
+    maxBuyPrice: normalizeSellPriceMap(m.maxBuyPrice),
+    buyMaxBatch: normalizeNumber(m.buyMaxBatch, 5000, 1, 300000),
+    dailyBudget: normalizeNumber(m.dailyBudget, 0, 0, 1e9),
+    creditReserve: normalizeNumber(m.creditReserve, 10000, 0, 1e9),
+    buyResources: normalizeResourceList(m.buyResources),
   };
 }
 
@@ -325,6 +344,10 @@ const BASE_RESOURCES: Set<string> = new Set([
   "energy", "power",
   "H", "O", "U", "K", "L", "Z", "X", "G",
   "silicon", "biomass", "metal", "mist",
+]);
+
+const REGIONAL_RAW_RESOURCES: Set<string> = new Set([
+  "mist", "biomass", "metal", "silicon",
 ]);
 
 const FACTORY_CARRIER_TASK_PRODUCER = "factoryControl";
@@ -741,11 +764,13 @@ function claimOrder(
   orderId: string,
   roomName: string,
   currentTick: number,
+  purpose: "sell" | "buy" = "sell",
+  credits?: number,
 ): void {
   if (!runtime.claimedOrders) {
     runtime.claimedOrders = [];
   }
-  runtime.claimedOrders.push({ orderId, roomName, tick: currentTick, purpose: "sell" });
+  runtime.claimedOrders.push({ orderId, roomName, tick: currentTick, purpose, credits });
 }
 
 function findSafeBuyOrder(
@@ -812,6 +837,101 @@ function findSafeBuyOrder(
 
     if (!best || order.price > best.order.price) {
       best = { order, dealAmount, energyCost, netCredits };
+    }
+  }
+
+  return best;
+}
+
+function findSafeSellOrder(
+  resource: ResourceConstant,
+  demandAmount: number,
+  terminalEnergy: number,
+  energyReserve: number,
+  terminalFreeCapacity: number,
+  roomName: string,
+  marketCfg: MarketConfig,
+  runtime: FactoryControlRuntime,
+  currentTick: number,
+  availableCredits: number,
+): SafeOrderSelection | null {
+  const maxPrice = marketCfg.maxBuyPrice[resource];
+  if (maxPrice === undefined || !Number.isFinite(maxPrice)) return null;
+
+  if (marketCfg.dailyBudget <= 0) return null;
+
+  const allowlistHasEntries = marketCfg.orderAllowlist.size > 0;
+  const roomAllowlistHasEntries = marketCfg.roomAllowlist.size > 0;
+
+  const orders = Game.market.getAllOrders({ type: ORDER_SELL, resourceType: resource });
+  let best: SafeOrderSelection | null = null;
+
+  const spentThisTick = (runtime.claimedOrders ?? [])
+    .filter(c => c.tick === currentTick && c.purpose === "buy" && c.credits)
+    .reduce((sum, c) => sum + (c.credits ?? 0), 0);
+
+  const budgetRemaining = Math.max(0, marketCfg.dailyBudget - spentThisTick);
+
+  const creditAfterReserve = Math.max(0, availableCredits - marketCfg.creditReserve);
+  const effectiveCreditLimit = Math.min(creditAfterReserve, budgetRemaining);
+
+  for (const order of orders) {
+    if (!order.roomName) continue;
+    if (marketCfg.orderBlacklist.has(order.id)) continue;
+    if (allowlistHasEntries && !marketCfg.orderAllowlist.has(order.id)) continue;
+    if (roomAllowlistHasEntries && !marketCfg.roomAllowlist.has(order.roomName)) continue;
+    if (order.amount < marketCfg.minOrderAmount) continue;
+    if (isOrderClaimed(runtime, order.id, currentTick)) continue;
+    if (order.price > maxPrice) continue;
+
+    let dealAmount = Math.min(demandAmount, order.amount);
+    if (terminalFreeCapacity > 0) {
+      dealAmount = Math.min(dealAmount, terminalFreeCapacity);
+    } else {
+      continue;
+    }
+    if (marketCfg.buyMaxBatch > 0) {
+      dealAmount = Math.min(dealAmount, marketCfg.buyMaxBatch);
+    }
+    if (dealAmount <= 0) continue;
+
+    let energyCost = Game.market.calcTransactionCost(dealAmount, roomName, order.roomName);
+    const affordableEnergy = Math.max(0, terminalEnergy - energyReserve);
+    if (energyCost > affordableEnergy && dealAmount > 1) {
+      let lo = 1;
+      let hi = dealAmount;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        const midCost = Game.market.calcTransactionCost(mid, roomName, order.roomName);
+        if (midCost <= affordableEnergy) {
+          lo = mid;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      dealAmount = lo;
+      energyCost = Game.market.calcTransactionCost(dealAmount, roomName, order.roomName);
+    }
+    if (dealAmount <= 0 || energyCost > affordableEnergy) continue;
+    if (dealAmount < marketCfg.minOrderAmount) continue;
+
+    const energyCostRatio = dealAmount > 0 ? energyCost / dealAmount : Infinity;
+    if (energyCostRatio > marketCfg.maxEnergyCostRatio) continue;
+
+    let totalCost = order.price * dealAmount;
+    if (totalCost > effectiveCreditLimit && dealAmount > 1 && order.price > 0) {
+      const creditLimitedAmount = Math.floor(effectiveCreditLimit / order.price);
+      if (creditLimitedAmount >= 1) {
+        dealAmount = Math.min(dealAmount, creditLimitedAmount);
+        energyCost = Game.market.calcTransactionCost(dealAmount, roomName, order.roomName);
+        totalCost = order.price * dealAmount;
+      }
+    }
+    if (dealAmount <= 0 || dealAmount < marketCfg.minOrderAmount) continue;
+    if (totalCost > effectiveCreditLimit) continue;
+
+    if (!best || order.price < best.order.price) {
+      best = { order, dealAmount, energyCost, netCredits: totalCost };
     }
   }
 
@@ -907,6 +1027,103 @@ function attemptProductSale(
   claimOrder(runtime, selection.order.id, roomName, Game.time);
   state.sleepReason = undefined;
   state.lastError = undefined;
+}
+
+function attemptRegionalRawPurchase(
+  room: Room,
+  state: RoomRuntimeState,
+  config: FactoryControlConfig,
+  runtime: FactoryControlRuntime,
+  roomName: string,
+): void {
+  const marketCfg = config.market;
+  if (!marketCfg.purchaseEnabled) return;
+  if (!state.missing) return;
+  if (!room.terminal) return;
+  if (room.terminal.cooldown !== 0) return;
+
+  const buyAllow = marketCfg.buyResources.length > 0
+    ? new Set(marketCfg.buyResources.filter(r => REGIONAL_RAW_RESOURCES.has(r)))
+    : REGIONAL_RAW_RESOURCES;
+
+  const terminalEnergy = room.terminal.store.getUsedCapacity(RESOURCE_ENERGY) ?? 0;
+  const availableCredits = Game.market.credits ?? 0;
+
+  for (const [resource, amount] of Object.entries(state.missing)) {
+    if (!amount || amount <= 0) continue;
+    if (!buyAllow.has(resource)) continue;
+
+    const res = resource as ResourceConstant;
+    const terminalFreeCapacity = room.terminal!.store.getFreeCapacity();
+    if (terminalFreeCapacity <= 0) break;
+
+    const selection = findSafeSellOrder(
+      res,
+      amount,
+      terminalEnergy,
+      config.terminalEnergyReserve,
+      terminalFreeCapacity,
+      roomName,
+      marketCfg,
+      runtime,
+      Game.time,
+      availableCredits,
+    );
+
+    if (!selection) {
+      if (!state.lastError) {
+        state.lastError = "purchase_no_safe_order";
+      }
+      continue;
+    }
+
+    if (typeof Game.market.getOrderById === "function") {
+      const freshOrder = Game.market.getOrderById(selection.order.id);
+      if (!freshOrder) {
+        state.lastError = "purchase_order_gone";
+        continue;
+      }
+      if (
+        freshOrder.type !== ORDER_SELL ||
+        freshOrder.resourceType !== res ||
+        freshOrder.roomName !== selection.order.roomName ||
+        freshOrder.price !== selection.order.price ||
+        freshOrder.amount < selection.dealAmount
+      ) {
+        state.lastError = "purchase_order_changed";
+        continue;
+      }
+    } else if (typeof Game.market.getAllOrders === "function") {
+      const freshOrders = Game.market.getAllOrders({ type: ORDER_SELL, resourceType: res });
+      const match = freshOrders.find(o => o.id === selection.order.id);
+      if (!match) {
+        state.lastError = "purchase_order_gone";
+        continue;
+      }
+      if (
+        match.type !== ORDER_SELL ||
+        match.resourceType !== res ||
+        match.roomName !== selection.order.roomName ||
+        match.price !== selection.order.price ||
+        match.amount < selection.dealAmount
+      ) {
+        state.lastError = "purchase_order_changed";
+        continue;
+      }
+    } else {
+      state.lastError = "purchase_no_revalidation";
+      continue;
+    }
+
+    const code = Game.market.deal(selection.order.id, selection.dealAmount, roomName);
+    if (code !== OK) {
+      state.lastError = `purchase_deal_${code}`;
+      continue;
+    }
+
+    claimOrder(runtime, selection.order.id, roomName, Game.time, "buy", selection.netCredits);
+    break;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,6 +1269,10 @@ export function runFactoryControl(): void {
       continue;
     }
 
+    if (state.stage === "blocked" && state.missing) {
+      attemptRegionalRawPurchase(room, state, config, runtime, roomName);
+    }
+
     if (state.stage === "blocked") {
       replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, roomName, []);
       continue;
@@ -1078,7 +1299,9 @@ export {
   getRequiredFactoryLevel,
   isProducible,
   findSafeBuyOrder,
+  findSafeSellOrder,
   attemptProductSale,
+  attemptRegionalRawPurchase,
   type TargetEntry,
   type RoomPlanConfig,
   type FactoryControlConfig,
