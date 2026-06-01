@@ -18,6 +18,7 @@ import { getMemoryService, getTickContextService } from "@/runtime/runtimeServic
 import { getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getReservedProductionAmountExcludingHolder } from "@/runtime/resourceReservation";
 import { getActivePowerBankBoostLabIds } from "@/runtime/powerBankBoostMemory";
+import { normalizeBoolean, normalizeNumber, normalizeRoomNameList } from "@/runtime/configNormalize";
 
 type SynthesisStage = "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
 
@@ -129,27 +130,6 @@ const SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO = 1.2;
 const SYNTHESIS_CARRIER_TASK_PRODUCER = "synthesisControl";
 
 let productReagentCache: Partial<Record<ResourceConstant, [ResourceConstant, ResourceConstant]>> | undefined;
-
-function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  const normalized = Math.floor(value);
-  return Math.max(min, Math.min(max, normalized));
-}
-
-function normalizeBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function normalizeRoomNameList(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
-}
 
 function getProductReagentMap(): Partial<Record<ResourceConstant, [ResourceConstant, ResourceConstant]>> {
   if (productReagentCache) {

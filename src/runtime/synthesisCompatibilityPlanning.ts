@@ -12,6 +12,7 @@ import {
   type ResourceControlSnapshot,
 } from "@/runtime/resourceControl";
 import { getMemoryService } from "@/runtime/runtimeServices";
+import { normalizeBoolean, normalizeNumber, normalizeRoomNameList } from "@/runtime/configNormalize";
 
 type ResourceThresholdMap = Partial<Record<ResourceConstant, number>>;
 
@@ -55,22 +56,6 @@ const SYNTHESIS_BINDING_LEASE_TICKS = 200;
 const SYNTHESIS_BINDING_STICKY_BONUS = 5;
 const SYNTHESIS_BINDING_SWITCH_ADVANTAGE_RATIO = 1.2;
 
-function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  const normalized = Math.floor(value);
-  return Math.max(min, Math.min(max, normalized));
-}
-
-function normalizeBoolean(value: unknown, fallback: boolean): boolean {
-  if (typeof value !== "boolean") {
-    return fallback;
-  }
-  return value;
-}
-
 function normalizeResourceThresholdMap(
   value: unknown,
   fallback: ResourceThresholdMap,
@@ -91,14 +76,6 @@ function normalizeResourceThresholdMap(
   }
 
   return next;
-}
-
-function normalizeRoomNameList(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
 function normalizeSynthesisConfig(value: unknown): ResourceControlSynthesisConfig {

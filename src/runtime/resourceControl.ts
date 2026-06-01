@@ -11,6 +11,7 @@ import {
   type ResourceTransferTask,
 } from "@/runtime/logistics/resourceTransferTasks";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import { normalizeBoolean, normalizeNumber } from "@/runtime/configNormalize";
 
 type ResourceControlState = "survival" | "balanced" | "export";
 type ResourceThresholdMap = Partial<Record<ResourceConstant, number>>;
@@ -149,28 +150,12 @@ const DEFAULT_MARKET_CONFIG: ResourceControlMarketConfig = {
   buyResources: BASE_MINERALS,
 };
 
-function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  const normalized = Math.floor(value);
-  return Math.max(min, Math.min(max, normalized));
-}
-
 function normalizeInterval(value: unknown): number {
   return normalizeNumber(value, DEFAULT_INTERVAL, MIN_INTERVAL, MAX_INTERVAL);
 }
 
 function normalizeTaskMaxPerRun(value: unknown): number {
   return normalizeNumber(value, DEFAULT_TASK_MAX_PER_RUN, MIN_TASK_MAX_PER_RUN, MAX_TASK_MAX_PER_RUN);
-}
-
-function normalizeBoolean(value: unknown, fallback: boolean): boolean {
-  if (typeof value !== "boolean") {
-    return fallback;
-  }
-  return value;
 }
 
 function normalizeResourceThresholdMap(
@@ -204,13 +189,6 @@ function normalizeResourceList(value: unknown, fallback: ResourceConstant[]): Re
   return normalized.length > 0 ? normalized : [...fallback];
 }
 
-function normalizeRoomNameList(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
-}
 
 function normalizeRoomConfig(value: unknown): ResourceControlRoomConfig {
   const config = value && typeof value === "object" ? (value as Partial<ResourceControlRoomConfig>) : {};
