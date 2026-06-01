@@ -498,7 +498,7 @@ describe("factory level gate", () => {
     expect(state).toBeDefined();
     // composite requires level 1, skipped; utrium_bar at level 0 is planned
     expect(state!.activeTarget).toBe("utrium_bar");
-    expect(state!.stage).toBe("idle");
+    expect(state!.stage).toBe("loading");
   });
 
   it("sleeps when only target requires higher factory level", () => {
@@ -651,5 +651,293 @@ describe("runFactoryControl planning", () => {
     expect(isProducible("U" as ResourceConstant)).toBe(false);
     expect(isProducible("silicon" as ResourceConstant)).toBe(false);
     expect(isProducible("power" as ResourceConstant)).toBe(false);
+  });
+});
+
+describe("produce and unload", () => {
+  beforeEach(() => {
+    const { clearCarrierTaskBoardForTest } = require("@/runtime/carrierTaskBoard");
+    clearCarrierTaskBoardForTest();
+  });
+
+  it("publishes factory_supply tasks when recipe inputs missing from factory", () => {
+    const { room, terminal } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({}, 50000),
+      },
+    });
+    (terminal as any).store = createMockStore({ [RESOURCE_ENERGY]: 50000, battery: 0 }, 300000);
+    setupGameRooms({ W1N1: room });
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 100 }],
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.activeTarget).toBe("battery");
+    expect(state!.stage).toBe("loading");
+
+    const { listCarrierTasksByRoom } = require("@/runtime/carrierTaskBoard");
+    const tasks = listCarrierTasksByRoom("W1N1");
+    const supplyTasks = tasks.filter((t: any) => t.type === "factory_supply");
+    expect(supplyTasks.length).toBeGreaterThanOrEqual(1);
+
+    const energyTask = supplyTasks.find((t: any) => t.steps.some((s: any) => s.resource === "energy"));
+    expect(energyTask).toBeDefined();
+    const step = energyTask.steps.find((s: any) => s.resource === "energy");
+    expect(step.fromKind).toBe("storage");
+    expect(step.toKind).toBe("factory");
+    expect(step.amount).toBeGreaterThan(0);
+  });
+
+  it("calls produce when inputs present and publishes unload after product appears", () => {
+    const { room, factory, terminal } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({ [RESOURCE_ENERGY]: 600 }, 50000),
+        cooldown: 0,
+      },
+    });
+    (terminal as any).store = createMockStore({ [RESOURCE_ENERGY]: 25000, battery: 0 }, 300000);
+    setupGameRooms({ W1N1: room });
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 100 }],
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.stage).toBe("producing");
+    expect(factory.produce).toHaveBeenCalledTimes(1);
+    expect(factory.produce).toHaveBeenCalledWith("battery");
+
+    const { listCarrierTasksByRoom } = require("@/runtime/carrierTaskBoard");
+    let tasks = listCarrierTasksByRoom("W1N1");
+    let supplyTasks = tasks.filter((t: any) => t.type === "factory_supply");
+    let unloadTasks = tasks.filter((t: any) => t.type === "factory_unload");
+    expect(supplyTasks.length).toBe(0);
+    expect(unloadTasks.length).toBe(0);
+
+    (factory as any).store = createMockStore({ battery: 50, energy: 0 }, 50000);
+    (factory.produce as jest.Mock).mockClear();
+
+    Game.time = 1001;
+    runFactoryControl();
+
+    const state2 = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state2!.stage).toBe("unloading");
+
+    tasks = listCarrierTasksByRoom("W1N1");
+    unloadTasks = tasks.filter((t: any) => t.type === "factory_unload");
+    expect(unloadTasks.length).toBe(1);
+
+    const unloadStep = unloadTasks[0].steps[0];
+    expect(unloadStep.resource).toBe("battery");
+    expect(unloadStep.fromKind).toBe("factory");
+    expect(unloadStep.toKind).toBe("terminal");
+    expect(unloadStep.amount).toBe(50);
+  });
+});
+
+describe("cooldown and capacity", () => {
+  beforeEach(() => {
+    const { clearCarrierTaskBoardForTest } = require("@/runtime/carrierTaskBoard");
+    clearCarrierTaskBoardForTest();
+  });
+
+  it("skips produce during cooldown but stays in producing stage", () => {
+    const { room, factory } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({ [RESOURCE_ENERGY]: 600 }, 50000),
+        cooldown: 5,
+      },
+    });
+    setupGameRooms({ W1N1: room });
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 100 }],
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.stage).toBe("producing");
+    expect(factory.produce).not.toHaveBeenCalled();
+  });
+
+  it("blocks when factory has no free capacity for output", () => {
+    const { room, factory } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({ [RESOURCE_ENERGY]: 2999 }, 3000),
+        cooldown: 0,
+      },
+    });
+    setupGameRooms({ W1N1: room });
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 100 }],
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.stage).toBe("blocked");
+    expect(state!.sleepReason).toBe("factory_output_full");
+    expect(state!.lastError).toBe("factory_full");
+    expect(factory.produce).not.toHaveBeenCalled();
+  });
+
+  it("blocks when terminal has no capacity for output (backpressure)", () => {
+    const { room, factory, storage } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({ [RESOURCE_ENERGY]: 600 }, 50000),
+        cooldown: 0,
+      },
+    });
+    (storage as any).store = createMockStore({ [RESOURCE_ENERGY]: 1000000 }, 1000000);
+    setupGameRooms({ W1N1: room });
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 100 }],
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.stage).toBe("blocked");
+    expect(state!.sleepReason).toBe("terminal_backpressure");
+    expect(factory.produce).not.toHaveBeenCalled();
+  });
+
+  it("blocks unloading when terminal and storage have no capacity for product", () => {
+    const { room, storage } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({ battery: 50 }, 50000),
+        cooldown: 0,
+      },
+    });
+    (storage as any).store = createMockStore({ [RESOURCE_ENERGY]: 1000000 }, 1000000);
+    setupGameRooms({ W1N1: room });
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 100 }],
+    });
+
+    runFactoryControl();
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state).toBeDefined();
+    expect(state!.stage).toBe("blocked");
+    expect(state!.sleepReason).toBe("unload_target_full");
+
+    const { listCarrierTasksByRoom } = require("@/runtime/carrierTaskBoard");
+    const tasks = listCarrierTasksByRoom("W1N1");
+    expect(tasks.length).toBe(0);
+  });
+
+  it("replaces supply tasks when active target changes", () => {
+    const { room, terminal } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000, U: 2000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({}, 50000),
+      },
+    });
+    (terminal as any).store = createMockStore({ [RESOURCE_ENERGY]: 25000, battery: 0 }, 300000);
+    setupGameRooms({ W1N1: room });
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 100 }],
+    });
+
+    runFactoryControl();
+
+    const { listCarrierTasksByRoom } = require("@/runtime/carrierTaskBoard");
+    let tasks = listCarrierTasksByRoom("W1N1");
+    let supplyTasks = tasks.filter((t: any) => t.type === "factory_supply");
+    expect(supplyTasks.length).toBeGreaterThanOrEqual(1);
+    const hasEnergyStep = supplyTasks.some((t: any) =>
+      t.steps.some((s: any) => s.resource === "energy"),
+    );
+    expect(hasEnergyStep).toBe(true);
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "utrium_bar", targetAmount: 100 }],
+    });
+
+    Game.time = 1001;
+    runFactoryControl();
+
+    tasks = listCarrierTasksByRoom("W1N1");
+    supplyTasks = tasks.filter((t: any) => t.type === "factory_supply");
+    const hasUStep = supplyTasks.some((t: any) =>
+      t.steps.some((s: any) => s.resource === "U"),
+    );
+    expect(hasUStep).toBe(true);
+  });
+
+  it("clears carrier tasks when room sleeps", () => {
+    const { room, terminal } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({}, 50000),
+      },
+    });
+    (terminal as any).store = createMockStore({ [RESOURCE_ENERGY]: 25000, battery: 0 }, 300000);
+    setupGameRooms({ W1N1: room });
+
+    setConfig({
+      enabled: true,
+      targets: [{ resource: "battery", targetAmount: 100 }],
+    });
+
+    runFactoryControl();
+
+    const { listCarrierTasksByRoom } = require("@/runtime/carrierTaskBoard");
+    let tasks = listCarrierTasksByRoom("W1N1");
+    expect(tasks.length).toBeGreaterThan(0);
+
+    setConfig({
+      enabled: true,
+      targets: [],
+    });
+
+    Game.time = 1001;
+    runFactoryControl();
+
+    tasks = listCarrierTasksByRoom("W1N1");
+    expect(tasks.length).toBe(0);
+
+    const state = Memory.runtime?.factoryControl?.rooms?.W1N1;
+    expect(state!.stage).toBe("sleeping");
+    expect(state!.sleepReason).toBe("empty_target_queue");
   });
 });

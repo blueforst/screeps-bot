@@ -1,14 +1,23 @@
 /**
- * Factory target queue planning and surplus checks.
+ * Factory target queue planning, surplus checks, and production state machine.
  *
- * This module is planning-only: it does NOT create carrier tasks, call
- * factory.produce(), or make market deals. It normalizes config, enumerates
- * eligible rooms, resolves the target queue with recursive COMMODITIES
- * decomposition, and writes deterministic runtime state.
+ * Normalizes config, enumerates eligible rooms, resolves the target queue with
+ * recursive COMMODITIES decomposition, then drives the production lifecycle:
+ * publishes factory_supply / factory_unload carrier tasks, calls
+ * factory.produce() when gated conditions are met, and tracks stage transitions.
+ * Market deals are NOT handled here.
  */
 
 import { normalizeBoolean, normalizeNumber } from "@/runtime/configNormalize";
 import { getReservedProductionAmountExcludingHolder } from "@/runtime/resourceReservation";
+import {
+  replaceCarrierTasksForProducerRoom,
+  type CarrierTaskDraft,
+} from "@/runtime/carrierTaskBoard";
+import {
+  createSingleStepDraft,
+  terminalStorageKind,
+} from "@/runtime/carrierTaskHelpers";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -247,6 +256,8 @@ const BASE_RESOURCES: Set<string> = new Set([
   "silicon", "biomass", "metal", "mist",
 ]);
 
+const FACTORY_CARRIER_TASK_PRODUCER = "factoryControl";
+
 function getCommodityRecipe(resource: ResourceConstant): CommodityRecipe | null {
   if (typeof COMMODITIES === "undefined") return null;
   const entry = (COMMODITIES as Record<string, CommodityRecipe>)[resource];
@@ -436,6 +447,203 @@ function getRoomState(runtime: FactoryControlRuntime, roomName: string): RoomRun
   return runtime.rooms[roomName];
 }
 
+function resolveSupplySourceStructure(
+  room: Room,
+  resource: ResourceConstant,
+): StructureTerminal | StructureStorage | null {
+  const terminalAmount = room.terminal?.store.getUsedCapacity(resource) ?? 0;
+  const storageAmount = room.storage?.store.getUsedCapacity(resource) ?? 0;
+  if (terminalAmount <= 0 && storageAmount <= 0) return null;
+  if (terminalAmount >= storageAmount && room.terminal && terminalAmount > 0) {
+    return room.terminal;
+  }
+  if (room.storage && storageAmount > 0) {
+    return room.storage;
+  }
+  return room.terminal && terminalAmount > 0 ? room.terminal : null;
+}
+
+function generateFactorySupplyDrafts(
+  room: Room,
+  factory: StructureFactory,
+  recipe: CommodityRecipe,
+  roomName: string,
+): CarrierTaskDraft[] {
+  const drafts: CarrierTaskDraft[] = [];
+  for (const [component, neededPerBatch] of Object.entries(recipe.components)) {
+    if (!neededPerBatch || neededPerBatch <= 0) continue;
+    const comp = component as ResourceConstant;
+
+    const inFactory = factory.store.getUsedCapacity(comp) ?? 0;
+    if (inFactory >= neededPerBatch) continue;
+
+    const deficit = neededPerBatch - inFactory;
+    const source = resolveSupplySourceStructure(room, comp);
+    if (!source) continue;
+
+    const sourceAmount = source.store.getUsedCapacity(comp) ?? 0;
+    if (sourceAmount <= 0) continue;
+
+    const fromKind = source.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage";
+
+    drafts.push(createSingleStepDraft({
+      taskId: `factoryControl:factory_supply:${roomName}:${comp}`,
+      type: "factory_supply",
+      priority: 100,
+      producer: FACTORY_CARRIER_TASK_PRODUCER,
+      roomName,
+      resource: comp,
+      fromKind,
+      toKind: "factory",
+      fromId: source.id,
+      toId: factory.id,
+      amount: Math.min(deficit, sourceAmount),
+    }));
+  }
+  return drafts;
+}
+
+function resolveFactoryUnloadTarget(
+  room: Room,
+  product: ResourceConstant,
+): StructureTerminal | StructureStorage | null {
+  if (room.terminal && room.terminal.store.getFreeCapacity(product) > 0) {
+    return room.terminal;
+  }
+  const isLowRisk = product === RESOURCE_ENERGY || product === RESOURCE_BATTERY;
+  if (isLowRisk && room.storage && room.storage.store.getFreeCapacity(product) > 0) {
+    return room.storage;
+  }
+  return null;
+}
+
+function generateFactoryUnloadDraft(
+  room: Room,
+  factory: StructureFactory,
+  product: ResourceConstant,
+  roomName: string,
+): CarrierTaskDraft | null {
+  const productAmount = factory.store.getUsedCapacity(product) ?? 0;
+  if (productAmount <= 0) return null;
+
+  const target = resolveFactoryUnloadTarget(room, product);
+  if (!target) return null;
+
+  const toKind = terminalStorageKind(target);
+
+  return createSingleStepDraft({
+    taskId: `factoryControl:factory_unload:${roomName}:${product}`,
+    type: "factory_unload",
+    priority: 180,
+    producer: FACTORY_CARRIER_TASK_PRODUCER,
+    roomName,
+    resource: product,
+    fromKind: "factory",
+    toKind,
+    fromId: factory.id,
+    toId: target.id,
+    amount: productAmount,
+  });
+}
+
+function executeProductionCycle(
+  room: Room,
+  factory: StructureFactory,
+  state: RoomRuntimeState,
+  config: FactoryControlConfig,
+  roomName: string,
+): void {
+  const product = state.activeTarget!;
+  const recipe = getCommodityRecipe(product);
+  if (!recipe) {
+    state.stage = "blocked";
+    state.sleepReason = "no_recipe";
+    state.lastError = "no_recipe";
+    replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, roomName, []);
+    return;
+  }
+
+  const productInFactory = factory.store.getUsedCapacity(product) ?? 0;
+  const hasProduct = productInFactory > 0;
+
+  let allInputsPresent = true;
+  for (const [comp, needed] of Object.entries(recipe.components)) {
+    if (!needed || needed <= 0) continue;
+    const inFactory = factory.store.getUsedCapacity(comp as ResourceConstant) ?? 0;
+    if (inFactory < needed) {
+      allInputsPresent = false;
+      break;
+    }
+  }
+
+  let drafts: CarrierTaskDraft[] = [];
+  const previousStage = state.stage;
+
+  if (hasProduct) {
+    const unloadDraft = generateFactoryUnloadDraft(room, factory, product, roomName);
+    if (unloadDraft) {
+      state.stage = "unloading";
+      drafts = [unloadDraft];
+    } else {
+      state.stage = "blocked";
+      state.sleepReason = "unload_target_full";
+      state.lastError = "terminal_and_storage_full";
+    }
+  } else if (allInputsPresent) {
+    if (factory.cooldown > 0) {
+      state.stage = "producing";
+    } else {
+      const factoryFree = factory.store.getFreeCapacity() ?? 0;
+      const hasOutputCapacity = factoryFree >= recipe.amount;
+      const unloadTarget = resolveFactoryUnloadTarget(room, product);
+
+      if (hasOutputCapacity && unloadTarget) {
+        state.stage = "producing";
+        const result = factory.produce(product as CommodityConstant);
+        if (result !== OK) {
+          state.lastError = `produce_${result}`;
+          if (result === ERR_NOT_ENOUGH_RESOURCES) {
+            state.stage = "loading";
+            if (!state.loadingSinceTick) {
+              state.loadingSinceTick = Game.time;
+            }
+            drafts = generateFactorySupplyDrafts(room, factory, recipe, roomName);
+          } else {
+            state.stage = "blocked";
+            state.sleepReason = `produce_error_${result}`;
+            state.sleepUntilTick = Game.time + config.sleepSettings.cooldownOnError;
+          }
+        }
+      } else {
+        state.stage = "blocked";
+        if (!hasOutputCapacity) {
+          state.sleepReason = "factory_output_full";
+          state.lastError = "factory_full";
+        } else {
+          state.sleepReason = "terminal_backpressure";
+          state.lastError = "unload_target_full";
+        }
+        state.sleepUntilTick = Game.time + config.sleepSettings.cooldownOnError;
+      }
+    }
+  } else {
+    state.stage = "loading";
+    if (!state.loadingSinceTick) {
+      state.loadingSinceTick = Game.time;
+    }
+    drafts = generateFactorySupplyDrafts(room, factory, recipe, roomName);
+  }
+
+  if (state.stage !== previousStage) {
+    state.lastTransitionAt = Game.time;
+    if (state.stage as string !== "loading" && state.stage as string !== "acquiring") {
+      state.loadingSinceTick = undefined;
+    }
+  }
+
+  replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, roomName, drafts);
+}
+
 // ---------------------------------------------------------------------------
 // Main planning function
 // ---------------------------------------------------------------------------
@@ -459,19 +667,19 @@ export function runFactoryControl(): void {
 
     const state = getRoomState(runtime, roomName);
     const holderId = factory.id as string;
+    const previousActiveTarget = state.activeTarget;
 
-    // Resolve effective config for this room
     const targetQueue = resolveTargetQueue(config, roomName);
     const resourceFloors = resolveResourceFloors(config, roomName);
     const productionCaps = resolveProductionCaps(config, roomName);
 
-    // Empty queue → idle/sleep
     if (targetQueue.length === 0) {
       state.stage = "sleeping";
       state.sleepReason = "empty_target_queue";
       state.activeTarget = undefined;
       state.missing = undefined;
       state.lastTransitionAt = Game.time;
+      replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, roomName, []);
       continue;
     }
 
@@ -539,6 +747,10 @@ export function runFactoryControl(): void {
         state.activeTarget = decomposition.productionTarget;
       }
 
+      if (state.activeTarget !== previousActiveTarget) {
+        state.loadingSinceTick = undefined;
+      }
+
       state.missing = Object.keys(decomposition.missing).length > 0
         ? decomposition.missing
         : undefined;
@@ -571,7 +783,16 @@ export function runFactoryControl(): void {
         state.sleepReason = "all_targets_skipped";
         state.sleepUntilTick = Game.time + config.sleepSettings.maxSleepTicks;
       }
+      replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, roomName, []);
+      continue;
     }
+
+    if (state.stage === "blocked") {
+      replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, roomName, []);
+      continue;
+    }
+
+    executeProductionCycle(room, factory, state, config, roomName);
   }
 }
 
