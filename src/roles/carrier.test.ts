@@ -3539,3 +3539,96 @@ describe("pending synthesis intent – phase jitter (E4N58)", () => {
     expect(switched).toBe(true);
   });
 });
+
+describe("carrierRole factory logistics", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    clearCreepAssignmentStateForTest();
+    resetRuntimeServices();
+    Game.time += 1;
+    Memory.rooms = {};
+    getEnergyStoreTarget.mockReset();
+    isDroppedResourceTarget.mockReset();
+    isDroppedResourceTarget.mockReturnValue(false);
+    getPickupTargetEnergyAmount.mockReset();
+    getPickupTargetEnergyAmount.mockReturnValue(0);
+    getReservedPickupTarget.mockReset();
+    getReservedPickupTarget.mockReturnValue(null);
+    reservePickupTarget.mockReset();
+    reservePickupTarget.mockReturnValue(false);
+    moveToTarget.mockReset();
+    getPlannedStoragePos.mockReset();
+    getPlannedStoragePos.mockReturnValue(null);
+    getProtoStorageContainer.mockReset();
+    getProtoStorageContainer.mockReturnValue(null);
+    getProtoControllerLinkContainer.mockReset();
+    getProtoControllerLinkContainer.mockReturnValue(null);
+  });
+
+  it("factory_unload: withdraws product from factory and transfers to storage", () => {
+    const room = createRoom("F1N1");
+    const storage = room.storage as StructureStorage;
+    const factory = {
+      id: "factory-unload-1",
+      structureType: STRUCTURE_FACTORY,
+      pos: { x: 20, y: 20, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_BATTERY ? 800 : 0,
+        getFreeCapacity: () => 40000,
+      },
+    } as unknown as StructureFactory;
+    let carried = 0;
+    const store = {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource === undefined) return carried;
+        return resource === RESOURCE_BATTERY ? carried : 0;
+      },
+      getFreeCapacity: () => 800 - carried,
+    };
+    const creep = {
+      ...createCreep(room),
+      store,
+      withdraw: jest.fn(() => {
+        carried = 800;
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        carried = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === factory.id) return factory;
+      if (id === storage.id) return storage;
+      if (id === (room.terminal as StructureTerminal).id) return room.terminal;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("factoryControl", room.name, [{
+      id: "factoryControl:factory_unload:F1N1:battery",
+      type: "factory_unload",
+      priority: 110,
+      steps: [{
+        id: "battery:factory-unload-1->F1N1-storage",
+        resource: RESOURCE_BATTERY as ResourceConstant,
+        fromKind: "factory",
+        toKind: "storage",
+        fromId: factory.id,
+        toId: storage.id,
+        amount: 800,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(factory, RESOURCE_BATTERY, 800);
+    expect(switched).toBe(true);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("factoryControl:factory_unload:F1N1:battery");
+
+    const done = carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(storage, RESOURCE_BATTERY);
+    expect(done).toBe(true);
+  });
+});

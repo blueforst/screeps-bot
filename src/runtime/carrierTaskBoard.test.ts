@@ -7,6 +7,7 @@ import {
   cleanupCarrierTaskBoard,
 } from "@/runtime/carrierTaskBoard";
 import type { CarrierTaskDraft, CarrierTaskStep } from "@/runtime/carrierTaskBoard";
+import { createCarrierTaskStepId, createSingleStepDraft, createCarrierTaskStep, resolveTerminalStorageTarget, terminalStorageKind } from "@/runtime/carrierTaskHelpers";
 
 function makeStep(overrides: Partial<CarrierTaskStep> = {}): CarrierTaskStep {
   return {
@@ -160,6 +161,37 @@ describe("carrierTaskBoard", () => {
     expect(getCarrierTasksByRoom("W3N3")["t3"]).toBeUndefined();
   });
 
+  it("factory_supply stores a task with toKind factory and returns it unchanged", () => {
+    const step: CarrierTaskStep = {
+      id: "battery:storage-1->factory-1",
+      resource: RESOURCE_BATTERY as ResourceConstant,
+      fromKind: "storage",
+      toKind: "factory",
+      fromId: "storage-1",
+      toId: "factory-1",
+      amount: 500,
+    };
+    const draft: CarrierTaskDraft = {
+      id: "factoryControl:factory_supply:W1N1:battery",
+      type: "factory_supply",
+      priority: 110,
+      steps: [step],
+    };
+    replaceCarrierTasksForProducerRoom("factoryControl", "W1N1", [draft]);
+
+    const tasks = getCarrierTasksByRoom("W1N1");
+    const task = tasks["factoryControl:factory_supply:W1N1:battery"];
+    expect(task).toBeDefined();
+    expect(task.type).toBe("factory_supply");
+    expect(task.producer).toBe("factoryControl");
+    expect(task.roomName).toBe("W1N1");
+    expect(task.priority).toBe(110);
+    expect(task.steps).toHaveLength(1);
+    expect(task.steps[0]).toEqual(step);
+    expect(task.steps[0].toKind).toBe("factory");
+    expect(task.steps[0].fromKind).toBe("storage");
+  });
+
   it("cleanup removes tasks in rooms not owned and stale tasks", () => {
     const d1 = makeDraft({ id: "keep:fresh" });
     Game.time = 1000;
@@ -179,5 +211,181 @@ describe("carrierTaskBoard", () => {
     expect(getCarrierTasksByRoom("W1N1")["stale:owned"]).toBeUndefined();
     // W4N4 room entry should be cleaned up entirely
     expect(getCarrierTasksByRoom("W4N4")["keep:unowned"]).toBeUndefined();
+  });
+});
+
+describe("carrierTaskHelpers", () => {
+  it("createCarrierTaskStepId is deterministic for same inputs", () => {
+    const id1 = createCarrierTaskStepId({
+      producer: "factoryControl",
+      roomName: "W1N1",
+      resource: RESOURCE_BATTERY as ResourceConstant,
+      fromId: "from-1",
+      toId: "to-1",
+    });
+    const id2 = createCarrierTaskStepId({
+      producer: "factoryControl",
+      roomName: "W1N1",
+      resource: RESOURCE_BATTERY as ResourceConstant,
+      fromId: "from-1",
+      toId: "to-1",
+    });
+    expect(id1).toBe("factoryControl:W1N1:battery:from-1->to-1");
+    expect(id1).toBe(id2);
+  });
+
+  it("createCarrierTaskStepId differs for different producer or room", () => {
+    const id1 = createCarrierTaskStepId({
+      producer: "factoryControl",
+      roomName: "W1N1",
+      resource: RESOURCE_BATTERY as ResourceConstant,
+      fromId: "from-1",
+      toId: "to-1",
+    });
+    const id2 = createCarrierTaskStepId({
+      producer: "synthesisControl",
+      roomName: "W1N1",
+      resource: RESOURCE_BATTERY as ResourceConstant,
+      fromId: "from-1",
+      toId: "to-1",
+    });
+    const id3 = createCarrierTaskStepId({
+      producer: "factoryControl",
+      roomName: "W2N2",
+      resource: RESOURCE_BATTERY as ResourceConstant,
+      fromId: "from-1",
+      toId: "to-1",
+    });
+    expect(id1).not.toBe(id2);
+    expect(id1).not.toBe(id3);
+  });
+
+  it("createCarrierTaskStep produces a valid step with deterministic id", () => {
+    const step = createCarrierTaskStep({
+      producer: "factoryControl",
+      roomName: "W1N1",
+      resource: RESOURCE_BATTERY as ResourceConstant,
+      fromKind: "storage",
+      toKind: "factory",
+      fromId: "storage-1",
+      toId: "factory-1",
+      amount: 500,
+    });
+    expect(step.id).toBe("factoryControl:W1N1:battery:storage-1->factory-1");
+    expect(step.fromKind).toBe("storage");
+    expect(step.toKind).toBe("factory");
+    expect(step.amount).toBe(500);
+  });
+
+  it("createSingleStepDraft produces a draft accepted by the board", () => {
+    clearCarrierTaskBoardForTest();
+    Game.time = 1000;
+    const draft = createSingleStepDraft({
+      taskId: "factoryControl:factory_supply:W1N1:battery",
+      type: "factory_supply",
+      priority: 110,
+      producer: "factoryControl",
+      roomName: "W1N1",
+      resource: RESOURCE_BATTERY as ResourceConstant,
+      fromKind: "storage",
+      toKind: "factory",
+      fromId: "storage-1",
+      toId: "factory-1",
+      amount: 500,
+    });
+    replaceCarrierTasksForProducerRoom("factoryControl", "W1N1", [draft]);
+
+    const tasks = getCarrierTasksByRoom("W1N1");
+    expect(tasks["factoryControl:factory_supply:W1N1:battery"]).toBeDefined();
+    expect(tasks["factoryControl:factory_supply:W1N1:battery"].steps[0].id).toBe(
+      "factoryControl:W1N1:battery:storage-1->factory-1",
+    );
+  });
+
+  it("resolveTerminalStorageTarget prefers terminal when it has capacity", () => {
+    const terminal = {
+      id: "term-1",
+      structureType: STRUCTURE_TERMINAL,
+      store: { getFreeCapacity: () => 5000 },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "stor-1",
+      structureType: STRUCTURE_STORAGE,
+      store: { getFreeCapacity: () => 5000 },
+    } as unknown as StructureStorage;
+    const room = {
+      terminal,
+      storage,
+    } as Room;
+
+    const result = resolveTerminalStorageTarget(room, RESOURCE_ENERGY, "terminal");
+    expect(result).toBe(terminal);
+  });
+
+  it("resolveTerminalStorageTarget falls back to storage when terminal is full", () => {
+    const terminal = {
+      id: "term-full",
+      structureType: STRUCTURE_TERMINAL,
+      store: { getFreeCapacity: () => 0 },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "stor-1",
+      structureType: STRUCTURE_STORAGE,
+      store: { getFreeCapacity: () => 5000 },
+    } as unknown as StructureStorage;
+    const room = {
+      terminal,
+      storage,
+    } as Room;
+
+    const result = resolveTerminalStorageTarget(room, RESOURCE_ENERGY, "terminal");
+    expect(result).toBe(storage);
+  });
+
+  it("resolveTerminalStorageTarget returns null when both are full", () => {
+    const terminal = {
+      id: "term-full",
+      structureType: STRUCTURE_TERMINAL,
+      store: { getFreeCapacity: () => 0 },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "stor-full",
+      structureType: STRUCTURE_STORAGE,
+      store: { getFreeCapacity: () => 0 },
+    } as unknown as StructureStorage;
+    const room = {
+      terminal,
+      storage,
+    } as Room;
+
+    const result = resolveTerminalStorageTarget(room, RESOURCE_ENERGY, "terminal");
+    expect(result).toBeNull();
+  });
+
+  it("resolveTerminalStorageTarget prefers storage when preferred is storage", () => {
+    const terminal = {
+      id: "term-1",
+      structureType: STRUCTURE_TERMINAL,
+      store: { getFreeCapacity: () => 5000 },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "stor-1",
+      structureType: STRUCTURE_STORAGE,
+      store: { getFreeCapacity: () => 5000 },
+    } as unknown as StructureStorage;
+    const room = {
+      terminal,
+      storage,
+    } as Room;
+
+    const result = resolveTerminalStorageTarget(room, RESOURCE_ENERGY, "storage");
+    expect(result).toBe(storage);
+  });
+
+  it("terminalStorageKind returns correct kind for terminal and storage", () => {
+    const terminal = { structureType: STRUCTURE_TERMINAL } as StructureTerminal;
+    const storage = { structureType: STRUCTURE_STORAGE } as StructureStorage;
+    expect(terminalStorageKind(terminal)).toBe("terminal");
+    expect(terminalStorageKind(storage)).toBe("storage");
   });
 });

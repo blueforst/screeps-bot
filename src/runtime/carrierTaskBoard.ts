@@ -1,10 +1,12 @@
-export type CarrierTaskType = "lab_supply" | "lab_cleanup" | "lab_product_unload" | "mineral_haul" | "terminal_feed" | "terminal_offload";
+export type CarrierTaskType = "lab_supply" | "lab_cleanup" | "lab_product_unload" | "mineral_haul" | "terminal_feed" | "terminal_offload" | "factory_supply" | "factory_unload";
+
+export type CarrierStructureKind = "lab" | "terminal" | "storage" | "container" | "factory";
 
 export interface CarrierTaskStep {
   id: string;
   resource: ResourceConstant;
-  fromKind: "lab" | "terminal" | "storage" | "container";
-  toKind: "lab" | "terminal" | "storage";
+  fromKind: CarrierStructureKind;
+  toKind: CarrierStructureKind;
   fromId: string;
   toId: string;
   amount: number;
