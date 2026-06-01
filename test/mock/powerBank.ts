@@ -187,6 +187,38 @@ export function createMockLab(overrides: Partial<MockLabConfig> = {}): Structure
 }
 
 // ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export interface MockFactoryConfig {
+  id?: string;
+  x?: number;
+  y?: number;
+  roomName?: string;
+  level?: number;
+  cooldown?: number;
+  store?: StoreDefinition;
+  produce?: jest.Mock;
+}
+
+export function createMockFactory(overrides: Partial<MockFactoryConfig> = {}): StructureFactory {
+  const x = overrides.x ?? 20;
+  const y = overrides.y ?? 20;
+  const roomName = overrides.roomName ?? "W1N1";
+
+  return {
+    id: (overrides.id ?? "factory-0") as Id<StructureFactory>,
+    pos: new MockPos(x, y, roomName) as unknown as RoomPosition,
+    room: { name: roomName } as Room,
+    structureType: STRUCTURE_FACTORY as StructureConstant,
+    level: overrides.level ?? 0,
+    cooldown: overrides.cooldown ?? 0,
+    store: overrides.store ?? createMockStore({}),
+    produce: overrides.produce ?? jest.fn((_resource: ResourceConstant) => OK),
+  } as unknown as StructureFactory;
+}
+
+// ---------------------------------------------------------------------------
 // Spawn
 // ---------------------------------------------------------------------------
 

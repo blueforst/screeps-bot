@@ -444,6 +444,56 @@ declare global {
         /** When true (default), non-T3/non-POWER surplus stays local; only T3 and POWER centralize to hub. */
         distributedStorage?: boolean;
       };
+      factoryControl?: {
+        enabled?: boolean;
+        terminalEnergyReserve?: number;
+        market?: {
+          enabled?: boolean;
+          sellResources?: ResourceConstant[];
+          minSellPrice?: Partial<Record<ResourceConstant, number>>;
+          minNetCredits?: number;
+          minOrderAmount?: number;
+          minPriceRatio?: number;
+          maxEnergyCostRatio?: number;
+          orderBlacklist?: string[];
+          orderAllowlist?: string[];
+          roomAllowlist?: string[];
+          purchaseEnabled?: boolean;
+          maxBuyPrice?: Partial<Record<ResourceConstant, number>>;
+          maxBatch?: number;
+          dailyBudget?: number;
+          creditReserve?: number;
+          buyResources?: ResourceConstant[];
+        };
+        targetQueue?: ResourceConstant[];
+        targets?: Array<{
+          resource: ResourceConstant;
+          targetAmount?: number;
+          cap?: number;
+        }>;
+        resourceFloors?: Partial<Record<ResourceConstant, number>>;
+        productionCaps?: Partial<Record<ResourceConstant, number>>;
+        sleepSettings?: {
+          cooldownOnError?: number;
+          cooldownOnMissing?: number;
+          maxSleepTicks?: number;
+        };
+        rooms?: Record<
+          string,
+          {
+            enabled?: boolean;
+            targetQueue?: ResourceConstant[];
+            targets?: Array<{
+              resource: ResourceConstant;
+              targetAmount?: number;
+              cap?: number;
+            }>;
+            resourceFloors?: Partial<Record<ResourceConstant, number>>;
+            productionCaps?: Partial<Record<ResourceConstant, number>>;
+            sleepTicks?: number;
+          }
+        >;
+      };
     };
     runtime?: {
       lastDeployTag?: string;
@@ -559,6 +609,28 @@ declare global {
             expiresAt: number;
           }
         >;
+      };
+      factoryControl?: {
+        updatedAt?: number;
+        rooms: Record<
+          string,
+          {
+            stage: "idle" | "acquiring" | "loading" | "producing" | "unloading" | "blocked" | "sleeping";
+            activeTarget?: ResourceConstant;
+            missing?: Partial<Record<ResourceConstant, number>>;
+            sleepReason?: string;
+            sleepUntilTick?: number;
+            lastError?: string;
+            lastTransitionAt: number;
+            loadingSinceTick?: number;
+          }
+        >;
+        claimedOrders?: Array<{
+          orderId: string;
+          roomName: string;
+          tick: number;
+          purpose: "sell" | "buy";
+        }>;
       };
       synthesisControl?: {
         updatedAt: number;
