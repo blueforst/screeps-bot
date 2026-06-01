@@ -9,6 +9,7 @@ import { runPortalDiscovery } from "@/runtime/portalDiscovery";
 import { registerProductionApi, runProductionMonitor } from "@/runtime/productionMonitor";
 import { runResourceControl } from "@/runtime/resourceControl";
 import { runSynthesisControl } from "@/runtime/synthesisControl";
+import { runFactoryControl } from "@/runtime/factoryControl";
 import { runHubPlanner } from "@/runtime/hubPlanner";
 import { runMineralExtraction } from "@/runtime/mineralExtraction";
 import { runExternalTelemetryExport } from "@/runtime/externalTelemetry";
@@ -59,6 +60,7 @@ function gameLoop(): void {
   cpuProfiler.measure("productionMonitor", runProductionMonitor);
   cpuProfiler.measure("hubPlanner", runHubPlanner);
   cpuProfiler.measure("synthesisControl", runSynthesisControl);
+  cpuProfiler.measure("factoryControl", runFactoryControl);
   cpuProfiler.measure("mineralExtraction", runMineralExtraction);
   cpuProfiler.measure("resourceControl", runResourceControl);
   cpuProfiler.measure("hubProgressAnalytics", runHubProgressAnalytics);
