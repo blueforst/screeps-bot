@@ -719,6 +719,81 @@ describe("spawnPlanner no-spawn safety", () => {
   });
 });
 
+describe("remoteMiningCarrier defense mode", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  it("does not queue remoteMiningCarrier when source room is in defense mode", () => {
+    const room = createRoom("W7N1");
+    const spawn = createSpawn(room);
+    const configName = "W7N1:remoteMiningCarrier:W7N0:src1";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps["carrier-rm"] = {
+      name: "carrier-rm",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "remoteMiningCarrier",
+          args: ["W7N0", "src1"],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configName);
+  });
+
+  it("queues remoteMiningCarrier when source room is not in defense mode", () => {
+    const room = createRoom("W7N2");
+    const spawn = createSpawn(room);
+    const configName = "W7N2:remoteMiningCarrier:W7N1:src2";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps["carrier-rm2"] = {
+      name: "carrier-rm2",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "remoteMiningCarrier",
+          args: ["W7N1", "src2"],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (isDefenseMode as jest.Mock).mockReturnValue(false);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(configName);
+  });
+
+  it("remoteMiningCarrier is not priority 0 (not treated as emergency carrier/miner)", () => {
+    const { readFileSync } = require("fs");
+    const { resolve } = require("path");
+    const src = readFileSync(resolve(__dirname, "spawnPlanner.ts"), "utf-8");
+
+    const priorityBlockMatch = src.match(/function getSpawnRolePriority[\s\S]*?^}/m);
+    expect(priorityBlockMatch).not.toBeNull();
+
+    const priorityBlock = priorityBlockMatch![0];
+    expect(priorityBlock).not.toContain("remoteMiningCarrier");
+
+    expect(priorityBlock).toContain('role === "carrier" || role === "remoteCarrier"');
+  });
+});
+
 describe("spawnPlanner standard managed config distribution", () => {
   beforeEach(() => {
     resetRuntimeServices();
@@ -839,5 +914,194 @@ describe("spawnPlanner standard managed config distribution", () => {
     expect(spawnA.memory.spawnList).not.toContain(configNames[0]);
     expect(spawnB.memory.spawnList.filter((q) => q === configNames[0])).toHaveLength(1);
     expect(spawnA.memory.spawnList).toContain(configNames[1]);
+  });
+});
+
+describe("remoteMiningReserver spawn planner", () => {
+  const reserverBody = [CLAIM, MOVE, CLAIM, MOVE, CLAIM, MOVE]; // 6 parts
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  function setupReserverRoom(
+    roomName: string,
+    overrides?: { reserverTtl?: number; alreadyQueued?: boolean; alreadySpawning?: boolean },
+  ): { room: Room; spawn: StructureSpawn; configName: string } {
+    const room = createRoom(roomName);
+    room.energyCapacityAvailable = 2300;
+    const spawn = createSpawn(room);
+    const configName = `${roomName}:remoteMine:W8N1:reserver:0`;
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps[`carrier-${roomName}`] = {
+      name: `carrier-${roomName}`,
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "remoteMiningReserver",
+          args: ["W8N1"],
+          roomName: room.name,
+          body: reserverBody,
+        },
+      },
+    } as Memory["data"];
+
+    if (overrides?.reserverTtl !== undefined) {
+      Game.creeps["reserver-live"] = {
+        name: "reserver-live",
+        room,
+        ticksToLive: overrides.reserverTtl,
+        memory: {
+          role: "remoteMiningReserver",
+          configName,
+        },
+      } as Creep;
+    }
+
+    if (overrides?.alreadyQueued) {
+      spawn.memory.spawnList = [configName];
+    }
+
+    if (overrides?.alreadySpawning) {
+      spawn.spawning = {
+        name: "reserver-spawning",
+        remainingTime: 5,
+        needTime: 6,
+      } as Spawning;
+      Memory.creeps = Memory.creeps || {};
+      Memory.creeps["reserver-spawning"] = {
+        configName,
+      } as any;
+    }
+
+    return { room, spawn, configName };
+  }
+
+  // ── Defense mode skip ──
+
+  it("does not queue remoteMiningReserver when source room is in defense mode", () => {
+    const { spawn, configName } = setupReserverRoom("W9N1");
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configName);
+  });
+
+  it("queues remoteMiningReserver when source room is not in defense mode", () => {
+    const { spawn, configName } = setupReserverRoom("W9N2");
+    (isDefenseMode as jest.Mock).mockReturnValue(false);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(configName);
+  });
+
+  // ── Priority ──
+
+  it("remoteMiningReserver has priority 1 (same tier as colonizerHarvester, not priority 0)", () => {
+    const { readFileSync } = require("fs");
+    const { resolve } = require("path");
+    const src = readFileSync(resolve(__dirname, "spawnPlanner.ts"), "utf-8");
+
+    const priorityBlockMatch = src.match(/function getSpawnRolePriority[\s\S]*?^}/m);
+    expect(priorityBlockMatch).not.toBeNull();
+
+    const priorityBlock = priorityBlockMatch![0];
+
+    // Must be in the priority-1 tier alongside harvester/miner/colonizerHarvester
+    const p1Line = priorityBlock.match(/role === "harvester" \|[^]*?return 1/);
+    expect(p1Line).not.toBeNull();
+    expect(p1Line![0]).toContain("remoteMiningReserver");
+
+    // Must NOT be in priority-0 tier
+    const p0Line = priorityBlock.match(/return 0[^]*?role === "carrier"/);
+    if (p0Line) {
+      expect(p0Line[0]).not.toContain("remoteMiningReserver");
+    }
+  });
+
+  it("remoteMiningReserver is higher priority than remoteMiningCarrier (priority 3 default)", () => {
+    const { readFileSync } = require("fs");
+    const { resolve } = require("path");
+    const src = readFileSync(resolve(__dirname, "spawnPlanner.ts"), "utf-8");
+
+    const priorityBlockMatch = src.match(/function getSpawnRolePriority[\s\S]*?^}/m);
+    expect(priorityBlockMatch).not.toBeNull();
+
+    const priorityBlock = priorityBlockMatch![0];
+
+    // remoteMiningCarrier is not in any explicit tier → falls to return 3
+    expect(priorityBlock).not.toContain("remoteMiningCarrier");
+    // remoteMiningReserver is explicitly in tier 1
+    expect(priorityBlock).toContain("remoteMiningReserver");
+  });
+
+  // ── Pre-spawn: queue when no live reserver exists ──
+
+  it("queues reserver when no live reserver exists", () => {
+    const { spawn, configName } = setupReserverRoom("W9N3");
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(configName);
+  });
+
+  // ── Pre-spawn: queue when live reserver TTL is below threshold ──
+
+  it("pre-spawns reserver when live reserver TTL is below spawnTime + 100", () => {
+    // reserverBody has 6 parts → spawnTime = 6 * 3 = 18 ticks; threshold = 18 + 100 = 118
+    const { spawn, configName } = setupReserverRoom("W9N4", { reserverTtl: 100 });
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(configName);
+  });
+
+  it("does not pre-spawn reserver when live reserver TTL is above threshold", () => {
+    // threshold = 18 + 100 = 118; TTL = 200 > 118
+    const { spawn, configName } = setupReserverRoom("W9N5", { reserverTtl: 200 });
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configName);
+  });
+
+  // ── No duplicate queueing ──
+
+  it("does not queue reserver when already queued on a spawn", () => {
+    const { spawn, configName } = setupReserverRoom("W9N6", { alreadyQueued: true });
+
+    scheduleSpawnTasks();
+
+    // Should still be exactly 1 entry, not duplicated
+    const count = spawn.memory.spawnList!.filter((n) => n === configName).length;
+    expect(count).toBe(1);
+  });
+
+  it("does not queue reserver when already spawning", () => {
+    const { spawn, configName } = setupReserverRoom("W9N7", { alreadySpawning: true });
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configName);
+  });
+
+  // ── Outbound non-war role check ──
+
+  it("remoteMiningReserver is in the outbound non-war role list", () => {
+    const { readFileSync } = require("fs");
+    const { resolve } = require("path");
+    const src = readFileSync(resolve(__dirname, "spawnPlanner.ts"), "utf-8");
+
+    const outboundMatch = src.match(/function isOutboundNonWarRole[\s\S]*?^}/m);
+    expect(outboundMatch).not.toBeNull();
+    expect(outboundMatch![0]).toContain("remoteMiningReserver");
   });
 });

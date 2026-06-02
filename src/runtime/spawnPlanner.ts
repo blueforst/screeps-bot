@@ -17,12 +17,14 @@ interface SpawnPlanningContext {
   spawningConfigNames: Set<string>;
 }
 
+const RESERVER_PRESPAWN_BUFFER_TICKS = 100;
+
 function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
   if (role === "carrier" || role === "remoteCarrier") {
     return 0;
   }
 
-  if (role === "harvester" || role === "miner") {
+  if (role === "harvester" || role === "miner" || role === "colonizerHarvester" || role === "remoteMiningReserver") {
     return 1;
   }
 
@@ -307,6 +309,28 @@ function shouldPreSpawnSourceWorker(
   return soonestDying.ticksToLive <= threshold;
 }
 
+function shouldPreSpawnReserver(
+  spawn: StructureSpawn,
+  configName: string,
+  context?: SpawnPlanningContext,
+): boolean {
+  const creeps = getConfigCreeps(configName, context);
+  if (creeps.length === 0) {
+    return true;
+  }
+
+  if (creeps.length >= 2) {
+    return false;
+  }
+
+  const threshold = getSpawnTime(spawn, configName, context) + RESERVER_PRESPAWN_BUFFER_TICKS;
+  const soonestDying = creeps.reduce((minCreep, creep) =>
+    creep.ticksToLive < minCreep.ticksToLive ? creep : minCreep,
+  );
+
+  return soonestDying.ticksToLive <= threshold;
+}
+
 function shouldQueueConfig(
   spawns: StructureSpawn[],
   estimateSpawn: StructureSpawn,
@@ -348,6 +372,10 @@ function shouldQueueConfig(
     return shouldPreSpawnCarrier(estimateSpawn, configName, context);
   }
 
+  if (config.role === "remoteMiningReserver") {
+    return shouldPreSpawnReserver(estimateSpawn, configName, context);
+  }
+
   return getConfigCreeps(configName, context).length === 0;
 }
 
@@ -358,6 +386,8 @@ function isOutboundNonWarRole(role: CreepConfig["role"]): boolean {
     role === "crossShardColonizerWorker" ||
     role === "crossShardClaimer" ||
     role === "remoteCarrier" ||
+    role === "remoteMiningCarrier" ||
+    role === "remoteMiningReserver" ||
     role === "claimer" ||
     role === "scout" ||
     role === "powerBankScout" ||
