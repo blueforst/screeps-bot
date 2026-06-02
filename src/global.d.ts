@@ -1,6 +1,7 @@
 import type { LoDashStatic } from "lodash";
 import type { CreepApi, CreepConfig, RoleName, RoomType } from "@/types/system";
 import type { HubProgressSnapshot } from "@/runtime/hubProgress";
+import type { RemoteMiningTask } from "@/runtime/remoteMining";
 import type {
   SynthesisRoomCapability,
   SynthesisDispatchAssignment,
@@ -8,6 +9,7 @@ import type {
   DirectRouteDecision,
   ProgressEdge,
 } from "@/runtime/hubPlanner";
+import type { CpuMonitorMemoryV2 } from "@/runtime/cpuMonitor";
 
 declare const _: LoDashStatic;
 
@@ -377,6 +379,10 @@ declare global {
         enabled?: boolean;
         sampleInterval?: number;
         historyLimit?: number;
+        emaAlpha?: number;
+        roomRoleAggregation?: boolean;
+        heapStats?: boolean;
+        fixedActionCpuCost?: number;
       };
       synthesisControl?: {
         enabled?: boolean;
@@ -513,6 +519,17 @@ declare global {
             sleepTicks?: number;
           }
         >;
+      };
+      remoteMining?: {
+        enabled?: boolean;
+        scanInterval?: number;
+        roadInterval?: number;
+        scoutTimeout?: number;
+        maxRemoteRoomsPerSourceRoom?: number;
+        maintenanceReserveEnergy?: number;
+        maxRemoteSitesPerRun?: number;
+        remoteSafeTicksToResume?: number;
+        remoteReservationRenewAt?: number;
       };
     };
     runtime?: {
@@ -748,6 +765,9 @@ declare global {
         lastObservedRooms: string[];
         coveredRooms: string[];
       };
+      remoteMining?: {
+        lastScanAt?: number;
+      };
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
@@ -892,6 +912,7 @@ declare global {
         }
       >;
       powerBankHarvest?: Record<string, PowerBankHarvestTask>;
+      remoteMining?: Record<string, RemoteMiningTask>;
     };
     analytics?: {
       production?: {
@@ -936,6 +957,8 @@ declare global {
           untracked: number;
         };
       };
+      /** CPU Monitor v2 (canonical). Legacy moduleCpu kept during migration. */
+      cpuMonitor?: CpuMonitorMemoryV2;
       hub?: {
         updatedAt: number;
         enabled: boolean;
@@ -999,6 +1022,8 @@ declare global {
     colonizationDeathHandled?: boolean;
     scoutVisitedRooms?: string[];
     _patrol?: { patrolIndex?: number };
+    _rmcWait?: { ticks: number };
+    _rmcSelectedSource?: string;
     _move?: {
       dest?: {
         x: number;

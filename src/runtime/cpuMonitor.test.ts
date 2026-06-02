@@ -10,6 +10,11 @@ import {
 } from "@/runtime/cpuPhaseProfiler";
 import { CPU_PROFILER_MIN_HISTORY_LIMIT } from "@/runtime/cpuProfilerConfig";
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
+import {
+  normalizeCpuMonitorConfig,
+  CPU_MONITOR_DEFAULTS,
+} from "@/runtime/cpuMonitor";
+import type { CpuMonitorConfig, CpuMonitorRawConfig } from "@/runtime/cpuMonitor";
 
 /**
  * Characterization tests for CPU phase profiler contracts.
@@ -478,5 +483,219 @@ describe("config normalisation", () => {
     expect(getCpuPhaseHistory()).toHaveLength(1);
     // Defaults to 120 limit, stored in Memory.analytics
     expect(Memory.analytics!.moduleCpu!.historyLimit).toBe(120);
+  });
+});
+
+// ─── CPU Monitor v2 config normalization ──────────────────────────────────────
+
+describe("cpu monitor v2 config normalization", () => {
+  it("returns all defaults when given undefined", () => {
+    const config = normalizeCpuMonitorConfig(undefined);
+    expect(config).toEqual(CPU_MONITOR_DEFAULTS);
+  });
+
+  it("returns all defaults when given null", () => {
+    const config = normalizeCpuMonitorConfig(null);
+    expect(config).toEqual(CPU_MONITOR_DEFAULTS);
+  });
+
+  it("returns all defaults when given empty object", () => {
+    const config = normalizeCpuMonitorConfig({});
+    expect(config).toEqual({
+      ...CPU_MONITOR_DEFAULTS,
+      enabled: false,
+    });
+  });
+
+  it("preserves valid enabled=true", () => {
+    const config = normalizeCpuMonitorConfig({ enabled: true });
+    expect(config.enabled).toBe(true);
+  });
+
+  it("treats enabled=undefined as false", () => {
+    const config = normalizeCpuMonitorConfig({});
+    expect(config.enabled).toBe(false);
+  });
+
+  it("preserves valid sampleInterval", () => {
+    const config = normalizeCpuMonitorConfig({ sampleInterval: 5 });
+    expect(config.sampleInterval).toBe(5);
+  });
+
+  it("clamps sampleInterval to minimum (1)", () => {
+    const config = normalizeCpuMonitorConfig({ sampleInterval: -5 });
+    expect(config.sampleInterval).toBe(1);
+  });
+
+  it("clamps sampleInterval to maximum (100)", () => {
+    const config = normalizeCpuMonitorConfig({ sampleInterval: 999 });
+    expect(config.sampleInterval).toBe(100);
+  });
+
+  it("sanitizes string sampleInterval to default", () => {
+    const config = normalizeCpuMonitorConfig({ sampleInterval: "bad" as any });
+    expect(config.sampleInterval).toBe(10);
+  });
+
+  it("sanitizes NaN sampleInterval to default", () => {
+    const config = normalizeCpuMonitorConfig({ sampleInterval: NaN });
+    expect(config.sampleInterval).toBe(10);
+  });
+
+  it("sanitizes Infinity sampleInterval to default", () => {
+    const config = normalizeCpuMonitorConfig({ sampleInterval: Infinity });
+    expect(config.sampleInterval).toBe(10);
+  });
+
+  it("floors fractional sampleInterval", () => {
+    const config = normalizeCpuMonitorConfig({ sampleInterval: 3.7 });
+    expect(config.sampleInterval).toBe(3);
+  });
+
+  it("preserves valid historyLimit", () => {
+    const config = normalizeCpuMonitorConfig({ historyLimit: 200 });
+    expect(config.historyLimit).toBe(200);
+  });
+
+  it("clamps historyLimit to minimum (10)", () => {
+    const config = normalizeCpuMonitorConfig({ historyLimit: 2 });
+    expect(config.historyLimit).toBe(10);
+  });
+
+  it("clamps historyLimit to maximum (1000)", () => {
+    const config = normalizeCpuMonitorConfig({ historyLimit: 5000 });
+    expect(config.historyLimit).toBe(1000);
+  });
+
+  it("clamps negative historyLimit to minimum", () => {
+    const config = normalizeCpuMonitorConfig({ historyLimit: -100 });
+    expect(config.historyLimit).toBe(10);
+  });
+
+  it("sanitizes string historyLimit to default", () => {
+    const config = normalizeCpuMonitorConfig({ historyLimit: "x" as any });
+    expect(config.historyLimit).toBe(120);
+  });
+
+  it("sanitizes NaN historyLimit to default", () => {
+    const config = normalizeCpuMonitorConfig({ historyLimit: NaN });
+    expect(config.historyLimit).toBe(120);
+  });
+
+  it("sanitizes -Infinity historyLimit to default", () => {
+    const config = normalizeCpuMonitorConfig({ historyLimit: -Infinity });
+    expect(config.historyLimit).toBe(120);
+  });
+
+  it("floors fractional historyLimit", () => {
+    const config = normalizeCpuMonitorConfig({ historyLimit: 55.9 });
+    expect(config.historyLimit).toBe(55);
+  });
+
+  it("preserves valid emaAlpha", () => {
+    const config = normalizeCpuMonitorConfig({ emaAlpha: 0.3 });
+    expect(config.emaAlpha).toBe(0.3);
+  });
+
+  it("clamps emaAlpha to 1", () => {
+    const config = normalizeCpuMonitorConfig({ emaAlpha: 2.5 });
+    expect(config.emaAlpha).toBe(1);
+  });
+
+  it("sanitizes zero emaAlpha to default", () => {
+    const config = normalizeCpuMonitorConfig({ emaAlpha: 0 });
+    expect(config.emaAlpha).toBe(0.1);
+  });
+
+  it("sanitizes negative emaAlpha to default", () => {
+    const config = normalizeCpuMonitorConfig({ emaAlpha: -0.5 });
+    expect(config.emaAlpha).toBe(0.1);
+  });
+
+  it("sanitizes NaN emaAlpha to default", () => {
+    const config = normalizeCpuMonitorConfig({ emaAlpha: NaN });
+    expect(config.emaAlpha).toBe(0.1);
+  });
+
+  it("sanitizes string emaAlpha to default", () => {
+    const config = normalizeCpuMonitorConfig({ emaAlpha: "fast" as any });
+    expect(config.emaAlpha).toBe(0.1);
+  });
+
+  it("preserves roomRoleAggregation=true", () => {
+    const config = normalizeCpuMonitorConfig({ roomRoleAggregation: true });
+    expect(config.roomRoleAggregation).toBe(true);
+  });
+
+  it("defaults roomRoleAggregation to true when missing", () => {
+    const config = normalizeCpuMonitorConfig({});
+    expect(config.roomRoleAggregation).toBe(true);
+  });
+
+  it("allows roomRoleAggregation=false", () => {
+    const config = normalizeCpuMonitorConfig({ roomRoleAggregation: false });
+    expect(config.roomRoleAggregation).toBe(false);
+  });
+
+  it("preserves heapStats=true", () => {
+    const config = normalizeCpuMonitorConfig({ heapStats: true });
+    expect(config.heapStats).toBe(true);
+  });
+
+  it("defaults heapStats to true when missing", () => {
+    const config = normalizeCpuMonitorConfig({});
+    expect(config.heapStats).toBe(true);
+  });
+
+  it("allows heapStats=false", () => {
+    const config = normalizeCpuMonitorConfig({ heapStats: false });
+    expect(config.heapStats).toBe(false);
+  });
+
+  it("preserves valid fixedActionCpuCost", () => {
+    const config = normalizeCpuMonitorConfig({ fixedActionCpuCost: 0.5 });
+    expect(config.fixedActionCpuCost).toBe(0.5);
+  });
+
+  it("sanitizes negative fixedActionCpuCost to default", () => {
+    const config = normalizeCpuMonitorConfig({ fixedActionCpuCost: -1 });
+    expect(config.fixedActionCpuCost).toBe(0.2);
+  });
+
+  it("sanitizes NaN fixedActionCpuCost to default", () => {
+    const config = normalizeCpuMonitorConfig({ fixedActionCpuCost: NaN });
+    expect(config.fixedActionCpuCost).toBe(0.2);
+  });
+
+  it("sanitizes string fixedActionCpuCost to default", () => {
+    const config = normalizeCpuMonitorConfig({ fixedActionCpuCost: "free" as any });
+    expect(config.fixedActionCpuCost).toBe(0.2);
+  });
+
+  it("allows fixedActionCpuCost=0", () => {
+    const config = normalizeCpuMonitorConfig({ fixedActionCpuCost: 0 });
+    expect(config.fixedActionCpuCost).toBe(0);
+  });
+
+  it("preserves all fields from a complete valid config", () => {
+    const raw: CpuMonitorRawConfig = {
+      enabled: true,
+      sampleInterval: 5,
+      historyLimit: 200,
+      emaAlpha: 0.2,
+      roomRoleAggregation: false,
+      heapStats: false,
+      fixedActionCpuCost: 0.5,
+    };
+    const config = normalizeCpuMonitorConfig(raw);
+    expect(config).toEqual({
+      enabled: true,
+      sampleInterval: 5,
+      historyLimit: 200,
+      emaAlpha: 0.2,
+      roomRoleAggregation: false,
+      heapStats: false,
+      fixedActionCpuCost: 0.5,
+    } satisfies CpuMonitorConfig);
   });
 });
