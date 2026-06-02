@@ -1,12 +1,14 @@
 import {
-  CPU_PROFILER_DEFAULT_HISTORY_LIMIT,
-  CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL,
-  CPU_PROFILER_MAX_HISTORY_LIMIT,
-  CPU_PROFILER_MAX_SAMPLE_INTERVAL,
-  CPU_PROFILER_MIN_HISTORY_LIMIT,
-  CPU_PROFILER_MIN_SAMPLE_INTERVAL,
-} from "@/runtime/cpuProfilerConfig";
-import { getCpuPhaseHistory } from "@/runtime/cpuPhaseProfiler";
+  normalizeCpuMonitorConfig,
+  getCpuMonitorHistory,
+  CPU_MONITOR_DEFAULTS,
+} from "@/runtime/cpuMonitor";
+import type {
+  CpuMonitorSnapshotV2,
+  CpuMonitorSummaryV2,
+  CpuMonitorConfig,
+  CpuMonitorHeapSnapshot,
+} from "@/runtime/cpuMonitor";
 
 interface CpuProfilerControlResult {
   ok: true;
@@ -16,48 +18,17 @@ interface CpuProfilerControlResult {
   historyLimit: number;
 }
 
-interface CpuMonitorSnapshot {
-  tick: number;
-  shard: string;
-  totalUsed: number;
-  bucket: number;
-  limit: number;
-  tickLimit: number;
-  phases: Record<string, number>;
-  fixedActionCounts: Record<string, number>;
-  untracked: number;
-}
-
-interface CpuMonitorSummary {
-  ticks: number;
-  avgTotalUsed: number;
-  maxTotalUsed: number;
-  minBucket: number;
-  maxBucket: number;
-  avgBucket: number;
-  avgUntracked: number;
-  avgPhases: Record<string, number>;
-  avgFixedActionCounts: Record<string, number>;
-}
-
-interface CpuMonitorPhaseTotals {
-  raw: number;
-  logic: number;
-  fixed: number;
-}
-
 interface CpuMonitorResult {
   ok: true;
+  version: 2;
   enabled: boolean;
   sampleInterval: number;
   historyLimit: number;
   historySize: number;
-  latest: CpuMonitorSnapshot | null;
-  recentHistory: CpuMonitorSnapshot[];
-  summary: CpuMonitorSummary | null;
+  latest: CpuMonitorSnapshotV2 | null;
+  recentHistory: CpuMonitorSnapshotV2[];
+  summary: CpuMonitorSummaryV2 | null;
 }
-
-const CPU_FIXED_ACTION_COST = 0.2;
 
 function ensureCpuProfilerConfig(): { enabled?: boolean; sampleInterval?: number; historyLimit?: number } {
   Memory.cfg = Memory.cfg || {};
@@ -68,96 +39,65 @@ function ensureCpuProfilerConfig(): { enabled?: boolean; sampleInterval?: number
   return Memory.cfg.cpuProfiler;
 }
 
-function sanitizeCpuProfilerSampleInterval(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL;
-  }
-  const normalized = Math.floor(value);
-  return Math.max(CPU_PROFILER_MIN_SAMPLE_INTERVAL, Math.min(CPU_PROFILER_MAX_SAMPLE_INTERVAL, normalized));
-}
-
-function sanitizeCpuProfilerHistoryLimit(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return CPU_PROFILER_DEFAULT_HISTORY_LIMIT;
-  }
-  const normalized = Math.floor(value);
-  return Math.max(CPU_PROFILER_MIN_HISTORY_LIMIT, Math.min(CPU_PROFILER_MAX_HISTORY_LIMIT, normalized));
-}
-
-function resolveCpuProfilerSampleInterval(next?: number): number | string {
-  if (next === undefined) {
-    return CPU_PROFILER_DEFAULT_SAMPLE_INTERVAL;
-  }
-  if (typeof next !== "number" || !Number.isFinite(next)) {
-    return `ERR_INVALID_CPU_PROFILER_SAMPLE_INTERVAL:${String(next)}`;
-  }
-
-  const normalized = Math.floor(next);
-  if (normalized < CPU_PROFILER_MIN_SAMPLE_INTERVAL || normalized > CPU_PROFILER_MAX_SAMPLE_INTERVAL) {
-    return `ERR_CPU_PROFILER_SAMPLE_INTERVAL_OUT_OF_RANGE:${normalized}`;
-  }
-
-  return normalized;
-}
-
-function resolveCpuProfilerHistoryLimit(next?: number): number | string {
-  if (next === undefined) {
-    return CPU_PROFILER_DEFAULT_HISTORY_LIMIT;
-  }
-  if (typeof next !== "number" || !Number.isFinite(next)) {
-    return `ERR_INVALID_CPU_PROFILER_HISTORY_LIMIT:${String(next)}`;
-  }
-
-  const normalized = Math.floor(next);
-  if (normalized < CPU_PROFILER_MIN_HISTORY_LIMIT || normalized > CPU_PROFILER_MAX_HISTORY_LIMIT) {
-    return `ERR_CPU_PROFILER_HISTORY_LIMIT_OUT_OF_RANGE:${normalized}`;
-  }
-
-  return normalized;
+function getConfig(): CpuMonitorConfig {
+  return normalizeCpuMonitorConfig(Memory.cfg?.cpuProfiler);
 }
 
 export function startCpuProfiler(sampleInterval?: number, historyLimit?: number): CpuProfilerControlResult | string {
   const cfg = ensureCpuProfilerConfig();
   const previousEnabled = cfg.enabled === true;
 
-  const resolvedSampleInterval = resolveCpuProfilerSampleInterval(sampleInterval);
-  if (typeof resolvedSampleInterval === "string") {
-    return resolvedSampleInterval;
+  if (sampleInterval !== undefined) {
+    if (typeof sampleInterval !== "number" || !Number.isFinite(sampleInterval)) {
+      return `ERR_INVALID_CPU_PROFILER_SAMPLE_INTERVAL:${String(sampleInterval)}`;
+    }
+    const normalized = Math.floor(sampleInterval);
+    const config = normalizeCpuMonitorConfig({ sampleInterval: normalized });
+    if (normalized !== config.sampleInterval) {
+      return `ERR_CPU_PROFILER_SAMPLE_INTERVAL_OUT_OF_RANGE:${normalized}`;
+    }
+    cfg.sampleInterval = normalized;
   }
-  const resolvedHistoryLimit = resolveCpuProfilerHistoryLimit(historyLimit);
-  if (typeof resolvedHistoryLimit === "string") {
-    return resolvedHistoryLimit;
+
+  if (historyLimit !== undefined) {
+    if (typeof historyLimit !== "number" || !Number.isFinite(historyLimit)) {
+      return `ERR_INVALID_CPU_PROFILER_HISTORY_LIMIT:${String(historyLimit)}`;
+    }
+    const normalized = Math.floor(historyLimit);
+    const config = normalizeCpuMonitorConfig({ historyLimit: normalized });
+    if (normalized !== config.historyLimit) {
+      return `ERR_CPU_PROFILER_HISTORY_LIMIT_OUT_OF_RANGE:${normalized}`;
+    }
+    cfg.historyLimit = normalized;
   }
 
   cfg.enabled = true;
-  cfg.sampleInterval = resolvedSampleInterval;
-  cfg.historyLimit = resolvedHistoryLimit;
+  if (cfg.sampleInterval === undefined) cfg.sampleInterval = CPU_MONITOR_DEFAULTS.sampleInterval;
+  if (cfg.historyLimit === undefined) cfg.historyLimit = CPU_MONITOR_DEFAULTS.historyLimit;
 
+  const resolved = getConfig();
   return {
     ok: true,
     enabled: true,
     previousEnabled,
-    sampleInterval: resolvedSampleInterval,
-    historyLimit: resolvedHistoryLimit,
+    sampleInterval: resolved.sampleInterval,
+    historyLimit: resolved.historyLimit,
   };
 }
 
 export function stopCpuProfilerExport(): CpuProfilerControlResult {
   const cfg = ensureCpuProfilerConfig();
   const previousEnabled = cfg.enabled === true;
-  const sampleInterval = sanitizeCpuProfilerSampleInterval(cfg.sampleInterval);
-  const historyLimit = sanitizeCpuProfilerHistoryLimit(cfg.historyLimit);
 
   cfg.enabled = false;
-  cfg.sampleInterval = sampleInterval;
-  cfg.historyLimit = historyLimit;
+  const resolved = getConfig();
 
   return {
     ok: true,
     enabled: false,
     previousEnabled,
-    sampleInterval,
-    historyLimit,
+    sampleInterval: resolved.sampleInterval,
+    historyLimit: resolved.historyLimit,
   };
 }
 
@@ -169,128 +109,102 @@ function formatCpuProfilerControlResult(result: CpuProfilerControlResult | strin
   return JSON.stringify(result);
 }
 
-function cloneCpuMonitorSnapshot(snapshot: CpuMonitorSnapshot): CpuMonitorSnapshot {
-  return {
-    tick: snapshot.tick,
-    shard: snapshot.shard,
-    totalUsed: snapshot.totalUsed,
-    bucket: snapshot.bucket,
-    limit: snapshot.limit,
-    tickLimit: snapshot.tickLimit,
-    phases: { ...snapshot.phases },
-    fixedActionCounts: { ...snapshot.fixedActionCounts },
-    untracked: snapshot.untracked,
-  };
-}
-
-function buildCpuMonitorSummary(history: CpuMonitorSnapshot[]): CpuMonitorSummary | null {
-  if (history.length === 0) {
-    return null;
-  }
-
-  const avgPhases: Record<string, number> = {};
-  const avgFixedActionCounts: Record<string, number> = {};
-  let totalUsedSum = 0;
-  let bucketSum = 0;
-  let untrackedSum = 0;
-  let maxTotalUsed = Number.NEGATIVE_INFINITY;
-  let minBucket = Number.POSITIVE_INFINITY;
-  let maxBucket = Number.NEGATIVE_INFINITY;
-
-  for (const entry of history) {
-    totalUsedSum += entry.totalUsed;
-    bucketSum += entry.bucket;
-    untrackedSum += entry.untracked;
-    maxTotalUsed = Math.max(maxTotalUsed, entry.totalUsed);
-    minBucket = Math.min(minBucket, entry.bucket);
-    maxBucket = Math.max(maxBucket, entry.bucket);
-
-    for (const [phase, used] of Object.entries(entry.phases)) {
-      avgPhases[phase] = (avgPhases[phase] || 0) + used;
-    }
-
-    for (const [phase, count] of Object.entries(entry.fixedActionCounts)) {
-      avgFixedActionCounts[phase] = (avgFixedActionCounts[phase] || 0) + count;
-    }
-  }
-
-  for (const phase of Object.keys(avgPhases)) {
-    avgPhases[phase] = avgPhases[phase] / history.length;
-  }
-
-  for (const phase of Object.keys(avgFixedActionCounts)) {
-    avgFixedActionCounts[phase] = avgFixedActionCounts[phase] / history.length;
-  }
-
-  return {
-    ticks: history.length,
-    avgTotalUsed: totalUsedSum / history.length,
-    maxTotalUsed,
-    minBucket,
-    maxBucket,
-    avgBucket: bucketSum / history.length,
-    avgUntracked: untrackedSum / history.length,
-    avgPhases,
-    avgFixedActionCounts,
-  };
-}
-
 function formatCpuMonitorNumber(value: number): string {
   return Number.isInteger(value) ? `${value}` : value.toFixed(2);
 }
 
-function buildTopLevelPhaseTotals(
+function formatTopCpuPhases(
   phases: Record<string, number>,
   fixedActionCounts: Record<string, number>,
-): Array<[string, CpuMonitorPhaseTotals]> {
+  fixedActionCpuCost: number,
+  limit = 5,
+): string[] {
   const topLevelPhaseNames = new Set(Object.keys(phases).filter((phase) => !phase.includes(":")));
-
   for (const phase of Object.keys(fixedActionCounts)) {
     topLevelPhaseNames.add(phase);
   }
 
-  return [...topLevelPhaseNames].map((phase) => {
-    const raw = phases[phase] || 0;
-    const fixed = (fixedActionCounts[phase] || 0) * CPU_FIXED_ACTION_COST;
-    const logic = Math.max(0, raw - fixed);
-    return [phase, { raw, logic, fixed }];
+  const entries = [...topLevelPhaseNames]
+    .map((phase) => {
+      const raw = phases[phase] || 0;
+      const fixed = (fixedActionCounts[phase] || 0) * fixedActionCpuCost;
+      const logic = Math.max(0, raw - fixed);
+      return { name: phase, raw, logic, fixed };
+    })
+    .sort((a, b) => b.raw - a.raw)
+    .slice(0, limit);
+
+  return entries.map(({ name, raw, logic, fixed }) => {
+    if (fixed > 0) {
+      return `[cpu-monitor]   ${name}  ${raw.toFixed(2)}  (${logic.toFixed(2)} + ${fixed.toFixed(2)} fixed)`;
+    }
+    return `[cpu-monitor]   ${name}  ${logic.toFixed(2)}`;
   });
 }
 
-function formatTopCpuPhases(phases: Record<string, number>, fixedActionCounts: Record<string, number>, limit = 5): string[] {
-  const entries = buildTopLevelPhaseTotals(phases, fixedActionCounts)
-    .sort((left, right) => right[1].raw - left[1].raw)
+function formatTopRoomRoles(rooms: Record<string, { totalUsed: number; roles: Record<string, { count: number; used: number }> }>, limit = 5): string[] {
+  if (!rooms || Object.keys(rooms).length === 0) return [];
+
+  const entries = Object.entries(rooms)
+    .map(([roomName, room]) => ({
+      roomName,
+      totalUsed: room.totalUsed,
+      roles: room.roles,
+    }))
+    .sort((a, b) => b.totalUsed - a.totalUsed)
     .slice(0, limit);
 
-  return entries.map(([name, totals]) => {
-    if (totals.fixed > 0) {
-      return `[cpu-monitor]   ${name}  ${totals.raw.toFixed(2)}  (${totals.logic.toFixed(2)} + ${totals.fixed.toFixed(2)} fixed)`;
-    }
-    return `[cpu-monitor]   ${name}  ${totals.logic.toFixed(2)}`;
-  });
+  const lines: string[] = [];
+  for (const entry of entries) {
+    const roleParts = Object.entries(entry.roles)
+      .sort((a, b) => b[1].used - a[1].used)
+      .map(([role, s]) => `${role}(${s.count}x ${s.used.toFixed(2)})`)
+      .join("  ");
+    lines.push(`[cpu-monitor]   ${entry.roomName}  ${entry.totalUsed.toFixed(2)}  ${roleParts}`);
+  }
+  return lines;
+}
+
+function formatHeap(heap: CpuMonitorHeapSnapshot | null): string[] {
+  if (!heap) return [];
+  const usedMb = (heap.used_heap_size / 1048576).toFixed(1);
+  const totalMb = (heap.total_heap_size / 1048576).toFixed(1);
+  const limitMb = (heap.heap_size_limit / 1048576).toFixed(0);
+  return [`[cpu-monitor]   heap  ${usedMb}/${totalMb}MB  limit=${limitMb}MB`];
 }
 
 function formatCpuMonitorResult(result: CpuMonitorResult): string {
+  const config = getConfig();
   const lines = [
-    `[cpu-monitor] enabled=${result.enabled}  interval=${result.sampleInterval}  history=${result.historySize}/${result.historyLimit}`,
+    `[cpu-monitor] version=2  enabled=${result.enabled}  interval=${result.sampleInterval}  history=${result.historySize}/${result.historyLimit}`,
   ];
 
   if (!result.latest) {
     lines.push("[cpu-monitor] latest=none");
   } else {
+    const latest = result.latest;
+    const fixedEstimate = Object.entries(latest.fixedActionCounts || {})
+      .reduce((sum, [, count]) => sum + count * config.fixedActionCpuCost, 0);
+
     lines.push(
-      `[cpu-monitor] latest  t=${result.latest.tick}  shard=${result.latest.shard}  used=${result.latest.totalUsed.toFixed(2)}/${formatCpuMonitorNumber(result.latest.limit)}  bucket=${formatCpuMonitorNumber(result.latest.bucket)}  tickLimit=${formatCpuMonitorNumber(result.latest.tickLimit)}  untracked=${result.latest.untracked.toFixed(2)}`,
+      `[cpu-monitor] latest  t=${latest.tick}  shard=${latest.shard}  used=${latest.totalUsed.toFixed(2)}/${formatCpuMonitorNumber(latest.limit)}  bucket=${formatCpuMonitorNumber(latest.bucket)}  tickLimit=${formatCpuMonitorNumber(latest.tickLimit)}  untracked=${latest.untracked.toFixed(2)}  ema=${latest.emaTotalUsed.toFixed(2)}`,
     );
-    lines.push(...formatTopCpuPhases(result.latest.phases, result.latest.fixedActionCounts));
+    lines.push(...formatTopCpuPhases(latest.phases, latest.fixedActionCounts, config.fixedActionCpuCost));
+    if (fixedEstimate > 0) {
+      lines.push(`[cpu-monitor]   fixed-action estimate=${fixedEstimate.toFixed(2)} (cost=${config.fixedActionCpuCost})`);
+    }
+    lines.push(...formatTopRoomRoles(latest.rooms || {}));
+    lines.push(...formatHeap(latest.heap));
   }
 
   if (!result.summary) {
     lines.push("[cpu-monitor] summary=none");
   } else {
+    const summary = result.summary;
     lines.push(
-      `[cpu-monitor] avg(${result.summary.ticks})  avg=${result.summary.avgTotalUsed.toFixed(2)}  max=${result.summary.maxTotalUsed.toFixed(2)}  bucket=${formatCpuMonitorNumber(result.summary.minBucket)}-${formatCpuMonitorNumber(result.summary.maxBucket)}  untracked=${result.summary.avgUntracked.toFixed(2)}`,
+      `[cpu-monitor] avg(${summary.ticks})  avg=${summary.avgTotalUsed.toFixed(2)}  max=${summary.maxTotalUsed.toFixed(2)}  bucket=${formatCpuMonitorNumber(summary.minBucket)}-${formatCpuMonitorNumber(summary.maxBucket)}  untracked=${summary.avgUntracked.toFixed(2)}  ema=${summary.emaTotalUsed.toFixed(2)}`,
     );
-    lines.push(...formatTopCpuPhases(result.summary.avgPhases, result.summary.avgFixedActionCounts));
+    lines.push(...formatTopCpuPhases(summary.avgPhases, summary.avgFixedActionCounts, config.fixedActionCpuCost));
   }
 
   return lines.join("\n");
@@ -313,13 +227,13 @@ export function stopCpuProfilerCommand(): string {
 }
 
 export function statusCpuProfilerRaw(): CpuProfilerControlResult {
-  const cfg = ensureCpuProfilerConfig();
+  const config = getConfig();
   return {
     ok: true,
-    enabled: cfg.enabled === true,
-    previousEnabled: cfg.enabled === true,
-    sampleInterval: sanitizeCpuProfilerSampleInterval(cfg.sampleInterval),
-    historyLimit: sanitizeCpuProfilerHistoryLimit(cfg.historyLimit),
+    enabled: config.enabled,
+    previousEnabled: config.enabled,
+    sampleInterval: config.sampleInterval,
+    historyLimit: config.historyLimit,
   };
 }
 
@@ -327,21 +241,79 @@ export function statusCpuProfilerCommand(): string {
   return formatCpuProfilerControlResult(statusCpuProfilerRaw());
 }
 
+function computeSummaryFromHistory(recentHistory: CpuMonitorSnapshotV2[]): CpuMonitorSummaryV2 | null {
+  if (recentHistory.length === 0) return null;
+
+  let sumTotalUsed = 0;
+  let maxTotalUsed = -Infinity;
+  let sumBucket = 0;
+  let minBucket = Infinity;
+  let maxBucket = -Infinity;
+  let sumUntracked = 0;
+  const phaseSums: Record<string, number> = {};
+  const fixedActionSums: Record<string, number> = {};
+  let lastEma = 0;
+
+  for (const entry of recentHistory) {
+    sumTotalUsed += entry.totalUsed;
+    if (entry.totalUsed > maxTotalUsed) maxTotalUsed = entry.totalUsed;
+    sumBucket += entry.bucket;
+    if (entry.bucket < minBucket) minBucket = entry.bucket;
+    if (entry.bucket > maxBucket) maxBucket = entry.bucket;
+    sumUntracked += entry.untracked;
+
+    for (const [phase, used] of Object.entries(entry.phases)) {
+      phaseSums[phase] = (phaseSums[phase] || 0) + used;
+    }
+    for (const [action, count] of Object.entries(entry.fixedActionCounts)) {
+      fixedActionSums[action] = (fixedActionSums[action] || 0) + count;
+    }
+
+    lastEma = entry.emaTotalUsed;
+  }
+
+  const ticks = recentHistory.length;
+  const avgPhases: Record<string, number> = {};
+  for (const [phase, sum] of Object.entries(phaseSums)) {
+    avgPhases[phase] = sum / ticks;
+  }
+  const avgFixedActionCounts: Record<string, number> = {};
+  for (const [action, sum] of Object.entries(fixedActionSums)) {
+    avgFixedActionCounts[action] = sum / ticks;
+  }
+
+  return {
+    ticks,
+    avgTotalUsed: sumTotalUsed / ticks,
+    maxTotalUsed,
+    minBucket,
+    maxBucket,
+    avgBucket: sumBucket / ticks,
+    avgUntracked: sumUntracked / ticks,
+    avgPhases,
+    avgFixedActionCounts,
+    emaTotalUsed: lastEma,
+  };
+}
+
 export function cpuMonitorRaw(): CpuMonitorResult {
-  const cfg = ensureCpuProfilerConfig();
-  const latest = Memory.analytics?.moduleCpu?.latest || null;
-  const history = getCpuPhaseHistory().map((entry) => cloneCpuMonitorSnapshot(entry));
+  const config = getConfig();
+  const persisted = Memory.analytics?.cpuMonitor;
+  const latest = persisted?.latest || null;
+  const history = getCpuMonitorHistory();
   const recentHistory = history.slice(-10);
+  const summary = persisted?.summary ?? computeSummaryFromHistory(recentHistory);
 
   return {
     ok: true,
-    enabled: cfg.enabled === true,
-    sampleInterval: sanitizeCpuProfilerSampleInterval(cfg.sampleInterval),
-    historyLimit: sanitizeCpuProfilerHistoryLimit(cfg.historyLimit),
+    version: 2,
+    enabled: config.enabled,
+    sampleInterval: config.sampleInterval,
+    historyLimit: config.historyLimit,
     historySize: history.length,
-    latest: latest ? cloneCpuMonitorSnapshot(latest) : null,
+    latest,
     recentHistory,
-    summary: buildCpuMonitorSummary(recentHistory),
+    summary,
   };
 }
 

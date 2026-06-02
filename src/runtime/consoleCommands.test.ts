@@ -1,11 +1,63 @@
 import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand, hubProgressRaw, hubProgressCommand, memoryAuditRaw, memoryAudit } from "@/runtime/consoleCommands";
+import type { CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
+
+const fullHeap: CpuMonitorHeapSnapshot = {
+  total_heap_size: 2097152,
+  total_heap_size_executable: 524288,
+  total_physical_size: 2097152,
+  total_available_size: 2097152,
+  used_heap_size: 1048576,
+  heap_size_limit: 4194304,
+  malloced_memory: 65536,
+  peak_malloced_memory: 131072,
+  does_zap_garbage: 1,
+  externally_allocated_size: 0,
+};
+
+function makeV2Snapshot(overrides: Partial<{
+  tick: number;
+  totalUsed: number;
+  bucket: number;
+  phases: Record<string, number>;
+  fixedActionCounts: Record<string, number>;
+  untracked: number;
+  emaTotalUsed: number;
+  rooms: Record<string, { totalUsed: number; roles: Record<string, { count: number; used: number }> }>;
+  heap: CpuMonitorHeapSnapshot | null;
+}> & { tick: number }) {
+  return {
+    tick: overrides.tick,
+    shard: "shard3",
+    totalUsed: overrides.totalUsed ?? 15,
+    bucket: overrides.bucket ?? 9800,
+    limit: 20,
+    tickLimit: 500,
+    phases: overrides.phases ?? { creepWork: 7, towerControl: 1 },
+    fixedActionCounts: overrides.fixedActionCounts ?? { creepWork: 3 },
+    untracked: overrides.untracked ?? 1,
+    emaTotalUsed: overrides.emaTotalUsed ?? 15,
+    rooms: overrides.rooms ?? {},
+    heap: overrides.heap ?? null,
+  };
+}
 
 describe("cpuMonitor", () => {
-  it("returns empty monitor data when no cpu snapshot exists", () => {
+  beforeEach(() => {
+    Memory.cfg = {};
+    Memory.analytics = {};
+    (global as typeof global & { __cpuMonitor?: { history: any[]; emaTotalUsed: number; seeded: boolean } }).__cpuMonitor = {
+      history: [],
+      emaTotalUsed: 0,
+      seeded: false,
+    };
+  });
+
+  it("returns v2 empty monitor data with version=2 when no snapshot exists", () => {
     const result = cpuMonitorRaw();
 
     expect(result).toMatchObject({
       ok: true,
+      version: 2,
       enabled: false,
       historySize: 0,
       latest: null,
@@ -16,11 +68,11 @@ describe("cpuMonitor", () => {
 
   it("returns readable empty output from command wrapper", () => {
     expect(cpuMonitorCommand()).toBe(
-      "[cpu-monitor] enabled=false  interval=10  history=0/120\n[cpu-monitor] latest=none\n[cpu-monitor] summary=none",
+      "[cpu-monitor] version=2  enabled=false  interval=10  history=0/120\n[cpu-monitor] latest=none\n[cpu-monitor] summary=none",
     );
   });
 
-  it("returns latest snapshot and recent history summary", () => {
+  it("returns latest snapshot from Memory.analytics.cpuMonitor (not moduleCpu)", () => {
     Memory.cfg = {
       cpuProfiler: {
         enabled: true,
@@ -29,109 +81,234 @@ describe("cpuMonitor", () => {
       },
     };
 
+    const latestSnapshot = makeV2Snapshot({
+      tick: 123,
+      totalUsed: 17,
+      bucket: 9500,
+      phases: {
+        creepWork: 8,
+        "creepWork:intent": 4,
+        "creepWork:decision": 2,
+        "creepWork:pathing": 1.5,
+        towerControl: 1,
+      },
+      fixedActionCounts: {
+        creepWork: 4,
+        towerControl: 1,
+      },
+      untracked: 2,
+      emaTotalUsed: 16.5,
+      rooms: {
+        W1N1: { totalUsed: 5.0, roles: { worker: { count: 2, used: 5.0 } } },
+      },
+      heap: fullHeap,
+    });
+
+    Memory.analytics = {
+      cpuMonitor: {
+        version: 2,
+        updatedAt: 123,
+        sampleInterval: 5,
+        historyLimit: 120,
+        latest: latestSnapshot,
+        summary: null,
+      },
+    } as unknown as Memory["analytics"];
+
+    (global as typeof global & { __cpuMonitor?: { history: any[]; emaTotalUsed: number; seeded: boolean } }).__cpuMonitor = {
+      history: [
+        makeV2Snapshot({ tick: 121, totalUsed: 15, bucket: 9800, phases: { creepWork: 7, towerControl: 1 }, fixedActionCounts: { creepWork: 3, towerControl: 1 }, untracked: 1, emaTotalUsed: 15 }),
+        makeV2Snapshot({ tick: 122, totalUsed: 16, bucket: 9600, phases: { creepWork: 8, towerControl: 1 }, fixedActionCounts: { creepWork: 4, towerControl: 1 }, untracked: 2, emaTotalUsed: 15.5 }),
+        makeV2Snapshot({ tick: 123, totalUsed: 17, bucket: 9500, phases: { creepWork: 9, towerControl: 1 }, fixedActionCounts: { creepWork: 5, towerControl: 1 }, untracked: 3, emaTotalUsed: 16.5 }),
+      ],
+      emaTotalUsed: 16.5,
+      seeded: true,
+    };
+
+    const result = cpuMonitorRaw();
+
+    expect(result.version).toBe(2);
+    expect(result.enabled).toBe(true);
+    expect(result.sampleInterval).toBe(5);
+    expect(result.historySize).toBe(3);
+    expect(result.latest?.tick).toBe(123);
+    expect(result.latest?.emaTotalUsed).toBe(16.5);
+    expect(result.latest?.rooms).toEqual({ W1N1: { totalUsed: 5.0, roles: { worker: { count: 2, used: 5.0 } } } });
+    expect(result.latest?.heap).toMatchObject({ used_heap_size: 1048576, total_heap_size: 2097152, heap_size_limit: 4194304 });
+    expect(result.recentHistory).toHaveLength(3);
+    expect(result.recentHistory[0].emaTotalUsed).toBe(15);
+    expect(result.recentHistory[0].rooms).toEqual({});
+    expect(result.summary).toMatchObject({
+      ticks: 3,
+      maxTotalUsed: 17,
+      minBucket: 9500,
+      maxBucket: 9800,
+      emaTotalUsed: 16.5,
+    });
+    expect(result.summary?.avgTotalUsed).toBeCloseTo(16);
+    expect(result.summary?.avgBucket).toBeCloseTo(9633.333, 2);
+    expect(result.summary?.avgUntracked).toBeCloseTo(2);
+    expect(result.summary?.avgPhases.creepWork).toBeCloseTo(8);
+    expect(result.summary?.avgFixedActionCounts.creepWork).toBeCloseTo(4);
+    expect(result.summary?.avgFixedActionCounts.towerControl).toBeCloseTo(1);
+  });
+
+  it("does not read from Memory.analytics.moduleCpu", () => {
+    Memory.cfg = { cpuProfiler: { enabled: true, sampleInterval: 5, historyLimit: 120 } };
+
+    // Seed moduleCpu but NOT cpuMonitor
     Memory.analytics = {
       moduleCpu: {
         updatedAt: 123,
         sampleInterval: 5,
         historyLimit: 120,
         latest: {
-          tick: 123,
+          tick: 999,
           shard: "shard3",
-          totalUsed: 17,
-          bucket: 9500,
+          totalUsed: 99,
+          bucket: 5000,
           limit: 20,
           tickLimit: 500,
-          phases: {
-            creepWork: 8,
-            "creepWork:intent": 4,
-            "creepWork:decision": 2,
-            "creepWork:pathing": 1.5,
-            towerControl: 1,
-          },
-          fixedActionCounts: {
-            creepWork: 4,
-            towerControl: 1,
-          },
-          untracked: 2,
+          phases: { creepWork: 50 },
+          fixedActionCounts: {},
+          untracked: 1,
         },
       },
-    } as Memory["analytics"];
+    } as unknown as Memory["analytics"];
 
     (global as typeof global & { __cpuMonitor?: { history: any[]; emaTotalUsed: number; seeded: boolean } }).__cpuMonitor = {
-      history: [
-        {
-          tick: 121,
-          shard: "shard3",
-          totalUsed: 15,
-          bucket: 9800,
-          limit: 20,
-          tickLimit: 500,
-          phases: { creepWork: 7, "creepWork:intent": 3, "creepWork:decision": 1, "creepWork:pathing": 1, towerControl: 1 },
-          fixedActionCounts: { creepWork: 3, towerControl: 1 },
-          untracked: 1,
-          emaTotalUsed: 0,
-          rooms: {},
-          heap: null,
-        },
-        {
-          tick: 122,
-          shard: "shard3",
-          totalUsed: 16,
-          bucket: 9600,
-          limit: 20,
-          tickLimit: 500,
-          phases: { creepWork: 8, "creepWork:intent": 4, "creepWork:decision": 2, "creepWork:pathing": 1.5, towerControl: 1 },
-          fixedActionCounts: { creepWork: 4, towerControl: 1 },
-          untracked: 2,
-          emaTotalUsed: 0,
-          rooms: {},
-          heap: null,
-        },
-        {
-          tick: 123,
-          shard: "shard3",
-          totalUsed: 17,
-          bucket: 9500,
-          limit: 20,
-          tickLimit: 500,
-          phases: { creepWork: 9, "creepWork:intent": 5, "creepWork:decision": 3, "creepWork:pathing": 2, towerControl: 1 },
-          fixedActionCounts: { creepWork: 5, towerControl: 1 },
-          untracked: 3,
-          emaTotalUsed: 0,
-          rooms: {},
-          heap: null,
-        },
-      ],
+      history: [],
+      emaTotalUsed: 0,
+      seeded: false,
+    };
+
+    const result = cpuMonitorRaw();
+    // latest should be null (ignoring moduleCpu), not tick 999
+    expect(result.latest).toBeNull();
+    expect(result.version).toBe(2);
+  });
+
+  it("uses persisted summary when global history is empty", () => {
+    Memory.cfg = { cpuProfiler: { enabled: true, sampleInterval: 5, historyLimit: 120 } };
+
+    const persistedSummary = {
+      ticks: 50,
+      avgTotalUsed: 14.3,
+      maxTotalUsed: 19.0,
+      minBucket: 9000,
+      maxBucket: 10000,
+      avgBucket: 9500,
+      avgUntracked: 1.5,
+      avgPhases: { creepWork: 7.0, towerControl: 0.8 },
+      avgFixedActionCounts: { creepWork: 3.5 },
+      emaTotalUsed: 14.1,
+    };
+
+    Memory.analytics = {
+      cpuMonitor: {
+        version: 2,
+        updatedAt: 500,
+        sampleInterval: 5,
+        historyLimit: 120,
+        latest: makeV2Snapshot({ tick: 500, totalUsed: 14.5, bucket: 9500, emaTotalUsed: 14.1 }),
+        summary: persistedSummary,
+      },
+    } as unknown as Memory["analytics"];
+
+    // Global history is empty (simulates code reload)
+    (global as typeof global & { __cpuMonitor?: { history: any[]; emaTotalUsed: number; seeded: boolean } }).__cpuMonitor = {
+      history: [],
       emaTotalUsed: 0,
       seeded: false,
     };
 
     const result = cpuMonitorRaw();
 
-    expect(result.enabled).toBe(true);
-    expect(result.sampleInterval).toBe(5);
-    expect(result.historySize).toBe(3);
-    expect(result.latest?.tick).toBe(123);
-    expect(result.recentHistory).toHaveLength(3);
-    expect(result.summary).toMatchObject({
-      ticks: 3,
-      maxTotalUsed: 17,
-      minBucket: 9500,
-      maxBucket: 9800,
-    });
-    expect(result.summary?.avgTotalUsed).toBeCloseTo(16);
-    expect(result.summary?.avgBucket).toBeCloseTo(9633.333, 2);
-    expect(result.summary?.avgUntracked).toBeCloseTo(2);
-    expect(result.summary?.avgPhases.creepWork).toBeCloseTo(8);
-    expect(result.summary?.avgPhases["creepWork:intent"]).toBeCloseTo(4);
-    expect(result.summary?.avgPhases["creepWork:decision"]).toBeCloseTo(2);
-    expect(result.summary?.avgPhases["creepWork:pathing"]).toBeCloseTo(1.5);
-    expect(result.latest?.fixedActionCounts.creepWork).toBe(4);
-    expect(result.summary?.avgFixedActionCounts.creepWork).toBeCloseTo(4);
-    expect(result.summary?.avgFixedActionCounts.towerControl).toBeCloseTo(1);
+    expect(result.latest?.tick).toBe(500);
+    expect(result.summary).toEqual(persistedSummary);
+    expect(result.summary?.ticks).toBe(50);
+    expect(result.summary?.emaTotalUsed).toBe(14.1);
+    expect(result.recentHistory).toHaveLength(0);
   });
 
-  it("returns readable output from command wrapper", () => {
+  it("falls back to computed summary when Memory summary is absent", () => {
+    Memory.cfg = { cpuProfiler: { enabled: true, sampleInterval: 5, historyLimit: 120 } };
+
+    // Memory has latest but no summary
+    Memory.analytics = {
+      cpuMonitor: {
+        version: 2,
+        updatedAt: 500,
+        sampleInterval: 5,
+        historyLimit: 120,
+        latest: makeV2Snapshot({ tick: 500, totalUsed: 15, bucket: 9500, emaTotalUsed: 15 }),
+        summary: null,
+      },
+    } as unknown as Memory["analytics"];
+
+    (global as typeof global & { __cpuMonitor?: { history: any[]; emaTotalUsed: number; seeded: boolean } }).__cpuMonitor = {
+      history: [
+        makeV2Snapshot({ tick: 499, totalUsed: 14, bucket: 9600, emaTotalUsed: 14.5 }),
+        makeV2Snapshot({ tick: 500, totalUsed: 16, bucket: 9500, emaTotalUsed: 15 }),
+      ],
+      emaTotalUsed: 15,
+      seeded: true,
+    };
+
+    const result = cpuMonitorRaw();
+
+    expect(result.summary).not.toBeNull();
+    expect(result.summary?.ticks).toBe(2);
+    expect(result.summary?.avgTotalUsed).toBeCloseTo(15);
+  });
+
+  it("returns readable formatted output with persisted summary and empty global history", () => {
+    Memory.cfg = { cpuProfiler: { enabled: true, sampleInterval: 5, historyLimit: 120 } };
+
+    const persistedSummary = {
+      ticks: 50,
+      avgTotalUsed: 14.3,
+      maxTotalUsed: 19.0,
+      minBucket: 9000,
+      maxBucket: 10000,
+      avgBucket: 9500,
+      avgUntracked: 1.5,
+      avgPhases: { creepWork: 7.0, towerControl: 0.8 },
+      avgFixedActionCounts: { creepWork: 3.5 },
+      emaTotalUsed: 14.1,
+    };
+
+    Memory.analytics = {
+      cpuMonitor: {
+        version: 2,
+        updatedAt: 500,
+        sampleInterval: 5,
+        historyLimit: 120,
+        latest: makeV2Snapshot({
+          tick: 500,
+          totalUsed: 14.5,
+          bucket: 9500,
+          phases: { creepWork: 7, towerControl: 1 },
+          fixedActionCounts: { creepWork: 3 },
+          untracked: 1.5,
+          emaTotalUsed: 14.1,
+        }),
+        summary: persistedSummary,
+      },
+    } as unknown as Memory["analytics"];
+
+    (global as typeof global & { __cpuMonitor?: { history: any[]; emaTotalUsed: number; seeded: boolean } }).__cpuMonitor = {
+      history: [],
+      emaTotalUsed: 0,
+      seeded: false,
+    };
+
+    const output = cpuMonitorCommand();
+    expect(output).toContain("version=2  enabled=true  interval=5  history=0/120");
+    expect(output).toContain("avg(50)  avg=14.30  max=19.00  bucket=9000-10000  untracked=1.50  ema=14.10");
+  });
+
+  it("returns readable formatted output with phases, rooms, heap, and EMA", () => {
     Memory.cfg = {
       cpuProfiler: {
         enabled: true,
@@ -140,92 +317,103 @@ describe("cpuMonitor", () => {
       },
     };
 
+    const latestSnapshot = makeV2Snapshot({
+      tick: 123,
+      totalUsed: 17,
+      bucket: 9500,
+      phases: {
+        creepWork: 8,
+        "creepWork:intent": 4,
+        "creepWork:decision": 2,
+        "creepWork:pathing": 1.5,
+        towerControl: 1,
+      },
+      fixedActionCounts: {
+        creepWork: 4,
+        towerControl: 1,
+      },
+      untracked: 2,
+      emaTotalUsed: 16.5,
+      rooms: {
+        W1N1: { totalUsed: 5.0, roles: { worker: { count: 2, used: 5.0 } } },
+      },
+      heap: fullHeap,
+    });
+
     Memory.analytics = {
-      moduleCpu: {
+      cpuMonitor: {
+        version: 2,
         updatedAt: 123,
         sampleInterval: 5,
         historyLimit: 120,
-        latest: {
-          tick: 123,
-          shard: "shard3",
-          totalUsed: 17,
-          bucket: 9500,
-          limit: 20,
-          tickLimit: 500,
-          phases: {
-            creepWork: 8,
-            "creepWork:intent": 4,
-            "creepWork:decision": 2,
-            "creepWork:pathing": 1.5,
-            towerControl: 1,
-          },
-          fixedActionCounts: {
-            creepWork: 4,
-            towerControl: 1,
-          },
-          untracked: 2,
-        },
+        latest: latestSnapshot,
+        summary: null,
       },
-    } as Memory["analytics"];
+    } as unknown as Memory["analytics"];
 
     (global as typeof global & { __cpuMonitor?: { history: any[]; emaTotalUsed: number; seeded: boolean } }).__cpuMonitor = {
       history: [
-        {
-          tick: 121,
-          shard: "shard3",
-          totalUsed: 15,
-          bucket: 9800,
-          limit: 20,
-          tickLimit: 500,
-          phases: { creepWork: 7, "creepWork:intent": 3, "creepWork:decision": 1, "creepWork:pathing": 1, towerControl: 1 },
-          fixedActionCounts: { creepWork: 3, towerControl: 1 },
-          untracked: 1,
-          emaTotalUsed: 0,
-          rooms: {},
-          heap: null,
-        },
-        {
-          tick: 122,
-          shard: "shard3",
-          totalUsed: 16,
-          bucket: 9600,
-          limit: 20,
-          tickLimit: 500,
-          phases: { creepWork: 8, "creepWork:intent": 4, "creepWork:decision": 2, "creepWork:pathing": 1.5, towerControl: 1 },
-          fixedActionCounts: { creepWork: 4, towerControl: 1 },
-          untracked: 2,
-          emaTotalUsed: 0,
-          rooms: {},
-          heap: null,
-        },
-        {
-          tick: 123,
-          shard: "shard3",
-          totalUsed: 17,
-          bucket: 9500,
-          limit: 20,
-          tickLimit: 500,
-          phases: { creepWork: 9, "creepWork:intent": 5, "creepWork:decision": 3, "creepWork:pathing": 2, towerControl: 1 },
-          fixedActionCounts: { creepWork: 5, towerControl: 1 },
-          untracked: 3,
-          emaTotalUsed: 0,
-          rooms: {},
-          heap: null,
-        },
+        makeV2Snapshot({ tick: 121, totalUsed: 15, bucket: 9800, phases: { creepWork: 7, towerControl: 1 }, fixedActionCounts: { creepWork: 3, towerControl: 1 }, untracked: 1, emaTotalUsed: 15 }),
+        makeV2Snapshot({ tick: 122, totalUsed: 16, bucket: 9600, phases: { creepWork: 8, towerControl: 1 }, fixedActionCounts: { creepWork: 4, towerControl: 1 }, untracked: 2, emaTotalUsed: 15.5 }),
+        makeV2Snapshot({ tick: 123, totalUsed: 17, bucket: 9500, phases: { creepWork: 9, towerControl: 1 }, fixedActionCounts: { creepWork: 5, towerControl: 1 }, untracked: 3, emaTotalUsed: 16.5 }),
       ],
-      emaTotalUsed: 0,
-      seeded: false,
+      emaTotalUsed: 16.5,
+      seeded: true,
     };
 
-    expect(cpuMonitorCommand()).toBe(
-      "[cpu-monitor] enabled=true  interval=5  history=3/120\n" +
-      "[cpu-monitor] latest  t=123  shard=shard3  used=17.00/20  bucket=9500  tickLimit=500  untracked=2.00\n" +
-      "[cpu-monitor]   creepWork  8.00  (7.20 + 0.80 fixed)\n" +
-      "[cpu-monitor]   towerControl  1.00  (0.80 + 0.20 fixed)\n" +
-      "[cpu-monitor] avg(3)  avg=16.00  max=17.00  bucket=9500-9800  untracked=2.00\n" +
-      "[cpu-monitor]   creepWork  8.00  (7.20 + 0.80 fixed)\n" +
-      "[cpu-monitor]   towerControl  1.00  (0.80 + 0.20 fixed)",
-    );
+    const output = cpuMonitorCommand();
+
+    expect(output).toContain("version=2  enabled=true  interval=5  history=3/120");
+    expect(output).toContain("latest  t=123  shard=shard3  used=17.00/20  bucket=9500  tickLimit=500  untracked=2.00  ema=16.50");
+    // Top phases
+    expect(output).toContain("creepWork  8.00  (7.20 + 0.80 fixed)");
+    expect(output).toContain("towerControl  1.00  (0.80 + 0.20 fixed)");
+    // Fixed-action estimate
+    expect(output).toContain("fixed-action estimate=1.00 (cost=0.2)");
+    // Top room/role
+    expect(output).toContain("W1N1  5.00  worker(2x 5.00)");
+    // Heap
+    expect(output).toContain("heap  1.0/2.0MB  limit=4MB");
+    // Summary with EMA
+    expect(output).toContain("avg(3)  avg=16.00  max=17.00  bucket=9500-9800  untracked=2.00  ema=16.50");
+  });
+
+  it("handles empty rooms and heap gracefully in formatted output", () => {
+    Memory.cfg = { cpuProfiler: { enabled: true } };
+
+    const latestSnapshot = makeV2Snapshot({
+      tick: 50,
+      totalUsed: 10,
+      bucket: 9000,
+      phases: { init: 5 },
+      fixedActionCounts: {},
+      untracked: 5,
+      emaTotalUsed: 10,
+      rooms: {},
+      heap: null,
+    });
+
+    Memory.analytics = {
+      cpuMonitor: {
+        version: 2,
+        updatedAt: 50,
+        sampleInterval: 10,
+        historyLimit: 120,
+        latest: latestSnapshot,
+        summary: null,
+      },
+    } as unknown as Memory["analytics"];
+
+    (global as typeof global & { __cpuMonitor?: { history: any[]; emaTotalUsed: number; seeded: boolean } }).__cpuMonitor = {
+      history: [latestSnapshot],
+      emaTotalUsed: 10,
+      seeded: true,
+    };
+
+    const output = cpuMonitorCommand();
+    expect(output).not.toContain("fixed-action estimate");
+    expect(output).not.toContain("heap");
+    expect(output).not.toMatch(/\]\s+\w+\s+\d+\.\d+\s+\w+\(\d+x/);
   });
 });
 

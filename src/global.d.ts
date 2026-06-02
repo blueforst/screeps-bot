@@ -9,7 +9,7 @@ import type {
   DirectRouteDecision,
   ProgressEdge,
 } from "@/runtime/hubPlanner";
-import type { CpuMonitorMemoryV2 } from "@/runtime/cpuMonitor";
+import type { CpuMonitorMemoryV2, CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
 
 declare const _: LoDashStatic;
 
@@ -157,6 +157,7 @@ declare global {
   var cpuMonitor: () => string;
   var cpuMonitorRaw: () => {
     ok: true;
+    version: 2;
     enabled: boolean;
     sampleInterval: number;
     historyLimit: number;
@@ -172,6 +173,15 @@ declare global {
           phases: Record<string, number>;
           fixedActionCounts: Record<string, number>;
           untracked: number;
+          emaTotalUsed: number;
+          rooms: Record<
+            string,
+            {
+              totalUsed: number;
+              roles: Record<string, { count: number; used: number }>;
+            }
+          >;
+          heap: CpuMonitorHeapSnapshot | null;
         }
       | null;
     recentHistory: Array<{
@@ -182,7 +192,17 @@ declare global {
       limit: number;
       tickLimit: number;
       phases: Record<string, number>;
+      fixedActionCounts: Record<string, number>;
       untracked: number;
+      emaTotalUsed: number;
+      rooms: Record<
+        string,
+        {
+          totalUsed: number;
+          roles: Record<string, { count: number; used: number }>;
+        }
+      >;
+      heap: CpuMonitorHeapSnapshot | null;
     }>;
     summary:
       | {
@@ -194,6 +214,8 @@ declare global {
           avgBucket: number;
           avgUntracked: number;
           avgPhases: Record<string, number>;
+          avgFixedActionCounts: Record<string, number>;
+          emaTotalUsed: number;
         }
       | null;
   };
@@ -1158,6 +1180,7 @@ declare namespace NodeJS {
     cpuMonitor: () => string;
     cpuMonitorRaw: () => {
       ok: true;
+      version: 2;
       enabled: boolean;
       sampleInterval: number;
       historyLimit: number;
@@ -1173,6 +1196,15 @@ declare namespace NodeJS {
             phases: Record<string, number>;
             fixedActionCounts: Record<string, number>;
             untracked: number;
+            emaTotalUsed: number;
+            rooms: Record<
+              string,
+              {
+                totalUsed: number;
+                roles: Record<string, { count: number; used: number }>;
+              }
+            >;
+            heap: CpuMonitorHeapSnapshot | null;
           }
         | null;
       recentHistory: Array<{
@@ -1185,6 +1217,15 @@ declare namespace NodeJS {
         phases: Record<string, number>;
         fixedActionCounts: Record<string, number>;
         untracked: number;
+        emaTotalUsed: number;
+        rooms: Record<
+          string,
+          {
+            totalUsed: number;
+            roles: Record<string, { count: number; used: number }>;
+          }
+        >;
+        heap: CpuMonitorHeapSnapshot | null;
       }>;
       summary:
         | {
@@ -1195,8 +1236,9 @@ declare namespace NodeJS {
             maxBucket: number;
             avgBucket: number;
             avgUntracked: number;
-          avgPhases: Record<string, number>;
-          avgFixedActionCounts: Record<string, number>;
+            avgPhases: Record<string, number>;
+            avgFixedActionCounts: Record<string, number>;
+            emaTotalUsed: number;
           }
         | null;
     };
