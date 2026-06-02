@@ -46,6 +46,8 @@ beforeEach(() => {
   (global as any).__cpuPhaseHistory = undefined;
   // Reset cpu monitor global store
   (global as any).__cpuMonitor = undefined;
+  // Reset config so top-level profiler creation never calls getUsed with stale state
+  Memory.cfg = {};
   // Reset active profiler to noop
   setActiveTickCpuProfiler(createTickCpuProfiler());
 });
@@ -93,7 +95,7 @@ describe("noop profiler (cpuProfiler not enabled)", () => {
   it("flush is a no-op (does not throw or write)", () => {
     const profiler = createTickCpuProfiler();
     profiler.flush();
-    expect(Memory.analytics?.moduleCpu).toBeUndefined();
+    expect(Memory.analytics?.cpuMonitor).toBeUndefined();
   });
 });
 
@@ -213,13 +215,14 @@ describe("enabled profiler (cpuProfiler.enabled = true)", () => {
     expect(snap.shard).toBe("shard3");
   });
 
-  it("flush persists snapshot to Memory.analytics.moduleCpu", () => {
+  it("flush persists snapshot to Memory.analytics.cpuMonitor", () => {
     const profiler = createTickCpuProfiler();
     profiler.flush();
 
-    expect(Memory.analytics?.moduleCpu).toBeDefined();
-    expect(Memory.analytics!.moduleCpu!.latest).toBeDefined();
-    expect(Memory.analytics!.moduleCpu!.latest!.tick).toBe(100);
+    expect(Memory.analytics?.cpuMonitor).toBeDefined();
+    expect(Memory.analytics!.cpuMonitor!.latest).toBeDefined();
+    expect(Memory.analytics!.cpuMonitor!.latest!.tick).toBe(100);
+    expect(Memory.analytics!.cpuMonitor!.version).toBe(2);
   });
 
   it("history respects historyLimit and evicts oldest entries", () => {
@@ -416,6 +419,9 @@ describe("getCpuPhaseHistory", () => {
       phases: {},
       fixedActionCounts: {},
       untracked: 0,
+      emaTotalUsed: 0,
+      rooms: {},
+      heap: null,
     });
     expect(getCpuPhaseHistory()).toHaveLength(1);
   });
@@ -491,8 +497,7 @@ describe("config normalisation", () => {
     const profiler = createTickCpuProfiler();
     profiler.flush();
     expect(getCpuPhaseHistory()).toHaveLength(1);
-    // Defaults to 120 limit, stored in Memory.analytics
-    expect(Memory.analytics!.moduleCpu!.historyLimit).toBe(120);
+    expect(Memory.analytics!.cpuMonitor!.historyLimit).toBe(120);
   });
 });
 
@@ -978,5 +983,169 @@ describe("heap", () => {
     expect(heap.total_heap_size_executable).toBe(0);
     expect(heap.total_physical_size).toBe(0);
     expect(heap.total_available_size).toBe(800000);
+  });
+});
+
+// ─── Zero-overhead paths ──────────────────────────────────────────────────────
+
+describe("zero overhead", () => {
+  it("disabled profiler never calls Game.cpu.getUsed", () => {
+    Memory.cfg = {};
+    Game.cpu = {
+      getUsed: () => {
+        throw new Error("getUsed called on disabled path!");
+      },
+    } as unknown as typeof Game.cpu;
+
+    const profiler = createTickCpuProfiler();
+    expect(profiler.measure("a", () => 42)).toBe(42);
+    profiler.recordFixedAction("b", 1);
+    profiler.flush();
+  });
+
+  it("enabled non-sample tick never calls Game.cpu.getUsed", () => {
+    Memory.cfg = { cpuProfiler: { enabled: true, sampleInterval: 10 } };
+    Game.time = 101;
+    Game.cpu = {
+      getUsed: () => {
+        throw new Error("getUsed called on non-sample tick!");
+      },
+    } as unknown as typeof Game.cpu;
+
+    const profiler = createTickCpuProfiler();
+    expect(profiler.measure("a", () => 42)).toBe(42);
+    profiler.recordFixedAction("b", 1);
+    profiler.flush();
+  });
+});
+
+// ─── Sample tick v2 data ──────────────────────────────────────────────────────
+
+describe("sample tick v2 data", () => {
+  beforeEach(() => {
+    Memory.cfg = {
+      cpuProfiler: { enabled: true, sampleInterval: 1, historyLimit: 10 },
+    };
+    Game.time = 100;
+    Game.shard = { name: "shard3" } as Game["shard"];
+    Game.cpu = {
+      getUsed: jest.fn(deterministicGetUsed([10, 11, 13, 16])),
+      bucket: 9000,
+      limit: 20,
+      tickLimit: 500,
+    } as unknown as typeof Game.cpu;
+  });
+
+  it("writes to Memory.analytics.cpuMonitor with version 2", () => {
+    const profiler = createTickCpuProfiler();
+    profiler.flush();
+
+    expect(Memory.analytics?.cpuMonitor).toBeDefined();
+    expect(Memory.analytics!.cpuMonitor!.version).toBe(2);
+  });
+
+  it("records phase deltas", () => {
+    const getUsed = deterministicGetUsed([10, 11, 13, 16]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+    profiler.measure("phaseA", () => undefined);
+    profiler.flush();
+
+    expect(Memory.analytics!.cpuMonitor!.latest.phases.phaseA).toBeCloseTo(2, 5);
+  });
+
+  it("records fixedActionCounts", () => {
+    const profiler = createTickCpuProfiler();
+    profiler.recordFixedAction("creepWork", 5);
+    profiler.flush();
+
+    expect(Memory.analytics!.cpuMonitor!.latest.fixedActionCounts.creepWork).toBe(5);
+  });
+
+  it("latest.emaTotalUsed is finite", () => {
+    const profiler = createTickCpuProfiler();
+    profiler.flush();
+
+    expect(Number.isFinite(Memory.analytics!.cpuMonitor!.latest.emaTotalUsed)).toBe(true);
+  });
+
+  it("does not write moduleCpu as canonical output", () => {
+    const profiler = createTickCpuProfiler();
+    profiler.flush();
+
+    expect(Memory.analytics?.moduleCpu).toBeUndefined();
+  });
+});
+
+// ─── Exception path on sample tick ────────────────────────────────────────────
+
+describe("exception path on sample tick", () => {
+  beforeEach(() => {
+    Memory.cfg = {
+      cpuProfiler: { enabled: true, sampleInterval: 1, historyLimit: 10 },
+    };
+    Game.time = 100;
+    Game.shard = { name: "shard3" } as Game["shard"];
+    Game.cpu = {
+      getUsed: jest.fn(deterministicGetUsed([10, 11, 13, 15])),
+      bucket: 9000,
+      limit: 20,
+      tickLimit: 500,
+    } as unknown as typeof Game.cpu;
+  });
+
+  it("still records phase delta after callback throws", () => {
+    const profiler = createTickCpuProfiler();
+    expect(() =>
+      profiler.measure("errPhase", () => {
+        throw new Error("fail");
+      }),
+    ).toThrow("fail");
+
+    profiler.flush();
+
+    const history = getCpuMonitorHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].phases.errPhase).toBeCloseTo(2, 5);
+    expect(Memory.analytics!.cpuMonitor!.latest.phases.errPhase).toBeCloseTo(2, 5);
+  });
+});
+
+// ─── Overhead bound ───────────────────────────────────────────────────────────
+
+describe("overhead bound", () => {
+  it("deterministic 100-sample overhead <= 0.5 CPU/tick", () => {
+    Memory.cfg = { cpuProfiler: { enabled: true, sampleInterval: 1, historyLimit: 120 } };
+    Game.shard = { name: "shard3" } as Game["shard"];
+    Game.cpu = {
+      getUsed: jest.fn(),
+      bucket: 9000,
+      limit: 20,
+      tickLimit: 500,
+    } as unknown as typeof Game.cpu;
+
+    const ticks = 100;
+    const overheadPerGetUsedCall = 0.002;
+
+    for (let t = 0; t < ticks; t++) {
+      Game.time = 100 + t;
+      let cpuBase = 10.0;
+
+      (Game.cpu.getUsed as jest.Mock).mockImplementation(() => {
+        cpuBase += overheadPerGetUsedCall;
+        return cpuBase;
+      });
+
+      const profiler = createTickCpuProfiler();
+      profiler.measure("noop", () => undefined);
+      profiler.flush();
+    }
+
+    const history = getCpuMonitorHistory();
+    expect(history).toHaveLength(ticks);
+
+    const avgTotalUsed = history.reduce((sum, s) => sum + s.totalUsed, 0) / ticks;
+    expect(avgTotalUsed).toBeLessThanOrEqual(0.5);
   });
 });
