@@ -2,7 +2,7 @@ import { getCreepConfigService, getMemoryService, getTickContextService } from "
 import { isOwnedManagedRoom } from "@/runtime/roomTypes";
 import { isDefenseMode } from "@/runtime/defenseMode";
 
-export type RemoteMiningStatus = "scouting" | "active" | "suspended" | "abandoned";
+export type RemoteMiningStatus = "scouting" | "active" | "suspended" | "defending" | "abandoned";
 
 export type RemoteSuspendReason =
   | "hostile_creeps"
@@ -10,6 +10,18 @@ export type RemoteSuspendReason =
   | "hostile_owner"
   | "hostile_structures"
   | "source_keeper";
+
+export type RemoteDefenseReason = "npc_invader" | "player_aggression";
+
+export interface DamageSnapshot {
+  tick: number;
+  hits: number;
+}
+
+export interface DamageSnapshots {
+  creeps: Record<string, DamageSnapshot>;
+  containers: Record<string, DamageSnapshot>;
+}
 
 export interface RemoteMiningTask {
   sourceRoom: string;
@@ -30,6 +42,11 @@ export interface RemoteMiningTask {
     generatedAt: number;
   };
   containerPositions?: Record<string, { x: number; y: number; roomName: string }>;
+  defendingSince?: number;
+  lastDefenseThreatAt?: number;
+  defenseReason?: RemoteDefenseReason;
+  lastDefenseSafeAt?: number;
+  damageSnapshots?: DamageSnapshots;
 }
 
 export interface RemoteMiningConfig {
@@ -117,6 +134,20 @@ export function getRemoteMiningReserverConfigName(
   return `${sourceRoom}:remoteMine:${targetRoom}:reserver:0`;
 }
 
+export function getRemoteWorkerConfigName(
+  sourceRoom: string,
+  targetRoom: string,
+): string {
+  return `${sourceRoom}:remoteMine:${targetRoom}:worker:0`;
+}
+
+export function getRemoteDefenderConfigName(
+  sourceRoom: string,
+  targetRoom: string,
+): string {
+  return `${sourceRoom}:remoteMine:${targetRoom}:defender:0`;
+}
+
 function isRouteDirect(sourceRoom: string, targetRoom: string): boolean {
   const route = Game.map.findRoute(sourceRoom, targetRoom);
   if (route === ERR_NO_PATH || !Array.isArray(route)) {
@@ -128,24 +159,6 @@ function isRouteDirect(sourceRoom: string, targetRoom: string): boolean {
 function isRoomStatusNormal(roomName: string): boolean {
   return Game.map.getRoomStatus(roomName).status === "normal";
 }
-
-// WORK indicates competition, not combat danger; only combat/heal parts trigger suspension.
-const DANGEROUS_CREEP_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, HEAL];
-
-function hasDangerousHostileCreeps(room: Room): boolean {
-  const hostiles = room.find(FIND_HOSTILE_CREEPS);
-  for (const creep of hostiles) {
-    for (const part of DANGEROUS_CREEP_PARTS) {
-      if (typeof creep.getActiveBodyparts === "function") {
-        if (creep.getActiveBodyparts(part) > 0) return true;
-      } else if (creep.body && Array.isArray(creep.body)) {
-        if (creep.body.some((bp: BodyPartDefinition) => bp.type === part && bp.hits > 0)) return true;
-      }
-    }
-  }
-  return false;
-}
-
 export function getRemoteThreatReason(room: Room): RemoteSuspendReason | null {
   const controller = room.controller;
 
@@ -155,10 +168,6 @@ export function getRemoteThreatReason(room: Room): RemoteSuspendReason | null {
 
   if (controller?.reservation && controller.reservation.username !== getMyUsername()) {
     return "hostile_reservation";
-  }
-
-  if (hasDangerousHostileCreeps(room)) {
-    return "hostile_creeps";
   }
 
   const hostileStructures = room.find(FIND_HOSTILE_STRUCTURES, {
@@ -173,6 +182,215 @@ export function getRemoteThreatReason(room: Room): RemoteSuspendReason | null {
   });
   if (keeperLairs.length > 0) {
     return "source_keeper";
+  }
+
+  return null;
+}
+
+// NPC Invader combat parts include WORK (dismantle) per Screeps mechanics
+const NPC_INVADER_COMBAT_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, HEAL, WORK];
+
+function hasNpcInvaderCombatParts(creep: Creep): boolean {
+  for (const part of NPC_INVADER_COMBAT_PARTS) {
+    if (typeof creep.getActiveBodyparts === "function") {
+      if (creep.getActiveBodyparts(part) > 0) return true;
+    } else if (creep.body && Array.isArray(creep.body)) {
+      if (creep.body.some((bp: BodyPartDefinition) => bp.type === part && bp.hits > 0)) return true;
+    }
+  }
+  return false;
+}
+
+function hasNpcInvaderCreep(room: Room): boolean {
+  const hostiles = room.find(FIND_HOSTILE_CREEPS);
+  return hostiles.some(c => (c.owner as { username: string } | undefined)?.username === "Invader" && hasNpcInvaderCombatParts(c));
+}
+
+function hasPlayerHostileCreeps(room: Room): boolean {
+  const hostiles = room.find(FIND_HOSTILE_CREEPS);
+  return hostiles.some(c => {
+    const username = (c.owner as { username: string } | undefined)?.username;
+    return username && username !== "Invader";
+  });
+}
+
+const SNAPSHOT_STALE_TICKS = 150;
+
+function snapshotCreepHits(
+  task: RemoteMiningTask,
+  creeps: Creep[],
+): void {
+  if (creeps.length === 0 && !task.damageSnapshots) return;
+  if (!task.damageSnapshots) {
+    task.damageSnapshots = { creeps: {}, containers: {} };
+  }
+  const snapshots = task.damageSnapshots;
+  const now = Game.time;
+  const validIds = new Set<string>();
+
+  for (const creep of creeps) {
+    validIds.add(creep.id);
+    const prev = snapshots.creeps[creep.id];
+    if (prev && now - prev.tick >= SNAPSHOT_STALE_TICKS) {
+      // Re-baseline stale snapshots; do not trigger player aggression from old baselines
+      snapshots.creeps[creep.id] = { tick: now, hits: creep.hits };
+    } else {
+      snapshots.creeps[creep.id] = { tick: now, hits: creep.hits };
+    }
+  }
+
+  for (const id of Object.keys(snapshots.creeps)) {
+    if (!validIds.has(id)) {
+      delete snapshots.creeps[id];
+    }
+  }
+}
+
+function hasContainersNearSources(task: RemoteMiningTask, room: Room): boolean {
+  for (const sourceId of task.sourceIds) {
+    const source = Game.getObjectById?.(sourceId as Id<Source>) ?? null;
+    if (!source) continue;
+    const containers = room.find(FIND_STRUCTURES).filter(
+      s =>
+        s.structureType === STRUCTURE_CONTAINER &&
+        Math.abs(s.pos.x - source.pos.x) <= 2 &&
+        Math.abs(s.pos.y - source.pos.y) <= 2,
+    );
+    if (containers.length > 0) return true;
+  }
+  return false;
+}
+
+function snapshotContainerHits(
+  task: RemoteMiningTask,
+  room: Room,
+): void {
+  if (!task.damageSnapshots && !hasContainersNearSources(task, room)) return;
+  if (!task.damageSnapshots) {
+    task.damageSnapshots = { creeps: {}, containers: {} };
+  }
+  const snapshots = task.damageSnapshots;
+  const now = Game.time;
+  const validIds = new Set<string>();
+
+  for (const sourceId of task.sourceIds) {
+    const source = Game.getObjectById?.(sourceId as Id<Source>) ?? null;
+    if (!source) continue;
+
+    const containers = room.find(FIND_STRUCTURES).filter(
+      s =>
+        s.structureType === STRUCTURE_CONTAINER &&
+        Math.abs(s.pos.x - source.pos.x) <= 2 &&
+        Math.abs(s.pos.y - source.pos.y) <= 2,
+    ) as StructureContainer[];
+
+    for (const container of containers) {
+      validIds.add(container.id);
+      const prev = snapshots.containers[container.id];
+      if (prev && now - prev.tick >= SNAPSHOT_STALE_TICKS) {
+        snapshots.containers[container.id] = { tick: now, hits: container.hits };
+      } else {
+        snapshots.containers[container.id] = { tick: now, hits: container.hits };
+      }
+    }
+  }
+
+  for (const id of Object.keys(snapshots.containers)) {
+    if (!validIds.has(id)) {
+      delete snapshots.containers[id];
+    }
+  }
+}
+
+function detectPlayerAggression(
+  task: RemoteMiningTask,
+  creeps: Creep[],
+  room: Room,
+): boolean {
+  if (!task.damageSnapshots) return false;
+  const snapshots = task.damageSnapshots;
+  const now = Game.time;
+
+  for (const creep of creeps) {
+    const prev = snapshots.creeps[creep.id];
+    if (!prev) continue;
+    if (now - prev.tick >= SNAPSHOT_STALE_TICKS) continue;
+    if (creep.hits < prev.hits) return true;
+  }
+
+  for (const sourceId of task.sourceIds) {
+    const source = Game.getObjectById?.(sourceId as Id<Source>) ?? null;
+    if (!source) continue;
+
+    const containers = room.find(FIND_STRUCTURES).filter(
+      s =>
+        s.structureType === STRUCTURE_CONTAINER &&
+        Math.abs(s.pos.x - source.pos.x) <= 2 &&
+        Math.abs(s.pos.y - source.pos.y) <= 2,
+    ) as StructureContainer[];
+
+    for (const container of containers) {
+      const prev = snapshots.containers[container.id];
+      if (!prev) continue;
+      if (now - prev.tick >= SNAPSHOT_STALE_TICKS) continue;
+      if (container.hits < prev.hits) {
+        const isOwnedRoom = room.controller?.my === true;
+        const decayInterval = isOwnedRoom ? CONTAINER_DECAY_TIME_OWNED : CONTAINER_DECAY_TIME;
+        const ticksSinceSnapshot = now - prev.tick;
+        const decayIntervals = Math.floor(ticksSinceSnapshot / decayInterval);
+        const expectedDecay = decayIntervals * CONTAINER_DECAY;
+        const actualLoss = prev.hits - container.hits;
+        if (actualLoss > expectedDecay) return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function getOwnRemoteCreeps(task: RemoteMiningTask): Creep[] {
+  const prefix = `${task.sourceRoom}:remoteMine:${task.targetRoom}:`;
+  const result: Creep[] = [];
+  for (const creep of Object.values(Game.creeps)) {
+    const configName = creep.memory.configName;
+    if (configName && configName.startsWith(prefix)) {
+      result.push(creep);
+    }
+  }
+  return result;
+}
+
+/**
+ * Determines whether a remote mining room requires active defense.
+ *
+ * Player aggression policy: player presence alone, regardless of body parts
+ * (ATTACK, RANGED_ATTACK, HEAL, etc.), is NEVER sufficient to trigger a state
+ * change. Only observed damage to our creeps or source containers (via hit
+ * point snapshots) constitutes player aggression. This is a deliberate design
+ * choice to avoid overreacting to passing players who are not attacking us.
+ */
+export function getActiveDefenseReason(room: Room, task: RemoteMiningTask): RemoteDefenseReason | null {
+  if (hasNpcInvaderCreep(room)) {
+    return "npc_invader";
+  }
+
+  const ownCreeps = getOwnRemoteCreeps(task);
+
+  // Player present: detect aggression BEFORE updating snapshots so the
+  // comparison uses the previous baseline. Damage snapshots are required;
+  // player presence alone does not trigger defending.
+  if (hasPlayerHostileCreeps(room)) {
+    const playerAggressive = detectPlayerAggression(task, ownCreeps, room);
+
+    snapshotCreepHits(task, ownCreeps);
+    snapshotContainerHits(task, room);
+
+    if (playerAggressive) {
+      return "player_aggression";
+    }
+  } else {
+    snapshotCreepHits(task, ownCreeps);
+    snapshotContainerHits(task, room);
   }
 
   return null;
@@ -696,6 +914,53 @@ function cleanupRemoteConfigs(
   }
 }
 
+function isRemoteAllManagedConfig(configName: string, sourceRoom: string, targetRoom: string): boolean {
+  const prefix = `${sourceRoom}:remoteMine:${targetRoom}:`;
+  if (!configName.startsWith(prefix)) return false;
+  const suffix = configName.slice(prefix.length);
+  return suffix.startsWith("harvester:") || suffix.startsWith("carrier:") || suffix.startsWith("reserver:") ||
+    suffix.startsWith("worker:") || suffix.startsWith("defender:");
+}
+
+function discoverAllStaleConfigNames(sourceRoom: string, targetRoom: string): string[] {
+  const prefix = `${sourceRoom}:remoteMine:${targetRoom}:`;
+  const creepConfigs = getCreepConfigService();
+  const allConfigs = creepConfigs.list(prefix);
+  const staleNames: string[] = [];
+  for (const configName of Object.keys(allConfigs)) {
+    const suffix = configName.slice(prefix.length);
+    if (suffix.startsWith("harvester:") || suffix.startsWith("carrier:") || suffix.startsWith("reserver:") ||
+      suffix.startsWith("worker:") || suffix.startsWith("defender:")) {
+      staleNames.push(configName);
+    }
+  }
+  return staleNames;
+}
+
+function removeAllRemotePrefixFromSpawnQueues(
+  sourceRoom: string,
+  targetRoom: string,
+): void {
+  const tickContext = getTickContextService();
+  for (const spawn of tickContext.getSpawnsByRoom(sourceRoom)) {
+    const queue = spawn.memory.spawnList;
+    if (!queue || queue.length === 0) continue;
+    spawn.memory.spawnList = queue.filter(
+      name => !isRemoteAllManagedConfig(name, sourceRoom, targetRoom),
+    );
+  }
+}
+
+function cleanupAllRemoteConfigs(
+  task: RemoteMiningTask,
+): void {
+  const staleNames = discoverAllStaleConfigNames(task.sourceRoom, task.targetRoom);
+  removeAllRemotePrefixFromSpawnQueues(task.sourceRoom, task.targetRoom);
+  for (const configName of staleNames) {
+    removeRemoteConfig(configName);
+  }
+}
+
 /** Remove carrier configs whose index exceeds task.sourceIds.length.
  *  Keeps carrier:0 through carrier:(sourceIds.length-1). Orphans configs
  *  with live creeps instead of deleting them, so existing creeps finish
@@ -807,6 +1072,86 @@ function upsertReserverConfig(task: RemoteMiningTask, config: RemoteMiningConfig
   );
 }
 
+function remoteNeedsContainerWorker(task: RemoteMiningTask): boolean {
+  if (task.status !== "active") return false;
+
+  const targetRoom = Game.rooms[task.targetRoom];
+  if (!targetRoom) return false;
+
+  for (const sourceId of task.sourceIds) {
+    const source = Game.getObjectById?.(sourceId as Id<Source>) ?? null;
+    if (!source) continue;
+
+    const containers = targetRoom.find(FIND_STRUCTURES).filter(s =>
+      s.structureType === STRUCTURE_CONTAINER &&
+      Math.abs(s.pos.x - source.pos.x) <= 2 &&
+      Math.abs(s.pos.y - source.pos.y) <= 2 &&
+      s.hits / s.hitsMax < 0.30,
+    );
+    if (containers.length > 0) return true;
+
+    const sites = targetRoom.find(FIND_CONSTRUCTION_SITES).filter(s =>
+      s.structureType === STRUCTURE_CONTAINER &&
+      (s as ConstructionSite).my &&
+      Math.abs(s.pos.x - source.pos.x) <= 2 &&
+      Math.abs(s.pos.y - source.pos.y) <= 2,
+    );
+    if (sites.length > 0) return true;
+  }
+
+  return false;
+}
+
+function upsertRemoteWorkerConfig(task: RemoteMiningTask): void {
+  const configName = getRemoteWorkerConfigName(task.sourceRoom, task.targetRoom);
+  getCreepConfigService().upsert(
+    configName,
+    "remoteWorker",
+    [task.targetRoom],
+    task.sourceRoom,
+  );
+}
+
+function removeRemoteWorkerConfig(sourceRoom: string, targetRoom: string): void {
+  const configName = getRemoteWorkerConfigName(sourceRoom, targetRoom);
+  removeRemoteConfig(configName);
+
+  const tickContext = getTickContextService();
+  for (const spawn of tickContext.getSpawnsByRoom(sourceRoom)) {
+    const queue = spawn.memory.spawnList;
+    if (!queue || queue.length === 0) continue;
+    const idx = queue.indexOf(configName);
+    if (idx >= 0) {
+      queue.splice(idx, 1);
+    }
+  }
+}
+
+function upsertRemoteDefenderConfig(task: RemoteMiningTask): void {
+  const configName = getRemoteDefenderConfigName(task.sourceRoom, task.targetRoom);
+  getCreepConfigService().upsert(
+    configName,
+    "remoteDefender",
+    [task.targetRoom],
+    task.sourceRoom,
+  );
+}
+
+function removeRemoteDefenderConfig(sourceRoom: string, targetRoom: string): void {
+  const configName = getRemoteDefenderConfigName(sourceRoom, targetRoom);
+  removeRemoteConfig(configName);
+
+  const tickContext = getTickContextService();
+  for (const spawn of tickContext.getSpawnsByRoom(sourceRoom)) {
+    const queue = spawn.memory.spawnList;
+    if (!queue || queue.length === 0) continue;
+    const idx = queue.indexOf(configName);
+    if (idx >= 0) {
+      queue.splice(idx, 1);
+    }
+  }
+}
+
 export function processRemoteConfigLifecycle(
   store: Record<string, RemoteMiningTask>,
   config: RemoteMiningConfig,
@@ -817,13 +1162,13 @@ export function processRemoteConfigLifecycle(
     }
 
     if (task.status === "abandoned") {
-      cleanupRemoteConfigs(task);
+      cleanupAllRemoteConfigs(task);
       removeScoutIfVisible(task.sourceRoom, task.targetRoom);
       continue;
     }
 
     if (task.status === "suspended") {
-      cleanupRemoteConfigs(task);
+      cleanupAllRemoteConfigs(task);
 
       let resumed = false;
       const visibleTarget = Game.rooms[task.targetRoom];
@@ -864,20 +1209,144 @@ export function processRemoteConfigLifecycle(
       }
     }
 
+    if (task.status === "defending") {
+      const visibleTarget = Game.rooms[task.targetRoom];
+
+      if (!isSourceRoomValidForRemote(task.sourceRoom)) {
+        task.status = "suspended";
+        task.suspendReason = "source_room_invalid";
+        task.suspendedAt = Game.time;
+        task.lastThreatAt = Game.time;
+        delete task.safeSince;
+        delete task.defendingSince;
+        delete task.lastDefenseThreatAt;
+        delete task.defenseReason;
+        delete task.lastDefenseSafeAt;
+        delete task.damageSnapshots;
+        task.updatedAt = Game.time;
+        cleanupRemoteConfigs(task);
+        removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+        removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+        removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+        continue;
+      }
+
+      if (isDefenseMode(task.sourceRoom)) {
+        task.status = "suspended";
+        task.suspendReason = "source_room_defense_mode";
+        task.suspendedAt = Game.time;
+        task.lastThreatAt = Game.time;
+        delete task.safeSince;
+        delete task.defendingSince;
+        delete task.lastDefenseThreatAt;
+        delete task.defenseReason;
+        delete task.lastDefenseSafeAt;
+        delete task.damageSnapshots;
+        task.updatedAt = Game.time;
+        cleanupRemoteConfigs(task);
+        removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+        removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+        removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+        continue;
+      }
+
+      if (visibleTarget) {
+        const passiveThreat = getRemoteThreatReason(visibleTarget);
+        if (passiveThreat !== null) {
+          task.status = "suspended";
+          task.suspendReason = passiveThreat;
+          task.suspendedAt = Game.time;
+          task.lastThreatAt = Game.time;
+          delete task.safeSince;
+          delete task.defendingSince;
+          delete task.lastDefenseThreatAt;
+          delete task.defenseReason;
+          delete task.lastDefenseSafeAt;
+          delete task.damageSnapshots;
+          task.updatedAt = Game.time;
+          cleanupRemoteConfigs(task);
+          removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+          removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+          removeScoutConfig(task.sourceRoom, task.targetRoom);
+          removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+          continue;
+        }
+
+        const defenseReason = getActiveDefenseReason(visibleTarget, task);
+        if (defenseReason !== null) {
+          if (task.defendingSince !== undefined && Game.time - task.defendingSince > 750) {
+            task.status = "suspended";
+            task.suspendReason = "defense_timeout";
+            task.suspendedAt = Game.time;
+            task.lastThreatAt = Game.time;
+            delete task.safeSince;
+            delete task.defendingSince;
+            delete task.lastDefenseThreatAt;
+            delete task.defenseReason;
+            delete task.lastDefenseSafeAt;
+            delete task.damageSnapshots;
+            task.updatedAt = Game.time;
+            cleanupRemoteConfigs(task);
+            removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+            removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+            removeScoutConfig(task.sourceRoom, task.targetRoom);
+            removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+            continue;
+          }
+
+          task.lastDefenseThreatAt = Game.time;
+          task.updatedAt = Game.time;
+          delete task.lastDefenseSafeAt;
+          cleanupRemoteConfigs(task);
+          removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+          upsertRemoteDefenderConfig(task);
+          removeScoutConfig(task.sourceRoom, task.targetRoom);
+          removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+          continue;
+        } else {
+          if (task.lastDefenseSafeAt === undefined) {
+            task.lastDefenseSafeAt = Game.time;
+          }
+          const safeTicks = Game.time - task.lastDefenseSafeAt;
+          if (safeTicks >= config.remoteSafeTicksToResume) {
+            task.status = "active";
+            delete task.defendingSince;
+            delete task.lastDefenseThreatAt;
+            delete task.defenseReason;
+            delete task.lastDefenseSafeAt;
+            delete task.damageSnapshots;
+            task.updatedAt = Game.time;
+            removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+            removeScoutConfig(task.sourceRoom, task.targetRoom);
+            removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+            continue;
+          } else {
+            task.updatedAt = Game.time;
+            upsertRemoteDefenderConfig(task);
+            removeScoutConfig(task.sourceRoom, task.targetRoom);
+            removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+            continue;
+          }
+        }
+      } else {
+        upsertScoutConfig(task.sourceRoom, task.targetRoom);
+        upsertRemoteDefenderConfig(task);
+        continue;
+      }
+    }
+
     if (!isSourceRoomValidForRemote(task.sourceRoom)) {
-      cleanupRemoteConfigs(task);
+      cleanupAllRemoteConfigs(task);
       removeScoutIfVisible(task.sourceRoom, task.targetRoom);
       continue;
     }
 
     if (isDefenseMode(task.sourceRoom)) {
-      cleanupRemoteConfigs(task);
+      cleanupAllRemoteConfigs(task);
       removeScoutIfVisible(task.sourceRoom, task.targetRoom);
       continue;
     }
 
-    // Conservative threat policy: suspend immediately on any hostile detection,
-    // no defender squads spawned. Resume only after remoteSafeTicksToResume safe ticks.
     const visibleTarget = Game.rooms[task.targetRoom];
     if (visibleTarget) {
       const threatReason = getRemoteThreatReason(visibleTarget);
@@ -888,9 +1357,24 @@ export function processRemoteConfigLifecycle(
         task.lastThreatAt = Game.time;
         delete task.safeSince;
         task.updatedAt = Game.time;
-        cleanupRemoteConfigs(task);
+        cleanupAllRemoteConfigs(task);
         removeScoutConfig(task.sourceRoom, task.targetRoom);
         removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+        continue;
+      }
+
+      // No passive threat; check for active defense
+      const defenseReason = getActiveDefenseReason(visibleTarget, task);
+      if (defenseReason !== null) {
+        task.status = "defending";
+        task.defendingSince = task.defendingSince ?? Game.time;
+        task.lastDefenseThreatAt = Game.time;
+        task.defenseReason = defenseReason;
+        delete task.lastDefenseSafeAt;
+        task.updatedAt = Game.time;
+        cleanupRemoteConfigs(task);
+        removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+        upsertRemoteDefenderConfig(task);
         continue;
       }
     }
@@ -907,6 +1391,12 @@ export function processRemoteConfigLifecycle(
     upsertCarrierConfigs(task);
     reconcileStaleCarrierConfigs(task);
     upsertReserverConfig(task, config);
+
+    if (remoteNeedsContainerWorker(task)) {
+      upsertRemoteWorkerConfig(task);
+    } else {
+      removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+    }
   }
 }
 

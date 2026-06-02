@@ -6,10 +6,13 @@ import {
   getRemoteMiningCarrierConfigName,
   getRemoteMiningScoutConfigName,
   getRemoteMiningReserverConfigName,
+  getRemoteWorkerConfigName,
+  getRemoteDefenderConfigName,
   runRemoteMining,
   upsertScoutConfig,
   processRemoteConstruction,
   processRemoteConfigLifecycle,
+  getActiveDefenseReason,
 } from "@/runtime/remoteMining";
 
 beforeEach(() => {
@@ -222,11 +225,11 @@ function createVisibleTargetRoom(
     name,
     memory: Memory.rooms[name],
     controller: controller as StructureController,
-    find: jest.fn((what: number) => {
+    find: jest.fn((what: number, opts?: { filter?: (s: any) => boolean }) => {
       if (what === FIND_SOURCES) return sources;
       if (what === FIND_HOSTILE_CREEPS) return hostileCreeps;
       if (what === FIND_HOSTILE_STRUCTURES) return hostileStructures;
-      if (what === FIND_STRUCTURES) return keeperLairs;
+      if (what === FIND_STRUCTURES) return opts?.filter ? keeperLairs.filter(opts.filter) : keeperLairs;
       return [];
     }),
   } as unknown as Room;
@@ -644,7 +647,7 @@ describe("runRemoteMining rejects rooms", () => {
     expect(store["W1N0"]).toBeUndefined();
   });
 
-  it("rejects visible room with hostile creeps", () => {
+  it("accepts visible room with player hostile creeps (player policy)", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostileCreep = {
       id: "hc1",
@@ -663,7 +666,8 @@ describe("runRemoteMining rejects rooms", () => {
     runRemoteMining();
 
     const store = ensureRemoteMiningStore();
-    expect(store["W1N0"]).toBeUndefined();
+    expect(store["W1N0"]).toBeDefined();
+    expect(store["W1N0"].status).toBe("active");
   });
 
   it("allows visible room with harmless claim/move-only hostile creep", () => {
@@ -2390,7 +2394,7 @@ describe("visible unsafe remote suspension cleanup", () => {
     store = ensureRemoteMiningStore();
   });
 
-  it("suspends active task when visible remote becomes unsafe with hostile creeps", () => {
+  it("does not suspend active task for player hostile creep (player policy)", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostileCreep = {
       id: "hc1",
@@ -2421,13 +2425,8 @@ describe("visible unsafe remote suspension cleanup", () => {
     const config = getRemoteMiningConfig();
     processRemoteConfigLifecycle(store, config);
 
-    expect(store["W1N0"].status).toBe("suspended");
-    expect(store["W1N0"].suspendReason).toBe("hostile_creeps");
-    expect(store["W1N0"].suspendedAt).toBe(100);
-    expect(store["W1N0"].lastThreatAt).toBe(100);
-    expect(store["W1N0"].updatedAt).toBe(100);
-    expect(Memory.data!.creepConfigs![h1]).toBeUndefined();
-    expect(Memory.data!.creepConfigs![c0]).toBeUndefined();
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
   });
 
   it("suspends active task when visible remote has hostile owner", () => {
@@ -2820,7 +2819,7 @@ describe("suspends hostile remote with reason-specific threat detection", () => 
     store = ensureRemoteMiningStore();
   });
 
-  it("suspends with hostile_creeps for ATTACK hostile", () => {
+  it("does not suspend for ATTACK hostile (player policy: no passive suspend on player creeps)", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostile = {
       id: "hc1",
@@ -2840,10 +2839,11 @@ describe("suspends hostile remote with reason-specific threat detection", () => 
     };
 
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
-    expect(store["W1N0"].suspendReason).toBe("hostile_creeps");
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
   });
 
-  it("suspends with hostile_creeps for RANGED_ATTACK hostile", () => {
+  it("does not suspend for RANGED_ATTACK hostile (player policy)", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostile = {
       id: "hc1",
@@ -2863,10 +2863,11 @@ describe("suspends hostile remote with reason-specific threat detection", () => 
     };
 
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
-    expect(store["W1N0"].suspendReason).toBe("hostile_creeps");
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
   });
 
-  it("suspends with hostile_creeps for HEAL hostile", () => {
+  it("does not suspend for HEAL hostile (player policy)", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostile = {
       id: "hc1",
@@ -2886,7 +2887,8 @@ describe("suspends hostile remote with reason-specific threat detection", () => 
     };
 
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
-    expect(store["W1N0"].suspendReason).toBe("hostile_creeps");
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
   });
 
   it("does not suspend for WORK-only hostile (competition, not combat danger)", () => {
@@ -2913,7 +2915,7 @@ describe("suspends hostile remote with reason-specific threat detection", () => 
     expect(store["W1N0"].suspendReason).toBeUndefined();
   });
 
-  it("suspends with hostile_creeps using body array fallback when no getActiveBodyparts", () => {
+  it("does not suspend for body array hostile with ATTACK (player policy)", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostile = {
       id: "hc1",
@@ -2933,7 +2935,8 @@ describe("suspends hostile remote with reason-specific threat detection", () => 
     };
 
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
-    expect(store["W1N0"].suspendReason).toBe("hostile_creeps");
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
   });
 
   it("does not suspend for harmless claim/move-only hostile", () => {
@@ -3115,7 +3118,7 @@ describe("suspended remote resume after safe ticks", () => {
     store = ensureRemoteMiningStore();
   });
 
-  it("does not resume while still visibly dangerous", () => {
+  it("resumes from hostile_creeps suspend when only player creeps present", () => {
     Game.time = 200;
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostile = {
@@ -3139,8 +3142,7 @@ describe("suspended remote resume after safe ticks", () => {
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
 
     expect(store["W1N0"].status).toBe("suspended");
-    expect(store["W1N0"].lastThreatAt).toBe(200);
-    expect(store["W1N0"].safeSince).toBeUndefined();
+    expect(store["W1N0"].safeSince).toBe(200);
   });
 
   it("starts safe tick tracking when room becomes visible and safe", () => {
@@ -3231,7 +3233,7 @@ describe("suspended remote resume after safe ticks", () => {
     expect(store["W1N0"].status).toBe("suspended");
   });
 
-  it("resets safeSince when room becomes dangerous again after partial safe ticks", () => {
+  it("safeSince persists when player creeps present (no passive suspend)", () => {
     Game.time = 250;
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostile = {
@@ -3256,8 +3258,7 @@ describe("suspended remote resume after safe ticks", () => {
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
 
     expect(store["W1N0"].status).toBe("suspended");
-    expect(store["W1N0"].safeSince).toBeUndefined();
-    expect(store["W1N0"].lastThreatAt).toBe(250);
+    expect(store["W1N0"].safeSince).toBe(200);
   });
 
   it("respects custom remoteSafeTicksToResume config", () => {
@@ -3490,7 +3491,7 @@ describe("defense recheck outside scan cadence", () => {
     store = ensureRemoteMiningStore();
   });
 
-  it("suspends active remote when threat detected during scan-blocked tick", () => {
+  it("does not suspend active remote for player hostile during scan-blocked tick", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostile = {
       id: "hc1",
@@ -3517,11 +3518,8 @@ describe("defense recheck outside scan cadence", () => {
 
     runRemoteMining();
 
-    expect(store["W1N0"].status).toBe("suspended");
-    expect(store["W1N0"].suspendReason).toBe("hostile_creeps");
-    expect(store["W1N0"].suspendedAt).toBe(95);
-    expect(Memory.data!.creepConfigs![h1]).toBeUndefined();
-    expect(Memory.runtime.remoteMining!.lastScanAt).toBe(90);
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
   });
 
   it("resumes suspended remote during scan-blocked tick when safe ticks elapsed", () => {
@@ -3625,8 +3623,1684 @@ describe("remote reserver", () => {
       role: "remoteMiningReserver",
       args: ["W1N0"],
       roomName: "W1N1",
-    });
   });
+});
+
+function createInvaderCreep(id: string, bodyParts: Partial<Record<BodyPartConstant, number>>): Creep {
+  return {
+    id,
+    owner: { username: "Invader" },
+    getActiveBodyparts: (part: BodyPartConstant) => bodyParts[part] ?? 0,
+  } as unknown as Creep;
+}
+
+function createPlayerCreep(id: string, username = "Player1"): Creep {
+  return {
+    id,
+    owner: { username },
+    getActiveBodyparts: () => 0,
+    body: [],
+  } as unknown as Creep;
+}
+
+function createSourceWithPosDef(id: string, x: number, y: number, roomName: string): Source {
+  return {
+    id,
+    pos: { x, y, roomName } as RoomPosition,
+  } as Source;
+}
+
+function createContainerStructureDef(id: string, x: number, y: number, roomName: string, hits: number, hitsMax: number): StructureContainer {
+  return {
+    id,
+    structureType: STRUCTURE_CONTAINER as StructureConstant,
+    pos: { x, y, roomName } as RoomPosition,
+    hits,
+    hitsMax,
+  } as unknown as StructureContainer;
+}
+
+function createDefendingTargetRoom(
+  name: string,
+  options: {
+    sources?: Source[];
+    hostileCreeps?: Creep[];
+    hostileStructures?: Structure[];
+    keeperLairs?: Structure[];
+    controllerOwner?: string;
+    controllerMy?: boolean;
+    reservationUsername?: string;
+    structures?: Array<Structure<StructureConstant>>;
+  } = {},
+): Room {
+  const sources = options.sources ?? [];
+  const hostileCreeps = options.hostileCreeps ?? [];
+  const hostileStructures = options.hostileStructures ?? [];
+  const keeperLairs = options.keeperLairs ?? [];
+  const allStructures = options.structures ?? [];
+  const controller: Partial<StructureController> = {
+    my: options.controllerMy ?? false,
+    level: 0,
+  };
+  if (options.controllerOwner) {
+    (controller as any).owner = { username: options.controllerOwner };
+  }
+  if (options.reservationUsername) {
+    (controller as any).reservation = {
+      username: options.reservationUsername,
+      ticksToEnd: 100,
+    };
+  }
+  Memory.rooms[name] = {} as RoomMemory;
+  return {
+    name,
+    memory: Memory.rooms[name],
+    controller: controller as StructureController,
+    find: jest.fn((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_SOURCES) return sources;
+      if (what === FIND_HOSTILE_CREEPS) return hostileCreeps;
+      if (what === FIND_HOSTILE_STRUCTURES) return hostileStructures;
+      if (what === FIND_STRUCTURES) {
+        const all = [...keeperLairs, ...allStructures];
+        if (opts?.filter) return all.filter(opts.filter);
+        return all;
+      }
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    }),
+  } as unknown as Room;
+}
+
+// ─── Remote worker lifecycle tests ──────────────────────────────────
+
+describe("remote worker lifecycle", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  function createSourceWithPos(id: string, x: number, y: number): Source {
+    return { id, pos: { x, y, roomName: "W2N1" } as RoomPosition } as Source;
+  }
+
+  function makeContainer(id: string, x: number, y: number, hits: number, hitsMax: number): StructureContainer {
+    return {
+      id,
+      structureType: STRUCTURE_CONTAINER as StructureConstant,
+      pos: { x, y, roomName: "W2N1" } as RoomPosition,
+      hits,
+      hitsMax,
+    } as unknown as StructureContainer;
+  }
+
+  function makeContainerSite(x: number, y: number, mine: boolean): ConstructionSite {
+    return {
+      structureType: STRUCTURE_CONTAINER as StructureConstant,
+      pos: { x, y, roomName: "W2N1" } as RoomPosition,
+      my: mine,
+    } as unknown as ConstructionSite;
+  }
+
+  function makeRoadSite(x: number, y: number): ConstructionSite {
+    return {
+      structureType: STRUCTURE_ROAD as StructureConstant,
+      pos: { x, y, roomName: "W2N1" } as RoomPosition,
+      my: true,
+    } as unknown as ConstructionSite;
+  }
+
+  function makeRoad(x: number, y: number, hits: number): StructureRoad {
+    return {
+      structureType: STRUCTURE_ROAD as StructureConstant,
+      pos: { x, y, roomName: "W2N1" } as RoomPosition,
+      hits,
+      hitsMax: 5000,
+    } as unknown as StructureRoad;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 200;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("getRemoteWorkerConfigName formats correctly", () => {
+    expect(getRemoteWorkerConfigName("W1N1", "W2N1")).toBe("W1N1:remoteMine:W2N1:worker:0");
+  });
+
+  it("creates worker config when source container below 30% hits", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const container = makeContainer("cont1", 10, 10, 100, 250000);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [container].filter(opts.filter) : [container];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeDefined();
+    expect(Memory.data!.creepConfigs![configName].role).toBe("remoteWorker");
+  });
+
+  it("does not create worker config when all containers healthy", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const container = makeContainer("cont1", 10, 10, 200000, 250000);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [container].filter(opts.filter) : [container];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("creates worker config for my container construction site near source", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const site = makeContainerSite(11, 10, true);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return [];
+      if (what === FIND_CONSTRUCTION_SITES) return [site];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeDefined();
+  });
+
+  it("does not create worker config for not-my container site", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const site = makeContainerSite(11, 10, false);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return [];
+      if (what === FIND_CONSTRUCTION_SITES) return [site];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("does not create worker config for road construction site", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const site = makeRoadSite(11, 10);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return [];
+      if (what === FIND_CONSTRUCTION_SITES) return [site];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("does not create worker config for damaged road near source", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const road = makeRoad(11, 10, 100);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [road].filter(opts.filter) : [road];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("does not create worker config when room not visible", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("does not create worker config for scouting task", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createVisibleTargetRoom("W2N1", { sources: [createSource("src1")] });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "scouting",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("does not create worker config for suspended task", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createVisibleTargetRoom("W2N1", { sources: [createSource("src1")] });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "suspended",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+      suspendReason: "hostile_owner" as any, suspendedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("does not create worker config for abandoned task", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createVisibleTargetRoom("W2N1", { sources: [createSource("src1")] });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "abandoned",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("removes worker config when container repaired above threshold", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const container = makeContainer("cont1", 10, 10, 200000, 250000);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [container].filter(opts.filter) : [container];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    Memory.data!.creepConfigs![configName] = { role: "remoteWorker", args: ["W2N1"], roomName: "W1N1" };
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("removes worker config from spawn queue when no longer needed", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const container = makeContainer("cont1", 10, 10, 200000, 250000);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [container].filter(opts.filter) : [container];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    const spawn = createSpawn(rcl7Room);
+    Game.spawns["Spawn1"] = spawn;
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    Memory.data!.creepConfigs![configName] = { role: "remoteWorker", args: ["W2N1"], roomName: "W1N1" };
+    spawn.memory.spawnList = [configName, "W1N1:worker:0"];
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual(["W1N1:worker:0"]);
+  });
+
+  it("orphans pre-existing worker config when live worker creep exists", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const container = makeContainer("cont1", 10, 10, 200000, 250000);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [container].filter(opts.filter) : [container];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    Memory.data!.creepConfigs![configName] = { role: "remoteWorker", args: ["W2N1"], roomName: "W1N1" };
+    const liveWorker = {
+      memory: { configName, role: "remoteWorker" },
+      room: { name: "W2N1" },
+    } as unknown as Creep;
+    Game.creeps["worker_1"] = liveWorker;
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(Memory.data!.creepConfigs![configName]).toBeDefined();
+    expect(Memory.data!.creepConfigs![configName].roomName).toBeUndefined();
+  });
+
+  it("only one worker config per room even with multiple damaged containers", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src1 = createSourceWithPos("src1", 10, 10);
+    const src2 = createSourceWithPos("src2", 30, 30);
+    const cont1 = makeContainer("cont1", 10, 10, 100, 250000);
+    const cont2 = makeContainer("cont2", 30, 30, 100, 250000);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src1, src2] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [cont1, cont2].filter(opts.filter) : [cont1, cont2];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src1;
+      if (id === "src2") return src2;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1", "src2"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeDefined();
+    expect(Memory.data!.creepConfigs![configName].role).toBe("remoteWorker");
+  });
+
+  it("does not trigger for container at range 3 from source (boundary)", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const container = makeContainer("cont1", 13, 10, 100, 250000);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [container].filter(opts.filter) : [container];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+  });
+
+  it("idempotent: running lifecycle twice does not duplicate config", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const container = makeContainer("cont1", 10, 10, 100, 250000);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return opts?.filter ? [container].filter(opts.filter) : [container];
+      if (what === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeDefined();
+    expect(Object.keys(Memory.data!.creepConfigs!).filter(k => k === configName)).toHaveLength(1);
+  });
+});
+
+describe("defending state - NPC Invader classification", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("transitions active task to defending with npc_invader when Invader with ATTACK present", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 2 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("npc_invader");
+    expect(store["W1N0"].defendingSince).toBe(100);
+    expect(store["W1N0"].lastDefenseThreatAt).toBe(100);
+  });
+
+  it("transitions active task to defending with npc_invader when Invader with RANGED_ATTACK present", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [RANGED_ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("npc_invader");
+  });
+
+  it("transitions active task to defending when Invader with WORK (dismantle) present", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [WORK]: 3 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("npc_invader");
+  });
+
+  it("transitions active task to defending when Invader with HEAL present", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [HEAL]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("npc_invader");
+  });
+
+  it("Invader with only MOVE/TOUGH does not trigger defending (no combat parts)", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [MOVE]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].defenseReason).toBeUndefined();
+  });
+});
+
+describe("defending state - player presence without aggression", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("player creep presence alone does NOT transition to defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].defenseReason).toBeUndefined();
+  });
+
+  it("player with ATTACK body parts does NOT trigger suspended or defending without damage", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = {
+      id: "p1",
+      owner: { username: "Player1" },
+      getActiveBodyparts: (part: BodyPartConstant) => part === ATTACK ? 5 : 0,
+    } as unknown as Creep;
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
+    expect(store["W1N0"].defenseReason).toBeUndefined();
+  });
+});
+
+describe("defending state - player aggression via damage snapshots", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("transitions to defending when player present and own remote creep hits decrease", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 500,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: { c1: { tick: 100, hits: 1000 } },
+        containers: {},
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("player_aggression");
+  });
+
+  it("transitions to defending when player with ATTACK + damage snapshot proves aggression", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = {
+      id: "p1",
+      owner: { username: "Player1" },
+      getActiveBodyparts: (part: BodyPartConstant) => part === ATTACK ? 5 : 0,
+    } as unknown as Creep;
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 500,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: { c1: { tick: 100, hits: 1000 } },
+        containers: {},
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("player_aggression");
+  });
+
+  it("does not transition to defending when player present and own creep hits unchanged", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 1000,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: { c1: { tick: 100, hits: 1000 } },
+        containers: {},
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+  });
+
+  it("transitions to defending when player present and source container hits decrease beyond natural decay", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const container = createContainerStructureDef("cont1", 11, 10, "W1N0", 200000, 250000);
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 800,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSourceWithPosDef("src1", 10, 10, "W1N0")],
+      hostileCreeps: [player],
+      structures: [container],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createSourceWithPosDef("src1", 10, 10, "W1N0");
+      return null;
+    });
+
+    // Snapshot: tick 100, container 245000. Now tick 200, container 200000.
+    // Natural decay: floor(100/500) * 5000 = 0. Actual loss = 45000. Aggressive.
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: {},
+        containers: { cont1: { tick: 100, hits: 245000 } },
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("player_aggression");
+  });
+
+  it("does not transition to defending when container loss is within natural decay", () => {
+    Game.time = 600;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const container = createContainerStructureDef("cont1", 11, 10, "W1N0", 245000, 250000);
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 800,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSourceWithPosDef("src1", 10, 10, "W1N0")],
+      hostileCreeps: [player],
+      structures: [container],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createSourceWithPosDef("src1", 10, 10, "W1N0");
+      return null;
+    });
+
+    // Snapshot: tick 100, container 250000. Now tick 600, container 245000.
+    // Natural decay: floor(500/500) * 5000 = 5000. Actual loss = 5000. Not aggressive.
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: {},
+        containers: { cont1: { tick: 100, hits: 250000 } },
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+  });
+
+  it("stale snapshot (older than 150 ticks) is re-baselined without triggering aggression", () => {
+    Game.time = 300;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 500,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    // Snapshot at tick 100, now tick 300. Stale (200 > 150). Re-baseline.
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: { c1: { tick: 100, hits: 1000 } },
+        containers: {},
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].damageSnapshots!.creeps.c1.tick).toBe(300);
+    expect(store["W1N0"].damageSnapshots!.creeps.c1.hits).toBe(500);
+  });
+});
+
+describe("defending state - passive suspend reasons remain intact", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("hostile owner still causes passive suspended, not defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      controllerOwner: "enemy",
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("hostile_owner");
+    expect(store["W1N0"].defenseReason).toBeUndefined();
+  });
+
+  it("hostile reservation still causes passive suspended, not defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      reservationUsername: "enemy",
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("hostile_reservation");
+  });
+
+  it("hostile structures still causes passive suspended, not defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const hostileStructure = {
+      id: "hs1",
+      structureType: STRUCTURE_EXTENSION,
+    } as unknown as Structure;
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileStructures: [hostileStructure],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("hostile_structures");
+  });
+
+  it("source keeper still causes passive suspended, not defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const keeperLair = {
+      id: "kl1",
+      structureType: STRUCTURE_KEEPER_LAIR,
+    } as unknown as Structure;
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      keeperLairs: [keeperLair],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("source_keeper");
+  });
+
+  it("player hostile creep with combat parts does NOT trigger passive suspended", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const hostile = {
+      id: "hc1",
+      owner: { username: "SomePlayer" },
+      getActiveBodyparts: (part: BodyPartConstant) => part === ATTACK ? 1 : 0,
+    } as unknown as Creep;
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [hostile],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
+  });
+});
+
+describe("defending state - lifecycle transitions", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("defending task resumes to active after safe ticks when threat clears", () => {
+    Game.time = 300;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader", lastDefenseSafeAt: 200,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].defendingSince).toBeUndefined();
+    expect(store["W1N0"].defenseReason).toBeUndefined();
+    expect(store["W1N0"].damageSnapshots).toBeUndefined();
+  });
+
+  it("defending task stays defending before safe ticks elapse", () => {
+    Game.time = 250;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader", lastDefenseSafeAt: 200,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+  });
+
+  it("defending task stays defending when only player threat present (no passive suspend)", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = {
+      id: "hc1",
+      owner: { username: "SomePlayer" },
+      getActiveBodyparts: (part: BodyPartConstant) => part === ATTACK ? 1 : 0,
+    } as unknown as Creep;
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 500,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defendingSince).toBe(100);
+  });
+
+  it("defending task preserves defendingSince when threat persists", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defendingSince).toBe(100);
+    expect(store["W1N0"].lastDefenseThreatAt).toBe(200);
+  });
+
+  it("defending task falls back to suspended on source room RCL drop", () => {
+    const rcl6Room = createRclRoom("W1N1", 6);
+    Game.rooms["W1N1"] = rcl6Room;
+    Game.spawns["Spawn1"] = createSpawn(rcl6Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("source_room_invalid");
+    expect(store["W1N0"].defendingSince).toBeUndefined();
+  });
+
+  it("defending task falls back to suspended on defense mode activation", () => {
+    const mod = require("@/runtime/defenseMode");
+    jest.spyOn(mod, "isDefenseMode").mockReturnValue(true);
+
+    const rcl7Room = createRclRoom("W1N1", 7);
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("source_room_defense_mode");
+    expect(store["W1N0"].defendingSince).toBeUndefined();
+
+    (mod.isDefenseMode as jest.Mock).mockRestore();
+  });
+});
+
+describe("defending state - damage snapshot management", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("snapshots own remote mining creep hits when player present", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 800,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].damageSnapshots).toBeDefined();
+    expect(store["W1N0"].damageSnapshots!.creeps.c1).toBeDefined();
+    expect(store["W1N0"].damageSnapshots!.creeps.c1.hits).toBe(800);
+    expect(store["W1N0"].damageSnapshots!.creeps.c1.tick).toBe(100);
+  });
+
+  it("does not snapshot creeps outside the remote mining config prefix", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const otherCreep = {
+      id: "c_other",
+      hits: 800,
+      memory: { configName: "W1N1:worker:0", role: "worker" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["worker_1"] = otherCreep;
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].damageSnapshots).toBeUndefined();
+  });
+
+  it("snapshots source containers within range 2 of task sources", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const container = createContainerStructureDef("cont1", 11, 10, "W1N0", 200000, 250000);
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSourceWithPosDef("src1", 10, 10, "W1N0")],
+      hostileCreeps: [player],
+      structures: [container],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createSourceWithPosDef("src1", 10, 10, "W1N0");
+      return null;
+    });
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 800,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].damageSnapshots).toBeDefined();
+    expect(store["W1N0"].damageSnapshots!.containers.cont1).toBeDefined();
+    expect(store["W1N0"].damageSnapshots!.containers.cont1.hits).toBe(200000);
+  });
+
+  it("cleans up stale creep snapshot entries for gone creeps", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 800,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: {
+          c1: { tick: 100, hits: 800 },
+          c_gone: { tick: 100, hits: 1000 },
+        },
+        containers: {},
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].damageSnapshots!.creeps.c_gone).toBeUndefined();
+    expect(store["W1N0"].damageSnapshots!.creeps.c1).toBeDefined();
+  });
+
+  it("snapshots creep baseline without player, then detects player aggression on next tick", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 1000,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].damageSnapshots).toBeDefined();
+    expect(store["W1N0"].damageSnapshots!.creeps.c1.hits).toBe(1000);
+    expect(store["W1N0"].damageSnapshots!.creeps.c1.tick).toBe(100);
+
+    Game.time = 110;
+    (ownCreep as any).hits = 600;
+    const player = createPlayerCreep("p1");
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_HOSTILE_CREEPS) return [player];
+      if (what === FIND_SOURCES) return [createSource("src1")];
+      return [];
+    });
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("player_aggression");
+  });
+
+  it("non-owned remote container natural decay uses CONTAINER_DECAY_TIME not owned interval", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const player = createPlayerCreep("p1");
+    const container = createContainerStructureDef("cont1", 11, 10, "W1N0", 235000, 250000);
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 800,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSourceWithPosDef("src1", 10, 10, "W1N0")],
+      hostileCreeps: [player],
+      structures: [container],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createSourceWithPosDef("src1", 10, 10, "W1N0");
+      return null;
+    });
+
+    // Snapshot: tick 100, container 250000. Now tick 200, container 245000.
+    // ticksSinceSnapshot = 100. Non-owned: floor(100/100) * 5000 = 5000.
+    // Actual loss = 5000. 5000 <= 5000 → not aggressive. ✓
+    // Old (owned): floor(100/500) * 5000 = 0. 5000 > 0 → falsely aggressive. ✗
+    const container2 = createContainerStructureDef("cont1", 11, 10, "W1N0", 245000, 250000);
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_HOSTILE_CREEPS) return [player];
+      if (what === FIND_SOURCES) return [createSourceWithPosDef("src1", 10, 10, "W1N0")];
+      if (what === FIND_STRUCTURES) return opts?.filter ? [container2].filter(opts.filter) : [container2];
+      return [];
+    });
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: {},
+        containers: { cont1: { tick: 100, hits: 250000 } },
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(store["W1N0"].status).toBe("active");
+  });
+});
+
+describe("getActiveDefenseReason direct tests", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+  });
+
+  it("returns npc_invader for Invader creep with ATTACK", () => {
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const room = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    const task: import("@/runtime/remoteMining").RemoteMiningTask = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    expect(getActiveDefenseReason(room, task)).toBe("npc_invader");
+  });
+
+  it("returns null when no hostiles present", () => {
+    const room = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    const task: import("@/runtime/remoteMining").RemoteMiningTask = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    expect(getActiveDefenseReason(room, task)).toBeNull();
+  });
+
+  it("returns null for player creep with no damage", () => {
+    const player = createPlayerCreep("p1");
+    const room = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+    const task: import("@/runtime/remoteMining").RemoteMiningTask = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    expect(getActiveDefenseReason(room, task)).toBeNull();
+  });
+
+  it("returns player_aggression when creep hits decreased with player present", () => {
+    const player = createPlayerCreep("p1");
+    const room = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [player],
+    });
+
+    const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+    const ownCreep = {
+      id: "c1",
+      hits: 500,
+      memory: { configName, role: "colonizerHarvester" },
+      room: { name: "W1N0" },
+    } as unknown as Creep;
+    Game.creeps["harvester_1"] = ownCreep;
+
+    const task: import("@/runtime/remoteMining").RemoteMiningTask = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      damageSnapshots: {
+        creeps: { c1: { tick: 99, hits: 1000 } },
+        containers: {},
+      },
+    };
+
+    expect(getActiveDefenseReason(room, task)).toBe("player_aggression");
+  });
+});
 
   it("creates one reserver config for unreserved visible active remote", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
@@ -4628,7 +6302,7 @@ describe("scout visibility lifecycle", () => {
     expect(Memory.data!.creepConfigs![scoutName].roomName).toBeUndefined();
   });
 
-  it("active visible target removes stale scout when suspending due to threat", () => {
+  it("active visible target with player hostile stays active (player policy)", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const hostile = {
       id: "hc1",
@@ -4658,10 +6332,8 @@ describe("scout visibility lifecycle", () => {
 
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
 
-    expect(store["W1N0"].status).toBe("suspended");
-    expect(store["W1N0"].suspendReason).toBe("hostile_creeps");
-    expect(Memory.data!.creepConfigs![scoutName]).toBeUndefined();
-    expect(spawn.memory.spawnList).toEqual(["W1N1:worker:0"]);
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].suspendReason).toBeUndefined();
   });
 
   it("suspended visible target in defense mode removes stale scout", () => {
@@ -4737,6 +6409,844 @@ describe("scout visibility lifecycle", () => {
   });
 });
 
+// ─── Defending lifecycle: defender config orchestration ──────────────
+
+describe("defending lifecycle", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("getRemoteDefenderConfigName formats correctly", () => {
+    expect(getRemoteDefenderConfigName("W1N1", "W2N1")).toBe("W1N1:remoteMine:W2N1:defender:0");
+  });
+
+  // ─── Active → defending transition ───────────────────────────────
+
+  it("removes harvester/carrier/reserver configs when entering defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 2 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    const spawn = createSpawn(rcl7Room);
+    Game.spawns["Spawn1"] = spawn;
+
+    const h1 = getRemoteMiningHarvesterConfigName("W1N1", "W1N0", "src1");
+    const c0 = getRemoteMiningCarrierConfigName("W1N1", "W1N0", 0);
+    const r0 = getRemoteMiningReserverConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![h1] = { role: "colonizerHarvester", args: ["W1N0", "src1"], roomName: "W1N1" };
+    Memory.data!.creepConfigs![c0] = { role: "remoteMiningCarrier", args: ["W1N0", "src1"], roomName: "W1N1" };
+    Memory.data!.creepConfigs![r0] = { role: "remoteMiningReserver", args: ["W1N0"], roomName: "W1N1" };
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("defending");
+    expect(Memory.data!.creepConfigs![h1]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![c0]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![r0]).toBeUndefined();
+  });
+
+  it("removes worker config when entering defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 2 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("defending");
+    expect(Memory.data!.creepConfigs![w0]).toBeUndefined();
+  });
+
+  it("removes economy entries from spawn queue when entering defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 2 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    const spawn = createSpawn(rcl7Room);
+    Game.spawns["Spawn1"] = spawn;
+
+    const h1 = getRemoteMiningHarvesterConfigName("W1N1", "W1N0", "src1");
+    const c0 = getRemoteMiningCarrierConfigName("W1N1", "W1N0", 0);
+    const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+    spawn.memory.spawnList = [h1, c0, w0, "W1N1:worker:0"];
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("defending");
+    expect(spawn.memory.spawnList).not.toContain(h1);
+    expect(spawn.memory.spawnList).not.toContain(c0);
+    expect(spawn.memory.spawnList).not.toContain(w0);
+    expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+  });
+
+  it("upserts exactly one remoteDefender config when entering defending", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 2 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeDefined();
+    expect(Memory.data!.creepConfigs![defenderName].role).toBe("remoteDefender");
+    expect(Memory.data!.creepConfigs![defenderName].args).toEqual(["W1N0"]);
+    expect(Memory.data!.creepConfigs![defenderName].roomName).toBe("W1N1");
+
+    const allConfigKeys = Object.keys(Memory.data!.creepConfigs!);
+    const defenderConfigs = allConfigKeys.filter(k => k.includes(":defender:"));
+    expect(defenderConfigs).toHaveLength(1);
+  });
+
+  it("does not upsert economy configs on the same tick as defending transition", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 2 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configs = Memory.data!.creepConfigs!;
+    for (const key of Object.keys(configs)) {
+      if (key.includes(":defender:")) continue;
+      expect(key).not.toContain(":harvester:");
+      expect(key).not.toContain(":carrier:");
+      expect(key).not.toContain(":reserver:");
+      expect(key).not.toContain(":worker:");
+    }
+  });
+
+  // ─── Defending maintenance ──────────────────────────────────────
+
+  it("maintains defender config while active threat persists", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    expect(store["W1N0"].status).toBe("defending");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeDefined();
+    expect(store["W1N0"].lastDefenseThreatAt).toBe(200);
+  });
+
+  it("upserts scout when target invisible and keeps defender config", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+    // W1N0 not in Game.rooms — invisible
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    expect(store["W1N0"].status).toBe("defending");
+    expect(Memory.data!.creepConfigs![scoutName]).toBeDefined();
+    expect(Memory.data!.creepConfigs![scoutName].roomName).toBe("W1N1");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeDefined();
+  });
+
+  // ─── Defending → passive suspend ────────────────────────────────
+
+  it("removes defender config on passive suspend transition (hostile_owner)", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const hostileTarget = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      controllerOwner: "enemy",
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = hostileTarget;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("hostile_owner");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+  });
+
+  // ─── Defending → suspended (source room issues) ─────────────────
+
+  it("removes defender config when source room becomes invalid", () => {
+    const rcl6Room = createRclRoom("W1N1", 6);
+    Game.rooms["W1N1"] = rcl6Room;
+    Game.spawns["Spawn1"] = createSpawn(rcl6Room);
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("source_room_invalid");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+  });
+
+  it("removes defender config when source room enters defense mode", () => {
+    const mod = require("@/runtime/defenseMode");
+    jest.spyOn(mod, "isDefenseMode").mockReturnValue(true);
+
+    const rcl7Room = createRclRoom("W1N1", 7);
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("source_room_defense_mode");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+
+    (mod.isDefenseMode as jest.Mock).mockRestore();
+  });
+
+  // ─── Defending → active (resume) ────────────────────────────────
+
+  it("removes defender config on resume to active after safe ticks", () => {
+    Game.time = 300;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader", lastDefenseSafeAt: 200,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("active");
+    expect(store["W1N0"].defendingSince).toBeUndefined();
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+  });
+
+  it("does not upsert economy configs on the same tick as resume from defending", () => {
+    Game.time = 300;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader", lastDefenseSafeAt: 200,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configs = Memory.data!.creepConfigs!;
+    for (const key of Object.keys(configs)) {
+      expect(key).not.toContain(":harvester:");
+      expect(key).not.toContain(":carrier:");
+      expect(key).not.toContain(":reserver:");
+      expect(key).not.toContain(":worker:");
+    }
+  });
+
+  // ─── Timeout ────────────────────────────────────────────────────
+
+  it("falls back to suspended after 750 ticks of defending with active threat", () => {
+    Game.time = 900; // defendingSince=100, 800 ticks > 750
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("suspended");
+    expect(store["W1N0"].suspendReason).toBe("defense_timeout");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+  });
+
+  it("does not timeout before 750 ticks with active threat", () => {
+    Game.time = 849; // defendingSince=100, 749 ticks < 750
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["W1N0"].status).toBe("defending");
+  });
+
+  // ─── No economy while defending ─────────────────────────────────
+
+  it("no harvester/carrier/reserver configs active while defending with threat", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configs = Memory.data!.creepConfigs!;
+    for (const key of Object.keys(configs)) {
+      if (key.includes(":defender:")) continue;
+      expect(key).not.toContain(":harvester:");
+      expect(key).not.toContain(":carrier:");
+      expect(key).not.toContain(":reserver:");
+      expect(key).not.toContain(":worker:");
+    }
+  });
+
+  it("cleans up pre-existing economy configs while defending with threat", () => {
+    Game.time = 200;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    const h1 = getRemoteMiningHarvesterConfigName("W1N1", "W1N0", "src1");
+    const c0 = getRemoteMiningCarrierConfigName("W1N1", "W1N0", 0);
+    const r0 = getRemoteMiningReserverConfigName("W1N1", "W1N0");
+    const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![h1] = { role: "colonizerHarvester", args: ["W1N0", "src1"], roomName: "W1N1" };
+    Memory.data!.creepConfigs![c0] = { role: "remoteMiningCarrier", args: ["W1N0", "src1"], roomName: "W1N1" };
+    Memory.data!.creepConfigs![r0] = { role: "remoteMiningReserver", args: ["W1N0"], roomName: "W1N1" };
+    Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(Memory.data!.creepConfigs![h1]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![c0]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![r0]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![w0]).toBeUndefined();
+  });
+
+  it("keeps defender config while waiting for safe ticks after threat clears", () => {
+    Game.time = 150; // lastDefenseSafeAt not set yet → will be 150
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 120,
+      defenseReason: "npc_invader",
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].lastDefenseSafeAt).toBe(150);
+    expect(Memory.data!.creepConfigs![defenderName]).toBeDefined();
+  });
+
+  it("removes stale scout config and spawn queue while visible and waiting safe ticks", () => {
+    Game.time = 160;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    const spawn = createSpawn(rcl7Room);
+    Game.spawns["Spawn1"] = spawn;
+
+    const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![scoutName] = { role: "scout", args: ["W1N0"], roomName: "W1N1" };
+    spawn.memory.spawnList = [scoutName, "W1N1:worker:0"];
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 120,
+      defenseReason: "npc_invader", lastDefenseSafeAt: 150,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    expect(store["W1N0"].status).toBe("defending");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeDefined();
+    expect(Memory.data!.creepConfigs![scoutName]).toBeUndefined();
+    expect(spawn.memory.spawnList).not.toContain(scoutName);
+    expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+  });
+
+  it("removes stale scout config and spawn queue when resuming from defending to active", () => {
+    Game.time = 300;
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const target = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = target;
+    const spawn = createSpawn(rcl7Room);
+    Game.spawns["Spawn1"] = spawn;
+
+    const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![scoutName] = { role: "scout", args: ["W1N0"], roomName: "W1N1" };
+    spawn.memory.spawnList = [scoutName, "W1N1:worker:0"];
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+      defendingSince: 100, lastDefenseThreatAt: 100,
+      defenseReason: "npc_invader", lastDefenseSafeAt: 200,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    expect(store["W1N0"].status).toBe("active");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![scoutName]).toBeUndefined();
+    expect(spawn.memory.spawnList).not.toContain(scoutName);
+  });
+});
+
+  // ─── Full cleanup (suspended/abandoned/source invalid removes worker+defender) ───
+
+  describe("full cleanup removes worker and defender", () => {
+    it("abandoned task removes worker config and spawn queue entry", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      Game.rooms["W1N1"] = rcl7Room;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "abandoned",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+        abandonedReason: "unsafe",
+      };
+
+      const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [w0, "W1N1:worker:0"];
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(Memory.data!.creepConfigs![w0]).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(w0);
+      expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+    });
+
+    it("abandoned task removes defender config and spawn queue entry", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      Game.rooms["W1N1"] = rcl7Room;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "abandoned",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+        abandonedReason: "unsafe",
+      };
+
+      const d0 = getRemoteDefenderConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![d0] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [d0, "W1N1:worker:0"];
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(Memory.data!.creepConfigs![d0]).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(d0);
+      expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+    });
+
+    it("suspended task removes worker and defender configs", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      Game.rooms["W1N1"] = rcl7Room;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "suspended",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+        suspendReason: "hostile_owner", suspendedAt: 60,
+      };
+
+      const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+      const d0 = getRemoteDefenderConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![d0] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [w0, d0, "W1N1:worker:0"];
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(Memory.data!.creepConfigs![w0]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![d0]).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(w0);
+      expect(spawn.memory.spawnList).not.toContain(d0);
+      expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+    });
+
+    it("active task with invalid source room removes worker and defender configs", () => {
+      const rcl6Room = createRclRoom("W1N1", 6); // RCL6 < 7, invalid
+      Game.rooms["W1N1"] = rcl6Room;
+      const spawn = createSpawn(rcl6Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      };
+
+      const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+      const d0 = getRemoteDefenderConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![d0] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [w0, d0, "W1N1:worker:0"];
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(Memory.data!.creepConfigs![w0]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![d0]).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(w0);
+      expect(spawn.memory.spawnList).not.toContain(d0);
+      expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+    });
+
+    it("active task with source room defense mode removes worker and defender configs", () => {
+      const mod = require("@/runtime/defenseMode");
+      jest.spyOn(mod, "isDefenseMode").mockReturnValue(true);
+
+      const rcl7Room = createRclRoom("W1N1", 7);
+      Game.rooms["W1N1"] = rcl7Room;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+      };
+
+      const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+      const d0 = getRemoteDefenderConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![d0] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [w0, d0, "W1N1:worker:0"];
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(Memory.data!.creepConfigs![w0]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![d0]).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(w0);
+      expect(spawn.memory.spawnList).not.toContain(d0);
+      expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+
+      (mod.isDefenseMode as jest.Mock).mockRestore();
+    });
+
+    it("active task with passive threat (hostile_owner) removes worker and defender configs", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      Game.rooms["W1N1"] = rcl7Room;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      const hostileTarget = createVisibleTargetRoom("W1N0", {
+        sources: [createSource("src1"), createSource("src2")],
+        controllerOwner: "enemy",
+      });
+      Game.rooms["W1N0"] = hostileTarget;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+        sourceIds: ["src1", "src2"], assignedAt: 50, updatedAt: 50,
+      };
+
+      const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+      const d0 = getRemoteDefenderConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![d0] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [w0, d0, "W1N1:worker:0"];
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(store["W1N0"].status).toBe("suspended");
+      expect(store["W1N0"].suspendReason).toBe("hostile_owner");
+      expect(Memory.data!.creepConfigs![w0]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![d0]).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(w0);
+      expect(spawn.memory.spawnList).not.toContain(d0);
+      expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+    });
+
+    it("full cleanup orphans live worker creep instead of deleting config", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      Game.rooms["W1N1"] = rcl7Room;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "abandoned",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+        abandonedReason: "unsafe",
+      };
+
+      const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [w0];
+
+      const liveCreep = {
+        memory: { configName: w0, role: "remoteWorker" },
+        room: { name: "W1N0" },
+      } as unknown as Creep;
+      Game.creeps["worker_live"] = liveCreep;
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(Memory.data!.creepConfigs![w0]).toBeDefined();
+      expect(Memory.data!.creepConfigs![w0].roomName).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(w0);
+    });
+
+    it("full cleanup orphans live defender creep instead of deleting config", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      Game.rooms["W1N1"] = rcl7Room;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "abandoned",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+        abandonedReason: "unsafe",
+      };
+
+      const d0 = getRemoteDefenderConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![d0] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [d0];
+
+      const liveCreep = {
+        memory: { configName: d0, role: "remoteDefender" },
+        room: { name: "W1N0" },
+      } as unknown as Creep;
+      Game.creeps["defender_live"] = liveCreep;
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(Memory.data!.creepConfigs![d0]).toBeDefined();
+      expect(Memory.data!.creepConfigs![d0].roomName).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(d0);
+    });
+
+    it("full cleanup removes all role configs but preserves non-remote configs", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      Game.rooms["W1N1"] = rcl7Room;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "abandoned",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+        abandonedReason: "unsafe",
+      };
+
+      const h1 = getRemoteMiningHarvesterConfigName("W1N1", "W1N0", "src1");
+      const c0 = getRemoteMiningCarrierConfigName("W1N1", "W1N0", 0);
+      const r0 = getRemoteMiningReserverConfigName("W1N1", "W1N0");
+      const w0 = getRemoteWorkerConfigName("W1N1", "W1N0");
+      const d0 = getRemoteDefenderConfigName("W1N1", "W1N0");
+      const nonRemote = "W1N1:worker:0";
+
+      Memory.data!.creepConfigs![h1] = { role: "colonizerHarvester", args: ["W1N0", "src1"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![c0] = { role: "remoteMiningCarrier", args: ["W1N0", "src1"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![r0] = { role: "remoteMiningReserver", args: ["W1N0"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![w0] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![d0] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![nonRemote] = { role: "worker", args: [], roomName: "W1N1" };
+
+      spawn.memory.spawnList = [h1, c0, r0, w0, d0, nonRemote];
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(Memory.data!.creepConfigs![h1]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![c0]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![r0]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![w0]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![d0]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![nonRemote]).toBeDefined();
+      expect(spawn.memory.spawnList).toEqual([nonRemote]);
+    });
+  });
+
    it("orphans pre-existing reserver config when self-reservation above threshold and live creep exists", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const targetRoom = createVisibleTargetRoom("W1N0", {
@@ -4774,5 +7284,276 @@ describe("scout visibility lifecycle", () => {
 
     expect(Memory.data!.creepConfigs![reserverName]).toBeDefined();
     expect(Memory.data!.creepConfigs![reserverName].roomName).toBeUndefined();
+  });
+  // ─── Regression tests ──────────────────────────────────────────────
+
+  describe("regression: stale container snapshot re-baseline after visibility gap", () => {
+    let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      delete (global as any).__runtimeServices;
+      registerRuntimeServices(undefined);
+      Game.time = 300;
+      Game.rooms = {};
+      Game.spawns = {};
+      Game.creeps = {};
+      Memory.runtime = {};
+      Memory.data = {};
+      ensureConfigStore();
+      store = ensureRemoteMiningStore();
+    });
+
+    it("stale container snapshot (>150 ticks) re-baselines without accusing player", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      const player = createPlayerCreep("p1");
+      const container = createContainerStructureDef("cont1", 11, 10, "W1N0", 200000, 250000);
+      const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+      const ownCreep = {
+        id: "c1",
+        hits: 800,
+        memory: { configName, role: "colonizerHarvester" },
+        room: { name: "W1N0" },
+      } as unknown as Creep;
+      Game.creeps["harvester_1"] = ownCreep;
+
+      const target = createDefendingTargetRoom("W1N0", {
+        sources: [createSourceWithPosDef("src1", 10, 10, "W1N0")],
+        hostileCreeps: [player],
+        structures: [container],
+      });
+      Game.rooms["W1N1"] = rcl7Room;
+      Game.rooms["W1N0"] = target;
+      Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+      (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+        if (id === "src1") return createSourceWithPosDef("src1", 10, 10, "W1N0");
+        return null;
+      });
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+        damageSnapshots: {
+          creeps: {},
+          containers: { cont1: { tick: 100, hits: 250000 } },
+        },
+      };
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+      expect(store["W1N0"].status).toBe("active");
+      expect(store["W1N0"].damageSnapshots!.containers.cont1.tick).toBe(300);
+      expect(store["W1N0"].damageSnapshots!.containers.cont1.hits).toBe(200000);
+    });
+  });
+
+  describe("regression: destroyed container → construction site → worker config chain", () => {
+    let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      delete (global as any).__runtimeServices;
+      registerRuntimeServices(undefined);
+      (global as any).RoomPosition = ConMockRoomPosition;
+      (global as any).PathFinder = {
+        search: jest.fn(),
+        CostMatrix: class {
+          private data: number[] = new Array(2500).fill(0);
+          set(x: number, y: number, val: number) { this.data[y * 50 + x] = val; }
+          get(x: number, y: number) { return this.data[y * 50 + x]; }
+        },
+      };
+      Game.time = 100;
+      Game.rooms = {};
+      Game.spawns = {};
+      Game.creeps = {};
+      Game.constructionSites = {} as Game["constructionSites"];
+      Memory.runtime = {};
+      Memory.cfg = {};
+      Memory.data = {};
+      ensureConfigStore();
+      store = ensureRemoteMiningStore();
+    });
+
+    it("destroyed source container triggers processRemoteConstruction to create site, then worker config triggers", () => {
+      const sourceRoom = createConRoom("W1N1");
+      const targetRoom = createConRoom("W1N0");
+      targetRoom.find = jest.fn((type: number) => {
+        if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
+        if (type === FIND_STRUCTURES) return [];
+        if (type === FIND_CONSTRUCTION_SITES) return [];
+        return [];
+      });
+      Game.rooms["W1N1"] = sourceRoom as unknown as Room;
+      Game.rooms["W1N0"] = targetRoom as unknown as Room;
+
+      const path = makePathPositions(25, 25, "W1N1", 10, 10, "W1N0");
+      (PathFinder.search as jest.Mock).mockReturnValue({ path, incomplete: false, ops: 10, cost: 10 });
+
+      setupActiveTask(store, "W1N1", "W1N0", ["src1"]);
+      (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+        if (id === "src1") return createConSource("src1", targetRoom, 10, 10);
+        return null;
+      });
+
+      const config = { ...getRemoteMiningConfig(), maxRemoteSitesPerRun: 5 };
+      processRemoteConstruction(store, config);
+
+      const containerAttempts = targetRoom.__siteAttempts.filter(a => a.structureType === STRUCTURE_CONTAINER);
+      expect(containerAttempts.length).toBe(1);
+
+      const site = targetRoom.__sites.find(s => s.structureType === STRUCTURE_CONTAINER);
+      expect(site).toBeDefined();
+
+      (targetRoom as any).find = jest.fn((type: number) => {
+        if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
+        if (type === FIND_STRUCTURES) return [];
+        if (type === FIND_CONSTRUCTION_SITES) return site ? [site] : [];
+        return [];
+      });
+
+      processRemoteConfigLifecycle(store, config);
+
+      const workerConfigName = getRemoteWorkerConfigName("W1N1", "W1N0");
+      expect(Memory.data!.creepConfigs![workerConfigName]).toBeDefined();
+      expect(Memory.data!.creepConfigs![workerConfigName].role).toBe("remoteWorker");
+    });
+  });
+
+  describe("regression: non-aggressive player + natural container decay does not trigger defending", () => {
+    let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      delete (global as any).__runtimeServices;
+      registerRuntimeServices(undefined);
+      Game.time = 200;
+      Game.rooms = {};
+      Game.spawns = {};
+      Game.creeps = {};
+      Memory.runtime = {};
+      Memory.data = {};
+      ensureConfigStore();
+      store = ensureRemoteMiningStore();
+    });
+
+    it("player with ATTACK body parts + container natural decay does NOT trigger defending", () => {
+      const rcl7Room = createRclRoom("W1N1", 7);
+      const player = {
+        id: "p1",
+        owner: { username: "SomePlayer" },
+        getActiveBodyparts: (part: BodyPartConstant) => part === ATTACK ? 3 : 0,
+      } as unknown as Creep;
+      // Container at 245000: lost exactly 5000 over 100 ticks = 1 non-owned decay interval
+      const container = createContainerStructureDef("cont1", 11, 10, "W1N0", 245000, 250000);
+      const configName = "W1N1:remoteMine:W1N0:harvester:src1";
+      const ownCreep = {
+        id: "c1",
+        hits: 1000,
+        memory: { configName, role: "colonizerHarvester" },
+        room: { name: "W1N0" },
+      } as unknown as Creep;
+      Game.creeps["harvester_1"] = ownCreep;
+
+      const target = createDefendingTargetRoom("W1N0", {
+        sources: [createSourceWithPosDef("src1", 10, 10, "W1N0")],
+        hostileCreeps: [player],
+        structures: [container],
+      });
+      Game.rooms["W1N1"] = rcl7Room;
+      Game.rooms["W1N0"] = target;
+      Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+      (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+        if (id === "src1") return createSourceWithPosDef("src1", 10, 10, "W1N0");
+        return null;
+      });
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+        damageSnapshots: {
+          creeps: {},
+          containers: { cont1: { tick: 100, hits: 250000 } },
+        },
+      };
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+      expect(store["W1N0"].status).toBe("active");
+      expect(store["W1N0"].defenseReason).toBeUndefined();
+    });
+  });
+
+  describe("regression: defender timeout after >750 ticks transitions to suspended and removes config", () => {
+    let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      delete (global as any).__runtimeServices;
+      registerRuntimeServices(undefined);
+      Game.rooms = {};
+      Game.spawns = {};
+      Game.creeps = {};
+      Memory.runtime = {};
+      Memory.data = {};
+      ensureConfigStore();
+      store = ensureRemoteMiningStore();
+    });
+
+    it("timeout at exactly 751 ticks with active threat suspends and cleans up defender+worker", () => {
+      Game.time = 851;
+      const rcl7Room = createRclRoom("W1N1", 7);
+      const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+      const target = createDefendingTargetRoom("W1N0", {
+        sources: [createSource("src1")],
+        hostileCreeps: [invader],
+      });
+      Game.rooms["W1N1"] = rcl7Room;
+      Game.rooms["W1N0"] = target;
+      const spawn = createSpawn(rcl7Room);
+      Game.spawns["Spawn1"] = spawn;
+
+      const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+      const workerName = getRemoteWorkerConfigName("W1N1", "W1N0");
+      Memory.data!.creepConfigs![defenderName] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+      Memory.data!.creepConfigs![workerName] = { role: "remoteWorker", args: ["W1N0"], roomName: "W1N1" };
+      spawn.memory.spawnList = [defenderName, workerName, "W1N1:worker:0"];
+
+      store["W1N0"] = {
+        sourceRoom: "W1N1", targetRoom: "W1N0", status: "defending",
+        sourceIds: ["src1"], assignedAt: 50, updatedAt: 100,
+        defendingSince: 100, lastDefenseThreatAt: 850,
+        defenseReason: "npc_invader",
+      };
+
+      processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+      expect(store["W1N0"].status).toBe("suspended");
+      expect(store["W1N0"].suspendReason).toBe("defense_timeout");
+      expect(store["W1N0"].defendingSince).toBeUndefined();
+      expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+      expect(Memory.data!.creepConfigs![workerName]).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain(defenderName);
+      expect(spawn.memory.spawnList).not.toContain(workerName);
+      expect(spawn.memory.spawnList).toContain("W1N1:worker:0");
+    });
+  });
+
+  describe("regression: remoteMiningCarrier body invariant at 3000 energy", () => {
+    it("carrier body at 3000 energy has exactly 1 WORK, fills 50 parts, stays within budget", () => {
+      const { spawnProfiles } = require("@/config/spawnProfiles");
+      const room = { energyCapacityAvailable: 3000 } as Room;
+      const body = spawnProfiles.remoteMiningCarrier(room);
+
+      expect(body.filter((p: BodyPartConstant) => p === WORK)).toHaveLength(1);
+      expect(body).toHaveLength(50);
+      const cost = body.reduce((sum: number, p: BodyPartConstant) => sum + BODYPART_COST[p], 0);
+      expect(cost).toBeLessThanOrEqual(3000);
+
+      const carries = body.filter((p: BodyPartConstant) => p === CARRY).length;
+      const moves = body.filter((p: BodyPartConstant) => p === MOVE).length;
+      expect(carries).toBe(32);
+      expect(moves).toBe(17);
+    });
   });
 });
