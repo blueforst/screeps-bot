@@ -311,6 +311,8 @@ export function createMockPowerBankCreep(role: string, overrides: Partial<MockCr
 
     // Action mocks
     attack: jest.fn((_target: Creep | Structure) => OK),
+    rangedAttack: jest.fn((_target: Creep | Structure) => OK),
+    rangedMassAttack: jest.fn(() => OK),
     heal: jest.fn((_target: Creep) => OK),
     rangedHeal: jest.fn((_target: Creep) => OK),
     pickup: jest.fn((_resource: Resource) => OK),
