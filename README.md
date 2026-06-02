@@ -60,16 +60,57 @@ Token page: `https://screeps.com/a/#!/account/auth-tokens`
 - If `npm run push` returns `Not Authorized`, check `main.token` in `.secret.json`.
 - Rollup output is a single `dist/main.js`, matching Screeps runtime requirements.
 
-## External Monitor (MVP)
+## External Monitor
 
-This repo includes an external monitor service at `scripts/monitor-service.mjs`.
+External monitor service: `scripts/monitor-service.mjs`. Requires Node.js 18+ (Node 24 recommended).
 
-Note: the monitor service uses native `fetch` and requires Node.js 18+ (Node 24 recommended).
+Sources:
+- Primary: `Memory.analytics.production` (via `runProductionMonitor`)
+- CPU Monitor v2: `Memory.analytics.cpuMonitor` and `RawMemory` segment payload `cpuMonitor`
+- Optional debug: `RawMemory.segments[segmentId]` (via `runExternalTelemetryExport`)
 
-- Primary source: `Memory.analytics.production` (already maintained by `runProductionMonitor`)
-- Optional debug source: `RawMemory.segments[segmentId]` produced by `runExternalTelemetryExport`
+### CPU Monitor v2
 
-### 1) Optional: enable segment debug telemetry in game
+CPU Monitor v2 is a diagnostics-only subsystem. It reports and exports CPU data. It does not throttle gameplay, trigger emergency brakes, or alter behavior in any way.
+
+**Runtime storage:**
+- `Memory.analytics.cpuMonitor` — persisted snapshots, summary, config metadata (schema `version: 2`)
+- `RawMemory` segment `cpuMonitor` — compact telemetry payload exported every sample tick
+- Config lives under `Memory.cfg.cpuProfiler` (same namespace as the original profiler)
+
+**v2 data highlights:** total CPU used, bucket, tickLimit, exponential moving average (EMA), top phases, top rooms/roles, heap statistics, fixed-action CPU estimate, bounded history ring buffer.
+
+**Console commands** (run in Screeps console):
+
+```js
+// Enable with defaults (sampleInterval=10, historyLimit=120)
+startCpuProfiler()
+startCpuProfiler(5, 200)     // custom interval and history limit
+stopCpuProfiler()            // disable
+statusCpuProfiler()          // show current config and state
+
+cpuMonitor()                 // formatted v2 summary (version, EMA, top phases, rooms, heap)
+
+// Raw JSON variants
+startCpuProfilerRaw()
+stopCpuProfilerRaw()
+statusCpuProfilerRaw()
+cpuMonitorRaw()
+```
+
+**Config fields** (set via `Memory.cfg.cpuProfiler`):
+
+| Field | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Master switch |
+| `sampleInterval` | `10` | Ticks between samples (min 1, max 60) |
+| `historyLimit` | `120` | Ring buffer depth (min 10, max 500) |
+| `emaAlpha` | `0.1` | EMA smoothing factor (> 0, ≤ 1) |
+| `roomRoleAggregation` | `true` | Track CPU per room/role |
+| `heapStats` | `true` | Capture `Game.cpu.getHeapStatistics()` |
+| `fixedActionCpuCost` | `0.2` | Estimated CPU cost per fixed action |
+
+### Enable segment debug telemetry
 
 Run in Screeps console:
 
@@ -81,66 +122,77 @@ Memory.cfg.telemetry = {
   segmentId: 90
 }
 
-// Quick global commands
-startTelemetry()      // use defaults: sampleInterval=10, segmentId=90
-startTelemetry(5, 91) // custom sample interval and segment
-stopTelemetry()       // disable export quickly
-statusTelemetry()     // inspect current telemetry config
-
-Memory.cfg.cpuProfiler = {
-  enabled: true,
-  sampleInterval: 10,
-  historyLimit: 120
-}
-
-startCpuProfiler()          // defaults: sampleInterval=10, historyLimit=120
-startCpuProfiler(5, 200)    // custom sample interval and history
-stopCpuProfiler()           // disable profiler quickly
-statusCpuProfiler()         // inspect current cpu profiler config
+startTelemetry()      // defaults: sampleInterval=10, segmentId=90
+startTelemetry(5, 91) // custom
+stopTelemetry()
+statusTelemetry()
 ```
 
-### 2) Run the monitor
+### Run the monitor
 
-If `.secret.json` has `main.token`, token is loaded automatically.
+Token is loaded from `.secret.json` when present.
 
 ```bash
 npm run monitor:serve
 ```
 
-With explicit token and segment polling:
+Explicit token and segment polling:
 
 ```bash
 SCREEPS_TOKEN=your-token SCREEPS_MONITOR_SEGMENT_ID=90 npm run monitor:serve
 ```
 
-If your active room is on a non-default shard (for example `shard2`):
+Non-default shard:
 
 ```bash
 SCREEPS_MONITOR_SHARD=shard2 SCREEPS_MONITOR_SEGMENT_ID=90 npm run monitor:serve
 ```
 
-One-shot snapshot mode:
+One-shot mode:
 
 ```bash
 npm run monitor:once
 ```
 
-### 3) Read monitor outputs
+Fixture mode (no token, no API call):
 
-- HTTP summary: `http://127.0.0.1:3131/`
+```bash
+node scripts/monitor-service.mjs --once \
+  --memory-fixture .sisyphus/fixtures/task-8-cpu-monitor-v2-memory.json \
+  --segment-id off --output off --no-http
+```
+
+### Monitor HTTP endpoints
+
+- Summary: `http://127.0.0.1:3131/`
 - Health: `http://127.0.0.1:3131/health`
 - Full state: `http://127.0.0.1:3131/state`
-- Room list: `http://127.0.0.1:3131/rooms`
+- Rooms: `http://127.0.0.1:3131/rooms`
 - Poll history: `http://127.0.0.1:3131/history`
-- Module CPU: `http://127.0.0.1:3131/cpu`
+- CPU data: `http://127.0.0.1:3131/cpu`
 - Hub analytics: `http://127.0.0.1:3131/hub`
 
-Snapshots are appended to `monitor-data/snapshots.jsonl` by default.
+Snapshots append to `monitor-data/snapshots.jsonl`.
 
-When hub is enabled, `npm run monitor:once` includes a hub progress summary under `memory.hub`.
+### `/cpu` endpoint keys
+
+The `/cpu` endpoint returns v2 data first, with read-only legacy fallback:
+
+| Key | Source | Description |
+|---|---|---|
+| `memoryCpuMonitor` | `Memory.analytics.cpuMonitor` | v2 snapshot, summary, config |
+| `segmentCpuMonitor` | `RawMemory` segment | v2 segment payload (when available) |
+| `segmentCpuMonitorHistory` | `RawMemory` segment | v2 history array from segment |
+| `segmentSchemaVersion` | `RawMemory` segment | Schema version (expected: `2`) |
+| `memoryModuleCpu` | `Memory.analytics.moduleCpu` | Legacy, read-only fallback |
+| `segmentModuleCpu` | `RawMemory` segment | Legacy, read-only fallback |
+
+`cpuMonitor` is the canonical v2 namespace. The older `moduleCpu` is kept as a secondary read-only fallback for old fixtures and API responses.
+
+When hub is enabled, `npm run monitor:once` includes hub progress under `memory.hub`.
 
 - `SCREEPS_MONITOR_SHARD=<shard>` explicitly selects a shard; if omitted, the service falls back automatically.
-- Screeps console: `hubProgressRaw()` returns the raw hub progress snapshot; `hubProgress()` returns pretty-printed JSON.
+- Screeps console: `hubProgressRaw()` returns raw hub progress; `hubProgress()` returns pretty-printed JSON.
 
 ## RoomPlanner Auto Construction
 
