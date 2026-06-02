@@ -1,9 +1,10 @@
 /**
- * CPU Monitor v2 — types, config defaults, and normalization.
+ * CPU Monitor v2 — types, config defaults, normalization, and runtime store.
  *
- * This module defines the canonical v2 schema for CPU monitoring.
- * Runtime store, EMA, heap capture, profiler rewrite, main-loop integration,
- * console commands, and telemetry migration live in later tasks.
+ * This module defines the canonical v2 schema for CPU monitoring and provides
+ * the global store, history, EMA, summary, heap capture, and persistence helpers.
+ * Profiler rewrite, main-loop integration, console commands, and telemetry
+ * migration live in later tasks.
  */
 
 import {
@@ -12,6 +13,7 @@ import {
   CPU_PROFILER_MIN_HISTORY_LIMIT,
   CPU_PROFILER_MIN_SAMPLE_INTERVAL,
 } from "@/runtime/cpuProfilerConfig";
+import { getMemoryService } from "@/runtime/runtimeServices";
 
 // ─── v2 Config ────────────────────────────────────────────────────────────────
 
@@ -199,5 +201,181 @@ export function normalizeCpuMonitorConfig(raw: CpuMonitorRawConfig | undefined |
     roomRoleAggregation: raw.roomRoleAggregation !== false,
     heapStats: raw.heapStats !== false,
     fixedActionCpuCost: normalizeFixedActionCpuCost(raw.fixedActionCpuCost),
+  };
+}
+
+// ─── Global store ─────────────────────────────────────────────────────────────
+
+interface CpuMonitorGlobalStore {
+  history: CpuMonitorSnapshotV2[];
+  emaTotalUsed: number;
+  seeded: boolean;
+}
+
+type GlobalWithCpuMonitor = typeof global & {
+  __cpuMonitor?: CpuMonitorGlobalStore;
+};
+
+const cpuMonitorGlobal: GlobalWithCpuMonitor = global;
+
+function ensureCpuMonitorStore(): CpuMonitorGlobalStore {
+  if (!cpuMonitorGlobal.__cpuMonitor) {
+    cpuMonitorGlobal.__cpuMonitor = {
+      history: [],
+      emaTotalUsed: 0,
+      seeded: false,
+    };
+  }
+  return cpuMonitorGlobal.__cpuMonitor;
+}
+
+export function getCpuMonitorHistory(): CpuMonitorSnapshotV2[] {
+  return ensureCpuMonitorStore().history;
+}
+
+export function getCpuMonitorEma(): number {
+  return ensureCpuMonitorStore().emaTotalUsed;
+}
+
+export function resetCpuMonitorStore(): void {
+  cpuMonitorGlobal.__cpuMonitor = {
+    history: [],
+    emaTotalUsed: 0,
+    seeded: false,
+  };
+}
+
+// ─── EMA helper ───────────────────────────────────────────────────────────────
+
+function safeFinite(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+export function computeEma(currentEma: number, newValue: number, alpha: number, seeded: boolean): number {
+  const safeValue = safeFinite(newValue, 0);
+  const safeAlpha = safeFinite(alpha, CPU_MONITOR_DEFAULTS.emaAlpha);
+  if (!seeded) {
+    return safeFinite(safeValue, 0);
+  }
+  const safeCurrent = safeFinite(currentEma, 0);
+  return safeCurrent * (1 - safeAlpha) + safeValue * safeAlpha;
+}
+
+// ─── Heap capture ─────────────────────────────────────────────────────────────
+
+export function captureCpuMonitorHeap(config: CpuMonitorConfig): CpuMonitorHeapSnapshot | null {
+  if (!config.heapStats) {
+    return null;
+  }
+  if (typeof Game.cpu.getHeapStatistics !== "function") {
+    return null;
+  }
+  try {
+    const stats = Game.cpu.getHeapStatistics();
+    return {
+      total_heap_size: safeFinite(stats.total_heap_size, 0),
+      total_heap_size_executable: safeFinite(stats.total_heap_size_executable, 0),
+      total_physical_size: safeFinite(stats.total_physical_size, 0),
+      total_available_size: safeFinite(stats.total_available_size, 0),
+      used_heap_size: safeFinite(stats.used_heap_size, 0),
+      heap_size_limit: safeFinite(stats.heap_size_limit, 0),
+      malloced_memory: safeFinite(stats.malloced_memory, 0),
+      peak_malloced_memory: safeFinite(stats.peak_malloced_memory, 0),
+      does_zap_garbage: safeFinite(stats.does_zap_garbage, 0),
+      externally_allocated_size: safeFinite(stats.externally_allocated_size, 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Summary calculations ─────────────────────────────────────────────────────
+
+export function computeCpuMonitorSummary(history: CpuMonitorSnapshotV2[], emaTotalUsed: number): CpuMonitorSummaryV2 | null {
+  if (history.length === 0) {
+    return null;
+  }
+
+  let sumTotalUsed = 0;
+  let maxTotalUsed = -Infinity;
+  let sumBucket = 0;
+  let minBucket = Infinity;
+  let maxBucket = -Infinity;
+  let sumUntracked = 0;
+  const phaseSums: Record<string, number> = {};
+  const fixedActionSums: Record<string, number> = {};
+
+  for (const entry of history) {
+    const total = safeFinite(entry.totalUsed, 0);
+    const bucket = safeFinite(entry.bucket, 0);
+    const untracked = safeFinite(entry.untracked, 0);
+
+    sumTotalUsed += total;
+    if (total > maxTotalUsed) maxTotalUsed = total;
+    sumBucket += bucket;
+    if (bucket < minBucket) minBucket = bucket;
+    if (bucket > maxBucket) maxBucket = bucket;
+    sumUntracked += untracked;
+
+    for (const [phase, used] of Object.entries(entry.phases)) {
+      phaseSums[phase] = (phaseSums[phase] || 0) + safeFinite(used, 0);
+    }
+    for (const [action, count] of Object.entries(entry.fixedActionCounts)) {
+      fixedActionSums[action] = (fixedActionSums[action] || 0) + safeFinite(count, 0);
+    }
+  }
+
+  const ticks = history.length;
+  const avgPhases: Record<string, number> = {};
+  for (const [phase, sum] of Object.entries(phaseSums)) {
+    avgPhases[phase] = sum / ticks;
+  }
+  const avgFixedActionCounts: Record<string, number> = {};
+  for (const [action, sum] of Object.entries(fixedActionSums)) {
+    avgFixedActionCounts[action] = sum / ticks;
+  }
+
+  return {
+    ticks,
+    avgTotalUsed: sumTotalUsed / ticks,
+    maxTotalUsed,
+    minBucket,
+    maxBucket,
+    avgBucket: sumBucket / ticks,
+    avgUntracked: sumUntracked / ticks,
+    avgPhases,
+    avgFixedActionCounts,
+    emaTotalUsed: safeFinite(emaTotalUsed, 0),
+  };
+}
+
+// ─── Sample persistence ───────────────────────────────────────────────────────
+
+export function persistCpuMonitorSample(
+  snapshot: CpuMonitorSnapshotV2,
+  config: CpuMonitorConfig,
+): void {
+  const store = ensureCpuMonitorStore();
+
+  store.emaTotalUsed = computeEma(store.emaTotalUsed, snapshot.totalUsed, config.emaAlpha, store.seeded);
+  store.seeded = true;
+
+  snapshot.emaTotalUsed = store.emaTotalUsed;
+
+  store.history.push(snapshot);
+  while (store.history.length > config.historyLimit) {
+    store.history.shift();
+  }
+
+  const analytics = getMemoryService().ensureAnalytics();
+  const summary = computeCpuMonitorSummary(store.history, store.emaTotalUsed);
+
+  analytics.cpuMonitor = {
+    version: 2,
+    updatedAt: snapshot.tick,
+    sampleInterval: config.sampleInterval,
+    historyLimit: config.historyLimit,
+    latest: snapshot,
+    summary,
   };
 }

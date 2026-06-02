@@ -13,8 +13,15 @@ import { registerRuntimeServices } from "@/runtime/runtimeServices";
 import {
   normalizeCpuMonitorConfig,
   CPU_MONITOR_DEFAULTS,
+  getCpuMonitorHistory,
+  getCpuMonitorEma,
+  resetCpuMonitorStore,
+  computeEma,
+  captureCpuMonitorHeap,
+  computeCpuMonitorSummary,
+  persistCpuMonitorSample,
 } from "@/runtime/cpuMonitor";
-import type { CpuMonitorConfig, CpuMonitorRawConfig } from "@/runtime/cpuMonitor";
+import type { CpuMonitorConfig, CpuMonitorRawConfig, CpuMonitorSnapshotV2 } from "@/runtime/cpuMonitor";
 
 /**
  * Characterization tests for CPU phase profiler contracts.
@@ -37,6 +44,8 @@ beforeEach(() => {
   registerRuntimeServices();
   // Reset cpu profiler history store
   (global as any).__cpuPhaseHistory = undefined;
+  // Reset cpu monitor global store
+  (global as any).__cpuMonitor = undefined;
   // Reset active profiler to noop
   setActiveTickCpuProfiler(createTickCpuProfiler());
 });
@@ -44,6 +53,7 @@ beforeEach(() => {
 afterEach(() => {
   (global as any).__runtimeServices = undefined;
   (global as any).__cpuPhaseHistory = undefined;
+  (global as any).__cpuMonitor = undefined;
 });
 
 // ─── Noop / disabled profiler ────────────────────────────────────────────────
@@ -697,5 +707,276 @@ describe("cpu monitor v2 config normalization", () => {
       heapStats: false,
       fixedActionCpuCost: 0.5,
     } satisfies CpuMonitorConfig);
+  });
+});
+
+// ─── Global store lifecycle ──────────────────────────────────────────────────
+
+describe("fresh deploy", () => {
+  it("global store starts empty", () => {
+    expect((global as any).__cpuMonitor).toBeUndefined();
+    expect(getCpuMonitorHistory()).toEqual([]);
+    expect(getCpuMonitorEma()).toBe(0);
+  });
+
+  it("getCpuMonitorHistory returns the same reference on repeated calls", () => {
+    const h1 = getCpuMonitorHistory();
+    const h2 = getCpuMonitorHistory();
+    expect(h1).toBe(h2);
+  });
+
+  it("resetCpuMonitorStore clears history and EMA", () => {
+    const store = getCpuMonitorHistory();
+    store.push({ tick: 1 } as CpuMonitorSnapshotV2);
+    expect(getCpuMonitorHistory()).toHaveLength(1);
+
+    resetCpuMonitorStore();
+    expect(getCpuMonitorHistory()).toEqual([]);
+    expect(getCpuMonitorEma()).toBe(0);
+  });
+
+  it("global reset creates fresh store", () => {
+    getCpuMonitorHistory().push({ tick: 1 } as CpuMonitorSnapshotV2);
+    (global as any).__cpuMonitor = undefined;
+    expect(getCpuMonitorHistory()).toEqual([]);
+  });
+});
+
+// ─── EMA helper ───────────────────────────────────────────────────────────────
+
+describe("computeEma", () => {
+  it("seeds EMA from first sample when not seeded", () => {
+    expect(computeEma(0, 15, 0.1, false)).toBe(15);
+  });
+
+  it("seeds EMA even if current EMA was non-zero", () => {
+    expect(computeEma(99, 10, 0.1, false)).toBe(10);
+  });
+
+  it("applies standard EMA formula when seeded", () => {
+    const result = computeEma(10, 20, 0.1, true);
+    expect(result).toBeCloseTo(10 * 0.9 + 20 * 0.1, 10);
+  });
+
+  it("returns finite value for NaN input", () => {
+    expect(computeEma(NaN, 10, 0.1, false)).toBe(10);
+    expect(Number.isFinite(computeEma(10, NaN, 0.1, true))).toBe(true);
+  });
+
+  it("returns finite value for Infinity input", () => {
+    expect(Number.isFinite(computeEma(10, Infinity, 0.1, true))).toBe(true);
+    expect(Number.isFinite(computeEma(Infinity, 10, 0.1, false))).toBe(true);
+  });
+
+  it("clamps NaN alpha to default", () => {
+    const result = computeEma(10, 20, NaN, true);
+    const expected = 10 * (1 - CPU_MONITOR_DEFAULTS.emaAlpha) + 20 * CPU_MONITOR_DEFAULTS.emaAlpha;
+    expect(result).toBeCloseTo(expected, 10);
+  });
+});
+
+// ─── History limit ────────────────────────────────────────────────────────────
+
+describe("history limit", () => {
+  let config: CpuMonitorConfig;
+
+  beforeEach(() => {
+    Game.time = 100;
+    Game.shard = { name: "shard3" } as Game["shard"];
+    Game.cpu = {
+      getUsed: jest.fn(() => 0),
+      bucket: 9000,
+      limit: 20,
+      tickLimit: 500,
+    } as unknown as typeof Game.cpu;
+    config = { ...CPU_MONITOR_DEFAULTS, enabled: true, historyLimit: 15, sampleInterval: 1 };
+  });
+
+  function makeSnapshot(tick: number, totalUsed: number): CpuMonitorSnapshotV2 {
+    return {
+      tick,
+      shard: "shard3",
+      totalUsed,
+      bucket: 9000,
+      limit: 20,
+      tickLimit: 500,
+      phases: {},
+      fixedActionCounts: {},
+      untracked: 0,
+      emaTotalUsed: 0,
+      rooms: {},
+      heap: null,
+    };
+  }
+
+  it("trims history to historyLimit", () => {
+    const limit = 15;
+    config.historyLimit = limit;
+
+    for (let i = 0; i < 30; i++) {
+      Game.time = 100 + i;
+      persistCpuMonitorSample(makeSnapshot(100 + i, 5 + i), config);
+    }
+
+    expect(getCpuMonitorHistory()).toHaveLength(limit);
+    expect(getCpuMonitorHistory()[0].tick).toBe(115);
+    expect(getCpuMonitorHistory()[limit - 1].tick).toBe(129);
+  });
+
+  it("persists latest + summary to Memory.analytics.cpuMonitor", () => {
+    persistCpuMonitorSample(makeSnapshot(100, 10), config);
+
+    const persisted = Memory.analytics!.cpuMonitor!;
+    expect(persisted.version).toBe(2);
+    expect(persisted.updatedAt).toBe(100);
+    expect(persisted.sampleInterval).toBe(1);
+    expect(persisted.historyLimit).toBe(15);
+    expect(persisted.latest.tick).toBe(100);
+    expect(persisted.latest.emaTotalUsed).toBe(10);
+    expect(persisted.summary).not.toBeNull();
+    expect(persisted.summary!.ticks).toBe(1);
+    expect(persisted.summary!.avgTotalUsed).toBeCloseTo(10, 5);
+    expect(persisted.summary!.emaTotalUsed).toBe(10);
+  });
+
+  it("computes summary correctly over multiple samples", () => {
+    const values = [10, 20, 30];
+    for (let i = 0; i < values.length; i++) {
+      persistCpuMonitorSample(makeSnapshot(100 + i, values[i]), config);
+    }
+
+    const summary = Memory.analytics!.cpuMonitor!.summary!;
+    expect(summary.ticks).toBe(3);
+    expect(summary.avgTotalUsed).toBeCloseTo(20, 5);
+    expect(summary.maxTotalUsed).toBe(30);
+    expect(summary.minBucket).toBe(9000);
+    expect(summary.maxBucket).toBe(9000);
+    expect(summary.avgBucket).toBeCloseTo(9000, 5);
+    expect(summary.avgUntracked).toBeCloseTo(0, 5);
+  });
+
+  it("full history stays in global only, not in Memory", () => {
+    for (let i = 0; i < 20; i++) {
+      persistCpuMonitorSample(makeSnapshot(100 + i, 5), config);
+    }
+
+    expect(getCpuMonitorHistory()).toHaveLength(15);
+    expect(Memory.analytics!.cpuMonitor!.latest).toBeDefined();
+    expect((Memory.analytics!.cpuMonitor as any).history).toBeUndefined();
+  });
+});
+
+// ─── Summary calculations ─────────────────────────────────────────────────────
+
+describe("computeCpuMonitorSummary", () => {
+  it("returns null for empty history", () => {
+    expect(computeCpuMonitorSummary([], 0)).toBeNull();
+  });
+
+  it("computes avgPhases across entries", () => {
+    const history: CpuMonitorSnapshotV2[] = [
+      { tick: 1, shard: "s", totalUsed: 10, bucket: 9000, limit: 20, tickLimit: 500, phases: { a: 3, b: 2 }, fixedActionCounts: {}, untracked: 5, emaTotalUsed: 0, rooms: {}, heap: null },
+      { tick: 2, shard: "s", totalUsed: 12, bucket: 8900, limit: 20, tickLimit: 500, phases: { a: 5, b: 1 }, fixedActionCounts: { x: 3 }, untracked: 6, emaTotalUsed: 0, rooms: {}, heap: null },
+    ];
+
+    const summary = computeCpuMonitorSummary(history, 11)!;
+    expect(summary.avgPhases.a).toBeCloseTo(4, 5);
+    expect(summary.avgPhases.b).toBeCloseTo(1.5, 5);
+    expect(summary.avgFixedActionCounts.x).toBeCloseTo(1.5, 5);
+    expect(summary.avgTotalUsed).toBeCloseTo(11, 5);
+    expect(summary.emaTotalUsed).toBe(11);
+  });
+
+  it("handles NaN in snapshot fields gracefully", () => {
+    const history: CpuMonitorSnapshotV2[] = [
+      { tick: 1, shard: "s", totalUsed: NaN, bucket: Infinity, limit: 20, tickLimit: 500, phases: {}, fixedActionCounts: {}, untracked: NaN, emaTotalUsed: 0, rooms: {}, heap: null },
+    ];
+
+    const summary = computeCpuMonitorSummary(history, 0)!;
+    expect(Number.isFinite(summary.avgTotalUsed)).toBe(true);
+    expect(Number.isFinite(summary.avgBucket)).toBe(true);
+    expect(Number.isFinite(summary.avgUntracked)).toBe(true);
+    expect(Number.isFinite(summary.emaTotalUsed)).toBe(true);
+  });
+});
+
+// ─── Heap capture ─────────────────────────────────────────────────────────────
+
+describe("heap", () => {
+  let config: CpuMonitorConfig;
+
+  beforeEach(() => {
+    config = { ...CPU_MONITOR_DEFAULTS, enabled: true };
+    Game.cpu = {
+      getUsed: jest.fn(() => 0),
+      bucket: 9000,
+      limit: 20,
+      tickLimit: 500,
+    } as unknown as typeof Game.cpu;
+  });
+
+  it("returns null when heapStats disabled", () => {
+    config.heapStats = false;
+    expect(captureCpuMonitorHeap(config)).toBeNull();
+  });
+
+  it("returns null when getHeapStatistics absent", () => {
+    delete (Game.cpu as any).getHeapStatistics;
+    expect(captureCpuMonitorHeap(config)).toBeNull();
+  });
+
+  it("returns null when getHeapStatistics is not a function", () => {
+    (Game.cpu as any).getHeapStatistics = "not a function";
+    expect(captureCpuMonitorHeap(config)).toBeNull();
+  });
+
+  it("captures heap when API is available", () => {
+    (Game.cpu as any).getHeapStatistics = jest.fn(() => ({
+      total_heap_size: 1000000,
+      total_heap_size_executable: 500000,
+      total_physical_size: 900000,
+      total_available_size: 800000,
+      used_heap_size: 600000,
+      heap_size_limit: 2000000,
+      malloced_memory: 10000,
+      peak_malloced_memory: 20000,
+      does_zap_garbage: 1,
+      externally_allocated_size: 5000,
+    }));
+
+    const heap = captureCpuMonitorHeap(config);
+    expect(heap).not.toBeNull();
+    expect(heap!.total_heap_size).toBe(1000000);
+    expect(heap!.used_heap_size).toBe(600000);
+    expect(heap!.heap_size_limit).toBe(2000000);
+  });
+
+  it("returns null when getHeapStatistics throws", () => {
+    (Game.cpu as any).getHeapStatistics = jest.fn(() => {
+      throw new Error("IVM error");
+    });
+
+    expect(captureCpuMonitorHeap(config)).toBeNull();
+  });
+
+  it("sanitizes NaN heap fields to zero", () => {
+    (Game.cpu as any).getHeapStatistics = jest.fn(() => ({
+      total_heap_size: NaN,
+      total_heap_size_executable: Infinity,
+      total_physical_size: -Infinity,
+      total_available_size: 800000,
+      used_heap_size: 600000,
+      heap_size_limit: 2000000,
+      malloced_memory: 10000,
+      peak_malloced_memory: 20000,
+      does_zap_garbage: 1,
+      externally_allocated_size: 5000,
+    }));
+
+    const heap = captureCpuMonitorHeap(config)!;
+    expect(heap.total_heap_size).toBe(0);
+    expect(heap.total_heap_size_executable).toBe(0);
+    expect(heap.total_physical_size).toBe(0);
+    expect(heap.total_available_size).toBe(800000);
   });
 });
