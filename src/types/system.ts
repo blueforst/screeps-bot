@@ -21,7 +21,9 @@ export type RoleName =
   | "powerBankAttacker"
   | "powerBankHealer"
   | "powerBankHauler"
-  | "remoteMiningReserver";
+  | "remoteMiningReserver"
+  | "remoteWorker"
+  | "remoteDefender";
 export type WorkerTaskType = "build" | "upgrade" | "repair" | "dismantle";
 export type RoomType = "normal" | "reserved" | "industrial";
 

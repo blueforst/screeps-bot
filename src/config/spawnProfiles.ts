@@ -170,6 +170,59 @@ function powerBankHaulerBody(room: Room): BodyPartConstant[] {
   return clampByCapacity(parts, room);
 }
 
+function remoteDefenderBody(room: Room): BodyPartConstant[] {
+  const capacity = room.energyCapacityAvailable;
+  const rangedCost = BODYPART_COST[RANGED_ATTACK];
+  const healCost = BODYPART_COST[HEAL];
+  const moveCost = BODYPART_COST[MOVE];
+  const minFull = rangedCost + healCost + moveCost * 2;
+
+  if (capacity < minFull) {
+    return [RANGED_ATTACK, MOVE];
+  }
+
+  let bestSlots = 0;
+  for (let slots = 25; slots >= 2; slots--) {
+    const healCount = Math.max(1, Math.round(slots * 0.3));
+    const rangedCount = slots - healCount;
+    if (rangedCount < 1) continue;
+    const totalParts = rangedCount + healCount + slots;
+    if (totalParts > MAX_BODY_SIZE) continue;
+    const totalCost = rangedCount * rangedCost + healCount * healCost + slots * moveCost;
+    if (totalCost <= capacity) {
+      bestSlots = slots;
+      break;
+    }
+  }
+
+  if (bestSlots === 0) {
+    return [RANGED_ATTACK, HEAL, MOVE, MOVE];
+  }
+
+  const healCount = Math.max(1, Math.round(bestSlots * 0.3));
+  const rangedCount = bestSlots - healCount;
+
+  const parts: BodyPartConstant[] = [];
+  for (let i = 0; i < rangedCount; i++) parts.push(RANGED_ATTACK);
+  for (let i = 0; i < healCount; i++) parts.push(HEAL);
+  for (let i = 0; i < bestSlots; i++) parts.push(MOVE);
+
+  return parts;
+}
+
+function remoteWorkerBody(room: Room): BodyPartConstant[] {
+  const tripletCost = BODYPART_COST[WORK] + BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
+  const maxTriplets = 10;
+  const tripletCount = Math.max(1, Math.min(maxTriplets, Math.floor(room.energyCapacityAvailable / tripletCost)));
+  const parts: BodyPartConstant[] = [];
+
+  for (let i = 0; i < tripletCount; i++) {
+    parts.push(WORK, CARRY, MOVE);
+  }
+
+  return clampByCapacity(parts, room);
+}
+
 function remoteMiningCarrierBody(room: Room): BodyPartConstant[] {
   const capacity = room.energyCapacityAvailable;
 
@@ -227,4 +280,6 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   powerBankAttacker: powerBankAttackerBody,
   powerBankHealer: powerBankHealerBody,
   powerBankHauler: powerBankHaulerBody,
+  remoteWorker: remoteWorkerBody,
+  remoteDefender: remoteDefenderBody,
 };

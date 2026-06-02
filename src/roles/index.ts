@@ -19,6 +19,8 @@ import { powerBankScoutRole } from "@/roles/powerBankScout";
 import { remoteCarrierRole } from "@/roles/remoteCarrier";
 import { remoteMiningCarrierRole } from "@/roles/remoteMiningCarrier";
 import { remoteMiningReserverRole } from "@/roles/remoteMiningReserver";
+import { remoteDefenderRole } from "@/roles/remoteDefender";
+import { remoteWorkerRole } from "@/roles/remoteWorker";
 import { scoutRole } from "@/roles/scout";
 import { workerRole } from "@/roles/worker";
 import type { RoleFactory, RoleName } from "@/types/system";
@@ -43,6 +45,8 @@ export const roleRegistry: Record<RoleName, RoleFactory> = {
   remoteCarrier: remoteCarrierRole,
   remoteMiningCarrier: remoteMiningCarrierRole,
   remoteMiningReserver: remoteMiningReserverRole,
+  remoteWorker: remoteWorkerRole,
+  remoteDefender: remoteDefenderRole,
   powerBankScout: powerBankScoutRole,
   powerBankAttacker: powerBankAttackerRole,
   powerBankHealer: powerBankHealerRole,
