@@ -388,6 +388,8 @@ function isOutboundNonWarRole(role: CreepConfig["role"]): boolean {
     role === "remoteCarrier" ||
     role === "remoteMiningCarrier" ||
     role === "remoteMiningReserver" ||
+    role === "remoteWorker" ||
+    role === "remoteDefender" ||
     role === "claimer" ||
     role === "scout" ||
     role === "powerBankScout" ||

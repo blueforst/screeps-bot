@@ -1105,3 +1105,129 @@ describe("remoteMiningReserver spawn planner", () => {
     expect(outboundMatch![0]).toContain("remoteMiningReserver");
   });
 });
+
+describe("remoteWorker and remoteDefender defense mode", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  it("does not queue remoteWorker when source room is in defense mode", () => {
+    const room = createRoom("W8N1");
+    const spawn = createSpawn(room);
+    const configName = "W8N1:remoteMine:W8N0:worker:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps["carrier-rw"] = {
+      name: "carrier-rw",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "remoteWorker",
+          args: ["W8N0"],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configName);
+  });
+
+  it("queues remoteWorker when source room is not in defense mode", () => {
+    const room = createRoom("W8N2");
+    const spawn = createSpawn(room);
+    const configName = "W8N2:remoteMine:W8N1:worker:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps["carrier-rw2"] = {
+      name: "carrier-rw2",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "remoteWorker",
+          args: ["W8N1"],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (isDefenseMode as jest.Mock).mockReturnValue(false);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(configName);
+  });
+
+  it("does not queue remoteDefender when source room is in defense mode", () => {
+    const room = createRoom("W9N1");
+    const spawn = createSpawn(room);
+    const configName = "W9N1:remoteMine:W9N0:defender:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps["carrier-rd"] = {
+      name: "carrier-rd",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "remoteDefender",
+          args: ["W9N0"],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configName);
+  });
+
+  it("queues remoteDefender when source room is not in defense mode", () => {
+    const room = createRoom("W9N2");
+    const spawn = createSpawn(room);
+    const configName = "W9N2:remoteMine:W9N1:defender:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps["carrier-rd2"] = {
+      name: "carrier-rd2",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "remoteDefender",
+          args: ["W9N1"],
+          roomName: room.name,
+        },
+      },
+    } as Memory["data"];
+    (isDefenseMode as jest.Mock).mockReturnValue(false);
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(configName);
+  });
+
+  it("remoteWorker and remoteDefender are in the outbound non-war role list", () => {
+    const { readFileSync } = require("fs");
+    const { resolve } = require("path");
+    const src = readFileSync(resolve(__dirname, "spawnPlanner.ts"), "utf-8");
+
+    const outboundMatch = src.match(/function isOutboundNonWarRole[\s\S]*?^}/m);
+    expect(outboundMatch).not.toBeNull();
+    expect(outboundMatch![0]).toContain("remoteWorker");
+    expect(outboundMatch![0]).toContain("remoteDefender");
+  });
+});
