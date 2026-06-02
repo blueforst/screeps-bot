@@ -27,10 +27,12 @@ const VALID_ROLES = new Set([
   "crossShardColonizerWorker",
   "flagScout",
   "remoteCarrier",
+  "remoteMiningCarrier",
   "powerBankScout",
   "powerBankAttacker",
   "powerBankHealer",
   "powerBankHauler",
+  "remoteMiningReserver",
 ]);
 const ROOM_PLANNER_TTL = 50000;
 const INTER_SHARD_PORTAL_TTL = 10000;

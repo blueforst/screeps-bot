@@ -147,6 +147,24 @@ describe("runMemoryCleanup", () => {
     });
   });
 
+  it("preserves remoteMiningReserver configs during legacy cleanup", () => {
+    Memory.data = {
+      creepConfigs: {
+        reserverConfig: { role: "remoteMiningReserver", args: ["W2N2"] },
+      },
+    };
+    Game.creeps = {
+      Reserver1: createManagedCreep("reserverConfig", "remoteMiningReserver"),
+    };
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs?.reserverConfig).toMatchObject({
+      role: "remoteMiningReserver",
+      args: ["W2N2"],
+    });
+  });
+
   it("removes room planner build runtime entries for rooms no longer owned", () => {
     Memory.runtime = {
       roomPlannerBuild: {
