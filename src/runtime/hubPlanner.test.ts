@@ -1839,13 +1839,13 @@ describe("planHubDistribution", () => {
   it("destination terminal capacity caps transfer amount", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
     const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
-    (satRoom.terminal!.store as any).getFreeCapacity = () => 100;
+    (satRoom.terminal!.store as any).getFreeCapacity = () => 40_100;
 
     Game.rooms[SAT_ROOM] = satRoom;
 
     const actions = planHubDistribution(Memory.cfg!.hub!);
 
-    // Shortage is 750, hub has 5000, but terminal free capacity is 100
+    // Shortage is 750, hub has 5000, but terminal capacity above the 40k buffer is 100
     expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=100`);
   });
 
@@ -1878,23 +1878,21 @@ describe("planHubDistribution", () => {
     expect(task!.amount).toBe(1250);
   });
 
-  it("creates export task when satellite storage is full but terminal has free capacity", () => {
+  it("creates no export task when satellite storage lacks the receive buffer", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
     const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
-    // Storage full, terminal has 15000 free (passes combined gate of 10000)
+    // Storage full, terminal has free capacity, but storage lacks the 100k receive buffer.
     (satRoom.storage!.store as any).getFreeCapacity = () => 0;
-    (satRoom.terminal!.store as any).getFreeCapacity = () => 15000;
+    (satRoom.terminal!.store as any).getFreeCapacity = () => 150000;
 
     Game.rooms[SAT_ROOM] = satRoom;
 
     const actions = planHubDistribution(Memory.cfg!.hub!);
 
-    // Shortage is 750, hub has 5000, terminal free is 15000 → capped by shortage (750)
-    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=750`);
+    expect(actions).toHaveLength(0);
     const tasks = Object.values(ensureResourceTransferTaskStore());
     const task = tasks.find((t) => t.reason === `hub:export:${XGHO2}`);
-    expect(task).toBeDefined();
-    expect(task!.amount).toBe(750);
+    expect(task).toBeUndefined();
   });
 
   it("creates no export task when both satellite storage and terminal are full", () => {

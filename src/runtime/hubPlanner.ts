@@ -31,6 +31,8 @@ const DEFAULT_TARGET_COMPOUNDS: ResourceConstant[] = [
 ];
 
 const DEFAULT_RESERVE_PER_ROOM = 2000;
+const DISTRIBUTION_RECEIVER_TERMINAL_FREE_BUFFER = 40_000;
+const DISTRIBUTION_RECEIVER_STORAGE_FREE_BUFFER = 100_000;
 
 export function getDefaultHubConfig(): NonNullable<Memory["cfg"]>["hub"] {
   return {
@@ -663,7 +665,14 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
   for (const satellite of satellites) {
     const satStorageFree = satellite.storage!.store.getFreeCapacity();
     const satTerminalFree = satellite.terminal!.store.getFreeCapacity();
-    if (satStorageFree + satTerminalFree < 10000) continue;
+    const receivableCapacity = Math.max(
+      0,
+      Math.min(
+        satStorageFree - DISTRIBUTION_RECEIVER_STORAGE_FREE_BUFFER,
+        satTerminalFree - DISTRIBUTION_RECEIVER_TERMINAL_FREE_BUFFER,
+      ),
+    );
+    if (receivableCapacity <= 0) continue;
 
     for (const t3 of targetCompounds) {
       if (hubRemaining[t3] <= 0) continue;
@@ -677,8 +686,7 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
 
       const shortage = reservePerRoom - effectiveTotal;
       const cappedByHub = Math.min(shortage, hubRemaining[t3]);
-      const terminalFree = satellite.terminal!.store.getFreeCapacity();
-      const amount = Math.min(cappedByHub, terminalFree);
+      const amount = Math.min(cappedByHub, receivableCapacity);
 
       if (amount <= 0) continue;
 
@@ -1574,7 +1582,7 @@ export function wireDistributedSynthesis(
   hubReservePerCompound: number,
   reservePerRoom: number,
   hubInventory: Record<string, number>,
-  steps: ChainStep[],
+  _steps: ChainStep[],
   distributedStorage?: boolean,
 ): boolean {
   const eligibleRooms = getEligibleSynthesisRooms();
@@ -1824,7 +1832,7 @@ export function runHubPlanner(): void {
 
   const result = planHubChains(hubInventory, incomingResources, chainTarget, targetCompounds);
 
-  const importActions = planHubImports(cfg);
+  planHubImports(cfg);
 
   rt.needsPlan = false;
   rt.lastPlanTick = Game.time;
