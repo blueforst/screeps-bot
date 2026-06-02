@@ -1,0 +1,3 @@
+$ npx tsc --noEmit
+(exit 0, no output - clean)
+(re-run after scope mismatch fix)
