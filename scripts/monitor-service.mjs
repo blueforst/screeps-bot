@@ -217,9 +217,17 @@ async function resolveConfig(args) {
   const secret = await readSecretConfig();
   const secretMain = secret && typeof secret.main === "object" ? secret.main : null;
 
+  const memoryFixture =
+    process.env.SCREEPS_MONITOR_MEMORY_FIXTURE || args.memoryFixture || null;
+
   const token = args.token || process.env.SCREEPS_TOKEN || (secretMain && secretMain.token) || null;
-  if (!token) {
+  // Token required for live API; fixture-only mode with no segment can work without token
+  const segmentId = toOptionalInteger(args.segmentId || process.env.SCREEPS_MONITOR_SEGMENT_ID, 0, 99);
+  if (!token && !memoryFixture) {
     throw new Error("Missing Screeps token. Use --token, SCREEPS_TOKEN, or .secret.json main.token.");
+  }
+  if (!token && memoryFixture && segmentId !== null) {
+    throw new Error("Missing Screeps token. Token required for segment fetch even with --memory-fixture. Use --segment-id off to disable.");
   }
 
   const secretBaseUrl = buildBaseUrlFromSecret(secretMain);
@@ -233,7 +241,6 @@ async function resolveConfig(args) {
     5_000,
     3_600_000,
   );
-  const segmentId = toOptionalInteger(args.segmentId || process.env.SCREEPS_MONITOR_SEGMENT_ID, 0, 99);
   const shard = toOptionalShard(args.shard || process.env.SCREEPS_MONITOR_SHARD);
   const segmentIntervalMs = toInteger(
     args.segmentIntervalMs || process.env.SCREEPS_MONITOR_SEGMENT_INTERVAL_MS,
@@ -255,9 +262,6 @@ async function resolveConfig(args) {
     1_000,
     120_000,
   );
-
-  const memoryFixture =
-    process.env.SCREEPS_MONITOR_MEMORY_FIXTURE || args.memoryFixture || null;
 
   const shardsRaw = args.shards || process.env.SCREEPS_MONITOR_SHARDS || "shard0,shard1,shard2,shard3";
   const shardCandidates = String(shardsRaw)
@@ -479,6 +483,7 @@ function summarizeModuleCpu(moduleCpu) {
   if (!moduleCpu || typeof moduleCpu !== "object") {
     return {
       available: false,
+      source: "legacy",
       updatedAt: null,
       sampleInterval: null,
       historyLimit: null,
@@ -499,36 +504,13 @@ function summarizeModuleCpu(moduleCpu) {
     .sort((left, right) => right[1] - left[1])
     .slice(0, 5)
     .map(([phase, used]) => ({ phase, used }));
-  const historyRaw = Array.isArray(moduleCpu.history) ? moduleCpu.history : [];
-  const history = historyRaw
-    .filter((entry) => entry && typeof entry === "object")
-    .map((entry) => {
-      const phases = entry.phases && typeof entry.phases === "object" ? entry.phases : {};
-      const topHistoryPhases = Object.entries(phases)
-        .filter(([, used]) => typeof used === "number" && Number.isFinite(used))
-        .sort((left, right) => right[1] - left[1])
-        .slice(0, 3)
-        .map(([phase, used]) => ({ phase, used }));
-
-      return {
-        tick: typeof entry.tick === "number" ? entry.tick : null,
-        shard: typeof entry.shard === "string" ? entry.shard : null,
-        totalUsed: typeof entry.totalUsed === "number" ? entry.totalUsed : null,
-        bucket: typeof entry.bucket === "number" ? entry.bucket : null,
-        limit: typeof entry.limit === "number" ? entry.limit : null,
-        tickLimit: typeof entry.tickLimit === "number" ? entry.tickLimit : null,
-        untracked: typeof entry.untracked === "number" ? entry.untracked : null,
-        phases,
-        topPhases: topHistoryPhases,
-      };
-    });
 
   return {
     available: true,
+    source: "legacy",
     updatedAt: typeof moduleCpu.updatedAt === "number" ? moduleCpu.updatedAt : null,
     sampleInterval: typeof moduleCpu.sampleInterval === "number" ? moduleCpu.sampleInterval : null,
     historyLimit: typeof moduleCpu.historyLimit === "number" ? moduleCpu.historyLimit : null,
-    history,
     latest: latestRaw
       ? {
           tick: typeof latestRaw.tick === "number" ? latestRaw.tick : null,
@@ -542,6 +524,210 @@ function summarizeModuleCpu(moduleCpu) {
           topPhases,
         }
       : null,
+  };
+}
+
+function summarizeCpuMonitor(cpuMonitor, fallbackModuleCpu) {
+  // Prefer v2 cpuMonitor when present
+  if (cpuMonitor && typeof cpuMonitor === "object" && cpuMonitor.version === 2) {
+    const latestRaw = cpuMonitor.latest && typeof cpuMonitor.latest === "object" ? cpuMonitor.latest : null;
+    const summaryRaw = cpuMonitor.summary && typeof cpuMonitor.summary === "object" ? cpuMonitor.summary : null;
+
+    const phasesRaw = latestRaw && latestRaw.phases && typeof latestRaw.phases === "object" ? latestRaw.phases : {};
+    const normalizedPhases = {};
+    for (const [phase, used] of Object.entries(phasesRaw)) {
+      if (typeof used === "number" && Number.isFinite(used)) {
+        normalizedPhases[phase] = used;
+      }
+    }
+    const topPhases = Object.entries(normalizedPhases)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 5)
+      .map(([phase, used]) => ({ phase, used }));
+
+    // Config: segment shape uses cpuMonitor.config.*, Memory shape uses top-level fields
+    const configRaw = cpuMonitor.config && typeof cpuMonitor.config === "object" ? cpuMonitor.config : {};
+    const sampleInterval = typeof cpuMonitor.sampleInterval === "number" ? cpuMonitor.sampleInterval
+      : typeof configRaw.sampleInterval === "number" ? configRaw.sampleInterval : null;
+    const historyLimit = typeof cpuMonitor.historyLimit === "number" ? cpuMonitor.historyLimit
+      : typeof configRaw.historyLimit === "number" ? configRaw.historyLimit : null;
+    const fixedActionCpuCost = typeof configRaw.fixedActionCpuCost === "number" ? configRaw.fixedActionCpuCost : 0.2;
+
+    // Fixed action estimate — 3-tier priority:
+    // 1. Sum latest.fixedActionCounts * cost (most precise)
+    // 2. latest.fixedActionEstimate if present (segment pre-computed)
+    // 3. summary.fixedActionEstimate fallback (aggregated)
+    const fixedActionCounts = latestRaw && latestRaw.fixedActionCounts && typeof latestRaw.fixedActionCounts === "object"
+      ? latestRaw.fixedActionCounts : {};
+    let fixedActionEstimate = 0;
+    for (const count of Object.values(fixedActionCounts)) {
+      if (typeof count === "number" && Number.isFinite(count)) {
+        fixedActionEstimate += count * fixedActionCpuCost;
+      }
+    }
+    if (fixedActionEstimate === 0) {
+      if (latestRaw && typeof latestRaw.fixedActionEstimate === "number" && Number.isFinite(latestRaw.fixedActionEstimate)) {
+        fixedActionEstimate = latestRaw.fixedActionEstimate;
+      } else if (summaryRaw && typeof summaryRaw.fixedActionEstimate === "number" && Number.isFinite(summaryRaw.fixedActionEstimate)) {
+        fixedActionEstimate = summaryRaw.fixedActionEstimate;
+      }
+    }
+
+    // Top rooms/roles
+    const topRooms = [];
+    const topRoomRoles = [];
+    if (latestRaw && latestRaw.rooms && typeof latestRaw.rooms === "object") {
+      const roomEntries = [];
+      for (const [roomName, roomData] of Object.entries(latestRaw.rooms)) {
+        if (!roomData || typeof roomData !== "object") continue;
+        let roomTotal = typeof roomData.totalUsed === "number" ? roomData.totalUsed : 0;
+        roomEntries.push({ roomName, totalUsed: roomTotal, roles: roomData.roles || {} });
+      }
+      roomEntries.sort((a, b) => b.totalUsed - a.totalUsed);
+      for (const re of roomEntries.slice(0, 5)) {
+        topRooms.push({ room: re.roomName, totalUsed: re.totalUsed });
+        if (re.roles && typeof re.roles === "object") {
+          const roleEntries = Object.entries(re.roles)
+            .filter(([, rd]) => rd && typeof rd === "object")
+            .map(([role, rd]) => ({ room: re.roomName, role, avgUsed: typeof rd.used === "number" ? rd.used : 0, count: typeof rd.count === "number" ? rd.count : 0 }))
+            .sort((a, b) => b.avgUsed - a.avgUsed);
+          for (const rre of roleEntries.slice(0, 3)) {
+            topRoomRoles.push(rre);
+          }
+        }
+      }
+    }
+
+    // Heap
+    const heapRaw = latestRaw && latestRaw.heap ? latestRaw.heap : null;
+    let heap = null;
+    if (heapRaw && typeof heapRaw === "object") {
+      heap = {
+        used_heap_size: typeof heapRaw.used_heap_size === "number" ? heapRaw.used_heap_size : null,
+        total_heap_size: typeof heapRaw.total_heap_size === "number" ? heapRaw.total_heap_size : null,
+        heap_size_limit: typeof heapRaw.heap_size_limit === "number" ? heapRaw.heap_size_limit : null,
+      };
+    }
+
+    // Summary top phases: Memory shape uses avgPhases (record), segment shape uses topPhases (record or array)
+    const summaryTopPhases = [];
+    if (summaryRaw && summaryRaw.avgPhases && typeof summaryRaw.avgPhases === "object" && !Array.isArray(summaryRaw.avgPhases)) {
+      for (const [phase, avg] of Object.entries(summaryRaw.avgPhases).sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+        if (typeof avg === "number" && Number.isFinite(avg)) {
+          summaryTopPhases.push({ phase, avgUsed: avg });
+        }
+      }
+    } else if (summaryRaw && summaryRaw.topPhases && typeof summaryRaw.topPhases === "object" && !Array.isArray(summaryRaw.topPhases)) {
+      // Segment shape: topPhases is a record { phase: avgUsed }
+      for (const [phase, avg] of Object.entries(summaryRaw.topPhases).sort((a, b) => b[1] - a[1]).slice(0, 8)) {
+        if (typeof avg === "number" && Number.isFinite(avg)) {
+          summaryTopPhases.push({ phase, avgUsed: avg });
+        }
+      }
+    } else if (summaryRaw && Array.isArray(summaryRaw.topPhases)) {
+      for (const entry of summaryRaw.topPhases.slice(0, 8)) {
+        if (entry && typeof entry === "object") {
+          const phase = typeof entry.phase === "string" ? entry.phase : String(entry.phase ?? "");
+          const avgUsed = typeof entry.avgUsed === "number" && Number.isFinite(entry.avgUsed) ? entry.avgUsed : 0;
+          if (phase) summaryTopPhases.push({ phase, avgUsed });
+        }
+      }
+    }
+
+    // Summary top room roles (segment shape)
+    const summaryTopRoomRoles = [];
+    if (summaryRaw && Array.isArray(summaryRaw.topRoomRoles)) {
+      for (const entry of summaryRaw.topRoomRoles.slice(0, 10)) {
+        if (entry && typeof entry === "object") {
+          summaryTopRoomRoles.push({
+            room: typeof entry.room === "string" ? entry.room : "",
+            role: typeof entry.role === "string" ? entry.role : "",
+            avgUsed: typeof entry.avgUsed === "number" && Number.isFinite(entry.avgUsed) ? entry.avgUsed : 0,
+            count: typeof entry.count === "number" ? entry.count : 0,
+          });
+        }
+      }
+    }
+
+    // History size
+    const historyRaw = Array.isArray(cpuMonitor.history) ? cpuMonitor.history : null;
+    const historySize = historyRaw ? historyRaw.length : null;
+
+    return {
+      available: true,
+      version: 2,
+      source: "cpuMonitor",
+      updatedAt: typeof cpuMonitor.updatedAt === "number" ? cpuMonitor.updatedAt : null,
+      sampleInterval,
+      historyLimit,
+      config: Object.keys(configRaw).length > 0 ? { fixedActionCpuCost, sampleInterval, historyLimit } : null,
+      historySize,
+      latest: latestRaw
+        ? {
+            tick: typeof latestRaw.tick === "number" ? latestRaw.tick : null,
+            shard: typeof latestRaw.shard === "string" ? latestRaw.shard : null,
+            totalUsed: typeof latestRaw.totalUsed === "number" ? latestRaw.totalUsed : null,
+            bucket: typeof latestRaw.bucket === "number" ? latestRaw.bucket : null,
+            limit: typeof latestRaw.limit === "number" ? latestRaw.limit : null,
+            tickLimit: typeof latestRaw.tickLimit === "number" ? latestRaw.tickLimit : null,
+            untracked: typeof latestRaw.untracked === "number" ? latestRaw.untracked : null,
+            emaTotalUsed: typeof latestRaw.emaTotalUsed === "number" ? latestRaw.emaTotalUsed : null,
+            phases: normalizedPhases,
+            topPhases,
+            fixedActionEstimate,
+            topRooms,
+            topRoomRoles,
+            heap,
+          }
+        : null,
+      summary: summaryRaw
+        ? {
+            ticks: typeof summaryRaw.ticks === "number" ? summaryRaw.ticks : null,
+            avgTotalUsed: typeof summaryRaw.avgTotalUsed === "number" ? summaryRaw.avgTotalUsed : null,
+            maxTotalUsed: typeof summaryRaw.maxTotalUsed === "number" ? summaryRaw.maxTotalUsed : null,
+            avgBucket: typeof summaryRaw.avgBucket === "number" ? summaryRaw.avgBucket : null,
+            minBucket: typeof summaryRaw.minBucket === "number" ? summaryRaw.minBucket : null,
+            emaTotalUsed: typeof summaryRaw.emaTotalUsed === "number" ? summaryRaw.emaTotalUsed : null,
+            fixedActionEstimate: (() => {
+              if (typeof summaryRaw.fixedActionEstimate === "number" && Number.isFinite(summaryRaw.fixedActionEstimate)) {
+                return summaryRaw.fixedActionEstimate;
+              }
+              if (summaryRaw.avgFixedActionCounts && typeof summaryRaw.avgFixedActionCounts === "object") {
+                let sum = 0;
+                for (const count of Object.values(summaryRaw.avgFixedActionCounts)) {
+                  if (typeof count === "number" && Number.isFinite(count)) sum += count;
+                }
+                if (sum > 0) return sum * fixedActionCpuCost;
+              }
+              return null;
+            })(),
+            topPhases: summaryTopPhases,
+            topRoomRoles: summaryTopRoomRoles,
+          }
+        : null,
+    };
+  }
+
+  // Legacy fallback
+  if (fallbackModuleCpu && typeof fallbackModuleCpu === "object") {
+    const legacy = summarizeModuleCpu(fallbackModuleCpu);
+    return {
+      ...legacy,
+      version: 1,
+    };
+  }
+
+  return {
+    available: false,
+    version: null,
+    source: "none",
+    updatedAt: null,
+    sampleInterval: null,
+    historyLimit: null,
+    config: null,
+    historySize: null,
+    latest: null,
+    summary: null,
   };
 }
 
@@ -606,6 +792,40 @@ function parseSegmentSnapshot(segmentId, payload) {
   };
 }
 
+function extractAnalyticsData(parsed) {
+  let production = null;
+  let moduleCpu = null;
+  let cpuMonitor = null;
+  let hub = null;
+
+  if (!parsed || typeof parsed !== "object") {
+    return { production, moduleCpu, cpuMonitor, hub };
+  }
+
+  if ("rooms" in parsed) {
+    production = parsed;
+    if ("moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
+    if ("cpuMonitor" in parsed) cpuMonitor = parsed.cpuMonitor;
+  } else if ("production" in parsed && parsed.production) {
+    production = parsed.production;
+    if ("moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
+    if ("cpuMonitor" in parsed) cpuMonitor = parsed.cpuMonitor;
+  } else if ("analytics" in parsed && parsed.analytics) {
+    const analytics = parsed.analytics;
+    if (typeof analytics === "object" && analytics) {
+      if ("production" in analytics) production = analytics.production;
+      if ("moduleCpu" in analytics) moduleCpu = analytics.moduleCpu;
+      if ("cpuMonitor" in analytics) cpuMonitor = analytics.cpuMonitor;
+      if ("hub" in analytics) hub = analytics.hub;
+    }
+  }
+  // Top-level hub or cpuMonitor overrides
+  if ("hub" in parsed && parsed.hub) hub = parsed.hub;
+  if ("cpuMonitor" in parsed && parsed.cpuMonitor && !cpuMonitor) cpuMonitor = parsed.cpuMonitor;
+
+  return { production, moduleCpu, cpuMonitor, hub };
+}
+
 async function fetchMemorySnapshot(config) {
   // Fixture mode: read from file instead of API
   if (config.memoryFixture) {
@@ -613,34 +833,14 @@ async function fetchMemorySnapshot(config) {
     const raw = await fs.readFile(config.memoryFixture, "utf-8");
     const parsed = JSON.parse(raw);
     const rateLimit = { limit: "?", remaining: "?", reset: "?" };
-
-    let production = null;
-    let moduleCpu = null;
-    let hub = null;
-
-    if (parsed && typeof parsed === "object") {
-      if ("rooms" in parsed) {
-        production = parsed;
-        if ("moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
-      } else if ("production" in parsed && parsed.production) {
-        production = parsed.production;
-        if ("moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
-      } else if ("analytics" in parsed && parsed.analytics) {
-        const analytics = parsed.analytics;
-        if (typeof analytics === "object" && analytics) {
-          if ("production" in analytics) production = analytics.production;
-          if ("moduleCpu" in analytics) moduleCpu = analytics.moduleCpu;
-          if ("hub" in analytics) hub = analytics.hub;
-        }
-      }
-      if ("hub" in parsed) hub = parsed.hub;
-    }
+    const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(parsed);
 
     return {
       source: "memory",
       fetchedAt: new Date().toISOString(),
       rateLimit,
       summary: summarizeProduction(production),
+      cpuMonitor: summarizeCpuMonitor(cpuMonitor, moduleCpu),
       moduleCpu: summarizeModuleCpu(moduleCpu),
       hub: summarizeHub(hub),
     };
@@ -651,44 +851,16 @@ async function fetchMemorySnapshot(config) {
     path: "analytics",
   });
   const memoryOrProduction = parseMemoryBody(payload);
-  let production = null;
-  let moduleCpu = null;
-  let hub = null;
-  if (memoryOrProduction && typeof memoryOrProduction === "object") {
-    if ("rooms" in memoryOrProduction) {
-      production = memoryOrProduction;
-      if ("moduleCpu" in memoryOrProduction) {
-        moduleCpu = memoryOrProduction.moduleCpu;
-      }
-    } else if ("production" in memoryOrProduction && memoryOrProduction.production) {
-      production = memoryOrProduction.production;
-      if ("moduleCpu" in memoryOrProduction) {
-        moduleCpu = memoryOrProduction.moduleCpu;
-      }
-    } else if ("analytics" in memoryOrProduction && memoryOrProduction.analytics) {
-      const analytics = memoryOrProduction.analytics;
-      if (typeof analytics === "object" && analytics) {
-        if ("production" in analytics) {
-          production = analytics.production;
-        }
-        if ("moduleCpu" in analytics) {
-          moduleCpu = analytics.moduleCpu;
-        }
-        if ("hub" in analytics) {
-          hub = analytics.hub;
-        }
-      }
-    }
-  }
+  const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(memoryOrProduction);
   const summary = summarizeProduction(production);
-  const moduleCpuSummary = summarizeModuleCpu(moduleCpu);
 
   return {
     source: "memory",
     fetchedAt: new Date().toISOString(),
     rateLimit,
     summary,
-    moduleCpu: moduleCpuSummary,
+    cpuMonitor: summarizeCpuMonitor(cpuMonitor, moduleCpu),
+    moduleCpu: summarizeModuleCpu(moduleCpu),
     hub: summarizeHub(hub),
   };
 }
@@ -791,14 +963,25 @@ function pushError(state, message, limit) {
 function summarizeState(state) {
   const memory = state.latest.memory;
   const segment = state.latest.segment;
+  const cpuMonitor = memory && memory.cpuMonitor ? memory.cpuMonitor : null;
   const moduleCpu = memory && memory.moduleCpu ? memory.moduleCpu : null;
   const segmentParsed =
     segment && segment.snapshot && segment.snapshot.parsed && typeof segment.snapshot.parsed === "object"
       ? segment.snapshot.parsed
       : null;
-  const segmentModuleCpu =
-    segmentParsed && segmentParsed.moduleCpu && typeof segmentParsed.moduleCpu === "object" ? segmentParsed.moduleCpu : null;
-  const latestModuleCpu = moduleCpu && moduleCpu.latest ? moduleCpu.latest : segmentModuleCpu;
+
+  // Prefer v2 cpuMonitor from segment, fall back to legacy moduleCpu
+  const segmentCpuMonitor =
+    segmentParsed && segmentParsed.cpuMonitor && typeof segmentParsed.cpuMonitor === "object"
+      ? summarizeCpuMonitor(segmentParsed.cpuMonitor, segmentParsed.moduleCpu)
+      : (segmentParsed && segmentParsed.moduleCpu
+        ? summarizeCpuMonitor(null, segmentParsed.moduleCpu)
+        : null);
+
+  const latestCpu = cpuMonitor && cpuMonitor.available ? cpuMonitor :
+    (segmentCpuMonitor && segmentCpuMonitor.available ? segmentCpuMonitor : null);
+  const latestCpuLatest = latestCpu && latestCpu.latest ? latestCpu.latest : null;
+
   const segmentTruncated = !!(segmentParsed && segmentParsed.truncated);
   const segmentSchemaVersion = segmentParsed && typeof segmentParsed.version === "number" ? segmentParsed.version : null;
 
@@ -808,10 +991,22 @@ function summarizeState(state) {
     latestTick: memory ? memory.summary.latestTick : null,
     totals: memory ? memory.summary.totals : null,
     hub: memory?.hub ?? null,
+    cpuMonitorAvailable: latestCpu ? latestCpu.available : false,
+    cpuMonitorVersion: latestCpu ? latestCpu.version : null,
+    cpuMonitorSource: latestCpu ? latestCpu.source : null,
+    cpuMonitorTick: latestCpuLatest ? latestCpuLatest.tick : null,
+    cpuMonitorTotalUsed: latestCpuLatest ? latestCpuLatest.totalUsed : null,
+    cpuMonitorEmaTotalUsed: latestCpuLatest ? latestCpuLatest.emaTotalUsed : null,
+    cpuMonitorTopPhases: latestCpuLatest ? latestCpuLatest.topPhases : [],
+    cpuMonitorTopRooms: latestCpuLatest ? (latestCpuLatest.topRooms || []) : [],
+    cpuMonitorTopRoomRoles: latestCpuLatest ? (latestCpuLatest.topRoomRoles || []) : [],
+    cpuMonitorHeap: latestCpuLatest ? (latestCpuLatest.heap || null) : null,
+    cpuMonitorFixedActionEstimate: latestCpuLatest ? (latestCpuLatest.fixedActionEstimate || 0) : 0,
+    cpuMonitorSummary: latestCpu && latestCpu.summary ? latestCpu.summary : null,
     moduleCpuAvailable: moduleCpu ? moduleCpu.available : false,
-    moduleCpuTick: latestModuleCpu ? latestModuleCpu.tick : null,
-    moduleCpuTotalUsed: latestModuleCpu ? latestModuleCpu.totalUsed : null,
-    moduleCpuTopPhases: latestModuleCpu ? latestModuleCpu.topPhases : [],
+    moduleCpuTick: moduleCpu && moduleCpu.latest ? moduleCpu.latest.tick : null,
+    moduleCpuTotalUsed: moduleCpu && moduleCpu.latest ? moduleCpu.latest.totalUsed : null,
+    moduleCpuTopPhases: moduleCpu && moduleCpu.latest ? moduleCpu.latest.topPhases : [],
     segmentTruncated,
     segmentSchemaVersion,
     hasSegment: !!segment,
@@ -869,15 +1064,20 @@ function createHttpServer(state) {
         typeof state.latest.segment.snapshot.parsed === "object"
           ? state.latest.segment.snapshot.parsed
           : null;
+      const segmentCpuMonitor = segmentParsed && segmentParsed.cpuMonitor
+        ? summarizeCpuMonitor(segmentParsed.cpuMonitor, segmentParsed.moduleCpu)
+        : (segmentParsed && segmentParsed.moduleCpu
+          ? summarizeCpuMonitor(null, segmentParsed.moduleCpu)
+          : null);
+      const segmentHistory = segmentParsed && segmentParsed.cpuMonitor && Array.isArray(segmentParsed.cpuMonitor.history)
+        ? segmentParsed.cpuMonitor.history
+        : [];
       writeJson(res, 200, {
+        memoryCpuMonitor: state.latest.memory ? state.latest.memory.cpuMonitor : null,
+        segmentCpuMonitor,
+        segmentCpuMonitorHistory: segmentHistory,
         memoryModuleCpu: state.latest.memory ? state.latest.memory.moduleCpu : null,
         segmentModuleCpu: segmentParsed && segmentParsed.moduleCpu ? segmentParsed.moduleCpu : null,
-        segmentModuleCpuHistory:
-          segmentParsed &&
-          segmentParsed.moduleCpu &&
-          Array.isArray(segmentParsed.moduleCpu.history)
-            ? segmentParsed.moduleCpu.history
-            : [],
         segmentTick: segmentParsed && typeof segmentParsed.tick === "number" ? segmentParsed.tick : null,
         segmentTruncated: !!(segmentParsed && segmentParsed.truncated),
         segmentSchemaVersion: segmentParsed && typeof segmentParsed.version === "number" ? segmentParsed.version : null,
@@ -899,17 +1099,47 @@ function createHttpServer(state) {
 
 function logMemorySnapshot(snapshot) {
   const summary = snapshot.summary;
-  const moduleCpu = snapshot.moduleCpu && snapshot.moduleCpu.latest ? snapshot.moduleCpu.latest : null;
-  const topPhase = moduleCpu && moduleCpu.topPhases && moduleCpu.topPhases.length > 0
-    ? `${moduleCpu.topPhases[0].phase}:${moduleCpu.topPhases[0].used.toFixed(2)}`
+  const cpuMon = snapshot.cpuMonitor && snapshot.cpuMonitor.available ? snapshot.cpuMonitor : null;
+  const cpuLatest = cpuMon && cpuMon.latest ? cpuMon.latest : null;
+  const cpuSource = cpuMon ? cpuMon.source : "none";
+  const cpuVersion = cpuMon ? cpuMon.version : "n/a";
+
+  // Prefer v2 fields
+  const topPhase = cpuLatest && cpuLatest.topPhases && cpuLatest.topPhases.length > 0
+    ? `${cpuLatest.topPhases[0].phase}:${cpuLatest.topPhases[0].used.toFixed(2)}`
     : "n/a";
-  const hub = snapshot.hub;
-  const hubStr = hub && hub.available
-    ? ` hub=${hub.hubRoomName} status=${hub.status ?? "n/a"} stage=${hub.stage ?? "n/a"} product=${hub.activeProduct ?? "n/a"} imports=${hub.pendingImports} exports=${hub.pendingExports}`
+  const emaStr = cpuLatest && typeof cpuLatest.emaTotalUsed === "number"
+    ? ` ema=${cpuLatest.emaTotalUsed.toFixed(2)}`
     : "";
+  const fixedStr = cpuLatest && typeof cpuLatest.fixedActionEstimate === "number" && cpuLatest.fixedActionEstimate > 0
+    ? ` fixedAct=${cpuLatest.fixedActionEstimate.toFixed(2)}`
+    : "";
+  const heapStr = cpuLatest && cpuLatest.heap
+    ? ` heap=${(cpuLatest.heap.used_heap_size / 1048576).toFixed(1)}MB`
+    : "";
+  const cpuTick = cpuLatest ? cpuLatest.tick : "n/a";
+  const cpuUsed = cpuLatest ? cpuLatest.totalUsed : "n/a";
+
+  // Fallback to legacy moduleCpu when v2 absent
+  if (!cpuMon && snapshot.moduleCpu && snapshot.moduleCpu.available && snapshot.moduleCpu.latest) {
+    const legacy = snapshot.moduleCpu.latest;
+    const legacyTop = legacy.topPhases && legacy.topPhases.length > 0
+      ? `${legacy.topPhases[0].phase}:${legacy.topPhases[0].used.toFixed(2)}`
+      : "n/a";
+    console.log(
+      `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [legacy] moduleCpuTick=${legacy.tick ?? "n/a"} moduleCpuUsed=${legacy.totalUsed ?? "n/a"} topPhase=${legacyTop}${hubStr(snapshot.hub)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+    );
+    return;
+  }
+
   console.log(
-    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} moduleCpuTick=${moduleCpu?.tick ?? "n/a"} moduleCpuUsed=${moduleCpu?.totalUsed ?? "n/a"} topPhase=${topPhase}${hubStr} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [cpu-v${cpuVersion}|${cpuSource}] cpuTick=${cpuTick} cpuUsed=${cpuUsed}${emaStr}${fixedStr}${heapStr} topPhase=${topPhase}${hubStr(snapshot.hub)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
   );
+}
+
+function hubStr(hub) {
+  if (!hub || !hub.available) return "";
+  return ` hub=${hub.hubRoomName} status=${hub.status ?? "n/a"} stage=${hub.stage ?? "n/a"} product=${hub.activeProduct ?? "n/a"} imports=${hub.pendingImports} exports=${hub.pendingExports}`;
 }
 
 function logSegmentSnapshot(snapshot) {
@@ -917,10 +1147,18 @@ function logSegmentSnapshot(snapshot) {
   const tick = parsed && typeof parsed === "object" && typeof parsed.tick === "number" ? parsed.tick : "n/a";
   const version = parsed && typeof parsed === "object" && typeof parsed.version === "number" ? parsed.version : "n/a";
   const truncated = !!(parsed && typeof parsed === "object" && parsed.truncated);
-  const moduleCpu = parsed && typeof parsed === "object" && parsed.moduleCpu ? parsed.moduleCpu : null;
-  const phaseCount = moduleCpu && typeof moduleCpu.phases === "object" ? Object.keys(moduleCpu.phases).length : 0;
+
+  // Prefer v2 cpuMonitor from segment
+  const cpuMon = parsed && typeof parsed === "object" && parsed.cpuMonitor
+    ? summarizeCpuMonitor(parsed.cpuMonitor, parsed.moduleCpu)
+    : (parsed && typeof parsed === "object" && parsed.moduleCpu
+      ? summarizeCpuMonitor(null, parsed.moduleCpu)
+      : null);
+  const cpuSource = cpuMon ? cpuMon.source : "none";
+  const phaseCount = cpuMon && cpuMon.latest && cpuMon.latest.phases ? Object.keys(cpuMon.latest.phases).length : 0;
+
   console.log(
-    `[monitor][segment] id=${snapshot.snapshot.segmentId} tick=${tick} ver=${version} truncated=${truncated} phaseCount=${phaseCount} size=${snapshot.snapshot.rawSize} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+    `[monitor][segment] id=${snapshot.snapshot.segmentId} tick=${tick} ver=${version} truncated=${truncated} cpuSource=${cpuSource} phaseCount=${phaseCount} size=${snapshot.snapshot.rawSize} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
   );
 }
 
