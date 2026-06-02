@@ -170,6 +170,39 @@ function powerBankHaulerBody(room: Room): BodyPartConstant[] {
   return clampByCapacity(parts, room);
 }
 
+function remoteMiningCarrierBody(room: Room): BodyPartConstant[] {
+  const capacity = room.energyCapacityAvailable;
+
+  // Ratio: MOVE : non-MOVE = 1 : 2
+  // non-MOVE = 1 WORK + remaining CARRY
+  // For n non-MOVE parts, MOVE count = ceil(n / 2)
+  let maxN = 2; // minimum useful: 1 WORK + 1 CARRY
+  for (let n = 2; n <= 50; n++) {
+    const moves = Math.ceil(n / 2);
+    if (n + moves > MAX_BODY_SIZE) break;
+    const cost = BODYPART_COST[WORK] + (n - 1) * BODYPART_COST[CARRY] + moves * BODYPART_COST[MOVE];
+    if (cost > capacity) break;
+    maxN = n;
+  }
+
+  const moves = Math.ceil(maxN / 2);
+  const parts: BodyPartConstant[] = [WORK];
+  for (let i = 1; i < maxN; i++) parts.push(CARRY);
+  for (let i = 0; i < moves; i++) parts.push(MOVE);
+
+  return clampByCapacity(parts, room);
+}
+
+function remoteMiningReserverBody(room: Room): BodyPartConstant[] {
+  const pairCost = BODYPART_COST[CLAIM] + BODYPART_COST[MOVE];
+  const maxPairs = Math.max(1, Math.min(3, Math.floor(room.energyCapacityAvailable / pairCost)));
+  const parts: BodyPartConstant[] = [];
+  for (let i = 0; i < maxPairs; i++) {
+    parts.push(CLAIM, MOVE);
+  }
+  return clampByCapacity(parts, room);
+}
+
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => getHarvesterBody(room),
   mineralHarvester: twoToOneWorkMoveBody,
@@ -188,6 +221,8 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   crossShardColonizerWorker: oneOneOneBody,
   flagScout: () => [MOVE],
   remoteCarrier: carryMoveBody,
+  remoteMiningCarrier: remoteMiningCarrierBody,
+  remoteMiningReserver: remoteMiningReserverBody,
   powerBankScout: powerBankScoutBody,
   powerBankAttacker: powerBankAttackerBody,
   powerBankHealer: powerBankHealerBody,
