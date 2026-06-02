@@ -1,4 +1,10 @@
-import { getCpuPhaseHistory } from "@/runtime/cpuPhaseProfiler";
+import { getCpuMonitorHistory, normalizeCpuMonitorConfig } from "@/runtime/cpuMonitor";
+import type {
+  CpuMonitorSnapshotV2,
+  CpuMonitorSummaryV2,
+  CpuMonitorConfig,
+  CpuMonitorRoomSummary,
+} from "@/runtime/cpuMonitor";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getCreepMovementState, getMovementAnalytics } from "@/movement";
 import { getAssignedWorkerTaskId } from "@/runtime/workerTaskPool";
@@ -70,8 +76,54 @@ interface ExternalTelemetryRoomSnapshot {
   };
 }
 
+interface CpuMonitorTelemetryEntry {
+  tick: number;
+  shard: string;
+  totalUsed: number;
+  bucket: number;
+  limit: number;
+  tickLimit: number;
+  phases: Record<string, number>;
+  fixedActionCounts: Record<string, number>;
+  fixedActionEstimate: number;
+  untracked: number;
+  emaTotalUsed: number;
+  rooms?: Record<string, CpuMonitorRoomSummary>;
+  heap?: {
+    used_heap_size: number;
+    total_heap_size: number;
+    heap_size_limit: number;
+  } | null;
+}
+
+interface CpuMonitorTelemetrySummary {
+  ticks: number;
+  avgTotalUsed: number;
+  maxTotalUsed: number;
+  minBucket: number;
+  maxBucket: number;
+  avgBucket: number;
+  avgUntracked: number;
+  emaTotalUsed: number;
+  fixedActionEstimate: number;
+  topPhases: Record<string, number>;
+  topRoomRoles: Array<{ room: string; role: string; avgUsed: number; count: number }>;
+}
+
+interface CpuMonitorTelemetryPayload {
+  version: 2;
+  latest: CpuMonitorTelemetryEntry | null;
+  summary: CpuMonitorTelemetrySummary | null;
+  history: CpuMonitorTelemetryEntry[];
+  config: {
+    sampleInterval: number;
+    historyLimit: number;
+    fixedActionCpuCost: number;
+  };
+}
+
 interface ExternalTelemetrySnapshot {
-  version: 1;
+  version: 2;
   tick: number;
   shard: string;
   sampleInterval: number;
@@ -109,26 +161,7 @@ interface ExternalTelemetrySnapshot {
     };
   };
   debug?: ExternalTelemetryDebugSnapshot;
-  moduleCpu?: {
-    tick: number;
-    shard: string;
-    totalUsed: number;
-    bucket: number;
-    limit: number;
-    tickLimit: number;
-    phases: Record<string, number>;
-    untracked: number;
-    history?: Array<{
-      tick: number;
-      shard: string;
-      totalUsed: number;
-      bucket: number;
-      limit: number;
-      tickLimit: number;
-      phases: Record<string, number>;
-      untracked: number;
-    }>;
-  };
+  cpuMonitor?: CpuMonitorTelemetryPayload;
   rooms: ExternalTelemetryRoomSnapshot[];
   truncated?: boolean;
 }
@@ -193,7 +226,6 @@ interface DebugColonizationTelemetry {
   permanentDangerousRoomCount?: number;
 }
 
-type ModuleCpuSnapshot = NonNullable<ExternalTelemetrySnapshot["moduleCpu"]>;
 
 function toValidSampleInterval(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -486,6 +518,182 @@ function getOwnedRooms(): Room[] {
   return getTickContextService().getMyRooms();
 }
 
+function toTelemetryEntry(
+  snap: CpuMonitorSnapshotV2,
+  config: CpuMonitorConfig,
+): CpuMonitorTelemetryEntry {
+  let fixedActionTotal = 0;
+  for (const count of Object.values(snap.fixedActionCounts)) {
+    fixedActionTotal += count;
+  }
+  const fixedActionEstimate = fixedActionTotal * config.fixedActionCpuCost;
+
+  const heap = snap.heap
+    ? {
+        used_heap_size: snap.heap.used_heap_size,
+        total_heap_size: snap.heap.total_heap_size,
+        heap_size_limit: snap.heap.heap_size_limit,
+      }
+    : null;
+
+  return {
+    tick: snap.tick,
+    shard: snap.shard,
+    totalUsed: snap.totalUsed,
+    bucket: snap.bucket,
+    limit: snap.limit,
+    tickLimit: snap.tickLimit,
+    phases: snap.phases,
+    fixedActionCounts: snap.fixedActionCounts,
+    fixedActionEstimate,
+    untracked: snap.untracked,
+    emaTotalUsed: snap.emaTotalUsed,
+    rooms: snap.rooms,
+    heap,
+  };
+}
+
+function buildCpuMonitorPayload(): CpuMonitorTelemetryPayload | undefined {
+  const config = normalizeCpuMonitorConfig(Memory.cfg?.cpuProfiler);
+  const memLatest = Memory.analytics?.cpuMonitor?.latest;
+  const memSummary = Memory.analytics?.cpuMonitor?.summary;
+  const globalHistory = getCpuMonitorHistory();
+
+  if (!memLatest && globalHistory.length === 0) {
+    return undefined;
+  }
+
+  const latest = memLatest ? toTelemetryEntry(memLatest, config) : null;
+
+  const history = globalHistory.slice(-20).map((snap) => toTelemetryEntry(snap, config));
+
+  let summary: CpuMonitorTelemetrySummary | null = null;
+  const source = memSummary ?? (history.length > 0 ? computeSummaryFromHistory(history, config) : null);
+  if (source) {
+    const persisted = source as CpuMonitorSummaryV2;
+    let fixedActionEstimate = 0;
+    if (persisted.avgFixedActionCounts) {
+      for (const count of Object.values(persisted.avgFixedActionCounts)) {
+        fixedActionEstimate += count * config.fixedActionCpuCost;
+      }
+    }
+    const topPhases = Object.entries(persisted.avgPhases || {})
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .reduce<Record<string, number>>((acc, [k, v]) => {
+        acc[k] = v;
+        return acc;
+      }, {});
+
+    const topRoomRoles = buildTopRoomRoles(latest?.rooms, 10);
+
+    summary = {
+      ticks: persisted.ticks,
+      avgTotalUsed: persisted.avgTotalUsed,
+      maxTotalUsed: persisted.maxTotalUsed,
+      minBucket: persisted.minBucket,
+      maxBucket: persisted.maxBucket,
+      avgBucket: persisted.avgBucket,
+      avgUntracked: persisted.avgUntracked,
+      emaTotalUsed: persisted.emaTotalUsed,
+      fixedActionEstimate,
+      topPhases,
+      topRoomRoles,
+    };
+  }
+
+  return {
+    version: 2,
+    latest,
+    summary,
+    history,
+    config: {
+      sampleInterval: config.sampleInterval,
+      historyLimit: config.historyLimit,
+      fixedActionCpuCost: config.fixedActionCpuCost,
+    },
+  };
+}
+
+function computeSummaryFromHistory(
+  history: CpuMonitorTelemetryEntry[],
+  config: CpuMonitorConfig,
+): CpuMonitorTelemetrySummary | null {
+  if (history.length === 0) return null;
+
+  let sumTotalUsed = 0;
+  let maxTotalUsed = -Infinity;
+  let sumBucket = 0;
+  let minBucket = Infinity;
+  let maxBucket = -Infinity;
+  let sumUntracked = 0;
+  const phaseSums: Record<string, number> = {};
+  let fixedActionEstimate = 0;
+
+  for (const entry of history) {
+    sumTotalUsed += entry.totalUsed;
+    if (entry.totalUsed > maxTotalUsed) maxTotalUsed = entry.totalUsed;
+    sumBucket += entry.bucket;
+    if (entry.bucket < minBucket) minBucket = entry.bucket;
+    if (entry.bucket > maxBucket) maxBucket = entry.bucket;
+    sumUntracked += entry.untracked;
+    for (const [phase, used] of Object.entries(entry.phases)) {
+      phaseSums[phase] = (phaseSums[phase] || 0) + used;
+    }
+    fixedActionEstimate += entry.fixedActionEstimate;
+  }
+
+  const ticks = history.length;
+  const avgPhases: Record<string, number> = {};
+  for (const [phase, sum] of Object.entries(phaseSums)) {
+    avgPhases[phase] = sum / ticks;
+  }
+
+  const topPhases = Object.entries(avgPhases)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .reduce<Record<string, number>>((acc, [k, v]) => {
+      acc[k] = v;
+      return acc;
+    }, {});
+
+  const lastEntry = history[history.length - 1];
+  const topRoomRoles = buildTopRoomRoles(lastEntry?.rooms, 10);
+
+  return {
+    ticks,
+    avgTotalUsed: sumTotalUsed / ticks,
+    maxTotalUsed,
+    minBucket,
+    maxBucket,
+    avgBucket: sumBucket / ticks,
+    avgUntracked: sumUntracked / ticks,
+    emaTotalUsed: lastEntry?.emaTotalUsed ?? 0,
+    fixedActionEstimate: fixedActionEstimate / ticks,
+    topPhases,
+    topRoomRoles,
+  };
+}
+
+function buildTopRoomRoles(
+  rooms: Record<string, CpuMonitorRoomSummary> | undefined,
+  limit: number,
+): Array<{ room: string; role: string; avgUsed: number; count: number }> {
+  if (!rooms) return [];
+  const entries: Array<{ room: string; role: string; avgUsed: number; count: number }> = [];
+  for (const [roomName, roomData] of Object.entries(rooms)) {
+    for (const [role, roleData] of Object.entries(roomData.roles || {})) {
+      entries.push({
+        room: roomName,
+        role,
+        avgUsed: roleData.count > 0 ? roleData.used / roleData.count : 0,
+        count: roleData.count,
+      });
+    }
+  }
+  return entries.sort((a, b) => b.avgUsed - a.avgUsed).slice(0, limit);
+}
+
 function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): ExternalTelemetrySnapshot {
   const ownedRooms = getOwnedRooms();
   const creepsByRoom = collectCreepTelemetryByRoom(ownedRooms);
@@ -493,9 +701,8 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
   const spawnsByRoom = collectSpawnTelemetryByRoom(ownedRooms);
   const debug = collectDebugTelemetry();
   const productionRooms = Memory.analytics?.production?.rooms || {};
-  const moduleCpuLatest = Memory.analytics?.moduleCpu?.latest;
-  const moduleCpuHistory = getCpuPhaseHistory();
   const movementAnalytics = getMovementAnalytics();
+  const cpuMonitor = buildCpuMonitorPayload();
 
   const rooms: ExternalTelemetryRoomSnapshot[] = [];
   let totalWorkers = 0;
@@ -569,7 +776,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
   }
 
   return {
-    version: 1,
+    version: 2,
     tick: Game.time,
     shard: Game.shard.name,
     sampleInterval,
@@ -597,28 +804,7 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
       movement: movementAnalytics?.totals,
     },
     debug,
-    moduleCpu: moduleCpuLatest
-      ? {
-          tick: moduleCpuLatest.tick,
-          shard: moduleCpuLatest.shard,
-          totalUsed: moduleCpuLatest.totalUsed,
-          bucket: moduleCpuLatest.bucket,
-          limit: moduleCpuLatest.limit,
-          tickLimit: moduleCpuLatest.tickLimit,
-          phases: moduleCpuLatest.phases,
-          untracked: moduleCpuLatest.untracked,
-          history: moduleCpuHistory.slice(-20).map((entry) => ({
-            tick: entry.tick,
-            shard: entry.shard,
-            totalUsed: entry.totalUsed,
-            bucket: entry.bucket,
-            limit: entry.limit,
-            tickLimit: entry.tickLimit,
-            phases: entry.phases,
-            untracked: entry.untracked,
-          })),
-        }
-      : undefined,
+    cpuMonitor,
     rooms,
   };
 }
@@ -635,18 +821,36 @@ function compactPhaseMap(phases: Record<string, number>, limit: number): Record<
   return compact;
 }
 
-function compactModuleCpu(moduleCpu: ModuleCpuSnapshot | undefined, historyLimit: number): ModuleCpuSnapshot | undefined {
-  if (!moduleCpu) {
+function compactCpuMonitorTelemetryEntry(
+  entry: CpuMonitorTelemetryEntry,
+  phaseLimit: number,
+): CpuMonitorTelemetryEntry {
+  return {
+    ...entry,
+    phases: compactPhaseMap(entry.phases, phaseLimit),
+    rooms: undefined,
+    heap: undefined,
+  };
+}
+
+function compactCpuMonitorPayload(
+  cpuMonitor: CpuMonitorTelemetryPayload | undefined,
+  historyLimit: number,
+): CpuMonitorTelemetryPayload | undefined {
+  if (!cpuMonitor) {
     return undefined;
   }
 
   return {
-    ...moduleCpu,
-    phases: compactPhaseMap(moduleCpu.phases, 8),
-    history: (moduleCpu.history || []).slice(-historyLimit).map((entry) => ({
-      ...entry,
-      phases: compactPhaseMap(entry.phases, 5),
-    })),
+    ...cpuMonitor,
+    latest: cpuMonitor.latest ? compactCpuMonitorTelemetryEntry(cpuMonitor.latest, 8) : null,
+    history: cpuMonitor.history.slice(-historyLimit).map((entry) => compactCpuMonitorTelemetryEntry(entry, 5)),
+    summary: cpuMonitor.summary
+      ? {
+          ...cpuMonitor.summary,
+          topRoomRoles: cpuMonitor.summary.topRoomRoles.slice(0, 5),
+        }
+      : null,
   };
 }
 
@@ -676,7 +880,7 @@ function serializeSnapshot(snapshot: ExternalTelemetrySnapshot): string {
           truncated: true,
         }
       : undefined,
-    moduleCpu: compactModuleCpu(snapshot.moduleCpu, 20),
+    cpuMonitor: compactCpuMonitorPayload(snapshot.cpuMonitor, 20),
     rooms: compactRooms,
   });
 
@@ -694,7 +898,7 @@ function serializeSnapshot(snapshot: ExternalTelemetrySnapshot): string {
     gcl: snapshot.gcl,
     totals: snapshot.totals,
     debug: snapshot.debug ? { counts: snapshot.debug.counts, creeps: [], colonization: [], truncated: true } : undefined,
-    moduleCpu: compactModuleCpu(snapshot.moduleCpu, 5),
+    cpuMonitor: compactCpuMonitorPayload(snapshot.cpuMonitor, 5),
     rooms: [],
     truncated: true,
   } satisfies ExternalTelemetrySnapshot);
