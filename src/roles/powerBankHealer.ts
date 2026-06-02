@@ -2,6 +2,8 @@ import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
+const TRAVEL_OPTIONS = { plainCost: 2, swampCost: 8 } as const;
+
 type PowerBankHealerRuntimeMemory = CreepMemory & { taskId?: string; powerBankReinforcementStage?: PowerBankReinforcementStage };
 
 const BLOCKED_STATUSES: ReadonlySet<string> = new Set([
@@ -84,7 +86,7 @@ function supportAttacker(creep: Creep, attacker: Creep): void {
   if (sameRoom && range > 1) {
     moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
   } else if (!sameRoom) {
-    moveToPowerBankRoom(creep, attacker.room.name, undefined);
+    moveToTargetRoom(creep, attacker.room.name, undefined, TRAVEL_OPTIONS);
   }
 }
 
@@ -106,55 +108,6 @@ function healPairedAttacker(creep: Creep, attacker: Creep): { sameRoom: boolean;
   }
 
   return { sameRoom, attackerDamaged, range };
-}
-
-function moveToPowerBankRoom(creep: Creep, roomName: string, encodedRouteRooms?: string): void {
-  const exitDirection = typeof creep.room.findExitTo === "function" ? creep.room.findExitTo(roomName) : ERR_NO_PATH;
-  if (isExitDirection(exitDirection)) {
-    if (isOnExitDirection(creep.pos, exitDirection)) {
-      measureCreepIntent(() => creep.move(exitToMoveDirection(exitDirection)));
-      return;
-    }
-
-    const exits = creep.room.find(exitDirection) as RoomPosition[];
-    const exit = creep.pos.findClosestByPath(exits) || creep.pos.findClosestByRange(exits);
-    if (exit) {
-      moveToTarget(creep, exit, 0, { plainCost: 2, swampCost: 8, reusePath: 0, maxRooms: 1 });
-      return;
-    }
-  }
-
-  moveToTargetRoom(creep, roomName, encodedRouteRooms, { plainCost: 2, swampCost: 8 });
-}
-
-function isExitDirection(value: unknown): value is ExitConstant {
-  return value === FIND_EXIT_TOP || value === FIND_EXIT_RIGHT || value === FIND_EXIT_BOTTOM || value === FIND_EXIT_LEFT;
-}
-
-function exitToMoveDirection(exitDirection: ExitConstant): DirectionConstant {
-  switch (exitDirection) {
-    case FIND_EXIT_TOP:
-      return TOP;
-    case FIND_EXIT_RIGHT:
-      return RIGHT;
-    case FIND_EXIT_BOTTOM:
-      return BOTTOM;
-    case FIND_EXIT_LEFT:
-      return LEFT;
-  }
-}
-
-function isOnExitDirection(pos: RoomPosition, exitDirection: ExitConstant): boolean {
-  switch (exitDirection) {
-    case FIND_EXIT_TOP:
-      return pos.y === 0;
-    case FIND_EXIT_RIGHT:
-      return pos.x === 49;
-    case FIND_EXIT_BOTTOM:
-      return pos.y === 49;
-    case FIND_EXIT_LEFT:
-      return pos.x === 0;
-  }
 }
 
 function isExitTile(pos: RoomPosition): boolean {
@@ -287,7 +240,7 @@ export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRou
       if (!attacker) return false;
 
       if (attacker.room.name !== creep.room.name) {
-        moveToPowerBankRoom(creep, attacker.room.name, "");
+        moveToTargetRoom(creep, attacker.room.name, "", TRAVEL_OPTIONS);
         return false;
       }
 
@@ -311,7 +264,7 @@ export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRou
     }
 
     if (targetRoom && creep.room.name !== targetRoom) {
-      moveToPowerBankRoom(creep, targetRoom, encodedRouteRooms);
+      moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }
 
@@ -346,7 +299,7 @@ export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRou
           moveOffTargetRoomExit(creep);
           return false;
         }
-        moveToPowerBankRoom(creep, attacker.room.name, undefined);
+        moveToTargetRoom(creep, attacker.room.name, undefined, TRAVEL_OPTIONS);
         return false;
       }
     }
@@ -377,7 +330,7 @@ export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRou
         moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
       }
     } else {
-      moveToPowerBankRoom(creep, attacker.room.name, undefined);
+      moveToTargetRoom(creep, attacker.room.name, undefined, TRAVEL_OPTIONS);
     }
 
     return false;

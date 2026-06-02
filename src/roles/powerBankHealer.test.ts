@@ -686,7 +686,7 @@ describe("powerBankHealerRole", () => {
     );
   });
 
-  it("boundary - healer standing on the correct exit tile crosses instead of idling", () => {
+  it("boundary - healer delegates exit-tile travel to shared moveToTargetRoom", () => {
     setupTask();
     Memory.data!.powerBankHarvest![TASK_ID].status = "travelling";
     const attacker = createAttacker({ roomName: "W1N1", x: 48, y: 25 });
@@ -701,14 +701,17 @@ describe("powerBankHealerRole", () => {
       y: 25,
       memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
     });
-    (healer.room as Room & { findExitTo: jest.Mock }).findExitTo = jest.fn(() => FIND_EXIT_RIGHT);
 
     const role = powerBankHealerRole(TARGET_ROOM);
     role.source?.(healer);
 
-    expect(healer.move).toHaveBeenCalledWith(RIGHT);
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      healer,
+      TARGET_ROOM,
+      undefined,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
     expect(moveToTarget).not.toHaveBeenCalled();
-    expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 
   it("boundary - healer vacates target-room exit when it crossed before attacker", () => {
