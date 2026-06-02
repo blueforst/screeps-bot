@@ -16,10 +16,12 @@ export type RoleName =
   | "crossShardColonizerWorker"
   | "flagScout"
   | "remoteCarrier"
+  | "remoteMiningCarrier"
   | "powerBankScout"
   | "powerBankAttacker"
   | "powerBankHealer"
-  | "powerBankHauler";
+  | "powerBankHauler"
+  | "remoteMiningReserver";
 export type WorkerTaskType = "build" | "upgrade" | "repair" | "dismantle";
 export type RoomType = "normal" | "reserved" | "industrial";
 
