@@ -51,4 +51,48 @@ describe("main loop phase ordering", () => {
     expect(synthIdx).toBeGreaterThan(-1);
     expect(hubIdx).toBeLessThan(synthIdx);
   });
+
+  it("remoteMining is after bootstrapRooms and before scheduleSpawnTasks", () => {
+    const order = extractMeasureOrder(mainSrc);
+    const bootstrapIdx = order.indexOf("bootstrapRooms");
+    const remoteMiningIdx = order.indexOf("remoteMining");
+    const scheduleIdx = order.indexOf("scheduleSpawnTasks");
+
+    expect(bootstrapIdx).toBeGreaterThan(-1);
+    expect(remoteMiningIdx).toBeGreaterThan(-1);
+    expect(scheduleIdx).toBeGreaterThan(-1);
+
+    // Regression: remoteMining must come after bootstrapRooms
+    expect(remoteMiningIdx).toBeGreaterThan(bootstrapIdx);
+    // Regression: remoteMining must come before scheduleSpawnTasks
+    expect(remoteMiningIdx).toBeLessThan(scheduleIdx);
+  });
+});
+
+describe("spawn/creep inner wrapper regression", () => {
+  const mainSrc = readFileSync(resolve(__dirname, "main.ts"), "utf-8");
+
+  it("spawnWork wraps each spawn.work() with measureRoomPhase", () => {
+    expect(mainSrc).toMatch(
+      /cpuProfiler\.measure\("spawnWork"[^)]*\)[\s\S]*?cpuProfiler\.measureRoomPhase\(\s*"spawnWork"\s*,\s*spawn\.room\.name\s*,\s*\(\)\s*=>\s*spawn\.work\(\)\s*\)/,
+    );
+  });
+
+  it("creepWork wraps each creep.work() with measureCreep", () => {
+    expect(mainSrc).toMatch(
+      /cpuProfiler\.measure\("creepWork"[^)]*\)[\s\S]*?cpuProfiler\.measureCreep\(\s*creep\s*,\s*\(\)\s*=>\s*creep\.work\(\)\s*\)/,
+    );
+  });
+
+  it("inner wrappers appear after scheduleSpawnTasks outer measure", () => {
+    const scheduleIdx = mainSrc.indexOf('cpuProfiler.measure("scheduleSpawnTasks"');
+    const spawnWorkIdx = mainSrc.indexOf('cpuProfiler.measure("spawnWork"');
+    const creepWorkIdx = mainSrc.indexOf('cpuProfiler.measure("creepWork"');
+
+    expect(scheduleIdx).toBeGreaterThan(-1);
+    expect(spawnWorkIdx).toBeGreaterThan(-1);
+    expect(creepWorkIdx).toBeGreaterThan(-1);
+    expect(spawnWorkIdx).toBeGreaterThan(scheduleIdx);
+    expect(creepWorkIdx).toBeGreaterThan(spawnWorkIdx);
+  });
 });

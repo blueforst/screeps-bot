@@ -4,11 +4,13 @@ import {
   captureCpuMonitorHeap,
   getCpuMonitorHistory,
 } from "@/runtime/cpuMonitor";
-import type { CpuMonitorSnapshotV2 } from "@/runtime/cpuMonitor";
+import type { CpuMonitorSnapshotV2, CpuMonitorRoomSummary } from "@/runtime/cpuMonitor";
 
 export interface TickCpuProfiler {
   measure<T>(phase: string, fn: () => T): T;
   recordFixedAction(phase: string, count?: number): void;
+  measureCreep(creep: Creep, fn: () => void): void;
+  measureRoomPhase<T>(phase: string, roomName: string, fn: () => T): T;
   flush(): void;
 }
 
@@ -29,6 +31,12 @@ function createNoopProfiler(): TickCpuProfiler {
     },
     recordFixedAction(_phase: string, _count = 1): void {
       return;
+    },
+    measureCreep(_creep: Creep, fn: () => void): void {
+      fn();
+    },
+    measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T {
+      return fn();
     },
     flush(): void {
       return;
@@ -86,6 +94,24 @@ export function createTickCpuProfiler(): TickCpuProfiler {
   const loopStartUsed = Game.cpu.getUsed();
   const phases: Record<string, number> = {};
   const fixedActionCounts: Record<string, number> = {};
+  const rooms: Record<string, CpuMonitorRoomSummary> = {};
+
+  function ensureRoom(roomName: string): CpuMonitorRoomSummary {
+    if (!rooms[roomName]) {
+      rooms[roomName] = { totalUsed: 0, roles: {} };
+    }
+    return rooms[roomName];
+  }
+
+  function recordRoomRole(roomName: string, role: string, delta: number): void {
+    const room = ensureRoom(roomName);
+    room.totalUsed += delta;
+    if (!room.roles[role]) {
+      room.roles[role] = { count: 0, used: 0 };
+    }
+    room.roles[role].used += delta;
+    room.roles[role].count += 1;
+  }
 
   return {
     measure<T>(phase: string, fn: () => T): T {
@@ -100,6 +126,28 @@ export function createTickCpuProfiler(): TickCpuProfiler {
 
     recordFixedAction(phase: string, count = 1): void {
       fixedActionCounts[phase] = (fixedActionCounts[phase] || 0) + count;
+    },
+
+    measureCreep(creep: Creep, fn: () => void): void {
+      const start = Game.cpu.getUsed();
+      try {
+        fn();
+      } finally {
+        const delta = Math.max(0, Game.cpu.getUsed() - start);
+        const role = creep.memory?.role || "unknown";
+        const roomName = creep.room?.name || creep.pos?.roomName || "unknown";
+        recordRoomRole(roomName, role, delta);
+      }
+    },
+
+    measureRoomPhase<T>(phase: string, roomName: string, fn: () => T): T {
+      const start = Game.cpu.getUsed();
+      try {
+        return fn();
+      } finally {
+        const delta = Math.max(0, Game.cpu.getUsed() - start);
+        recordRoomRole(roomName, "spawn", delta);
+      }
     },
 
     flush(): void {
@@ -119,7 +167,17 @@ export function createTickCpuProfiler(): TickCpuProfiler {
         fixedActionCounts: { ...fixedActionCounts },
         untracked,
         emaTotalUsed: 0, // overwritten by persistCpuMonitorSample
-        rooms: {},
+        rooms: Object.fromEntries(
+          Object.entries(rooms).map(([name, room]) => [
+            name,
+            {
+              totalUsed: room.totalUsed,
+              roles: Object.fromEntries(
+                Object.entries(room.roles).map(([role, summary]) => [role, { ...summary }]),
+              ),
+            },
+          ]),
+        ),
         heap,
       };
 

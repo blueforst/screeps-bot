@@ -31,6 +31,7 @@ import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 import { createTickCpuProfiler, setActiveTickCpuProfiler } from "@/runtime/cpuPhaseProfiler";
 import { getMemoryService } from "@/runtime/runtimeServices";
 import { runHubProgressAnalytics, renderHubProgressOverlays } from "@/runtime/hubProgress";
+import { runRemoteMining } from "@/runtime/remoteMining";
 
 mountAll();
 registerGlobalApi();
@@ -82,16 +83,17 @@ function gameLoop(): void {
   cpuProfiler.measure("towerControl", runTowerControl);
   cpuProfiler.measure("refreshWorkerTasks", refreshWorkerTasks);
   cpuProfiler.measure("bootstrapRooms", bootstrapRooms);
+  cpuProfiler.measure("remoteMining", runRemoteMining);
   cpuProfiler.measure("scheduleSpawnTasks", scheduleSpawnTasks);
 
   cpuProfiler.measure("spawnWork", () => {
     Object.values(Game.spawns).forEach((spawn) => {
-      spawn.work();
+      cpuProfiler.measureRoomPhase("spawnWork", spawn.room.name, () => spawn.work());
     });
   });
   cpuProfiler.measure("creepWork", () => {
     Object.values(Game.creeps).forEach((creep) => {
-      creep.work();
+      cpuProfiler.measureCreep(creep, () => creep.work());
     });
   });
   cpuProfiler.flush();

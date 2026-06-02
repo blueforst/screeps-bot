@@ -260,6 +260,8 @@ describe("recordFixedCpuAction", () => {
         recordedPhase = phase;
         recordedCount = count;
       },
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -278,6 +280,8 @@ describe("recordFixedCpuAction", () => {
       recordFixedAction(): void {
         recorded = true;
       },
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -297,6 +301,8 @@ describe("recordFixedCpuAction", () => {
       recordFixedAction(_phase: string, count = 1): void {
         recordedCount = count;
       },
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -320,6 +326,8 @@ describe("measureCreepIntent", () => {
       recordFixedAction(phase: string, _count = 1): void {
         if (phase === "creepWork") fixedRecorded = true;
       },
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -339,6 +347,8 @@ describe("measureCreepIntent", () => {
       recordFixedAction(phase: string, _count = 1): void {
         if (phase === "creepWork") fixedRecorded = true;
       },
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -357,6 +367,8 @@ describe("measureCreepIntent", () => {
       recordFixedAction(): void {
         fixedRecorded = true;
       },
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -377,6 +389,8 @@ describe("measureCreepDecision and measureCreepPathing", () => {
         return fn();
       },
       recordFixedAction(): void {},
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -392,6 +406,8 @@ describe("measureCreepDecision and measureCreepPathing", () => {
         return fn();
       },
       recordFixedAction(): void {},
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -438,6 +454,8 @@ describe("setActiveTickCpuProfiler", () => {
         return fn();
       },
       recordFixedAction(): void {},
+      measureCreep(_creep: Creep, fn: () => void): void { fn(); },
+      measureRoomPhase<T>(_phase: string, _roomName: string, fn: () => T): T { return fn(); },
       flush(): void {},
     });
 
@@ -1147,5 +1165,203 @@ describe("overhead bound", () => {
 
     const avgTotalUsed = history.reduce((sum, s) => sum + s.totalUsed, 0) / ticks;
     expect(avgTotalUsed).toBeLessThanOrEqual(0.5);
+  });
+});
+
+// ─── Room/role aggregation ────────────────────────────────────────────────────
+
+describe("room role aggregation", () => {
+  beforeEach(() => {
+    Memory.cfg = {
+      cpuProfiler: { enabled: true, sampleInterval: 1, historyLimit: 10 },
+    };
+    Game.time = 100;
+    Game.shard = { name: "shard3" } as Game["shard"];
+    Game.cpu = {
+      getUsed: jest.fn(),
+      bucket: 9000,
+      limit: 20,
+      tickLimit: 500,
+    } as unknown as typeof Game.cpu;
+  });
+
+  function makeMockCreep(role: string, roomName: string): Creep {
+    return {
+      memory: { role },
+      room: { name: roomName } as Room,
+      pos: { roomName } as RoomPosition,
+    } as unknown as Creep;
+  }
+
+  it("separates two creeps in two rooms/roles into distinct buckets", () => {
+    // getUsed sequence: 10 (constructor) -> 11 (start creep1) -> 13 (end creep1)
+    //   -> 13 (start creep2) -> 16 (end creep2) -> 16 (flush)
+    const getUsed = deterministicGetUsed([10, 11, 13, 13, 16, 16]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+
+    const creep1 = makeMockCreep("worker", "W1N1");
+    const creep2 = makeMockCreep("carrier", "W2N2");
+
+    profiler.measureCreep(creep1, () => undefined);
+    profiler.measureCreep(creep2, () => undefined);
+    profiler.flush();
+
+    const snapshot = getCpuMonitorHistory()[0];
+    expect(snapshot.rooms["W1N1"]).toBeDefined();
+    expect(snapshot.rooms["W1N1"].roles.worker).toBeDefined();
+    expect(snapshot.rooms["W1N1"].roles.worker.used).toBeCloseTo(2, 5);
+    expect(snapshot.rooms["W1N1"].roles.worker.count).toBe(1);
+
+    expect(snapshot.rooms["W2N2"]).toBeDefined();
+    expect(snapshot.rooms["W2N2"].roles.carrier).toBeDefined();
+    expect(snapshot.rooms["W2N2"].roles.carrier.used).toBeCloseTo(3, 5);
+    expect(snapshot.rooms["W2N2"].roles.carrier.count).toBe(1);
+  });
+
+  it("accumulates multiple creeps of same role in same room", () => {
+    const getUsed = deterministicGetUsed([10, 11, 12, 12, 13.5, 13.5]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+
+    const creep1 = makeMockCreep("worker", "W1N1");
+    const creep2 = makeMockCreep("worker", "W1N1");
+
+    profiler.measureCreep(creep1, () => undefined);
+    profiler.measureCreep(creep2, () => undefined);
+    profiler.flush();
+
+    const snapshot = getCpuMonitorHistory()[0];
+    expect(snapshot.rooms["W1N1"].roles.worker.used).toBeCloseTo(2.5, 5);
+    expect(snapshot.rooms["W1N1"].roles.worker.count).toBe(2);
+    expect(snapshot.rooms["W1N1"].totalUsed).toBeCloseTo(2.5, 5);
+  });
+
+  it("defaults role to unknown when memory.role is missing", () => {
+    const getUsed = deterministicGetUsed([10, 11, 12, 12]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+
+    const creep = { memory: {}, room: { name: "W1N1" }, pos: { roomName: "W1N1" } } as unknown as Creep;
+    profiler.measureCreep(creep, () => undefined);
+    profiler.flush();
+
+    const snapshot = getCpuMonitorHistory()[0];
+    expect(snapshot.rooms["W1N1"].roles.unknown).toBeDefined();
+    expect(snapshot.rooms["W1N1"].roles.unknown.count).toBe(1);
+  });
+
+  it("defaults roomName to unknown when room and pos are missing", () => {
+    const getUsed = deterministicGetUsed([10, 11, 12, 12]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+
+    const creep = { memory: { role: "scout" }, room: undefined, pos: undefined } as unknown as Creep;
+    profiler.measureCreep(creep, () => undefined);
+    profiler.flush();
+
+    const snapshot = getCpuMonitorHistory()[0];
+    expect(snapshot.rooms.unknown).toBeDefined();
+    expect(snapshot.rooms.unknown.roles.scout.count).toBe(1);
+  });
+
+  it("measureRoomPhase records spawn role under room", () => {
+    const getUsed = deterministicGetUsed([10, 11, 14, 14]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+    profiler.measureRoomPhase("spawnWork", "W1N1", () => undefined);
+    profiler.flush();
+
+    const snapshot = getCpuMonitorHistory()[0];
+    expect(snapshot.rooms["W1N1"]).toBeDefined();
+    expect(snapshot.rooms["W1N1"].roles.spawn).toBeDefined();
+    expect(snapshot.rooms["W1N1"].roles.spawn.used).toBeCloseTo(3, 5);
+    expect(snapshot.rooms["W1N1"].roles.spawn.count).toBe(1);
+  });
+
+  it("measureRoomPhase passes through return value", () => {
+    const getUsed = deterministicGetUsed([10, 11, 12, 12]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+    const result = profiler.measureRoomPhase("spawnWork", "W1N1", () => 42);
+    expect(result).toBe(42);
+  });
+
+  it("noop profiler measureCreep never calls getUsed", () => {
+    Memory.cfg = {};
+    Game.cpu = {
+      getUsed: () => {
+        throw new Error("getUsed called!");
+      },
+    } as unknown as typeof Game.cpu;
+
+    const profiler = createTickCpuProfiler();
+    const creep = makeMockCreep("worker", "W1N1");
+    profiler.measureCreep(creep, () => undefined);
+    profiler.flush();
+    // Should not throw
+  });
+
+  it("noop profiler measureRoomPhase never calls getUsed", () => {
+    Memory.cfg = {};
+    Game.cpu = {
+      getUsed: () => {
+        throw new Error("getUsed called!");
+      },
+    } as unknown as typeof Game.cpu;
+
+    const profiler = createTickCpuProfiler();
+    const result = profiler.measureRoomPhase("spawnWork", "W1N1", () => 99);
+    expect(result).toBe(99);
+    profiler.flush();
+    // Should not throw
+  });
+
+  it("creep execution order is unchanged", () => {
+    const getUsed = deterministicGetUsed([10, 10, 10, 10, 10, 10, 10]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+    const order: string[] = [];
+
+    const creep1 = makeMockCreep("worker", "W1N1");
+    const creep2 = makeMockCreep("carrier", "W2N2");
+    const creep3 = makeMockCreep("worker", "W1N1");
+
+    profiler.measureCreep(creep1, () => { order.push("c1"); });
+    profiler.measureCreep(creep2, () => { order.push("c2"); });
+    profiler.measureCreep(creep3, () => { order.push("c3"); });
+
+    expect(order).toEqual(["c1", "c2", "c3"]);
+  });
+
+  it("snapshot rooms are deep-copied (not shared references)", () => {
+    const getUsed = deterministicGetUsed([10, 11, 12, 12]);
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(getUsed);
+
+    const profiler = createTickCpuProfiler();
+    const creep = makeMockCreep("worker", "W1N1");
+    profiler.measureCreep(creep, () => undefined);
+    profiler.flush();
+
+    const snap1 = getCpuMonitorHistory()[0];
+    // Mutate snapshot — next tick should not be affected
+    snap1.rooms["W1N1"].roles.worker.used = 999;
+
+    // Run another tick
+    Game.time = 101;
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(deterministicGetUsed([10, 11, 12, 12]));
+    const profiler2 = createTickCpuProfiler();
+    profiler2.measureCreep(creep, () => undefined);
+    profiler2.flush();
+
+    const snap2 = getCpuMonitorHistory()[1];
+    expect(snap2.rooms["W1N1"].roles.worker.used).not.toBe(999);
   });
 });
