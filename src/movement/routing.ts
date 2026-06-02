@@ -5,6 +5,7 @@ import { getPosKey, isExitTile, isWalkableConstructionSite, isWalkableStructure,
 import { recordMovementMetric } from "@/movement/metrics";
 import { moveToTarget } from "@/movement/pathing";
 import { moveOffExit } from "@/movement/traffic";
+import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
 import type {
   CachedTravelPath,
   DynamicRouteCacheEntry,
@@ -131,6 +132,7 @@ export function moveToTargetRoom(
     plainCost: options.plainCost,
     reusePath: travelState.stuckTicks >= 2 ? 0 : options.reusePath ?? 5,
     maxRooms: options.maxRooms ?? Math.max(routeRooms.length + 1, 16),
+    ignoreCreeps: travelState.stuckTicks >= 2 ? false : options.ignoreCreeps,
     avoidExitTiles: true,
   };
 
@@ -376,8 +378,34 @@ function buildMultiRoomTravelMatrix(creep: Creep, roomName: string, options: Mov
 
   const sites = roomContext?.getConstructionSites() ?? room.find(FIND_CONSTRUCTION_SITES);
   for (const site of sites) {
-    if (site.my && !isWalkableConstructionSite(site)) {
+    if (!site.my) {
+      continue;
+    }
+    if (!isWalkableConstructionSite(site)) {
       matrix.set(site.pos.x, site.pos.y, 0xff);
+    } else if (site.structureType === STRUCTURE_ROAD) {
+      matrix.set(site.pos.x, site.pos.y, 1);
+    }
+  }
+
+  for (const pos of getSourceContainerPositionsForRoom(roomName)) {
+    if (matrix.get(pos.x, pos.y) < 0xfe) {
+      matrix.set(pos.x, pos.y, 0xfe);
+    }
+  }
+
+  if (room.controller?.my) {
+    const cPos = room.controller.pos;
+    for (let dx = -3; dx <= 3; dx += 1) {
+      for (let dy = -3; dy <= 3; dy += 1) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) > 3) continue;
+        const x = cPos.x + dx;
+        const y = cPos.y + dy;
+        if (x < 1 || x > 48 || y < 1 || y > 48) continue;
+        if (matrix.get(x, y) < 0xfe) {
+          matrix.set(x, y, 0xfe);
+        }
+      }
     }
   }
 

@@ -47,7 +47,7 @@ export interface MovePathState {
   targetRoom: string;
   targetX: number;
   targetY: number;
-  range: 0 | 1 | 3;
+  range: 0 | 1 | 2 | 3;
   lastPosKey?: string;
   stuckTicks: number;
   expiresAt: number;

@@ -22,7 +22,7 @@ export function clearMovementState(creep: Creep): void {
 export function moveToTarget(
   creep: Creep,
   target: RoomPosition | { pos: RoomPosition },
-  range: 0 | 1 | 3 = 1,
+  range: 0 | 1 | 2 | 3 = 1,
   options: MoveToTargetOptions = {},
 ): ScreepsReturnCode {
   recordMovementMetric("pathRequests", creep.room.name);
@@ -245,8 +245,13 @@ function getCachedRoomBaseCostMatrix(
   }
 
   for (const site of roomContext.getConstructionSites()) {
-    if (site.my && !isWalkableConstructionSite(site)) {
+    if (!site.my) {
+      continue;
+    }
+    if (!isWalkableConstructionSite(site)) {
       baseMatrix.set(site.pos.x, site.pos.y, 0xff);
+    } else if (site.structureType === STRUCTURE_ROAD && baseMatrix.get(site.pos.x, site.pos.y) < 0xfe) {
+      baseMatrix.set(site.pos.x, site.pos.y, 1);
     }
   }
 
@@ -267,7 +272,7 @@ function followStoredRoomPath(
   creep: Creep,
   movePathState: MovePathState,
   targetPos: RoomPosition,
-  range: 0 | 1 | 3,
+  range: 0 | 1 | 2 | 3,
 ): ScreepsReturnCode {
   if (creep.pos.getRangeTo(targetPos) <= range) {
     return OK;
