@@ -370,6 +370,66 @@ describe("runResourceControl terminal feed tasks", () => {
     });
   });
 
+  it("does not auto-balance energy into rooms without terminal and storage receive buffers", () => {
+    const donor = createRoom({
+      name: "W8N5",
+      storageResources: { [RESOURCE_ENERGY]: 300000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30000 },
+    });
+    const receiver = createRoom({
+      name: "W8N6",
+      storageResources: { [RESOURCE_ENERGY]: 50000 },
+      terminalResources: { [RESOURCE_ENERGY]: 260000 },
+      storageFreeCapacity: 150000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+  });
+
+  it("caps auto-balance energy by receiver capacity above terminal and storage buffers", () => {
+    const donor = createRoom({
+      name: "W8N7",
+      storageResources: { [RESOURCE_ENERGY]: 300000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30000 },
+    });
+    const receiver = createRoom({
+      name: "W8N8",
+      storageResources: { [RESOURCE_ENERGY]: 50000 },
+      terminalResources: { [RESOURCE_ENERGY]: 259900 },
+      storageFreeCapacity: 150000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).toHaveBeenCalledWith(RESOURCE_ENERGY, 100, receiver.name, "resourceControl:auto-balance");
+  });
+
+  it("does not execute pending transfer tasks into rooms without receive buffers", () => {
+    const donor = createRoom({
+      name: "W8N9",
+      storageResources: { [RESOURCE_KEANIUM]: 5000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30000, [RESOURCE_KEANIUM]: 5000 },
+    });
+    const receiver = createRoom({
+      name: "W8N10",
+      terminalResources: { [RESOURCE_ENERGY]: 260000 },
+      storageFreeCapacity: 150000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(donor.name, receiver.name, RESOURCE_KEANIUM, 3000, "test");
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+  });
+
   it("stages native minerals above the 10000 threshold into the terminal before selling", () => {
     Memory.cfg = {
       resourceControl: {

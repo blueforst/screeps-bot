@@ -2,8 +2,6 @@ import { pruneCarrierTasksForProducer, replaceCarrierTasksForProducerRoom, type 
 import { limitActionLog } from "@/runtime/actionLog";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import {
-  countPendingOutgoingResourceTransferTasksByRoom,
-  createResourceTransferTask,
   ensureResourceTransferTaskStore,
   getIncomingResourceTransferAmount,
   getOutgoingResourceTransferAmount,
@@ -106,6 +104,7 @@ const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";
 const RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY = 80;
 const RESOURCE_CONTROL_TERMINAL_OFFLOAD_PRIORITY = 90;
 const TERMINAL_TOTAL_STORAGE_CAP = 250_000;
+const RECEIVER_TERMINAL_FREE_BUFFER = 40_000;
 const RECEIVER_STORAGE_FREE_BUFFER = 100_000;
 
 const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
@@ -401,6 +400,11 @@ function computeSendAmount(
 }
 
 function computeTransferAmount(from: ResourceControlSnapshot, to: ResourceControlSnapshot): number {
+  const receiverCapacity = getReceiverReceivableCapacity(to, RESOURCE_ENERGY);
+  if (receiverCapacity <= 0) {
+    return 0;
+  }
+
   const receiverNeed = Math.max(0, to.energyTarget - to.storageEnergy);
   if (receiverNeed <= 0) {
     return 0;
@@ -416,7 +420,7 @@ function computeTransferAmount(from: ResourceControlSnapshot, to: ResourceContro
     return 0;
   }
 
-  let candidate = Math.min(from.transferBatchSize, receiverNeed, donorStorageSurplus, terminalFreeForSend);
+  let candidate = Math.min(from.transferBatchSize, receiverNeed, donorStorageSurplus, terminalFreeForSend, receiverCapacity);
   while (candidate > 0) {
     const transferCost = Game.market.calcTransactionCost(candidate, from.roomName, to.roomName);
     if (candidate + transferCost <= terminalFreeForSend) {
@@ -486,7 +490,12 @@ function applyInternalBalancing(snapshots: ResourceControlSnapshot[], terminalBu
 }
 
 function isStorageConstrained(snapshot: ResourceControlSnapshot | undefined): boolean {
-  return (snapshot?.storage?.store.getFreeCapacity() ?? 0) < RECEIVER_STORAGE_FREE_BUFFER;
+  return (snapshot?.storage?.store.getFreeCapacity() ?? 0) <= RECEIVER_STORAGE_FREE_BUFFER;
+}
+
+function getReceiverStorageFreeCapacity(receiver: ResourceControlSnapshot): number {
+  const free = receiver.storage?.store.getFreeCapacity();
+  return typeof free === "number" ? Math.max(0, free) : 0;
 }
 
 function getTransferTaskPriority(
@@ -511,13 +520,23 @@ function getTransferTaskPriority(
 }
 
 function getReceiverTerminalFreeCapacity(receiver: ResourceControlSnapshot, resource: ResourceConstant): number {
+  const totalFree = receiver.terminal.store.getFreeCapacity();
+  if (typeof totalFree === "number") {
+    return Math.max(0, totalFree);
+  }
+
   const resourceFree = receiver.terminal.store.getFreeCapacity(resource);
   if (typeof resourceFree === "number") {
     return Math.max(0, resourceFree);
   }
 
-  const totalFree = receiver.terminal.store.getFreeCapacity();
-  return typeof totalFree === "number" ? Math.max(0, totalFree) : 0;
+  return 0;
+}
+
+function getReceiverReceivableCapacity(receiver: ResourceControlSnapshot, resource: ResourceConstant): number {
+  const terminalFreeAboveBuffer = getReceiverTerminalFreeCapacity(receiver, resource) - RECEIVER_TERMINAL_FREE_BUFFER;
+  const storageFreeAboveBuffer = getReceiverStorageFreeCapacity(receiver) - RECEIVER_STORAGE_FREE_BUFFER;
+  return Math.max(0, Math.min(terminalFreeAboveBuffer, storageFreeAboveBuffer));
 }
 
 function getHubPendingImportResources(): Map<string, Set<string>> {
@@ -612,11 +631,8 @@ function executeTransferTasks(
     if (terminalBusy.has(donor.roomName) || donor.terminal.cooldown > 0) {
       continue;
     }
-    const receiverTerminalFree = getReceiverTerminalFreeCapacity(receiver, task.resource);
-    if (receiverTerminalFree <= 0) {
-      continue;
-    }
-    if (task.resource !== RESOURCE_ENERGY && isStorageConstrained(receiver)) {
+    const receiverCapacity = getReceiverReceivableCapacity(receiver, task.resource);
+    if (receiverCapacity <= 0) {
       continue;
     }
 
@@ -624,7 +640,7 @@ function executeTransferTasks(
       donor,
       receiver.roomName,
       task.resource,
-      Math.min(task.remainingAmount, donor.transferBatchSize, receiverTerminalFree),
+      Math.min(task.remainingAmount, donor.transferBatchSize, receiverCapacity),
     );
     if (amount <= 0) {
       task.updatedAt = Game.time;
@@ -1089,14 +1105,6 @@ function isResourceCommittedToDistributedSynthesis(roomName: string, resource: R
   }
 
   return false;
-}
-
-function hasHubMarketSellSurplus(roomName: string): boolean {
-  const hubCfg = Memory.cfg?.hub;
-  if (!hubCfg || hubCfg.hubRoomName !== roomName) return false;
-  const surplus = Memory.runtime?.hub?.marketSellSurplus;
-  if (!surplus) return false;
-  return Object.values(surplus).some(v => v != null && v > 0);
 }
 
 function getHubMarketSellResources(): ResourceConstant[] {
