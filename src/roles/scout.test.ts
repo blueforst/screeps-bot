@@ -89,4 +89,89 @@ describe("scoutRole", () => {
     });
     expect(result).toBe(false);
   });
+
+  describe("suspended remote mining keep-alive", () => {
+    it("does not suicide when target room remote mining is suspended", () => {
+      const creep = {
+        room: { name: "W2N57" },
+        memory: {},
+        pos: { x: 25, y: 25, roomName: "W2N57" },
+        suicide: jest.fn(),
+      } as unknown as Creep;
+
+      Memory.data = {
+        remoteMining: {
+          "W2N57": {
+            sourceRoom: "W1N57",
+            targetRoom: "W2N57",
+            status: "suspended",
+            suspendedAt: 100,
+            sourceIds: [],
+            assignedAt: 50,
+            updatedAt: 100,
+          } satisfies import("@/runtime/remoteMining").RemoteMiningTask,
+        },
+      };
+
+      scoutRole("W2N57").source?.(creep);
+
+      expect(creep.suicide).not.toHaveBeenCalled();
+    });
+
+    it("suicides when target room remote mining is active", () => {
+      const creep = {
+        room: { name: "W2N57" },
+        memory: {},
+        pos: { x: 25, y: 25, roomName: "W2N57" },
+        suicide: jest.fn(),
+      } as unknown as Creep;
+
+      Memory.data = {
+        remoteMining: {
+          "W2N57": {
+            sourceRoom: "W1N57",
+            targetRoom: "W2N57",
+            status: "active",
+            sourceIds: [],
+            assignedAt: 50,
+            updatedAt: 100,
+          } satisfies import("@/runtime/remoteMining").RemoteMiningTask,
+        },
+      };
+
+      scoutRole("W2N57").source?.(creep);
+
+      expect(creep.suicide).toHaveBeenCalledTimes(1);
+    });
+
+    it("suicides when no remote mining data exists for target room", () => {
+      const creep = {
+        room: { name: "W2N57" },
+        memory: {},
+        pos: { x: 25, y: 25, roomName: "W2N57" },
+        suicide: jest.fn(),
+      } as unknown as Creep;
+
+      Memory.data = {};
+
+      scoutRole("W2N57").source?.(creep);
+
+      expect(creep.suicide).toHaveBeenCalledTimes(1);
+    });
+
+    it("suicides when Memory.data is undefined", () => {
+      const creep = {
+        room: { name: "W2N57" },
+        memory: {},
+        pos: { x: 25, y: 25, roomName: "W2N57" },
+        suicide: jest.fn(),
+      } as unknown as Creep;
+
+      delete (Memory as unknown as Record<string, unknown>).data;
+
+      scoutRole("W2N57").source?.(creep);
+
+      expect(creep.suicide).toHaveBeenCalledTimes(1);
+    });
+  });
 });
