@@ -1036,6 +1036,114 @@ describe("distributed synthesis integration – statusHub and hubProgressRaw vis
   });
 });
 
+describe("ordered pipeline integration regression – distributedStorage hub fallback", () => {
+  it("runHubPlanner writes hub fallback reaction, runSynthesisControl consumes it same tick", () => {
+    // Regression: when distributedStorage=true and hub room is NOT in dispatchAssignments,
+    // runHubPlanner must still write a hub-room synthesisControl config (the fallback path
+    // added in Task 2). runSynthesisControl must then consume that config and enter a
+    // non-idle production stage.
+
+    // Hub room: W1N1 — H+O below reservePerRoom (1000) so planHubChains sees them
+    // and produces an OH step, but planDistributedSynthesis ledger subtracts the
+    // reserve and sees 0 effective minerals for the hub → hub NOT dispatched.
+    const { room: hubRoom } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROGEN]: 500,
+        [RESOURCE_OXYGEN]: 500,
+      },
+    });
+    Game.rooms["W1N1"] = hubRoom;
+
+    // Aux room: W2N1 — Z+K above reserve so planDistributedSynthesis dispatches
+    // ZK here, and wireDistributedSynthesis returns true (aux rooms exist).
+    const { room: auxRoom } = createSynthesisRoom({
+      name: "W2N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_ZYNTHIUM]: 30000,
+        [RESOURCE_KEANIUM]: 30000,
+      },
+    });
+    Game.rooms["W2N1"] = auxRoom;
+
+    Memory.cfg = {
+      hub: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        planInterval: 50,
+        reservePerRoom: 1000,
+        hubReservePerCompound: 1000,
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ALKALIDE as ResourceConstant],
+        storagePauseFreeCapacity: 100_000,
+        surplusThreshold: 1500,
+        internalOnly: true,
+        distributedStorage: true,
+      },
+    };
+    Memory.runtime = {
+      hub: {
+        status: "idle",
+        updatedAt: 0,
+        activeProduct: "",
+        activeStep: 0,
+        missingResources: [],
+        lastPlanActions: [],
+        needsPlan: true,
+      },
+    };
+
+    Game.time = 0;
+
+    // ---- Step 1: runHubPlanner() ----
+    runHubPlanner();
+
+    // Verify: planner produced a non-idle hub status
+    expect(Memory.runtime!.hub!.status).not.toBe("idle");
+    expect(Memory.runtime!.hub!.status).not.toBe("blocked");
+    expect(Memory.runtime!.hub!.activeProduct).toBeTruthy();
+    expect(Memory.runtime!.hub!.needsPlan).toBe(false);
+
+    // Verify: distributed synthesis is active (aux rooms exist)
+    const dist = Memory.runtime!.hub!.distributedSynthesis;
+    expect(dist).toBeDefined();
+
+    // Verify: hub room has synthesisControl config written (the fallback path)
+    const hubRoomCfg = Memory.cfg?.synthesisControl?.rooms?.["W1N1"];
+    expect(hubRoomCfg).toBeDefined();
+    expect(hubRoomCfg!.enabled).toBe(true);
+    expect(hubRoomCfg!.reactions).toBeDefined();
+    expect(hubRoomCfg!.reactions!.length).toBeGreaterThanOrEqual(1);
+
+    // The hub room reaction product should match the first chain step
+    const hubReaction = hubRoomCfg!.reactions![0];
+    expect(hubReaction.targetAmount).toBeGreaterThan(0);
+    expect(hubReaction.product).toBeTruthy();
+
+    // Verify: hub is NOT in dispatch assignments (reservePerRoom trick prevents dispatch)
+    expect(dist!.dispatchAssignments!.find(a => a.roomName === "W1N1")).toBeUndefined();
+
+    // Hub fallback wrote the reaction matching the active product
+    expect(hubReaction.product).toBe(Memory.runtime!.hub!.activeProduct);
+
+    // ---- Step 2: runSynthesisControl() same tick ----
+    Game.time = 1;
+    runSynthesisControl();
+
+    // Verify: hub room synthesis runtime entered a non-idle production path
+    const hubSynthesisState = Memory.runtime!.synthesisControl!.rooms["W1N1"];
+    expect(hubSynthesisState).toBeDefined();
+    expect(hubSynthesisState!.stage).not.toBe("idle");
+    expect(hubSynthesisState!.stage).not.toBe("blocked");
+    // The stage should be one of: acquiring, loading, or synthesizing
+    expect(["acquiring", "loading", "synthesizing"]).toContain(hubSynthesisState!.stage);
+
+    // The active product should match the config that runHubPlanner wrote
+    expect(hubSynthesisState!.activeProduct).toBe(hubReaction.product);
+  });
+});
+
 describe("main.ts tick-order invariant", () => {
   it("hubPlanner runs before synthesisControl and hubProgressAnalytics runs after both", () => {
     // Read main.ts and verify the call order is:

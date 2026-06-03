@@ -1582,7 +1582,7 @@ export function wireDistributedSynthesis(
   hubReservePerCompound: number,
   reservePerRoom: number,
   hubInventory: Record<string, number>,
-  _steps: ChainStep[],
+  steps: ChainStep[],
   distributedStorage?: boolean,
 ): boolean {
   const eligibleRooms = getEligibleSynthesisRooms();
@@ -1721,6 +1721,43 @@ export function wireDistributedSynthesis(
       return !(oldReagents.has(route.resource as ResourceConstant) && !actualReagents.has(route.resource as ResourceConstant));
     });
     Memory.runtime.hub.distributedSynthesis.routeDecisions = filteredRouteDecisions;
+  }
+
+  // Hub-room synthesis config fallback:
+  // When distributedStorage is active, the hub room may not appear in dispatch
+  // assignments (planner assigns aux rooms instead). This block ensures the hub
+  // room's synthesisControl config stays synchronized with the chain steps,
+  // using the same write-pattern as writeSynthesisConfig.
+  if (distributedStorage) {
+    const hubStage = Memory.runtime?.synthesisControl?.rooms?.[hubRoomName]?.stage;
+    if (canRewriteSynthesisRoom(hubRoomName, hubStage)) {
+      const nextStep = steps.length > 0 ? steps[0] : null;
+
+      if (!nextStep) {
+        const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
+        if (roomCfg) {
+          roomCfg.reactions = [];
+        }
+      } else {
+        if (!Memory.cfg.synthesisControl.rooms[hubRoomName]) {
+          Memory.cfg.synthesisControl.rooms[hubRoomName] = {
+            enabled: true,
+            donorRoomNames: [],
+          };
+        }
+
+        const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
+        roomCfg.enabled = true;
+        roomCfg.reactions = [
+          {
+            product: nextStep.product,
+            targetAmount: roundUpReactionAmount((hubInventory[nextStep.product] || 0) + nextStep.targetAmount),
+            batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(nextStep.targetAmount))),
+            donorRoomNames: [],
+          },
+        ];
+      }
+    }
   }
 
   wireRouteTransferTasks(filteredRouteDecisions, hubRoomName, reservePerRoom, distributedStorage);

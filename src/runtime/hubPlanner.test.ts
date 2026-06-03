@@ -1296,6 +1296,10 @@ describe("distributedStorage off", () => {
     expect(hTask).toBeDefined();
     expect(ohTask).toBeDefined();
     expect(t3Task).toBeDefined();
+
+    // Guardrail: distributedStorage off never populates dispatchAssignments
+    const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
+    expect(dispatchAssignments).toHaveLength(0);
   });
 });
 
@@ -1419,6 +1423,32 @@ describe("distributedStorage on", () => {
     // POWER route present
     const powerTask = tasks.find((t) => t.reason === "hub:import:power");
     expect(powerTask).toBeDefined();
+
+    // Guardrail: route-task wiring must NOT create synthetic dispatchAssignments
+    const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
+    expect(dispatchAssignments).toHaveLength(0);
+  });
+
+  it("Guardrail: route-task wiring never creates synthetic dispatchAssignments entries", () => {
+    // all route types active: proves none pollute dispatchAssignments
+    Game.rooms[HUB_ROOM] = createHubRoomForImports();
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
+      [RESOURCE_HYDROGEN]: 2000,
+      [RESOURCE_HYDROXIDE]: 500,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 2000,
+      [RESOURCE_POWER]: 3000,
+    });
+
+    const actions = planHubImports(Memory.cfg!.hub!);
+
+    // Route tasks exist (reclaim + power), but dispatchAssignments must remain empty
+    const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
+    expect(dispatchAssignments).toHaveLength(0);
+    // Also verify the entire distributedSynthesis object is absent or empty — no synthetic entries
+    const ds = Memory.runtime?.hub?.distributedSynthesis;
+    if (ds) {
+      expect(Object.keys(ds).filter(k => k !== "dispatchAssignments")).toHaveLength(0);
+    }
   });
 });
 
@@ -6406,6 +6436,202 @@ describe("logistics-cost-aware dispatch scoring", () => {
 
       // Deterministic: identical structure
       expect(secondAssignments).toEqual(firstAssignments);
+    });
+
+    // -----------------------------------------------------------------------
+    // Task 2: Hub-room synthesis config fallback when distributedStorage is on
+    // -----------------------------------------------------------------------
+
+    it("distributedStorage fallback: hub room reaction matches steps[0].product when hub not in dispatch assignments", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      const steps: ChainStep[] = [
+        { product: RESOURCE_HYDROXIDE, targetAmount: 1000, reagents: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN] },
+      ];
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 5000, [RESOURCE_OXYGEN]: 5000 },
+        steps,
+        true,
+      );
+
+      const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
+      expect(dispatchAssignments.find(a => a.roomName === WIRE_HUB)).toBeUndefined();
+
+      const hubRoomCfg = Memory.cfg?.synthesisControl?.rooms?.[WIRE_HUB];
+      expect(hubRoomCfg).toBeDefined();
+      expect(hubRoomCfg!.reactions).toBeDefined();
+      expect(hubRoomCfg!.reactions!.length).toBeGreaterThanOrEqual(1);
+      expect(hubRoomCfg!.reactions![0].product).toBe(RESOURCE_HYDROXIDE);
+    });
+
+    it("distributedStorage fallback: stale idle hub reaction is replaced by steps[0].product", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+          [RESOURCE_ZYNTHIUM]: 5000,
+          [RESOURCE_KEANIUM]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      Memory.cfg!.synthesisControl = {
+        enabled: true,
+        rooms: {
+          [WIRE_HUB]: {
+            enabled: true,
+            reactions: [{ product: RESOURCE_ZYNTHIUM_KEANITE, targetAmount: 5000, batchSize: 100, donorRoomNames: [] }],
+            donorRoomNames: [],
+          },
+        },
+      };
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_HUB] = { stage: "idle" };
+
+      const steps: ChainStep[] = [
+        { product: RESOURCE_UTRIUM_HYDRIDE, targetAmount: 1000, reagents: [RESOURCE_UTRIUM, RESOURCE_HYDROGEN] },
+      ];
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_HYDROGEN]: 5000, [RESOURCE_OXYGEN]: 5000, [RESOURCE_ZYNTHIUM]: 5000, [RESOURCE_KEANIUM]: 5000 },
+        steps,
+        true,
+      );
+
+      const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
+      expect(dispatchAssignments.find(a => a.roomName === WIRE_HUB)).toBeUndefined();
+
+      const hubRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_HUB];
+      expect(hubRoomCfg.reactions).toBeDefined();
+      expect(hubRoomCfg.reactions!.length).toBeGreaterThanOrEqual(1);
+      expect(hubRoomCfg.reactions![0].product).toBe(RESOURCE_UTRIUM_HYDRIDE);
+    });
+
+    it("distributedStorage fallback: busy hub room preserves existing reaction unchanged", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_UTRIUM]: 10000,
+          [RESOURCE_HYDROGEN]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 5000,
+          [RESOURCE_OXYGEN]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_HUB] = {
+        stage: "synthesizing",
+        activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+        targetAmount: 2000,
+      };
+      Memory.cfg!.synthesisControl = {
+        enabled: true,
+        rooms: {
+          [WIRE_HUB]: {
+            enabled: true,
+            reactions: [{ product: RESOURCE_UTRIUM_HYDRIDE, targetAmount: 2000, batchSize: 100, donorRoomNames: [] }],
+            donorRoomNames: [],
+          },
+        },
+      };
+
+      const steps: ChainStep[] = [
+        { product: RESOURCE_HYDROXIDE, targetAmount: 1000, reagents: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN] },
+      ];
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        { [RESOURCE_UTRIUM]: 10000, [RESOURCE_HYDROGEN]: 15000, [RESOURCE_OXYGEN]: 5000 },
+        steps,
+        true,
+      );
+
+      const hubRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_HUB];
+      expect(hubRoomCfg.reactions![0].product).toBe(RESOURCE_UTRIUM_HYDRIDE);
+      expect(hubRoomCfg.reactions![0].targetAmount).toBe(2000);
+      expect(hubRoomCfg.reactions![0].product).not.toBe(steps[0].product);
+    });
+
+    it("distributedStorage fallback: empty steps clears hub room reactions when rewrite-safe", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_ZYNTHIUM]: 5000,
+          [RESOURCE_KEANIUM]: 5000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      Memory.cfg!.synthesisControl = {
+        enabled: true,
+        rooms: {
+          [WIRE_HUB]: {
+            enabled: true,
+            reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 5000, batchSize: 100, donorRoomNames: [] }],
+            donorRoomNames: [],
+          },
+        },
+      };
+      if (!Memory.runtime!.synthesisControl) (Memory.runtime as any).synthesisControl = { rooms: {} };
+      if (!(Memory.runtime as any).synthesisControl.rooms) (Memory.runtime as any).synthesisControl.rooms = {};
+      (Memory.runtime as any).synthesisControl.rooms[WIRE_HUB] = { stage: "idle" };
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_UTRIUM_ACID],
+        1000,
+        1000,
+        {},
+        [],
+        true,
+      );
+
+      const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
+      expect(dispatchAssignments.find(a => a.roomName === WIRE_HUB)).toBeUndefined();
+
+      const hubRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_HUB];
+      expect(hubRoomCfg.reactions).toEqual([]);
     });
   });
 });
