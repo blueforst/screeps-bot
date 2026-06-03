@@ -1,4 +1,4 @@
-import { runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
+import { getSourceContainerPositionsForRoom, runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -256,6 +256,71 @@ function setRoomPlannerLayout(roomName: string, layout: Partial<Record<string, P
     },
   } as Memory["data"];
 }
+
+function createRemoteMiningTask(
+  sourceRoom: string,
+  targetRoom: string,
+  containerPositions: Record<string, { x: number; y: number; roomName: string }>,
+): import("@/runtime/remoteMining").RemoteMiningTask {
+  return {
+    sourceRoom,
+    targetRoom,
+    status: "active",
+    sourceIds: Object.keys(containerPositions),
+    assignedAt: Game.time,
+    updatedAt: Game.time,
+    containerPositions,
+  };
+}
+
+describe("getSourceContainerPositionsForRoom", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time = 100;
+    Game.rooms = {} as Game["rooms"];
+    Memory.data = {} as Memory["data"];
+  });
+
+  it("includes remote mining source container positions without a room planner layout", () => {
+    const room = createRoom({ name: "W2N1" });
+    Game.rooms[room.name] = room;
+    Memory.data = {
+      remoteMining: {
+        [room.name]: createRemoteMiningTask("W1N1", room.name, {
+          source1: { x: 12, y: 14, roomName: room.name },
+          source2: { x: 35, y: 37, roomName: room.name },
+        }),
+      },
+    } as Memory["data"];
+
+    expect(getSourceContainerPositionsForRoom(room.name)).toEqual([
+      { x: 12, y: 14 },
+      { x: 35, y: 37 },
+    ]);
+  });
+
+  it("deduplicates remote mining container positions with planned source container positions", () => {
+    const room = createRoom({ name: "W2N2" });
+    const source = createSource(room, 11, 10);
+    room.__sources.push(source);
+    Game.rooms[room.name] = room;
+    setRoomPlannerLayout(room.name, { [STRUCTURE_CONTAINER]: [{ x: 12, y: 10 }] });
+    Memory.data = {
+      ...Memory.data,
+      remoteMining: {
+        [room.name]: createRemoteMiningTask("W1N1", room.name, {
+          source1: { x: 12, y: 10, roomName: room.name },
+          source2: { x: 20, y: 20, roomName: room.name },
+        }),
+      },
+    } as Memory["data"];
+
+    expect(getSourceContainerPositionsForRoom(room.name)).toEqual([
+      { x: 12, y: 10 },
+      { x: 20, y: 20 },
+    ]);
+  });
+});
 
 describe("runRoomPlannerConstruction lab ordering", () => {
   beforeAll(() => {

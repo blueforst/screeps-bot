@@ -690,10 +690,10 @@ function queueMissingPlannedRamparts(
 }
 
 export function getSourceContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
+  const remoteContainerPositions = getRemoteMiningContainerPositionsForRoom(roomName);
   const layout = Memory.data?.roomPlanner?.[roomName]?.layout;
-  if (!layout) return [];
   const room = Game.rooms[roomName];
-  if (!room) return [];
+  if (!layout || !room) return remoteContainerPositions;
   const sources = room.find(FIND_SOURCES);
 
   // Containers explicitly planned (no link at source).
@@ -722,7 +722,7 @@ export function getSourceContainerPositionsForRoom(roomName: string): { x: numbe
 
   const seen = new Set<string>();
   const unique: { x: number; y: number }[] = [];
-  for (const pos of [...fromContainers, ...fromWorkPos, ...mineralPositions]) {
+  for (const pos of [...fromContainers, ...fromWorkPos, ...mineralPositions, ...remoteContainerPositions]) {
     const key = `${pos.x}:${pos.y}`;
     if (!seen.has(key)) {
       seen.add(key);
@@ -730,6 +730,27 @@ export function getSourceContainerPositionsForRoom(roomName: string): { x: numbe
     }
   }
   return unique;
+}
+
+function getRemoteMiningContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
+  const tasks = Memory.data?.remoteMining;
+  if (!tasks) return [];
+
+  const seen = new Set<string>();
+  const positions: { x: number; y: number }[] = [];
+  for (const task of Object.values(tasks)) {
+    for (const pos of Object.values(task.containerPositions ?? {})) {
+      if (pos.roomName !== roomName) continue;
+
+      const key = `${pos.x}:${pos.y}`;
+      if (seen.has(key)) continue;
+
+      seen.add(key);
+      positions.push({ x: pos.x, y: pos.y });
+    }
+  }
+
+  return positions;
 }
 
 export function getPlannedSourceContainerPos(source: Source): RoomPosition | null {
