@@ -173,6 +173,66 @@ describe("moveToTarget yielding", () => {
     expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
   });
 
+  it("pushes a blocker with stale path state when it has not requested pathing this tick", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N5A", creeps);
+    const pusher = createCreep("worker-stale-push", "worker", 10, 10, room);
+    const blocker = createCreep("carrier-stale-block", "carrier", 11, 10, room);
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+
+    ensureCreepMovementState(blocker.name).movePathState = {
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0`,
+      path: "33",
+      steps: [
+        { x: 11, y: 10 },
+        { x: 12, y: 10 },
+        { x: 13, y: 10 },
+      ],
+      targetRoom: room.name,
+      targetX: 13,
+      targetY: 10,
+      range: 1,
+      stuckTicks: 0,
+      expiresAt: Game.time + 5,
+    };
+
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(result).toBe(OK);
+    expect(blocker.move).toHaveBeenCalled();
+    expect(pusher.move).toHaveBeenCalledWith(RIGHT);
+    expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
+  });
+
+  it("does not push a blocker that already requested pathing this tick", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N5B", creeps);
+    const pusher = createCreep("worker-active-push", "worker", 10, 10, room);
+    const blocker = createCreep("carrier-active-block", "carrier", 11, 10, room);
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+    ensureCreepMovementState(blocker.name).pathingRequestedAt = Game.time;
+
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(result).toBe(OK);
+    expect(blocker.move).not.toHaveBeenCalled();
+    expect(pusher.move).toHaveBeenCalledWith(RIGHT);
+  });
+
   it("continues forward on a cached path instead of stepping back to the previous tile", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N2C", creeps);

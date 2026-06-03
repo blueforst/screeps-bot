@@ -4,7 +4,7 @@ import { getTickContextService } from "@/runtime/runtimeServices";
 import { getPosKey, isExitTile, isWalkableConstructionSite, isWalkableStructure, parseEncodedRouteRooms } from "@/movement/common";
 import { recordMovementMetric } from "@/movement/metrics";
 import { moveToTarget } from "@/movement/pathing";
-import { moveOffExit } from "@/movement/traffic";
+import { moveOffExit, moveToAdjacentPosition } from "@/movement/traffic";
 import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
 import type {
   CachedTravelPath,
@@ -66,6 +66,7 @@ export function moveToTargetRoom(
   const dangerousRooms = getDangerousRoomsForTarget(targetRoom);
   const hasFixedRoute = routeRooms.length > 0;
   const travelState = getTravelState(creep, targetRoom);
+  ensureCreepMovementState(creep.name).pathingRequestedAt = Game.time;
   const currentPosKey = getPosKey(creep.pos);
   const currentOnExit = isExitTile(creep.pos);
   const repeatedExitTransition = travelState.lastWasExit && currentOnExit && travelState.lastPosKey !== currentPosKey;
@@ -245,8 +246,7 @@ function followCachedTravelPath(creep: Creep, cachedPath: CachedTravelPath): Scr
     return ERR_NO_PATH;
   }
 
-  const direction = creep.pos.getDirectionTo(nextPos);
-  return measureCreepIntent(() => creep.move(direction));
+  return moveToAdjacentPosition(creep, nextPos);
 }
 
 function getNextCachedTravelPathStep(pos: RoomPosition, positions: StoredRoomPosition[]): StoredRoomPosition | null {
@@ -322,8 +322,7 @@ function moveAlongMultiRoomPath(
     return ERR_NO_PATH;
   }
 
-  const direction = creep.pos.getDirectionTo(nextPos);
-  return measureCreepIntent(() => creep.move(direction));
+  return moveToAdjacentPosition(creep, nextPos);
 }
 
 function createMultiRoomTravelCallback(

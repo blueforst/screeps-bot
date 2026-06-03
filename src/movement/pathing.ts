@@ -1,10 +1,10 @@
 import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
-import { clearCreepMovementState, ensureCreepMovementState, getCreepMovementState } from "@/movement/creepState";
+import { clearCreepMovementState, ensureCreepMovementState } from "@/movement/creepState";
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 import { getPosKey, getTargetPos, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
-import { findMyCreepAt, moveOffExit, pushBlockingCreep } from "@/movement/traffic";
+import { moveOffExit, moveToAdjacentPosition } from "@/movement/traffic";
 import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
 import type { MovePathState, MoveToTargetOptions, RoomCostMatrixCacheEntry, WorkAnchor } from "@/movement/types";
 
@@ -43,6 +43,8 @@ export function moveToTarget(
     delete movementState.movePathState;
     return ERR_NO_PATH;
   }
+
+  movementState.pathingRequestedAt = Game.time;
 
   if (sameRoomNonEdgeMoveNeedsExitRecovery(creep, targetPos)) {
     recordMovementMetric("exitRecoveries", creep.room.name);
@@ -284,28 +286,11 @@ function followStoredRoomPath(
     return ERR_NO_PATH;
   }
 
-  const blockingCreep = findMyCreepAt(nextPos, creep.name);
-  if (blockingCreep) {
-    const blockerState = getCreepMovementState(blockingCreep.name);
-    const blockerPathState = blockerState?.movePathState;
-    const blockerIsStationaryWorker = !!blockerState?.workAnchor;
-    const blockerWillMoveNaturally = !blockerIsStationaryWorker && !!blockerPathState && blockerPathState.expiresAt > Game.time;
-
-    if (blockerWillMoveNaturally) {
-      // Blocker is actively moving — submit our move and let the engine resolve it naturally.
-      return moveToAdjacentPosition(creep, nextPos);
-    }
-
-    // Blocker is stationary — push it to a nearby free tile.
-    if (pushBlockingCreep(creep, blockingCreep)) {
-      return moveToAdjacentPosition(creep, nextPos);
-    }
-
+  const moveCode = moveToAdjacentPosition(creep, nextPos);
+  if (moveCode === ERR_BUSY) {
     delete ensureCreepMovementState(creep.name).movePathState;
-    return ERR_BUSY;
   }
-
-  return moveToAdjacentPosition(creep, nextPos);
+  return moveCode;
 }
 
 function getNextStoredPathStep(creep: Creep, steps: MovePathState["steps"]): RoomPosition | null {
@@ -347,15 +332,6 @@ function getNextStoredPathStep(creep: Creep, steps: MovePathState["steps"]): Roo
   }
 
   return new RoomPosition(nextStep.x, nextStep.y, creep.room.name);
-}
-
-function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): ScreepsReturnCode {
-  if (creep.pos.getRangeTo(nextPos) > 1) {
-    return ERR_NO_PATH;
-  }
-
-  const direction = creep.pos.getDirectionTo(nextPos);
-  return measureCreepIntent(() => creep.move(direction));
 }
 
 function pruneRoomBaseCostMatrixCache(): void {

@@ -33,6 +33,29 @@ export function pushBlockingCreep(pusher: Creep, blocker: Creep): boolean {
   return false;
 }
 
+export function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): ScreepsReturnCode {
+  if (creep.pos.getRangeTo(nextPos) > 1) {
+    return ERR_NO_PATH;
+  }
+
+  const direction = creep.pos.getDirectionTo(nextPos);
+  const blockingCreep = findMyCreepAt(nextPos, creep.name);
+  if (!blockingCreep) {
+    return measureCreepIntent(() => creep.move(direction));
+  }
+
+  const blockerState = getCreepMovementState(blockingCreep.name);
+  if (blockerState?.pathingRequestedAt === Game.time) {
+    return measureCreepIntent(() => creep.move(direction));
+  }
+
+  if (pushBlockingCreep(creep, blockingCreep)) {
+    return measureCreepIntent(() => creep.move(direction));
+  }
+
+  return ERR_BUSY;
+}
+
 function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: RoomPosition): boolean {
   const moveCode = measureCreepIntent(() => blocker.move(blocker.pos.getDirectionTo(yieldPos)));
   if (moveCode !== OK && moveCode !== ERR_TIRED) {

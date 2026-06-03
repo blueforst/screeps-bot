@@ -4,6 +4,7 @@ export interface CreepMovementState {
   movePathState?: MovePathState;
   travelState?: TravelState;
   movementPushedAt?: number;
+  pathingRequestedAt?: number;
   workAnchor?: WorkAnchor;
 }
 
