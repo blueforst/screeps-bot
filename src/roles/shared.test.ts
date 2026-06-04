@@ -173,7 +173,7 @@ describe("moveToTarget yielding", () => {
     expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
   });
 
-  it("pushes a blocker with stale path state when it has not requested pathing this tick", () => {
+  it("does not push a blocker with non-expired movePathState even when pathingRequestedAt is stale", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N5A", creeps);
     const pusher = createCreep("worker-stale-push", "worker", 10, 10, room);
@@ -206,9 +206,8 @@ describe("moveToTarget yielding", () => {
     const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
 
     expect(result).toBe(OK);
-    expect(blocker.move).toHaveBeenCalled();
+    expect(blocker.move).not.toHaveBeenCalled();
     expect(pusher.move).toHaveBeenCalledWith(RIGHT);
-    expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
   });
 
   it("does not push a blocker that already requested pathing this tick", () => {
@@ -231,6 +230,66 @@ describe("moveToTarget yielding", () => {
     expect(result).toBe(OK);
     expect(blocker.move).not.toHaveBeenCalled();
     expect(pusher.move).toHaveBeenCalledWith(RIGHT);
+  });
+
+  it("does not treat ERR_TIRED as a successful push: blocker path state is preserved", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N5C", creeps);
+    const pusher = createCreep("worker-tired-push", "worker", 10, 10, room);
+    const blocker = createCreep("carrier-tired-block", "carrier", 11, 10, room);
+    (blocker.move as jest.Mock).mockReturnValue(ERR_TIRED);
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+
+    ensureCreepMovementState(blocker.name).movePathState = {
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0`,
+      path: "2",
+      steps: [
+        { x: 11, y: 10 },
+        { x: 12, y: 10 },
+      ],
+      targetRoom: room.name,
+      targetX: 13,
+      targetY: 10,
+      range: 1,
+      stuckTicks: 0,
+      expiresAt: Game.time + 5,
+    };
+
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(result).toBe(OK);
+    expect(blocker.move).not.toHaveBeenCalled();
+    expect(getCreepMovementState(blocker.name)?.movePathState).toBeDefined();
+    expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBeUndefined();
+  });
+
+  it("returns ERR_BUSY when a stationary blocker returns ERR_TIRED on push", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N5D", creeps);
+    const pusher = createCreep("worker-tired-push2", "worker", 10, 10, room);
+    const blocker = createCreep("carrier-tired-block2", "carrier", 11, 10, room);
+    (blocker.move as jest.Mock).mockReturnValue(ERR_TIRED);
+    creeps.push(pusher, blocker);
+    Game.creeps[pusher.name] = pusher;
+    Game.creeps[blocker.name] = blocker;
+
+    (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
+      { x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT },
+      { x: 12, y: 10, dx: 1, dy: 0, direction: RIGHT },
+    ]);
+
+    const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
+
+    expect(result).toBe(ERR_BUSY);
+    expect(blocker.move).toHaveBeenCalled();
+    expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBeUndefined();
   });
 
   it("continues forward on a cached path instead of stepping back to the previous tile", () => {

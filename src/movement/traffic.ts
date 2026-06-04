@@ -16,6 +16,23 @@ export function findMyCreepAt(pos: RoomPosition, excludeName?: string): Creep | 
 
 // ─── Push ─────────────────────────────────────────────────────────────────────
 
+export function isBlockerActivelyMoving(blocker: Creep): boolean {
+  const state = getCreepMovementState(blocker.name);
+  if (!state) {
+    return false;
+  }
+  if (state.pathingRequestedAt === Game.time) {
+    return true;
+  }
+  if (state.movePathState && state.movePathState.expiresAt > Game.time) {
+    return true;
+  }
+  if (state.travelState) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Pushes a stationary blocker to a nearby free tile.
  * Returns true if the blocker was successfully moved.
@@ -44,8 +61,7 @@ export function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): Scr
     return measureCreepIntent(() => creep.move(direction));
   }
 
-  const blockerState = getCreepMovementState(blockingCreep.name);
-  if (blockerState?.pathingRequestedAt === Game.time) {
+  if (isBlockerActivelyMoving(blockingCreep)) {
     return measureCreepIntent(() => creep.move(direction));
   }
 
@@ -58,7 +74,7 @@ export function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): Scr
 
 function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: RoomPosition): boolean {
   const moveCode = measureCreepIntent(() => blocker.move(blocker.pos.getDirectionTo(yieldPos)));
-  if (moveCode !== OK && moveCode !== ERR_TIRED) {
+  if (moveCode !== OK) {
     return false;
   }
 
