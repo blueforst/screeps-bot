@@ -170,8 +170,11 @@ export function getRemoteThreatReason(room: Room): RemoteSuspendReason | null {
     return "hostile_reservation";
   }
 
+  // Only treat active NPC infrastructure as hostile. Abandoned player structures
+  // (extensions, spawns, towers, etc.) in unowned rooms are harmless leftovers
+  // and must not block remote mining. Invader cores indicate active NPC control.
   const hostileStructures = room.find(FIND_HOSTILE_STRUCTURES, {
-    filter: (structure) => structure.structureType !== STRUCTURE_CONTROLLER,
+    filter: (structure) => structure.structureType === STRUCTURE_INVADER_CORE,
   });
   if (hostileStructures.length > 0) {
     return "hostile_structures";

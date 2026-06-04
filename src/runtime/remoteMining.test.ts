@@ -228,7 +228,7 @@ function createVisibleTargetRoom(
     find: jest.fn((what: number, opts?: { filter?: (s: any) => boolean }) => {
       if (what === FIND_SOURCES) return sources;
       if (what === FIND_HOSTILE_CREEPS) return hostileCreeps;
-      if (what === FIND_HOSTILE_STRUCTURES) return hostileStructures;
+      if (what === FIND_HOSTILE_STRUCTURES) return opts?.filter ? hostileStructures.filter(opts.filter) : hostileStructures;
       if (what === FIND_STRUCTURES) return opts?.filter ? keeperLairs.filter(opts.filter) : keeperLairs;
       return [];
     }),
@@ -694,15 +694,42 @@ describe("runRemoteMining rejects rooms", () => {
     expect(store["W1N0"]!.status).toBe("active");
   });
 
-  it("rejects visible room with hostile-owned structures (excluding controller)", () => {
+  it("allows visible room with abandoned enemy structures (extensions/spawns are harmless without owner)", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
-    const hostileStructure = {
+    const abandonedExtension = {
       id: "hs1",
       structureType: STRUCTURE_EXTENSION,
     } as unknown as Structure;
+    const abandonedSpawn = {
+      id: "hs2",
+      structureType: STRUCTURE_SPAWN,
+    } as unknown as Structure;
     const targetRoom = createVisibleTargetRoom("W1N0", {
       sources: [createSource("src1"), createSource("src2")],
-      hostileStructures: [hostileStructure],
+      hostileStructures: [abandonedExtension, abandonedSpawn],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = targetRoom;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    setupGameMap({ W1N1: { "1": "W1N0" } });
+
+    runRemoteMining();
+
+    const store = ensureRemoteMiningStore();
+    expect(store["W1N0"]).toBeDefined();
+    expect(store["W1N0"].status).toBe("active");
+  });
+
+  it("rejects visible room with hostile invader core", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const invaderCore = {
+      id: "ic1",
+      structureType: STRUCTURE_INVADER_CORE,
+    } as unknown as Structure;
+    const targetRoom = createVisibleTargetRoom("W1N0", {
+      sources: [createSource("src1"), createSource("src2")],
+      hostileStructures: [invaderCore],
     });
     Game.rooms["W1N1"] = rcl7Room;
     Game.rooms["W1N0"] = targetRoom;
@@ -3001,15 +3028,15 @@ describe("suspends hostile remote with reason-specific threat detection", () => 
     expect(store["W1N0"].suspendReason).toBe("hostile_owner");
   });
 
-  it("suspends with hostile_structures for hostile structures excluding controller", () => {
+  it("suspends with hostile_structures for invader core", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
-    const hostileStructure = {
-      id: "hs1",
-      structureType: STRUCTURE_EXTENSION,
+    const invaderCore = {
+      id: "ic1",
+      structureType: STRUCTURE_INVADER_CORE,
     } as unknown as Structure;
     const target = createVisibleTargetRoom("W1N0", {
       sources: [createSource("src1")],
-      hostileStructures: [hostileStructure],
+      hostileStructures: [invaderCore],
     });
     Game.rooms["W1N1"] = rcl7Room;
     Game.rooms["W1N0"] = target;
@@ -3699,7 +3726,7 @@ function createDefendingTargetRoom(
     find: jest.fn((what: number, opts?: { filter?: (s: any) => boolean }) => {
       if (what === FIND_SOURCES) return sources;
       if (what === FIND_HOSTILE_CREEPS) return hostileCreeps;
-      if (what === FIND_HOSTILE_STRUCTURES) return hostileStructures;
+      if (what === FIND_HOSTILE_STRUCTURES) return opts?.filter ? hostileStructures.filter(opts.filter) : hostileStructures;
       if (what === FIND_STRUCTURES) {
         const all = [...keeperLairs, ...allStructures];
         if (opts?.filter) return all.filter(opts.filter);
@@ -4729,15 +4756,15 @@ describe("defending state - passive suspend reasons remain intact", () => {
     expect(store["W1N0"].suspendReason).toBe("hostile_reservation");
   });
 
-  it("hostile structures still causes passive suspended, not defending", () => {
+  it("invader core still causes passive suspended, not defending", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
-    const hostileStructure = {
-      id: "hs1",
-      structureType: STRUCTURE_EXTENSION,
+    const invaderCore = {
+      id: "ic1",
+      structureType: STRUCTURE_INVADER_CORE,
     } as unknown as Structure;
     const target = createDefendingTargetRoom("W1N0", {
       sources: [createSource("src1")],
-      hostileStructures: [hostileStructure],
+      hostileStructures: [invaderCore],
     });
     Game.rooms["W1N1"] = rcl7Room;
     Game.rooms["W1N0"] = target;
