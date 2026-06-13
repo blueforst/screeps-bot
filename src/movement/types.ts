@@ -29,6 +29,7 @@ export interface MoveToTargetOptions {
 
 export interface MoveToRoomOptions extends MoveToTargetOptions {
   travelRange?: 1 | 3;
+  avoidRooms?: string[];
 }
 
 export type MovementOptions = MoveToRoomOptions;

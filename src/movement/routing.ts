@@ -63,7 +63,7 @@ export function moveToTargetRoom(
   }
 
   const routeRooms = parseEncodedRouteRooms(encodedRouteRooms);
-  const dangerousRooms = getDangerousRoomsForTarget(targetRoom);
+  const dangerousRooms = getDangerousRoomsForTarget(targetRoom, options.avoidRooms);
   const hasFixedRoute = routeRooms.length > 0;
   const travelState = getTravelState(creep, targetRoom);
   ensureCreepMovementState(creep.name).pathingRequestedAt = Game.time;
@@ -449,12 +449,22 @@ function updateTravelState(creep: Creep, state: TravelState): void {
   ensureCreepMovementState(creep.name).travelState = state;
 }
 
-function getDangerousRoomsForTarget(targetRoom: string): string[] {
+function getDangerousRoomsForTarget(targetRoom: string, additionalAvoidRooms?: string[]): string[] {
   const dangerousRooms = Memory.data?.colonization?.[targetRoom]?.dangerousRooms;
-  if (!dangerousRooms || dangerousRooms.length === 0) {
-    return [];
+  const base = dangerousRooms && dangerousRooms.length > 0
+    ? dangerousRooms.filter((roomName) => roomName !== targetRoom)
+    : [];
+  if (!additionalAvoidRooms || additionalAvoidRooms.length === 0) {
+    return base;
   }
-  return dangerousRooms.filter((roomName) => roomName !== targetRoom);
+  const seen = new Set(base);
+  for (const room of additionalAvoidRooms) {
+    if (room !== targetRoom && !seen.has(room)) {
+      seen.add(room);
+      base.push(room);
+    }
+  }
+  return base;
 }
 
 function buildDynamicRouteCacheKey(

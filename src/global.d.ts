@@ -378,6 +378,8 @@ declare global {
       };
       energyPickup?: {
         preferredMin?: number;
+        /** Room names where carriers may withdraw ENERGY from terminal as a generic pickup source. */
+        terminalPickupRooms?: Record<string, boolean>;
       };
       pixelGenerator?: {
         enabled?: boolean;
@@ -790,6 +792,8 @@ declare global {
       remoteMining?: {
         lastScanAt?: number;
       };
+      /** Power bank scout transit danger rooms: roomName -> expiresAt tick. */
+      transitDangerRooms?: Record<string, number>;
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
@@ -1044,6 +1048,7 @@ declare global {
     colonizationDeathHandled?: boolean;
     scoutVisitedRooms?: string[];
     _patrol?: { patrolIndex?: number };
+    _lastHits?: number;
     _rmcWait?: { ticks: number };
     _rmcSelectedSource?: string;
     _move?: {
