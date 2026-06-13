@@ -656,6 +656,186 @@ describe("waits and repairs", () => {
   });
 });
 
+describe("carrier yields container tile to harvester", () => {
+  it("steps off container tile when waiting near low-energy container", () => {
+    const containerPos = makePos(26, 25, "W5N5");
+    const container = makeSourceContainer(10, containerPos);
+    const sourcePos = makePos(27, 25, "W5N5");
+    const room = makeRoom("W5N5", { structures: [container] });
+
+    const creepPos = makePos(26, 25, "W5N5");
+    let carried = 0;
+    const creep = makeCreep({ room, energy: 0, pos: creepPos });
+    (creep.store.getFreeCapacity as jest.Mock) = jest.fn(() => 800 - carried);
+    (creep.store.getUsedCapacity as jest.Mock) = jest.fn((r?: any) => r === undefined ? carried : (r === RESOURCE_ENERGY ? carried : 0));
+    creep.withdraw = jest.fn(() => { carried = 10; return OK; });
+
+    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
+
+    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
+
+    expect(result).toBe(false);
+    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
+      (call: any[]) => {
+        const t = call[1];
+        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
+      },
+    );
+    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
+    expect(stepOffCalls[0][2]).toBe(0);
+  });
+
+  it("steps off container tile when waiting near empty container", () => {
+    const containerPos = makePos(26, 25, "W5N5");
+    const container = makeSourceContainer(0, containerPos);
+    const sourcePos = makePos(27, 25, "W5N5");
+    const room = makeRoom("W5N5", { structures: [container] });
+
+    const creepPos = makePos(26, 25, "W5N5");
+    const creep = makeCreep({ room, energy: 0, pos: creepPos });
+
+    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
+
+    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
+
+    expect(result).toBe(false);
+    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
+      (call: any[]) => {
+        const t = call[1];
+        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
+      },
+    );
+    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
+    expect(stepOffCalls[0][2]).toBe(0);
+  });
+
+  it("does not step off when adjacent to container (not on it)", () => {
+    const containerPos = makePos(26, 25, "W5N5");
+    const container = makeSourceContainer(0, containerPos);
+    const sourcePos = makePos(27, 25, "W5N5");
+    const room = makeRoom("W5N5", { structures: [container] });
+
+    const creepPos = makePos(25, 25, "W5N5");
+    const creep = makeCreep({ room, energy: 0, pos: creepPos });
+
+    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
+
+    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
+
+    expect(result).toBe(false);
+    expect(moveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("avoids source tile when stepping off container", () => {
+    const containerPos = makePos(26, 25, "W5N5");
+    const container = makeSourceContainer(0, containerPos);
+    const sourcePos = makePos(25, 25, "W5N5");
+    const blockingStructure = { structureType: STRUCTURE_EXTENSION } as unknown as Structure;
+    const room = makeRoom("W5N5", {
+      structures: [container],
+      lookData: {
+        "25,24": { structures: [blockingStructure] },
+        "26,24": { structures: [blockingStructure] },
+        "27,24": { structures: [blockingStructure] },
+        "25,26": { structures: [blockingStructure] },
+        "26,26": { structures: [blockingStructure] },
+        "27,26": { structures: [blockingStructure] },
+        // (25,25) is the source tile — no blocking structures, but avoided via sourcePos
+        // (27,25) is open — no entry in lookData
+      },
+    });
+
+    const creepPos = makePos(26, 25, "W5N5");
+    const creep = makeCreep({ room, energy: 0, pos: creepPos });
+
+    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
+
+    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
+
+    expect(result).toBe(false);
+    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
+      (call: any[]) => {
+        const t = call[1];
+        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
+      },
+    );
+    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
+    // Must choose (27,25), not the source tile at (25,25)
+    expect(stepOffCalls[0][1].x).toBe(27);
+    expect(stepOffCalls[0][1].y).toBe(25);
+  });
+
+  it("avoids tile with blocking construction site", () => {
+    const containerPos = makePos(26, 25, "W5N5");
+    const container = makeSourceContainer(0, containerPos);
+    const sourcePos = makePos(27, 25, "W5N5");
+    const blockingSite = { structureType: STRUCTURE_EXTENSION, my: true } as unknown as ConstructionSite;
+    const room = makeRoom("W5N5", {
+      structures: [container],
+      lookData: {
+        "25,25": { sites: [blockingSite] },
+      },
+    });
+
+    const creepPos = makePos(26, 25, "W5N5");
+    const creep = makeCreep({ room, energy: 0, pos: creepPos });
+
+    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
+
+    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
+
+    expect(result).toBe(false);
+    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
+      (call: any[]) => {
+        const t = call[1];
+        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
+      },
+    );
+    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
+    const chosen = stepOffCalls[0][1];
+    expect(chosen.x === 25 && chosen.y === 25).toBe(false);
+  });
+
+  it("accepts road tile adjacent to container", () => {
+    const containerPos = makePos(26, 25, "W5N5");
+    const container = makeSourceContainer(0, containerPos);
+    const sourcePos = makePos(27, 25, "W5N5");
+    const road = { structureType: STRUCTURE_ROAD } as unknown as Structure;
+    const blockingStructure = { structureType: STRUCTURE_WALL } as unknown as Structure;
+    const room = makeRoom("W5N5", {
+      structures: [container],
+      lookData: {
+        "25,25": { structures: [road] },
+        "25,24": { structures: [blockingStructure] },
+        "25,26": { structures: [blockingStructure] },
+        "26,24": { structures: [blockingStructure] },
+        "26,26": { structures: [blockingStructure] },
+        "27,24": { structures: [blockingStructure] },
+        "27,26": { structures: [blockingStructure] },
+      },
+    });
+
+    const creepPos = makePos(26, 25, "W5N5");
+    const creep = makeCreep({ room, energy: 0, pos: creepPos });
+
+    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
+
+    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
+
+    expect(result).toBe(false);
+    // Road at (25,25) should be accepted; source at (27,25) is avoided
+    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
+      (call: any[]) => {
+        const t = call[1];
+        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
+      },
+    );
+    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
+    expect(stepOffCalls[0][1].x).toBe(25);
+    expect(stepOffCalls[0][1].y).toBe(25);
+  });
+});
+
 describe("source container construction site build", () => {
   it("builds container construction site near assigned source when no built container exists", () => {
     const sourcePos = makePos(27, 25, "W5N5");
