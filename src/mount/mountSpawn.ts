@@ -1,3 +1,4 @@
+import { isSpawnActive } from "@/runtime/tickContext";
 import { getHarvesterBody, spawnProfiles } from "@/config/spawnProfiles";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
@@ -72,6 +73,18 @@ export function mountSpawn(): void {
       if (isTransientConfigName(configName)) {
         creepConfigs.remove(configName);
       }
+    } else {
+      this.memory._lastSpawnFail = {
+        tick: Game.time,
+        spawnName: this.name,
+        configName,
+        role: config.role,
+        code,
+        bodyCost: body.reduce((sum, part) => sum + BODYPART_COST[part], 0),
+        bodyParts: body.length,
+        roomEnergyAvailable: this.room.energyAvailable,
+        roomEnergyCapacityAvailable: this.room.energyCapacityAvailable,
+      };
     }
 
     return code === OK;
@@ -79,6 +92,10 @@ export function mountSpawn(): void {
 
   StructureSpawn.prototype.work = function work(): void {
     if (this.spawning) {
+      return;
+    }
+
+    if (!isSpawnActive(this)) {
       return;
     }
 

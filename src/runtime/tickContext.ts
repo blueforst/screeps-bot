@@ -1,3 +1,11 @@
+/**
+ * Backward-compatible spawn active check.
+ * Treats spawn as active if `isActive` is not present (mock environment).
+ */
+export function isSpawnActive(spawn: StructureSpawn): boolean {
+  return typeof spawn.isActive !== "function" || spawn.isActive();
+}
+
 export interface RoomTickContext {
   room: Room;
   getStructures(): Structure<StructureConstant>[];
@@ -230,8 +238,10 @@ export function createTickContextService(): TickContextService {
         spawnsByRoom.set(spawn.room.name, [spawn]);
       }
 
-      if (!primarySpawnByRoom.has(spawn.room.name)) {
-        primarySpawnByRoom.set(spawn.room.name, spawn);
+      if (!primarySpawnByRoom.has(spawn.room.name) || !isSpawnActive(primarySpawnByRoom.get(spawn.room.name)!)) {
+        if (isSpawnActive(spawn) || !primarySpawnByRoom.has(spawn.room.name)) {
+          primarySpawnByRoom.set(spawn.room.name, spawn);
+        }
       }
     }
 

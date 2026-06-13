@@ -1070,6 +1070,17 @@ declare global {
 
   interface SpawnMemory {
     spawnList?: string[];
+    _lastSpawnFail?: {
+      tick: number;
+      spawnName: string;
+      configName: string;
+      role: string;
+      code: number;
+      bodyCost: number;
+      bodyParts: number;
+      roomEnergyAvailable: number;
+      roomEnergyCapacityAvailable: number;
+    };
   }
 
   interface Creep {

@@ -1,3 +1,4 @@
+import { isSpawnActive } from "@/runtime/tickContext";
 import { spawnProfiles } from "@/config/spawnProfiles";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { spawnMaxCarrierRaw } from "@/runtime/emergencySpawning";
@@ -459,7 +460,9 @@ function queueMissingConfig(
 }
 
 function isConfigQueuedInSpawns(spawns: StructureSpawn[], configName: string): boolean {
-  return spawns.some((spawn) => isConfigQueued(spawn, configName));
+  const activeSpawns = spawns.filter(isSpawnActive);
+  const candidates = activeSpawns.length > 0 ? activeSpawns : spawns;
+  return candidates.some((spawn) => isConfigQueued(spawn, configName));
 }
 
 function getSpawnQueueLoad(spawn: StructureSpawn): number {
@@ -469,7 +472,10 @@ function getSpawnQueueLoad(spawn: StructureSpawn): number {
 function selectLeastLoadedSpawn(spawns: StructureSpawn[]): StructureSpawn | undefined {
   if (spawns.length === 0) return undefined;
 
-  return [...spawns].sort((left, right) => {
+  const activeSpawns = spawns.filter(isSpawnActive);
+  const candidates = activeSpawns.length > 0 ? activeSpawns : spawns;
+
+  return [...candidates].sort((left, right) => {
     const loadDiff = getSpawnQueueLoad(left) - getSpawnQueueLoad(right);
     if (loadDiff !== 0) return loadDiff;
     return left.name.localeCompare(right.name);

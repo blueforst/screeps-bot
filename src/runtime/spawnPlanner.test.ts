@@ -1231,3 +1231,110 @@ describe("remoteWorker and remoteDefender defense mode", () => {
     expect(outboundMatch![0]).toContain("remoteDefender");
   });
 });
+
+describe("inactive spawn filtering", () => {
+  function createSpawnWithActive(room: Room, name: string, active: boolean): StructureSpawn {
+    const spawn = createSpawn(room, 2, name);
+    (spawn as any).isActive = jest.fn(() => active);
+    return spawn;
+  }
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  it("selects the active spawn as primary when the first spawn is inactive", () => {
+    const room = createRoom("E4N58");
+    const inactiveSpawn = createSpawnWithActive(room, "E4N58-Spawn2", false);
+    const activeSpawn = createSpawnWithActive(room, "E4N58-Spawn10", true);
+    Game.rooms[room.name] = room;
+    Game.spawns[inactiveSpawn.name] = inactiveSpawn;
+    Game.spawns[activeSpawn.name] = activeSpawn;
+
+    const { getTickContextService } = require("@/runtime/runtimeServices");
+    const primary = getTickContextService().getPrimarySpawnByRoom(room.name);
+    expect(primary).toBeDefined();
+    expect(primary!.name).toBe("E4N58-Spawn10");
+  });
+
+  it("queues emergency carrier to active spawn when primary is inactive", () => {
+    const room = createRoom("E4N59");
+    const inactiveSpawn = createSpawnWithActive(room, "E4N59-Spawn2", false);
+    const activeSpawn = createSpawnWithActive(room, "E4N59-Spawn10", true);
+    Game.rooms[room.name] = room;
+    Game.spawns[inactiveSpawn.name] = inactiveSpawn;
+    Game.spawns[activeSpawn.name] = activeSpawn;
+
+    scheduleSpawnTasks();
+
+    expect(activeSpawn.memory.spawnList?.[0]).toContain(":manual:maxcarrier:");
+    expect(inactiveSpawn.memory.spawnList?.length ?? 0).toBe(0);
+  });
+
+  it("distributes worker configs to active spawn when inactive spawn has shorter queue", () => {
+    const room = createRoom("E4N60");
+    room.controller = { my: true, level: 6 } as StructureController;
+    const inactiveSpawn = createSpawnWithActive(room, "E4N60-Spawn2", false);
+    const activeSpawn = createSpawnWithActive(room, "E4N60-Spawn10", true);
+    Game.rooms[room.name] = room;
+    Game.spawns[inactiveSpawn.name] = inactiveSpawn;
+    Game.spawns[activeSpawn.name] = activeSpawn;
+
+    Game.creeps["carrier-e4n60"] = {
+      name: "carrier-e4n60",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+
+    const configNames = [`${room.name}:worker:0`, `${room.name}:worker:1`];
+    Memory.data = {
+      creepConfigs: {
+        [configNames[0]]: { role: "worker", args: [], roomName: room.name },
+        [configNames[1]]: { role: "worker", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(activeSpawn.memory.spawnList).toContain(configNames[0]);
+    expect(activeSpawn.memory.spawnList).toContain(configNames[1]);
+    expect(inactiveSpawn.memory.spawnList?.length ?? 0).toBe(0);
+  });
+
+  it("falls back to inactive spawn when no active spawn exists", () => {
+    const room = createRoom("E4N61");
+    const inactiveSpawn = createSpawnWithActive(room, "E4N61-Spawn2", false);
+    Game.rooms[room.name] = room;
+    Game.spawns[inactiveSpawn.name] = inactiveSpawn;
+
+    scheduleSpawnTasks();
+
+    expect(inactiveSpawn.memory.spawnList?.[0]).toContain(":manual:maxcarrier:");
+  });
+
+  it("queues config on active spawn when stale entry exists only on inactive spawn", () => {
+    const room = createRoom("E4N62");
+    room.controller = { my: true, level: 6 } as StructureController;
+    const inactiveSpawn = createSpawnWithActive(room, "E4N62-Spawn2", false);
+    const activeSpawn = createSpawnWithActive(room, "E4N62-Spawn10", true);
+    Game.rooms[room.name] = room;
+    Game.spawns[inactiveSpawn.name] = inactiveSpawn;
+    Game.spawns[activeSpawn.name] = activeSpawn;
+
+    const configName = `${room.name}:worker:0`;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: { role: "worker", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    // Simulate stale queue entry on inactive spawn
+    inactiveSpawn.memory.spawnList = [configName];
+
+    scheduleSpawnTasks();
+
+    // Active spawn should receive the config despite stale entry on inactive spawn
+    expect(activeSpawn.memory.spawnList).toContain(configName);
+  });
+});
