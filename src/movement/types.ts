@@ -25,6 +25,8 @@ export interface MoveToTargetOptions {
   maxRooms?: number;
   ignoreCreeps?: boolean;
   avoidExitTiles?: boolean;
+  costCallback?: (roomName: string, matrix: PathFinder["CostMatrix"]) => PathFinder["CostMatrix"];
+  cacheKey?: string;
 }
 
 export interface MoveToRoomOptions extends MoveToTargetOptions {

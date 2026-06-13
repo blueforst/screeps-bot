@@ -1,5 +1,8 @@
 export function getTargetPos(target: RoomPosition | { pos: RoomPosition }): RoomPosition {
-  return target instanceof RoomPosition ? target : target.pos;
+  // Duck-typing: RoomPosition has x/y/roomName but no 'pos'; game objects have 'pos'.
+  // Avoids instanceof which fails when RoomPosition is not defined in test environments.
+  if ("pos" in target) return (target as { pos: RoomPosition }).pos;
+  return target as RoomPosition;
 }
 
 export function getPosKey(pos: RoomPosition): string {

@@ -4,6 +4,7 @@ import { getAssignedDefenseFront, getDefenderRole, getTowerFocusFront, type Defe
 import { getPlayerHostiles } from "@/runtime/defenseMode";
 import { chooseBoundaryBurstEngagement, chooseInsideBurstTarget } from "@/runtime/hostilePriorities";
 import { createSafeZoneCostCallback, getBoundaryRamparts } from "@/runtime/safeZoneHelpers";
+import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import type { RoleFactory } from "@/types/system";
 
 function findEngagedHostileIdByOtherDefenders(creep: Creep, hostiles: Creep[]): Id<Creep> | null {
@@ -58,7 +59,7 @@ function chooseAdjacentAttackTarget(creep: Creep, hostiles: Creep[]): Creep | nu
 export const homeDefenderRole: RoleFactory = (roomName: string, slot?: string) => ({
   target: (creep): boolean => {
     if (creep.room.name !== roomName) {
-      creep.moveTo(new RoomPosition(25, 25, roomName), { reusePath: 5 });
+      moveToTargetRoom(creep, roomName);
       return false;
     }
 
@@ -88,7 +89,12 @@ export const homeDefenderRole: RoleFactory = (roomName: string, slot?: string) =
       if (creep.pos.getRangeTo(target) <= 1) {
         measureCreepIntent(() => creep.attack(target));
       } else {
-        creep.moveTo(target, { costCallback: safeZoneCostCallback, reusePath: 2, maxRooms: 1 });
+        moveToTarget(creep, target, 1, {
+          costCallback: safeZoneCostCallback,
+          cacheKey: `safezone:${roomName}`,
+          maxRooms: 1,
+          reusePath: 2,
+        });
       }
       return false;
     }
@@ -130,20 +136,22 @@ export const homeDefenderRole: RoleFactory = (roomName: string, slot?: string) =
         findNearestUnoccupiedRampartToFront(assignedFront, ramparts, occupiedRampartIds),
       );
       if (coverageRampart && !creep.pos.isEqualTo(coverageRampart.pos)) {
-        creep.moveTo(coverageRampart.pos, {
+        moveToTarget(creep, coverageRampart.pos, 0, {
           costCallback: safeZoneCostCallback,
-          reusePath: 3,
+          cacheKey: `safezone:${roomName}`,
           maxRooms: 1,
+          reusePath: 3,
         });
         return false;
       }
     }
 
     if (!creep.pos.isEqualTo(targetRampart.pos)) {
-      creep.moveTo(targetRampart.pos, {
+      moveToTarget(creep, targetRampart.pos, 0, {
         costCallback: safeZoneCostCallback,
-        reusePath: 3,
+        cacheKey: `safezone:${roomName}`,
         maxRooms: 1,
+        reusePath: 3,
       });
     }
 

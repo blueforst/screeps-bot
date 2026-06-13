@@ -1,4 +1,4 @@
-import { measureCreepIntent, measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
+import { measureCreepPathing } from "@/runtime/cpuPhaseProfiler";
 import { clearCreepMovementState, ensureCreepMovementState } from "@/movement/creepState";
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
@@ -34,6 +34,12 @@ export function moveToTarget(
   }
 
   const targetPos = getTargetPos(target);
+
+  if (creep.room.name !== targetPos.roomName) {
+    delete movementState.movePathState;
+    return ERR_INVALID_TARGET;
+  }
+
   if (creep.pos.getRangeTo(targetPos) <= range) {
     delete movementState.movePathState;
     return OK;
@@ -56,15 +62,18 @@ export function moveToTarget(
 
   const reusePath = options.reusePath ?? 5;
   const ignoreCreeps = options.ignoreCreeps ?? true;
-  const sameRoomTarget = creep.room.name === targetPos.roomName;
+  // costCallback without cacheKey disables path caching to avoid stale safe-zone paths
+  const noCacheReuse = !!options.costCallback && !options.cacheKey;
   const movePathKey = `${creep.room.name}:${targetPos.roomName}:${targetPos.x}:${targetPos.y}:r${range}:i${
     ignoreCreeps ? 1 : 0
-  }:s${options.swampCost ?? "d"}:p${options.plainCost ?? "d"}:m${options.maxRooms ?? "d"}:e${options.avoidExitTiles ? 1 : 0}`;
+  }:s${options.swampCost ?? "d"}:p${options.plainCost ?? "d"}:m${options.maxRooms ?? "d"}:e${options.avoidExitTiles ? 1 : 0}:c${options.cacheKey ?? ""}`;
 
-  if (sameRoomTarget) {
+  {
     const currentPosKey = getPosKey(creep.pos);
     const movePathState = movementState.movePathState;
+    const canReuse = !noCacheReuse;
     const isMatchingState =
+      canReuse &&
       movePathState &&
       movePathState.key === movePathKey &&
       movePathState.targetRoom === targetPos.roomName &&
@@ -106,6 +115,7 @@ export function moveToTarget(
     if (path.length > 0) {
       const serializedPath = Room.serializePath(path);
       const steps = path.map((step) => ({ x: step.x, y: step.y }));
+      const currentPosKey2 = getPosKey(creep.pos);
       movementState.movePathState = {
         key: movePathKey,
         path: serializedPath,
@@ -114,9 +124,9 @@ export function moveToTarget(
         targetX: targetPos.x,
         targetY: targetPos.y,
         range,
-        lastPosKey: currentPosKey,
+        lastPosKey: currentPosKey2,
         stuckTicks: 0,
-        expiresAt: reusePath === 0 ? Game.time : Game.time + Math.max(MOVE_PATH_CACHE_TTL, reusePath),
+        expiresAt: noCacheReuse ? Game.time : (reusePath === 0 ? Game.time : Game.time + Math.max(MOVE_PATH_CACHE_TTL, reusePath)),
       };
 
       const followPathCode = followStoredRoomPath(creep, movementState.movePathState, targetPos, range);
@@ -126,21 +136,9 @@ export function moveToTarget(
 
       delete movementState.movePathState;
     }
-  } else {
-    delete movementState.movePathState;
   }
 
-  return measureCreepIntent(() =>
-    creep.moveTo(targetPos, {
-      range,
-      swampCost: options.swampCost,
-      plainCost: options.plainCost,
-      reusePath,
-      maxRooms: options.maxRooms,
-      ignoreCreeps,
-      visualizePathStyle: { stroke: "#ffaa00" },
-    }),
-  );
+  return ERR_NO_PATH;
 }
 
 export function moveToRemoteWorkTarget(creep: Creep, target: RoomPosition | { pos: RoomPosition }): ScreepsReturnCode {
@@ -176,6 +174,9 @@ function buildRoomCostMatrix(
 
   const roomContext = getTickContextService().getRoomContext(creep.room);
   if (!roomContext) {
+    if (options.costCallback) {
+      return options.costCallback(roomName, matrix);
+    }
     return matrix;
   }
 
@@ -185,15 +186,17 @@ function buildRoomCostMatrix(
     applyExitTileAvoidance(roomMatrix, targetPos, roomName);
   }
 
-  if (options.ignoreCreeps ?? true) {
-    return roomMatrix;
+  if (!(options.ignoreCreeps ?? true)) {
+    for (const otherCreep of roomContext.getMyCreeps()) {
+      if (otherCreep.name === creep.name) {
+        continue;
+      }
+      roomMatrix.set(otherCreep.pos.x, otherCreep.pos.y, 0xfe);
+    }
   }
 
-  for (const otherCreep of roomContext.getMyCreeps()) {
-    if (otherCreep.name === creep.name) {
-      continue;
-    }
-    roomMatrix.set(otherCreep.pos.x, otherCreep.pos.y, 0xfe);
+  if (options.costCallback && roomName === creep.room.name) {
+    return options.costCallback(roomName, roomMatrix);
   }
 
   return roomMatrix;

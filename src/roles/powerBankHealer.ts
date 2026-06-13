@@ -135,6 +135,7 @@ function moveOffTargetRoomExit(creep: Creep): boolean {
   }
 
   if (!direction) return false;
+  // Tactical directional move — not destination pathfinding
   measureCreepIntent(() => creep.move(direction));
   return true;
 }
@@ -220,6 +221,7 @@ function sidestepOutOfAttackerLane(creep: Creep, attacker: Creep, targetRoom: st
   const direction = sidesteps.find((candidate) => isWalkableSideStep(creep, candidate));
   if (!direction) return false;
 
+  // Tactical directional move — not destination pathfinding
   measureCreepIntent(() => creep.move(direction));
   return true;
 }

@@ -12,7 +12,7 @@ import { remoteDefenderRole } from "@/roles/remoteDefender";
 import { createMockPowerBankCreep, MockPos } from "@mock/powerBank";
 import type { RemoteMiningTask, RemoteDefenseReason } from "@/runtime/remoteMining";
 
-const { moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
+const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
   moveToTarget: jest.Mock;
   moveToTargetRoom: jest.Mock;
 };
@@ -380,7 +380,7 @@ describe("remoteDefenderRole", () => {
 
       expect(creep.rangedAttack).not.toHaveBeenCalled();
       expect(creep.rangedMassAttack).not.toHaveBeenCalled();
-      expect(creep.moveTo).toHaveBeenCalledWith(invader, expect.objectContaining({ reusePath: 5 }));
+      expect(moveToTarget).toHaveBeenCalledWith(creep, invader, 3, expect.objectContaining({ reusePath: 5 }));
     });
 
     it("uses rangedMassAttack when 3+ eligible hostiles in range 3", () => {
@@ -523,7 +523,12 @@ describe("remoteDefenderRole", () => {
       role.target(creep);
 
       expect(creep.heal).toHaveBeenCalledWith(creep);
-      expect(creep.moveTo).toHaveBeenCalled();
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        creep,
+        SOURCE_ROOM,
+        undefined,
+        expect.objectContaining({ reusePath: 5 }),
+      );
     });
   });
 
@@ -553,6 +558,64 @@ describe("remoteDefenderRole", () => {
     });
   });
 
+  describe("unified movement API", () => {
+    it("uses moveToTarget for same-room target approach", () => {
+      const invader = makeHostile({
+        id: "inv-far", username: "Invader", x: 10, y: 10,
+      });
+      const creep = makeCreep({ x: 40, y: 40 });
+      (creep.room as any).find = jest.fn((type: number) => {
+        if (type === FIND_HOSTILE_CREEPS) return [invader];
+        return [];
+      });
+
+      const role = remoteDefenderRole(TARGET_ROOM);
+      role.target(creep);
+
+      expect(moveToTarget).toHaveBeenCalledWith(
+        creep, invader, 3, expect.objectContaining({ reusePath: 5 }),
+      );
+    });
+
+    it("uses moveToTargetRoom for cross-room retreat when damaged", () => {
+      const creep = makeCreep({ hits: 400, hitsMax: 1600 });
+      const invader = makeHostile({
+        id: "inv-0", username: "Invader", x: 26, y: 25,
+      });
+      (creep.room as any).find = jest.fn((type: number) => {
+        if (type === FIND_HOSTILE_CREEPS) return [invader];
+        return [];
+      });
+
+      const role = remoteDefenderRole(TARGET_ROOM);
+      role.target(creep);
+
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        creep, SOURCE_ROOM, undefined, expect.objectContaining({ reusePath: 5 }),
+      );
+    });
+
+    it("preserves tactical creep.move() for flee", () => {
+      const invader = makeHostile({
+        id: "inv-melee", username: "Invader", x: 26, y: 25,
+        body: [
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+      const creep = makeCreep();
+      (creep.room as any).find = jest.fn((type: number) => {
+        if (type === FIND_HOSTILE_CREEPS) return [invader];
+        return [];
+      });
+
+      const role = remoteDefenderRole(TARGET_ROOM);
+      role.target(creep);
+
+      expect(creep.move).toHaveBeenCalled();
+    });
+  });
+
   describe("retirement", () => {
     it("returns home and suicides when no eligible hostiles and task not defending", () => {
       setupMemory(setupTask(undefined));
@@ -564,7 +627,12 @@ describe("remoteDefenderRole", () => {
       const role = remoteDefenderRole(TARGET_ROOM);
       role.target(creep);
 
-      expect(creep.moveTo).toHaveBeenCalled();
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        creep,
+        SOURCE_ROOM,
+        undefined,
+        expect.objectContaining({ reusePath: 5 }),
+      );
     });
 
     it("stays and fights when task is defending with npc_invader", () => {
@@ -598,7 +666,12 @@ describe("remoteDefenderRole", () => {
       const role = remoteDefenderRole(TARGET_ROOM);
       role.target(creep);
 
-      expect(creep.moveTo).toHaveBeenCalled();
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        creep,
+        SOURCE_ROOM,
+        undefined,
+        expect.objectContaining({ reusePath: 5 }),
+      );
     });
   });
 });

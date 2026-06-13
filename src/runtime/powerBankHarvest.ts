@@ -6,6 +6,7 @@ import { cleanupStaleDiscoveries, ensureDiscoveryStore } from "@/runtime/powerBa
 import { hasPowerBankObserverCoverage } from "@/runtime/powerBankObserver";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import { moveToTarget } from "@/roles/shared";
 import type { CreepConfig } from "@/types/system";
 
 const PATROL_SCOUT_CONFIG_NAME = "powerbank:patrol:scout:0";
@@ -590,8 +591,7 @@ function applyNextBoost(
     lab.boostCreep(creep);
     return "boosted";
   } else {
-    const sameRoom = creep.pos.roomName === lab.pos.roomName;
-    creep.moveTo(lab, { reusePath: 3, maxRooms: sameRoom ? 1 : 16 });
+    moveToTarget(creep, lab, 1, { reusePath: 3, maxRooms: 1 });
     return "moving";
   }
 }

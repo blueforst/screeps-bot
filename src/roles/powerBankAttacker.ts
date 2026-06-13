@@ -108,6 +108,7 @@ function moveOffTargetRoomExit(creep: Creep): boolean {
   }
 
   if (!direction) return false;
+  // Tactical directional move — not destination pathfinding
   measureCreepIntent(() => creep.move(direction));
   return true;
 }

@@ -3483,6 +3483,9 @@ describe("powerBankHarvest", () => {
     it("multi-boost attacker: moves to labs and receives sequential boosts", () => {
       setupSourceRoom();
 
+      const sharedMod = require("@/roles/shared");
+      const moveToTargetSpy = jest.spyOn(sharedMod, "moveToTarget").mockReturnValue(OK);
+
       const xgho2Lab = createMockLab({
         id: "lab-xgho2",
         x: 24,
@@ -3551,9 +3554,9 @@ describe("powerBankHarvest", () => {
       // Simulate XGHO2 applied to body (effective next tick)
       (attacker.body[0] as any).boost = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
 
-      // Tick 2: attacker needs XUH2O, not near that lab → moveTo called
+      // Tick 2: attacker needs XUH2O, not near that lab → moveToTarget called
       runPowerBankHarvest();
-      expect(attacker.moveTo).toHaveBeenCalled();
+      expect(moveToTargetSpy).toHaveBeenCalledWith(attacker, xuh2oLab, 1, { reusePath: 3, maxRooms: 1 });
       expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.BOOSTING);
 
       // Simulate attacker now adjacent to XUH2O lab
@@ -3572,6 +3575,7 @@ describe("powerBankHarvest", () => {
       expect(getTask("pb-test")!.status).toBe(POWER_BANK_STATUS.TRAVELLING);
 
       Game.getObjectById = originalGetObjectById;
+      moveToTargetSpy.mockRestore();
     });
 
     it("lab not ready blocks travel — empty compound store", () => {

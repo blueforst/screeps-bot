@@ -1,4 +1,4 @@
-import { moveToTargetRoom } from "@/roles/shared";
+import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import type { RoleFactory } from "@/types/system";
 import type { RemoteDefenseReason } from "@/runtime/remoteMining";
 
@@ -128,7 +128,11 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
 
       if (eligible.length === 0) {
         if (!defending) {
-          creep.moveTo(new RoomPosition(25, 25, sourceRoom), { reusePath: 5 });
+          if (creep.room.name !== sourceRoom) {
+            moveToTargetRoom(creep, sourceRoom, undefined, { reusePath: 5 });
+          } else {
+            moveToTarget(creep, new RoomPosition(25, 25, sourceRoom), 3, { reusePath: 5 });
+          }
           if (creep.pos.roomName === sourceRoom) {
             creep.suicide();
           }
@@ -141,7 +145,11 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
 
       if (creep.hits < creep.hitsMax * 0.5) {
         creep.heal(creep);
-        creep.moveTo(new RoomPosition(25, 25, sourceRoom), { reusePath: 5 });
+        if (creep.room.name !== sourceRoom) {
+          moveToTargetRoom(creep, sourceRoom, undefined, { reusePath: 5 });
+        } else {
+          moveToTarget(creep, new RoomPosition(25, 25, sourceRoom), 3, { reusePath: 5 });
+        }
         return false;
       }
 
@@ -181,11 +189,12 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
           creep.rangedAttack(target);
         }
       } else {
-        creep.moveTo(target, { reusePath: 5 });
+        moveToTarget(creep, target, 3, { reusePath: 5 });
       }
 
       if (hasBodyPart(target, ATTACK) && targetRange < 3) {
         const fleeDir = getFleeDirection(creep, target);
+        // Tactical directional move — not destination pathfinding
         creep.move(fleeDir);
       }
 

@@ -183,7 +183,7 @@ describe("moveToTarget yielding", () => {
     Game.creeps[blocker.name] = blocker;
 
     ensureCreepMovementState(blocker.name).movePathState = {
-      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0`,
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:c`,
       path: "33",
       steps: [
         { x: 11, y: 10 },
@@ -243,7 +243,7 @@ describe("moveToTarget yielding", () => {
     Game.creeps[blocker.name] = blocker;
 
     ensureCreepMovementState(blocker.name).movePathState = {
-      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0`,
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:c`,
       path: "2",
       steps: [
         { x: 11, y: 10 },
@@ -299,7 +299,7 @@ describe("moveToTarget yielding", () => {
     creeps.push(creep);
     Game.creeps[creep.name] = creep;
     ensureCreepMovementState(creep.name).movePathState = {
-      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0`,
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:c`,
       path: "333",
       steps: [
         { x: 11, y: 10 },
