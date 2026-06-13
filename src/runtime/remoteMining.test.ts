@@ -819,6 +819,24 @@ describe("runRemoteMining rejects rooms", () => {
     expect(store["W1N0"]).toBeDefined();
     expect(store["W1N0"]!.status).toBe("active");
   });
+
+  it("rejects visible room owned by me (controller.my === true)", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const ownedTarget = createVisibleTargetRoom("W1N0", {
+      sources: [createSource("src1"), createSource("src2")],
+      controllerMy: true,
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = ownedTarget;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    setupGameMap({ W1N1: { "1": "W1N0" } });
+
+    runRemoteMining();
+
+    const store = ensureRemoteMiningStore();
+    expect(store["W1N0"]).toBeUndefined();
+  });
 });
 
 describe("scout discovers and promotes", () => {
@@ -951,6 +969,179 @@ describe("scout discovers and promotes", () => {
     expect(store["W1N0"].status).toBe("active");
     expect(store["W1N0"].sourceIds).toEqual(["src1", "src2"]);
     expect(Memory.runtime.remoteMining!.lastScanAt).toBe(90);
+  });
+});
+
+describe("owned room never treated as remote target", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = Memory.data ?? {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  it("abandons active task when visible target room is owned by me", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const ownedTarget = createVisibleTargetRoom("W1N0", {
+      sources: [createSource("src1"), createSource("src2")],
+      controllerMy: true,
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = ownedTarget;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1",
+      targetRoom: "W1N0",
+      status: "active",
+      sourceIds: ["src1", "src2"],
+      assignedAt: 50,
+      updatedAt: 50,
+    };
+
+    const h1 = getRemoteMiningHarvesterConfigName("W1N1", "W1N0", "src1");
+    const c0 = getRemoteMiningCarrierConfigName("W1N1", "W1N0", 0);
+    Memory.data!.creepConfigs![h1] = { role: "colonizerHarvester", args: ["W1N0", "src1"], roomName: "W1N1" };
+    Memory.data!.creepConfigs![c0] = { role: "remoteMiningCarrier", args: ["W1N0", "src1"], roomName: "W1N1" };
+
+    const config = getRemoteMiningConfig();
+    processRemoteConfigLifecycle(store, config);
+
+    expect(store["W1N0"].status).toBe("abandoned");
+    expect(store["W1N0"].abandonedReason).toBe("owned_room");
+    expect(Memory.data!.creepConfigs![h1]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![c0]).toBeUndefined();
+  });
+
+  it("abandons scouting task when visible target room is owned by me", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const ownedTarget = createVisibleTargetRoom("W1N0", {
+      sources: [createSource("src1"), createSource("src2")],
+      controllerMy: true,
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = ownedTarget;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    setupGameMap({ W1N1: { "1": "W1N0" } });
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1",
+      targetRoom: "W1N0",
+      status: "scouting",
+      sourceIds: [],
+      assignedAt: 50,
+      updatedAt: 50,
+    };
+
+    upsertScoutConfig("W1N1", "W1N0");
+
+    runRemoteMining();
+
+    expect(store["W1N0"].status).toBe("abandoned");
+    expect(store["W1N0"].abandonedReason).toBe("owned_room");
+
+    const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
+    expect(Memory.data!.creepConfigs![scoutName]).toBeUndefined();
+  });
+
+  it("abandons suspended task when visible target room is owned by me", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const ownedTarget = createVisibleTargetRoom("W1N0", {
+      sources: [createSource("src1"), createSource("src2")],
+      controllerMy: true,
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = ownedTarget;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1",
+      targetRoom: "W1N0",
+      status: "suspended",
+      sourceIds: ["src1"],
+      assignedAt: 50,
+      updatedAt: 80,
+      suspendReason: "hostile_creeps",
+      suspendedAt: 80,
+    };
+
+    const h1 = getRemoteMiningHarvesterConfigName("W1N1", "W1N0", "src1");
+    Memory.data!.creepConfigs![h1] = { role: "colonizerHarvester", args: ["W1N0", "src1"], roomName: "W1N1" };
+
+    const config = getRemoteMiningConfig();
+    processRemoteConfigLifecycle(store, config);
+
+    expect(store["W1N0"].status).toBe("abandoned");
+    expect(store["W1N0"].abandonedReason).toBe("owned_room");
+    expect(Memory.data!.creepConfigs![h1]).toBeUndefined();
+  });
+
+  it("abandons defending task when visible target room is owned by me", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const ownedTarget = createVisibleTargetRoom("W1N0", {
+      sources: [createSource("src1"), createSource("src2")],
+      controllerMy: true,
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = ownedTarget;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1",
+      targetRoom: "W1N0",
+      status: "defending",
+      sourceIds: ["src1", "src2"],
+      assignedAt: 50,
+      updatedAt: 50,
+      defendingSince: 60,
+      defenseReason: "npc_invader",
+    };
+
+    const d0 = getRemoteDefenderConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![d0] = { role: "remoteDefender", args: ["W1N0"], roomName: "W1N1" };
+
+    const config = getRemoteMiningConfig();
+    processRemoteConfigLifecycle(store, config);
+
+    expect(store["W1N0"].status).toBe("abandoned");
+    expect(store["W1N0"].abandonedReason).toBe("owned_room");
+    expect(Memory.data!.creepConfigs![d0]).toBeUndefined();
+  });
+
+  it("continues remote configs normally when target room is not owned", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const normalTarget = createVisibleTargetRoom("W1N0", {
+      sources: [createSource("src1"), createSource("src2")],
+    });
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W1N0"] = normalTarget;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W1N0"] = {
+      sourceRoom: "W1N1",
+      targetRoom: "W1N0",
+      status: "active",
+      sourceIds: ["src1", "src2"],
+      assignedAt: 50,
+      updatedAt: 50,
+    };
+
+    const config = getRemoteMiningConfig();
+    processRemoteConfigLifecycle(store, config);
+
+    expect(store["W1N0"].status).toBe("active");
+    const h1 = getRemoteMiningHarvesterConfigName("W1N1", "W1N0", "src1");
+    expect(Memory.data!.creepConfigs![h1]).toBeDefined();
   });
 });
 
@@ -1144,7 +1335,7 @@ class ConMockRoomPosition {
   }
 }
 
-function createConRoom(name: string, options: { level?: number; storage?: StructureStorage } = {}): MockConRoom {
+function createConRoom(name: string, options: { level?: number; storage?: StructureStorage; controllerMy?: boolean } = {}): MockConRoom {
   const structures: Array<Structure<StructureConstant>> = [];
   const sites: Array<ConstructionSite> = [];
   const siteAttempts: Array<{ x: number; y: number; structureType: BuildableStructureConstant }> = [];
@@ -1152,7 +1343,7 @@ function createConRoom(name: string, options: { level?: number; storage?: Struct
   const room = {
     name,
     controller: {
-      my: true,
+      my: options.controllerMy ?? true,
       level: options.level ?? 7,
       pos: new ConMockRoomPosition(25, 25, name),
     } as StructureController,
@@ -1258,7 +1449,7 @@ describe("remote construction caps", () => {
 
   it("respects maxRemoteSitesPerRun=2 cap", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10), createConSource("src2", targetRoom, 35, 35)];
       return [];
@@ -1288,7 +1479,7 @@ describe("remote construction caps", () => {
 
   it("respects global soft cap of 95 construction sites", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1317,7 +1508,7 @@ describe("remote construction caps", () => {
 
   it("rejects incomplete PathFinder paths without storing plan", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1344,7 +1535,7 @@ describe("remote construction caps", () => {
     Memory.cfg = { roomPlannerBuild: { enabled: false } };
 
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     Game.rooms["W1N1"] = sourceRoom as unknown as Room;
     Game.rooms["W1N0"] = targetRoom as unknown as Room;
 
@@ -1359,7 +1550,7 @@ describe("remote construction caps", () => {
 
   it("skips duplicate road sites over existing roads", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1395,7 +1586,7 @@ describe("remote construction caps", () => {
 
   it("skips duplicate container site when container already exists", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1454,7 +1645,7 @@ describe("remote construction caps", () => {
 
   it("places remote roads only in the target room", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1481,7 +1672,7 @@ describe("remote construction caps", () => {
 
   it("does not replan road before roadInterval elapses", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     Game.rooms["W1N1"] = sourceRoom as unknown as Room;
     Game.rooms["W1N0"] = targetRoom as unknown as Room;
 
@@ -1501,7 +1692,7 @@ describe("remote construction caps", () => {
 
   it("replans road after roadInterval elapses", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1546,7 +1737,7 @@ describe("remote construction caps", () => {
 
   it("rejects container position with blocking structure, falls back to another tile", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1584,7 +1775,7 @@ describe("remote construction caps", () => {
 
   it("places container site instead of road on container tile", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1624,7 +1815,7 @@ describe("remote construction caps", () => {
 
   it("prioritizes container site over road sites when cap is 1", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -1660,7 +1851,7 @@ describe("remote construction caps", () => {
 
   it("reuses shared corridor between two source paths and deduplicates road positions", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10), createConSource("src2", targetRoom, 40, 10)];
       return [];
@@ -1719,7 +1910,7 @@ describe("remote construction caps", () => {
 
   it("prefers existing target-room roads in path planning", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
 
     // Place an existing road at (25, 20) in the target room
     const existingRoadPos = new ConMockRoomPosition(25, 20, "W1N0");
@@ -1766,7 +1957,7 @@ describe("remote construction caps", () => {
 
   it("skips container site when my container construction site already exists near source (different position)", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       if (type === FIND_STRUCTURES) return targetRoom.__structures;
@@ -1812,7 +2003,7 @@ describe("remote construction caps", () => {
 
   it("skips container site when built container already exists near source (different position)", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       if (type === FIND_STRUCTURES) return targetRoom.__structures;
@@ -1855,7 +2046,7 @@ describe("remote construction caps", () => {
 
   it("creates exactly one container site per source when no existing container or site exists", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_STRUCTURES) return targetRoom.__structures;
       if (type === FIND_CONSTRUCTION_SITES) return targetRoom.__sites;
@@ -1891,7 +2082,7 @@ describe("remote construction caps", () => {
 
   it("places container for second source when first source container is within range 2 of both sources", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_STRUCTURES) return targetRoom.__structures;
       if (type === FIND_CONSTRUCTION_SITES) return targetRoom.__sites;
@@ -1937,7 +2128,7 @@ describe("remote construction caps", () => {
 
   it("does not place container for second source when an unassigned container site near that source exists", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_STRUCTURES) return targetRoom.__structures;
       if (type === FIND_CONSTRUCTION_SITES) return targetRoom.__sites;
@@ -1982,6 +2173,34 @@ describe("remote construction caps", () => {
     const containerAttempts = targetRoom.__siteAttempts.filter(a => a.structureType === STRUCTURE_CONTAINER);
     // src2 should be skipped because the stale site at (10,12) is near src2 and is not at src1's planned position
     expect(containerAttempts.length).toBe(0);
+  });
+
+  it("skips construction for active task whose visible target is owned by me", () => {
+    const sourceRoom = createConRoom("W1N1");
+    const ownedTarget = createConRoom("W1N0", { controllerMy: true });
+    ownedTarget.find = jest.fn((type: number) => {
+      if (type === FIND_SOURCES) return [createConSource("src1", ownedTarget, 10, 10)];
+      if (type === FIND_STRUCTURES) return [];
+      if (type === FIND_CONSTRUCTION_SITES) return [];
+      return [];
+    });
+    Game.rooms["W1N1"] = sourceRoom as unknown as Room;
+    Game.rooms["W1N0"] = ownedTarget as unknown as Room;
+
+    const path = makePathPositions(25, 25, "W1N1", 10, 10, "W1N0");
+    (PathFinder.search as jest.Mock).mockReturnValue({ path, incomplete: false, ops: 10, cost: 10 });
+
+    setupActiveTask(store, "W1N1", "W1N0", ["src1"]);
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createConSource("src1", ownedTarget, 10, 10);
+      return null;
+    });
+
+    const config = getRemoteMiningConfig();
+    processRemoteConstruction(store, config);
+
+    expect(ownedTarget.__siteAttempts.length).toBe(0);
+    expect(PathFinder.search as jest.Mock).not.toHaveBeenCalled();
   });
 });
 
@@ -3433,7 +3652,7 @@ describe("road construction cadence hardening", () => {
 
   it("does not call PathFinder.search when cached roadPlan is fresh", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     Game.rooms["W1N1"] = sourceRoom as unknown as Room;
     Game.rooms["W1N0"] = targetRoom as unknown as Room;
 
@@ -3453,7 +3672,7 @@ describe("road construction cadence hardening", () => {
 
   it("calls PathFinder.search when roadPlan is stale past roadInterval", () => {
     const sourceRoom = createConRoom("W1N1");
-    const targetRoom = createConRoom("W1N0");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
       if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
       return [];
@@ -7404,7 +7623,7 @@ describe("defending lifecycle", () => {
 
     it("destroyed source container triggers processRemoteConstruction to create site, then worker config triggers", () => {
       const sourceRoom = createConRoom("W1N1");
-      const targetRoom = createConRoom("W1N0");
+      const targetRoom = createConRoom("W1N0", { controllerMy: false });
       targetRoom.find = jest.fn((type: number) => {
         if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
         if (type === FIND_STRUCTURES) return [];

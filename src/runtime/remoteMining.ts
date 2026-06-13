@@ -469,7 +469,7 @@ function removeScoutFromSpawnQueues(sourceRoom: string, targetRoom: string): voi
 
 function abandonTask(
   task: RemoteMiningTask,
-  reason: "not_dual_source" | "unsafe" | "not_normal" | "not_direct" | "scout_timeout",
+  reason: "not_dual_source" | "unsafe" | "not_normal" | "not_direct" | "scout_timeout" | "owned_room",
 ): void {
   task.status = "abandoned";
   task.abandonedReason = reason;
@@ -516,6 +516,13 @@ function processScoutLifecycle(store: Record<string, RemoteMiningTask>, config: 
     const sources = visibleRoom.find(FIND_SOURCES);
     if (sources.length !== 2) {
       abandonTask(task, "not_dual_source");
+      removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+      removeScoutConfig(task.sourceRoom, task.targetRoom);
+      continue;
+    }
+
+    if (visibleRoom.controller?.my) {
+      abandonTask(task, "owned_room");
       removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
       removeScoutConfig(task.sourceRoom, task.targetRoom);
       continue;
@@ -750,6 +757,9 @@ export function processRemoteConstruction(
 
   for (const task of Object.values(store)) {
     if (task.status !== "active") continue;
+
+    const visibleTarget = Game.rooms[task.targetRoom];
+    if (visibleTarget && visibleTarget.controller?.my) continue;
 
     const needsPlan = !task.roadPlan ||
       (task.roadPlan.generatedAt <= Game.time && Game.time - task.roadPlan.generatedAt >= config.roadInterval) ||
@@ -1170,6 +1180,30 @@ export function processRemoteConfigLifecycle(
       continue;
     }
 
+    // If a visible target room is owned by me, it must never be a remote mining target.
+    // Abandon the task and clean up all remote configs/spawn entries regardless of current status.
+    const earlyVisibleTarget = Game.rooms[task.targetRoom];
+    if (earlyVisibleTarget && earlyVisibleTarget.controller?.my) {
+      task.status = "abandoned";
+      task.abandonedReason = "owned_room";
+      task.updatedAt = Game.time;
+      task.nextRetryAt = Game.time + 5000;
+      delete task.suspendReason;
+      delete task.suspendedAt;
+      delete task.lastThreatAt;
+      delete task.safeSince;
+      delete task.defendingSince;
+      delete task.lastDefenseThreatAt;
+      delete task.defenseReason;
+      delete task.lastDefenseSafeAt;
+      delete task.damageSnapshots;
+      cleanupAllRemoteConfigs(task);
+      removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+      removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+      removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+      continue;
+    }
+
     if (task.status === "suspended") {
       cleanupAllRemoteConfigs(task);
 
@@ -1493,6 +1527,10 @@ export function runRemoteMining(): void {
 
       const sources = visibleRoom.find(FIND_SOURCES);
       if (sources.length !== 2) {
+        continue;
+      }
+
+      if (visibleRoom.controller?.my) {
         continue;
       }
 
