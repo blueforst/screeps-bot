@@ -1378,7 +1378,7 @@ describe("distributedStorage on", () => {
     expect(t3Task!.amount).toBe(501);
   });
 
-  it("creates hub:import:power task for POWER resource", () => {
+  it("does not create hub:import:power task for POWER resource", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForImports();
     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
       [RESOURCE_POWER]: 3000,
@@ -1390,14 +1390,12 @@ describe("distributedStorage on", () => {
     const powerTask = tasks.find(
       (t) => t.resource === RESOURCE_POWER && t.reason === "hub:import:power",
     );
-    // TDD RED: planHubImports does not yet create hub:import:power tasks
-    expect(powerTask).toBeDefined();
-    expect(powerTask!.fromRoomName).toBe(SAT_ROOM);
-    expect(powerTask!.toRoomName).toBe(HUB_ROOM);
-    expect(powerTask!.amount).toBeGreaterThan(0);
+    expect(powerTask).toBeUndefined();
+    const powerAction = actions.find((a) => a.includes(":power="));
+    expect(powerAction).toBeUndefined();
   });
 
-  it("suppressed state: no base or intermediate imports, only reclaim and power", () => {
+  it("suppressed state: no base, intermediate, or POWER imports, only T3 reclaim", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForImports();
     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
       [RESOURCE_HYDROGEN]: 2000,
@@ -1420,9 +1418,9 @@ describe("distributedStorage on", () => {
     const t3Task = tasks.find((t) => t.reason === "hub:reclaim:XUH2O");
     expect(t3Task).toBeDefined();
 
-    // POWER route present
+    // POWER import must not be created
     const powerTask = tasks.find((t) => t.reason === "hub:import:power");
-    expect(powerTask).toBeDefined();
+    expect(powerTask).toBeUndefined();
 
     // Guardrail: route-task wiring must NOT create synthetic dispatchAssignments
     const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
@@ -1441,7 +1439,7 @@ describe("distributedStorage on", () => {
 
     const actions = planHubImports(Memory.cfg!.hub!);
 
-    // Route tasks exist (reclaim + power), but dispatchAssignments must remain empty
+    // Route tasks exist (T3 reclaim only), but dispatchAssignments must remain empty
     const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
     expect(dispatchAssignments).toHaveLength(0);
     // Also verify the entire distributedSynthesis object is absent or empty — no synthetic entries
@@ -6000,6 +5998,28 @@ describe("logistics-cost-aware dispatch scoring", () => {
         t => t.status === "pending" && t.reason === "synthesis:surplus:X",
       );
       expect(surplusTasks.length).toBe(0);
+    });
+
+    it("suppresses synthesis:surplus:power when distributedStorage is true", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_POWER, amount: 5000, fee: 0 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000, true);
+
+      const store = ensureResourceTransferTaskStore();
+      const surplusTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:surplus:power",
+      );
+      expect(surplusTasks.length).toBe(0);
+      const powerTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.resource === RESOURCE_POWER,
+      );
+      expect(powerTasks.length).toBe(0);
     });
 
     it("creates synthesis:surplus:XUH2O (T3) hub-route when distributedStorage is true", () => {

@@ -548,8 +548,8 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
       }
     }
 
-    // Distributed storage keeps base/intermediate surplus local; T3 reclaim and POWER
-    // centralization stay hub-bound.
+    // Distributed storage keeps base/intermediate surplus local; T3 reclaim stays
+    // hub-bound.
     if (cfg.distributedStorage !== true) {
       for (const mineral of BASE_MINERALS) {
         const amount = satResources[mineral] || 0;
@@ -597,19 +597,6 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
       const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, t3, sendAmount, reason);
       if (typeof result === "object" && result.ok) {
         actions.push(`reclaim:${satellite.name}:${t3}=${sendAmount}`);
-      }
-    }
-
-    // POWER import: route all POWER from satellites to hub (no local reserve)
-    const powerAmount = satResources[RESOURCE_POWER] || 0;
-    if (powerAmount > 0) {
-      const reason = "hub:import:power";
-      const key = `${satellite.name}:${RESOURCE_POWER}:${reason}`;
-      if (!existingKeys.has(key)) {
-        const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, RESOURCE_POWER, powerAmount, reason);
-        if (typeof result === "object" && result.ok) {
-          actions.push(`import:${satellite.name}:power=${powerAmount}`);
-        }
       }
     }
   }
@@ -1438,10 +1425,9 @@ export function wireRouteTransferTasks(
     if (route.amount <= 0) continue;
 
     const isT3 = T3_TARGETS.includes(route.resource);
-    const isPower = route.resource === RESOURCE_POWER;
     // Hub-bound route decisions without active downstream demand are surplus returns.
-    // In distributed storage mode, only T3 and POWER surplus remain hub-central.
-    if (distributedStorage === true && !isT3 && !isPower) continue;
+    // In distributed storage mode, only T3 surplus remains hub-central.
+    if (distributedStorage === true && !isT3) continue;
 
     const key = `${route.fromRoom}:${route.resource}`;
     const committed = directCommitment[key] || 0;

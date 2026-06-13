@@ -491,7 +491,7 @@ declare global {
         surplusThreshold?: number;
         internalOnly?: boolean;
         marketSellEnabled?: boolean;
-        /** When true (default), non-T3/non-POWER surplus stays local; only T3 and POWER centralize to hub. */
+        /** When true (default), non-T3 surplus stays local; only T3 centralizes to hub. */
         distributedStorage?: boolean;
       };
       factoryControl?: {
