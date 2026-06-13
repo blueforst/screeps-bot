@@ -1934,6 +1934,87 @@ describe("carrierRole mineral hauling", () => {
   // These tests MUST FAIL against the current implementation to confirm the bug.
 
 
+  // ── Terminal energy pickup config ──────────────────────────────────
+
+  it("does not pick up energy from terminal by default for any room", () => {
+    const room = createRoom("E7N58");
+    const terminal = {
+      id: "E7N58-terminal",
+      pos: { x: 15, y: 15, roomName: "E7N58" },
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    (room as any).terminal = terminal;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(null);
+    getPickupTargetEnergyAmount.mockImplementation((target: { id: string }) => (target.id === terminal.id ? 5000 : 0));
+    reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === terminal.id);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    expect(switched).toBe(false);
+  });
+
+  it("picks up energy from terminal when room is explicitly enabled via config", () => {
+    const room = createRoom("E7N58");
+    const terminal = {
+      id: "E7N58-terminal-enabled",
+      pos: { x: 15, y: 15, roomName: "E7N58" },
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    (room as any).terminal = terminal;
+    let carried = 0;
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? carried : resource === undefined ? carried : 0),
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn(() => { carried = 800; return OK; }),
+    } as unknown as Creep;
+    Memory.cfg = { energyPickup: { terminalPickupRooms: { "E7N58": true } } };
+    getEnergyStoreTarget.mockReturnValue(null);
+    getPickupTargetEnergyAmount.mockImplementation((target: { id: string }) => (target.id === terminal.id ? 5000 : 0));
+    reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === terminal.id);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    expect(switched).toBe(true);
+  });
+
+  it("does not pick up energy from terminal for non-enabled room", () => {
+    const room = createRoom("W1N1");
+    const terminal = {
+      id: "W1N1-terminal",
+      pos: { x: 15, y: 15, roomName: "W1N1" },
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    (room as any).terminal = terminal;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(null);
+    getPickupTargetEnergyAmount.mockImplementation((target: { id: string }) => (target.id === terminal.id ? 5000 : 0));
+    reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === terminal.id);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    expect(switched).toBe(false);
+  });
+
+
 });
 
 describe("carrierRole lab logistics", () => {

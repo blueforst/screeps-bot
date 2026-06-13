@@ -18,7 +18,7 @@ import { getPlannedStoragePos, getPlannedControllerLinkPos, getProtoStorageConta
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 
-type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | Tombstone | Ruin;
+type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | StructureTerminal | Tombstone | Ruin;
 type DeadStorePickupTarget = Tombstone | Ruin;
 type DeadStorePickupAssignment = { target: DeadStorePickupTarget; resource: ResourceConstant };
 type CarrierTaskFilter = (task: CarrierTask) => boolean;
@@ -28,6 +28,17 @@ const POWER_BANK_BOOST_PRODUCER_PREFIX = "powerBankBoost:";
 interface CarrierPickupOptions {
   includeStorage?: boolean;
   includeProtoStorage?: boolean;
+  includeTerminal?: boolean;
+}
+
+const DEFAULT_TERMINAL_PICKUP_ROOMS: Record<string, boolean> = {};
+
+function isTerminalPickupEnabledForRoom(roomName: string): boolean {
+  const configRooms = Memory.cfg?.energyPickup?.terminalPickupRooms;
+  if (configRooms && roomName in configRooms) {
+    return !!configRooms[roomName];
+  }
+  return !!DEFAULT_TERMINAL_PICKUP_ROOMS[roomName];
 }
 
 function getCarrierPickupAmount(target: CarrierPickupTarget): number {
@@ -122,8 +133,12 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPicku
       options?.includeStorage && creep.room.storage && creep.room.storage.store.getUsedCapacity(RESOURCE_ENERGY) > 0
         ? [creep.room.storage]
         : [];
+    const terminal =
+      options?.includeTerminal && creep.room.terminal && creep.room.terminal.store.getUsedCapacity(RESOURCE_ENERGY) > 0
+        ? [creep.room.terminal]
+        : [];
 
-    const candidates: CarrierPickupTarget[] = [...dropped, ...structures, ...tombstones, ...ruins, ...storage];
+    const candidates: CarrierPickupTarget[] = [...dropped, ...structures, ...tombstones, ...ruins, ...storage, ...terminal];
     if (candidates.length === 0) {
       return [];
     }
@@ -170,6 +185,10 @@ function isCarrierPickupTarget(
 
   const structureType = (target as Structure).structureType;
   if (options?.includeStorage && structureType === STRUCTURE_STORAGE) {
+    return true;
+  }
+
+  if (options?.includeTerminal && structureType === STRUCTURE_TERMINAL) {
     return true;
   }
 
@@ -856,6 +875,7 @@ export const carrierRole: RoleFactory = () => ({
       pickupEnergyForCarrier(creep, {
         includeStorage: isSupplyingSpawnOrExtension,
         includeProtoStorage: isSupplyingSpawnOrExtension,
+        includeTerminal: isTerminalPickupEnabledForRoom(assignedRoomName),
       });
       const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
       if (hasEnergy) {
@@ -923,6 +943,7 @@ export const carrierRole: RoleFactory = () => ({
 
     pickupEnergyForCarrier(creep, {
       includeStorage: false,
+      includeTerminal: isTerminalPickupEnabledForRoom(assignedRoomName),
     });
     const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
     if (hasEnergy) {
