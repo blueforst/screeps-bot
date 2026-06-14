@@ -1108,12 +1108,19 @@ function maintainPatrolScout(): void {
 
   if (eligibleRooms.length === 0) return;
 
-  const firstPatrolRoom = POWER_BANK_PATROL_ROOMS[0];
-  const sourceRoom = eligibleRooms.reduce((best, room) => {
-    const dist = getRouteDistance(room.name, firstPatrolRoom);
-    const bestDist = getRouteDistance(best.name, firstPatrolRoom);
-    return dist < bestDist ? room : best;
-  }).name;
+  let sourceRoom = eligibleRooms[0].name;
+  let sourceMinDist = Infinity;
+  for (const room of eligibleRooms) {
+    let minDist = Infinity;
+    for (const patrolRoom of POWER_BANK_PATROL_ROOMS) {
+      const dist = getRouteDistance(room.name, patrolRoom);
+      if (dist < minDist) minDist = dist;
+    }
+    if (minDist < sourceMinDist) {
+      sourceMinDist = minDist;
+      sourceRoom = room.name;
+    }
+  }
 
   configStore[PATROL_SCOUT_CONFIG_NAME] = {
     role: "powerBankScout",

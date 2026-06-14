@@ -3381,7 +3381,7 @@ describe("powerBankHarvest", () => {
       expect(configs[SCOUT_CONFIG_NAME].role).toBe("powerBankScout");
     });
 
-    it("picks nearest room to first patrol room", () => {
+    it("picks nearest room to patrol corridor", () => {
       const room1 = {
         name: "E8N55",
         controller: { my: true, level: 8 },
@@ -3430,9 +3430,23 @@ describe("powerBankHarvest", () => {
         return 5;
       });
       Game.map.findRoute = jest.fn((from: string, to: string) => {
+        // Each room is 1 hop from its same-x patrol room.
+        if (from === "E1N55" && to === "E1N60") return [{ room: "E1N60", exit: FIND_EXIT_TOP }];
+        if (from === "E8N55" && to === "E8N60") return [{ room: "E8N60", exit: FIND_EXIT_TOP }];
+        // Distance to E0N60 specifically (what old code measured).
         if (to === "E0N60") {
-          if (from === "E1N55") return [{ room: "E0N60", exit: FIND_EXIT_LEFT }];
-          if (from === "E8N55") return Array.from({ length: 8 }, (_, i) => ({ room: `E${7 - i}N60`, exit: FIND_EXIT_RIGHT }));
+          if (from === "E1N55") {
+            return [{ room: "E1N60", exit: FIND_EXIT_TOP }, { room: "E0N60", exit: FIND_EXIT_LEFT }];
+          }
+          if (from === "E8N55") {
+            return Array.from({ length: 8 }, (_, i) => ({ room: `E${7 - i}N60`, exit: FIND_EXIT_RIGHT }));
+          }
+        }
+        // Other patrol rooms: proportional to x-distance.
+        if (from === "E1N55" || from === "E8N55") {
+          const srcX = parseInt(from.charAt(1));
+          const targetX = parseInt(to.charAt(1));
+          return Array.from({ length: Math.abs(targetX - srcX) + 1 }, () => ({ room: "c", exit: FIND_EXIT_RIGHT }));
         }
         return [{ room: "corridor", exit: FIND_EXIT_RIGHT }];
       });
@@ -3441,7 +3455,111 @@ describe("powerBankHarvest", () => {
 
       const configs = getCreepConfigService().list();
       expect(configs[SCOUT_CONFIG_NAME]).toBeDefined();
-      expect(configs[SCOUT_CONFIG_NAME].roomName).toBe("E1N55");
+      // Both rooms tie at nearest-patrol distance 1; first-iterated wins (E8N55).
+      expect(configs[SCOUT_CONFIG_NAME].roomName).toBe("E8N55");
+    });
+
+    it("picks room closest to nearest patrol room when not closest to first patrol room", () => {
+      // E1N55: nearest patrol 1 (E1N60), but distance to E0N60 = 2.
+      // E5N55: nearest patrol 1 (E5N60), but distance to E0N60 = 6.
+      // E1N57: nearest patrol 3 (E1N60), but distance to E0N60 = 4.
+      // Old code (E0N60 only): E1N55(2) < E1N57(4) < E5N55(6) → picks E1N55.
+      // E1N57 would beat E5N55 under old code despite being farther from corridor.
+      // New code must reject E1N57 (min 3) in favor of E1N55/E5N55 (min 1).
+
+      const roomA = {
+        name: "E1N55",
+        controller: { my: true, level: 8 },
+        energyCapacityAvailable: 12_000,
+        storage: { store: createMockStore({}) },
+        terminal: { store: createMockStore({}), cooldown: 0 },
+        find: () => [],
+      } as unknown as Room;
+      Game.rooms["E1N55"] = roomA;
+
+      const spawnA = {
+        name: "E1N55-spawnA",
+        room: roomA,
+        memory: { spawnList: [] },
+        spawning: null,
+        isActive: () => true,
+        renewCreep: jest.fn(() => OK),
+      } as unknown as StructureSpawn;
+      Game.spawns["E1N55-spawnA"] = spawnA;
+
+      const roomB = {
+        name: "E5N55",
+        controller: { my: true, level: 8 },
+        energyCapacityAvailable: 12_000,
+        storage: { store: createMockStore({}) },
+        terminal: { store: createMockStore({}), cooldown: 0 },
+        find: () => [],
+      } as unknown as Room;
+      Game.rooms["E5N55"] = roomB;
+
+      const spawnB = {
+        name: "E5N55-spawnB",
+        room: roomB,
+        memory: { spawnList: [] },
+        spawning: null,
+        isActive: () => true,
+        renewCreep: jest.fn(() => OK),
+      } as unknown as StructureSpawn;
+      Game.spawns["E5N55-spawnB"] = spawnB;
+
+      const roomC = {
+        name: "E1N57",
+        controller: { my: true, level: 8 },
+        energyCapacityAvailable: 12_000,
+        storage: { store: createMockStore({}) },
+        terminal: { store: createMockStore({}), cooldown: 0 },
+        find: () => [],
+      } as unknown as Room;
+      Game.rooms["E1N57"] = roomC;
+
+      const spawnC = {
+        name: "E1N57-spawnC",
+        room: roomC,
+        memory: { spawnList: [] },
+        spawning: null,
+        isActive: () => true,
+        renewCreep: jest.fn(() => OK),
+      } as unknown as StructureSpawn;
+      Game.spawns["E1N57-spawnC"] = spawnC;
+
+      Game.map.getRoomLinearDistance = jest.fn(() => 5);
+      Game.map.findRoute = jest.fn((from: string, to: string) => {
+        // Same-x patrol room is 1 hop for E1N55/E5N55; E1N57 is 3 hops south.
+        if (from === "E1N55" && to === "E1N60") return [{ room: "E1N60", exit: FIND_EXIT_TOP }];
+        if (from === "E5N55" && to === "E5N60") return [{ room: "E5N60", exit: FIND_EXIT_TOP }];
+        if (from === "E1N57" && to === "E1N60") {
+          return Array.from({ length: 3 }, () => ({ room: "c", exit: FIND_EXIT_TOP }));
+        }
+        // E0N60 distances: E1N55=2, E5N55=6, E1N57=4 (what old code measured).
+        if (to === "E0N60") {
+          if (from === "E1N55") {
+            return Array.from({ length: 2 }, () => ({ room: "c", exit: FIND_EXIT_RIGHT }));
+          }
+          if (from === "E5N55") {
+            return Array.from({ length: 6 }, () => ({ room: "c", exit: FIND_EXIT_RIGHT }));
+          }
+          if (from === "E1N57") {
+            return Array.from({ length: 4 }, () => ({ room: "c", exit: FIND_EXIT_RIGHT }));
+          }
+        }
+        // Other patrol rooms: proportional to x-distance + vertical offset.
+        const srcX = parseInt(from.charAt(1));
+        const targetX = parseInt(to.charAt(1));
+        const vertical = from.endsWith("N57") ? 3 : 1;
+        return Array.from({ length: Math.abs(targetX - srcX) + vertical }, () => ({ room: "c", exit: FIND_EXIT_RIGHT }));
+      });
+
+      runPowerBankHarvest();
+
+      const configs = getCreepConfigService().list();
+      expect(configs[SCOUT_CONFIG_NAME]).toBeDefined();
+      // E1N57 (min 3) must lose to E1N55/E5N55 (min 1) under new logic.
+      expect(configs[SCOUT_CONFIG_NAME].roomName).not.toBe("E1N57");
     });
 
     it("does not create scout config when observers cover all patrol rooms", () => {
