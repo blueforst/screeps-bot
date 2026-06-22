@@ -740,6 +740,26 @@ describe("remoteDefenderRole", () => {
   });
 
   describe("retirement", () => {
+    it("retires from source room instead of returning to a non-defending remote room", () => {
+      setupMemory(setupTask(undefined));
+      delete (Memory.data as any).remoteMining[TARGET_ROOM].defenseReason;
+
+      const creep = makeCreep({ roomName: SOURCE_ROOM, x: 12, y: 0 });
+      (creep.room as any).find = jest.fn((_type: number) => []);
+
+      const role = remoteDefenderRole(TARGET_ROOM);
+      role.target(creep);
+
+      expect(moveToTargetRoom).not.toHaveBeenCalledWith(
+        creep,
+        TARGET_ROOM,
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(moveToTarget).toHaveBeenCalledWith(creep, new MockPos(25, 25, SOURCE_ROOM), 3, { reusePath: 5 });
+      expect(creep.suicide).toHaveBeenCalled();
+    });
+
     it("returns home and suicides when no eligible hostiles and task not defending", () => {
       setupMemory(setupTask(undefined));
       delete (Memory.data as any).remoteMining[TARGET_ROOM].defenseReason;

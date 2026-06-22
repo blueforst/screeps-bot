@@ -184,6 +184,18 @@ function moveInwardDuringBoundaryReady(creep: Creep, targetRoom: string): void {
   }
 }
 
+function retireTowardSource(creep: Creep, sourceRoom: string): void {
+  if (creep.room.name !== sourceRoom) {
+    moveToTargetRoom(creep, sourceRoom, undefined, { reusePath: 5 });
+    return;
+  }
+
+  moveToTarget(creep, new RoomPosition(25, 25, sourceRoom), 3, { reusePath: 5 });
+  if (creep.pos.roomName === sourceRoom) {
+    creep.suicide();
+  }
+}
+
 export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
   const targetRoom = args[0];
   return {
@@ -199,6 +211,14 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
       const resolvedTargetRoom = targetRoom || getTargetRoomFromConfig(creep);
       if (!resolvedTargetRoom) return false;
 
+      const sourceRoom = getSourceRoomFromConfig(creep) ?? resolvedTargetRoom;
+      const defending = isTaskDefending(resolvedTargetRoom);
+
+      if (!defending && creep.room.name !== resolvedTargetRoom) {
+        retireTowardSource(creep, sourceRoom);
+        return false;
+      }
+
       if (creep.room.name !== resolvedTargetRoom) {
         moveToTargetRoom(creep, resolvedTargetRoom, undefined, {
           plainCost: 2,
@@ -209,23 +229,14 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
         return false;
       }
 
-      const sourceRoom = getSourceRoomFromConfig(creep) ?? resolvedTargetRoom;
       const defenseReason = getDefenseReason(resolvedTargetRoom);
-      const defending = isTaskDefending(resolvedTargetRoom);
 
       const hostiles: Creep[] = creep.room.find(FIND_HOSTILE_CREEPS);
       const eligible = getEligibleTargets(creep, hostiles, defenseReason);
 
       if (eligible.length === 0) {
         if (!defending) {
-          if (creep.room.name !== sourceRoom) {
-            moveToTargetRoom(creep, sourceRoom, undefined, { reusePath: 5 });
-          } else {
-            moveToTarget(creep, new RoomPosition(25, 25, sourceRoom), 3, { reusePath: 5 });
-          }
-          if (creep.pos.roomName === sourceRoom) {
-            creep.suicide();
-          }
+          retireTowardSource(creep, sourceRoom);
         }
         return false;
       }
