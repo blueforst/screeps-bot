@@ -142,9 +142,36 @@ function getSafeFleeDirection(creep: Creep, hostile: Creep, currentRange: number
   return null;
 }
 
+function moveInwardDuringBoundaryReady(creep: Creep, targetRoom: string): void {
+  if (creep.room.name !== targetRoom || !isExitTile(creep.pos)) {
+    return;
+  }
+
+  const defenseReason = getDefenseReason(targetRoom);
+  const hostiles: Creep[] = creep.room.find(FIND_HOSTILE_CREEPS);
+  const target = pickTarget(creep, hostiles.filter((h) => isEligibleTarget(h, defenseReason)));
+  if (!target) {
+    return;
+  }
+
+  const targetRange = creep.pos.getRangeTo(target.pos);
+  const fleeDir = getSafeFleeDirection(creep, target, targetRange);
+  if (fleeDir !== null) {
+    creep.move(fleeDir);
+  }
+}
+
 export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
   const targetRoom = args[0];
   return {
+    prepare: (creep: Creep): boolean => {
+      const resolvedTargetRoom = targetRoom || getTargetRoomFromConfig(creep);
+      if (resolvedTargetRoom) {
+        moveInwardDuringBoundaryReady(creep, resolvedTargetRoom);
+      }
+      return true;
+    },
+
     target: (creep: Creep): boolean => {
       const resolvedTargetRoom = targetRoom || getTargetRoomFromConfig(creep);
       if (!resolvedTargetRoom) return false;
@@ -232,7 +259,9 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
         moveToTarget(creep, target, 3, { reusePath: 5, avoidExitTiles: true });
       }
 
-      if (hasBodyPart(target, ATTACK) && targetRange < 3) {
+      const shouldFleeMelee = hasBodyPart(target, ATTACK) && targetRange < 3;
+      const shouldStepOffExit = isExitTile(creep.pos) && targetRange <= 3;
+      if (shouldFleeMelee || shouldStepOffExit) {
         const fleeDir = getSafeFleeDirection(creep, target, targetRange);
         // Tactical directional move — not destination pathfinding
         if (fleeDir !== null) {

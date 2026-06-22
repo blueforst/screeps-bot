@@ -194,7 +194,7 @@ describe("mountCreep remoteDefender lifecycle", () => {
     (global as typeof global & { RoomPosition: typeof MockPos }).RoomPosition = MockPos;
   });
 
-  it("newly spawned defender enters target phase and flees inward when an Invader blocks the remote room boundary", () => {
+  it("new defender on a remote room exit moves inward during ready initialization when an Invader blocks the boundary", () => {
     const sourceRoom = "E4N58";
     const targetRoom = "E4N59";
     const configName = `${sourceRoom}:remoteMine:${targetRoom}:defender:0`;
@@ -245,7 +245,8 @@ describe("mountCreep remoteDefender lifecycle", () => {
     expect(creep.memory.ready).toBe(true);
     expect(creep.memory.working).toBe(false);
     expect(creep.rangedAttack).not.toHaveBeenCalled();
-    expect(creep.move).not.toHaveBeenCalled();
+    expect(creep.move).toHaveBeenCalledWith(TOP_LEFT);
+    expect(creep.move).not.toHaveBeenCalledWith(BOTTOM_LEFT);
 
     Game.time += 1;
     creep.work();
