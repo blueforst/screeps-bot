@@ -654,6 +654,31 @@ describe("remoteDefenderRole", () => {
       expect(creep.rangedAttack).toHaveBeenCalledWith(invader);
       expect(creep.move).toHaveBeenCalledWith(TOP_LEFT);
     });
+
+    it("clears a non-combat Invader remnant that is blocking the defender on an exit tile", () => {
+      const invader = makeHostile({
+        id: "inv-remnant-edge",
+        username: "Invader",
+        x: 13, y: 48,
+        body: [
+          { type: TOUGH as BodyPartConstant, hits: 0 },
+          { type: MOVE as BodyPartConstant, hits: 66 },
+        ],
+      });
+
+      const creep = makeCreep({ x: 12, y: 49 });
+      (creep.room as any).find = jest.fn((type: number) => {
+        if (type === FIND_HOSTILE_CREEPS) return [invader];
+        return [];
+      });
+
+      const role = remoteDefenderRole(TARGET_ROOM);
+      role.target(creep);
+
+      expect(creep.rangedAttack).toHaveBeenCalledWith(invader);
+      expect(creep.move).toHaveBeenCalledWith(TOP_LEFT);
+      expect(moveToTargetRoom).not.toHaveBeenCalledWith(creep, SOURCE_ROOM, expect.anything(), expect.anything());
+    });
   });
 
   describe("unified movement API", () => {

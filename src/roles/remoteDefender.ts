@@ -51,6 +51,29 @@ function isEligibleTarget(hostile: Creep, defenseReason: RemoteDefenseReason | n
   return defenseReason === "player_aggression";
 }
 
+function isBoundaryBlockerTarget(creep: Creep, hostile: Creep, defenseReason: RemoteDefenseReason | null): boolean {
+  if (!isExitTile(creep.pos) || creep.pos.getRangeTo(hostile.pos) > 3) {
+    return false;
+  }
+
+  const username = getUsername(hostile);
+  if (username === SOURCE_KEEPER_USERNAME) {
+    return false;
+  }
+  if (username === INVADER_USERNAME) {
+    return true;
+  }
+  return defenseReason === "player_aggression";
+}
+
+function getEligibleTargets(creep: Creep, hostiles: Creep[], defenseReason: RemoteDefenseReason | null): Creep[] {
+  const activeThreats = hostiles.filter((h) => isEligibleTarget(h, defenseReason));
+  if (activeThreats.length > 0) {
+    return activeThreats;
+  }
+  return hostiles.filter((h) => isBoundaryBlockerTarget(creep, h, defenseReason));
+}
+
 function hasNpcInvaderCombatParts(creep: Creep): boolean {
   for (const part of NPC_INVADER_COMBAT_PARTS) {
     if (hasBodyPart(creep, part)) return true;
@@ -149,7 +172,7 @@ function moveInwardDuringBoundaryReady(creep: Creep, targetRoom: string): void {
 
   const defenseReason = getDefenseReason(targetRoom);
   const hostiles: Creep[] = creep.room.find(FIND_HOSTILE_CREEPS);
-  const target = pickTarget(creep, hostiles.filter((h) => isEligibleTarget(h, defenseReason)));
+  const target = pickTarget(creep, getEligibleTargets(creep, hostiles, defenseReason));
   if (!target) {
     return;
   }
@@ -191,7 +214,7 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
       const defending = isTaskDefending(resolvedTargetRoom);
 
       const hostiles: Creep[] = creep.room.find(FIND_HOSTILE_CREEPS);
-      const eligible = hostiles.filter((h) => isEligibleTarget(h, defenseReason));
+      const eligible = getEligibleTargets(creep, hostiles, defenseReason);
 
       if (eligible.length === 0) {
         if (!defending) {
