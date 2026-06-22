@@ -1,10 +1,12 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { getPositionAtDirection, isExitTile } from "@/movement/common";
 import type { RoleFactory } from "@/types/system";
 import type { RemoteDefenseReason } from "@/runtime/remoteMining";
 
 const SOURCE_KEEPER_USERNAME = "Source Keeper";
 const INVADER_USERNAME = "Invader";
 const NPC_INVADER_COMBAT_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, HEAL, WORK];
+const FLEE_DIRECTIONS: DirectionConstant[] = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
 
 function getTargetRoomFromConfig(creep: Creep): string | null {
   const parts = creep.memory.configName?.split(":");
@@ -102,6 +104,44 @@ function getFleeDirection(creep: Creep, hostile: Creep): DirectionConstant {
   return dy >= 0 ? BOTTOM : TOP;
 }
 
+function isSafeFleeDirection(creep: Creep, hostile: Creep, direction: DirectionConstant, currentRange: number): boolean {
+  const nextPos = getPositionAtDirection(creep.pos, direction);
+  if (!nextPos || isExitTile(nextPos)) {
+    return false;
+  }
+  return nextPos.getRangeTo(hostile.pos) > currentRange;
+}
+
+function getSafeFleeDirection(creep: Creep, hostile: Creep, currentRange: number): DirectionConstant | null {
+  const preferred = getFleeDirection(creep, hostile);
+  if (isSafeFleeDirection(creep, hostile, preferred, currentRange)) {
+    return preferred;
+  }
+
+  let bestDirection: DirectionConstant | null = null;
+  let bestRange = currentRange;
+  for (const direction of FLEE_DIRECTIONS) {
+    if (!isSafeFleeDirection(creep, hostile, direction, currentRange)) {
+      continue;
+    }
+    const nextPos = getPositionAtDirection(creep.pos, direction);
+    if (!nextPos) {
+      continue;
+    }
+    const range = nextPos.getRangeTo(hostile.pos);
+    if (range > bestRange) {
+      bestRange = range;
+      bestDirection = direction;
+    }
+  }
+
+  if (bestDirection !== null) {
+    return bestDirection;
+  }
+
+  return null;
+}
+
 export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
   const targetRoom = args[0];
   return {
@@ -189,13 +229,15 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
           creep.rangedAttack(target);
         }
       } else {
-        moveToTarget(creep, target, 3, { reusePath: 5 });
+        moveToTarget(creep, target, 3, { reusePath: 5, avoidExitTiles: true });
       }
 
       if (hasBodyPart(target, ATTACK) && targetRange < 3) {
-        const fleeDir = getFleeDirection(creep, target);
+        const fleeDir = getSafeFleeDirection(creep, target, targetRange);
         // Tactical directional move — not destination pathfinding
-        creep.move(fleeDir);
+        if (fleeDir !== null) {
+          creep.move(fleeDir);
+        }
       }
 
       return false;

@@ -1,10 +1,13 @@
 import { mountCreep } from "@/mount/mountCreep";
 import { clearCarrierTaskBoardForTest, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import { getCreepConfigService } from "@/runtime/runtimeServices";
+import { createMockPowerBankCreep, MockPos } from "@mock/powerBank";
 
 jest.mock("@/roles/shared", () => ({
   clearMovementState: jest.fn(),
   moveToTarget: jest.fn(),
+  moveToTargetRoom: jest.fn(),
 }));
 
 jest.mock("@/roles/energyTargets", () => ({
@@ -69,6 +72,25 @@ function createRoom(name = "W1N1", options: { storage?: StructureStorage | null;
 
   Game.rooms[name] = room;
   return room;
+}
+
+function makeInvaderAtBoundary(targetRoom: string): Creep {
+  const body = [
+    { type: ATTACK as BodyPartConstant, hits: 100 },
+    { type: MOVE as BodyPartConstant, hits: 100 },
+  ];
+  return {
+    id: "invader-edge" as Id<Creep>,
+    name: "invader_E4N59_929",
+    pos: new MockPos(13, 48, targetRoom) as unknown as RoomPosition,
+    room: { name: targetRoom } as Room,
+    body,
+    hits: 200,
+    hitsMax: 200,
+    owner: { username: "Invader" },
+    my: false,
+    getActiveBodyparts: jest.fn((part: BodyPartConstant) => body.filter((p) => p.type === part && p.hits > 0).length),
+  } as unknown as Creep;
 }
 
 describe("mountCreep carrier switching", () => {
@@ -154,5 +176,83 @@ describe("mountCreep carrier switching", () => {
 
     creep.work();
     expect(creep.memory.working).toBe(true);
+  });
+});
+
+describe("mountCreep remoteDefender lifecycle", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    clearCreepAssignmentStateForTest();
+    resetRuntimeServices();
+    installCreepPrototype();
+    mountCreep();
+    Game.time += 1;
+    Memory.rooms = {};
+    Memory.data = { creepConfigs: {} } as NonNullable<Memory["data"]>;
+    Game.rooms = {};
+    Game.creeps = {};
+    (global as typeof global & { RoomPosition: typeof MockPos }).RoomPosition = MockPos;
+  });
+
+  it("newly spawned defender enters target phase and flees inward when an Invader blocks the remote room boundary", () => {
+    const sourceRoom = "E4N58";
+    const targetRoom = "E4N59";
+    const configName = `${sourceRoom}:remoteMine:${targetRoom}:defender:0`;
+    const invader = makeInvaderAtBoundary(targetRoom);
+    const room = createRoom(targetRoom);
+    (room as Room & { find: jest.Mock }).find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) {
+        return [invader];
+      }
+      return [];
+    });
+    Memory.data!.remoteMining = {
+      [targetRoom]: {
+        sourceRoom,
+        targetRoom,
+        status: "defending",
+        sourceIds: ["source-0", "source-1"],
+        assignedAt: 100,
+        updatedAt: 100,
+        defenseReason: "npc_invader",
+      },
+    };
+    getCreepConfigService().upsert(configName, "remoteDefender", [targetRoom], sourceRoom);
+
+    const creep = createMockPowerBankCreep("remoteDefender", {
+      name: "remoteDefender-new",
+      x: 12,
+      y: 49,
+      roomName: targetRoom,
+      body: [
+        ...Array.from({ length: 2 }, () => ({ type: RANGED_ATTACK as BodyPartConstant, hits: 100 })),
+        { type: HEAL as BodyPartConstant, hits: 100 },
+        ...Array.from({ length: 3 }, () => ({ type: MOVE as BodyPartConstant, hits: 100 })),
+      ],
+      memory: {
+        role: "remoteDefender",
+        configName,
+        ready: false,
+        working: false,
+      },
+    });
+    Object.assign(creep, { room });
+    Object.setPrototypeOf(creep, Creep.prototype);
+    Game.creeps[creep.name] = creep;
+
+    creep.work();
+
+    expect(creep.memory.ready).toBe(true);
+    expect(creep.memory.working).toBe(false);
+    expect(creep.rangedAttack).not.toHaveBeenCalled();
+    expect(creep.move).not.toHaveBeenCalled();
+
+    Game.time += 1;
+    creep.work();
+
+    expect(creep.memory.working).toBe(true);
+    expect(creep.rangedAttack).toHaveBeenCalledWith(invader);
+    expect(creep.move).toHaveBeenCalledWith(TOP_LEFT);
+    expect(creep.move).not.toHaveBeenCalledWith(BOTTOM_LEFT);
   });
 });

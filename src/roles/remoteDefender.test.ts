@@ -383,6 +383,30 @@ describe("remoteDefenderRole", () => {
       expect(moveToTarget).toHaveBeenCalledWith(creep, invader, 3, expect.objectContaining({ reusePath: 5 }));
     });
 
+    it("avoids exit tiles when chasing a remote hostile near the room boundary", () => {
+      const invader = makeHostile({
+        id: "inv-edge",
+        username: "Invader",
+        x: 1, y: 25,
+      });
+
+      const creep = makeCreep({ x: 25, y: 25 });
+      (creep.room as any).find = jest.fn((type: number) => {
+        if (type === FIND_HOSTILE_CREEPS) return [invader];
+        return [];
+      });
+
+      const role = remoteDefenderRole(TARGET_ROOM);
+      role.target(creep);
+
+      expect(moveToTarget).toHaveBeenCalledWith(
+        creep,
+        invader,
+        3,
+        expect.objectContaining({ avoidExitTiles: true }),
+      );
+    });
+
     it("uses rangedMassAttack when 3+ eligible hostiles in range 3", () => {
       const hostiles = [
         makeHostile({ id: "h0", username: "Invader", x: 26, y: 25 }),
@@ -555,6 +579,55 @@ describe("remoteDefenderRole", () => {
       role.target(creep);
 
       expect(creep.move).toHaveBeenCalled();
+    });
+
+    it("does not flee onto an exit tile at the room boundary", () => {
+      const invader = makeHostile({
+        id: "inv-melee-edge",
+        username: "Invader",
+        x: 2, y: 25,
+        body: [
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+
+      const creep = makeCreep({ x: 1, y: 25 });
+      (creep.room as any).find = jest.fn((type: number) => {
+        if (type === FIND_HOSTILE_CREEPS) return [invader];
+        return [];
+      });
+
+      const role = remoteDefenderRole(TARGET_ROOM);
+      role.target(creep);
+
+      expect(creep.rangedAttack).toHaveBeenCalledWith(invader);
+      expect(creep.move).not.toHaveBeenCalledWith(LEFT);
+    });
+
+    it("chooses an alternate safe flee direction when the preferred boundary direction leaves the room", () => {
+      const invader = makeHostile({
+        id: "inv-melee-bottom-edge",
+        username: "Invader",
+        x: 13, y: 48,
+        body: [
+          { type: ATTACK as BodyPartConstant, hits: 100 },
+          { type: MOVE as BodyPartConstant, hits: 100 },
+        ],
+      });
+
+      const creep = makeCreep({ x: 12, y: 49 });
+      (creep.room as any).find = jest.fn((type: number) => {
+        if (type === FIND_HOSTILE_CREEPS) return [invader];
+        return [];
+      });
+
+      const role = remoteDefenderRole(TARGET_ROOM);
+      role.target(creep);
+
+      expect(creep.rangedAttack).toHaveBeenCalledWith(invader);
+      expect(creep.move).toHaveBeenCalledWith(TOP_LEFT);
+      expect(creep.move).not.toHaveBeenCalledWith(BOTTOM_LEFT);
     });
   });
 
