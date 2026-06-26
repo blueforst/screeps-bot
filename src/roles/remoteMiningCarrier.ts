@@ -373,9 +373,6 @@ export const remoteMiningCarrierRole: RoleFactory = (targetRoom: string, sourceI
         }
 
         if (assignedSource) {
-          if (creep.pos.getRangeTo(container.pos) > 1) {
-            moveToTarget(creep, container, 1);
-          }
           if (!isFull(creep)) {
             stepOffContainerTile(creep, container.pos, [sourcePos]);
           }
