@@ -1,9 +1,34 @@
+// isActive() reads the immutable tick-start snapshot, so it is stable for the
+// whole tick; memoizing avoids redundant JS->native calls from the spawn
+// planner's per-config spawn filters and mountSpawn's work loop.
+let spawnActiveCacheTick = -1;
+const spawnActiveCache = new Map<Id<StructureSpawn>, boolean>();
+
 /**
  * Backward-compatible spawn active check.
  * Treats spawn as active if `isActive` is not present (mock environment).
  */
 export function isSpawnActive(spawn: StructureSpawn): boolean {
-  return typeof spawn.isActive !== "function" || spawn.isActive();
+  const tick = Game.time;
+  if (spawnActiveCacheTick !== tick) {
+    spawnActiveCache.clear();
+    spawnActiveCacheTick = tick;
+  }
+
+  const cached = spawnActiveCache.get(spawn.id);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const active = typeof spawn.isActive !== "function" || spawn.isActive();
+  spawnActiveCache.set(spawn.id, active);
+  return active;
+}
+
+// Test-only reset of the per-tick isSpawnActive cache; not a runtime API.
+export function clearSpawnActiveCacheForTest(): void {
+  spawnActiveCache.clear();
+  spawnActiveCacheTick = -1;
 }
 
 export interface RoomTickContext {
