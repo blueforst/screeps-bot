@@ -21,10 +21,11 @@ export function isBlockerActivelyMoving(blocker: Creep): boolean {
   if (!state) {
     return false;
   }
+  // Only a current-tick pathing request proves the creep is actively trying to
+  // move this tick. A stale, unexpired `movePathState` is just cached path data
+  // left over from a previous approach — the creep may have since stopped to
+  // withdraw/wait, so it must remain pushable (yieldable) by other creeps.
   if (state.pathingRequestedAt === Game.time) {
-    return true;
-  }
-  if (state.movePathState && state.movePathState.expiresAt > Game.time) {
     return true;
   }
   if (state.travelState) {

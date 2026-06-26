@@ -80,7 +80,7 @@ describe("isBlockerActivelyMoving", () => {
     expect(isBlockerActivelyMoving(blocker)).toBe(true);
   });
 
-  it("returns true when movePathState has not expired", () => {
+  it("returns false when only non-expired movePathState exists (stale cached path, no current pathing request)", () => {
     const blocker = makeCreep("blocker", 10, 10);
     const state = ensureCreepMovementState(blocker.name);
     state.movePathState = {
@@ -94,7 +94,7 @@ describe("isBlockerActivelyMoving", () => {
       stuckTicks: 0,
       expiresAt: Game.time + 10,
     };
-    expect(isBlockerActivelyMoving(blocker)).toBe(true);
+    expect(isBlockerActivelyMoving(blocker)).toBe(false);
   });
 
   it("returns false when movePathState has expired", () => {
@@ -143,7 +143,7 @@ describe("moveToAdjacentPosition", () => {
     });
   });
 
-  it("does not push a blocker with non-expired movePathState", () => {
+  it("pushes a blocker with stale movePathState when pathingRequestedAt is not current", () => {
     const pusher = makeCreep("pusher", 10, 10);
     const blocker = makeCreep("blocker", 11, 10);
     const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
@@ -162,6 +162,23 @@ describe("moveToAdjacentPosition", () => {
       stuckTicks: 0,
       expiresAt: Game.time + 10,
     };
+
+    const result = moveToAdjacentPosition(pusher, nextPos);
+
+    expect(result).toBe(OK);
+    expect(blocker.move).toHaveBeenCalled();
+    expect(state.movePathState).toBeUndefined();
+  });
+
+  it("does not push a blocker with current-tick pathingRequestedAt", () => {
+    const pusher = makeCreep("pusher", 10, 10);
+    const blocker = makeCreep("blocker", 11, 10);
+    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
+
+    setupRoomContext([pusher, blocker]);
+
+    const state = ensureCreepMovementState(blocker.name);
+    state.pathingRequestedAt = Game.time;
 
     const result = moveToAdjacentPosition(pusher, nextPos);
 
@@ -201,7 +218,7 @@ describe("moveToAdjacentPosition", () => {
     expect(blocker.move).toHaveBeenCalled();
   });
 
-  it("does not treat ERR_TIRED as a successful push for stationary blocker", () => {
+  it("preserves blocker movePathState when push fails with ERR_TIRED", () => {
     const pusher = makeCreep("pusher", 10, 10);
     const blocker = makeCreep("blocker", 11, 10);
     (blocker.move as jest.Mock).mockReturnValue(ERR_TIRED);
@@ -224,8 +241,8 @@ describe("moveToAdjacentPosition", () => {
 
     const result = moveToAdjacentPosition(pusher, nextPos);
 
-    expect(result).toBe(OK);
-    expect(blocker.move).not.toHaveBeenCalled();
+    expect(result).toBe(ERR_BUSY);
+    expect(blocker.move).toHaveBeenCalled();
     expect(blockerState.movePathState).toBeDefined();
   });
 

@@ -173,7 +173,7 @@ describe("moveToTarget yielding", () => {
     expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
   });
 
-  it("does not push a blocker with non-expired movePathState even when pathingRequestedAt is stale", () => {
+  it("pushes a blocker with stale pathingRequestedAt and non-expired movePathState", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N5A", creeps);
     const pusher = createCreep("worker-stale-push", "worker", 10, 10, room);
@@ -206,8 +206,9 @@ describe("moveToTarget yielding", () => {
     const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
 
     expect(result).toBe(OK);
-    expect(blocker.move).not.toHaveBeenCalled();
+    expect(blocker.move).toHaveBeenCalled();
     expect(pusher.move).toHaveBeenCalledWith(RIGHT);
+    expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
   });
 
   it("does not push a blocker that already requested pathing this tick", () => {
@@ -232,7 +233,7 @@ describe("moveToTarget yielding", () => {
     expect(pusher.move).toHaveBeenCalledWith(RIGHT);
   });
 
-  it("does not treat ERR_TIRED as a successful push: blocker path state is preserved", () => {
+  it("preserves blocker movePathState when push fails with ERR_TIRED", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N5C", creeps);
     const pusher = createCreep("worker-tired-push", "worker", 10, 10, room);
@@ -264,8 +265,8 @@ describe("moveToTarget yielding", () => {
 
     const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
 
-    expect(result).toBe(OK);
-    expect(blocker.move).not.toHaveBeenCalled();
+    expect(result).toBe(ERR_BUSY);
+    expect(blocker.move).toHaveBeenCalled();
     expect(getCreepMovementState(blocker.name)?.movePathState).toBeDefined();
     expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBeUndefined();
   });
