@@ -147,6 +147,13 @@ export interface DirectRouteDecision {
   amount: number;
   /** Terminal send fee in energy. */
   fee: number;
+  /**
+   * True when this route carries a reagent demand for the hub room's own active
+   * synthesis (toRoom === hubRoomName because the hub is synthesizing). Such
+   * routes are NOT surplus returns and survive under distributedStorage even for
+   * non-T3 resources. Untagged hub-bound routes are treated as surplus returns.
+   */
+  isHubReagentDemand?: boolean;
 }
 
 /** Represents an edge in the upstream/downstream production progress graph. */
@@ -872,7 +879,16 @@ export function planDistributedSynthesis(
   hubReservePerCompound: number,
   reservePerRoom: number,
   hubInventory: Record<string, number>,
+  /**
+   * Effective T3 production target to plan toward. Defaults to
+   * `hubReservePerCompound` for backward compatibility. When the hub planner
+   * computes `chainTarget = hubReservePerCompound + satelliteDeficit`, that
+   * value must be passed here so distributed synthesis covers satellite export
+   * demand instead of stopping at the bare hub reserve.
+   */
+  effectiveTargetReserve?: number,
 ): DistributedSynthesisPlan {
+  const targetReserve = effectiveTargetReserve ?? hubReservePerCompound;
   const rooms = getEligibleSynthesisRooms();
   const allResources = [...BASE_MINERALS, ...INTERMEDIATE_COMPOUNDS, ...T3_TARGETS];
 
@@ -921,7 +937,7 @@ export function planDistributedSynthesis(
       ? hubInventory[res] || 0
       : ledger[res]?.totalAmount ?? 0;
   }
-  const chainResult = planHubChains(chainInventory, {}, hubReservePerCompound, targetCompounds);
+  const chainResult = planHubChains(chainInventory, {}, targetReserve, targetCompounds);
 
   // 5. Assign steps to rooms using logistics-cost-aware scoring, decrementing ledger atomically
   const assignments: SynthesisDispatchAssignment[] = [];
@@ -1248,6 +1264,7 @@ function assignStepToRoom(
     const newDeps = new Set<string>();
     let remA = needed;
     let remB = needed;
+    const isHubTarget = roomName === hubRoomName;
 
     const localA = availA;
     if (localA > 0) {
@@ -1272,7 +1289,7 @@ function assignStepToRoom(
         const avail = ledger[reagentA]?.roomCommitments[from] ?? 0;
         if (avail > 0) {
           const send = Math.min(avail, remA);
-          routes.push({ fromRoom: from, toRoom: roomName, resource: reagentA, amount: send, fee: 0 });
+          routes.push({ fromRoom: from, toRoom: roomName, resource: reagentA, amount: send, fee: 0, isHubReagentDemand: isHubTarget });
           changes.push({ res: reagentA, room: from, amt: send });
           newDeps.add(from);
           remA -= send;
@@ -1282,7 +1299,7 @@ function assignStepToRoom(
         const avail = ledger[reagentB]?.roomCommitments[from] ?? 0;
         if (avail > 0) {
           const send = Math.min(avail, remB);
-          routes.push({ fromRoom: from, toRoom: roomName, resource: reagentB, amount: send, fee: 0 });
+          routes.push({ fromRoom: from, toRoom: roomName, resource: reagentB, amount: send, fee: 0, isHubReagentDemand: isHubTarget });
           changes.push({ res: reagentB, room: from, amt: send });
           newDeps.add(from);
           remB -= send;
@@ -1380,8 +1397,15 @@ export function wireRouteTransferTasks(
     plannedRoutes.set(key, { fromRoom, toRoom, resource, amount, fee, reason });
   }
 
+  const hubReagentDemandRoutes = hubRoutes.filter(r => r.isHubReagentDemand === true);
+  const hubSurplusRoutes = hubRoutes.filter(r => r.isHubReagentDemand !== true);
+
   const directCommitment: Record<string, number> = {};
   for (const route of directRoutes) {
+    const key = `${route.fromRoom}:${route.resource}`;
+    directCommitment[key] = (directCommitment[key] || 0) + route.amount;
+  }
+  for (const route of hubReagentDemandRoutes) {
     const key = `${route.fromRoom}:${route.resource}`;
     directCommitment[key] = (directCommitment[key] || 0) + route.amount;
   }
@@ -1421,7 +1445,22 @@ export function wireRouteTransferTasks(
     }
   }
 
-  for (const route of hubRoutes) {
+  // Active hub reagent demand: reagents the hub needs for its own synthesis.
+  // Non-surplus reason, no reservePerRoom subtraction, survives distributedStorage.
+  for (const route of hubReagentDemandRoutes) {
+    if (route.amount <= 0) continue;
+    addPlannedRoute(
+      route.fromRoom,
+      hubRoomName,
+      route.resource,
+      route.amount,
+      route.fee,
+      `synthesis:direct:${route.resource}`,
+    );
+  }
+
+  // True surplus returns: existing behavior preserved.
+  for (const route of hubSurplusRoutes) {
     if (route.amount <= 0) continue;
 
     const isT3 = T3_TARGETS.includes(route.resource);
@@ -1570,6 +1609,7 @@ export function wireDistributedSynthesis(
   hubInventory: Record<string, number>,
   steps: ChainStep[],
   distributedStorage?: boolean,
+  effectiveTargetReserve?: number,
 ): boolean {
   const eligibleRooms = getEligibleSynthesisRooms();
   const auxRooms = eligibleRooms.filter(r => r.roomName !== hubRoomName);
@@ -1584,6 +1624,7 @@ export function wireDistributedSynthesis(
     hubReservePerCompound,
     reservePerRoom,
     hubInventory,
+    effectiveTargetReserve,
   );
 
   if (!Memory.runtime?.hub) return true;
@@ -1714,34 +1755,42 @@ export function wireDistributedSynthesis(
   // assignments (planner assigns aux rooms instead). This block ensures the hub
   // room's synthesisControl config stays synchronized with the chain steps,
   // using the same write-pattern as writeSynthesisConfig.
+  //
+  // Guard: when the plan DOES include an explicit hub-room dispatch assignment,
+  // the first-pass assignment writer above already owns the hub room config. The
+  // fallback must not run in that case — otherwise, with empty `steps`, it would
+  // clear the just-written hub assignment (e.g. reactions=[] overwriting UH).
   if (distributedStorage) {
-    const hubStage = Memory.runtime?.synthesisControl?.rooms?.[hubRoomName]?.stage;
-    if (canRewriteSynthesisRoom(hubRoomName, hubStage)) {
-      const nextStep = steps.length > 0 ? steps[0] : null;
+    const hubHasDispatchAssignment = plan.dispatchAssignments.some(a => a.roomName === hubRoomName);
+    if (!hubHasDispatchAssignment) {
+      const hubStage = Memory.runtime?.synthesisControl?.rooms?.[hubRoomName]?.stage;
+      if (canRewriteSynthesisRoom(hubRoomName, hubStage)) {
+        const nextStep = steps.length > 0 ? steps[0] : null;
 
-      if (!nextStep) {
-        const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
-        if (roomCfg) {
-          roomCfg.reactions = [];
-        }
-      } else {
-        if (!Memory.cfg.synthesisControl.rooms[hubRoomName]) {
-          Memory.cfg.synthesisControl.rooms[hubRoomName] = {
-            enabled: true,
-            donorRoomNames: [],
-          };
-        }
+        if (!nextStep) {
+          const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
+          if (roomCfg) {
+            roomCfg.reactions = [];
+          }
+        } else {
+          if (!Memory.cfg.synthesisControl.rooms[hubRoomName]) {
+            Memory.cfg.synthesisControl.rooms[hubRoomName] = {
+              enabled: true,
+              donorRoomNames: [],
+            };
+          }
 
-        const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
-        roomCfg.enabled = true;
-        roomCfg.reactions = [
-          {
-            product: nextStep.product,
-            targetAmount: roundUpReactionAmount((hubInventory[nextStep.product] || 0) + nextStep.targetAmount),
-            batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(nextStep.targetAmount))),
-            donorRoomNames: [],
-          },
-        ];
+          const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
+          roomCfg.enabled = true;
+          roomCfg.reactions = [
+            {
+              product: nextStep.product,
+              targetAmount: roundUpReactionAmount((hubInventory[nextStep.product] || 0) + nextStep.targetAmount),
+              batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(nextStep.targetAmount))),
+              donorRoomNames: [],
+            },
+          ];
+        }
       }
     }
   }
@@ -1868,6 +1917,7 @@ export function runHubPlanner(): void {
         hubReservePerCompound,
         cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM,
         hubInventory,
+        chainTarget,
       )
     : null;
   const distributedAssignments = distributedPreview?.dispatchAssignments ?? [];
@@ -1911,6 +1961,7 @@ export function runHubPlanner(): void {
       hubInventory,
       result.steps,
       cfg.distributedStorage,
+      chainTarget,
     );
 
     if (!distributed) {

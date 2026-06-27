@@ -584,6 +584,35 @@ describe("runHubPlanner", () => {
     expect(Memory.runtime.hub.distributedSynthesis?.dispatchAssignments.length).toBeGreaterThan(0);
     expect(Memory.cfg!.synthesisControl!.rooms!["W2N1"].reactions!.length).toBe(1);
   });
+
+  it("distributed synthesis plans toward chainTarget when hub T3 is at hubReserve but satellite has deficit", () => {
+    Game.time = PLAN_INTERVAL;
+    Memory.cfg!.hub!.targetCompounds = [RESOURCE_CATALYZED_UTRIUM_ACID];
+    Memory.cfg!.hub!.hubReservePerCompound = 1000;
+    Memory.cfg!.hub!.reservePerRoom = 1000;
+
+    Game.rooms[HUB_ROOM] = createSynthesisCapableRoom(HUB_ROOM, {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 1000,
+      },
+    });
+
+    Game.rooms["W2N1"] = createSynthesisCapableRoom("W2N1", {
+      labCount: 3,
+      storageResources: {
+        [RESOURCE_HYDROGEN]: 5000,
+        [RESOURCE_OXYGEN]: 5000,
+        [RESOURCE_UTRIUM]: 5000,
+      },
+    });
+
+    runHubPlanner();
+
+    expect(Memory.runtime.hub.status).not.toBe("blocked");
+    expect(Memory.runtime.hub.missingResources).toEqual([]);
+    expect(Memory.runtime.hub.distributedSynthesis?.dispatchAssignments.length).toBeGreaterThan(0);
+  });
 });
 
 describe("clearHubSynthesisReactions", () => {
@@ -6041,6 +6070,93 @@ describe("logistics-cost-aware dispatch scoring", () => {
       expect(surplusTasks[0].amount).toBe(5000 - 1000);
     });
 
+    it("creates synthesis:direct:H task for hub-bound reagent demand under distributedStorage", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_HYDROGEN, amount: 458, fee: 0, isHubReagentDemand: true },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000, true);
+
+      const store = ensureResourceTransferTaskStore();
+      const demandTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:direct:H" && t.toRoomName === WIRE_HUB,
+      );
+      expect(demandTasks.length).toBe(1);
+      expect(demandTasks[0].fromRoomName).toBe(WIRE_AUX);
+      expect(demandTasks[0].resource).toBe(RESOURCE_HYDROGEN);
+      expect(demandTasks[0].amount).toBe(458);
+    });
+
+    it("does not subtract reservePerRoom from hub-bound reagent demand amount", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_OXYGEN, amount: 1500, fee: 0, isHubReagentDemand: true },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000, true);
+
+      const store = ensureResourceTransferTaskStore();
+      const demandTask = Object.values(store).find(
+        t => t.status === "pending" && t.reason === "synthesis:direct:O",
+      );
+      expect(demandTask).toBeDefined();
+      expect(demandTask!.amount).toBe(1500);
+    });
+
+    it("still skips non-T3 hub-bound surplus return (no isHubReagentDemand) under distributedStorage", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_HYDROGEN, amount: 5000, fee: 0 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000, true);
+
+      const store = ensureResourceTransferTaskStore();
+      const surplusTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:surplus:H",
+      );
+      expect(surplusTasks.length).toBe(0);
+      const anyHTask = Object.values(store).filter(
+        t => t.status === "pending" && t.resource === RESOURCE_HYDROGEN,
+      );
+      expect(anyHTask.length).toBe(0);
+    });
+
+    it("treats hub-bound reagent demand and surplus return for same resource independently", () => {
+      (global as any).__runtimeServices = undefined;
+      registerRuntimeServices();
+      Memory.data = {};
+
+      const routes: DirectRouteDecision[] = [
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_HYDROGEN, amount: 1000, fee: 0, isHubReagentDemand: true },
+        { fromRoom: WIRE_AUX, toRoom: WIRE_HUB, resource: RESOURCE_HYDROGEN, amount: 4000, fee: 0 },
+      ];
+
+      wireRouteTransferTasks(routes, WIRE_HUB, 1000, true);
+
+      const store = ensureResourceTransferTaskStore();
+      const demandTask = Object.values(store).find(
+        t => t.status === "pending" && t.reason === "synthesis:direct:H",
+      );
+      expect(demandTask).toBeDefined();
+      expect(demandTask!.amount).toBe(1000);
+
+      const surplusTasks = Object.values(store).filter(
+        t => t.status === "pending" && t.reason === "synthesis:surplus:H",
+      );
+      expect(surplusTasks.length).toBe(0);
+    });
+
     // -----------------------------------------------------------------------
     // Task 4: duplicate fallback, busy-room reconciliation, reassignment,
     // and stability tests
@@ -6652,6 +6768,55 @@ describe("logistics-cost-aware dispatch scoring", () => {
 
       const hubRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_HUB];
       expect(hubRoomCfg.reactions).toEqual([]);
+    });
+
+    it("distributedStorage fallback: does not clear hub reaction when hub has explicit dispatch assignment", () => {
+      const hubRoom = createSynthesisCapableRoom(WIRE_HUB, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_HYDROGEN]: 10000,
+          [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_UTRIUM]: 10000,
+          [RESOURCE_ZYNTHIUM]: 10000,
+          [RESOURCE_KEANIUM]: 10000,
+          [RESOURCE_LEMERGIUM]: 10000,
+        },
+      });
+      const auxRoom = createSynthesisCapableRoom(WIRE_AUX, {
+        labCount: 3,
+        storageResources: {
+          [RESOURCE_ZYNTHIUM]: 10000,
+          [RESOURCE_KEANIUM]: 10000,
+          [RESOURCE_UTRIUM]: 10000,
+          [RESOURCE_LEMERGIUM]: 10000,
+        },
+      });
+      Game.rooms[WIRE_HUB] = hubRoom;
+      Game.rooms[WIRE_AUX] = auxRoom;
+
+      wireDistributedSynthesis(
+        WIRE_HUB,
+        [RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+        1000,
+        1000,
+        {
+          [RESOURCE_HYDROGEN]: 10000, [RESOURCE_OXYGEN]: 10000,
+          [RESOURCE_ZYNTHIUM]: 10000, [RESOURCE_KEANIUM]: 10000,
+          [RESOURCE_UTRIUM]: 10000, [RESOURCE_LEMERGIUM]: 10000,
+        },
+        [],
+        true,
+      );
+
+      const dispatchAssignments = Memory.runtime?.hub?.distributedSynthesis?.dispatchAssignments ?? [];
+      const hubAssignments = dispatchAssignments.filter(a => a.roomName === WIRE_HUB);
+      expect(hubAssignments.length).toBeGreaterThan(0);
+      const hubAssignmentProducts = hubAssignments.map(a => a.product);
+
+      const hubRoomCfg = Memory.cfg!.synthesisControl!.rooms![WIRE_HUB];
+      expect(hubRoomCfg.reactions).toBeDefined();
+      expect(hubRoomCfg.reactions!.length).toBe(1);
+      expect(hubAssignmentProducts).toContain(hubRoomCfg.reactions![0].product);
     });
   });
 });
