@@ -622,6 +622,67 @@ describe("contamination cleanup", () => {
   });
 });
 
+describe("stale hub lastError cleanup", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 0;
+    Game.rooms = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("clears stale Memory.runtime.hub.lastError when storage/terminal capacity has recovered", () => {
+    setConfig({ sampleInterval: 100 });
+
+    Memory.cfg!.hub = {
+      hubRoomName: "W1N1",
+      enabled: true,
+      internalOnly: true,
+    };
+
+    // Simulate a stale error left over from a previous tick where destination was full.
+    Memory.runtime = {
+      synthesisControl: {
+        updatedAt: 0,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {},
+      },
+    } as any;
+    Memory.runtime.hub = { lastError: "lab_product_unload_destination_full" };
+
+    // Room has free storage/terminal capacity and target already met, so no
+    // destination-full condition is re-triggered this tick.
+    const { room, labs } = createSynthesisRoom({
+      name: "W1N1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 500000,
+        [RESOURCE_HYDROXIDE]: 5000,
+      },
+    });
+
+    labs[0].mineralType = undefined;
+    labs[0]._resourceMap = {};
+    labs[1].mineralType = undefined;
+    labs[1]._resourceMap = {};
+    labs[2].mineralType = undefined;
+    labs[2]._resourceMap = {};
+
+    Game.rooms["W1N1"] = room;
+    Game.time = 10;
+
+    runSynthesisControl();
+
+    expect(Memory.runtime.hub).toBeDefined();
+    expect(Memory.runtime.hub!.lastError).toBeUndefined();
+  });
+});
+
 describe("hub completion signal", () => {
   beforeEach(() => {
     resetRuntimeServices();

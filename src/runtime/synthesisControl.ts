@@ -1400,6 +1400,11 @@ export function clearBoostPause(roomName: string): void {
 
 export function runSynthesisControl(): void {
   const runtime = getRuntimeState();
+  // Clear stale hub lastError from previous ticks; the destination-full paths
+  // below will re-set it within this tick if the storage/terminal is still full.
+  if (Memory.runtime?.hub) {
+    delete Memory.runtime.hub.lastError;
+  }
   const cfg = normalizeConfig();
   const actions: string[] = [];
 
