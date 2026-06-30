@@ -28,9 +28,6 @@ export function isBlockerActivelyMoving(blocker: Creep): boolean {
   if (state.pathingRequestedAt === Game.time) {
     return true;
   }
-  if (state.travelState) {
-    return true;
-  }
   return false;
 }
 

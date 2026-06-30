@@ -114,14 +114,14 @@ describe("isBlockerActivelyMoving", () => {
     expect(isBlockerActivelyMoving(blocker)).toBe(false);
   });
 
-  it("returns true when travelState exists (inter-room traveller)", () => {
+  it("returns false when only stale travelState exists", () => {
     const blocker = makeCreep("blocker", 10, 10);
     const state = ensureCreepMovementState(blocker.name);
     state.travelState = {
       targetRoom: "W1N2",
       stuckTicks: 0,
     };
-    expect(isBlockerActivelyMoving(blocker)).toBe(true);
+    expect(isBlockerActivelyMoving(blocker)).toBe(false);
   });
 
   it("returns false when only stale pathingRequestedAt exists", () => {
@@ -186,7 +186,7 @@ describe("moveToAdjacentPosition", () => {
     expect(blocker.move).not.toHaveBeenCalled();
   });
 
-  it("does not push a blocker with active travelState", () => {
+  it("does not push a blocker with current-tick travel pathing", () => {
     const pusher = makeCreep("pusher", 10, 10);
     const blocker = makeCreep("blocker", 11, 10);
     const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
@@ -198,11 +198,32 @@ describe("moveToAdjacentPosition", () => {
       targetRoom: "W2N1",
       stuckTicks: 0,
     };
+    state.pathingRequestedAt = Game.time;
 
     const result = moveToAdjacentPosition(pusher, nextPos);
 
     expect(result).toBe(OK);
     expect(blocker.move).not.toHaveBeenCalled();
+  });
+
+  it("pushes a blocker with stale travelState when it is no longer pathing this tick", () => {
+    const pusher = makeCreep("pusher", 10, 10);
+    const blocker = makeCreep("blocker", 11, 10);
+    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
+
+    setupRoomContext([pusher, blocker]);
+
+    const state = ensureCreepMovementState(blocker.name);
+    state.travelState = {
+      targetRoom: "W2N1",
+      stuckTicks: 0,
+    };
+    state.pathingRequestedAt = Game.time - 1;
+
+    const result = moveToAdjacentPosition(pusher, nextPos);
+
+    expect(result).toBe(OK);
+    expect(blocker.move).toHaveBeenCalled();
   });
 
   it("pushes a stationary blocker without movement state", () => {
