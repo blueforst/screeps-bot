@@ -13,6 +13,9 @@ import {
   findSafeSellOrder,
   attemptProductSale,
   attemptRegionalRawPurchase,
+  addFactoryTask,
+  cancelFactoryTask,
+  listFactoryTasks,
   type MarketConfig,
   type FactoryControlRuntime,
 } from "@/runtime/factoryControl";
@@ -761,6 +764,138 @@ describe("produce and unload", () => {
     expect(unloadStep.fromKind).toBe("factory");
     expect(unloadStep.toKind).toBe("terminal");
     expect(unloadStep.amount).toBe(50);
+  });
+});
+
+describe("explicit factory tasks", () => {
+  beforeEach(() => {
+    const { clearCarrierTaskBoardForTest } = require("@/runtime/carrierTaskBoard");
+    clearCarrierTaskBoardForTest();
+  });
+
+  it("creates a battery decompression task and supplies battery to the factory", () => {
+    const { room, factory, storage } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000, [RESOURCE_BATTERY]: 1000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({}, 50000),
+      },
+    });
+    setupGameRooms({ W1N1: room });
+    setConfig({ enabled: true });
+
+    const created = addFactoryTask("W1N1", "decompress_battery", { amount: 1000 });
+    expect(created).toEqual(expect.objectContaining({ ok: true, taskId: "factoryTask:W1N1:decompress_battery:1000" }));
+
+    runFactoryControl();
+
+    const tasks = listFactoryTasks("W1N1");
+    expect(tasks).toEqual([
+      expect.objectContaining({
+        id: "factoryTask:W1N1:decompress_battery:1000",
+        roomName: "W1N1",
+        type: "decompress_battery",
+        status: "loading",
+        requestedBatteryAmount: 1000,
+        remainingBatteryAmount: 1000,
+      }),
+    ]);
+
+    const { listCarrierTasksByRoom } = require("@/runtime/carrierTaskBoard");
+    const carrierTasks = listCarrierTasksByRoom("W1N1");
+    expect(carrierTasks).toHaveLength(1);
+    expect(carrierTasks[0]).toEqual(expect.objectContaining({
+      id: "factoryControl:factory_task:factoryTask:W1N1:decompress_battery:1000:supply",
+      producer: "factoryControl",
+      type: "factory_supply",
+    }));
+    expect(carrierTasks[0].steps[0]).toEqual(expect.objectContaining({
+      resource: RESOURCE_BATTERY,
+      fromKind: "storage",
+      toKind: "factory",
+      fromId: storage.id,
+      toId: factory.id,
+      amount: 1000,
+    }));
+    expect(factory.produce).not.toHaveBeenCalled();
+  });
+
+  it("produces energy from loaded battery and unloads output before completing", () => {
+    const { room, factory, terminal } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000, [RESOURCE_BATTERY]: 1000 },
+      factoryOverrides: {
+        level: 0,
+        store: createMockStore({ [RESOURCE_BATTERY]: 50 }, 50000),
+        cooldown: 0,
+      },
+    });
+    (terminal as any).store = createMockStore({ [RESOURCE_ENERGY]: 25000 }, 300000);
+    setupGameRooms({ W1N1: room });
+    setConfig({ enabled: true });
+    addFactoryTask("W1N1", "decompress_battery", { amount: 50 });
+
+    runFactoryControl();
+
+    expect(factory.produce).toHaveBeenCalledWith(RESOURCE_ENERGY);
+    expect(listFactoryTasks("W1N1")[0]).toEqual(expect.objectContaining({
+      status: "producing",
+      producedEnergyAmount: 0,
+    }));
+
+    (factory as any).store = createMockStore({ [RESOURCE_ENERGY]: 500 }, 50000);
+    Game.time = 1001;
+    runFactoryControl();
+
+    const { listCarrierTasksByRoom } = require("@/runtime/carrierTaskBoard");
+    const unloadTasks = listCarrierTasksByRoom("W1N1").filter((task: any) => task.type === "factory_unload");
+    expect(unloadTasks).toHaveLength(1);
+    expect(unloadTasks[0]).toEqual(expect.objectContaining({
+      id: "factoryControl:factory_task:factoryTask:W1N1:decompress_battery:50:unload",
+      producer: "factoryControl",
+    }));
+    expect(unloadTasks[0].steps[0]).toEqual(expect.objectContaining({
+      resource: RESOURCE_ENERGY,
+      fromKind: "factory",
+      amount: 500,
+    }));
+    expect(listFactoryTasks("W1N1")[0]).toEqual(expect.objectContaining({
+      status: "unloading",
+      producedEnergyAmount: 500,
+    }));
+
+    (factory as any).store = createMockStore({}, 50000);
+    Game.time = 1002;
+    runFactoryControl();
+
+    expect(listFactoryTasks("W1N1")[0]).toEqual(expect.objectContaining({
+      status: "done",
+      completedAt: 1002,
+      producedEnergyAmount: 500,
+    }));
+    expect(listCarrierTasksByRoom("W1N1").filter((task: any) => task.producer === "factoryControl")).toHaveLength(0);
+  });
+
+  it("cancels a factory task and clears its carrier tasks", () => {
+    const { room } = createFactoryRoom({
+      storageResources: { [RESOURCE_ENERGY]: 500000, [RESOURCE_BATTERY]: 500 },
+      factoryOverrides: { store: createMockStore({}, 50000) },
+    });
+    setupGameRooms({ W1N1: room });
+    setConfig({ enabled: true });
+    const created = addFactoryTask("W1N1", "decompress_battery", { amount: 500 });
+    if (typeof created === "string") throw new Error(created);
+    runFactoryControl();
+
+    const result = cancelFactoryTask(created.taskId);
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, taskId: created.taskId, previousStatus: "loading" }));
+    expect(listFactoryTasks("W1N1")[0]).toEqual(expect.objectContaining({
+      id: created.taskId,
+      status: "cancelled",
+      completedAt: 1000,
+    }));
+    const { listCarrierTasksByRoom } = require("@/runtime/carrierTaskBoard");
+    expect(listCarrierTasksByRoom("W1N1").filter((task: any) => task.producer === "factoryControl")).toHaveLength(0);
   });
 });
 

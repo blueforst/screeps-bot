@@ -105,6 +105,41 @@ interface FactoryControlRuntime {
   }>;
 }
 
+type FactoryTaskType = "decompress_battery";
+type FactoryTaskStatus = "pending" | "loading" | "producing" | "unloading" | "done" | "cancelled" | "failed";
+
+export interface FactoryTask {
+  id: string;
+  roomName: string;
+  type: FactoryTaskType;
+  status: FactoryTaskStatus;
+  requestedBatteryAmount: number;
+  remainingBatteryAmount: number;
+  producedEnergyAmount: number;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+  lastError?: string;
+}
+
+export interface AddFactoryTaskOptions {
+  amount: number;
+}
+
+export interface AddFactoryTaskResult {
+  ok: true;
+  taskId: string;
+  task: FactoryTask;
+}
+
+export interface CancelFactoryTaskResult {
+  ok: true;
+  taskId: string;
+  previousStatus: FactoryTaskStatus;
+}
+
+type FactoryTaskStore = Record<string, FactoryTask>;
+
 // ---------------------------------------------------------------------------
 // Config normalization
 // ---------------------------------------------------------------------------
@@ -351,6 +386,9 @@ const REGIONAL_RAW_RESOURCES: Set<string> = new Set([
 ]);
 
 const FACTORY_CARRIER_TASK_PRODUCER = "factoryControl";
+const FACTORY_TASK_PREFIX = "factoryTask";
+const BATTERY_DECOMPRESS_BATCH_BATTERY = 50;
+const BATTERY_DECOMPRESS_BATCH_ENERGY = 500;
 
 function getCommodityRecipe(resource: ResourceConstant): CommodityRecipe | null {
   if (typeof COMMODITIES === "undefined") return null;
@@ -531,6 +569,92 @@ function ensureRuntimeState(): FactoryControlRuntime {
   return Memory.runtime.factoryControl as unknown as FactoryControlRuntime;
 }
 
+function ensureFactoryTaskStore(): FactoryTaskStore {
+  if (!Memory.data) {
+    Memory.data = {};
+  }
+  if (!Memory.data.factoryTasks) {
+    Memory.data.factoryTasks = {};
+  }
+  return Memory.data.factoryTasks as FactoryTaskStore;
+}
+
+function makeFactoryTaskId(roomName: string, type: FactoryTaskType, amount: number): string {
+  return `${FACTORY_TASK_PREFIX}:${roomName}:${type}:${amount}`;
+}
+
+function isActiveFactoryTask(task: FactoryTask): boolean {
+  return task.status !== "done" && task.status !== "cancelled" && task.status !== "failed";
+}
+
+function getActiveFactoryTaskForRoom(roomName: string): FactoryTask | null {
+  const tasks = Object.values(ensureFactoryTaskStore())
+    .filter((task) => task.roomName === roomName && isActiveFactoryTask(task))
+    .sort((left, right) => left.createdAt - right.createdAt);
+  return tasks[0] ?? null;
+}
+
+export function addFactoryTask(
+  roomName: string,
+  type: FactoryTaskType,
+  options: AddFactoryTaskOptions,
+): AddFactoryTaskResult | string {
+  if (type !== "decompress_battery") {
+    return `ERR_UNSUPPORTED_FACTORY_TASK:${type}`;
+  }
+  if (!options || !Number.isFinite(options.amount) || options.amount <= 0) {
+    return "ERR_INVALID_AMOUNT";
+  }
+
+  const amount = Math.floor(options.amount);
+  const taskId = makeFactoryTaskId(roomName, type, amount);
+  const store = ensureFactoryTaskStore();
+  const existing = store[taskId];
+  if (existing && isActiveFactoryTask(existing)) {
+    existing.requestedBatteryAmount += amount;
+    existing.remainingBatteryAmount += amount;
+    existing.updatedAt = Game.time;
+    return { ok: true, taskId, task: existing };
+  }
+
+  const task: FactoryTask = {
+    id: taskId,
+    roomName,
+    type,
+    status: "pending",
+    requestedBatteryAmount: amount,
+    remainingBatteryAmount: amount,
+    producedEnergyAmount: 0,
+    createdAt: Game.time,
+    updatedAt: Game.time,
+  };
+  store[taskId] = task;
+  return { ok: true, taskId, task };
+}
+
+export function listFactoryTasks(roomName?: string): FactoryTask[] {
+  return Object.values(ensureFactoryTaskStore())
+    .filter((task) => !roomName || task.roomName === roomName)
+    .sort((left, right) => left.createdAt - right.createdAt);
+}
+
+export function cancelFactoryTask(taskId: string): CancelFactoryTaskResult | string {
+  const task = ensureFactoryTaskStore()[taskId];
+  if (!task) {
+    return `ERR_NO_FACTORY_TASK:${taskId}`;
+  }
+  if (!isActiveFactoryTask(task)) {
+    return `ERR_FACTORY_TASK_NOT_ACTIVE:${taskId}`;
+  }
+
+  const previousStatus = task.status;
+  task.status = "cancelled";
+  task.updatedAt = Game.time;
+  task.completedAt = Game.time;
+  replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, task.roomName, []);
+  return { ok: true, taskId, previousStatus };
+}
+
 function getRoomState(runtime: FactoryControlRuntime, roomName: string): RoomRuntimeState {
   if (!runtime.rooms[roomName]) {
     runtime.rooms[roomName] = {
@@ -638,6 +762,150 @@ function generateFactoryUnloadDraft(
     toId: target.id,
     amount: productAmount,
   });
+}
+
+function generateBatteryDecompressSupplyDraft(
+  room: Room,
+  factory: StructureFactory,
+  task: FactoryTask,
+): CarrierTaskDraft | null {
+  const inFactory = factory.store.getUsedCapacity(RESOURCE_BATTERY) ?? 0;
+  const needed = Math.max(0, task.remainingBatteryAmount - inFactory);
+  if (needed <= 0) return null;
+
+  const source = resolveSupplySourceStructure(room, RESOURCE_BATTERY);
+  if (!source) return null;
+
+  const sourceAmount = source.store.getUsedCapacity(RESOURCE_BATTERY) ?? 0;
+  if (sourceAmount <= 0) return null;
+
+  const fromKind = source.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage";
+  return createSingleStepDraft({
+    taskId: `${FACTORY_CARRIER_TASK_PRODUCER}:factory_task:${task.id}:supply`,
+    type: "factory_supply",
+    priority: 190,
+    producer: FACTORY_CARRIER_TASK_PRODUCER,
+    roomName: task.roomName,
+    resource: RESOURCE_BATTERY,
+    fromKind,
+    toKind: "factory",
+    fromId: source.id,
+    toId: factory.id,
+    amount: Math.min(needed, sourceAmount),
+  });
+}
+
+function generateBatteryDecompressUnloadDraft(
+  room: Room,
+  factory: StructureFactory,
+  task: FactoryTask,
+): CarrierTaskDraft | null {
+  const energyAmount = factory.store.getUsedCapacity(RESOURCE_ENERGY) ?? 0;
+  if (energyAmount <= 0) return null;
+
+  const target = resolveFactoryUnloadTarget(room, RESOURCE_ENERGY);
+  if (!target) return null;
+
+  return createSingleStepDraft({
+    taskId: `${FACTORY_CARRIER_TASK_PRODUCER}:factory_task:${task.id}:unload`,
+    type: "factory_unload",
+    priority: 190,
+    producer: FACTORY_CARRIER_TASK_PRODUCER,
+    roomName: task.roomName,
+    resource: RESOURCE_ENERGY,
+    fromKind: "factory",
+    toKind: terminalStorageKind(target),
+    fromId: factory.id,
+    toId: target.id,
+    amount: energyAmount,
+  });
+}
+
+function executeBatteryDecompressTask(
+  room: Room,
+  factory: StructureFactory,
+  state: RoomRuntimeState,
+  task: FactoryTask,
+  config: FactoryControlConfig,
+): void {
+  const previousStage = state.stage;
+  state.activeTarget = RESOURCE_ENERGY;
+  state.missing = undefined;
+  state.sleepReason = undefined;
+  state.lastError = undefined;
+
+  const energyInFactory = factory.store.getUsedCapacity(RESOURCE_ENERGY) ?? 0;
+  if (energyInFactory > 0) {
+    task.producedEnergyAmount = Math.max(task.producedEnergyAmount, energyInFactory);
+    const unloadDraft = generateBatteryDecompressUnloadDraft(room, factory, task);
+    if (unloadDraft) {
+      task.status = "unloading";
+      state.stage = "unloading";
+      replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, task.roomName, [unloadDraft]);
+    } else {
+      task.status = "unloading";
+      state.stage = "blocked";
+      state.sleepReason = "unload_target_full";
+      state.lastError = "unload_target_full";
+      replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, task.roomName, []);
+    }
+  } else if (task.remainingBatteryAmount <= 0) {
+    task.status = "done";
+    task.updatedAt = Game.time;
+    task.completedAt = Game.time;
+    state.stage = "idle";
+    state.activeTarget = undefined;
+    replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, task.roomName, []);
+  } else {
+    const batteryInFactory = factory.store.getUsedCapacity(RESOURCE_BATTERY) ?? 0;
+    if (batteryInFactory >= BATTERY_DECOMPRESS_BATCH_BATTERY) {
+      task.status = "producing";
+      state.stage = "producing";
+      if (factory.cooldown <= 0) {
+        const factoryFree = factory.store.getFreeCapacity() ?? 0;
+        if (factoryFree < BATTERY_DECOMPRESS_BATCH_ENERGY) {
+          state.stage = "blocked";
+          state.sleepReason = "factory_output_full";
+          state.lastError = "factory_full";
+          state.sleepUntilTick = Game.time + config.sleepSettings.cooldownOnError;
+        } else {
+          const result = factory.produce(RESOURCE_ENERGY as CommodityConstant);
+          if (result === OK) {
+            task.remainingBatteryAmount = Math.max(0, task.remainingBatteryAmount - BATTERY_DECOMPRESS_BATCH_BATTERY);
+            task.lastError = undefined;
+          } else if (result === ERR_NOT_ENOUGH_RESOURCES) {
+            task.status = "loading";
+            state.stage = "loading";
+            task.lastError = `produce_${result}`;
+          } else {
+            task.status = "failed";
+            task.lastError = `produce_${result}`;
+            task.completedAt = Game.time;
+          }
+        }
+      }
+      replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, task.roomName, []);
+    } else {
+      const supplyDraft = generateBatteryDecompressSupplyDraft(room, factory, task);
+      task.status = "loading";
+      state.stage = "loading";
+      if (!state.loadingSinceTick) {
+        state.loadingSinceTick = Game.time;
+      }
+      if (!supplyDraft) {
+        task.lastError = "no_battery_source";
+      }
+      replaceCarrierTasksForProducerRoom(FACTORY_CARRIER_TASK_PRODUCER, task.roomName, supplyDraft ? [supplyDraft] : []);
+    }
+  }
+
+  task.updatedAt = Game.time;
+  if (state.stage !== previousStage) {
+    state.lastTransitionAt = Game.time;
+    if (state.stage !== "loading") {
+      state.loadingSinceTick = undefined;
+    }
+  }
 }
 
 function executeProductionCycle(
@@ -1150,6 +1418,12 @@ export function runFactoryControl(): void {
     const state = getRoomState(runtime, roomName);
     const holderId = factory.id as string;
     const previousActiveTarget = state.activeTarget;
+
+    const factoryTask = getActiveFactoryTaskForRoom(roomName);
+    if (factoryTask) {
+      executeBatteryDecompressTask(room, factory, state, factoryTask, config);
+      continue;
+    }
 
     const targetQueue = resolveTargetQueue(config, roomName);
     const resourceFloors = resolveResourceFloors(config, roomName);
