@@ -1,8 +1,142 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { prepareCombatBoost } from "@/roles/combatBoosts";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
+const TRAVEL_OPTIONS = { plainCost: 2, swampCost: 8 } as const;
+
+function findPairedWarAttacker(creep: Creep): Creep | null {
+  const configName = creep.memory.configName;
+  if (!configName?.includes(":war:")) return null;
+
+  const attackerConfigName = configName.replace(":healer:", ":meleeAttacker:");
+  if (attackerConfigName === configName) return null;
+
+  for (const name of Object.keys(Game.creeps)) {
+    const candidate = Game.creeps[name];
+    if (candidate === creep) continue;
+    if (candidate.memory.role !== "meleeAttacker") continue;
+    if (candidate.memory.configName !== attackerConfigName) continue;
+    return candidate;
+  }
+
+  return null;
+}
+
+function expectsWarAttacker(creep: Creep): boolean {
+  return creep.memory.configName?.includes(":war:") === true && creep.memory.configName.includes(":healer:");
+}
+
+function isOnExitDirection(pos: RoomPosition, direction: DirectionConstant): boolean {
+  if (direction === TOP) return pos.y <= 0;
+  if (direction === RIGHT) return pos.x >= 49;
+  if (direction === BOTTOM) return pos.y >= 49;
+  if (direction === LEFT) return pos.x <= 0;
+  return false;
+}
+
+function moveOffExitIntoRoom(creep: Creep): boolean {
+  if (creep.pos.x <= 0) {
+    measureCreepIntent(() => creep.move(RIGHT));
+    return true;
+  }
+  if (creep.pos.x >= 49) {
+    measureCreepIntent(() => creep.move(LEFT));
+    return true;
+  }
+  if (creep.pos.y <= 0) {
+    measureCreepIntent(() => creep.move(BOTTOM));
+    return true;
+  }
+  if (creep.pos.y >= 49) {
+    measureCreepIntent(() => creep.move(TOP));
+    return true;
+  }
+
+  return false;
+}
+
+function moveToPartnerRoom(creep: Creep, roomName: string): void {
+  const exitDirection = creep.room.findExitTo?.(roomName);
+  if (
+    typeof exitDirection === "number" &&
+    exitDirection >= TOP &&
+    exitDirection <= LEFT &&
+    isOnExitDirection(creep.pos, exitDirection as DirectionConstant)
+  ) {
+    measureCreepIntent(() => creep.move(exitDirection as DirectionConstant));
+    return;
+  }
+
+  moveToTargetRoom(creep, roomName, undefined, TRAVEL_OPTIONS);
+}
+
+function isPoisedToCrossInto(creep: Creep, targetRoom: string): boolean {
+  if (creep.room.name === targetRoom) return false;
+
+  const exitDirection = creep.room.findExitTo?.(targetRoom);
+  if (typeof exitDirection !== "number" || exitDirection < TOP || exitDirection > LEFT) return false;
+
+  return isOnExitDirection(creep.pos, exitDirection as DirectionConstant);
+}
+
+function healAttacker(creep: Creep, attacker: Creep): void {
+  if (attacker.room.name !== creep.room.name) {
+    if (creep.hits < creep.hitsMax) {
+      measureCreepIntent(() => creep.heal(creep));
+    }
+    return;
+  }
+
+  const range = creep.pos.getRangeTo(attacker.pos);
+  if (range <= 1) {
+    measureCreepIntent(() => creep.heal(attacker));
+  } else if (range <= 3) {
+    measureCreepIntent(() => creep.rangedHeal(attacker));
+  }
+}
+
+function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedRouteRooms?: string): boolean {
+  if (!expectsWarAttacker(creep)) return false;
+
+  const attacker = findPairedWarAttacker(creep);
+  if (!attacker) return true;
+
+  healAttacker(creep, attacker);
+
+  if (creep.room.name === targetRoom && attacker.room.name !== targetRoom) {
+    if (isPoisedToCrossInto(attacker, targetRoom)) {
+      moveOffExitIntoRoom(creep);
+      return true;
+    }
+    moveToPartnerRoom(creep, attacker.room.name);
+    return true;
+  }
+
+  if (attacker.room.name !== creep.room.name) {
+    moveToPartnerRoom(creep, attacker.room.name);
+    return true;
+  }
+
+  if (!creep.pos.isNearTo(attacker.pos)) {
+    moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+    return true;
+  }
+
+  if (creep.room.name !== targetRoom) {
+    moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
+    return true;
+  }
+
+  return false;
+}
+
 function getEscortTarget(creep: Creep, targetRoom?: string): Creep | null {
+  const pairedAttacker = findPairedWarAttacker(creep);
+  if (pairedAttacker && (!targetRoom || pairedAttacker.room.name === targetRoom)) {
+    return pairedAttacker;
+  }
+
   const friendlies = creep.room.find(FIND_MY_CREEPS, {
     filter: (ally) => ally.name !== creep.name && ally.memory.role === "meleeAttacker",
   });
@@ -23,18 +157,28 @@ function getEscortTarget(creep: Creep, targetRoom?: string): Creep | null {
   return creep.pos.findClosestByRange(friendlies);
 }
 
-export const healerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: string) => ({
+export const healerRole: RoleFactory = (
+  targetRoom?: string,
+  encodedRouteRooms?: string,
+  boostTaskId?: string,
+  encodedBoostCompounds?: string,
+) => ({
+  prepare: (creep): boolean => prepareCombatBoost(creep, boostTaskId, encodedBoostCompounds),
   source: (creep): boolean => {
+    if (targetRoom && moveWithWarAttackerFormation(creep, targetRoom, encodedRouteRooms)) return false;
+
     if (targetRoom && creep.room.name !== targetRoom) {
-      moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 8 });
+      moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }
 
     return true;
   },
   target: (creep): boolean => {
+    if (targetRoom && moveWithWarAttackerFormation(creep, targetRoom, encodedRouteRooms)) return false;
+
     if (targetRoom && creep.room.name !== targetRoom) {
-      moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 8 });
+      moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }
 
