@@ -10,6 +10,8 @@ import type {
   ProgressEdge,
 } from "@/runtime/hubPlanner";
 import type { CpuMonitorMemoryV2, CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
+import type { AddFactoryTaskResult, CancelFactoryTaskResult, FactoryTask } from "@/runtime/factoryControl";
+import type { StopWarOptions, StopWarResult, WarStatusSnapshot, WarStatusTaskSnapshot } from "@/runtime/warControl";
 
 declare const _: LoDashStatic;
 
@@ -102,6 +104,10 @@ declare global {
         suicidedCreeps: number;
       }
     | string;
+  var stopWar: (targetRoom: string, suicide?: boolean) => string;
+  var stopWarRaw: (targetRoom: string, options?: StopWarOptions) => StopWarResult | string;
+  var warStatus: (targetRoom?: string) => string;
+  var warStatusRaw: (targetRoom?: string) => WarStatusSnapshot;
   var startTelemetry: (sampleInterval?: number, segmentId?: number) => string;
   var startTelemetryRaw: (sampleInterval?: number, segmentId?: number) =>
     | {
@@ -281,6 +287,14 @@ declare global {
     ok: true;
     tasks: ResourceTransferTaskConsoleRecord[];
   };
+  var addFactoryTask: (roomName: string, type: "decompress_battery", amount: number) => string;
+  var addFactoryTaskRaw: (roomName: string, type: "decompress_battery", amount: number) => AddFactoryTaskResult | string;
+  var decompressBattery: (roomName: string, amount: number) => string;
+  var decompressBatteryRaw: (roomName: string, amount: number) => AddFactoryTaskResult | string;
+  var cancelFactoryTask: (taskId: string) => string;
+  var cancelFactoryTaskRaw: (taskId: string) => CancelFactoryTaskResult | string;
+  var listFactoryTasks: (roomName?: string) => string;
+  var listFactoryTasksRaw: (roomName?: string) => FactoryTask[];
 
   type PowerBankHarvestStatus =
     | "discovered"
@@ -815,6 +829,22 @@ declare global {
           }
         >;
       };
+      factoryTasks?: Record<
+        string,
+        {
+          id: string;
+          roomName: string;
+          type: "decompress_battery";
+          status: "pending" | "loading" | "producing" | "unloading" | "done" | "cancelled" | "failed";
+          requestedBatteryAmount: number;
+          remainingBatteryAmount: number;
+          producedEnergyAmount: number;
+          createdAt: number;
+          updatedAt: number;
+          completedAt?: number;
+          lastError?: string;
+        }
+      >;
       colonization?: Record<
         string,
         {
@@ -853,9 +883,17 @@ declare global {
           status: "staging" | "clearing" | "done" | "failed";
           reason: "npc_reservation" | "manual";
           routeRooms?: string[];
+          squad?: "standard" | "t3Duo";
+          boostTier?: "t3";
+          boostLabs?: string[];
+          boostStatus?: "preparing" | "ready" | "failed";
+          failReason?: string;
           attempts: number;
           createdAt: number;
           updatedAt: number;
+          statusSince?: number;
+          lastHostileSeenAt?: number;
+          clearSince?: number;
           completedAt?: number;
         }
       >;
@@ -966,6 +1004,11 @@ declare global {
             };
           }
         >;
+      };
+      war?: {
+        updatedAt: number;
+        clearDebounceTicks: number;
+        tasks: Record<string, WarStatusTaskSnapshot>;
       };
       moduleCpu?: {
         updatedAt: number;
@@ -1141,6 +1184,10 @@ declare namespace NodeJS {
           suicidedCreeps: number;
         }
       | string;
+    stopWar: (targetRoom: string, suicide?: boolean) => string;
+    stopWarRaw: (targetRoom: string, options?: StopWarOptions) => StopWarResult | string;
+    warStatus: (targetRoom?: string) => string;
+    warStatusRaw: (targetRoom?: string) => WarStatusSnapshot;
     startTelemetry: (sampleInterval?: number, segmentId?: number) => string;
     startTelemetryRaw: (sampleInterval?: number, segmentId?: number) =>
       | {
@@ -1320,6 +1367,14 @@ declare namespace NodeJS {
       ok: true;
       tasks: ResourceTransferTaskConsoleRecord[];
     };
+    addFactoryTask: (roomName: string, type: "decompress_battery", amount: number) => string;
+    addFactoryTaskRaw: (roomName: string, type: "decompress_battery", amount: number) => AddFactoryTaskResult | string;
+    decompressBattery: (roomName: string, amount: number) => string;
+    decompressBatteryRaw: (roomName: string, amount: number) => AddFactoryTaskResult | string;
+    cancelFactoryTask: (taskId: string) => string;
+    cancelFactoryTaskRaw: (taskId: string) => CancelFactoryTaskResult | string;
+    listFactoryTasks: (roomName?: string) => string;
+    listFactoryTasksRaw: (roomName?: string) => FactoryTask[];
     __screepsMounted?: boolean;
   }
 }

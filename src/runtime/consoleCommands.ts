@@ -19,6 +19,10 @@ import {
   stopColonization,
   stopColonizationCommand,
   stopColonizationRaw,
+  stopWarCommand,
+  stopWarRaw,
+  warStatusCommand,
+  warStatusRaw,
 } from "@/runtime/console/operationsCommands";
 import {
   registerTelemetryConsoleCommands,
@@ -42,6 +46,17 @@ import {
   listResourceTransferTasksRaw,
   registerResourceTransferConsoleCommands,
 } from "@/runtime/console/resourceTransferCommands";
+import {
+  addFactoryTaskCommand,
+  addFactoryTaskRaw,
+  cancelFactoryTaskCommand,
+  cancelFactoryTaskRaw,
+  decompressBatteryCommand,
+  decompressBatteryRaw,
+  listFactoryTasksCommand,
+  listFactoryTasksRaw,
+  registerFactoryTaskConsoleCommands,
+} from "@/runtime/console/factoryTaskCommands";
 import { clearHubSynthesisReactions } from "@/runtime/hubPlanner";
 import { collectHubProgressSnapshot } from "@/runtime/hubProgress";
 import { buildMemoryAuditSnapshot, MemoryAuditSnapshot } from "@/runtime/memoryAudit";
@@ -149,6 +164,7 @@ export function registerConsoleCommands(): void {
   global.memoryAudit = memoryAudit;
   global.memoryAuditRaw = memoryAuditRaw;
   registerResourceTransferConsoleCommands();
+  registerFactoryTaskConsoleCommands();
 }
 
 export {
@@ -156,10 +172,18 @@ export {
   addResourceTransferTaskRaw,
   addResourceTransferTasksCommand,
   addResourceTransferTasksRaw,
+  addFactoryTaskCommand,
+  addFactoryTaskRaw,
   cpuMonitorCommand,
   cpuMonitorRaw,
+  cancelFactoryTaskCommand,
+  cancelFactoryTaskRaw,
   cancelResourceTransferTaskCommand,
   cancelResourceTransferTaskRaw,
+  decompressBatteryCommand,
+  decompressBatteryRaw,
+  listFactoryTasksCommand,
+  listFactoryTasksRaw,
   listResourceTransferTasksCommand,
   listResourceTransferTasksRaw,
   spawnMaxCarrier,
@@ -176,6 +200,10 @@ export {
   stopColonization,
   stopColonizationCommand,
   stopColonizationRaw,
+  stopWarCommand,
+  stopWarRaw,
+  warStatusCommand,
+  warStatusRaw,
   startTelemetry,
   startTelemetryCommand,
   startTelemetryRaw,

@@ -4,6 +4,7 @@ import {
   type SpawnMaxCarrierResult,
 } from "@/runtime/emergencySpawning";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import { getWarStatus, stopWarRoom, type StopWarOptions, type StopWarResult, type WarStatusSnapshot } from "@/runtime/warControl";
 import type { CreepConfig } from "@/types/system";
 
 interface StopColonizationResult {
@@ -222,6 +223,30 @@ export function stopColonizationCommand(targetRoom?: string): string {
   return formatStopColonizationResult(stopColonization(targetRoom));
 }
 
+function formatWarResult(result: StopWarResult | WarStatusSnapshot | string): string {
+  if (typeof result === "string") {
+    return result;
+  }
+
+  return JSON.stringify(result, null, 2);
+}
+
+export function stopWarRaw(targetRoom: string, options?: StopWarOptions): StopWarResult | string {
+  return stopWarRoom(targetRoom, options);
+}
+
+export function stopWarCommand(targetRoom: string, suicide?: boolean): string {
+  return formatWarResult(stopWarRaw(targetRoom, { suicide: suicide === true }));
+}
+
+export function warStatusRaw(targetRoom?: string): WarStatusSnapshot {
+  return getWarStatus(targetRoom);
+}
+
+export function warStatusCommand(targetRoom?: string): string {
+  return formatWarResult(warStatusRaw(targetRoom));
+}
+
 export function spawnMaxCarrier(roomName: string): SpawnMaxCarrierResult | string {
   return spawnMaxCarrierCore(roomName);
 }
@@ -247,4 +272,8 @@ export function registerOperationsConsoleCommands(): void {
   global.spawnMaxCarrierRaw = spawnMaxCarrierRaw;
   global.stopColonization = stopColonizationCommand;
   global.stopColonizationRaw = stopColonizationRaw;
+  global.stopWar = stopWarCommand;
+  global.stopWarRaw = stopWarRaw;
+  global.warStatus = warStatusCommand;
+  global.warStatusRaw = warStatusRaw;
 }
