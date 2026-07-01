@@ -888,7 +888,7 @@ describe("distributed synthesis integration – full pipeline with 3 rooms", () 
 
 describe("distributed synthesis integration – statusHub and hubProgressRaw visibility", () => {
   it("hubProgressRaw returns productionRooms with non-hub synthesis rooms after planner run", () => {
-    // Hub + 1 aux room, targeting OH (simple)
+    // Hub + 1 aux room, targeting ZK (simple aux-room production)
     const { room: hubRoom } = createSynthesisRoom({
       name: "W1N1",
       storageResources: {
@@ -916,7 +916,7 @@ describe("distributed synthesis integration – statusHub and hubProgressRaw vis
         planInterval: 50,
         reservePerRoom: 1000,
         hubReservePerCompound: 1000,
-        targetCompounds: [RESOURCE_HYDROXIDE as ResourceConstant],
+        targetCompounds: [RESOURCE_ZYNTHIUM_KEANITE as ResourceConstant],
         storagePauseFreeCapacity: 100_000,
         surplusThreshold: 1500,
         internalOnly: true,

@@ -13,24 +13,20 @@
  */
 
 import { BLOCKING_ERRORS, createResourceTransferTask, ensureResourceTransferTaskStore, getIncomingResourceTransferAmount, getOutgoingResourceTransferAmount } from "@/runtime/logistics/resourceTransferTasks";
+import {
+  HUB_DISTRIBUTED_STORAGE,
+  HUB_INTERNAL_ONLY,
+  HUB_PLAN_INTERVAL,
+  HUB_RESERVE_PER_COMPOUND,
+  HUB_RESERVE_PER_ROOM,
+  HUB_STORAGE_PAUSE_FREE_CAPACITY,
+  HUB_SURPLUS_THRESHOLD,
+  HUB_TARGET_COMPOUNDS,
+} from "@/config/hub";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { collectCarrierCargoInventory } from "@/runtime/hubProgress";
 import { getProductReagentMap, roundUpReactionAmount } from "@/runtime/reactionMap";
 
-const DEFAULT_TARGET_COMPOUNDS: ResourceConstant[] = [
-  RESOURCE_CATALYZED_UTRIUM_ACID, // XUH2O
-  RESOURCE_CATALYZED_UTRIUM_ALKALIDE, // XUHO2
-  RESOURCE_CATALYZED_KEANIUM_ACID, // XKH2O
-  RESOURCE_CATALYZED_KEANIUM_ALKALIDE, // XKHO2
-  RESOURCE_CATALYZED_LEMERGIUM_ACID, // XLH2O
-  RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, // XLHO2
-  RESOURCE_CATALYZED_ZYNTHIUM_ACID, // XZH2O
-  RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, // XZHO2
-  RESOURCE_CATALYZED_GHODIUM_ACID, // XGH2O
-  RESOURCE_CATALYZED_GHODIUM_ALKALIDE, // XGHO2
-];
-
-const DEFAULT_RESERVE_PER_ROOM = 2000;
 const DISTRIBUTION_RECEIVER_TERMINAL_FREE_BUFFER = 40_000;
 const DISTRIBUTION_RECEIVER_STORAGE_FREE_BUFFER = 100_000;
 
@@ -38,14 +34,14 @@ export function getDefaultHubConfig(): NonNullable<Memory["cfg"]>["hub"] {
   return {
     enabled: false,
     hubRoomName: "",
-    planInterval: 50,
-    reservePerRoom: DEFAULT_RESERVE_PER_ROOM,
-    hubReservePerCompound: 20000,
-    targetCompounds: [...DEFAULT_TARGET_COMPOUNDS],
-    storagePauseFreeCapacity: 100_000,
-    surplusThreshold: DEFAULT_RESERVE_PER_ROOM + 500,
-    internalOnly: true,
-    distributedStorage: true,
+    planInterval: HUB_PLAN_INTERVAL,
+    reservePerRoom: HUB_RESERVE_PER_ROOM,
+    hubReservePerCompound: HUB_RESERVE_PER_COMPOUND,
+    targetCompounds: [...HUB_TARGET_COMPOUNDS],
+    storagePauseFreeCapacity: HUB_STORAGE_PAUSE_FREE_CAPACITY,
+    surplusThreshold: HUB_SURPLUS_THRESHOLD,
+    internalOnly: HUB_INTERNAL_ONLY,
+    distributedStorage: HUB_DISTRIBUTED_STORAGE,
   };
 }
 
@@ -83,16 +79,16 @@ export function normalizeHubConfig(cfg: NonNullable<Memory["cfg"]>["hub"]): NonN
       }
     }
     if (matchesOldDefault) {
-      migrated = { ...migrated, targetCompounds: [...DEFAULT_TARGET_COMPOUNDS] };
+      migrated = { ...migrated, targetCompounds: [...HUB_TARGET_COMPOUNDS] };
     }
   }
 
-  if ((migrated.reservePerRoom ?? 0) < DEFAULT_RESERVE_PER_ROOM) {
-    migrated = { ...migrated, reservePerRoom: DEFAULT_RESERVE_PER_ROOM };
+  if ((migrated.reservePerRoom ?? 0) < HUB_RESERVE_PER_ROOM) {
+    migrated = { ...migrated, reservePerRoom: HUB_RESERVE_PER_ROOM };
   }
 
   if (migrated.distributedStorage === undefined) {
-    migrated = { ...migrated, distributedStorage: true };
+    migrated = { ...migrated, distributedStorage: HUB_DISTRIBUTED_STORAGE };
   }
 
   return migrated;
@@ -514,12 +510,12 @@ export function planHubImports(cfg: NonNullable<Memory["cfg"]>["hub"]): string[]
   if (!hubRoom?.storage) return [];
 
   const hubFreeCapacity = hubRoom.storage.store.getFreeCapacity();
-  if (hubFreeCapacity < (cfg.storagePauseFreeCapacity ?? 100_000)) return [];
+  if (hubFreeCapacity < (cfg.storagePauseFreeCapacity ?? HUB_STORAGE_PAUSE_FREE_CAPACITY)) return [];
 
   const actions: string[] = [];
-  const reservePerRoom = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
-  const surplusThreshold = cfg.surplusThreshold ?? (DEFAULT_RESERVE_PER_ROOM + 500);
-  const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : DEFAULT_TARGET_COMPOUNDS;
+  const reservePerRoom = cfg.reservePerRoom ?? HUB_RESERVE_PER_ROOM;
+  const surplusThreshold = cfg.surplusThreshold ?? HUB_SURPLUS_THRESHOLD;
+  const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : HUB_TARGET_COMPOUNDS;
 
   const existingKeys = new Set<string>();
   const taskStore = ensureResourceTransferTaskStore();
@@ -617,8 +613,8 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
   const hubRoom = Game.rooms[cfg.hubRoomName];
   if (!hubRoom?.storage || !hubRoom?.terminal) return [];
 
-  const reservePerRoom = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
-  const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : DEFAULT_TARGET_COMPOUNDS;
+  const reservePerRoom = cfg.reservePerRoom ?? HUB_RESERVE_PER_ROOM;
+  const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : HUB_TARGET_COMPOUNDS;
 
   const hubT3Available: Record<string, number> = {};
   const hubStorageStore = hubRoom.storage.store as unknown as Record<string, number>;
@@ -639,7 +635,7 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
     }
   }
 
-  const hubReservePerCompound = cfg.hubReservePerCompound ?? 20000;
+  const hubReservePerCompound = cfg.hubReservePerCompound ?? HUB_RESERVE_PER_COMPOUND;
   const hubRemaining: Record<string, number> = {};
   for (const t3 of targetCompounds) {
     hubRemaining[t3] = Math.max(0, (hubT3Available[t3] || 0) - (hubPendingOutgoing[t3] || 0) - hubReservePerCompound);
@@ -757,7 +753,7 @@ function computeTotalSatelliteDeficit(
   cfg: NonNullable<Memory["cfg"]>["hub"],
   targetCompounds: ResourceConstant[],
 ): number {
-  const reservePerRoom = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
+  const reservePerRoom = cfg.reservePerRoom ?? HUB_RESERVE_PER_ROOM;
   const taskStore = ensureResourceTransferTaskStore();
   const myRooms = getTickContextService().getMyRooms();
   const satellites = myRooms.filter(
@@ -1897,8 +1893,8 @@ export function runHubPlanner(): void {
     }
   }
 
-  const hubReservePerCompound = cfg.hubReservePerCompound ?? 20000;
-  const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : DEFAULT_TARGET_COMPOUNDS;
+  const hubReservePerCompound = cfg.hubReservePerCompound ?? HUB_RESERVE_PER_COMPOUND;
+  const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : HUB_TARGET_COMPOUNDS;
   const satelliteDeficit = computeTotalSatelliteDeficit(cfg, targetCompounds);
   const chainTarget = hubReservePerCompound + satelliteDeficit;
 
@@ -1915,7 +1911,7 @@ export function runHubPlanner(): void {
         cfg.hubRoomName,
         targetCompounds,
         hubReservePerCompound,
-        cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM,
+        cfg.reservePerRoom ?? HUB_RESERVE_PER_ROOM,
         hubInventory,
         chainTarget,
       )
@@ -1949,9 +1945,9 @@ export function runHubPlanner(): void {
   }
 
   if (!result.blocked || distributedCanProceed) {
-    const hubReservePerCompound2 = cfg.hubReservePerCompound ?? 20000;
-    const reservePerRoom2 = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
-    const targetCompounds2 = cfg.targetCompounds?.length ? cfg.targetCompounds : DEFAULT_TARGET_COMPOUNDS;
+    const hubReservePerCompound2 = cfg.hubReservePerCompound ?? HUB_RESERVE_PER_COMPOUND;
+    const reservePerRoom2 = cfg.reservePerRoom ?? HUB_RESERVE_PER_ROOM;
+    const targetCompounds2 = cfg.targetCompounds?.length ? cfg.targetCompounds : HUB_TARGET_COMPOUNDS;
 
     const distributed = wireDistributedSynthesis(
       cfg.hubRoomName,
@@ -1969,7 +1965,7 @@ export function runHubPlanner(): void {
     }
   }
 
-  const reservePerRoom3 = cfg.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
+  const reservePerRoom3 = cfg.reservePerRoom ?? HUB_RESERVE_PER_ROOM;
   resupplyBusySynthesisRooms(cfg.hubRoomName, hubInventory, reservePerRoom3);
 
   if (room.storage && room.terminal) {

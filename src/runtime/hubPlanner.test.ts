@@ -52,9 +52,9 @@ describe("hubPlanner defaults", () => {
       ]);
     });
 
-    it("sets reservePerRoom to 2000", () => {
+    it("sets reservePerRoom to 5000", () => {
       const config = getDefaultHubConfig();
-      expect(config.reservePerRoom).toBe(2000);
+      expect(config.reservePerRoom).toBe(5000);
     });
 
     it("is disabled by default", () => {
@@ -563,17 +563,17 @@ describe("runHubPlanner", () => {
   it("uses distributed synthesis when hub-only inventory lacks base reagents", () => {
     Game.time = PLAN_INTERVAL;
     Memory.cfg!.hub!.targetCompounds = [RESOURCE_CATALYZED_UTRIUM_ALKALIDE];
-    Memory.cfg!.hub!.hubReservePerCompound = 1000;
-    Memory.cfg!.hub!.reservePerRoom = 1000;
+    Memory.cfg!.hub!.hubReservePerCompound = 5000;
+    Memory.cfg!.hub!.reservePerRoom = 5000;
 
     Game.rooms[HUB_ROOM] = createSynthesisCapableRoom(HUB_ROOM, { labCount: 3 });
     Game.rooms["W2N1"] = createSynthesisCapableRoom("W2N1", {
       labCount: 3,
       storageResources: {
-        [RESOURCE_HYDROGEN]: 5000,
-        [RESOURCE_OXYGEN]: 5000,
-        [RESOURCE_UTRIUM]: 5000,
-        [RESOURCE_CATALYST]: 5000,
+        [RESOURCE_HYDROGEN]: 10000,
+        [RESOURCE_OXYGEN]: 10000,
+        [RESOURCE_UTRIUM]: 10000,
+        [RESOURCE_CATALYST]: 10000,
       },
     });
 
@@ -588,22 +588,22 @@ describe("runHubPlanner", () => {
   it("distributed synthesis plans toward chainTarget when hub T3 is at hubReserve but satellite has deficit", () => {
     Game.time = PLAN_INTERVAL;
     Memory.cfg!.hub!.targetCompounds = [RESOURCE_CATALYZED_UTRIUM_ACID];
-    Memory.cfg!.hub!.hubReservePerCompound = 1000;
-    Memory.cfg!.hub!.reservePerRoom = 1000;
+    Memory.cfg!.hub!.hubReservePerCompound = 5000;
+    Memory.cfg!.hub!.reservePerRoom = 5000;
 
     Game.rooms[HUB_ROOM] = createSynthesisCapableRoom(HUB_ROOM, {
       labCount: 3,
       storageResources: {
-        [RESOURCE_CATALYZED_UTRIUM_ACID]: 1000,
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
       },
     });
 
     Game.rooms["W2N1"] = createSynthesisCapableRoom("W2N1", {
       labCount: 3,
       storageResources: {
-        [RESOURCE_HYDROGEN]: 5000,
-        [RESOURCE_OXYGEN]: 5000,
-        [RESOURCE_UTRIUM]: 5000,
+        [RESOURCE_HYDROGEN]: 10000,
+        [RESOURCE_OXYGEN]: 10000,
+        [RESOURCE_UTRIUM]: 10000,
       },
     });
 
@@ -1312,7 +1312,7 @@ describe("distributedStorage off", () => {
     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
       [RESOURCE_HYDROGEN]: 2000,
       [RESOURCE_HYDROXIDE]: 500,
-      [RESOURCE_CATALYZED_UTRIUM_ACID]: 2000,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
     });
 
     const actions = planHubImports(Memory.cfg!.hub!);
@@ -1344,7 +1344,7 @@ describe("distributedStorage on", () => {
         enabled: true,
         hubRoomName: HUB_ROOM,
         planInterval: 50,
-        reservePerRoom: 1000,
+        reservePerRoom: 5000,
         targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
         storagePauseFreeCapacity: 100_000,
         surplusThreshold: 1500,
@@ -1389,7 +1389,7 @@ describe("distributedStorage on", () => {
   it("still creates hub:reclaim:XUH2O T3 reclaim task (reclaims preserved)", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForImports();
     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
-      [RESOURCE_CATALYZED_UTRIUM_ACID]: 1501,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 5501,
     });
 
     const actions = planHubImports(Memory.cfg!.hub!);
@@ -1429,7 +1429,7 @@ describe("distributedStorage on", () => {
     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
       [RESOURCE_HYDROGEN]: 2000,
       [RESOURCE_HYDROXIDE]: 500,
-      [RESOURCE_CATALYZED_UTRIUM_ACID]: 2000,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 6000,
       [RESOURCE_POWER]: 3000,
     });
 
@@ -1462,7 +1462,7 @@ describe("distributedStorage on", () => {
     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {
       [RESOURCE_HYDROGEN]: 2000,
       [RESOURCE_HYDROXIDE]: 500,
-      [RESOURCE_CATALYZED_UTRIUM_ACID]: 2000,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
       [RESOURCE_POWER]: 3000,
     });
 
@@ -1570,7 +1570,7 @@ describe("writeSynthesisConfig", () => {
         enabled: true,
         hubRoomName: HUB_ROOM,
         planInterval: PLAN_INTERVAL,
-        reservePerRoom: 1000,
+        reservePerRoom: 5000,
         hubReservePerCompound: 1000,
         targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
         storagePauseFreeCapacity: 100_000,
@@ -2194,7 +2194,7 @@ describe("HUB lifecycle integration", () => {
       [RESOURCE_ZYNTHIUM_ALKALIDE]: 1000,
       [RESOURCE_GHODIUM_ALKALIDE]: 1000,
       [RESOURCE_GHODIUM_ACID]: 1000,
-      [RESOURCE_CATALYZED_UTRIUM_ACID]: 2000,
+      [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
       [RESOURCE_CATALYZED_UTRIUM_ALKALIDE]: 1000,
       [RESOURCE_CATALYZED_KEANIUM_ACID]: 1000,
       [RESOURCE_CATALYZED_KEANIUM_ALKALIDE]: 1000,
@@ -2219,7 +2219,7 @@ describe("HUB lifecycle integration", () => {
         enabled: true,
         hubRoomName: INTEGRATION_HUB,
         planInterval: 50,
-        reservePerRoom: 1000,
+        reservePerRoom: 5000,
         hubReservePerCompound: 0,
         targetCompounds: [RESOURCE_CATALYZED_UTRIUM_ACID],
         storagePauseFreeCapacity: 100_000,
@@ -2244,7 +2244,7 @@ describe("HUB lifecycle integration", () => {
     expect(exportTask!.fromRoomName).toBe(INTEGRATION_HUB);
     expect(exportTask!.toRoomName).toBe(INTEGRATION_SAT);
     expect(exportTask!.resource).toBe(RESOURCE_CATALYZED_UTRIUM_ACID);
-    expect(exportTask!.amount).toBe(2000);
+    expect(exportTask!.amount).toBe(5000);
   });
 
   // 4. No terminal → blocked safely (flag → planner integration)
@@ -2489,7 +2489,7 @@ describe("HUB lifecycle integration", () => {
 
     Game.rooms[INTEGRATION_HUB] = createIntegrationHubRoom(INTEGRATION_HUB, {
       ...partialMinerals,
-      [XGHO2]: 5000,
+      [XGHO2]: 10000,
     });
     Game.rooms[INTEGRATION_SAT] = createSatelliteRoom(INTEGRATION_SAT, {});
 
@@ -2498,7 +2498,7 @@ describe("HUB lifecycle integration", () => {
         enabled: true,
         hubRoomName: INTEGRATION_HUB,
         planInterval: 50,
-        reservePerRoom: 1000,
+        reservePerRoom: 5000,
         hubReservePerCompound: 1000,
         targetCompounds: [XGHO2],
         storagePauseFreeCapacity: 100_000,
@@ -2512,11 +2512,11 @@ describe("HUB lifecycle integration", () => {
 
     runHubPlanner();
 
-    // Progressive: XGHO2=5000 > hubReserve=1000 → distributing (chain target met)
+    // Progressive: XGHO2=10000 > hubReserve + satellite deficit → distributing (chain target met)
     expect(Memory.runtime.hub!.status).toBe("distributing");
     expect(Memory.runtime.hub!.activeProduct).toBe("");
 
-    // Distribution still runs — hub has 5000 XGHO2, satellite has 0
+    // Distribution still runs — hub has 10000 XGHO2, satellite has 0
     const tasks = Object.values(ensureResourceTransferTaskStore());
     const exportTask = tasks.find(
       (t) => t.resource === XGHO2 && t.reason === `hub:export:${XGHO2}`,
@@ -2524,7 +2524,7 @@ describe("HUB lifecycle integration", () => {
     expect(exportTask).toBeDefined();
     expect(exportTask!.fromRoomName).toBe(INTEGRATION_HUB);
     expect(exportTask!.toRoomName).toBe(INTEGRATION_SAT);
-    expect(exportTask!.amount).toBe(2000);
+    expect(exportTask!.amount).toBe(5000);
   });
 
   // Progressive: H+O → OH is feasible → importing (not distributing).

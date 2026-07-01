@@ -1,4 +1,5 @@
 import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
+import { HUB_RESERVE_PER_ROOM } from "@/config/hub";
 import type { ResourceTransferTask } from "@/runtime/logistics/resourceTransferTasks";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import type {
@@ -153,8 +154,6 @@ const ANALYTICS_SAMPLE_INTERVAL = 5;
 const MAX_LAST_PLAN_ACTIONS = 8;
 const MAX_INVENTORY_EXTRA = 10;
 const MAX_OVERLAY_LINES = 8;
-const DEFAULT_RESERVE_PER_ROOM = 2000;
-
 // Visual layout constants
 const HUB_VISUAL_X = 1;
 const HUB_VISUAL_Y = 2;
@@ -754,7 +753,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
   );
 
   const targetCompounds = hubConfig.targetCompounds?.length ? hubConfig.targetCompounds : [];
-  const reservePerRoom = hubConfig.reservePerRoom ?? DEFAULT_RESERVE_PER_ROOM;
+  const reservePerRoom = hubConfig.reservePerRoom ?? HUB_RESERVE_PER_ROOM;
   const hubReservePerCompound = hubConfig.hubReservePerCompound ?? 0;
   const t3ReserveStatus = buildT3ReserveStatus(
     input.hubStorageStore,
