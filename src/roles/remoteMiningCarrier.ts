@@ -1,11 +1,9 @@
-import { isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { getMyUsername } from "@/runtime/remoteMining";
 
 import type { RoleFactory } from "@/types/system";
 
-const MAX_WAIT_TICKS = 25;
 const MAINTENANCE_RESERVE_ENERGY = 100;
 const MAINTAINABLE_TYPES = new Set<string>([STRUCTURE_ROAD, STRUCTURE_CONTAINER]);
 
@@ -203,43 +201,6 @@ function runMaintenance(creep: Creep): boolean {
   return false;
 }
 
-/** If the carrier is standing on the container tile, step to an adjacent
- *  walkable tile so the harvester can occupy its work position on the container.
- *  Filters out terrain walls, source tiles, blocking structures, blocking
- *  construction sites, and prefers unoccupied tiles. */
-function stepOffContainerTile(
-  creep: Creep,
-  containerPos: RoomPosition,
-  avoidPositions: RoomPosition[] = [],
-): void {
-  if (creep.pos.x !== containerPos.x || creep.pos.y !== containerPos.y || creep.pos.roomName !== containerPos.roomName) return;
-
-  const roomName = creep.room.name;
-  const terrain = creep.room.getTerrain();
-  const candidates: RoomPosition[] = [];
-  for (let dx = -1; dx <= 1; dx++) {
-    for (let dy = -1; dy <= 1; dy++) {
-      if (dx === 0 && dy === 0) continue;
-      const x = containerPos.x + dx;
-      const y = containerPos.y + dy;
-      if (x < 0 || x > 49 || y < 0 || y > 49) continue;
-      if (terrain.get(x, y) === TERRAIN_MASK_WALL) continue;
-      if (avoidPositions.some((p) => p.x === x && p.y === y && p.roomName === roomName)) continue;
-      const structures = creep.room.lookForAt(LOOK_STRUCTURES, x, y) as Structure<StructureConstant>[];
-      if (structures.some((s) => !isWalkableStructure(s))) continue;
-      const sites = creep.room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y) as ConstructionSite[];
-      if (sites.some((s) => s.my && !isWalkableConstructionSite(s))) continue;
-      candidates.push(new RoomPosition(x, y, roomName));
-    }
-  }
-
-  if (candidates.length === 0) return;
-
-  const safe = candidates.filter((p) => creep.room.lookForAt(LOOK_CREEPS, p.x, p.y).length === 0);
-  const target = (safe.length > 0 ? safe : candidates)[0];
-  moveToTarget(creep, target, 0);
-}
-
 /** Get delivery target: terminal first, then storage. */
 function getDeliveryTarget(homeRoomName: string): AnyStoreStructure | null {
   const homeRoom = Game.rooms[homeRoomName];
@@ -259,8 +220,6 @@ function getDeliveryTarget(homeRoomName: string): AnyStoreStructure | null {
 }
 
 export const remoteMiningCarrierRole: RoleFactory = (targetRoom: string, sourceId?: string) => {
-  const assignedSource = !!sourceId;
-
   return {
     source: (creep): boolean => {
       const homeRoomName = getHomeRoomName(creep);
@@ -273,7 +232,6 @@ export const remoteMiningCarrierRole: RoleFactory = (targetRoom: string, sourceI
       }
 
       if (isFull(creep)) {
-        delete creep.memory._rmcWait;
         delete creep.memory._rmcSelectedSource;
         return true;
       }
@@ -297,10 +255,6 @@ export const remoteMiningCarrierRole: RoleFactory = (targetRoom: string, sourceI
       } else {
         const best = selectBestSourceTarget(creep.room, targetRoom);
         if (best) {
-          const prevSource = creep.memory._rmcSelectedSource;
-          if (prevSource !== undefined && prevSource !== best.sourceId) {
-            delete creep.memory._rmcWait;
-          }
           creep.memory._rmcSelectedSource = best.sourceId;
           resolvedSourcePos = best.sourcePos;
           resolvedContainer = best.container;
@@ -311,94 +265,33 @@ export const remoteMiningCarrierRole: RoleFactory = (targetRoom: string, sourceI
       }
 
       const sourcePos = resolvedSourcePos || creep.pos;
-
       const container = resolvedContainer;
+
       if (container) {
         const containerEnergy = container.store.getUsedCapacity(RESOURCE_ENERGY);
 
         if (containerEnergy > 0) {
-          const free = getFreeCapacity(creep);
-
-          if (containerEnergy >= free) {
-            const code = measureCreepIntent(() => creep.withdraw(container, RESOURCE_ENERGY));
-            if (code === ERR_NOT_IN_RANGE) {
-              moveToTarget(creep, container, 1);
-              if (getCarriedEnergy(creep) > MAINTENANCE_RESERVE_ENERGY) {
-                runMaintenance(creep);
-              }
-              return false;
-            }
-            if (code === OK) {
-              if (assignedSource) {
-                delete creep.memory._rmcWait;
-                return isFull(creep);
-              } else {
-                return isFull(creep);
-              }
-            }
-          } else {
-            const code = measureCreepIntent(() => creep.withdraw(container, RESOURCE_ENERGY));
-            if (code === ERR_NOT_IN_RANGE) {
-              moveToTarget(creep, container, 1);
-              return false;
-            }
-
-            if (!assignedSource && creep.pos.getRangeTo(container.pos) > 3) {
-              moveToTarget(creep, container, 3);
-            }
-
+          const code = measureCreepIntent(() => creep.withdraw(container, RESOURCE_ENERGY));
+          if (code === ERR_NOT_IN_RANGE) {
+            moveToTarget(creep, container, 1);
             if (getCarriedEnergy(creep) > MAINTENANCE_RESERVE_ENERGY) {
               runMaintenance(creep);
             }
-
-            if (!assignedSource) {
-              const waitState = creep.memory._rmcWait;
-              const ticksWaited = waitState?.ticks || 0;
-              creep.memory._rmcWait = { ticks: ticksWaited + 1 };
-
-              if (ticksWaited + 1 >= MAX_WAIT_TICKS && getCarriedEnergy(creep) > 0) {
-                delete creep.memory._rmcWait;
-                return true;
-              }
-            } else {
-              delete creep.memory._rmcWait;
-            }
-
-            if (!isFull(creep)) {
-              stepOffContainerTile(creep, container.pos, [sourcePos]);
-            }
-
             return false;
           }
-        }
-
-        if (assignedSource) {
-          if (!isFull(creep)) {
-            stepOffContainerTile(creep, container.pos, [sourcePos]);
+          if (code === OK) {
+            if (getCarriedEnergy(creep) > MAINTENANCE_RESERVE_ENERGY) {
+              runMaintenance(creep);
+            }
+            return true;
           }
-          if (getCarriedEnergy(creep) > MAINTENANCE_RESERVE_ENERGY) {
-            runMaintenance(creep);
-          }
-          delete creep.memory._rmcWait;
-          return false;
         }
       }
 
       const containerSite = findSourceContainerSite(creep.room, sourcePos);
 
       if (buildSourceContainerSite(creep, sourcePos)) {
-        if (!assignedSource) {
-          const waitState = creep.memory._rmcWait;
-          const ticksWaited = waitState?.ticks || 0;
-          creep.memory._rmcWait = { ticks: ticksWaited + 1 };
-          if (ticksWaited + 1 >= MAX_WAIT_TICKS && getCarriedEnergy(creep) > 0) {
-            delete creep.memory._rmcWait;
-            return true;
-          }
-        } else {
-          delete creep.memory._rmcWait;
-        }
-        return false;
+        return true;
       }
 
       const dropPos = container?.pos || containerSite?.pos || sourcePos;
@@ -410,9 +303,12 @@ export const remoteMiningCarrierRole: RoleFactory = (targetRoom: string, sourceI
           return false;
         }
         if (code === OK) {
-          delete creep.memory._rmcWait;
-          return isFull(creep);
+          return true;
         }
+      }
+
+      if (getCarriedEnergy(creep) > 0) {
+        return true;
       }
 
       if (containerSite && creep.pos.getRangeTo(containerSite.pos) > 3) {
@@ -423,19 +319,6 @@ export const remoteMiningCarrierRole: RoleFactory = (targetRoom: string, sourceI
 
       if (getCarriedEnergy(creep) > MAINTENANCE_RESERVE_ENERGY) {
         runMaintenance(creep);
-      }
-
-      if (!assignedSource) {
-        const fallbackWaitState = creep.memory._rmcWait;
-        const fallbackTicksWaited = fallbackWaitState?.ticks || 0;
-        creep.memory._rmcWait = { ticks: fallbackTicksWaited + 1 };
-
-        if (fallbackTicksWaited + 1 >= MAX_WAIT_TICKS && getCarriedEnergy(creep) > 0) {
-          delete creep.memory._rmcWait;
-          return true;
-        }
-      } else {
-        delete creep.memory._rmcWait;
       }
 
       return false;

@@ -99,17 +99,6 @@ function makePos(x: number, y: number, roomName: string): RoomPosition {
   } as unknown as RoomPosition;
 }
 
-function lastYieldTarget(): { x: number; y: number } | null {
-  const calls = (moveToTarget as jest.Mock).mock.calls.filter(
-    (call: any[]) => call[2] === 0 && call[1] && typeof call[1].x === "number",
-  );
-  return calls.length > 0 ? calls[calls.length - 1][1] : null;
-}
-
-function expectNoYieldMove(): void {
-  expect(lastYieldTarget()).toBeNull();
-}
-
 function makeSourceContainer(energy: number, pos: RoomPosition): StructureContainer {
   return {
     id: "container-1" as Id<StructureContainer>,
@@ -211,8 +200,8 @@ describe("remoteMiningCarrierRole - source phase", () => {
   });
 });
 
-describe("waits and repairs", () => {
-  it("explicit-source carrier withdraws partial from low-energy container and holds without retreating", () => {
+describe("partial withdrawal and maintenance", () => {
+  it("explicit-source carrier withdraws partial from low-energy container and returns for delivery", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(50, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -226,17 +215,13 @@ describe("waits and repairs", () => {
 
     (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
 
-    const role = remoteMiningCarrierRole("W5N5", "src-1");
+    const result1 = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
 
-    const result1 = role.source?.(creep);
-
-    expect(result1).toBe(false);
-    expect(creep.memory._rmcWait).toBeUndefined();
+    expect(result1).toBe(true);
     expect(creep.withdraw).toHaveBeenCalled();
-    expectNoYieldMove();
   });
 
-  it("runs maintenance while waiting with surplus energy", () => {
+  it("runs maintenance with surplus energy after withdraw", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(50, containerPos);
     const road = {
@@ -280,7 +265,7 @@ describe("waits and repairs", () => {
     expect(creep.repair).not.toHaveBeenCalled();
   });
 
-  it("explicit-source carrier waits at low-energy container past max wait ticks instead of returning", () => {
+  it("explicit-source carrier withdraws from partial-energy container and returns for delivery", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(10, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -288,39 +273,16 @@ describe("waits and repairs", () => {
 
     const creep = makeCreep({ room, energy: 50, memory: {
       configName: "W1N1:remoteMine:W5N5:carrier:src1",
-      _rmcWait: { ticks: 24 },
     } });
 
     (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
 
     const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
 
-    expect(result).toBe(false);
-    expect(creep.memory._rmcWait).toBeUndefined();
+    expect(result).toBe(true);
   });
 
-  it("explicit-source carrier at range 4 with partial-energy container holds position (no retreat)", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const room = makeRoom("W5N5", { structures: [container] });
-
-    const creepPos = makePos(30, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    const containerCalls = (moveToTarget as jest.Mock).mock.calls.filter(
-      (call: any[]) => call[1] === container,
-    );
-    expect(containerCalls).toHaveLength(0);
-    expectNoYieldMove();
-  });
-
-  it("explicit-source carrier at range 1 holds near low-energy container (yields via push only)", () => {
+  it("explicit-source carrier at range 1 withdraws from partial container and returns for delivery", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(10, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -333,32 +295,10 @@ describe("waits and repairs", () => {
 
     const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
 
-    expect(result).toBe(false);
-    expectNoYieldMove();
+    expect(result).toBe(true);
   });
 
-  it("explicit-source carrier at range 2 holds near low-energy container (no retreat)", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const room = makeRoom("W5N5", { structures: [container] });
-
-    const creepPos = makePos(24, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    const containerCalls = (moveToTarget as jest.Mock).mock.calls.filter(
-      (call: any[]) => call[1] === container,
-    );
-    expect(containerCalls).toHaveLength(0);
-    expectNoYieldMove();
-  });
-
-  it("explicit-source carrier with enough energy still withdraws without yielding", () => {
+  it("explicit-source carrier with enough energy still withdraws and returns for delivery", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(800, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -377,7 +317,7 @@ describe("waits and repairs", () => {
     expect(result).toBe(true);
   });
 
-  it("explicit-source carrier does not approach an empty container from afar (holds)", () => {
+  it("explicit-source carrier with energy returns for delivery when container is empty", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(0, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -390,7 +330,6 @@ describe("waits and repairs", () => {
       pos: creepPos,
       memory: {
         configName: "W1N1:remoteMine:W5N5:carrier:src1",
-        _rmcWait: { ticks: 10 },
       },
     });
 
@@ -398,15 +337,14 @@ describe("waits and repairs", () => {
 
     const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
 
-    expect(result).toBe(false);
+    expect(result).toBe(true);
     const containerCalls = (moveToTarget as jest.Mock).mock.calls.filter(
       (call: any[]) => call[1] === container,
     );
     expect(containerCalls).toHaveLength(0);
-    expect(creep.memory._rmcWait).toBeUndefined();
   });
 
-  it("explicit-source carrier with empty container at range 1 holds (yields via push only)", () => {
+  it("explicit-source carrier idles near empty container when carrying no energy", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(0, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -419,7 +357,6 @@ describe("waits and repairs", () => {
       pos: creepPos,
       memory: {
         configName: "W1N1:remoteMine:W5N5:carrier:src1",
-        _rmcWait: { ticks: 20 },
       },
     });
 
@@ -428,153 +365,9 @@ describe("waits and repairs", () => {
     const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
 
     expect(result).toBe(false);
-    expect(creep.memory._rmcWait).toBeUndefined();
-    expectNoYieldMove();
   });
 
-  it("explicit-source carrier does not approach an empty container at range 2 (holds)", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(0, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const room = makeRoom("W5N5", { structures: [container] });
-
-    const creepPos = makePos(24, 25, "W5N5");
-    const creep = makeCreep({
-      room,
-      energy: 0,
-      pos: creepPos,
-      memory: {
-        configName: "W1N1:remoteMine:W5N5:carrier:src1",
-        _rmcWait: { ticks: 20 },
-      },
-    });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    const containerCalls = (moveToTarget as jest.Mock).mock.calls.filter(
-      (call: any[]) => call[1] === container,
-    );
-    expect(containerCalls).toHaveLength(0);
-    expect(creep.memory._rmcWait).toBeUndefined();
-  });
-
-  it("explicit-source carrier at range 1 holds near low-energy container with adjacent blocked structure (no forced retreat)", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const blockedStructure = { structureType: STRUCTURE_WALL } as unknown as Structure;
-    const room = makeRoom("W5N5", {
-      structures: [container],
-      lookData: {
-        "24,25": { structures: [blockedStructure] },
-      },
-    });
-
-    const creepPos = makePos(25, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    expectNoYieldMove();
-  });
-
-  it("explicit-source carrier at range 1 holds near low-energy container with adjacent blocked site (no forced retreat)", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const blockedSite = { structureType: STRUCTURE_WALL, my: true } as unknown as ConstructionSite;
-    const room = makeRoom("W5N5", {
-      structures: [container],
-      lookData: {
-        "24,25": { sites: [blockedSite] },
-      },
-    });
-
-    const creepPos = makePos(25, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    expectNoYieldMove();
-  });
-
-  it("explicit-source carrier at range 1 holds near low-energy container with adjacent occupied tile (no forced retreat)", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const otherCreep = { name: "other-1" } as unknown as Creep;
-    const room = makeRoom("W5N5", {
-      structures: [container],
-      lookData: {
-        "24,25": { creeps: [otherCreep] },
-      },
-    });
-
-    const creepPos = makePos(25, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    expectNoYieldMove();
-  });
-
-  it("explicit-source carrier at range 1 holds near low-energy container adjacent to source (no forced retreat)", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(25, 24, "W5N5");
-    const room = makeRoom("W5N5", { structures: [container] });
-
-    const creepPos = makePos(25, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    expectNoYieldMove();
-  });
-
-  it("explicit-source carrier at range 1 does not move when not on the container tile", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const blockedStructure = { structureType: STRUCTURE_WALL } as unknown as Structure;
-    const otherCreep = { name: "other-1" } as unknown as Creep;
-    const blockedSite = { structureType: STRUCTURE_WALL, my: true } as unknown as ConstructionSite;
-    const room = makeRoom("W5N5", {
-      structures: [container],
-      lookData: {
-        "24,25": { structures: [blockedStructure] },
-        "24,24": { creeps: [otherCreep] },
-        "24,26": { sites: [blockedSite] },
-      },
-    });
-
-    const creepPos = makePos(25, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    expect(creep.move).not.toHaveBeenCalled();
-  });
-
-  it("dynamic-source carrier still uses range 3 for low-energy container wait", () => {
+  it("dynamic-source carrier approaches partial container to withdraw when out of range", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(10, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -591,6 +384,7 @@ describe("waits and repairs", () => {
         _rmcSelectedSource: "src1",
       },
     });
+    creep.withdraw = jest.fn(() => ERR_NOT_IN_RANGE);
 
     (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
       if (id === "src1") return source1;
@@ -613,10 +407,10 @@ describe("waits and repairs", () => {
     const result = remoteMiningCarrierRole("W5N5").source?.(creep);
 
     expect(result).toBe(false);
-    expect(moveToTarget).toHaveBeenCalledWith(creep, container, 3);
+    expect(moveToTarget).toHaveBeenCalledWith(creep, container, 1);
   });
 
-  it("dynamic-source carrier returns after max wait ticks with some energy", () => {
+  it("dynamic-source carrier withdraws partial and returns for delivery", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(10, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -625,7 +419,6 @@ describe("waits and repairs", () => {
 
     const creep = makeCreep({ room, energy: 50, memory: {
       configName: "W1N1:remoteMine:W5N5:carrier:0",
-      _rmcWait: { ticks: 24 },
       _rmcSelectedSource: "src1",
     } });
 
@@ -650,10 +443,9 @@ describe("waits and repairs", () => {
     const result = remoteMiningCarrierRole("W5N5").source?.(creep);
 
     expect(result).toBe(true);
-    expect(creep.memory._rmcWait).toBeUndefined();
   });
 
-  it("builds nearby road construction site during wait", () => {
+  it("builds nearby road construction site after withdraw", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(50, containerPos);
     container.hits = container.hitsMax;
@@ -676,186 +468,8 @@ describe("waits and repairs", () => {
   });
 });
 
-describe("carrier yields container tile to harvester", () => {
-  it("steps off container tile when waiting near low-energy container", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const room = makeRoom("W5N5", { structures: [container] });
-
-    const creepPos = makePos(26, 25, "W5N5");
-    let carried = 0;
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-    (creep.store.getFreeCapacity as jest.Mock) = jest.fn(() => 800 - carried);
-    (creep.store.getUsedCapacity as jest.Mock) = jest.fn((r?: any) => r === undefined ? carried : (r === RESOURCE_ENERGY ? carried : 0));
-    creep.withdraw = jest.fn(() => { carried = 10; return OK; });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
-      (call: any[]) => {
-        const t = call[1];
-        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
-      },
-    );
-    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
-    expect(stepOffCalls[0][2]).toBe(0);
-  });
-
-  it("steps off container tile when waiting near empty container", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(0, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const room = makeRoom("W5N5", { structures: [container] });
-
-    const creepPos = makePos(26, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
-      (call: any[]) => {
-        const t = call[1];
-        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
-      },
-    );
-    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
-    expect(stepOffCalls[0][2]).toBe(0);
-  });
-
-  it("holds position when adjacent to empty container (not on tile, yields via push only)", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(0, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const room = makeRoom("W5N5", { structures: [container] });
-
-    const creepPos = makePos(25, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    expectNoYieldMove();
-  });
-
-  it("avoids source tile when stepping off container", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(0, containerPos);
-    const sourcePos = makePos(25, 25, "W5N5");
-    const blockingStructure = { structureType: STRUCTURE_EXTENSION } as unknown as Structure;
-    const room = makeRoom("W5N5", {
-      structures: [container],
-      lookData: {
-        "25,24": { structures: [blockingStructure] },
-        "26,24": { structures: [blockingStructure] },
-        "27,24": { structures: [blockingStructure] },
-        "25,26": { structures: [blockingStructure] },
-        "26,26": { structures: [blockingStructure] },
-        "27,26": { structures: [blockingStructure] },
-        // (25,25) is the source tile — no blocking structures, but avoided via sourcePos
-        // (27,25) is open — no entry in lookData
-      },
-    });
-
-    const creepPos = makePos(26, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
-      (call: any[]) => {
-        const t = call[1];
-        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
-      },
-    );
-    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
-    // Must choose (27,25), not the source tile at (25,25)
-    expect(stepOffCalls[0][1].x).toBe(27);
-    expect(stepOffCalls[0][1].y).toBe(25);
-  });
-
-  it("avoids tile with blocking construction site", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(0, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const blockingSite = { structureType: STRUCTURE_EXTENSION, my: true } as unknown as ConstructionSite;
-    const room = makeRoom("W5N5", {
-      structures: [container],
-      lookData: {
-        "25,25": { sites: [blockingSite] },
-      },
-    });
-
-    const creepPos = makePos(26, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
-      (call: any[]) => {
-        const t = call[1];
-        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
-      },
-    );
-    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
-    const chosen = stepOffCalls[0][1];
-    expect(chosen.x === 25 && chosen.y === 25).toBe(false);
-  });
-
-  it("accepts road tile adjacent to container", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(0, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const road = { structureType: STRUCTURE_ROAD } as unknown as Structure;
-    const blockingStructure = { structureType: STRUCTURE_WALL } as unknown as Structure;
-    const room = makeRoom("W5N5", {
-      structures: [container],
-      lookData: {
-        "25,25": { structures: [road] },
-        "25,24": { structures: [blockingStructure] },
-        "25,26": { structures: [blockingStructure] },
-        "26,24": { structures: [blockingStructure] },
-        "26,26": { structures: [blockingStructure] },
-        "27,24": { structures: [blockingStructure] },
-        "27,26": { structures: [blockingStructure] },
-      },
-    });
-
-    const creepPos = makePos(26, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(false);
-    // Road at (25,25) should be accepted; source at (27,25) is avoided
-    const stepOffCalls = (moveToTarget as jest.Mock).mock.calls.filter(
-      (call: any[]) => {
-        const t = call[1];
-        return t && typeof t.x === "number" && (t.x !== 26 || t.y !== 25);
-      },
-    );
-    expect(stepOffCalls.length).toBeGreaterThanOrEqual(1);
-    expect(stepOffCalls[0][1].x).toBe(25);
-    expect(stepOffCalls[0][1].y).toBe(25);
-  });
-
-  it("assigned-source carrier holds instead of approaching an empty container", () => {
+describe("container approach behavior", () => {
+  it("assigned-source carrier does not approach an empty container when carrying no energy", () => {
     const containerPos = makePos(26, 25, "W5N5");
     const container = makeSourceContainer(0, containerPos);
     const sourcePos = makePos(27, 25, "W5N5");
@@ -1463,7 +1077,7 @@ describe("dynamic source selection (no sourceId)", () => {
     expect(result).toBe(true);
   });
 
-  it("resets _rmcWait when dynamic selected source changes", () => {
+  it("updates _rmcSelectedSource when dynamic selected source changes", () => {
     const container1Pos = makePos(10, 10, "W5N5");
     const container1 = makeSourceContainer(1500, container1Pos);
     const source1 = { id: "src1", pos: makePos(10, 10, "W5N5") } as unknown as Source;
@@ -1475,7 +1089,6 @@ describe("dynamic source selection (no sourceId)", () => {
       energy: 0,
       memory: {
         configName: "W1N1:remoteMine:W5N5:carrier:0",
-        _rmcWait: { ticks: 15 },
         _rmcSelectedSource: "src2",
       },
     });
@@ -1499,46 +1112,6 @@ describe("dynamic source selection (no sourceId)", () => {
 
     remoteMiningCarrierRole("W5N5").source?.(creep);
 
-    expect(creep.memory._rmcWait).toBeUndefined();
-    expect(creep.memory._rmcSelectedSource).toBe("src1");
-  });
-
-  it("does not reset _rmcWait when same source is reselected", () => {
-    const container1Pos = makePos(10, 10, "W5N5");
-    const container1 = makeSourceContainer(50, container1Pos);
-    const source1 = { id: "src1", pos: makePos(10, 10, "W5N5") } as unknown as Source;
-
-    const room = makeRoom("W5N5", { structures: [container1] });
-    const creep = makeCreep({
-      room,
-      energy: 0,
-      memory: {
-        configName: "W1N1:remoteMine:W5N5:carrier:0",
-        _rmcWait: { ticks: 5 },
-        _rmcSelectedSource: "src1",
-      },
-    });
-
-    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
-      if (id === "src1") return source1;
-      return null;
-    });
-
-    Memory.data!.remoteMining = {
-      W5N5: {
-        sourceRoom: "W1N1",
-        targetRoom: "W5N5",
-        status: "active",
-        sourceIds: ["src1"],
-        assignedAt: 50,
-        updatedAt: 50,
-      },
-    };
-
-    remoteMiningCarrierRole("W5N5").source?.(creep);
-
-    expect(creep.memory._rmcWait).toBeDefined();
-    expect(creep.memory._rmcWait.ticks).toBe(6);
     expect(creep.memory._rmcSelectedSource).toBe("src1");
   });
 
