@@ -57,6 +57,11 @@ import {
   listFactoryTasksRaw,
   registerFactoryTaskConsoleCommands,
 } from "@/runtime/console/factoryTaskCommands";
+import {
+  registerRemoteDefenseConsoleCommands,
+  remoteDefenseStatusCommand,
+  remoteDefenseStatusRaw,
+} from "@/runtime/console/remoteDefenseCommands";
 import { clearHubSynthesisReactions } from "@/runtime/hubPlanner";
 import { collectHubProgressSnapshot } from "@/runtime/hubProgress";
 import { buildMemoryAuditSnapshot, MemoryAuditSnapshot } from "@/runtime/memoryAudit";
@@ -165,6 +170,7 @@ export function registerConsoleCommands(): void {
   global.memoryAuditRaw = memoryAuditRaw;
   registerResourceTransferConsoleCommands();
   registerFactoryTaskConsoleCommands();
+  registerRemoteDefenseConsoleCommands();
 }
 
 export {
@@ -186,6 +192,8 @@ export {
   listFactoryTasksRaw,
   listResourceTransferTasksCommand,
   listResourceTransferTasksRaw,
+  remoteDefenseStatusCommand,
+  remoteDefenseStatusRaw,
   spawnMaxCarrier,
   spawnMaxCarrierCommand,
   spawnMaxCarrierRaw,

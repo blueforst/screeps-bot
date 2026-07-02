@@ -12,6 +12,7 @@ import type {
 import type { CpuMonitorMemoryV2, CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
 import type { AddFactoryTaskResult, CancelFactoryTaskResult, FactoryTask } from "@/runtime/factoryControl";
 import type { StopWarOptions, StopWarResult, WarStatusSnapshot, WarStatusTaskSnapshot } from "@/runtime/warControl";
+import type { RemoteDefenseStatusSnapshot } from "@/runtime/console/remoteDefenseCommands";
 
 declare const _: LoDashStatic;
 
@@ -295,6 +296,8 @@ declare global {
   var cancelFactoryTaskRaw: (taskId: string) => CancelFactoryTaskResult | string;
   var listFactoryTasks: (roomName?: string) => string;
   var listFactoryTasksRaw: (roomName?: string) => FactoryTask[];
+  var remoteDefenseStatus: (targetRoom: string) => string;
+  var remoteDefenseStatusRaw: (targetRoom: string) => RemoteDefenseStatusSnapshot | string;
 
   type PowerBankHarvestStatus =
     | "discovered"
@@ -1375,6 +1378,8 @@ declare namespace NodeJS {
     cancelFactoryTaskRaw: (taskId: string) => CancelFactoryTaskResult | string;
     listFactoryTasks: (roomName?: string) => string;
     listFactoryTasksRaw: (roomName?: string) => FactoryTask[];
+    remoteDefenseStatus: (targetRoom: string) => string;
+    remoteDefenseStatusRaw: (targetRoom: string) => RemoteDefenseStatusSnapshot | string;
     __screepsMounted?: boolean;
   }
 }

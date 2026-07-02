@@ -1,4 +1,4 @@
-import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand, hubProgressRaw, hubProgressCommand, memoryAuditRaw, memoryAudit } from "@/runtime/consoleCommands";
+import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand, hubProgressRaw, hubProgressCommand, memoryAuditRaw, memoryAudit, remoteDefenseStatusCommand, remoteDefenseStatusRaw, registerConsoleCommands } from "@/runtime/consoleCommands";
 import type { CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
 
 const fullHeap: CpuMonitorHeapSnapshot = {
@@ -609,5 +609,184 @@ describe("memoryAudit commands", () => {
     memoryAudit();
     const after = JSON.stringify(Memory);
     expect(after).toBe(before);
+  });
+});
+
+function createRoomForRemoteDefense(name: string, options: {
+  hostiles?: Creep[];
+  structures?: Structure[];
+} = {}): Room {
+  return {
+    name,
+    find: jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return options.hostiles ?? [];
+      if (type === FIND_STRUCTURES) return options.structures ?? [];
+      return [];
+    }),
+  } as unknown as Room;
+}
+
+function createRemoteDefenseCreep(name: string, roomName: string, overrides: Partial<{
+  id: string;
+  owner: string;
+  role: CreepMemory["role"];
+  configName: string;
+  roleArgs: string[];
+  x: number;
+  y: number;
+  hits: number;
+  hitsMax: number;
+  body: Array<{ type: BodyPartConstant; hits: number; boost?: ResourceConstant }>;
+}> = {}): Creep {
+  const body = overrides.body ?? [{ type: MOVE, hits: 100 }];
+  return {
+    id: overrides.id ?? name,
+    name,
+    owner: { username: overrides.owner ?? "me" },
+    pos: { x: overrides.x ?? 25, y: overrides.y ?? 25, roomName },
+    room: { name: roomName },
+    hits: overrides.hits ?? body.reduce((total, part) => total + part.hits, 0),
+    hitsMax: overrides.hitsMax ?? body.length * 100,
+    body,
+    memory: {
+      role: overrides.role,
+      roleArgs: overrides.roleArgs,
+      configName: overrides.configName,
+    },
+    getActiveBodyparts: jest.fn((part: BodyPartConstant) => body.filter((bodyPart) => bodyPart.type === part && bodyPart.hits > 0).length),
+  } as unknown as Creep;
+}
+
+describe("remoteDefenseStatus commands", () => {
+  beforeEach(() => {
+    Game.time = 100;
+    Game.rooms = {};
+    Game.creeps = {};
+    Game.spawns = {};
+    Memory.creeps = {};
+    Memory.data = {
+      remoteMining: {},
+      creepConfigs: {},
+    };
+  });
+
+  it("reports visible invader with disabled combat parts as an npc trigger", () => {
+    const targetRoom = "W1N0";
+    const sourceRoom = "W1N1";
+    const hostile = createRemoteDefenseCreep("Invader", targetRoom, {
+      id: "hostile1",
+      owner: "Invader",
+      x: 21,
+      y: 16,
+      hits: 66,
+      body: [
+        { type: ATTACK, hits: 0 },
+        { type: RANGED_ATTACK, hits: 0 },
+        { type: WORK, hits: 0 },
+        { type: MOVE, hits: 66 },
+      ],
+    });
+    Game.rooms[targetRoom] = createRoomForRemoteDefense(targetRoom, { hostiles: [hostile] });
+    Memory.data!.remoteMining![targetRoom] = {
+      sourceRoom,
+      targetRoom,
+      status: "active",
+      sourceIds: ["src1"],
+      assignedAt: 50,
+      updatedAt: 90,
+    };
+
+    const result = remoteDefenseStatusRaw(targetRoom);
+
+    expect(result).toMatchObject({
+      ok: true,
+      tick: 100,
+      targetRoom,
+      roomVisible: true,
+      trigger: {
+        wouldTrigger: true,
+        reason: "npc_invader",
+        npcInvaderHostiles: 1,
+        npcInvaderCombatHostiles: 0,
+        playerHostiles: 0,
+      },
+    });
+    expect(typeof result).not.toBe("string");
+    if (typeof result !== "string") {
+      expect(result.hostiles[0].activeCombatParts).toMatchObject({ attack: 0, ranged_attack: 0, work: 0 });
+      expect(result.notes).toContain("trigger_condition_present_next_remoteMining_run_should_enter_defending");
+    }
+  });
+
+  it("reports player aggression when a hostile player is present and a remote creep lost hits", () => {
+    const targetRoom = "W1N0";
+    const sourceRoom = "W1N1";
+    const prefix = `${sourceRoom}:remoteMine:${targetRoom}:`;
+    const hostile = createRemoteDefenseCreep("Player", targetRoom, { id: "hostile1", owner: "Enemy" });
+    const worker = createRemoteDefenseCreep("remoteWorker", targetRoom, {
+      id: "worker1",
+      role: "remoteWorker",
+      configName: `${prefix}worker:0`,
+      hits: 800,
+      hitsMax: 1000,
+    });
+    Game.rooms[targetRoom] = createRoomForRemoteDefense(targetRoom, { hostiles: [hostile] });
+    Game.creeps[worker.name] = worker;
+    Memory.data!.remoteMining![targetRoom] = {
+      sourceRoom,
+      targetRoom,
+      status: "active",
+      sourceIds: ["src1"],
+      assignedAt: 50,
+      updatedAt: 90,
+      damageSnapshots: {
+        creeps: {
+          worker1: { tick: 99, hits: 1000 },
+        },
+        containers: {},
+      },
+    };
+
+    const result = remoteDefenseStatusRaw(targetRoom);
+
+    expect(result).toMatchObject({
+      ok: true,
+      trigger: {
+        wouldTrigger: true,
+        reason: "player_aggression",
+        playerHostiles: 1,
+        damagedCreeps: [
+          {
+            id: "worker1",
+            previousTick: 99,
+            previousHits: 1000,
+            currentHits: 800,
+            loss: 200,
+          },
+        ],
+      },
+    });
+  });
+
+  it("remoteDefenseStatusCommand returns formatted JSON", () => {
+    Memory.data!.remoteMining!["W1N0"] = {
+      sourceRoom: "W1N1",
+      targetRoom: "W1N0",
+      status: "active",
+      sourceIds: [],
+      assignedAt: 50,
+      updatedAt: 90,
+    };
+
+    const parsed = JSON.parse(remoteDefenseStatusCommand("W1N0"));
+
+    expect(parsed).toMatchObject({ ok: true, targetRoom: "W1N0", roomVisible: false });
+  });
+
+  it("registerConsoleCommands exposes remote defense commands globally", () => {
+    registerConsoleCommands();
+
+    expect(global.remoteDefenseStatusRaw).toBe(remoteDefenseStatusRaw);
+    expect(global.remoteDefenseStatus).toBe(remoteDefenseStatusCommand);
   });
 });
