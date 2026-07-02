@@ -190,23 +190,9 @@ export function getRemoteThreatReason(room: Room): RemoteSuspendReason | null {
   return null;
 }
 
-// NPC Invader combat parts include WORK (dismantle) per Screeps mechanics
-const NPC_INVADER_COMBAT_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, HEAL, WORK];
-
-function hasNpcInvaderCombatParts(creep: Creep): boolean {
-  for (const part of NPC_INVADER_COMBAT_PARTS) {
-    if (typeof creep.getActiveBodyparts === "function") {
-      if (creep.getActiveBodyparts(part) > 0) return true;
-    } else if (creep.body && Array.isArray(creep.body)) {
-      if (creep.body.some((bp: BodyPartDefinition) => bp.type === part && bp.hits > 0)) return true;
-    }
-  }
-  return false;
-}
-
 function hasNpcInvaderCreep(room: Room): boolean {
   const hostiles = room.find(FIND_HOSTILE_CREEPS);
-  return hostiles.some(c => (c.owner as { username: string } | undefined)?.username === "Invader" && hasNpcInvaderCombatParts(c));
+  return hostiles.some(c => (c.owner as { username: string } | undefined)?.username === "Invader");
 }
 
 function hasPlayerHostileCreeps(room: Room): boolean {

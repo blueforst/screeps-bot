@@ -4576,7 +4576,7 @@ describe("defending state - NPC Invader classification", () => {
     expect(store["W1N0"].defenseReason).toBe("npc_invader");
   });
 
-  it("Invader with only MOVE/TOUGH does not trigger defending (no combat parts)", () => {
+  it("Invader with only MOVE/TOUGH still triggers defending until fully cleared", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const invader = createInvaderCreep("inv1", { [MOVE]: 1 });
     const target = createDefendingTargetRoom("W1N0", {
@@ -4593,8 +4593,8 @@ describe("defending state - NPC Invader classification", () => {
     };
 
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
-    expect(store["W1N0"].status).toBe("active");
-    expect(store["W1N0"].defenseReason).toBeUndefined();
+    expect(store["W1N0"].status).toBe("defending");
+    expect(store["W1N0"].defenseReason).toBe("npc_invader");
   });
 });
 
@@ -5481,6 +5481,20 @@ describe("getActiveDefenseReason direct tests", () => {
 
   it("returns npc_invader for Invader creep with ATTACK", () => {
     const invader = createInvaderCreep("inv1", { [ATTACK]: 1 });
+    const room = createDefendingTargetRoom("W1N0", {
+      sources: [createSource("src1")],
+      hostileCreeps: [invader],
+    });
+    const task: import("@/runtime/remoteMining").RemoteMiningTask = {
+      sourceRoom: "W1N1", targetRoom: "W1N0", status: "active",
+      sourceIds: ["src1"], assignedAt: 50, updatedAt: 50,
+    };
+
+    expect(getActiveDefenseReason(room, task)).toBe("npc_invader");
+  });
+
+  it("returns npc_invader for MOVE-only Invader until it is fully cleared", () => {
+    const invader = createInvaderCreep("inv1", { [MOVE]: 1 });
     const room = createDefendingTargetRoom("W1N0", {
       sources: [createSource("src1")],
       hostileCreeps: [invader],
