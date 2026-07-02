@@ -312,7 +312,7 @@ describe("remoteDefenderRole", () => {
       expect(creep.rangedAttack).toHaveBeenCalledWith(healer);
     });
 
-    it("ignores MOVE-only Invader with no combat/dismantle parts", () => {
+    it("attacks MOVE-only Invader so NPC blockers are fully cleared", () => {
       const harmlessInvader = makeHostile({
         id: "invader-harmless",
         username: "Invader",
@@ -332,11 +332,11 @@ describe("remoteDefenderRole", () => {
       const role = remoteDefenderRole(TARGET_ROOM);
       role.target(creep);
 
-      expect(creep.rangedAttack).not.toHaveBeenCalled();
+      expect(creep.rangedAttack).toHaveBeenCalledWith(harmlessInvader);
       expect(creep.rangedMassAttack).not.toHaveBeenCalled();
     });
 
-    it("ignores TOUGH-only Invader with no combat/dismantle parts", () => {
+    it("attacks TOUGH-only Invader so NPC blockers are fully cleared", () => {
       const toughInvader = makeHostile({
         id: "invader-tough",
         username: "Invader",
@@ -356,7 +356,7 @@ describe("remoteDefenderRole", () => {
       const role = remoteDefenderRole(TARGET_ROOM);
       role.target(creep);
 
-      expect(creep.rangedAttack).not.toHaveBeenCalled();
+      expect(creep.rangedAttack).toHaveBeenCalledWith(toughInvader);
       expect(creep.rangedMassAttack).not.toHaveBeenCalled();
     });
   });

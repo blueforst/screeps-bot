@@ -5,7 +5,6 @@ import type { RemoteDefenseReason } from "@/runtime/remoteMining";
 
 const SOURCE_KEEPER_USERNAME = "Source Keeper";
 const INVADER_USERNAME = "Invader";
-const NPC_INVADER_COMBAT_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, HEAL, WORK];
 const FLEE_DIRECTIONS: DirectionConstant[] = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
 
 function getTargetRoomFromConfig(creep: Creep): string | null {
@@ -46,7 +45,7 @@ function isEligibleTarget(hostile: Creep, defenseReason: RemoteDefenseReason | n
   const username = getUsername(hostile);
   if (username === SOURCE_KEEPER_USERNAME) return false;
   if (username === INVADER_USERNAME) {
-    return hasNpcInvaderCombatParts(hostile);
+    return true;
   }
   return defenseReason === "player_aggression";
 }
@@ -72,13 +71,6 @@ function getEligibleTargets(creep: Creep, hostiles: Creep[], defenseReason: Remo
     return activeThreats;
   }
   return hostiles.filter((h) => isBoundaryBlockerTarget(creep, h, defenseReason));
-}
-
-function hasNpcInvaderCombatParts(creep: Creep): boolean {
-  for (const part of NPC_INVADER_COMBAT_PARTS) {
-    if (hasBodyPart(creep, part)) return true;
-  }
-  return false;
 }
 
 function targetPriorityScore(hostile: Creep): number {
