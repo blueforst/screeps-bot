@@ -18,7 +18,7 @@ function getHostileStructures(room: Room): Structure[] {
   });
 }
 
-function findTarget(creep: Creep): Creep | Structure | null {
+export function findTarget(creep: Creep): Creep | Structure | null {
   const hostileCreeps = getHostileCreeps(creep.room);
   if (hostileCreeps.length > 0) {
     const dangerous = hostileCreeps
@@ -53,30 +53,103 @@ function findTarget(creep: Creep): Creep | Structure | null {
   return creep.pos.findClosestByRange(hostileStructures);
 }
 
+export function findWarObjectiveTarget(creep: Creep): Creep | Structure | null {
+  const hostileStructures = getHostileStructures(creep.room);
+  const objectiveOrder: StructureConstant[] = [
+    STRUCTURE_SPAWN,
+    STRUCTURE_TOWER,
+    STRUCTURE_STORAGE,
+    STRUCTURE_TERMINAL,
+    STRUCTURE_INVADER_CORE,
+  ];
+
+  for (const structureType of objectiveOrder) {
+    const candidates = hostileStructures.filter((structure) => structure.structureType === structureType);
+    if (candidates.length > 0) {
+      return creep.pos.findClosestByRange(candidates);
+    }
+  }
+
+  return findTarget(creep);
+}
+
 function isBreachTarget(structure: Structure): structure is StructureRampart | StructureWall {
   if (structure.structureType === STRUCTURE_WALL) return true;
   return structure.structureType === STRUCTURE_RAMPART;
 }
 
-function findAdjacentBreachTarget(creep: Creep, target: Creep | Structure): StructureRampart | StructureWall | null {
-  const blockers = creep.pos.findInRange(FIND_STRUCTURES, 1, { filter: isBreachTarget });
+function findAdjacentStructures(creep: Creep): Structure[] {
+  if (typeof creep.pos.findInRange === "function") return creep.pos.findInRange(FIND_STRUCTURES, 1);
+  if (typeof creep.room.find !== "function") return [];
+
+  return creep.room.find(FIND_STRUCTURES).filter((structure) => creep.pos.getRangeTo(structure.pos) <= 1);
+}
+
+function findAdjacentHostiles(creep: Creep): Creep[] {
+  if (typeof creep.pos.findInRange === "function") return creep.pos.findInRange(FIND_HOSTILE_CREEPS, 1);
+  if (typeof creep.room.find !== "function") return [];
+
+  return creep.room.find(FIND_HOSTILE_CREEPS).filter((hostile) => creep.pos.getRangeTo(hostile.pos) <= 1);
+}
+
+function findWeakestAdjacentBreachTarget(creep: Creep, target?: Creep | Structure): StructureRampart | StructureWall | null {
+  const blockers = findAdjacentStructures(creep).filter(isBreachTarget);
   if (blockers.length === 0) return null;
 
   return blockers.sort((left, right) => {
-    const leftRange = left.pos.getRangeTo(target.pos);
-    const rightRange = right.pos.getRangeTo(target.pos);
-    if (leftRange !== rightRange) return leftRange - rightRange;
+    if (left.hits !== right.hits) return left.hits - right.hits;
+    if (target) {
+      const leftRange = left.pos.getRangeTo(target.pos);
+      const rightRange = right.pos.getRangeTo(target.pos);
+      if (leftRange !== rightRange) return leftRange - rightRange;
+    }
 
-    return left.hits - right.hits;
+    return creep.pos.getRangeTo(left.pos) - creep.pos.getRangeTo(right.pos);
   })[0];
 }
 
 function attackAdjacentBreachTarget(creep: Creep, target: Creep | Structure): boolean {
-  const blocker = findAdjacentBreachTarget(creep, target);
+  const blocker = findWeakestAdjacentBreachTarget(creep, target);
   if (!blocker) return false;
 
   measureCreepIntent(() => creep.attack(blocker));
   return true;
+}
+
+function isDangerousHostile(creep: Creep): boolean {
+  return (
+    creep.getActiveBodyparts(HEAL) > 0 ||
+    creep.getActiveBodyparts(ATTACK) > 0 ||
+    creep.getActiveBodyparts(RANGED_ATTACK) > 0
+  );
+}
+
+function attackAdjacentHostileOnRoute(creep: Creep): boolean {
+  const adjacent = findAdjacentHostiles(creep).filter((hostile) => hostile.owner.username !== "Source Keeper");
+  if (adjacent.length === 0) return false;
+
+  return adjacent
+    .sort((left, right) => {
+      const leftDangerous = isDangerousHostile(left);
+      const rightDangerous = isDangerousHostile(right);
+      if (leftDangerous !== rightDangerous) return leftDangerous ? -1 : 1;
+      if (left.hits !== right.hits) return left.hits - right.hits;
+      return creep.pos.getRangeTo(left.pos) - creep.pos.getRangeTo(right.pos);
+    })
+    .some((target) => measureCreepIntent(() => creep.attack(target)) === OK);
+}
+
+function attackWeakestAdjacentBreachTarget(creep: Creep): boolean {
+  const blocker = findWeakestAdjacentBreachTarget(creep);
+  if (!blocker) return false;
+
+  measureCreepIntent(() => creep.attack(blocker));
+  return true;
+}
+
+function attackAdjacentWhileHoldingFormation(creep: Creep, includeBreach: boolean): void {
+  if (attackAdjacentHostileOnRoute(creep)) return;
+  if (includeBreach) attackWeakestAdjacentBreachTarget(creep);
 }
 
 function findPairedWarHealer(creep: Creep): Creep | null {
@@ -195,9 +268,13 @@ export const meleeAttackerRole: RoleFactory = (
 ) => ({
   prepare: (creep): boolean => prepareCombatBoost(creep, boostTaskId, encodedBoostCompounds),
   source: (creep): boolean => {
-    if (targetRoom && waitForWarHealerFormation(creep, targetRoom)) return false;
+    if (targetRoom && waitForWarHealerFormation(creep, targetRoom)) {
+      attackAdjacentWhileHoldingFormation(creep, creep.room.name === targetRoom);
+      return false;
+    }
 
     if (targetRoom && creep.room.name !== targetRoom) {
+      attackAdjacentHostileOnRoute(creep);
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }
@@ -205,14 +282,18 @@ export const meleeAttackerRole: RoleFactory = (
     return true;
   },
   target: (creep): boolean => {
-    if (targetRoom && waitForWarHealerFormation(creep, targetRoom)) return false;
+    if (targetRoom && waitForWarHealerFormation(creep, targetRoom)) {
+      attackAdjacentWhileHoldingFormation(creep, creep.room.name === targetRoom);
+      return false;
+    }
 
     if (targetRoom && creep.room.name !== targetRoom) {
+      attackAdjacentHostileOnRoute(creep);
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }
 
-    const target = measureCreepDecision(() => findTarget(creep));
+    const target = measureCreepDecision(() => (targetRoom ? findWarObjectiveTarget(creep) : findTarget(creep)));
     if (!target) {
       if (targetRoom) {
         moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 3, {
