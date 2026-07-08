@@ -11,7 +11,7 @@ import type {
 } from "@/runtime/hubPlanner";
 import type { CpuMonitorMemoryV2, CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
 import type { AddFactoryTaskResult, CancelFactoryTaskResult, FactoryTask } from "@/runtime/factoryControl";
-import type { StopWarOptions, StopWarResult, WarStatusSnapshot, WarStatusTaskSnapshot } from "@/runtime/warControl";
+import type { StartWarOptions, StartWarResult, StopWarOptions, StopWarResult, WarStatusSnapshot, WarStatusTaskSnapshot } from "@/runtime/warControl";
 import type { RemoteDefenseStatusSnapshot } from "@/runtime/console/remoteDefenseCommands";
 
 declare const _: LoDashStatic;
@@ -107,6 +107,8 @@ declare global {
     | string;
   var stopWar: (targetRoom: string, suicide?: boolean) => string;
   var stopWarRaw: (targetRoom: string, options?: StopWarOptions) => StopWarResult | string;
+  var startWar: (targetRoom: string, sourceRoom: string, squad?: "standard" | "t3Duo", routeRooms?: string[] | string, oneShot?: boolean) => string;
+  var startWarRaw: (targetRoom: string, sourceRoom: string, options?: StartWarOptions) => StartWarResult | string;
   var warStatus: (targetRoom?: string) => string;
   var warStatusRaw: (targetRoom?: string) => WarStatusSnapshot;
   var startTelemetry: (sampleInterval?: number, segmentId?: number) => string;
@@ -890,6 +892,7 @@ declare global {
           boostTier?: "t3";
           boostLabs?: string[];
           boostStatus?: "preparing" | "ready" | "failed";
+          oneShot?: boolean;
           failReason?: string;
           attempts: number;
           createdAt: number;
@@ -1189,6 +1192,8 @@ declare namespace NodeJS {
       | string;
     stopWar: (targetRoom: string, suicide?: boolean) => string;
     stopWarRaw: (targetRoom: string, options?: StopWarOptions) => StopWarResult | string;
+    startWar: (targetRoom: string, sourceRoom: string, squad?: "standard" | "t3Duo", routeRooms?: string[] | string, oneShot?: boolean) => string;
+    startWarRaw: (targetRoom: string, sourceRoom: string, options?: StartWarOptions) => StartWarResult | string;
     warStatus: (targetRoom?: string) => string;
     warStatusRaw: (targetRoom?: string) => WarStatusSnapshot;
     startTelemetry: (sampleInterval?: number, segmentId?: number) => string;

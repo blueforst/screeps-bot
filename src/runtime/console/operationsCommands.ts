@@ -4,7 +4,18 @@ import {
   type SpawnMaxCarrierResult,
 } from "@/runtime/emergencySpawning";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
-import { getWarStatus, stopWarRoom, type StopWarOptions, type StopWarResult, type WarStatusSnapshot } from "@/runtime/warControl";
+import {
+  getWarStatus,
+  startWarRoom,
+  stopWarRoom,
+  type StartWarOptions,
+  type StartWarResult,
+  type StopWarOptions,
+  type StopWarResult,
+  type WarBoostTier,
+  type WarSquad,
+  type WarStatusSnapshot,
+} from "@/runtime/warControl";
 import type { CreepConfig } from "@/types/system";
 
 interface StopColonizationResult {
@@ -223,12 +234,44 @@ export function stopColonizationCommand(targetRoom?: string): string {
   return formatStopColonizationResult(stopColonization(targetRoom));
 }
 
-function formatWarResult(result: StopWarResult | WarStatusSnapshot | string): string {
+function formatWarResult(result: StartWarResult | StopWarResult | WarStatusSnapshot | string): string {
   if (typeof result === "string") {
     return result;
   }
 
   return JSON.stringify(result, null, 2);
+}
+
+function parseRouteRooms(routeRooms?: string[] | string): string[] | undefined {
+  if (Array.isArray(routeRooms)) {
+    return routeRooms;
+  }
+
+  if (typeof routeRooms === "string" && routeRooms.length > 0) {
+    return routeRooms.split("|").filter((roomName) => roomName.length > 0);
+  }
+
+  return undefined;
+}
+
+export function startWarRaw(targetRoom: string, sourceRoom: string, options: StartWarOptions = {}): StartWarResult | string {
+  return startWarRoom(targetRoom, sourceRoom, options);
+}
+
+export function startWarCommand(
+  targetRoom: string,
+  sourceRoom: string,
+  squad: WarSquad = "t3Duo",
+  routeRooms?: string[] | string,
+  oneShot = true,
+): string {
+  const boostTier: WarBoostTier | undefined = squad === "t3Duo" ? "t3" : undefined;
+  return formatWarResult(startWarRaw(targetRoom, sourceRoom, {
+    squad,
+    boostTier,
+    routeRooms: parseRouteRooms(routeRooms),
+    oneShot,
+  }));
 }
 
 export function stopWarRaw(targetRoom: string, options?: StopWarOptions): StopWarResult | string {
@@ -274,6 +317,8 @@ export function registerOperationsConsoleCommands(): void {
   global.stopColonizationRaw = stopColonizationRaw;
   global.stopWar = stopWarCommand;
   global.stopWarRaw = stopWarRaw;
+  global.startWar = startWarCommand;
+  global.startWarRaw = startWarRaw;
   global.warStatus = warStatusCommand;
   global.warStatusRaw = warStatusRaw;
 }
