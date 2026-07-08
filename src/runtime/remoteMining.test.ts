@@ -1506,7 +1506,7 @@ describe("remote construction caps", () => {
     expect(targetRoom.__siteAttempts.length).toBe(0);
   });
 
-  it("rejects incomplete PathFinder paths without storing plan", () => {
+  it("incomplete PathFinder road plan still stores no roadPlan but queues source container site", () => {
     const sourceRoom = createConRoom("W1N1");
     const targetRoom = createConRoom("W1N0", { controllerMy: false });
     targetRoom.find = jest.fn((type: number) => {
@@ -1528,7 +1528,12 @@ describe("remote construction caps", () => {
     processRemoteConstruction(store, config);
 
     expect(task.roadPlan).toBeUndefined();
-    expect(targetRoom.__siteAttempts.length).toBe(0);
+    expect(task.containerPositions).toBeDefined();
+    expect(task.containerPositions!.src1).toBeDefined();
+    const containerAttempts = targetRoom.__siteAttempts.filter(a => a.structureType === STRUCTURE_CONTAINER);
+    expect(containerAttempts.length).toBe(1);
+    const roadAttempts = targetRoom.__siteAttempts.filter(a => a.structureType === STRUCTURE_ROAD);
+    expect(roadAttempts.length).toBe(0);
   });
 
   it("skips construction when roomPlannerBuild.enabled is false", () => {
@@ -2201,6 +2206,220 @@ describe("remote construction caps", () => {
 
     expect(ownedTarget.__siteAttempts.length).toBe(0);
     expect(PathFinder.search as jest.Mock).not.toHaveBeenCalled();
+  });
+});
+
+// ─── E8N58 regression: failed road plan must not block container planning ──
+
+describe("regression: remote container planning independent of road plan", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    (global as any).RoomPosition = ConMockRoomPosition;
+    (global as any).PathFinder = {
+      search: jest.fn(),
+      CostMatrix: class {
+        private data: number[] = new Array(2500).fill(0);
+        set(x: number, y: number, val: number) { this.data[y * 50 + x] = val; }
+        get(x: number, y: number) { return this.data[y * 50 + x]; }
+      },
+    };
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Game.constructionSites = {} as Game["constructionSites"];
+    Memory.runtime = {};
+    Memory.cfg = {};
+    store = ensureRemoteMiningStore();
+  });
+
+  it("active visible remote with two sources and failed road plan still records containerPositions and queues container sites", () => {
+    const sourceRoom = createConRoom("W1N1");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
+    targetRoom.find = jest.fn((type: number) => {
+      if (type === FIND_SOURCES) return [
+        createConSource("src1", targetRoom, 32, 31),
+        createConSource("src2", targetRoom, 32, 33),
+      ];
+      if (type === FIND_STRUCTURES) return targetRoom.__structures;
+      if (type === FIND_CONSTRUCTION_SITES) return targetRoom.__sites;
+      return [];
+    });
+    Game.rooms["W1N1"] = sourceRoom as unknown as Room;
+    Game.rooms["W1N0"] = targetRoom as unknown as Room;
+
+    // PathFinder returns incomplete — simulates E8N58 where road plan never succeeds
+    (PathFinder.search as jest.Mock).mockReturnValue({ path: [], incomplete: true, ops: 100, cost: 0 });
+
+    const task = setupActiveTask(store, "W1N1", "W1N0", ["src1", "src2"]);
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createConSource("src1", targetRoom, 32, 31);
+      if (id === "src2") return createConSource("src2", targetRoom, 32, 33);
+      return null;
+    });
+
+    const config = { ...getRemoteMiningConfig(), maxRemoteSitesPerRun: 5 };
+    processRemoteConstruction(store, config);
+
+    expect(task.roadPlan).toBeUndefined();
+    expect(task.containerPositions).toBeDefined();
+    expect(task.containerPositions!.src1).toBeDefined();
+    expect(task.containerPositions!.src2).toBeDefined();
+
+    const containerAttempts = targetRoom.__siteAttempts.filter(a => a.structureType === STRUCTURE_CONTAINER);
+    expect(containerAttempts.length).toBe(2);
+    expect(targetRoom.__siteAttempts.some(a => a.structureType === STRUCTURE_ROAD)).toBe(false);
+  });
+
+  it("closely-spaced sources get distinct container positions even when road plan fails", () => {
+    const sourceRoom = createConRoom("W1N1");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
+
+    // Sources at (32,31) and (32,33) — two tiles apart, mirrors E8N58.
+    // Shared adjacent tiles: (31,32), (32,32), (33,32).
+    // Wall off src1's non-shared adjacent tiles so it is forced toward a shared tile,
+    // which without claimedKeys would let src2 pick the same tile.
+    const wallSet = new Set(["31:30", "31:31", "32:30", "33:30", "33:31"]);
+    targetRoom.getTerrain = jest.fn(() => ({
+      get: jest.fn((x: number, y: number) => (wallSet.has(`${x}:${y}`) ? TERRAIN_MASK_WALL : 0)),
+    })) as any;
+
+    targetRoom.find = jest.fn((type: number) => {
+      if (type === FIND_SOURCES) return [
+        createConSource("src1", targetRoom, 32, 31),
+        createConSource("src2", targetRoom, 32, 33),
+      ];
+      if (type === FIND_STRUCTURES) return targetRoom.__structures;
+      if (type === FIND_CONSTRUCTION_SITES) return targetRoom.__sites;
+      return [];
+    });
+    Game.rooms["W1N1"] = sourceRoom as unknown as Room;
+    Game.rooms["W1N0"] = targetRoom as unknown as Room;
+
+    (PathFinder.search as jest.Mock).mockReturnValue({ path: [], incomplete: true, ops: 100, cost: 0 });
+
+    setupActiveTask(store, "W1N1", "W1N0", ["src1", "src2"]);
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createConSource("src1", targetRoom, 32, 31);
+      if (id === "src2") return createConSource("src2", targetRoom, 32, 33);
+      return null;
+    });
+
+    const config = { ...getRemoteMiningConfig(), maxRemoteSitesPerRun: 5 };
+    processRemoteConstruction(store, config);
+
+    const task = store["W1N0"];
+    const pos1 = task.containerPositions!.src1;
+    const pos2 = task.containerPositions!.src2;
+    expect(pos1).toBeDefined();
+    expect(pos2).toBeDefined();
+    // src1 is forced to its first available (shared) tile: (31,32)
+    expect(pos1.x).toBe(31);
+    expect(pos1.y).toBe(32);
+    // src2 must NOT reuse (31,32); it takes the next walkable adjacent tile
+    expect(`${pos2.x}:${pos2.y}`).not.toBe(`${pos1.x}:${pos1.y}`);
+  });
+
+  it("closely-spaced sources get distinct container positions via road plan", () => {
+    const sourceRoom = createConRoom("W1N1");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
+
+    const wallSet = new Set(["31:30", "31:31", "32:30", "33:30", "33:31"]);
+    targetRoom.getTerrain = jest.fn(() => ({
+      get: jest.fn((x: number, y: number) => (wallSet.has(`${x}:${y}`) ? TERRAIN_MASK_WALL : 0)),
+    })) as any;
+
+    targetRoom.find = jest.fn((type: number) => {
+      if (type === FIND_SOURCES) return [
+        createConSource("src1", targetRoom, 32, 31),
+        createConSource("src2", targetRoom, 32, 33),
+      ];
+      if (type === FIND_STRUCTURES) return targetRoom.__structures;
+      if (type === FIND_CONSTRUCTION_SITES) return targetRoom.__sites;
+      return [];
+    });
+    Game.rooms["W1N1"] = sourceRoom as unknown as Room;
+    Game.rooms["W1N0"] = targetRoom as unknown as Room;
+
+    // Road plan succeeds with paths that touch both sources
+    const path1 = makePathPositions(25, 25, "W1N1", 32, 31, "W1N0");
+    const path2 = makePathPositions(25, 25, "W1N1", 32, 33, "W1N0");
+    (PathFinder.search as jest.Mock)
+      .mockReturnValueOnce({ path: path1, incomplete: false, ops: 10, cost: 10 })
+      .mockReturnValueOnce({ path: path2, incomplete: false, ops: 10, cost: 10 });
+
+    setupActiveTask(store, "W1N1", "W1N0", ["src1", "src2"]);
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createConSource("src1", targetRoom, 32, 31);
+      if (id === "src2") return createConSource("src2", targetRoom, 32, 33);
+      return null;
+    });
+
+    const config = { ...getRemoteMiningConfig(), maxRemoteSitesPerRun: 5 };
+    processRemoteConstruction(store, config);
+
+    const task = store["W1N0"];
+    expect(task.roadPlan).toBeDefined();
+    const pos1 = task.containerPositions!.src1;
+    const pos2 = task.containerPositions!.src2;
+    expect(pos1).toBeDefined();
+    expect(pos2).toBeDefined();
+    expect(`${pos2.x}:${pos2.y}`).not.toBe(`${pos1.x}:${pos1.y}`);
+  });
+
+  it("does not queue container site when target room is not visible", () => {
+    const sourceRoom = createConRoom("W1N1");
+    Game.rooms["W1N1"] = sourceRoom as unknown as Room;
+    // W1N0 intentionally NOT in Game.rooms (not visible)
+
+    (PathFinder.search as jest.Mock).mockReturnValue({ path: [], incomplete: true, ops: 100, cost: 0 });
+
+    const task = setupActiveTask(store, "W1N1", "W1N0", ["src1"]);
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createConSource("src1", sourceRoom as unknown as Room, 10, 10);
+      return null;
+    });
+
+    const config = getRemoteMiningConfig();
+    processRemoteConstruction(store, config);
+
+    expect(task.roadPlan).toBeUndefined();
+    expect(task.containerPositions).toBeUndefined();
+    expect(Object.keys(Game.constructionSites ?? {}).length).toBe(0);
+  });
+
+  it("preserves existing road placement when road plan is available", () => {
+    const sourceRoom = createConRoom("W1N1");
+    const targetRoom = createConRoom("W1N0", { controllerMy: false });
+    targetRoom.find = jest.fn((type: number) => {
+      if (type === FIND_SOURCES) return [createConSource("src1", targetRoom, 10, 10)];
+      if (type === FIND_STRUCTURES) return targetRoom.__structures;
+      if (type === FIND_CONSTRUCTION_SITES) return targetRoom.__sites;
+      return [];
+    });
+    Game.rooms["W1N1"] = sourceRoom as unknown as Room;
+    Game.rooms["W1N0"] = targetRoom as unknown as Room;
+
+    const path = makePathPositions(25, 25, "W1N1", 10, 10, "W1N0");
+    (PathFinder.search as jest.Mock).mockReturnValue({ path, incomplete: false, ops: 10, cost: 10 });
+
+    setupActiveTask(store, "W1N1", "W1N0", ["src1"]);
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return createConSource("src1", targetRoom, 10, 10);
+      return null;
+    });
+
+    const config = { ...getRemoteMiningConfig(), maxRemoteSitesPerRun: 5 };
+    processRemoteConstruction(store, config);
+
+    const roadAttempts = targetRoom.__siteAttempts.filter(a => a.structureType === STRUCTURE_ROAD);
+    expect(roadAttempts.length).toBeGreaterThan(0);
+    const containerAttempts = targetRoom.__siteAttempts.filter(a => a.structureType === STRUCTURE_CONTAINER);
+    expect(containerAttempts.length).toBe(1);
   });
 });
 

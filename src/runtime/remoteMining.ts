@@ -591,6 +591,7 @@ function isTileBlockedByStructure(room: Room, x: number, y: number): boolean {
 function selectContainerPosition(
   source: Source,
   pathPositions: Array<{ x: number; y: number; roomName: string }>,
+  claimedKeys?: Set<string>,
 ): { x: number; y: number; roomName: string } | null {
   const room = source.room;
   const pathSet = new Set(pathPositions.filter(p => p.roomName === room.name).map(p => `${p.x}:${p.y}`));
@@ -598,6 +599,7 @@ function selectContainerPosition(
   const terrain = room.getTerrain();
 
   for (const tile of adjacent) {
+    if (claimedKeys?.has(`${tile.x}:${tile.y}`)) continue;
     const terrainType = terrain.get(tile.x, tile.y);
     if (terrainType === TERRAIN_MASK_WALL) continue;
     if (isTileBlockedByStructure(room, tile.x, tile.y)) continue;
@@ -607,6 +609,7 @@ function selectContainerPosition(
   }
 
   for (const tile of adjacent) {
+    if (claimedKeys?.has(`${tile.x}:${tile.y}`)) continue;
     const terrainType = terrain.get(tile.x, tile.y);
     if (terrainType === TERRAIN_MASK_WALL) continue;
     if (isTileBlockedByStructure(room, tile.x, tile.y)) continue;
@@ -614,6 +617,28 @@ function selectContainerPosition(
   }
 
   return null;
+}
+
+/**
+ * Plan container positions for all sources. Tiles claimed by earlier sources
+ * in this pass are excluded so closely-spaced sources get distinct containers.
+ */
+function generateContainerPositions(
+  task: RemoteMiningTask,
+  pathPositions: Array<{ x: number; y: number; roomName: string }>,
+): Record<string, { x: number; y: number; roomName: string }> {
+  const containers: Record<string, { x: number; y: number; roomName: string }> = {};
+  const claimedKeys = new Set<string>();
+  for (const sourceId of task.sourceIds) {
+    const source = Game.getObjectById(sourceId as Id<Source>);
+    if (!source) continue;
+    const containerPos = selectContainerPosition(source, pathPositions, claimedKeys);
+    if (containerPos) {
+      containers[sourceId] = containerPos;
+      claimedKeys.add(`${containerPos.x}:${containerPos.y}`);
+    }
+  }
+  return containers;
 }
 
 function hasExactRoadOrSite(room: Room, x: number, y: number, structureType: BuildableStructureConstant): boolean {
@@ -662,6 +687,8 @@ function generateRoadPlan(
   const containers: Record<string, { x: number; y: number; roomName: string }> = {};
   // Track planned road positions from earlier source paths so later paths prefer them
   const plannedKeys = new Set<string>();
+  // Track container tiles claimed by earlier sources so close neighbours get distinct containers
+  const plannedContainerKeys = new Set<string>();
 
   // Pre-seed with existing roads/construction sites in the target room
   const targetRoomObj = Game.rooms[task.targetRoom];
@@ -708,9 +735,10 @@ function generateRoadPlan(
       }
     }
 
-    const containerPos = selectContainerPosition(source, allPositions);
+    const containerPos = selectContainerPosition(source, allPositions, plannedContainerKeys);
     if (containerPos) {
       containers[sourceId] = containerPos;
+      plannedContainerKeys.add(`${containerPos.x}:${containerPos.y}`);
     }
   }
 
@@ -762,7 +790,24 @@ export function processRemoteConstruction(
       }
     }
 
-    if (!task.roadPlan || !task.roadPlan.positions.length) continue;
+    // Container planning is decoupled from road planning: a remote whose road
+    // PathFinder fails must still get containers, otherwise it never builds any.
+    const targetVisibleForContainers = Game.rooms[task.targetRoom];
+    const containerPlanMissing = !task.containerPositions ||
+      task.sourceIds.some(id => !task.containerPositions![id]);
+    if (
+      targetVisibleForContainers &&
+      typeof targetVisibleForContainers.getTerrain === "function" &&
+      task.sourceIds.length > 0 &&
+      containerPlanMissing
+    ) {
+      const existingPath = task.roadPlan?.positions ?? [];
+      task.containerPositions = generateContainerPositions(task, existingPath);
+    }
+
+    const hasRoads = !!task.roadPlan && task.roadPlan.positions.length > 0;
+    const hasContainers = !!task.containerPositions && Object.keys(task.containerPositions).length > 0;
+    if (!hasRoads && !hasContainers) continue;
 
     let sitesPlaced = 0;
     let globalRemaining = GLOBAL_SITE_SOFT_CAP - Object.keys(Game.constructionSites ?? {}).length;
@@ -805,7 +850,7 @@ export function processRemoteConstruction(
       }
     }
 
-    for (const pos of task.roadPlan.positions) {
+    for (const pos of task.roadPlan?.positions ?? []) {
       if (sitesPlaced >= config.maxRemoteSitesPerRun) break;
       if (globalRemaining <= 0) break;
       if (pos.roomName !== task.targetRoom) continue;
