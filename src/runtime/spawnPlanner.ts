@@ -343,6 +343,10 @@ function shouldQueueConfig(
     return false;
   }
 
+  if (config.spawnOnce?.queuedAt !== undefined) {
+    return false;
+  }
+
   if (config.roomName && shouldSkipConfigInDefenseMode(config)) {
     return false;
   }
@@ -431,14 +435,21 @@ function shouldSkipConfigInDefenseMode(config: CreepConfig): boolean {
 
 function queueConfig(spawn: StructureSpawn, configName: string, options?: { toFront?: boolean }): void {
   const queue = ensureQueue(spawn);
+  const config = getCreepConfigService().get(configName);
 
   if (options?.toFront) {
     spawn.memory.spawnList = [configName, ...queue.filter((item) => item !== configName)];
+    if (config?.spawnOnce && config.spawnOnce.queuedAt === undefined) {
+      config.spawnOnce.queuedAt = Game.time;
+    }
     return;
   }
 
   if (!queue.includes(configName)) {
     spawn.addTask(configName);
+    if (config?.spawnOnce && config.spawnOnce.queuedAt === undefined) {
+      config.spawnOnce.queuedAt = Game.time;
+    }
   }
 }
 

@@ -176,6 +176,40 @@ describe("spawnPlanner emergency carrier flow", () => {
   });
 });
 
+describe("spawnPlanner one-shot configs", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  it("does not requeue a spawnOnce config after it has been queued once", () => {
+    const room = createRoom("W1N3");
+    const spawn = createSpawn(room);
+    const configName = "W1N3:war:W2N3:meleeAttacker:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.carrier = {
+      name: "carrier",
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "meleeAttacker",
+          args: ["W2N3"],
+          roomName: room.name,
+          spawnOnce: { queuedAt: Game.time - 10 },
+        },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configName);
+  });
+});
+
 describe("spawnPlanner managed mineral harvester queueing", () => {
   beforeEach(() => {
     resetRuntimeServices();
