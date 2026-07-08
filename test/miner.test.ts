@@ -147,7 +147,7 @@ describe("minerRole – work position alignment with harvester", () => {
     const role = minerRole(SOURCE_ID);
     role.source(creep as unknown as Creep);
 
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5 });
+    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
     expect(creep.harvest).not.toHaveBeenCalled();
   });
 
@@ -166,7 +166,7 @@ describe("minerRole – work position alignment with harvester", () => {
     creep.pos = new MockPos(10, 11, ROOM);
 
     role.source(creep as unknown as Creep);
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5 });
+    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
   });
 
   test("no workPos in layout: miner moves directly to source", () => {
