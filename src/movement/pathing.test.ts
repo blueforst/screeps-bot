@@ -27,6 +27,7 @@ import {
   setupPathFinderGlobal,
   setupRoomPositionGlobal,
 } from "@mock/movement";
+import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
 
 jest.mock("@/runtime/roomPlannerConstruction", () => ({
   getSourceContainerPositionsForRoom: jest.fn(() => []),
@@ -60,6 +61,7 @@ describe("moveToTarget baseline", () => {
     Game.rooms = {};
     Game.creeps = {};
     setupGlobals();
+    (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([]);
   });
 
   it("returns OK when already at the target position within range", () => {
@@ -109,7 +111,7 @@ describe("moveToTarget baseline", () => {
     const room = createRoom("W1N1");
     const creep = createCreep("worker-del-state", "worker", 10, 10, room);
     ensureCreepMovementState(creep.name).movePathState = {
-      key: "W1N1:W1N1:20:10:r1:i1:sd:pd:md:e0:c",
+      key: "W1N1:W1N1:20:10:r1:i1:sd:pd:md:e0:sc0:c",
       path: "333",
       steps: [{ x: 11, y: 10 }, { x: 12, y: 10 }],
       targetRoom: "W1N1",
@@ -417,6 +419,7 @@ describe("room base cost matrix cache", () => {
     Game.rooms = {};
     Game.creeps = {};
     setupGlobals(RealCostMatrix as unknown as new () => CostMatrix);
+    (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([]);
   });
 
   it("caches room base cost matrix on first call and reuses it", () => {
@@ -490,6 +493,7 @@ describe("stored path following", () => {
     Game.rooms = {};
     Game.creeps = {};
     setupGlobals();
+    (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([]);
   });
 
   it("follows cached path steps in sequence", () => {
@@ -500,7 +504,7 @@ describe("stored path following", () => {
     Game.creeps[creep.name] = creep;
 
     ensureCreepMovementState(creep.name).movePathState = {
-      key: `W1N1:W1N1:13:10:r1:i1:sd:pd:md:e0:c`,
+      key: `W1N1:W1N1:13:10:r1:i1:sd:pd:md:e0:sc0:c`,
       path: "333",
       steps: [{ x: 11, y: 10 }, { x: 12, y: 10 }, { x: 13, y: 10 }],
       targetRoom: "W1N1",
@@ -526,7 +530,7 @@ describe("stored path following", () => {
     Game.creeps[creep.name] = creep;
 
     ensureCreepMovementState(creep.name).movePathState = {
-      key: `W1N1:W1N1:20:20:r1:i1:sd:pd:md:e0:c`,
+      key: `W1N1:W1N1:20:20:r1:i1:sd:pd:md:e0:sc0:c`,
       path: "3",
       steps: [{ x: 30, y: 30 }],
       targetRoom: "W1N1",
@@ -593,6 +597,58 @@ describe("moveToTarget target-behavior: costCallback overlay", () => {
     expect(capturedMatrix!.get(20, 20)).toBe(0xfe);
   });
 
+  it("blocks source container work positions for normal creeps", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N1", creeps);
+    const creep = createCreep("worker-source-avoid", "worker", 10, 10, room);
+    creeps.push(creep);
+    Game.creeps[creep.name] = creep;
+    (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([
+      new MockRoomPosition(20, 20, room.name) as unknown as RoomPosition,
+    ]);
+
+    let capturedMatrix: RealCostMatrix | null = null;
+    (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(
+      (_target: unknown, opts: { costCallback?: (roomName: string, matrix: CostMatrix) => CostMatrix }) => {
+        capturedMatrix = opts.costCallback?.(room.name, new RealCostMatrix() as unknown as CostMatrix) as unknown as RealCostMatrix;
+        return [{ x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT }];
+      },
+    );
+
+    moveToTarget(creep, new MockRoomPosition(20, 20, room.name) as unknown as RoomPosition, 0);
+
+    expect(capturedMatrix).not.toBeNull();
+    expect(capturedMatrix!.get(20, 20)).toBe(0xfe);
+  });
+
+  it("allows source container work position when it is the explicit target", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N1", creeps);
+    const creep = createCreep("miner-source-target", "miner", 10, 10, room);
+    creeps.push(creep);
+    Game.creeps[creep.name] = creep;
+    (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([
+      new MockRoomPosition(20, 20, room.name) as unknown as RoomPosition,
+      new MockRoomPosition(21, 20, room.name) as unknown as RoomPosition,
+    ]);
+
+    let capturedMatrix: RealCostMatrix | null = null;
+    (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(
+      (_target: unknown, opts: { costCallback?: (roomName: string, matrix: CostMatrix) => CostMatrix }) => {
+        capturedMatrix = opts.costCallback?.(room.name, new RealCostMatrix() as unknown as CostMatrix) as unknown as RealCostMatrix;
+        return [{ x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT }];
+      },
+    );
+
+    moveToTarget(creep, new MockRoomPosition(20, 20, room.name) as unknown as RoomPosition, 0, {
+      allowSourceContainerTarget: true,
+    });
+
+    expect(capturedMatrix).not.toBeNull();
+    expect(capturedMatrix!.get(20, 20)).toBe(0);
+    expect(capturedMatrix!.get(21, 20)).toBe(0xfe);
+  });
+
   it("does not reuse cached path when costCallback is provided without cacheKey", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N1", creeps);
@@ -636,6 +692,7 @@ describe("moveToTarget target-behavior: cacheKey isolation", () => {
     Game.rooms = {};
     Game.creeps = {};
     setupGlobals();
+    (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([]);
   });
 
   it("isolates cached paths by cacheKey when provided", () => {

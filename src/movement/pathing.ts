@@ -66,7 +66,9 @@ export function moveToTarget(
   const noCacheReuse = !!options.costCallback && !options.cacheKey;
   const movePathKey = `${creep.room.name}:${targetPos.roomName}:${targetPos.x}:${targetPos.y}:r${range}:i${
     ignoreCreeps ? 1 : 0
-  }:s${options.swampCost ?? "d"}:p${options.plainCost ?? "d"}:m${options.maxRooms ?? "d"}:e${options.avoidExitTiles ? 1 : 0}:c${options.cacheKey ?? ""}`;
+  }:s${options.swampCost ?? "d"}:p${options.plainCost ?? "d"}:m${options.maxRooms ?? "d"}:e${options.avoidExitTiles ? 1 : 0}:sc${
+    options.allowSourceContainerTarget ? 1 : 0
+  }:c${options.cacheKey ?? ""}`;
 
   {
     const currentPosKey = getPosKey(creep.pos);
@@ -186,6 +188,8 @@ function buildRoomCostMatrix(
     applyExitTileAvoidance(roomMatrix, targetPos, roomName);
   }
 
+  applySourceContainerPositionAvoidance(roomMatrix, roomName, targetPos, options);
+
   if (!(options.ignoreCreeps ?? true)) {
     for (const otherCreep of roomContext.getMyCreeps()) {
       if (otherCreep.name === creep.name) {
@@ -217,6 +221,27 @@ function blockExitTile(matrix: CostMatrix, x: number, y: number, targetPos: Room
   }
 
   matrix.set(x, y, 0xff);
+}
+
+function applySourceContainerPositionAvoidance(
+  matrix: CostMatrix,
+  roomName: string,
+  targetPos: RoomPosition,
+  options: MoveToTargetOptions,
+): void {
+  for (const pos of getSourceContainerPositionsForRoom(roomName)) {
+    if (
+      options.allowSourceContainerTarget &&
+      targetPos.roomName === roomName &&
+      targetPos.x === pos.x &&
+      targetPos.y === pos.y
+    ) {
+      continue;
+    }
+    if (matrix.get(pos.x, pos.y) < 0xfe) {
+      matrix.set(pos.x, pos.y, 0xfe);
+    }
+  }
 }
 
 function getCachedRoomBaseCostMatrix(
@@ -257,12 +282,6 @@ function getCachedRoomBaseCostMatrix(
       baseMatrix.set(site.pos.x, site.pos.y, 0xff);
     } else if (site.structureType === STRUCTURE_ROAD && baseMatrix.get(site.pos.x, site.pos.y) < 0xfe) {
       baseMatrix.set(site.pos.x, site.pos.y, 1);
-    }
-  }
-
-  for (const pos of getSourceContainerPositionsForRoom(room.name)) {
-    if (baseMatrix.get(pos.x, pos.y) < 0xfe) {
-      baseMatrix.set(pos.x, pos.y, 0xfe);
     }
   }
 

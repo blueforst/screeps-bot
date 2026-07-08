@@ -25,6 +25,7 @@ export interface MoveToTargetOptions {
   maxRooms?: number;
   ignoreCreeps?: boolean;
   avoidExitTiles?: boolean;
+  allowSourceContainerTarget?: boolean;
   costCallback?: (roomName: string, matrix: PathFinder["CostMatrix"]) => PathFinder["CostMatrix"];
   cacheKey?: string;
 }
