@@ -129,7 +129,7 @@ describe("harvesterRole – pre-spawn overlap (two harvesters for same source)",
     const role = harvesterRole(SOURCE_ID);
     role.source(creep as unknown as Creep);
 
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5 });
+    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
   });
 
   test("after old harvester dies (unoccupied workPos), new harvester claims position", () => {
@@ -149,7 +149,7 @@ describe("harvesterRole – pre-spawn overlap (two harvesters for same source)",
     creep.pos = new MockPos(10, 11, ROOM); // still not at workPos
 
     role.source(creep as unknown as Creep);
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5 });
+    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
   });
 
   test("existing harvester still pursues its work position even if defense policy later stops replacements", () => {
@@ -158,6 +158,6 @@ describe("harvesterRole – pre-spawn overlap (two harvesters for same source)",
     const role = harvesterRole(SOURCE_ID);
     role.source(creep as unknown as Creep);
 
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5 });
+    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
   });
 });
