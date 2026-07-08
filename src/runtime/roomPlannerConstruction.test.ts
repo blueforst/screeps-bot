@@ -1,4 +1,8 @@
-import { getSourceContainerPositionsForRoom, runRoomPlannerConstruction } from "@/runtime/roomPlannerConstruction";
+import {
+  getPlannedSourceContainerPos,
+  getSourceContainerPositionsForRoom,
+  runRoomPlannerConstruction,
+} from "@/runtime/roomPlannerConstruction";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -319,6 +323,94 @@ describe("getSourceContainerPositionsForRoom", () => {
       { x: 12, y: 10 },
       { x: 20, y: 20 },
     ]);
+  });
+
+  it("caches repeated same-tick calls and refreshes on the next tick", () => {
+    const room = createRoom({ name: "W2N3" });
+    const source = createSource(room, 11, 10);
+    room.__sources.push(source);
+    room.__minerals.push(createMineral(room, 40, 40));
+    Game.rooms[room.name] = room;
+    setRoomPlannerLayout(room.name, { [STRUCTURE_CONTAINER]: [{ x: 12, y: 10 }] });
+
+    const findSpy = jest.spyOn(room, "find");
+
+    const first = getSourceContainerPositionsForRoom(room.name);
+    const callsAfterFirst = findSpy.mock.calls.length;
+
+    expect(first).toEqual([{ x: 12, y: 10 }, { x: 40, y: 40 }]);
+
+    const second = getSourceContainerPositionsForRoom(room.name);
+    expect(second).toEqual(first);
+    expect(findSpy.mock.calls.length).toBe(callsAfterFirst);
+
+    findSpy.mockClear();
+    Game.time = 101;
+    const third = getSourceContainerPositionsForRoom(room.name);
+    expect(third).toEqual(first);
+    expect(findSpy.mock.calls.length).toBeGreaterThan(0);
+
+    findSpy.mockRestore();
+  });
+
+  it("returns defensive copies so callers cannot mutate the cached array", () => {
+    const room = createRoom({ name: "W2N4" });
+    const source = createSource(room, 11, 10);
+    room.__sources.push(source);
+    Game.rooms[room.name] = room;
+    setRoomPlannerLayout(room.name, { [STRUCTURE_CONTAINER]: [{ x: 12, y: 10 }] });
+
+    const first = getSourceContainerPositionsForRoom(room.name);
+    first.pop();
+    first.push({ x: 99, y: 99 });
+
+    const second = getSourceContainerPositionsForRoom(room.name);
+    expect(second).toEqual([{ x: 12, y: 10 }]);
+  });
+});
+
+describe("getPlannedSourceContainerPos", () => {
+  beforeAll(() => {
+    (global as RuntimeGlobal).RoomPosition = MockRoomPosition;
+  });
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time = 100;
+    Game.rooms = {} as Game["rooms"];
+    Memory.data = {} as Memory["data"];
+  });
+
+  it("uses remote mining container position keyed by source id before the container exists", () => {
+    const room = createRoom({ name: "E1N56" });
+    const source = createSource(room, 6, 32);
+    room.__sources.push(source);
+    Game.rooms[room.name] = room;
+    Memory.data = {
+      remoteMining: {
+        [room.name]: createRemoteMiningTask("E1N57", room.name, {
+          [source.id]: { x: 5, y: 33, roomName: room.name },
+        }),
+      },
+    } as Memory["data"];
+
+    expect(getPlannedSourceContainerPos(source)).toEqual(new MockRoomPosition(5, 33, room.name));
+  });
+
+  it("ignores remote mining container positions for other rooms", () => {
+    const room = createRoom({ name: "E1N56" });
+    const source = createSource(room, 6, 32);
+    room.__sources.push(source);
+    Game.rooms[room.name] = room;
+    Memory.data = {
+      remoteMining: {
+        [room.name]: createRemoteMiningTask("E1N57", room.name, {
+          [source.id]: { x: 5, y: 33, roomName: "E1N55" },
+        }),
+      },
+    } as Memory["data"];
+
+    expect(getPlannedSourceContainerPos(source)).toBeNull();
   });
 });
 

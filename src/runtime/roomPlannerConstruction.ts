@@ -689,7 +689,16 @@ function queueMissingPlannedRamparts(
   return { roomAdded: added, globalRemaining };
 }
 
-export function getSourceContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
+// Per-tick cache for getSourceContainerPositionsForRoom. The function is called
+// repeatedly from pathing/routing while building cost matrices; the underlying
+// room.find(FIND_SOURCES / FIND_MINERALS) and mineral findInRange work is
+// identical within a tick. Cache resets when Game.time changes.
+let sourceContainerPositionsCache: {
+  tick: number;
+  entries: Map<string, { x: number; y: number }[]>;
+} = { tick: -1, entries: new Map() };
+
+function computeSourceContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
   const remoteContainerPositions = getRemoteMiningContainerPositionsForRoom(roomName);
   const layout = Memory.data?.roomPlanner?.[roomName]?.layout;
   const room = Game.rooms[roomName];
@@ -732,6 +741,22 @@ export function getSourceContainerPositionsForRoom(roomName: string): { x: numbe
   return unique;
 }
 
+export function getSourceContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
+  if (sourceContainerPositionsCache.tick !== Game.time) {
+    sourceContainerPositionsCache = { tick: Game.time, entries: new Map() };
+  }
+
+  const cached = sourceContainerPositionsCache.entries.get(roomName);
+  if (cached) {
+    // Defensive copy so callers iterating/pushing cannot mutate the cached array.
+    return cached.slice();
+  }
+
+  const computed = computeSourceContainerPositionsForRoom(roomName);
+  sourceContainerPositionsCache.entries.set(roomName, computed);
+  return computed.slice();
+}
+
 function getRemoteMiningContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
   const tasks = Memory.data?.remoteMining;
   if (!tasks) return [];
@@ -754,21 +779,27 @@ function getRemoteMiningContainerPositionsForRoom(roomName: string): { x: number
 }
 
 export function getPlannedSourceContainerPos(source: Source): RoomPosition | null {
-  const layout = Memory.data?.roomPlanner?.[source.room.name]?.layout;
+  const roomName = source.room?.name ?? source.pos.roomName;
+  const remoteContainerPos = Memory.data?.remoteMining?.[roomName]?.containerPositions?.[source.id];
+  if (remoteContainerPos?.roomName === roomName) {
+    return new RoomPosition(remoteContainerPos.x, remoteContainerPos.y, roomName);
+  }
+
+  const layout = Memory.data?.roomPlanner?.[roomName]?.layout;
   if (!layout) return null;
 
   // Container explicitly in layout (autoplanner chose no link for this source).
   const containerPos = (layout[STRUCTURE_CONTAINER] ?? []).find(
     (c) => Math.abs(c.x - source.pos.x) <= 1 && Math.abs(c.y - source.pos.y) <= 1,
   );
-  if (containerPos) return new RoomPosition(containerPos.x, containerPos.y, source.room.name);
+  if (containerPos) return new RoomPosition(containerPos.x, containerPos.y, roomName);
 
   // Source has a planned link — the autoplanner recorded a work_pos instead.
   // A proto container is placed there until the link is built.
   const workPos = (layout[LAYOUT_WORK_POS] ?? []).find(
     (wp) => Math.abs(wp.x - source.pos.x) <= 1 && Math.abs(wp.y - source.pos.y) <= 1,
   );
-  return workPos ? new RoomPosition(workPos.x, workPos.y, source.room.name) : null;
+  return workPos ? new RoomPosition(workPos.x, workPos.y, roomName) : null;
 }
 
 export function runRoomPlannerConstruction(): void {
