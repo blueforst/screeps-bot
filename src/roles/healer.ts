@@ -1,5 +1,6 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { prepareCombatBoost } from "@/roles/combatBoosts";
+import { findWarObjectiveTarget } from "@/roles/meleeAttacker";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
@@ -80,6 +81,20 @@ function isPoisedToCrossInto(creep: Creep, targetRoom: string): boolean {
   return isOnExitDirection(creep.pos, exitDirection as DirectionConstant);
 }
 
+function getValidExitDirection(room: Room, targetRoom: string): DirectionConstant | null {
+  const exitDirection = room.findExitTo?.(targetRoom);
+  if (typeof exitDirection !== "number" || exitDirection < TOP || exitDirection > LEFT) return null;
+
+  return exitDirection as DirectionConstant;
+}
+
+function shouldHoldForAttackerAtExit(creep: Creep, attacker: Creep, targetRoom: string): boolean {
+  const exitDirection = getValidExitDirection(creep.room, targetRoom);
+  if (!exitDirection) return false;
+
+  return isOnExitDirection(creep.pos, exitDirection) && !isOnExitDirection(attacker.pos, exitDirection);
+}
+
 function healAttacker(creep: Creep, attacker: Creep): void {
   if (attacker.room.name !== creep.room.name) {
     if (creep.hits < creep.hitsMax) {
@@ -124,11 +139,17 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
   }
 
   if (creep.room.name !== targetRoom) {
+    if (shouldHoldForAttackerAtExit(creep, attacker, targetRoom)) return true;
     moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
     return true;
   }
 
-  return false;
+  const combatTarget = findWarObjectiveTarget(attacker);
+  if (combatTarget) {
+    moveToTarget(creep, combatTarget, 2, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+  }
+
+  return true;
 }
 
 function getEscortTarget(creep: Creep, targetRoom?: string): Creep | null {

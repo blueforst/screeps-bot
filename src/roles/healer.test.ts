@@ -20,6 +20,27 @@ const TARGET_ROOM = "E3N57";
 const ATTACKER_CONFIG = "E1N57:war:E3N57:meleeAttacker:0";
 const HEALER_CONFIG = "E1N57:war:E3N57:healer:0";
 
+function hostileCreep(name: string, hits = 1000): Creep {
+  return {
+    id: name as Id<Creep>,
+    name,
+    owner: { username: "TooAngel" },
+    hits,
+    pos: { x: 23, y: 20, roomName: TARGET_ROOM, getRangeTo: jest.fn(() => 1) } as unknown as RoomPosition,
+    getActiveBodyparts: jest.fn((part: BodyPartConstant) => (part === ATTACK ? 1 : 0)),
+  } as unknown as Creep;
+}
+
+function hostileStructure(type: StructureConstant, id: string, x: number, y: number, hits = 3000): Structure {
+  return {
+    id: id as Id<Structure>,
+    structureType: type,
+    hits,
+    hitsMax: hits,
+    pos: { x, y, roomName: TARGET_ROOM, getRangeTo: jest.fn(() => 1) } as unknown as RoomPosition,
+  } as Structure;
+}
+
 describe("healerRole war duo staging", () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -189,5 +210,184 @@ describe("healerRole war duo staging", () => {
       "E2N57",
       expect.objectContaining({ plainCost: 2, swampCost: 8 }),
     );
+  });
+
+  it("holds on an intermediate exit until attacker is also poised to cross", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: "E1N57",
+      x: 48,
+      y: 24,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E1N57",
+      x: 49,
+      y: 25,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    healer.room.findExitTo = jest.fn(() => RIGHT) as Room["findExitTo"];
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).source?.(healer);
+
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
+    expect(healer.move).not.toHaveBeenCalled();
+  });
+
+  it("crosses an intermediate exit when attacker is poised on the same side", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: "E1N57",
+      x: 49,
+      y: 24,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E1N57",
+      x: 49,
+      y: 25,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    healer.room.findExitTo = jest.fn(() => RIGHT) as Room["findExitTo"];
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).source?.(healer);
+
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      healer,
+      TARGET_ROOM,
+      undefined,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+  });
+
+  it("still advances toward an intermediate exit when not poised yet", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: "E1N57",
+      x: 46,
+      y: 24,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E1N57",
+      x: 47,
+      y: 25,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    healer.room.findExitTo = jest.fn(() => RIGHT) as Room["findExitTo"];
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).source?.(healer);
+
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      healer,
+      TARGET_ROOM,
+      undefined,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+  });
+
+  it("moves toward the paired attacker's combat target at range 2 inside target room", () => {
+    const hostile = hostileCreep("hostile-attacker");
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 20,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => (type === FIND_HOSTILE_CREEPS ? [hostile] : [])) as Room["find"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 21,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      healer,
+      hostile,
+      2,
+      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+    );
+    expect(moveToTarget).not.toHaveBeenCalledWith(
+      healer,
+      attacker,
+      1,
+      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+    );
+  });
+
+  it("moves toward the paired attacker's war core objective at range 2", () => {
+    const hostile = hostileCreep("hostile-attacker");
+    const spawn = hostileStructure(STRUCTURE_SPAWN, "spawn-healer-objective", 23, 20, 5000);
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 20,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [hostile];
+      if (type === FIND_HOSTILE_STRUCTURES) return [spawn];
+      return [];
+    }) as Room["find"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 21,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      healer,
+      spawn,
+      2,
+      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+    );
+    expect(moveToTarget).not.toHaveBeenCalledWith(
+      healer,
+      hostile,
+      2,
+      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+    );
+  });
+
+  it("holds adjacent in target room when the attacker has no combat target", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 20,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn(() => []) as Room["find"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 21,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(moveToTarget).not.toHaveBeenCalled();
   });
 });
