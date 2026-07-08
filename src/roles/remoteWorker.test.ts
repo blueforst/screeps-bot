@@ -1,7 +1,8 @@
 import { remoteWorkerRole } from "@/roles/remoteWorker";
-import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { clearMovementState, moveToTarget, moveToTargetRoom } from "@/roles/shared";
 
 jest.mock("@/roles/shared", () => ({
+  clearMovementState: jest.fn(),
   moveToTarget: jest.fn(),
   moveToTargetRoom: jest.fn(),
 }));
@@ -129,6 +130,7 @@ function makeCreep(opts: {
     memory: opts.memory || { configName: `${HOME_ROOM}:remoteMine:${TARGET_ROOM}:worker:0` },
     store: createStore({ [RESOURCE_ENERGY]: opts.energy }, capacity),
     withdraw: jest.fn(() => OK),
+    pickup: jest.fn(() => OK),
     transfer: jest.fn(() => OK),
     repair: jest.fn(() => OK),
     build: jest.fn(() => OK),
@@ -142,7 +144,7 @@ function makeCreep(opts: {
 // ─── SOURCE PHASE ────────────────────────────────────────────────────
 
 describe("remoteWorkerRole - source phase", () => {
-  it("fills from home storage first", () => {
+  it("travels empty from home to remote room instead of filling from home storage", () => {
     const storage = {
       id: "storage-1",
       structureType: STRUCTURE_STORAGE,
@@ -155,11 +157,12 @@ describe("remoteWorkerRole - source phase", () => {
 
     const result = remoteWorkerRole(TARGET_ROOM).source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(creep.withdraw).not.toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, TARGET_ROOM, undefined, TRAVEL_OPTS);
     expect(result).toBe(false);
   });
 
-  it("does not use terminal when storage has energy", () => {
+  it("does not use terminal or storage in home room", () => {
     const storage = {
       id: "storage-1",
       structureType: STRUCTURE_STORAGE,
@@ -178,11 +181,12 @@ describe("remoteWorkerRole - source phase", () => {
 
     remoteWorkerRole(TARGET_ROOM).source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(creep.withdraw).not.toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
     expect(creep.withdraw).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, TARGET_ROOM, undefined, TRAVEL_OPTS);
   });
 
-  it("uses terminal only when terminal energy is above 10000 and no storage", () => {
+  it("ignores home terminal surplus and travels empty to remote room", () => {
     const terminal = {
       id: "terminal-1",
       structureType: STRUCTURE_TERMINAL,
@@ -195,10 +199,11 @@ describe("remoteWorkerRole - source phase", () => {
 
     remoteWorkerRole(TARGET_ROOM).source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 600);
+    expect(creep.withdraw).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 600);
+    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, TARGET_ROOM, undefined, TRAVEL_OPTS);
   });
 
-  it("caps terminal withdrawal to surplus above 10000 reserve", () => {
+  it("does not cap home terminal withdrawal because it never withdraws from home terminal", () => {
     const terminal = {
       id: "terminal-1",
       structureType: STRUCTURE_TERMINAL,
@@ -211,7 +216,8 @@ describe("remoteWorkerRole - source phase", () => {
 
     remoteWorkerRole(TARGET_ROOM).source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 50);
+    expect(creep.withdraw).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 50);
+    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, TARGET_ROOM, undefined, TRAVEL_OPTS);
   });
 
   it("does not use terminal when terminal energy is at or below 10000", () => {
@@ -240,7 +246,20 @@ describe("remoteWorkerRole - source phase", () => {
     expect(result).toBe(true);
   });
 
-  it("never withdraws from remote source containers", () => {
+  it("switches to target after carrying any remote-room energy instead of filling to capacity", () => {
+    const remoteRoom = makeRoom(TARGET_ROOM);
+    Game.rooms[TARGET_ROOM] = remoteRoom;
+    const creep = makeCreep({ room: remoteRoom, energy: 130, capacity: 600 });
+
+    const result = remoteWorkerRole(TARGET_ROOM).source?.(creep);
+
+    expect(result).toBe(true);
+    expect(creep.withdraw).not.toHaveBeenCalled();
+    expect(creep.pickup).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("withdraws from remote source containers", () => {
     const containerPos = makePos(26, 25, TARGET_ROOM);
     const container = {
       id: "container-1",
@@ -252,12 +271,106 @@ describe("remoteWorkerRole - source phase", () => {
     } as unknown as StructureContainer;
     const remoteRoom = makeRoom(TARGET_ROOM, { structures: [container] });
     Game.rooms[TARGET_ROOM] = remoteRoom;
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src-1") return { pos: makePos(27, 25, TARGET_ROOM), id: "src-1" };
+      return null;
+    });
 
     const creep = makeCreep({ room: remoteRoom, energy: 0 });
 
     remoteWorkerRole(TARGET_ROOM).source?.(creep);
 
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_ENERGY);
+  });
+
+  it("picks up dropped energy near remote sources", () => {
+    const sourcePos = makePos(27, 25, TARGET_ROOM);
+    const dropped = {
+      id: "drop-1",
+      resourceType: RESOURCE_ENERGY,
+      amount: 300,
+      pos: makePos(26, 25, TARGET_ROOM),
+    } as unknown as Resource;
+    const remoteRoom = {
+      ...makeRoom(TARGET_ROOM),
+      find: jest.fn((type: FindConstant, opts2?: { filter?: (s: any) => boolean }) => {
+        const raw = type === FIND_DROPPED_RESOURCES ? [dropped] : [];
+        if (opts2?.filter) return raw.filter(opts2.filter);
+        return raw;
+      }),
+    } as unknown as Room;
+    Game.rooms[TARGET_ROOM] = remoteRoom;
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src-1") return { pos: sourcePos, id: "src-1" };
+      return null;
+    });
+
+    const creep = makeCreep({ room: remoteRoom, energy: 0 });
+
+    remoteWorkerRole(TARGET_ROOM).source?.(creep);
+
+    expect(creep.pickup).toHaveBeenCalledWith(dropped);
+  });
+
+  it("prefers a large dropped energy pile over a nearly empty source container", () => {
+    const sourcePos = makePos(27, 25, TARGET_ROOM);
+    const container = {
+      id: "container-1",
+      structureType: STRUCTURE_CONTAINER,
+      pos: makePos(26, 25, TARGET_ROOM),
+      store: createStore({ [RESOURCE_ENERGY]: 130 }),
+      hits: 200000,
+      hitsMax: 250000,
+    } as unknown as StructureContainer;
+    const dropped = {
+      id: "drop-1",
+      resourceType: RESOURCE_ENERGY,
+      amount: 2460,
+      pos: makePos(26, 25, TARGET_ROOM),
+    } as unknown as Resource;
+    const remoteRoom = {
+      ...makeRoom(TARGET_ROOM, { structures: [container] }),
+      find: jest.fn((type: FindConstant, opts2?: { filter?: (s: any) => boolean }) => {
+        const raw = type === FIND_STRUCTURES
+          ? [container]
+          : type === FIND_DROPPED_RESOURCES
+            ? [dropped]
+            : [];
+        if (opts2?.filter) return raw.filter(opts2.filter);
+        return raw;
+      }),
+    } as unknown as Room;
+    Game.rooms[TARGET_ROOM] = remoteRoom;
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src-1") return { pos: sourcePos, id: "src-1" };
+      return null;
+    });
+
+    const creep = makeCreep({ room: remoteRoom, energy: 0 });
+
+    remoteWorkerRole(TARGET_ROOM).source?.(creep);
+
+    expect(creep.pickup).toHaveBeenCalledWith(dropped);
     expect(creep.withdraw).not.toHaveBeenCalledWith(container, RESOURCE_ENERGY);
+  });
+
+  it("clears stale movement state when no remote energy is available", () => {
+    const remoteRoom = makeRoom(TARGET_ROOM);
+    Game.rooms[TARGET_ROOM] = remoteRoom;
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src-1") return { pos: makePos(27, 25, TARGET_ROOM), id: "src-1" };
+      return null;
+    });
+    const creep = makeCreep({ room: remoteRoom, energy: 0 });
+
+    const result = remoteWorkerRole(TARGET_ROOM).source?.(creep);
+
+    expect(result).toBe(false);
+    expect(clearMovementState).toHaveBeenCalledWith(creep);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
+    expect(creep.withdraw).not.toHaveBeenCalled();
+    expect(creep.pickup).not.toHaveBeenCalled();
   });
 });
 
@@ -472,7 +585,7 @@ describe("remoteWorkerRole - retirement", () => {
     expect(result).toBe(false);
   });
 
-  it("suicides when empty in home room and no work exists", () => {
+  it("travels to remote room when empty in home room", () => {
     const homeRoom = makeRoom(HOME_ROOM);
     Game.rooms[HOME_ROOM] = homeRoom;
 
@@ -481,21 +594,22 @@ describe("remoteWorkerRole - retirement", () => {
 
     const result = remoteWorkerRole(TARGET_ROOM).target(creep);
 
-    expect((creep as any).suicide).toHaveBeenCalled();
-    expect(result).toBe(true);
+    expect((creep as any).suicide).not.toHaveBeenCalled();
+    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, TARGET_ROOM, undefined, TRAVEL_OPTS);
+    expect(result).toBe(false);
   });
 
-  it("returns true to switch to source when empty in home room (before suicide)", () => {
-    const homeRoom = makeRoom(HOME_ROOM);
-    Game.rooms[HOME_ROOM] = homeRoom;
+  it("returns true to switch to source when empty in remote room", () => {
+    const remoteRoom = makeRoom(TARGET_ROOM);
+    Game.rooms[TARGET_ROOM] = remoteRoom;
 
-    const creep = makeCreep({ room: homeRoom, energy: 0 });
+    const creep = makeCreep({ room: remoteRoom, energy: 0 });
     (creep as any).suicide = jest.fn();
 
     const result = remoteWorkerRole(TARGET_ROOM).target(creep);
 
-    expect((creep as any).suicide).toHaveBeenCalled();
-    expect(typeof result).toBe("boolean");
+    expect((creep as any).suicide).not.toHaveBeenCalled();
+    expect(result).toBe(true);
   });
 });
 
