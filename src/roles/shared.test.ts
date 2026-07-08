@@ -173,7 +173,7 @@ describe("moveToTarget yielding", () => {
     expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
   });
 
-  it("pushes a blocker with stale pathingRequestedAt and non-expired movePathState", () => {
+  it("does not push a blocker with an unexpired movePathState", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N5A", creeps);
     const pusher = createCreep("worker-stale-push", "worker", 10, 10, room);
@@ -183,7 +183,7 @@ describe("moveToTarget yielding", () => {
     Game.creeps[blocker.name] = blocker;
 
     ensureCreepMovementState(blocker.name).movePathState = {
-      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:c`,
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:sc0:c`,
       path: "33",
       steps: [
         { x: 11, y: 10 },
@@ -206,9 +206,9 @@ describe("moveToTarget yielding", () => {
     const result = moveToTarget(pusher, { pos: new MockRoomPosition(12, 10, room.name) as unknown as RoomPosition });
 
     expect(result).toBe(OK);
-    expect(blocker.move).toHaveBeenCalled();
+    expect(blocker.move).not.toHaveBeenCalled();
     expect(pusher.move).toHaveBeenCalledWith(RIGHT);
-    expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBe(Game.time);
+    expect(getCreepMovementState(blocker.name)?.movementPushedAt).toBeUndefined();
   });
 
   it("does not push a blocker that already requested pathing this tick", () => {
@@ -244,7 +244,7 @@ describe("moveToTarget yielding", () => {
     Game.creeps[blocker.name] = blocker;
 
     ensureCreepMovementState(blocker.name).movePathState = {
-      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:c`,
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:sc0:c`,
       path: "2",
       steps: [
         { x: 11, y: 10 },
@@ -255,7 +255,7 @@ describe("moveToTarget yielding", () => {
       targetY: 10,
       range: 1,
       stuckTicks: 0,
-      expiresAt: Game.time + 5,
+      expiresAt: Game.time - 1,
     };
 
     (pusher.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(() => [
@@ -300,7 +300,7 @@ describe("moveToTarget yielding", () => {
     creeps.push(creep);
     Game.creeps[creep.name] = creep;
     ensureCreepMovementState(creep.name).movePathState = {
-      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:c`,
+      key: `${room.name}:${room.name}:13:10:r1:i1:sd:pd:md:e0:sc0:c`,
       path: "333",
       steps: [
         { x: 11, y: 10 },

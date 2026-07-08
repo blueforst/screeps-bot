@@ -80,7 +80,7 @@ describe("isBlockerActivelyMoving", () => {
     expect(isBlockerActivelyMoving(blocker)).toBe(true);
   });
 
-  it("returns false when only non-expired movePathState exists (stale cached path, no current pathing request)", () => {
+  it("returns true when an unexpired movePathState exists even before this tick's role execution", () => {
     const blocker = makeCreep("blocker", 10, 10);
     const state = ensureCreepMovementState(blocker.name);
     state.movePathState = {
@@ -94,7 +94,7 @@ describe("isBlockerActivelyMoving", () => {
       stuckTicks: 0,
       expiresAt: Game.time + 10,
     };
-    expect(isBlockerActivelyMoving(blocker)).toBe(false);
+    expect(isBlockerActivelyMoving(blocker)).toBe(true);
   });
 
   it("returns false when movePathState has expired", () => {
@@ -114,11 +114,21 @@ describe("isBlockerActivelyMoving", () => {
     expect(isBlockerActivelyMoving(blocker)).toBe(false);
   });
 
-  it("returns false when only stale travelState exists", () => {
+  it("returns true when travelState exists even before this tick's role execution", () => {
     const blocker = makeCreep("blocker", 10, 10);
     const state = ensureCreepMovementState(blocker.name);
     state.travelState = {
       targetRoom: "W1N2",
+      stuckTicks: 0,
+    };
+    expect(isBlockerActivelyMoving(blocker)).toBe(true);
+  });
+
+  it("returns false when travelState target is the blocker's current room", () => {
+    const blocker = makeCreep("blocker", 10, 10);
+    const state = ensureCreepMovementState(blocker.name);
+    state.travelState = {
+      targetRoom: "W1N1",
       stuckTicks: 0,
     };
     expect(isBlockerActivelyMoving(blocker)).toBe(false);
@@ -143,7 +153,7 @@ describe("moveToAdjacentPosition", () => {
     });
   });
 
-  it("pushes a blocker with stale movePathState when pathingRequestedAt is not current", () => {
+  it("does not push a blocker with an unexpired movePathState even when pathingRequestedAt is not current", () => {
     const pusher = makeCreep("pusher", 10, 10);
     const blocker = makeCreep("blocker", 11, 10);
     const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
@@ -166,8 +176,8 @@ describe("moveToAdjacentPosition", () => {
     const result = moveToAdjacentPosition(pusher, nextPos);
 
     expect(result).toBe(OK);
-    expect(blocker.move).toHaveBeenCalled();
-    expect(state.movePathState).toBeUndefined();
+    expect(blocker.move).not.toHaveBeenCalled();
+    expect(state.movePathState).toBeDefined();
   });
 
   it("does not push a blocker with current-tick pathingRequestedAt", () => {
@@ -206,7 +216,7 @@ describe("moveToAdjacentPosition", () => {
     expect(blocker.move).not.toHaveBeenCalled();
   });
 
-  it("pushes a blocker with stale travelState when it is no longer pathing this tick", () => {
+  it("does not push a blocker with travelState even when it is no longer pathing this tick", () => {
     const pusher = makeCreep("pusher", 10, 10);
     const blocker = makeCreep("blocker", 11, 10);
     const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
@@ -219,6 +229,25 @@ describe("moveToAdjacentPosition", () => {
       stuckTicks: 0,
     };
     state.pathingRequestedAt = Game.time - 1;
+
+    const result = moveToAdjacentPosition(pusher, nextPos);
+
+    expect(result).toBe(OK);
+    expect(blocker.move).not.toHaveBeenCalled();
+  });
+
+  it("pushes a blocker with arrived stale travelState", () => {
+    const pusher = makeCreep("pusher", 10, 10);
+    const blocker = makeCreep("blocker", 11, 10);
+    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
+
+    setupRoomContext([pusher, blocker]);
+
+    const state = ensureCreepMovementState(blocker.name);
+    state.travelState = {
+      targetRoom: "W1N1",
+      stuckTicks: 0,
+    };
 
     const result = moveToAdjacentPosition(pusher, nextPos);
 
@@ -257,7 +286,7 @@ describe("moveToAdjacentPosition", () => {
       targetY: 10,
       range: 1,
       stuckTicks: 0,
-      expiresAt: Game.time + 10,
+      expiresAt: Game.time - 1,
     };
 
     const result = moveToAdjacentPosition(pusher, nextPos);
