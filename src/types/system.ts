@@ -33,6 +33,9 @@ export interface CreepConfig {
   roomName?: string;
   body?: BodyPartConstant[];
   name?: string;
+  spawnOnce?: {
+    queuedAt?: number;
+  };
 }
 
 export interface RoleLifecycle {

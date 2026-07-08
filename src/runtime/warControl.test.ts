@@ -1,4 +1,4 @@
-import { getWarStatus, runWarControl, stopWarRoom } from "@/runtime/warControl";
+import { getWarStatus, runWarControl, startWarRoom, stopWarRoom } from "@/runtime/warControl";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { createMockStore, MockPos } from "@mock/powerBank";
 
@@ -177,6 +177,75 @@ describe("runWarControl", () => {
       "E1N57:war:E3N57:healer:0",
       "E1N57:war:E3N57:meleeAttacker:0",
     ]);
+    expect(attacker.spawnOnce?.queuedAt).toBeUndefined();
+  });
+
+  it("starts a manual one-shot T3 duo by default", () => {
+    Memory.data = {} as Memory["data"];
+
+    const result = startWarRoom("E3N57", "E1N57");
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      targetRoom: "E3N57",
+      sourceRoom: "E1N57",
+      squad: "t3Duo",
+      boostTier: "t3",
+      oneShot: true,
+    }));
+    expect(Memory.data?.war?.E3N57).toEqual(expect.objectContaining({
+      reason: "manual",
+      squad: "t3Duo",
+      boostTier: "t3",
+      oneShot: true,
+    }));
+  });
+
+  it("does not requeue one-shot war configs after their first queue", () => {
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "staging",
+          reason: "manual",
+          squad: "t3Duo",
+          boostTier: "t3",
+          oneShot: true,
+          attempts: 1,
+          createdAt: Game.time,
+          updatedAt: Game.time,
+        },
+      },
+    } as Memory["data"];
+    const labs = [
+      createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 600),
+      createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, 900),
+      createBoostLab("lab-heal", RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, 600),
+      createBoostLab("lab-move", RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, 540),
+    ];
+    const sourceRoom = createSourceRoom(labs);
+    const spawn = createSpawn(sourceRoom);
+    Game.rooms.E1N57 = sourceRoom;
+    Game.spawns.Spawn1 = spawn;
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) =>
+      labs.find((lab) => lab.id === id) ?? null
+    ) as Game["getObjectById"];
+
+    runWarControl();
+
+    expect(spawn.memory.spawnList).toEqual([
+      "E1N57:war:E3N57:healer:0",
+      "E1N57:war:E3N57:meleeAttacker:0",
+    ]);
+    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:meleeAttacker:0"].spawnOnce?.queuedAt).toBe(Game.time);
+
+    spawn.memory.spawnList = [];
+    Game.time += 1;
+    runWarControl();
+
+    expect(spawn.memory.spawnList).toEqual([]);
+    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:meleeAttacker:0"].spawnOnce?.queuedAt).toBe(1000);
   });
 
   it("keeps preparing and requests cross-room transfer when a boost compound is not local", () => {

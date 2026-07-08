@@ -3,7 +3,8 @@ import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
 import type { CreepConfig } from "@/types/system";
 
 type WarStatus = "staging" | "clearing" | "done" | "failed";
-type WarSquad = "standard" | "t3Duo";
+export type WarSquad = "standard" | "t3Duo";
+export type WarBoostTier = "t3";
 type WarRole = "meleeAttacker" | "healer";
 
 interface WarTask {
@@ -16,6 +17,7 @@ interface WarTask {
   boostTier?: "t3";
   boostLabs?: string[];
   boostStatus?: "preparing" | "ready" | "failed";
+  oneShot?: boolean;
   failReason?: string;
   attempts: number;
   createdAt: number;
@@ -35,6 +37,27 @@ interface HostilePresenceSnapshot {
 
 export interface StopWarOptions {
   suicide?: boolean;
+}
+
+export interface StartWarOptions {
+  routeRooms?: string[];
+  squad?: WarSquad;
+  boostTier?: WarBoostTier;
+  oneShot?: boolean;
+}
+
+export interface StartWarResult {
+  ok: true;
+  targetRoom: string;
+  sourceRoom: string;
+  status: WarStatus;
+  reason: "manual";
+  squad?: WarSquad;
+  boostTier?: WarBoostTier;
+  oneShot: boolean;
+  attempts: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface StopWarResult {
@@ -68,6 +91,7 @@ export interface WarStatusTaskSnapshot {
   reason: "npc_reservation" | "manual";
   squad?: WarSquad;
   boostTier?: "t3";
+  oneShot: boolean;
   boostStatus?: "preparing" | "ready" | "failed";
   attempts: number;
   age: number;
@@ -251,14 +275,25 @@ function isConfigSpawning(configName: string): boolean {
 
 function enqueueConfig(spawn: StructureSpawn, configName: string, toFront: boolean): void {
   const queue = spawn.memory.spawnList || [];
+  const config = ensureConfigStore()[configName];
   if (toFront) {
     spawn.memory.spawnList = [configName, ...queue.filter((name) => name !== configName)];
+    if (config?.spawnOnce && config.spawnOnce.queuedAt === undefined) {
+      config.spawnOnce.queuedAt = Game.time;
+    }
     return;
   }
 
   if (!queue.includes(configName)) {
     spawn.addTask(configName);
+    if (config?.spawnOnce && config.spawnOnce.queuedAt === undefined) {
+      config.spawnOnce.queuedAt = Game.time;
+    }
   }
+}
+
+function shouldQueueWarConfig(config: CreepConfig | undefined): boolean {
+  return config?.spawnOnce?.queuedAt === undefined;
 }
 
 function removeQueuedConfig(task: WarTask, configName: string): void {
@@ -402,21 +437,25 @@ function ensureCombatConfigs(task: WarTask): void {
 
   for (let i = 0; i < getMeleeCount(task); i++) {
     const configName = getConfigName(task, "meleeAttacker", i);
+    const existing = store[configName];
     store[configName] = {
       role: "meleeAttacker",
       args: getRoleArgs(task, "meleeAttacker", encodedRoute),
       roomName: task.sourceRoom,
       body: getRoleBody(task, "meleeAttacker"),
+      spawnOnce: task.oneShot ? (existing?.spawnOnce ?? {}) : undefined,
     };
   }
 
   for (let i = 0; i < getHealerCount(task); i++) {
     const configName = getConfigName(task, "healer", i);
+    const existing = store[configName];
     store[configName] = {
       role: "healer",
       args: getRoleArgs(task, "healer", encodedRoute),
       roomName: task.sourceRoom,
       body: getRoleBody(task, "healer"),
+      spawnOnce: task.oneShot ? (existing?.spawnOnce ?? {}) : undefined,
     };
   }
 
@@ -430,7 +469,7 @@ function ensureCombatConfigs(task: WarTask): void {
     const hasLive = getLiveCreepsByConfig(configName).length > 0;
     const queued = isConfigQueuedInSpawns(spawns, configName);
     const spawning = isConfigSpawning(configName);
-    if (!hasLive && !queued && !spawning) {
+    if (!hasLive && !queued && !spawning && shouldQueueWarConfig(store[configName])) {
       const targetSpawn = selectLeastLoadedSpawn(spawns);
       if (targetSpawn) enqueueConfig(targetSpawn, configName, true);
     }
@@ -441,7 +480,7 @@ function ensureCombatConfigs(task: WarTask): void {
     const hasLive = getLiveCreepsByConfig(configName).length > 0;
     const queued = isConfigQueuedInSpawns(spawns, configName);
     const spawning = isConfigSpawning(configName);
-    if (!hasLive && !queued && !spawning) {
+    if (!hasLive && !queued && !spawning && shouldQueueWarConfig(store[configName])) {
       const targetSpawn = selectLeastLoadedSpawn(spawns);
       if (targetSpawn) enqueueConfig(targetSpawn, configName, true);
     }
@@ -522,6 +561,7 @@ function buildTaskStatusSnapshot(task: WarTask): WarStatusTaskSnapshot {
     reason: task.reason,
     squad: task.squad,
     boostTier: task.boostTier,
+    oneShot: task.oneShot === true,
     boostStatus: task.boostStatus,
     attempts: task.attempts,
     age: Math.max(0, Game.time - task.createdAt),
@@ -595,7 +635,7 @@ function processTask(task: WarTask): void {
 export function requestWarRoomClear(
   targetRoom: string,
   sourceRoom: string,
-  options?: { routeRooms?: string[]; reason?: "npc_reservation" | "manual"; squad?: WarSquad; boostTier?: "t3" },
+  options?: { routeRooms?: string[]; reason?: "npc_reservation" | "manual"; squad?: WarSquad; boostTier?: WarBoostTier; oneShot?: boolean },
 ): void {
   const store = ensureWarStore();
   const existing = store[targetRoom];
@@ -614,6 +654,7 @@ export function requestWarRoomClear(
     boostTier: options?.boostTier ?? existing?.boostTier,
     boostLabs: existing?.boostLabs,
     boostStatus: existing?.boostStatus,
+    oneShot: options?.oneShot ?? existing?.oneShot,
     failReason: existing?.failReason,
     attempts: nextAttempts,
     createdAt: restart ? now : (existing?.createdAt ?? now),
@@ -622,6 +663,39 @@ export function requestWarRoomClear(
     clearSince: existing?.clearSince,
     updatedAt: now,
     completedAt: existing?.completedAt,
+  };
+}
+
+export function startWarRoom(targetRoom: string, sourceRoom: string, options: StartWarOptions = {}): StartWarResult | string {
+  if (!targetRoom || !sourceRoom) {
+    return "ERR_INVALID_ARGS:startWar(targetRoom, sourceRoom)";
+  }
+
+  const squad = options.squad ?? "t3Duo";
+  const boostTier = options.boostTier ?? (squad === "t3Duo" ? "t3" : undefined);
+  const oneShot = options.oneShot ?? true;
+
+  requestWarRoomClear(targetRoom, sourceRoom, {
+    routeRooms: options.routeRooms,
+    reason: "manual",
+    squad,
+    boostTier,
+    oneShot,
+  });
+
+  const task = ensureWarStore()[targetRoom];
+  return {
+    ok: true,
+    targetRoom: task.targetRoom,
+    sourceRoom: task.sourceRoom,
+    status: task.status,
+    reason: "manual",
+    squad: task.squad,
+    boostTier: task.boostTier,
+    oneShot: task.oneShot === true,
+    attempts: task.attempts,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
   };
 }
 
