@@ -396,8 +396,24 @@ function getAssignedSynthesisCarrierTask(creep: Creep): CarrierTask | null {
   return getSynthesisCarrierTasks(getAssignedCarrierRoomName(creep)).find((item) => item.id === taskId) || null;
 }
 
+// Per-tick memoization: Screeps object IDs resolve against the tick snapshot,
+// so same-tick caching is safe. Reset by Game.time so destroyed structures
+// refresh next tick. Avoids redundant Game.getObjectById calls from multiple
+// callers (runnable checks, pickup/delivery selection, assignment, fallbacks).
+let taskStructureCacheTick: number | null = null;
+const taskStructureCache = new Map<string, AnyStoreStructure | null>();
+
 function resolveTaskStructure(id: string): AnyStoreStructure | null {
-  return Game.getObjectById(id as Id<AnyStoreStructure>) || null;
+  if (taskStructureCacheTick !== Game.time) {
+    taskStructureCache.clear();
+    taskStructureCacheTick = Game.time;
+  }
+  if (taskStructureCache.has(id)) {
+    return taskStructureCache.get(id) ?? null;
+  }
+  const resolved = Game.getObjectById(id as Id<AnyStoreStructure>) || null;
+  taskStructureCache.set(id, resolved);
+  return resolved;
 }
 
 function isCarrierTaskStepRunnable(step: CarrierTaskStep): boolean {

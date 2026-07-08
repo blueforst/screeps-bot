@@ -3713,3 +3713,185 @@ describe("carrierRole factory logistics", () => {
     expect(done).toBe(true);
   });
 });
+
+describe("carrierRole resolveTaskStructure per-tick memoization", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    clearCreepAssignmentStateForTest();
+    resetRuntimeServices();
+    Game.time += 1;
+    Memory.rooms = {};
+    getEnergyStoreTarget.mockReset();
+    getEnergyStoreTarget.mockReturnValue(null);
+    isDroppedResourceTarget.mockReset();
+    isDroppedResourceTarget.mockReturnValue(false);
+    getPickupTargetEnergyAmount.mockReset();
+    getPickupTargetEnergyAmount.mockReturnValue(0);
+    getReservedPickupTarget.mockReset();
+    getReservedPickupTarget.mockReturnValue(null);
+    reservePickupTarget.mockReset();
+    reservePickupTarget.mockReturnValue(false);
+    moveToTarget.mockReset();
+    getPlannedStoragePos.mockReset();
+    getPlannedStoragePos.mockReturnValue(null);
+    getProtoStorageContainer.mockReset();
+    getProtoStorageContainer.mockReturnValue(null);
+    getProtoControllerLinkContainer.mockReset();
+    getProtoControllerLinkContainer.mockReturnValue(null);
+  });
+
+  function installGetObjectById(handler: (id: string) => unknown): jest.Mock {
+    const mock = jest.fn(handler);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = mock as unknown as Game["getObjectById"];
+    return mock as unknown as jest.Mock;
+  }
+
+  function countCallsFor(mock: jest.Mock, id: string): number {
+    return mock.mock.calls.filter(([arg]) => arg === id).length;
+  }
+
+  it("deduplicates Game.getObjectById calls for the same structure id within one tick", () => {
+    const room = createRoom("M1N1");
+    const container = {
+      id: "memo-container-1",
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_KEANIUM ? 900 : 0),
+      },
+    } as unknown as StructureContainer;
+    const terminal = room.terminal as StructureTerminal;
+    const creep = createCreep(room);
+    const getObjectById = installGetObjectById((id: string) => {
+      if (id === container.id) return container;
+      if (id === terminal.id) return terminal;
+      return null;
+    });
+    replaceCarrierTasksForProducerRoom("test", room.name, [
+      {
+        id: "memo-mineral-task",
+        type: "mineral_haul",
+        priority: 25,
+        steps: [
+          {
+            id: "memo-step-1",
+            resource: RESOURCE_KEANIUM,
+            fromKind: "container",
+            toKind: "terminal",
+            fromId: container.id,
+            toId: terminal.id,
+            amount: 900,
+          },
+        ],
+      },
+    ]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(switched).toBe(true);
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM, 800);
+    expect(countCallsFor(getObjectById, container.id)).toBe(1);
+    expect(countCallsFor(getObjectById, terminal.id)).toBe(1);
+  });
+
+  it("resolves structures again after Game.time advances (cache resets per tick)", () => {
+    const room = createRoom("M1N2");
+    const container = {
+      id: "memo-container-2",
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_KEANIUM ? 900 : 0),
+      },
+    } as unknown as StructureContainer;
+    const terminal = room.terminal as StructureTerminal;
+    const creep = createCreep(room);
+    const getObjectById = installGetObjectById((id: string) => {
+      if (id === container.id) return container;
+      if (id === terminal.id) return terminal;
+      return null;
+    });
+    replaceCarrierTasksForProducerRoom("test", room.name, [
+      {
+        id: "memo-mineral-task-2",
+        type: "mineral_haul",
+        priority: 25,
+        steps: [
+          {
+            id: "memo-step-2",
+            resource: RESOURCE_KEANIUM,
+            fromKind: "container",
+            toKind: "terminal",
+            fromId: container.id,
+            toId: terminal.id,
+            amount: 900,
+          },
+        ],
+      },
+    ]);
+
+    carrierRole().source?.(creep);
+    const firstTickContainerCalls = countCallsFor(getObjectById, container.id);
+    expect(firstTickContainerCalls).toBe(1);
+
+    Game.time += 1;
+    (creep.withdraw as jest.Mock).mockClear();
+
+    carrierRole().source?.(creep);
+
+    const totalContainerCalls = countCallsFor(getObjectById, container.id);
+    expect(totalContainerCalls).toBeGreaterThan(firstTickContainerCalls);
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM, 800);
+  });
+
+  it("caches null results within a tick but refreshes them next tick", () => {
+    const room = createRoom("M1N3");
+    const container = {
+      id: "memo-container-missing",
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_KEANIUM ? 900 : 0),
+      },
+    } as unknown as StructureContainer;
+    const terminal = room.terminal as StructureTerminal;
+    const creep = createCreep(room);
+    let containerExists = false;
+    const getObjectById = installGetObjectById((id: string) => {
+      if (id === container.id) return containerExists ? container : null;
+      if (id === terminal.id) return terminal;
+      return null;
+    });
+    replaceCarrierTasksForProducerRoom("test", room.name, [
+      {
+        id: "memo-mineral-task-missing",
+        type: "mineral_haul",
+        priority: 25,
+        steps: [
+          {
+            id: "memo-step-missing",
+            resource: RESOURCE_KEANIUM,
+            fromKind: "container",
+            toKind: "terminal",
+            fromId: container.id,
+            toId: terminal.id,
+            amount: 900,
+          },
+        ],
+      },
+    ]);
+
+    const switchedMissing = carrierRole().source?.(creep);
+
+    expect(switchedMissing).toBe(false);
+    expect(creep.withdraw).not.toHaveBeenCalled();
+    const firstTickContainerCalls = countCallsFor(getObjectById, container.id);
+    expect(firstTickContainerCalls).toBeGreaterThanOrEqual(1);
+
+    Game.time += 1;
+    containerExists = true;
+    (creep.withdraw as jest.Mock).mockClear();
+
+    const switchedPresent = carrierRole().source?.(creep);
+
+    expect(switchedPresent).toBe(true);
+    expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_KEANIUM, 800);
+  });
+});
