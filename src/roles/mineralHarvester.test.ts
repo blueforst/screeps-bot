@@ -56,6 +56,7 @@ describe("mineralHarvesterRole", () => {
     expect(role.source?.(creep)).toBe(false);
     expect(moveToTarget).toHaveBeenCalledWith(creep, (mineral.pos.findInRange(FIND_STRUCTURES, 1)[0] as StructureContainer).pos, 0, {
       reusePath: 5,
+      allowSourceContainerTarget: true,
     });
     expect(creep.harvest).not.toHaveBeenCalled();
   });

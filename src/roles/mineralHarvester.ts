@@ -35,7 +35,7 @@ export const mineralHarvesterRole: RoleFactory = (mineralId?: string) => ({
     }
 
     if (!creep.pos.isEqualTo(container.pos)) {
-      moveToTarget(creep, container.pos, 0, { reusePath: 5 });
+      moveToTarget(creep, container.pos, 0, { reusePath: 5, allowSourceContainerTarget: true });
       return false;
     }
 
