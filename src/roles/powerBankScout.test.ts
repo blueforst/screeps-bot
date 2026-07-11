@@ -85,7 +85,7 @@ describe("powerBankScoutRole", () => {
   });
 
   it("reverses toward E8N60 after visiting E9N60", () => {
-    const creep = createMockCreep("E9N60", { _patrol: { patrolIndex: 9, patrolDirection: 1 } });
+    const creep = createMockCreep("E9N60", { _patrol: { patrolIndex: 9 } });
 
     powerBankScoutRole().source?.(creep);
 
@@ -226,6 +226,16 @@ describe("powerBankScoutRole", () => {
       expect(Memory.runtime?.transitDangerRooms?.E3N57).toBeUndefined();
     });
 
+    it("permanently marks a transit room reserved by another user", () => {
+      const creep = createMockCreep("E3N57", { _patrol: { patrolIndex: 0 } });
+      (creep.room as any).controller = { reservation: { username: "enemy" }, my: false };
+
+      powerBankScoutRole().source?.(creep);
+
+      expect((Memory.runtime as any).powerBankPermanentDangerRooms?.E3N57).toBe(true);
+      expect(Memory.runtime?.transitDangerRooms?.E3N57).toBeUndefined();
+    });
+
     it("does not mark patrol target rooms as dangerous even if damaged", () => {
       const creep = createMockCreep("E0N60", { _patrol: { patrolIndex: 0 }, _lastHits: 1000 }, 800);
       (creep.room as any).controller = undefined;
@@ -317,12 +327,18 @@ describe("powerBankScoutRole", () => {
         E5N60: Game.time + 500,
         E2N54: Game.time + 200,
       };
+      (Memory.runtime as any).powerBankPermanentDangerRooms = {
+        E0N60: true,
+        E2N54: true,
+      };
 
       const rooms = getActiveTransitDangerRooms();
 
       expect(rooms).toEqual(["E2N54"]);
       expect(Memory.runtime!.transitDangerRooms!["E0N60"]).toBeUndefined();
       expect(Memory.runtime!.transitDangerRooms!["E5N60"]).toBeUndefined();
+      expect((Memory.runtime as any).powerBankPermanentDangerRooms?.E0N60).toBeUndefined();
+      expect((Memory.runtime as any).powerBankPermanentDangerRooms?.E2N54).toBe(true);
     });
   });
 });
