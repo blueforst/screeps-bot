@@ -7248,6 +7248,28 @@ describe("resupplyBusySynthesisRooms", () => {
     expect(task!.amount).toBe(800);
   });
 
+  it("uses a supplied transfer amount index for existing resupply", () => {
+    const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
+    Game.rooms[HUB_ROOM_NAME] = createSatelliteRoom(HUB_ROOM_NAME, {});
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+    Memory.runtime!.synthesisControl!.rooms![SAT_ROOM] = {
+      stage: "synthesizing",
+      missing: { [RESOURCE_UTRIUM]: 800 },
+    } as any;
+    const transferAmounts = {
+      getIncoming: jest.fn(() => 800),
+      getOutgoing: jest.fn(() => 0),
+      getPendingIncoming: jest.fn(() => 0),
+      getPendingOutgoing: jest.fn(() => 0),
+    };
+
+    const actions = resupplyBusySynthesisRooms(HUB_ROOM_NAME, hubInventory, 1000, transferAmounts);
+
+    expect(actions).toEqual([]);
+    expect(transferAmounts.getIncoming).toHaveBeenCalledWith(SAT_ROOM, RESOURCE_UTRIUM);
+    expect(Object.values(ensureResourceTransferTaskStore())).toHaveLength(0);
+  });
+
   it("skips idle rooms", () => {
     const hubInventory: Record<string, number> = { [RESOURCE_UTRIUM]: 5000 };
     const reservePerRoom = 1000;

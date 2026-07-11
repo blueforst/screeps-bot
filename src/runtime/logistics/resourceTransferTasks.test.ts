@@ -1,6 +1,7 @@
 import {
   cancelResourceTransferTask,
   cleanupResourceTransferTaskStore,
+  createResourceTransferTaskAmountIndex,
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
   getIncomingResourceTransferAmount,
@@ -138,6 +139,55 @@ describe("getOutgoingResourceTransferAmount / getIncomingResourceTransferAmount"
 
     expect(getOutgoingResourceTransferAmount("W1N1", RESOURCE_ENERGY)).toBe(200);
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(200);
+  });
+
+  it("indexes only supplyable pending transfer amounts", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "healthy");
+    const cancelled = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 300, "cancelled");
+    const blocked = createResourceTransferTask("W3N1", "W2N1", RESOURCE_ENERGY, 200, "blocked");
+    if (typeof cancelled === "string" || typeof blocked === "string") throw new Error("unexpected task creation failure");
+    cancelResourceTransferTask(cancelled.task.id);
+    ensureResourceTransferTaskStore()[blocked.task.id].lastError = "insufficient_terminal_resource_or_fee";
+
+    const index = createResourceTransferTaskAmountIndex();
+
+    expect(index.getOutgoing("W1N1", RESOURCE_ENERGY)).toBe(500);
+    expect(index.getIncoming("W2N1", RESOURCE_ENERGY)).toBe(500);
+    expect(index.getOutgoing("W3N1", RESOURCE_ENERGY)).toBe(200);
+    expect(index.getIncoming("W1N1", RESOURCE_ENERGY)).toBe(0);
+  });
+
+  it("indexes incoming amounts by task reason prefix when requested", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "hub:export:energy");
+    createResourceTransferTask("W3N1", "W2N1", RESOURCE_ENERGY, 300, "synthesis:direct:energy");
+
+    const index = createResourceTransferTaskAmountIndex();
+
+    expect(index.getIncoming("W2N1", RESOURCE_ENERGY)).toBe(800);
+    expect(index.getIncoming("W2N1", RESOURCE_ENERGY, "hub:export:")).toBe(500);
+  });
+
+  it("keeps blocked pending hub exports in the raw pending index", () => {
+    const task = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "hub:export:energy");
+    if (typeof task === "string") throw new Error("unexpected task creation failure");
+    ensureResourceTransferTaskStore()[task.task.id].lastError = "insufficient_terminal_resource_or_fee";
+
+    const index = createResourceTransferTaskAmountIndex();
+
+    expect(index.getIncoming("W2N1", RESOURCE_ENERGY, "hub:export:")).toBe(0);
+    expect(index.getPendingIncoming("W2N1", RESOURCE_ENERGY, "hub:export:")).toBe(500);
+  });
+
+  it("indexes pending outgoing amounts by task reason prefix", () => {
+    createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "synthesis:direct:energy");
+    createResourceTransferTask("W1N1", "W3N1", RESOURCE_ENERGY, 300, "synthesis:hub-route:energy");
+    createResourceTransferTask("W1N1", "W4N1", RESOURCE_ENERGY, 200, "hub:export:energy");
+
+    const index = createResourceTransferTaskAmountIndex();
+
+    expect(index.getOutgoing("W1N1", RESOURCE_ENERGY)).toBe(1000);
+    expect(index.getPendingOutgoing("W1N1", RESOURCE_ENERGY, "synthesis:direct:")).toBe(500);
+    expect(index.getPendingOutgoing("W1N1", RESOURCE_ENERGY, "synthesis:hub-route:")).toBe(300);
   });
 });
 
@@ -318,6 +368,23 @@ describe("cleanupResourceTransferTaskStore", () => {
 
     expect(removed).toBe(0);
     expect(store[r.task.id]).toBeDefined();
+  });
+
+  it("keeps blocking pending tasks on their longer TTL", () => {
+    const terminal = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "terminal");
+    const blocked = createResourceTransferTask("W1N1", "W2N1", RESOURCE_HYDROGEN, 500, "blocked");
+    if (typeof terminal === "string" || typeof blocked === "string") throw new Error("unexpected task creation failure");
+    const store = ensureResourceTransferTaskStore();
+    store[terminal.task.id].status = "cancelled";
+    store[terminal.task.id].updatedAt = 50;
+    store[blocked.task.id].lastError = "insufficient_terminal_resource_or_fee";
+    store[blocked.task.id].createdAt = 50;
+
+    const removed = cleanupResourceTransferTaskStore(new Set(["W1N1", "W2N1"]), 10, 100);
+
+    expect(removed).toBe(1);
+    expect(store[terminal.task.id]).toBeUndefined();
+    expect(store[blocked.task.id]).toBeDefined();
   });
 
   it("keeps pending tasks with non-blocking errors regardless of age", () => {
