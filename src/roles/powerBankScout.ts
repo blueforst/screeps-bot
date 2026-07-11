@@ -7,6 +7,7 @@ const TRANSIT_DANGER_TTL = 500;
 
 interface PatrolMemory {
   patrolIndex?: number;
+  patrolDirection?: 1 | -1;
 }
 
 function ensurePatrolMemory(creep: Creep): PatrolMemory {
@@ -22,8 +23,28 @@ function getCurrentPatrolTarget(patrol: PatrolMemory): string {
 }
 
 function advancePatrol(patrol: PatrolMemory): void {
-  const current = patrol.patrolIndex ?? 0;
-  patrol.patrolIndex = (current + 1) % POWER_BANK_PATROL_ROOMS.length;
+  const length = POWER_BANK_PATROL_ROOMS.length;
+  if (length <= 1) return;
+
+  const rawIndex = patrol.patrolIndex ?? 0;
+  const current = ((rawIndex % length) + length) % length;
+  const direction = patrol.patrolDirection === -1 ? -1 : 1;
+  const lastIndex = length - 1;
+
+  if (current === lastIndex) {
+    patrol.patrolIndex = lastIndex - 1;
+    patrol.patrolDirection = -1;
+    return;
+  }
+
+  if (current === 0 && direction === -1) {
+    patrol.patrolIndex = 1;
+    patrol.patrolDirection = 1;
+    return;
+  }
+
+  patrol.patrolIndex = current + direction;
+  patrol.patrolDirection = direction;
 }
 
 function scanRoomForPowerBanks(creep: Creep): void {
@@ -40,7 +61,7 @@ function scanRoomForPowerBanks(creep: Creep): void {
   }
 }
 
-function hasHostilePresence(room: Room): boolean {
+function hasHostileCombatPresence(room: Room): boolean {
   const hostiles = room.find(FIND_HOSTILE_CREEPS);
   for (const h of hostiles) {
     if (
@@ -54,6 +75,10 @@ function hasHostilePresence(room: Room): boolean {
   if (room.find(FIND_HOSTILE_POWER_CREEPS).length > 0) {
     return true;
   }
+  return false;
+}
+
+function hasHostileController(room: Room): boolean {
   if (room.controller?.owner && !room.controller.my) {
     return true;
   }
@@ -74,19 +99,41 @@ function markTransitDanger(roomName: string): void {
   Memory.runtime.transitDangerRooms[roomName] = Game.time + TRANSIT_DANGER_TTL;
 }
 
+function markPermanentTransitDanger(roomName: string): void {
+  if (!Memory.runtime) Memory.runtime = {};
+  if (!Memory.runtime.powerBankPermanentDangerRooms) Memory.runtime.powerBankPermanentDangerRooms = {};
+  Memory.runtime.powerBankPermanentDangerRooms[roomName] = true;
+}
+
 export function getActiveTransitDangerRooms(): string[] {
-  const map = Memory.runtime?.transitDangerRooms;
-  if (!map) return [];
+  const runtime = Memory.runtime;
+  if (!runtime) return [];
+
   const now = Game.time;
-  const active: string[] = [];
-  for (const [room, expiresAt] of Object.entries(map)) {
-    if (expiresAt <= now || isPowerBankPatrolRoom(room)) {
-      delete map[room];
-      continue;
+  const active = new Set<string>();
+  const permanent = runtime.powerBankPermanentDangerRooms;
+  if (permanent) {
+    for (const room of Object.keys(permanent)) {
+      if (isPowerBankPatrolRoom(room)) {
+        delete permanent[room];
+        continue;
+      }
+      active.add(room);
     }
-    active.push(room);
   }
-  return active;
+
+  const temporary = runtime.transitDangerRooms;
+  if (temporary) {
+    for (const [room, expiresAt] of Object.entries(temporary)) {
+      if (expiresAt <= now || isPowerBankPatrolRoom(room)) {
+        delete temporary[room];
+        continue;
+      }
+      active.add(room);
+    }
+  }
+
+  return [...active];
 }
 
 function checkAndMarkTransitDanger(creep: Creep): void {
@@ -97,12 +144,11 @@ function checkAndMarkTransitDanger(creep: Creep): void {
   const currentHits = creep.hits;
   creep.memory._lastHits = currentHits;
 
-  let damaged = false;
-  if (lastHits !== undefined && currentHits < lastHits) {
-    damaged = true;
+  const damaged = lastHits !== undefined && currentHits < lastHits;
+  if (hasHostileController(creep.room)) {
+    markPermanentTransitDanger(roomName);
   }
-
-  if (damaged || hasHostilePresence(creep.room)) {
+  if (damaged || hasHostileCombatPresence(creep.room)) {
     markTransitDanger(roomName);
   }
 }

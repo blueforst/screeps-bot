@@ -813,6 +813,8 @@ declare global {
       };
       /** Power bank scout transit danger rooms: roomName -> expiresAt tick. */
       transitDangerRooms?: Record<string, number>;
+      /** Power bank scout hostile-owned or hostile-reserved transit rooms. */
+      powerBankPermanentDangerRooms?: Record<string, true>;
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
