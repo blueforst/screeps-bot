@@ -40,6 +40,7 @@ describe("createResourceTransferTask validation", () => {
     resetRuntimeServices();
     registerRuntimeServices();
     Game.time = 100;
+    Memory.cfg = undefined;
     Memory.data = undefined;
     Memory.runtime = undefined;
   });
@@ -441,6 +442,20 @@ describe("cleanupResourceTransferTaskStore", () => {
     const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);
     expect(removed).toBe(0);
   });
+
+  it("retains the current schema gate after the final task record is removed", () => {
+    const created = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "terminal");
+    if (typeof created === "string") throw new Error(created);
+    created.task.status = "done";
+    created.task.updatedAt = 0;
+
+    cleanupResourceTransferTaskStore(new Set(["W1N1", "W2N1"]), 10);
+
+    expect(Memory.data?.resourceControl).toEqual({
+      taskSchemaVersion: 2,
+      tasks: {},
+    });
+  });
 });
 
 describe("getIncomingResourceTransferAmount blocked task filter", () => {
@@ -634,6 +649,58 @@ describe("resource transfer task health v2", () => {
     expect(index.getOutgoing("W3N1", RESOURCE_HYDROGEN)).toBe(300);
   });
 
+  it("uses configured source-depleted grace for health reads and reconciliation", () => {
+    Memory.cfg = {
+      resourceControl: {
+        capacityBalancing: {
+          sourceDepletedGraceTicks: 200,
+        },
+      },
+    };
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    const reconcile = taskHealthApi.reconcileResourceTransferTasks;
+    expect(createAutomatic).toBeDefined();
+    expect(markBlocked).toBeDefined();
+    expect(reconcile).toBeDefined();
+    if (!createAutomatic || !markBlocked || !reconcile) return;
+    const created = createAutomatic("W1N1", "W2N1", RESOURCE_HYDROGEN, 100, "synthesis:configured-grace");
+    if (typeof created === "string") throw new Error(created);
+    Game.time = 110;
+    markBlocked(created.task, "source_depleted");
+
+    Game.time = 299;
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_HYDROGEN)).toBe(100);
+    expect(reconcile()).toBe(0);
+    expect(created.task.status).toBe("pending");
+
+    Game.time = 310;
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_HYDROGEN)).toBe(0);
+    expect(reconcile()).toBe(1);
+    expect(created.task.status).toBe("cancelled");
+  });
+
+  it("uses configured no-progress TTL during task-store cleanup", () => {
+    Memory.cfg = {
+      resourceControl: {
+        capacityBalancing: {
+          automaticTaskNoProgressTtl: 10_000,
+        },
+      },
+    };
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    expect(createAutomatic).toBeDefined();
+    if (!createAutomatic) return;
+    Game.time = 0;
+    const created = createAutomatic("W1N1", "W2N1", RESOURCE_HYDROGEN, 100, "hub:configured-ttl");
+    if (typeof created === "string") throw new Error(created);
+
+    Game.time = 6_000;
+    cleanupResourceTransferTaskStore(new Set(["W1N1", "W2N1"]), 200);
+
+    expect(created.task.status).toBe("pending");
+  });
+
   it("cancels stalled automatic tasks while retaining equally old manual tasks", () => {
     const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
     const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
@@ -712,6 +779,7 @@ describe("resource transfer task health v2", () => {
     const knownReasons = [
       "hub:import:H",
       "synthesis:direct:H",
+      "auto:synthesis:W1N1:H",
       "powerBankBoost:task-1",
       "energy-support",
       "capacity:relief:H",

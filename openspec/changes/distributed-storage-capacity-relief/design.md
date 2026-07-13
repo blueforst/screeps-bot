@@ -80,11 +80,11 @@ For a new route, a receiver must:
 - have `capacityState === "normal"`;
 - have at least 300,000 storage free and 50,000 terminal free.
 
-Existing routes can continue below those admission watermarks, but execution still caps each send so the receiver retains at least 100,000 storage free and 40,000 terminal free. A pressure/emergency room is never a relief receiver.
+Existing routes can continue below those admission watermarks, but execution still caps each send so the receiver retains the configured storage and terminal buffers. Because pressure entry is inclusive at the threshold, capacity-relief sends keep one additional unit of headroom; a receiver admitted at exactly 50,000 terminal free therefore stops at 40,001 instead of immediately becoming pressured. A pressure/emergency room is never a relief receiver.
 
 Receiver ranking is deterministic: greatest safe receivable capacity first, then lowest current stock of the selected resource, then lowest transaction energy cost, then room name. This favors meaningful relief without turning transaction cost into the only objective.
 
-When the source terminal is below its recovery watermark, the planner first selects the largest movable non-energy resource already in the terminal; movable surplus energy is a fallback only after energy protection. When terminal recovery is satisfied and storage still needs relief, it selects the largest movable storage surplus and lets the existing terminal-feed carrier task stage that resource. If both structures are pressured, terminal relief comes first so a staging lane is restored.
+When the source terminal is below its recovery watermark, the planner first selects the largest movable non-energy resource already in the terminal; movable surplus energy is a fallback only after energy protection. When terminal recovery is satisfied and storage still needs relief, it selects the largest movable storage surplus and lets the existing terminal-feed carrier task stage that resource. If terminal pressure returns while a storage-only relief route is pending, carrier staging stops and the route is atomically replaced by a terminal-resident candidate; when none is movable, the stale automatic route is cancelled so it cannot occupy the source's only relief lane. If both structures are pressured, terminal relief comes first so a staging lane is restored.
 
 Planned amount is the minimum of:
 
@@ -130,7 +130,7 @@ blockedSince?: number;
 lastProgressAt: number;
 ```
 
-`lastError` remains for command cancellation, invalid routes, and terminal return codes; normal retry conditions use `blockedReason`. A new automatic-task creation wrapper marks Hub, synthesis, power-bank boost, energy-support, and capacity tasks as automatic. Existing console APIs keep creating manual tasks by default.
+`lastError` remains for command cancellation, invalid routes, and terminal return codes; normal retry conditions use `blockedReason`. A new automatic-task creation wrapper marks Hub, synthesis, power-bank boost, energy-support, and capacity tasks as automatic. Legacy `auto:synthesis:` compatibility tasks are also recognized as generated. Existing console APIs keep creating manual tasks by default.
 
 Health transitions are explicit:
 
@@ -140,6 +140,8 @@ Health transitions are explicit:
 - the first occurrence sets `blockedSince`; repeated checks do not reset it;
 - a successful send clears blocker fields and updates `lastProgressAt` and `updatedAt`;
 - restored conditions clear the blocker and allow execution without recreating the task.
+
+Blocker health is reevaluated for every pending task even after the shared send budget is exhausted. This health-only pass never sends, and a terminal return-code failure retains any pre-existing supply blocker until either its condition is independently observed as restored or a send succeeds.
 
 Reservation semantics deliberately differ by blocker:
 
@@ -169,7 +171,7 @@ Action logs remain bounded through the existing log limiter; task aggregates are
 
 `Memory.data.resourceControl.taskSchemaVersion` gates a one-time v2 reconciliation:
 
-- infer `automatic` only for known generated reason prefixes (`hub:`, `synthesis:`, `powerBankBoost`, `energy-support`, and `capacity:`); unknown or absent reasons become `manual`;
+- infer `automatic` only for known generated reason prefixes (`hub:`, `synthesis:`, `auto:synthesis:`, `powerBankBoost`, `energy-support`, and `capacity:`); unknown or absent reasons become `manual`;
 - initialize `lastProgressAt` from `updatedAt`, falling back to `createdAt`;
 - translate the legacy insufficient-terminal blocking error into the explicit blocker;
 - evaluate already-stale automatic tasks against the 100/5,000 tick rules;

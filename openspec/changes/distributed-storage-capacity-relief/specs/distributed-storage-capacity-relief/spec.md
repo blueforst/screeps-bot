@@ -56,6 +56,10 @@ The system SHALL prioritize movable non-energy stock already in a pressured term
 - **WHEN** terminal recovery is satisfied, storage remains pressured, and a movable storage surplus exists
 - **THEN** a relief task is created and the existing carrier-task mechanism stages the selected resource into the terminal
 
+#### Scenario: Terminal pressure supersedes an existing storage route
+- **WHEN** terminal free capacity falls below its recovery watermark while an automatic storage-only relief route is pending
+- **THEN** storage staging stops and the route is replaced by a movable terminal-resident resource, or cancelled when no such resource is safe to move
+
 #### Scenario: Reserved production input is protected
 - **WHEN** part of a resource is covered by an active synthesis, boost, factory, or production reservation
 - **THEN** only stock above that reservation and other safety floors is eligible for relief

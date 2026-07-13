@@ -189,4 +189,35 @@ describe("resource control live-like capacity recovery", () => {
     expect(capacityTasks.filter((task) => task.status === "pending")).toHaveLength(0);
     expect(Memory.runtime?.resourceControl?.recentCapacityReliefRoutes?.length).toBe(16);
   });
+
+  it("keeps an exact-admission receiver normal instead of ping-ponging next cycle", () => {
+    const source = createMutableRoom(
+      "W81N1",
+      { [RESOURCE_ENERGY]: 200_000 },
+      {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 230_000,
+      },
+    );
+    const receiver = createMutableRoom(
+      "W81N2",
+      { [RESOURCE_ENERGY]: 200_000 },
+      { [RESOURCE_ENERGY]: 250_000 },
+    );
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+
+    Game.time = 10;
+    runResourceControl();
+    Game.time = 20;
+    runResourceControl();
+
+    expect(receiver.terminal!.store.getFreeCapacity()).toBe(40_001);
+    expect(Memory.runtime?.resourceControl?.rooms[receiver.name]?.capacityState).toBe("normal");
+    expect(
+      Object.values(ensureResourceTransferTaskStore()).filter(
+        (task) => task.reason?.startsWith("capacity:relief:") && task.fromRoomName === receiver.name,
+      ),
+    ).toHaveLength(0);
+  });
 });

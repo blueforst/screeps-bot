@@ -43,7 +43,6 @@ const INTER_SHARD_CLAIM_TTL = 5000;
 const INTER_SHARD_ROOM_STATE_TTL = 5000;
 const CROSS_SHARD_COLONIZATION_TTL = 5000;
 const RESOURCE_CONTROL_TERMINAL_TASK_TTL = 200;
-const RESOURCE_CONTROL_BLOCKING_TASK_TTL = 5000;
 const CARRIER_TASK_BOARD_TTL = 500;
 
 function getOwnedRoomNameSet(): Set<string> {
@@ -498,7 +497,6 @@ function cleanupResourceControlTaskMemory(ownedRooms: Set<string>): number {
   return cleanupResourceTransferTaskStore(
     ownedRooms,
     RESOURCE_CONTROL_TERMINAL_TASK_TTL,
-    RESOURCE_CONTROL_BLOCKING_TASK_TTL,
   );
 }
 

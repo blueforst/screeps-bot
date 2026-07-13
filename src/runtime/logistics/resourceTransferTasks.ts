@@ -1,3 +1,4 @@
+import { normalizeNumber } from "@/runtime/configNormalize";
 import { getMemoryService } from "@/runtime/runtimeServices";
 
 export type ResourceTransferTaskStatus = "pending" | "done" | "cancelled" | "failed";
@@ -63,6 +64,7 @@ let taskIdSequenceTick = -1;
 const AUTOMATIC_LEGACY_REASON_PREFIXES = [
   "hub:",
   "synthesis:",
+  "auto:synthesis:",
   "powerBankBoost",
   "energy-support",
   "capacity:",
@@ -78,6 +80,24 @@ function inferLegacyTaskOrigin(reason?: string): ResourceTransferTaskOrigin {
     return "automatic";
   }
   return "manual";
+}
+
+export function resolveResourceTransferTaskHealthOptions(): ResourceTransferTaskHealthOptions {
+  const raw = Memory.cfg?.resourceControl?.capacityBalancing;
+  return {
+    automaticTaskNoProgressTtl: normalizeNumber(
+      raw?.automaticTaskNoProgressTtl,
+      DEFAULT_AUTOMATIC_TASK_NO_PROGRESS_TTL,
+      100,
+      100_000,
+    ),
+    sourceDepletedGraceTicks: normalizeNumber(
+      raw?.sourceDepletedGraceTicks,
+      DEFAULT_SOURCE_DEPLETED_GRACE_TICKS,
+      1,
+      5_000,
+    ),
+  };
 }
 
 function migrateResourceTransferTasksToV2(memory: ResourceTransferTaskStoreMemory): void {
@@ -309,7 +329,7 @@ export function recordResourceTransferTaskProgress(task: ResourceTransferTask): 
 export function isHealthyResourceTransferTaskReservation(
   task: ResourceTransferTask,
   direction: "incoming" | "outgoing" = "incoming",
-  sourceDepletedGraceTicks = DEFAULT_SOURCE_DEPLETED_GRACE_TICKS,
+  sourceDepletedGraceTicks = resolveResourceTransferTaskHealthOptions().sourceDepletedGraceTicks,
 ): boolean {
   if (task.status !== "pending") {
     return false;
@@ -333,12 +353,13 @@ function cancelAutomaticTask(task: ResourceTransferTask, reason: string): void {
 export function reconcileResourceTransferTasks(
   options: Partial<ResourceTransferTaskHealthOptions> = {},
 ): number {
+  const configured = resolveResourceTransferTaskHealthOptions();
   const automaticTaskNoProgressTtl = Number.isFinite(options.automaticTaskNoProgressTtl)
     ? Math.max(0, Math.floor(options.automaticTaskNoProgressTtl!))
-    : DEFAULT_AUTOMATIC_TASK_NO_PROGRESS_TTL;
+    : configured.automaticTaskNoProgressTtl;
   const sourceDepletedGraceTicks = Number.isFinite(options.sourceDepletedGraceTicks)
     ? Math.max(0, Math.floor(options.sourceDepletedGraceTicks!))
-    : DEFAULT_SOURCE_DEPLETED_GRACE_TICKS;
+    : configured.sourceDepletedGraceTicks;
 
   let cancelled = 0;
   for (const task of Object.values(ensureResourceTransferTaskStore())) {
@@ -494,14 +515,15 @@ export function countPendingIncomingResourceTransferTasksByRoom(roomName: string
 export function cleanupResourceTransferTaskStore(
   ownedRooms: Set<string>,
   terminalTaskTtl: number,
-  automaticTaskNoProgressTtl = DEFAULT_AUTOMATIC_TASK_NO_PROGRESS_TTL,
+  automaticTaskNoProgressTtl?: number,
+  sourceDepletedGraceTicks?: number,
 ): number {
   const tasks = getMemoryService().ensureData().resourceControl?.tasks;
   if (!tasks) {
     return 0;
   }
 
-  reconcileResourceTransferTasks({ automaticTaskNoProgressTtl });
+  reconcileResourceTransferTasks({ automaticTaskNoProgressTtl, sourceDepletedGraceTicks });
 
   let removed = 0;
   for (const [taskId, task] of Object.entries(tasks)) {
@@ -515,8 +537,11 @@ export function cleanupResourceTransferTaskStore(
     }
   }
 
-  if (Object.keys(tasks).length === 0 && getMemoryService().ensureData().resourceControl) {
-    delete getMemoryService().ensureData().resourceControl;
+  if (Object.keys(tasks).length === 0) {
+    getMemoryService().ensureData().resourceControl = {
+      taskSchemaVersion: RESOURCE_TRANSFER_TASK_SCHEMA_VERSION,
+      tasks: {},
+    };
   }
 
   return removed;

@@ -3620,6 +3620,30 @@ describe("resource-control capacity state", () => {
     );
   });
 
+  it("charges the current survival-support fee against total protected energy", () => {
+    const donor = createRoom({
+      name: "W60N5A",
+      storageResources: { [RESOURCE_ENERGY]: 100_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 50_000 },
+    });
+    const receiver = createRoom({
+      name: "W60N6A",
+      storageResources: { [RESOURCE_ENERGY]: 50_000 },
+      terminalResources: {},
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 1_000);
+
+    runResourceControl();
+
+    const supportCall = (donor.terminal!.send as jest.Mock).mock.calls.find(
+      (call) => call[3] === "resourceControl:auto-balance",
+    );
+    expect(supportCall).toBeDefined();
+    expect(supportCall[1] + 1_000).toBeLessThanOrEqual(10_000);
+  });
+
   it("does not spend energy committed to a healthy pending outgoing task", () => {
     const donor = createRoom({
       name: "W60N7",
@@ -3770,6 +3794,205 @@ describe("capacity-relief planning", () => {
         steps: [{ resource: RESOURCE_KEANIUM, amount: 10_000 }],
       },
     });
+  });
+
+  it("waits for terminal recovery before selecting a storage-only surplus", () => {
+    (Memory.cfg!.resourceControl as any).capacityBalancing = {
+      terminalReliefTargetFreeCapacity: 290_000,
+    };
+    const source = createRoom({
+      name: "W61N4A",
+      storageResources: {
+        [RESOURCE_ENERGY]: 120_000,
+        [RESOURCE_HYDROGEN]: 100_000,
+      },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 0,
+    });
+    source.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W61N4B",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+
+    runResourceControl();
+
+    expect(
+      Object.values(ensureResourceTransferTaskStore()).filter((entry) => entry.reason?.startsWith("capacity:relief:")),
+    ).toHaveLength(0);
+  });
+
+  it("replaces an existing storage relief route when terminal recovery becomes urgent", () => {
+    const source = createRoom({
+      name: "W61N4C",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200_000,
+        [RESOURCE_KEANIUM]: 100_000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 230_000,
+      },
+      storageFreeCapacity: 50_000,
+    });
+    source.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W61N4D",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    const staleStorageRoute = createAutomaticResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      50_000,
+      `capacity:relief:${RESOURCE_KEANIUM}`,
+    );
+    if (typeof staleStorageRoute === "string") throw new Error(staleStorageRoute);
+
+    runResourceControl();
+
+    expect(staleStorageRoute.task).toMatchObject({
+      status: "cancelled",
+      lastError: "capacity_terminal_priority_replaced",
+    });
+    const pending = Object.values(ensureResourceTransferTaskStore()).filter(
+      (entry) => entry.status === "pending" && entry.reason?.startsWith("capacity:relief:"),
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      fromRoomName: source.name,
+      toRoomName: receiver.name,
+      resource: RESOURCE_HYDROGEN,
+      remainingAmount: 40_000,
+    });
+    expect(
+      getCarrierTasksByRoom(source.name)[
+        `resourceControl:terminal_feed:${source.name}:${RESOURCE_KEANIUM}`
+      ],
+    ).toBeUndefined();
+  });
+
+  it("keeps other receiver reservations while replacing an oversized storage route", () => {
+    const source = createRoom({
+      name: "W61N4G",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200_000,
+        [RESOURCE_KEANIUM]: 100_000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 230_000,
+      },
+      storageFreeCapacity: 50_000,
+    });
+    source.terminal!.cooldown = 1;
+    const otherDonor = createRoom({
+      name: "W61N4H",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_OXYGEN]: 10_000,
+      },
+      storageFreeCapacity: 250_000,
+    });
+    otherDonor.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W61N4I",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 220_000 },
+      storageFreeCapacity: 300_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[otherDonor.name] = otherDonor;
+    Game.rooms[receiver.name] = receiver;
+    const oversizedStorageRoute = createAutomaticResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      50_000,
+      `capacity:relief:${RESOURCE_KEANIUM}`,
+    );
+    if (typeof oversizedStorageRoute === "string") throw new Error(oversizedStorageRoute);
+    createAutomaticResourceTransferTask(
+      otherDonor.name,
+      receiver.name,
+      RESOURCE_OXYGEN,
+      10_000,
+      "synthesis:receiver-commitment",
+    );
+
+    runResourceControl();
+
+    expect(oversizedStorageRoute.task.status).toBe("cancelled");
+    const replacement = Object.values(ensureResourceTransferTaskStore()).find(
+      (entry) =>
+        entry.status === "pending" &&
+        entry.fromRoomName === source.name &&
+        entry.reason === `capacity:relief:${RESOURCE_HYDROGEN}`,
+    );
+    expect(replacement).toMatchObject({
+      toRoomName: receiver.name,
+      amount: 29_999,
+      remainingAmount: 29_999,
+    });
+  });
+
+  it("cancels an existing storage relief route when terminal recovery has no safe candidate", () => {
+    const source = createRoom({
+      name: "W61N4E",
+      storageResources: {
+        [RESOURCE_ENERGY]: 110_000,
+        [RESOURCE_KEANIUM]: 100_000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 230_000,
+      },
+      storageFreeCapacity: 50_000,
+    });
+    source.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W61N4F",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    reserveProductionResource(source.name, RESOURCE_HYDROGEN, 225_000, "factory:protected-terminal");
+    const staleStorageRoute = createAutomaticResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      50_000,
+      `capacity:relief:${RESOURCE_KEANIUM}`,
+    );
+    if (typeof staleStorageRoute === "string") throw new Error(staleStorageRoute);
+
+    runResourceControl();
+
+    expect(staleStorageRoute.task).toMatchObject({
+      status: "cancelled",
+      lastError: "capacity_terminal_priority_replaced",
+    });
+    expect(
+      Object.values(ensureResourceTransferTaskStore()).filter(
+        (entry) => entry.status === "pending" && entry.reason?.startsWith("capacity:relief:"),
+      ),
+    ).toHaveLength(0);
+    expect(
+      getCarrierTasksByRoom(source.name)[
+        `resourceControl:terminal_feed:${source.name}:${RESOURCE_KEANIUM}`
+      ],
+    ).toBeUndefined();
   });
 
   it("keeps the configured per-room T3 reserve out of capacity relief", () => {
@@ -4003,7 +4226,7 @@ describe("capacity-relief planning", () => {
       (entry) => entry.status === "pending" && entry.reason?.startsWith("capacity:relief:"),
     );
     expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({ toRoomName: receiver.name, remainingAmount: 10_000 });
+    expect(tasks[0]).toMatchObject({ toRoomName: receiver.name, remainingAmount: 9_999 });
   });
 
   it("creates at most five new relief tasks per planning run", () => {
@@ -4332,6 +4555,85 @@ describe("capacity-relief execution health and priority", () => {
     });
   });
 
+  it("keeps a persistent terminal-supply blocker age stable", () => {
+    const donor = createRoom({
+      name: "W68N8A",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200_000,
+        [RESOURCE_KEANIUM]: 1_000,
+      },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+    });
+    const receiver = createRoom({
+      name: "W68N8B",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    const created = createAutomaticResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      1_000,
+      "synthesis:test",
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    runResourceControl();
+    Game.time = 20;
+    runResourceControl();
+
+    expect(created.task).toMatchObject({
+      status: "pending",
+      blockedReason: "insufficient_terminal_resource_or_fee",
+      blockedSince: 10,
+      updatedAt: 10,
+    });
+  });
+
+  it("retains the prior supply blocker when a viable send attempt fails", () => {
+    const donor = createRoom({
+      name: "W68N8C",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_KEANIUM]: 1_000,
+      },
+    });
+    const receiver = createRoom({
+      name: "W68N8D",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    Game.time = 1;
+    const created = createAutomaticResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      1_000,
+      "synthesis:test",
+    );
+    if (typeof created === "string") throw new Error(created);
+    markResourceTransferTaskBlocked(created.task, "insufficient_terminal_resource_or_fee");
+    (donor.terminal!.send as jest.Mock).mockReturnValue(ERR_TIRED);
+
+    Game.time = 10;
+    runResourceControl();
+
+    expect(created.task).toMatchObject({
+      status: "pending",
+      blockedReason: "insufficient_terminal_resource_or_fee",
+      blockedSince: 1,
+      updatedAt: 10,
+      lastError: `send_code_${ERR_TIRED}`,
+    });
+  });
+
   it("uses configured receiver safety buffers for every queued send", () => {
     (Memory.cfg!.resourceControl as any).capacityBalancing = {
       storagePressureFreeCapacity: 150_000,
@@ -4363,6 +4665,162 @@ describe("capacity-relief execution health and priority", () => {
       receiver.name,
       expect.stringContaining("resourceControl:task:"),
     );
+  });
+
+  it("does not execute capacity relief into a hysteresis-pressure receiver", () => {
+    const donor = createRoom({
+      name: "W68N10A",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_KEANIUM]: 10_000,
+      },
+      storageFreeCapacity: 50_000,
+    });
+    const receiver = createRoom({
+      name: "W68N10B",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 150_000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [receiver.name]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const created = createAutomaticResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      10_000,
+      `capacity:relief:${RESOURCE_KEANIUM}`,
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+    expect(created.task).toMatchObject({
+      status: "pending",
+      blockedReason: "receiver_capacity",
+      blockedSince: 10,
+    });
+  });
+
+  it("rechecks protected stock before executing an already queued capacity task", () => {
+    const donor = createRoom({
+      name: "W68N10C",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5_000,
+      },
+      storageFreeCapacity: 50_000,
+    });
+    const receiver = createRoom({
+      name: "W68N10D",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    const created = createAutomaticResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+      1_000,
+      `capacity:relief:${RESOURCE_CATALYZED_GHODIUM_ALKALIDE}`,
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+    expect(created.task).toMatchObject({
+      status: "pending",
+      blockedReason: "insufficient_terminal_resource_or_fee",
+    });
+  });
+
+  it("protects total donor energy from a non-energy relief fee", () => {
+    const donor = createRoom({
+      name: "W68N10E",
+      storageResources: { [RESOURCE_ENERGY]: 100_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 50_000,
+        [RESOURCE_HYDROGEN]: 1_000,
+      },
+      storageFreeCapacity: 50_000,
+    });
+    const receiver = createRoom({
+      name: "W68N10F",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 11_000);
+    const created = createAutomaticResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_HYDROGEN,
+      1_000,
+      `capacity:relief:${RESOURCE_HYDROGEN}`,
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+    expect(created.task).toMatchObject({
+      status: "pending",
+      blockedReason: "insufficient_terminal_resource_or_fee",
+    });
+  });
+
+  it("cancels remaining relief after the source has already recovered", () => {
+    const donor = createRoom({
+      name: "W68N10G",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 1_000,
+      },
+      storageFreeCapacity: 500_000,
+    });
+    const receiver = createRoom({
+      name: "W68N10H",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    const created = createAutomaticResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_HYDROGEN,
+      1_000,
+      `capacity:relief:${RESOURCE_HYDROGEN}`,
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+    expect(created.task).toMatchObject({
+      status: "cancelled",
+      lastError: "capacity_source_recovered",
+    });
   });
 
   it("shares the five-send budget between survival support and queued transfers", () => {
@@ -4408,6 +4866,112 @@ describe("capacity-relief execution health and priority", () => {
       "resourceControl:auto-balance",
     );
     expect(sendCalls).toBe(5);
+  });
+
+  it("refreshes source-depleted health after the send budget is exhausted", () => {
+    Memory.cfg!.resourceControl!.taskMaxPerRun = 1;
+    const activeDonor = createRoom({
+      name: "W69N9A",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 1_000,
+      },
+    });
+    const depletedDonor = createRoom({
+      name: "W69N9B",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+    });
+    const receiver = createRoom({
+      name: "W69N9C",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[activeDonor.name] = activeDonor;
+    Game.rooms[depletedDonor.name] = depletedDonor;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(activeDonor.name, receiver.name, RESOURCE_HYDROGEN, 1_000, "manual:first");
+    const depleted = createAutomaticResourceTransferTask(
+      depletedDonor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      1_000,
+      "synthesis:depleted",
+    );
+    if (typeof depleted === "string") throw new Error(depleted);
+
+    runResourceControl();
+
+    expect(activeDonor.terminal!.send).toHaveBeenCalledTimes(1);
+    expect(depleted.task).toMatchObject({
+      status: "pending",
+      blockedReason: "source_depleted",
+      blockedSince: 10,
+    });
+  });
+
+  it("clears a recovered terminal-supply blocker after the send budget is exhausted", () => {
+    Memory.cfg!.resourceControl!.taskMaxPerRun = 1;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 100);
+    const firstDonor = createRoom({
+      name: "W69N9D",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 1_000,
+      },
+    });
+    const recoveredDonor = createRoom({
+      name: "W69N9E",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_KEANIUM]: 1_000,
+      },
+    });
+    const receiver = createRoom({
+      name: "W69N9F",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[firstDonor.name] = firstDonor;
+    Game.rooms[recoveredDonor.name] = recoveredDonor;
+    Game.rooms[receiver.name] = receiver;
+
+    Game.time = 1;
+    const first = createResourceTransferTask(
+      firstDonor.name,
+      receiver.name,
+      RESOURCE_HYDROGEN,
+      1_000,
+      "manual:first",
+    );
+    if (typeof first === "string") throw new Error(first);
+    Game.time = 2;
+    const recovered = createResourceTransferTask(
+      recoveredDonor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      1_000,
+      "manual:later",
+    );
+    if (typeof recovered === "string") throw new Error(recovered);
+    markResourceTransferTaskBlocked(recovered.task, "insufficient_terminal_resource_or_fee");
+
+    Game.time = 10;
+    runResourceControl();
+
+    expect(firstDonor.terminal!.send).toHaveBeenCalledTimes(1);
+    expect(recoveredDonor.terminal!.send).not.toHaveBeenCalled();
+    expect(recovered.task).toMatchObject({
+      status: "pending",
+      remainingAmount: 1_000,
+    });
+    expect(recovered.task.blockedReason).toBeUndefined();
+    expect(recovered.task.blockedSince).toBeUndefined();
   });
 
   it("shares receiver safety capacity across multiple sends in one run", () => {
@@ -4586,7 +5150,7 @@ describe("resource-control logistics observability", () => {
       storageResources: { [RESOURCE_ENERGY]: 200_000 },
       terminalResources: {
         [RESOURCE_ENERGY]: 40_000,
-        [RESOURCE_KEANIUM]: 1_000,
+        [RESOURCE_KEANIUM]: 6_000,
       },
     });
     const receiver = createRoom({
@@ -4632,8 +5196,9 @@ describe("resource-control logistics observability", () => {
       storageResources: { [RESOURCE_ENERGY]: 200_000 },
       terminalResources: {
         [RESOURCE_ENERGY]: 40_000,
-        [RESOURCE_KEANIUM]: 1_000,
+        [RESOURCE_KEANIUM]: 6_000,
       },
+      storageFreeCapacity: 50_000,
     });
     const receiver = createRoom({
       name: "W72N4",
@@ -4665,5 +5230,30 @@ describe("resource-control logistics observability", () => {
         transferCost: 123,
       },
     ]);
+  });
+
+  it("keeps transfer-task store scans bounded independently of room count", () => {
+    (Memory.cfg!.resourceControl as any).capacityBalancing = { enabled: false };
+    const rooms = Array.from({ length: 4 }, (_, index) => createRoom({
+      name: `W72N${index + 5}`,
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    }));
+    for (const room of rooms) Game.rooms[room.name] = room;
+    createResourceTransferTask(rooms[0].name, rooms[1].name, RESOURCE_KEANIUM, 1_000, "manual:scan-bound");
+
+    let scans = 0;
+    const rawStore = Memory.data!.resourceControl!.tasks!;
+    Memory.data!.resourceControl!.tasks = new Proxy(rawStore, {
+      ownKeys(target) {
+        scans += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    runResourceControl();
+
+    expect(scans).toBeLessThanOrEqual(5);
   });
 });

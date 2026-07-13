@@ -30,6 +30,14 @@ A pending task SHALL represent normal retry conditions with `blockedReason`, `bl
 - **WHEN** the condition represented by a task's blocker is restored
 - **THEN** the existing pending task becomes executable without a duplicate task
 
+#### Scenario: Health refresh after the send budget is exhausted
+- **WHEN** earlier transfers consume the shared send budget before a later pending task is reached
+- **THEN** the later task's blocker condition is still reevaluated without attempting another terminal send
+
+#### Scenario: Failed send retains an unresolved blocker
+- **WHEN** a task with an unresolved supply blocker reaches a viable send attempt but the terminal returns an error
+- **THEN** the blocker and its original `blockedSince` remain until a later independent health check observes recovery or a send succeeds
+
 ### Requirement: Reservation health distinguishes blocked from phantom supply
 Pending tasks blocked by receiver capacity or temporary terminal supply/fee SHALL remain valid incoming and outgoing reservations. A source-depleted task SHALL be excluded from healthy incoming supply after the configured grace period while remaining visible in the raw task list.
 
@@ -60,7 +68,7 @@ The system SHALL cancel an automatic pending task after 5,000 ticks without a su
 The system SHALL migrate legacy task records once per task schema version. It SHALL infer automatic origin only from known generated reason prefixes and SHALL treat every unknown or absent reason as manual.
 
 #### Scenario: Known generated task migrates
-- **WHEN** a legacy task reason begins with `hub:`, `synthesis:`, `powerBankBoost`, `energy-support`, or `capacity:`
+- **WHEN** a legacy task reason begins with `hub:`, `synthesis:`, `auto:synthesis:`, `powerBankBoost`, `energy-support`, or `capacity:`
 - **THEN** the task becomes automatic and receives initialized progress fields
 
 #### Scenario: Unknown legacy task is preserved
