@@ -760,10 +760,13 @@ export function getSourceContainerPositionsForRoom(roomName: string): { x: numbe
 function getRemoteMiningContainerPositionsForRoom(roomName: string): { x: number; y: number }[] {
   const tasks = Memory.data?.remoteMining;
   if (!tasks) return [];
+  if (Game.rooms[roomName]?.controller?.my) return [];
 
   const seen = new Set<string>();
   const positions: { x: number; y: number }[] = [];
   for (const task of Object.values(tasks)) {
+    if (task.status !== "active" || task.targetRoom !== roomName) continue;
+
     for (const pos of Object.values(task.containerPositions ?? {})) {
       if (pos.roomName !== roomName) continue;
 
@@ -780,7 +783,13 @@ function getRemoteMiningContainerPositionsForRoom(roomName: string): { x: number
 
 export function getPlannedSourceContainerPos(source: Source): RoomPosition | null {
   const roomName = source.room?.name ?? source.pos.roomName;
-  const remoteContainerPos = Memory.data?.remoteMining?.[roomName]?.containerPositions?.[source.id];
+  const remoteTask = Memory.data?.remoteMining?.[roomName];
+  const remoteContainerPos =
+    remoteTask?.status === "active" &&
+    remoteTask.targetRoom === roomName &&
+    !Game.rooms[roomName]?.controller?.my
+      ? remoteTask.containerPositions?.[source.id]
+      : undefined;
   if (remoteContainerPos?.roomName === roomName) {
     return new RoomPosition(remoteContainerPos.x, remoteContainerPos.y, roomName);
   }

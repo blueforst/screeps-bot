@@ -287,6 +287,7 @@ describe("getSourceContainerPositionsForRoom", () => {
 
   it("includes remote mining source container positions without a room planner layout", () => {
     const room = createRoom({ name: "W2N1" });
+    room.controller.my = false;
     Game.rooms[room.name] = room;
     Memory.data = {
       remoteMining: {
@@ -305,6 +306,7 @@ describe("getSourceContainerPositionsForRoom", () => {
 
   it("deduplicates remote mining container positions with planned source container positions", () => {
     const room = createRoom({ name: "W2N2" });
+    room.controller.my = false;
     const source = createSource(room, 11, 10);
     room.__sources.push(source);
     Game.rooms[room.name] = room;
@@ -323,6 +325,35 @@ describe("getSourceContainerPositionsForRoom", () => {
       { x: 12, y: 10 },
       { x: 20, y: 20 },
     ]);
+  });
+
+  it("ignores a remote mining container plan after the target room is owned before lifecycle cleanup", () => {
+    const room = createRoom({ name: "W2N5" });
+    Game.rooms[room.name] = room;
+    const task = createRemoteMiningTask("W1N5", room.name, {
+      source1: { x: 12, y: 14, roomName: room.name },
+    });
+    Memory.data = {
+      remoteMining: { [room.name]: task },
+    } as Memory["data"];
+
+    expect(getSourceContainerPositionsForRoom(room.name)).toEqual([]);
+  });
+
+  it("ignores an abandoned remote mining container plan", () => {
+    const room = createRoom({ name: "W2N6" });
+    room.controller.my = false;
+    Game.rooms[room.name] = room;
+    const task = createRemoteMiningTask("W1N6", room.name, {
+      source1: { x: 12, y: 14, roomName: room.name },
+    });
+    task.status = "abandoned";
+    task.abandonedReason = "owned_room";
+    Memory.data = {
+      remoteMining: { [room.name]: task },
+    } as Memory["data"];
+
+    expect(getSourceContainerPositionsForRoom(room.name)).toEqual([]);
   });
 
   it("caches repeated same-tick calls and refreshes on the next tick", () => {
@@ -383,6 +414,7 @@ describe("getPlannedSourceContainerPos", () => {
 
   it("uses remote mining container position keyed by source id before the container exists", () => {
     const room = createRoom({ name: "E1N56" });
+    room.controller.my = false;
     const source = createSource(room, 6, 32);
     room.__sources.push(source);
     Game.rooms[room.name] = room;
@@ -408,6 +440,21 @@ describe("getPlannedSourceContainerPos", () => {
           [source.id]: { x: 5, y: 33, roomName: "E1N55" },
         }),
       },
+    } as Memory["data"];
+
+    expect(getPlannedSourceContainerPos(source)).toBeNull();
+  });
+
+  it("ignores a remote mining source container plan after the target room is owned before lifecycle cleanup", () => {
+    const room = createRoom({ name: "E1N55" });
+    const source = createSource(room, 6, 32);
+    room.__sources.push(source);
+    Game.rooms[room.name] = room;
+    const task = createRemoteMiningTask("E1N57", room.name, {
+      [source.id]: { x: 5, y: 33, roomName: room.name },
+    });
+    Memory.data = {
+      remoteMining: { [room.name]: task },
     } as Memory["data"];
 
     expect(getPlannedSourceContainerPos(source)).toBeNull();
