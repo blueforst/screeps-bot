@@ -1,6 +1,6 @@
 import {
   countPendingOutgoingResourceTransferTasksByRoom,
-  createResourceTransferTask,
+  createAutomaticResourceTransferTask,
   getIncomingResourceTransferAmount,
   getOutgoingResourceTransferAmount,
 } from "@/runtime/logistics/resourceTransferTasks";
@@ -275,7 +275,7 @@ function generateSynthesisTransferTasks(snapshots: ResourceControlSnapshot[]): {
         continue;
       }
 
-      const result = createResourceTransferTask(
+      const result = createAutomaticResourceTransferTask(
         donor.roomName,
         targetRoomName,
         resource,

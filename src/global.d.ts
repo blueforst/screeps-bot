@@ -462,6 +462,20 @@ declare global {
         enabled?: boolean;
         sampleInterval?: number;
         taskMaxPerRun?: number;
+        capacityBalancing?: {
+          enabled?: boolean;
+          storagePressureFreeCapacity?: number;
+          storageReliefTargetFreeCapacity?: number;
+          receiverStorageMinFreeCapacity?: number;
+          terminalPressureFreeCapacity?: number;
+          terminalReliefTargetFreeCapacity?: number;
+          receiverTerminalMinFreeCapacity?: number;
+          maxPlannedAmountPerTask?: number;
+          maxNewTasksPerRun?: number;
+          automaticTaskNoProgressTtl?: number;
+          sourceDepletedGraceTicks?: number;
+          t3ReservePerRoom?: number;
+        };
         rooms?: Record<
           string,
           {
@@ -669,18 +683,60 @@ declare global {
           string,
           {
             state: "survival" | "balanced" | "export";
+            capacityState?: "normal" | "pressure" | "emergency";
+            storageUsedCapacity?: number;
+            storageFreeCapacity?: number;
+            terminalUsedCapacity?: number;
+            terminalFreeCapacity?: number;
             storageEnergy: number;
             terminalEnergy: number;
             energyFloor: number;
             energyTarget: number;
             energyExportStart: number;
+            terminalEnergyReserve?: number;
             nativeMineralType?: MineralConstant;
             canMineNative: boolean;
             minerals: Partial<Record<ResourceConstant, number>>;
+            taskHealth?: {
+              pendingIncoming: number;
+              pendingOutgoing: number;
+              blockedIncoming: Partial<
+                Record<
+                  "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee",
+                  number
+                >
+              >;
+              blockedOutgoing: Partial<
+                Record<
+                  "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee",
+                  number
+                >
+              >;
+            };
           }
         >;
         lastActions: string[];
         lastMarketActions: string[];
+        taskSummary?: {
+          pending: number;
+          manualPending: number;
+          automaticPending: number;
+          blockedByReason: Partial<
+            Record<
+              "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee",
+              number
+            >
+          >;
+        };
+        recentCapacityReliefRoutes?: Array<{
+          tick: number;
+          taskId: string;
+          fromRoomName: string;
+          toRoomName: string;
+          resource: ResourceConstant;
+          amount: number;
+          transferCost: number;
+        }>;
         synthesisBindings?: Record<
           string,
           {
@@ -819,6 +875,7 @@ declare global {
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
       resourceControl?: {
+        taskSchemaVersion?: number;
         tasks?: Record<
           string,
           {
@@ -831,6 +888,10 @@ declare global {
             status: "pending" | "done" | "cancelled" | "failed";
             createdAt: number;
             updatedAt: number;
+            origin: "manual" | "automatic";
+            lastProgressAt: number;
+            blockedReason?: "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee";
+            blockedSince?: number;
             reason?: string;
             lastError?: string;
           }

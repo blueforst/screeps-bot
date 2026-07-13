@@ -48,6 +48,13 @@ export interface HubProgressInput {
       energyFloor: number;
       energyTarget: number;
       energyExportStart: number;
+      terminalEnergyReserve?: number;
+      taskHealth?: {
+        pendingIncoming: number;
+        pendingOutgoing: number;
+        blockedIncoming: Partial<Record<string, number>>;
+        blockedOutgoing: Partial<Record<string, number>>;
+      };
       nativeMineralType?: MineralConstant;
       canMineNative: boolean;
       minerals: Partial<Record<ResourceConstant, number>>;
@@ -154,6 +161,7 @@ const ANALYTICS_SAMPLE_INTERVAL = 5;
 const MAX_LAST_PLAN_ACTIONS = 8;
 const MAX_INVENTORY_EXTRA = 10;
 const MAX_OVERLAY_LINES = 8;
+const DEFAULT_TERMINAL_ENERGY_RESERVE = 20_000;
 // Visual layout constants
 const HUB_VISUAL_X = 1;
 const HUB_VISUAL_Y = 2;
@@ -505,25 +513,41 @@ function buildRoomTerminalBlockers(
   if (!resourceControlRooms) return [];
 
   const result: Array<{ room: string; terminalEnergy: number; reserve: number; pendingNonEnergy: number }> = [];
+  const roomEntries = Object.entries(resourceControlRooms).filter(([roomName]) => roomName !== hubRoomName);
+  const needsPendingNonEnergyIndex = roomEntries.some(([, roomData]) => {
+    if (!roomData.taskHealth) return true;
+    return roomData.taskHealth.pendingIncoming + roomData.taskHealth.pendingOutgoing !== 0;
+  });
+  const pendingNonEnergyByRoom = new Map<string, number>();
 
-  for (const [roomName, roomData] of Object.entries(resourceControlRooms)) {
-    if (roomName === hubRoomName) continue;
+  if (needsPendingNonEnergyIndex && transferTasks) {
+    for (const task of Object.values(transferTasks)) {
+      if (task.status !== "pending") continue;
+      if (task.resource === RESOURCE_ENERGY) continue;
 
-    let pendingNonEnergy = 0;
-    if (transferTasks) {
-      for (const task of Object.values(transferTasks)) {
-        if (task.status !== "pending") continue;
-        if (task.resource === RESOURCE_ENERGY) continue;
-        if (task.fromRoomName === roomName || task.toRoomName === roomName) {
-          pendingNonEnergy++;
-        }
+      pendingNonEnergyByRoom.set(
+        task.fromRoomName,
+        (pendingNonEnergyByRoom.get(task.fromRoomName) || 0) + 1,
+      );
+      if (task.toRoomName !== task.fromRoomName) {
+        pendingNonEnergyByRoom.set(
+          task.toRoomName,
+          (pendingNonEnergyByRoom.get(task.toRoomName) || 0) + 1,
+        );
       }
     }
+  }
+
+  for (const [roomName, roomData] of roomEntries) {
+    const projectedPending = roomData.taskHealth
+      ? roomData.taskHealth.pendingIncoming + roomData.taskHealth.pendingOutgoing
+      : undefined;
+    const pendingNonEnergy = projectedPending === 0 ? 0 : (pendingNonEnergyByRoom.get(roomName) || 0);
 
     result.push({
       room: roomName,
       terminalEnergy: roomData.terminalEnergy,
-      reserve: roomData.energyFloor,
+      reserve: roomData.terminalEnergyReserve ?? DEFAULT_TERMINAL_ENERGY_RESERVE,
       pendingNonEnergy,
     });
   }

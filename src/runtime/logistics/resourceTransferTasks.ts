@@ -1,6 +1,20 @@
 import { getMemoryService } from "@/runtime/runtimeServices";
 
 export type ResourceTransferTaskStatus = "pending" | "done" | "cancelled" | "failed";
+export type ResourceTransferTaskOrigin = "manual" | "automatic";
+export type ResourceTransferTaskBlockedReason =
+  | "receiver_capacity"
+  | "source_depleted"
+  | "insufficient_terminal_resource_or_fee";
+
+export interface ResourceTransferTaskHealthOptions {
+  automaticTaskNoProgressTtl: number;
+  sourceDepletedGraceTicks: number;
+}
+
+export const RESOURCE_TRANSFER_TASK_SCHEMA_VERSION = 2;
+export const DEFAULT_AUTOMATIC_TASK_NO_PROGRESS_TTL = 5_000;
+export const DEFAULT_SOURCE_DEPLETED_GRACE_TICKS = 100;
 
 export interface ResourceTransferTask {
   id: string;
@@ -12,6 +26,10 @@ export interface ResourceTransferTask {
   status: ResourceTransferTaskStatus;
   createdAt: number;
   updatedAt: number;
+  origin: ResourceTransferTaskOrigin;
+  lastProgressAt: number;
+  blockedReason?: ResourceTransferTaskBlockedReason;
+  blockedSince?: number;
   reason?: string;
   lastError?: string;
 }
@@ -42,10 +60,62 @@ export interface ListResourceTransferTasksResult {
 let taskIdSequence = 0;
 let taskIdSequenceTick = -1;
 
+const AUTOMATIC_LEGACY_REASON_PREFIXES = [
+  "hub:",
+  "synthesis:",
+  "powerBankBoost",
+  "energy-support",
+  "capacity:",
+];
+
+interface ResourceTransferTaskStoreMemory {
+  tasks?: Record<string, ResourceTransferTask>;
+  taskSchemaVersion?: number;
+}
+
+function inferLegacyTaskOrigin(reason?: string): ResourceTransferTaskOrigin {
+  if (reason && AUTOMATIC_LEGACY_REASON_PREFIXES.some((prefix) => reason.startsWith(prefix))) {
+    return "automatic";
+  }
+  return "manual";
+}
+
+function migrateResourceTransferTasksToV2(memory: ResourceTransferTaskStoreMemory): void {
+  if ((memory.taskSchemaVersion ?? 0) >= RESOURCE_TRANSFER_TASK_SCHEMA_VERSION) {
+    return;
+  }
+
+  for (const task of Object.values(memory.tasks || {})) {
+    const legacyTask = task as ResourceTransferTask & {
+      origin?: ResourceTransferTaskOrigin;
+      lastProgressAt?: number;
+      updatedAt?: number;
+    };
+    if (legacyTask.origin !== "manual" && legacyTask.origin !== "automatic") {
+      legacyTask.origin = inferLegacyTaskOrigin(legacyTask.reason);
+    }
+
+    const fallbackUpdatedAt = Number.isFinite(legacyTask.updatedAt) ? legacyTask.updatedAt! : legacyTask.createdAt;
+    legacyTask.updatedAt = fallbackUpdatedAt;
+    if (!Number.isFinite(legacyTask.lastProgressAt)) {
+      legacyTask.lastProgressAt = fallbackUpdatedAt;
+    }
+
+    if (legacyTask.lastError === "insufficient_terminal_resource_or_fee") {
+      legacyTask.blockedReason = "insufficient_terminal_resource_or_fee";
+      legacyTask.blockedSince = legacyTask.blockedSince ?? fallbackUpdatedAt;
+      legacyTask.lastError = undefined;
+    }
+  }
+
+  memory.taskSchemaVersion = RESOURCE_TRANSFER_TASK_SCHEMA_VERSION;
+}
+
 export function ensureResourceTransferTaskStore(): Record<string, ResourceTransferTask> {
   const data = getMemoryService().ensureData();
   data.resourceControl = data.resourceControl || { tasks: {} };
   data.resourceControl.tasks = data.resourceControl.tasks || {};
+  migrateResourceTransferTasksToV2(data.resourceControl);
   return data.resourceControl.tasks;
 }
 
@@ -77,6 +147,7 @@ function findMergeablePendingTask(
   fromRoomName: string,
   toRoomName: string,
   resource: ResourceConstant,
+  origin: ResourceTransferTaskOrigin,
   reason?: string,
 ): ResourceTransferTask | null {
   for (const task of Object.values(tasks)) {
@@ -85,6 +156,7 @@ function findMergeablePendingTask(
       task.fromRoomName === fromRoomName &&
       task.toRoomName === toRoomName &&
       task.resource === resource &&
+      task.origin === origin &&
       task.reason === reason
     ) {
       return task;
@@ -94,7 +166,8 @@ function findMergeablePendingTask(
   return null;
 }
 
-export function createResourceTransferTask(
+function createResourceTransferTaskWithOrigin(
+  origin: ResourceTransferTaskOrigin,
   fromRoomName: string,
   toRoomName: string,
   resource: ResourceConstant,
@@ -124,7 +197,7 @@ export function createResourceTransferTask(
 
   const normalizedReason = normalizeTaskReason(reason);
   const store = ensureResourceTransferTaskStore();
-  const mergeTarget = findMergeablePendingTask(store, fromRoomName, toRoomName, resource, normalizedReason);
+  const mergeTarget = findMergeablePendingTask(store, fromRoomName, toRoomName, resource, origin, normalizedReason);
   if (mergeTarget) {
     mergeTarget.amount += normalizedAmount;
     mergeTarget.remainingAmount += normalizedAmount;
@@ -146,6 +219,8 @@ export function createResourceTransferTask(
     status: "pending",
     createdAt: Game.time,
     updatedAt: Game.time,
+    origin,
+    lastProgressAt: Game.time,
     reason: normalizedReason,
   };
 
@@ -154,6 +229,26 @@ export function createResourceTransferTask(
     ok: true,
     task,
   };
+}
+
+export function createResourceTransferTask(
+  fromRoomName: string,
+  toRoomName: string,
+  resource: ResourceConstant,
+  amount: number,
+  reason?: string,
+): CreateResourceTransferTaskResult | string {
+  return createResourceTransferTaskWithOrigin("manual", fromRoomName, toRoomName, resource, amount, reason);
+}
+
+export function createAutomaticResourceTransferTask(
+  fromRoomName: string,
+  toRoomName: string,
+  resource: ResourceConstant,
+  amount: number,
+  reason?: string,
+): CreateResourceTransferTaskResult | string {
+  return createResourceTransferTaskWithOrigin("automatic", fromRoomName, toRoomName, resource, amount, reason);
 }
 
 export function cancelResourceTransferTask(taskId: string): CancelResourceTransferTaskResult | string {
@@ -166,6 +261,8 @@ export function cancelResourceTransferTask(taskId: string): CancelResourceTransf
   const previousStatus = task.status;
   task.status = "cancelled";
   task.updatedAt = Game.time;
+  task.blockedReason = undefined;
+  task.blockedSince = undefined;
   task.lastError = "cancelled_by_command";
 
   return {
@@ -173,6 +270,99 @@ export function cancelResourceTransferTask(taskId: string): CancelResourceTransf
     taskId,
     previousStatus,
   };
+}
+
+export function markResourceTransferTaskBlocked(
+  task: ResourceTransferTask,
+  reason: ResourceTransferTaskBlockedReason,
+): void {
+  if (task.status !== "pending") {
+    return;
+  }
+
+  if (task.blockedReason !== reason || !Number.isFinite(task.blockedSince)) {
+    task.blockedReason = reason;
+    task.blockedSince = Game.time;
+    task.updatedAt = Game.time;
+  }
+  task.lastError = undefined;
+}
+
+export function clearResourceTransferTaskBlocker(task: ResourceTransferTask): void {
+  if (task.blockedReason === undefined && task.blockedSince === undefined) {
+    return;
+  }
+
+  task.blockedReason = undefined;
+  task.blockedSince = undefined;
+  task.updatedAt = Game.time;
+}
+
+export function recordResourceTransferTaskProgress(task: ResourceTransferTask): void {
+  task.blockedReason = undefined;
+  task.blockedSince = undefined;
+  task.lastProgressAt = Game.time;
+  task.updatedAt = Game.time;
+  task.lastError = undefined;
+}
+
+export function isHealthyResourceTransferTaskReservation(
+  task: ResourceTransferTask,
+  direction: "incoming" | "outgoing" = "incoming",
+  sourceDepletedGraceTicks = DEFAULT_SOURCE_DEPLETED_GRACE_TICKS,
+): boolean {
+  if (task.status !== "pending") {
+    return false;
+  }
+  if (direction === "outgoing" || task.blockedReason !== "source_depleted") {
+    return true;
+  }
+  if (!Number.isFinite(task.blockedSince)) {
+    return true;
+  }
+
+  return Game.time - task.blockedSince! < sourceDepletedGraceTicks;
+}
+
+function cancelAutomaticTask(task: ResourceTransferTask, reason: string): void {
+  task.status = "cancelled";
+  task.updatedAt = Game.time;
+  task.lastError = reason;
+}
+
+export function reconcileResourceTransferTasks(
+  options: Partial<ResourceTransferTaskHealthOptions> = {},
+): number {
+  const automaticTaskNoProgressTtl = Number.isFinite(options.automaticTaskNoProgressTtl)
+    ? Math.max(0, Math.floor(options.automaticTaskNoProgressTtl!))
+    : DEFAULT_AUTOMATIC_TASK_NO_PROGRESS_TTL;
+  const sourceDepletedGraceTicks = Number.isFinite(options.sourceDepletedGraceTicks)
+    ? Math.max(0, Math.floor(options.sourceDepletedGraceTicks!))
+    : DEFAULT_SOURCE_DEPLETED_GRACE_TICKS;
+
+  let cancelled = 0;
+  for (const task of Object.values(ensureResourceTransferTaskStore())) {
+    if (task.status !== "pending" || task.origin !== "automatic") {
+      continue;
+    }
+
+    if (
+      task.blockedReason === "source_depleted" &&
+      Number.isFinite(task.blockedSince) &&
+      Game.time - task.blockedSince! >= sourceDepletedGraceTicks
+    ) {
+      cancelAutomaticTask(task, "automatic_source_depleted_timeout");
+      cancelled += 1;
+      continue;
+    }
+
+    if (Game.time - task.lastProgressAt > automaticTaskNoProgressTtl) {
+      cancelAutomaticTask(task, "automatic_no_progress_timeout");
+      cancelled += 1;
+    }
+  }
+
+  return cancelled;
 }
 
 export function listResourceTransferTasks(): ListResourceTransferTasksResult {
@@ -190,36 +380,6 @@ export function getOutgoingResourceTransferAmount(roomName: string, resource: Re
     }
   }
   return total;
-}
-
-export const BLOCKING_ERRORS = new Set([
-  "insufficient_terminal_resource_or_fee",
-]);
-
-const PHANTOM_INCOMING_SOURCE_CHECK_TICKS = 100;
-
-function getVisibleSourceRoomStock(task: ResourceTransferTask): number | null {
-  const room = Game.rooms[task.fromRoomName];
-  if (!room) {
-    return null;
-  }
-
-  const terminalAmount = room.terminal?.store.getUsedCapacity(task.resource) ?? 0;
-  const storageAmount = room.storage?.store.getUsedCapacity(task.resource) ?? 0;
-  return terminalAmount + storageAmount;
-}
-
-function isPendingTransferStillSupplyable(task: ResourceTransferTask): boolean {
-  if (BLOCKING_ERRORS.has(task.lastError ?? "")) {
-    return false;
-  }
-
-  if (Game.time - task.createdAt < PHANTOM_INCOMING_SOURCE_CHECK_TICKS) {
-    return true;
-  }
-
-  const visibleSourceStock = getVisibleSourceRoomStock(task);
-  return visibleSourceStock == null || visibleSourceStock > 0;
 }
 
 function transferAmountKey(roomName: string, resource: ResourceConstant): string {
@@ -271,7 +431,7 @@ export function createResourceTransferTaskAmountIndex(): ResourceTransferTaskAmo
     pendingReasonAmounts.set(reason, (pendingReasonAmounts.get(reason) || 0) + task.remainingAmount);
     pendingIncomingByReason.set(incomingKey, pendingReasonAmounts);
 
-    if (!isPendingTransferStillSupplyable(task)) continue;
+    if (!isHealthyResourceTransferTaskReservation(task, "incoming")) continue;
     incoming.set(incomingKey, (incoming.get(incomingKey) || 0) + task.remainingAmount);
     const reasonAmounts = incomingByReason.get(incomingKey) || new Map<string, number>();
     reasonAmounts.set(reason, (reasonAmounts.get(reason) || 0) + task.remainingAmount);
@@ -301,7 +461,7 @@ export function getIncomingResourceTransferAmount(roomName: string, resource: Re
       task.status === "pending" &&
       task.toRoomName === roomName &&
       task.resource === resource &&
-      isPendingTransferStillSupplyable(task)
+      isHealthyResourceTransferTaskReservation(task, "incoming")
     ) {
       total += task.remainingAmount;
     }
@@ -334,12 +494,14 @@ export function countPendingIncomingResourceTransferTasksByRoom(roomName: string
 export function cleanupResourceTransferTaskStore(
   ownedRooms: Set<string>,
   terminalTaskTtl: number,
-  blockingTaskTtl = terminalTaskTtl,
+  automaticTaskNoProgressTtl = DEFAULT_AUTOMATIC_TASK_NO_PROGRESS_TTL,
 ): number {
   const tasks = getMemoryService().ensureData().resourceControl?.tasks;
   if (!tasks) {
     return 0;
   }
+
+  reconcileResourceTransferTasks({ automaticTaskNoProgressTtl });
 
   let removed = 0;
   for (const [taskId, task] of Object.entries(tasks)) {
@@ -347,12 +509,7 @@ export function cleanupResourceTransferTaskStore(
     const terminalStale =
       (task.status === "done" || task.status === "cancelled" || task.status === "failed") &&
       Game.time - task.updatedAt > terminalTaskTtl;
-    const blockingStale =
-      task.status === "pending" &&
-      task.lastError != null &&
-      BLOCKING_ERRORS.has(task.lastError) &&
-      Game.time - task.createdAt > blockingTaskTtl;
-    if (sourceOrTargetLost || terminalStale || blockingStale) {
+    if (sourceOrTargetLost || terminalStale) {
       delete tasks[taskId];
       removed += 1;
     }

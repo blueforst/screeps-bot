@@ -4,7 +4,7 @@ import {
   resumeSynthesisAfterBoost,
 } from "@/runtime/synthesisControl";
 import {
-  createResourceTransferTask,
+  createAutomaticResourceTransferTask,
   getIncomingResourceTransferAmount,
 } from "@/runtime/logistics/resourceTransferTasks";
 import {
@@ -254,7 +254,7 @@ export function prepareBoosts(
     if (donorDeficit > 0) {
       const donorRoom = findBestDonorRoom(compound, donorDeficit, [sourceRoomName]);
       if (donorRoom) {
-        createResourceTransferTask(
+        createAutomaticResourceTransferTask(
           donorRoom,
           sourceRoomName,
           compound,

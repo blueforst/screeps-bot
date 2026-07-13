@@ -1,0 +1,102 @@
+{
+  "rooms": {},
+  "analytics": {
+    "production": {
+      "rooms": {}
+    },
+    "hub": {
+      "updatedAt": 995,
+      "enabled": true,
+      "hubRoomName": "W9N9",
+      "pendingImports": 0,
+      "pendingReclaims": 0,
+      "pendingExports": 0,
+      "pendingTasks": []
+    }
+  },
+  "runtime": {
+    "resourceControl": {
+      "updatedAt": 1000,
+      "rooms": {
+        "W1N1": {
+          "state": "balanced",
+          "capacityState": "pressure",
+          "storageUsedCapacity": 920000,
+          "storageFreeCapacity": 80000,
+          "terminalUsedCapacity": 270000,
+          "terminalFreeCapacity": 30000,
+          "storageEnergy": 300000,
+          "terminalEnergy": 50000,
+          "energyFloor": 120000,
+          "energyTarget": 200000,
+          "energyExportStart": 250000,
+          "terminalEnergyReserve": 20000,
+          "taskHealth": {
+            "pendingIncoming": 0,
+            "pendingOutgoing": 1,
+            "blockedIncoming": {},
+            "blockedOutgoing": {
+              "receiver_capacity": 1
+            }
+          }
+        }
+      },
+      "taskSummary": {
+        "pending": 1,
+        "manualPending": 0,
+        "automaticPending": 1,
+        "blockedByReason": {
+          "receiver_capacity": 1
+        }
+      },
+      "recentCapacityReliefRoutes": [
+        {
+          "tick": 980,
+          "taskId": "capacity-route",
+          "fromRoomName": "W1N1",
+          "toRoomName": "W2N1",
+          "resource": "energy",
+          "amount": 2000,
+          "transferCost": 100
+        }
+      ]
+    }
+  },
+  "data": {
+    "resourceControl": {
+      "taskSchemaVersion": 2,
+      "tasks": {
+        "non-hub-pending": {
+          "id": "non-hub-pending",
+          "resource": "energy",
+          "fromRoomName": "W1N1",
+          "toRoomName": "W2N1",
+          "amount": 5000,
+          "remainingAmount": 3000,
+          "status": "pending",
+          "createdAt": 900,
+          "updatedAt": 970,
+          "origin": "automatic",
+          "lastProgressAt": 940,
+          "blockedReason": "receiver_capacity",
+          "blockedSince": 970,
+          "reason": "capacity:relief:W1N1->W2N1"
+        },
+        "completed-record": {
+          "id": "completed-record",
+          "resource": "energy",
+          "fromRoomName": "W1N1",
+          "toRoomName": "W9N9",
+          "amount": 1000,
+          "remainingAmount": 0,
+          "status": "done",
+          "createdAt": 850,
+          "updatedAt": 950,
+          "origin": "automatic",
+          "lastProgressAt": 950,
+          "reason": "hub:import:energy"
+        }
+      }
+    }
+  }
+}

@@ -7,7 +7,25 @@ import {
   getIncomingResourceTransferAmount,
   getOutgoingResourceTransferAmount,
 } from "@/runtime/logistics/resourceTransferTasks";
+import * as resourceTransferTaskModule from "@/runtime/logistics/resourceTransferTasks";
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
+
+type CreatedTask = Exclude<ReturnType<typeof createResourceTransferTask>, string>["task"];
+type TaskHealthApi = {
+  createAutomaticResourceTransferTask?: typeof createResourceTransferTask;
+  markResourceTransferTaskBlocked?: (
+    task: CreatedTask,
+    reason: "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee",
+  ) => void;
+  clearResourceTransferTaskBlocker?: (task: CreatedTask) => void;
+  recordResourceTransferTaskProgress?: (task: CreatedTask) => void;
+  reconcileResourceTransferTasks?: (options?: {
+    automaticTaskNoProgressTtl?: number;
+    sourceDepletedGraceTicks?: number;
+  }) => number;
+};
+
+const taskHealthApi = resourceTransferTaskModule as typeof resourceTransferTaskModule & TaskHealthApi;
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -141,18 +159,21 @@ describe("getOutgoingResourceTransferAmount / getIncomingResourceTransferAmount"
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(200);
   });
 
-  it("indexes only supplyable pending transfer amounts", () => {
+  it("indexes pending retry-blocked transfers as healthy reservations", () => {
     createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "healthy");
     const cancelled = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 300, "cancelled");
     const blocked = createResourceTransferTask("W3N1", "W2N1", RESOURCE_ENERGY, 200, "blocked");
     if (typeof cancelled === "string" || typeof blocked === "string") throw new Error("unexpected task creation failure");
     cancelResourceTransferTask(cancelled.task.id);
-    ensureResourceTransferTaskStore()[blocked.task.id].lastError = "insufficient_terminal_resource_or_fee";
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+    markBlocked(blocked.task, "insufficient_terminal_resource_or_fee");
 
     const index = createResourceTransferTaskAmountIndex();
 
     expect(index.getOutgoing("W1N1", RESOURCE_ENERGY)).toBe(500);
-    expect(index.getIncoming("W2N1", RESOURCE_ENERGY)).toBe(500);
+    expect(index.getIncoming("W2N1", RESOURCE_ENERGY)).toBe(700);
     expect(index.getOutgoing("W3N1", RESOURCE_ENERGY)).toBe(200);
     expect(index.getIncoming("W1N1", RESOURCE_ENERGY)).toBe(0);
   });
@@ -167,14 +188,17 @@ describe("getOutgoingResourceTransferAmount / getIncomingResourceTransferAmount"
     expect(index.getIncoming("W2N1", RESOURCE_ENERGY, "hub:export:")).toBe(500);
   });
 
-  it("keeps blocked pending hub exports in the raw pending index", () => {
+  it("keeps retry-blocked hub exports in both healthy and raw pending indexes", () => {
     const task = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "hub:export:energy");
     if (typeof task === "string") throw new Error("unexpected task creation failure");
-    ensureResourceTransferTaskStore()[task.task.id].lastError = "insufficient_terminal_resource_or_fee";
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+    markBlocked(task.task, "insufficient_terminal_resource_or_fee");
 
     const index = createResourceTransferTaskAmountIndex();
 
-    expect(index.getIncoming("W2N1", RESOURCE_ENERGY, "hub:export:")).toBe(0);
+    expect(index.getIncoming("W2N1", RESOURCE_ENERGY, "hub:export:")).toBe(500);
     expect(index.getPendingIncoming("W2N1", RESOURCE_ENERGY, "hub:export:")).toBe(500);
   });
 
@@ -339,26 +363,32 @@ describe("cleanupResourceTransferTaskStore", () => {
     expect(removed).toBe(1);
   });
 
-  it("removes pending tasks with blocking errors past TTL", () => {
+  it("retains old manual pending tasks with retry blockers", () => {
     const r = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
     if (typeof r === "string") throw new Error("unexpected error");
     const store = ensureResourceTransferTaskStore();
-    store[r.task.id].lastError = "insufficient_terminal_resource_or_fee";
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+    markBlocked(store[r.task.id], "insufficient_terminal_resource_or_fee");
     store[r.task.id].createdAt = 50; // created 50 ticks ago, TTL=10
     store[r.task.id].updatedAt = 99; // resourceControl keeps refreshing updatedAt
 
     const ownedRooms = new Set(["W1N1", "W2N1"]);
     const removed = cleanupResourceTransferTaskStore(ownedRooms, 10);
 
-    expect(removed).toBe(1);
-    expect(store[r.task.id]).toBeUndefined();
+    expect(removed).toBe(0);
+    expect(store[r.task.id]).toBeDefined();
   });
 
-  it("keeps pending tasks with blocking errors within TTL", () => {
+  it("keeps manual pending tasks with recent retry blockers", () => {
     const r = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
     if (typeof r === "string") throw new Error("unexpected error");
     const store = ensureResourceTransferTaskStore();
-    store[r.task.id].lastError = "insufficient_terminal_resource_or_fee";
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+    markBlocked(store[r.task.id], "insufficient_terminal_resource_or_fee");
     // createdAt=95, Game.time=100, diff=5 < TTL=10
     store[r.task.id].createdAt = 95;
     store[r.task.id].updatedAt = 99;
@@ -370,15 +400,20 @@ describe("cleanupResourceTransferTaskStore", () => {
     expect(store[r.task.id]).toBeDefined();
   });
 
-  it("keeps blocking pending tasks on their longer TTL", () => {
+  it("keeps automatic tasks within the no-progress TTL while terminal records use their short TTL", () => {
     const terminal = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "terminal");
-    const blocked = createResourceTransferTask("W1N1", "W2N1", RESOURCE_HYDROGEN, 500, "blocked");
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(createAutomatic).toBeDefined();
+    expect(markBlocked).toBeDefined();
+    if (!createAutomatic || !markBlocked) return;
+    const blocked = createAutomatic("W1N1", "W2N1", RESOURCE_HYDROGEN, 500, "hub:import:H");
     if (typeof terminal === "string" || typeof blocked === "string") throw new Error("unexpected task creation failure");
     const store = ensureResourceTransferTaskStore();
     store[terminal.task.id].status = "cancelled";
     store[terminal.task.id].updatedAt = 50;
-    store[blocked.task.id].lastError = "insufficient_terminal_resource_or_fee";
-    store[blocked.task.id].createdAt = 50;
+    markBlocked(store[blocked.task.id], "insufficient_terminal_resource_or_fee");
+    (store[blocked.task.id] as CreatedTask & { lastProgressAt: number }).lastProgressAt = 50;
 
     const removed = cleanupResourceTransferTaskStore(new Set(["W1N1", "W2N1"]), 10, 100);
 
@@ -417,13 +452,16 @@ describe("getIncomingResourceTransferAmount blocked task filter", () => {
     Memory.runtime = undefined;
   });
 
-  it("excludes pending task blocked by insufficient terminal resource or fee", () => {
+  it("includes pending task blocked by insufficient terminal resource or fee", () => {
     createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
     const store = ensureResourceTransferTaskStore();
     const task = Object.values(store)[0];
-    task.lastError = "insufficient_terminal_resource_or_fee";
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+    markBlocked(task, "insufficient_terminal_resource_or_fee");
 
-    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(0);
+    expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(500);
   });
 
   it("includes pending task with legacy remaining-below-minimum lastError", () => {
@@ -441,28 +479,26 @@ describe("getIncomingResourceTransferAmount blocked task filter", () => {
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(500);
   });
 
-  it("excludes visible-source pending task when source has none of the resource", () => {
+  it("excludes an explicitly source-depleted pending task after grace", () => {
     createResourceTransferTask("W1N1", "W2N1", RESOURCE_HYDROGEN, 500, "test");
     const task = Object.values(ensureResourceTransferTaskStore())[0];
-    task.createdAt = Game.time - 100;
-    Game.rooms.W1N1 = {
-      name: "W1N1",
-      terminal: { store: { getUsedCapacity: jest.fn(() => 0) } },
-      storage: { store: { getUsedCapacity: jest.fn(() => 0) } },
-    } as unknown as Room;
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+    markBlocked(task, "source_depleted");
+    (task as CreatedTask & { blockedSince?: number }).blockedSince = Game.time - 100;
 
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_HYDROGEN)).toBe(0);
   });
 
-  it("includes visible-source pending task when source storage can still feed terminal", () => {
+  it("includes a source-depleted pending task within grace", () => {
     createResourceTransferTask("W1N1", "W2N1", RESOURCE_HYDROGEN, 500, "test");
     const task = Object.values(ensureResourceTransferTaskStore())[0];
-    task.createdAt = Game.time - 100;
-    Game.rooms.W1N1 = {
-      name: "W1N1",
-      terminal: { store: { getUsedCapacity: jest.fn(() => 0) } },
-      storage: { store: { getUsedCapacity: jest.fn(() => 500) } },
-    } as unknown as Room;
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+    markBlocked(task, "source_depleted");
+    (task as CreatedTask & { blockedSince?: number }).blockedSince = Game.time - 99;
 
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_HYDROGEN)).toBe(500);
   });
@@ -476,7 +512,7 @@ describe("getIncomingResourceTransferAmount blocked task filter", () => {
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_ENERGY)).toBe(500);
   });
 
-  it("sums multiple healthy tasks but excludes blocked ones", () => {
+  it("sums retry-blocked healthy tasks but excludes expired source-depleted supply", () => {
     createResourceTransferTask("W1N1", "W2N1", RESOURCE_HYDROGEN, 1000, "a");
     createResourceTransferTask("W3N1", "W2N1", RESOURCE_HYDROGEN, 1000, "b");
     createResourceTransferTask("W4N1", "W2N1", RESOURCE_HYDROGEN, 5000, "c");
@@ -484,8 +520,237 @@ describe("getIncomingResourceTransferAmount blocked task filter", () => {
     const store = ensureResourceTransferTaskStore();
     const tasks = Object.values(store);
     const blockedTask = tasks.find((t) => t.reason === "c")!;
-    blockedTask.lastError = "insufficient_terminal_resource_or_fee";
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+    markBlocked(blockedTask, "source_depleted");
+    (blockedTask as CreatedTask & { blockedSince?: number }).blockedSince = Game.time - 100;
 
     expect(getIncomingResourceTransferAmount("W2N1", RESOURCE_HYDROGEN)).toBe(2000);
+  });
+});
+
+describe("resource transfer task health v2", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    registerRuntimeServices();
+    Game.time = 100;
+    Memory.data = undefined;
+    Memory.runtime = undefined;
+  });
+
+  it("creates console-compatible tasks as manual with an initialized progress timestamp", () => {
+    const result = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "operator-request");
+    if (typeof result === "string") throw new Error("unexpected task creation failure");
+
+    expect(result.task).toEqual(
+      expect.objectContaining({
+        origin: "manual",
+        lastProgressAt: 100,
+      }),
+    );
+  });
+
+  it("provides an explicit automatic creator path", () => {
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    expect(createAutomatic).toBeDefined();
+    if (!createAutomatic) return;
+
+    const result = createAutomatic("W1N1", "W2N1", RESOURCE_ENERGY, 500, "hub:export:energy");
+    if (typeof result === "string") throw new Error("unexpected task creation failure");
+
+    expect(result.task).toEqual(
+      expect.objectContaining({
+        origin: "automatic",
+        lastProgressAt: 100,
+      }),
+    );
+  });
+
+  it("keeps the first blocked tick stable, transitions blocker reasons, and records progress", () => {
+    const result = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "test");
+    if (typeof result === "string") throw new Error("unexpected task creation failure");
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    const clearBlocker = taskHealthApi.clearResourceTransferTaskBlocker;
+    const recordProgress = taskHealthApi.recordResourceTransferTaskProgress;
+    expect(markBlocked).toBeDefined();
+    expect(clearBlocker).toBeDefined();
+    expect(recordProgress).toBeDefined();
+    if (!markBlocked || !clearBlocker || !recordProgress) return;
+
+    Game.time = 110;
+    markBlocked(result.task, "receiver_capacity");
+    expect(result.task).toEqual(expect.objectContaining({ blockedReason: "receiver_capacity", blockedSince: 110 }));
+
+    Game.time = 120;
+    markBlocked(result.task, "receiver_capacity");
+    expect((result.task as CreatedTask & { blockedSince?: number }).blockedSince).toBe(110);
+
+    Game.time = 130;
+    markBlocked(result.task, "source_depleted");
+    expect(result.task).toEqual(expect.objectContaining({ blockedReason: "source_depleted", blockedSince: 130 }));
+
+    Game.time = 135;
+    clearBlocker(result.task);
+    expect(result.task).toEqual(expect.objectContaining({ blockedReason: undefined, blockedSince: undefined }));
+
+    Game.time = 140;
+    markBlocked(result.task, "insufficient_terminal_resource_or_fee");
+    recordProgress(result.task);
+    expect(result.task).toEqual(
+      expect.objectContaining({
+        blockedReason: undefined,
+        blockedSince: undefined,
+        lastProgressAt: 140,
+        updatedAt: 140,
+      }),
+    );
+  });
+
+  it("counts retry blockers as reservations but excludes depleted incoming supply after grace", () => {
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    expect(markBlocked).toBeDefined();
+    if (!markBlocked) return;
+
+    const capacity = createResourceTransferTask("W1N1", "W9N9", RESOURCE_HYDROGEN, 100, "capacity");
+    const staging = createResourceTransferTask("W2N1", "W9N9", RESOURCE_HYDROGEN, 200, "staging");
+    const depleted = createResourceTransferTask("W3N1", "W9N9", RESOURCE_HYDROGEN, 300, "depleted");
+    if (typeof capacity === "string" || typeof staging === "string" || typeof depleted === "string") {
+      throw new Error("unexpected task creation failure");
+    }
+
+    Game.time = 200;
+    markBlocked(capacity.task, "receiver_capacity");
+    markBlocked(staging.task, "insufficient_terminal_resource_or_fee");
+    markBlocked(depleted.task, "source_depleted");
+    (depleted.task as CreatedTask & { blockedSince?: number }).blockedSince = 101;
+
+    expect(getIncomingResourceTransferAmount("W9N9", RESOURCE_HYDROGEN)).toBe(600);
+
+    Game.time = 201;
+    const index = createResourceTransferTaskAmountIndex();
+    expect(index.getIncoming("W9N9", RESOURCE_HYDROGEN)).toBe(300);
+    expect(index.getPendingIncoming("W9N9", RESOURCE_HYDROGEN)).toBe(600);
+    expect(index.getOutgoing("W3N1", RESOURCE_HYDROGEN)).toBe(300);
+  });
+
+  it("cancels stalled automatic tasks while retaining equally old manual tasks", () => {
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    const reconcile = taskHealthApi.reconcileResourceTransferTasks;
+    expect(createAutomatic).toBeDefined();
+    expect(markBlocked).toBeDefined();
+    expect(reconcile).toBeDefined();
+    if (!createAutomatic || !markBlocked || !reconcile) return;
+
+    const noProgress = createAutomatic("W1N1", "W9N9", RESOURCE_HYDROGEN, 100, "hub:import:H");
+    const sourceDepleted = createAutomatic("W2N1", "W9N9", RESOURCE_UTRIUM, 100, "synthesis:direct:U");
+    const manual = createResourceTransferTask("W3N1", "W9N9", RESOURCE_LEMERGIUM, 100, "operator-request");
+    if (typeof noProgress === "string" || typeof sourceDepleted === "string" || typeof manual === "string") {
+      throw new Error("unexpected task creation failure");
+    }
+
+    Game.time = 6_001;
+    (noProgress.task as CreatedTask & { lastProgressAt: number }).lastProgressAt = 1_000;
+    (sourceDepleted.task as CreatedTask & { lastProgressAt: number }).lastProgressAt = 6_000;
+    (manual.task as CreatedTask & { lastProgressAt: number }).lastProgressAt = 0;
+    markBlocked(sourceDepleted.task, "source_depleted");
+    (sourceDepleted.task as CreatedTask & { blockedSince?: number }).blockedSince = 5_900;
+    markBlocked(manual.task, "source_depleted");
+    (manual.task as CreatedTask & { blockedSince?: number }).blockedSince = 0;
+
+    expect(reconcile()).toBe(2);
+    expect(noProgress.task).toEqual(
+      expect.objectContaining({ status: "cancelled", lastError: "automatic_no_progress_timeout", updatedAt: 6_001 }),
+    );
+    expect(sourceDepleted.task).toEqual(
+      expect.objectContaining({ status: "cancelled", lastError: "automatic_source_depleted_timeout", updatedAt: 6_001 }),
+    );
+    expect(manual.task.status).toBe("pending");
+  });
+
+  it("retains newly cancelled automatic records until the existing terminal-record TTL elapses", () => {
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    const reconcile = taskHealthApi.reconcileResourceTransferTasks;
+    expect(createAutomatic).toBeDefined();
+    expect(reconcile).toBeDefined();
+    if (!createAutomatic || !reconcile) return;
+
+    const result = createAutomatic("W1N1", "W2N1", RESOURCE_ENERGY, 500, "energy-support");
+    if (typeof result === "string") throw new Error("unexpected task creation failure");
+    (result.task as CreatedTask & { lastProgressAt: number }).lastProgressAt = 0;
+    Game.time = 5_001;
+    reconcile();
+
+    const ownedRooms = new Set(["W1N1", "W2N1"]);
+    expect(cleanupResourceTransferTaskStore(ownedRooms, 200)).toBe(0);
+    expect(ensureResourceTransferTaskStore()[result.task.id]).toBeDefined();
+
+    Game.time = 5_202;
+    expect(cleanupResourceTransferTaskStore(ownedRooms, 200)).toBe(1);
+    expect(ensureResourceTransferTaskStore()[result.task.id]).toBeUndefined();
+  });
+
+  it("migrates known generated reasons conservatively and idempotently to schema v2", () => {
+    const reconcile = taskHealthApi.reconcileResourceTransferTasks;
+    expect(reconcile).toBeDefined();
+    if (!reconcile) return;
+
+    const legacyTask = (id: string, reason?: string, lastError?: string, updatedAt: number | undefined = 90) => ({
+      id,
+      resource: RESOURCE_HYDROGEN,
+      fromRoomName: `W${id.length}N1`,
+      toRoomName: "W9N9",
+      amount: 100,
+      remainingAmount: 100,
+      status: "pending",
+      createdAt: 80,
+      updatedAt,
+      reason,
+      lastError,
+    });
+    const knownReasons = [
+      "hub:import:H",
+      "synthesis:direct:H",
+      "powerBankBoost:task-1",
+      "energy-support",
+      "capacity:relief:H",
+    ];
+    const tasks: Record<string, ReturnType<typeof legacyTask>> = {};
+    knownReasons.forEach((reason, index) => {
+      tasks[`known-${index}`] = legacyTask(`known-${index}`, reason, index === 0 ? "insufficient_terminal_resource_or_fee" : undefined);
+    });
+    tasks["known-4"].updatedAt = undefined;
+    tasks.unknown = legacyTask("unknown", "operator-request");
+    tasks.absent = legacyTask("absent");
+    Memory.data = { resourceControl: { tasks } } as unknown as NonNullable<Memory["data"]>;
+
+    expect(reconcile()).toBe(0);
+    const resourceControl = Memory.data!.resourceControl as NonNullable<Memory["data"]>["resourceControl"] & {
+      taskSchemaVersion?: number;
+    };
+    const migrated = resourceControl!.tasks! as Record<string, CreatedTask>;
+    expect(resourceControl!.taskSchemaVersion).toBe(2);
+    for (let index = 0; index < knownReasons.length; index += 1) {
+      expect(migrated[`known-${index}`]).toEqual(
+        expect.objectContaining({
+          origin: "automatic",
+          lastProgressAt: index === 4 ? 80 : 90,
+        }),
+      );
+    }
+    expect(migrated["known-0"]).toEqual(
+      expect.objectContaining({
+        blockedReason: "insufficient_terminal_resource_or_fee",
+        blockedSince: 90,
+        lastError: undefined,
+      }),
+    );
+    expect(migrated.unknown).toEqual(expect.objectContaining({ origin: "manual", status: "pending" }));
+    expect(migrated.absent).toEqual(expect.objectContaining({ origin: "manual", status: "pending" }));
+
+    const once = JSON.stringify(resourceControl);
+    expect(reconcile()).toBe(0);
+    expect(JSON.stringify(resourceControl)).toBe(once);
   });
 });

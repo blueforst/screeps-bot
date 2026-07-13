@@ -12,6 +12,7 @@ const DEFAULT_HTTP_PORT = 3131;
 const DEFAULT_HISTORY_LIMIT = 200;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_OUTPUT_PATH = "monitor-data/snapshots.jsonl";
+const RESOURCE_CONTROL_ROUTE_LIMIT = 20;
 
 function printHelp() {
   console.log(`Screeps monitor service
@@ -758,6 +759,145 @@ function summarizeHub(hub) {
   };
 }
 
+function finiteNumberOrNull(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function tickAge(referenceTick, eventTick) {
+  if (!Number.isFinite(referenceTick) || !Number.isFinite(eventTick)) {
+    return null;
+  }
+  return Math.max(0, referenceTick - eventTick);
+}
+
+function summarizeCountMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, count]) => typeof count === "number" && Number.isFinite(count))
+      .sort(([leftReason], [rightReason]) => leftReason.localeCompare(rightReason)),
+  );
+}
+
+function summarizeTaskHealth(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    pendingIncoming: finiteNumberOrNull(value.pendingIncoming),
+    pendingOutgoing: finiteNumberOrNull(value.pendingOutgoing),
+    blockedIncoming: summarizeCountMap(value.blockedIncoming),
+    blockedOutgoing: summarizeCountMap(value.blockedOutgoing),
+  };
+}
+
+function summarizeTaskSummary(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    pending: finiteNumberOrNull(value.pending),
+    manualPending: finiteNumberOrNull(value.manualPending),
+    automaticPending: finiteNumberOrNull(value.automaticPending),
+    blockedByReason: summarizeCountMap(value.blockedByReason),
+  };
+}
+
+function summarizeCapacityReliefRoutes(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((route) => route && typeof route === "object" && !Array.isArray(route))
+    .slice(-RESOURCE_CONTROL_ROUTE_LIMIT)
+    .map((route) => ({
+      tick: finiteNumberOrNull(route.tick),
+      taskId: typeof route.taskId === "string" ? route.taskId : null,
+      fromRoomName: typeof route.fromRoomName === "string" ? route.fromRoomName : null,
+      toRoomName: typeof route.toRoomName === "string" ? route.toRoomName : null,
+      resource: typeof route.resource === "string" ? route.resource : null,
+      amount: finiteNumberOrNull(route.amount),
+      transferCost: finiteNumberOrNull(route.transferCost),
+    }));
+}
+
+function summarizeResourceControl(runtimeResourceControl, transferTaskStore) {
+  const runtime =
+    runtimeResourceControl && typeof runtimeResourceControl === "object" && !Array.isArray(runtimeResourceControl)
+      ? runtimeResourceControl
+      : null;
+  const tasks =
+    transferTaskStore && typeof transferTaskStore === "object" && !Array.isArray(transferTaskStore)
+      ? transferTaskStore
+      : null;
+  const referenceTick = runtime ? finiteNumberOrNull(runtime.updatedAt) : null;
+  const roomsRecord =
+    runtime && runtime.rooms && typeof runtime.rooms === "object" && !Array.isArray(runtime.rooms)
+      ? runtime.rooms
+      : {};
+
+  const rooms = Object.entries(roomsRecord)
+    .sort(([leftRoomName], [rightRoomName]) => leftRoomName.localeCompare(rightRoomName))
+    .map(([roomName, roomState]) => {
+      const room = roomState && typeof roomState === "object" && !Array.isArray(roomState) ? roomState : {};
+      return {
+        roomName,
+        state: typeof room.state === "string" ? room.state : null,
+        capacityState: typeof room.capacityState === "string" ? room.capacityState : null,
+        storageUsedCapacity: finiteNumberOrNull(room.storageUsedCapacity),
+        storageFreeCapacity: finiteNumberOrNull(room.storageFreeCapacity),
+        terminalUsedCapacity: finiteNumberOrNull(room.terminalUsedCapacity),
+        terminalFreeCapacity: finiteNumberOrNull(room.terminalFreeCapacity),
+        storageEnergy: finiteNumberOrNull(room.storageEnergy),
+        terminalEnergy: finiteNumberOrNull(room.terminalEnergy),
+        energyFloor: finiteNumberOrNull(room.energyFloor),
+        energyTarget: finiteNumberOrNull(room.energyTarget),
+        energyExportStart: finiteNumberOrNull(room.energyExportStart),
+        terminalEnergyReserve: finiteNumberOrNull(room.terminalEnergyReserve),
+        taskHealth: summarizeTaskHealth(room.taskHealth),
+      };
+    });
+
+  const pendingTasks = Object.entries(tasks || {})
+    .filter(([, task]) => task && typeof task === "object" && task.status === "pending")
+    .sort(([leftId, leftTask], [rightId, rightTask]) => {
+      const leftCreatedAt = finiteNumberOrNull(leftTask.createdAt) ?? Number.MAX_SAFE_INTEGER;
+      const rightCreatedAt = finiteNumberOrNull(rightTask.createdAt) ?? Number.MAX_SAFE_INTEGER;
+      if (leftCreatedAt !== rightCreatedAt) {
+        return leftCreatedAt - rightCreatedAt;
+      }
+      const normalizedLeftId = typeof leftTask.id === "string" ? leftTask.id : leftId;
+      const normalizedRightId = typeof rightTask.id === "string" ? rightTask.id : rightId;
+      return normalizedLeftId.localeCompare(normalizedRightId);
+    })
+    .map(([taskId, task]) => ({
+      id: typeof task.id === "string" ? task.id : taskId,
+      resource: typeof task.resource === "string" ? task.resource : null,
+      origin: typeof task.origin === "string" ? task.origin : null,
+      reason: typeof task.reason === "string" ? task.reason : null,
+      sourceRoom: typeof task.fromRoomName === "string" ? task.fromRoomName : null,
+      destinationRoom: typeof task.toRoomName === "string" ? task.toRoomName : null,
+      remainingAmount: finiteNumberOrNull(task.remainingAmount),
+      age: tickAge(referenceTick, task.createdAt),
+      blocker: typeof task.blockedReason === "string" ? task.blockedReason : null,
+      blockerAge: tickAge(referenceTick, task.blockedSince),
+      lastProgressAge: tickAge(referenceTick, task.lastProgressAt),
+    }));
+
+  return {
+    available: runtime !== null || tasks !== null,
+    updatedAt: referenceTick,
+    roomCount: rooms.length,
+    rooms,
+    taskSummary: summarizeTaskSummary(runtime?.taskSummary),
+    recentCapacityReliefRoutes: summarizeCapacityReliefRoutes(runtime?.recentCapacityReliefRoutes),
+    pendingTaskCount: pendingTasks.length,
+    pendingTasks,
+  };
+}
+
 function parseSegmentSnapshot(segmentId, payload) {
   if (!payload || typeof payload !== "object") {
     return {
@@ -802,15 +942,7 @@ function extractAnalyticsData(parsed) {
     return { production, moduleCpu, cpuMonitor, hub };
   }
 
-  if ("rooms" in parsed) {
-    production = parsed;
-    if ("moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
-    if ("cpuMonitor" in parsed) cpuMonitor = parsed.cpuMonitor;
-  } else if ("production" in parsed && parsed.production) {
-    production = parsed.production;
-    if ("moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
-    if ("cpuMonitor" in parsed) cpuMonitor = parsed.cpuMonitor;
-  } else if ("analytics" in parsed && parsed.analytics) {
+  if ("analytics" in parsed && parsed.analytics) {
     const analytics = parsed.analytics;
     if (typeof analytics === "object" && analytics) {
       if ("production" in analytics) production = analytics.production;
@@ -819,6 +951,16 @@ function extractAnalyticsData(parsed) {
       if ("hub" in analytics) hub = analytics.hub;
     }
   }
+  if (!production && "production" in parsed && parsed.production) {
+    production = parsed.production;
+    if (!moduleCpu && "moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
+    if (!cpuMonitor && "cpuMonitor" in parsed) cpuMonitor = parsed.cpuMonitor;
+  }
+  if (!production && "rooms" in parsed) {
+    production = parsed;
+    if (!moduleCpu && "moduleCpu" in parsed) moduleCpu = parsed.moduleCpu;
+    if (!cpuMonitor && "cpuMonitor" in parsed) cpuMonitor = parsed.cpuMonitor;
+  }
   // Top-level hub or cpuMonitor overrides
   if ("hub" in parsed && parsed.hub) hub = parsed.hub;
   if ("cpuMonitor" in parsed && parsed.cpuMonitor && !cpuMonitor) cpuMonitor = parsed.cpuMonitor;
@@ -826,7 +968,46 @@ function extractAnalyticsData(parsed) {
   return { production, moduleCpu, cpuMonitor, hub };
 }
 
-async function fetchMemorySnapshot(config) {
+function extractFixtureResourceControlData(parsed) {
+  if (!parsed || typeof parsed !== "object") {
+    return { runtimeResourceControl: null, transferTaskStore: null };
+  }
+
+  const runtime = parsed.runtime && typeof parsed.runtime === "object" ? parsed.runtime : null;
+  const data = parsed.data && typeof parsed.data === "object" ? parsed.data : null;
+  const dataResourceControl =
+    data && data.resourceControl && typeof data.resourceControl === "object" ? data.resourceControl : null;
+
+  return {
+    runtimeResourceControl:
+      runtime && runtime.resourceControl && typeof runtime.resourceControl === "object"
+        ? runtime.resourceControl
+        : null,
+    transferTaskStore:
+      dataResourceControl && dataResourceControl.tasks && typeof dataResourceControl.tasks === "object"
+        ? dataResourceControl.tasks
+        : null,
+  };
+}
+
+async function fetchOptionalMemoryPath(config, shard, path) {
+  try {
+    const { payload } = await fetchApiJson(config, "/api/user/memory", { shard, path });
+    return parseMemoryBody(payload);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchResourceControlData(config, shard) {
+  const [runtimeResourceControl, transferTaskStore] = await Promise.all([
+    fetchOptionalMemoryPath(config, shard, "runtime.resourceControl"),
+    fetchOptionalMemoryPath(config, shard, "data.resourceControl.tasks"),
+  ]);
+  return { runtimeResourceControl, transferTaskStore };
+}
+
+async function fetchMemorySnapshot(config, options = {}) {
   // Fixture mode: read from file instead of API
   if (config.memoryFixture) {
     const fs = await import("node:fs/promises");
@@ -834,6 +1015,7 @@ async function fetchMemorySnapshot(config) {
     const parsed = JSON.parse(raw);
     const rateLimit = { limit: "?", remaining: "?", reset: "?" };
     const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(parsed);
+    const { runtimeResourceControl, transferTaskStore } = extractFixtureResourceControlData(parsed);
 
     return {
       source: "memory",
@@ -843,6 +1025,7 @@ async function fetchMemorySnapshot(config) {
       cpuMonitor: summarizeCpuMonitor(cpuMonitor, moduleCpu),
       moduleCpu: summarizeModuleCpu(moduleCpu),
       hub: summarizeHub(hub),
+      resourceControl: summarizeResourceControl(runtimeResourceControl, transferTaskStore),
     };
   }
 
@@ -853,6 +1036,9 @@ async function fetchMemorySnapshot(config) {
   const memoryOrProduction = parseMemoryBody(payload);
   const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(memoryOrProduction);
   const summary = summarizeProduction(production);
+  const { runtimeResourceControl, transferTaskStore } = options.includeResourceControl === false
+    ? { runtimeResourceControl: null, transferTaskStore: null }
+    : await fetchResourceControlData(config, config.shard);
 
   return {
     source: "memory",
@@ -862,6 +1048,7 @@ async function fetchMemorySnapshot(config) {
     cpuMonitor: summarizeCpuMonitor(cpuMonitor, moduleCpu),
     moduleCpu: summarizeModuleCpu(moduleCpu),
     hub: summarizeHub(hub),
+    resourceControl: summarizeResourceControl(runtimeResourceControl, transferTaskStore),
   };
 }
 
@@ -991,6 +1178,7 @@ function summarizeState(state) {
     latestTick: memory ? memory.summary.latestTick : null,
     totals: memory ? memory.summary.totals : null,
     hub: memory?.hub ?? null,
+    resourceControl: memory?.resourceControl ?? null,
     cpuMonitorAvailable: latestCpu ? latestCpu.available : false,
     cpuMonitorVersion: latestCpu ? latestCpu.version : null,
     cpuMonitorSource: latestCpu ? latestCpu.source : null,
@@ -1089,10 +1277,15 @@ function createHttpServer(state) {
       writeJson(res, 200, { ok: true, hub, selectedShard: state.selectedShard ?? null });
       return;
     }
+    if (url.pathname === "/resource-control") {
+      const resourceControl = state.latest.memory?.resourceControl ?? null;
+      writeJson(res, 200, { ok: true, resourceControl, selectedShard: state.selectedShard ?? null });
+      return;
+    }
 
     writeJson(res, 200, {
       summary: summarizeState(state),
-      endpoints: ["/health", "/state", "/rooms", "/history", "/cpu", "/hub"],
+      endpoints: ["/health", "/state", "/rooms", "/history", "/cpu", "/hub", "/resource-control"],
     });
   });
 }
@@ -1127,19 +1320,24 @@ function logMemorySnapshot(snapshot) {
       ? `${legacy.topPhases[0].phase}:${legacy.topPhases[0].used.toFixed(2)}`
       : "n/a";
     console.log(
-      `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [legacy] moduleCpuTick=${legacy.tick ?? "n/a"} moduleCpuUsed=${legacy.totalUsed ?? "n/a"} topPhase=${legacyTop}${hubStr(snapshot.hub)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+      `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [legacy] moduleCpuTick=${legacy.tick ?? "n/a"} moduleCpuUsed=${legacy.totalUsed ?? "n/a"} topPhase=${legacyTop}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
     );
     return;
   }
 
   console.log(
-    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [cpu-v${cpuVersion}|${cpuSource}] cpuTick=${cpuTick} cpuUsed=${cpuUsed}${emaStr}${fixedStr}${heapStr} topPhase=${topPhase}${hubStr(snapshot.hub)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [cpu-v${cpuVersion}|${cpuSource}] cpuTick=${cpuTick} cpuUsed=${cpuUsed}${emaStr}${fixedStr}${heapStr} topPhase=${topPhase}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
   );
 }
 
 function hubStr(hub) {
   if (!hub || !hub.available) return "";
   return ` hub=${hub.hubRoomName} status=${hub.status ?? "n/a"} stage=${hub.stage ?? "n/a"} product=${hub.activeProduct ?? "n/a"} imports=${hub.pendingImports} exports=${hub.pendingExports}`;
+}
+
+function resourceControlStr(resourceControl) {
+  if (!resourceControl || !resourceControl.available) return "";
+  return ` transferTasks=${resourceControl.pendingTaskCount}`;
 }
 
 function logSegmentSnapshot(snapshot) {
@@ -1166,6 +1364,7 @@ async function fetchWithShardFallback(config) {
   const candidates = [undefined, ...config.shardCandidates];
   let bestResult = null;
   let bestShard = null;
+  let bestShardValue;
   let bestHubTime = -1;
   let bestDeployTime = -1;
   let bestTick = -1;
@@ -1173,7 +1372,10 @@ async function fetchWithShardFallback(config) {
 
   for (const shard of candidates) {
     try {
-      const result = await fetchMemorySnapshot({ ...config, shard, memoryFixture: config.memoryFixture });
+      const result = await fetchMemorySnapshot(
+        { ...config, shard, memoryFixture: config.memoryFixture },
+        { includeResourceControl: false },
+      );
       const runtimeInfo = await fetchRuntimeInfo(config, shard);
       const hubTime = result.memory?.hub?.updatedAt ?? result.hub?.updatedAt ?? -1;
       const tick = result.memory?.summary?.latestTick ?? result.summary?.latestTick ?? -1;
@@ -1192,6 +1394,7 @@ async function fetchWithShardFallback(config) {
       ) {
         bestResult = result;
         bestShard = shard ?? "(default)";
+        bestShardValue = shard;
         bestHubTime = hubTime;
         bestDeployTime = runtimeInfo.deployTime;
         bestTick = tick;
@@ -1202,16 +1405,22 @@ async function fetchWithShardFallback(config) {
   }
 
   if (bestResult) {
+    const { runtimeResourceControl, transferTaskStore } = await fetchResourceControlData(config, bestShardValue);
+    bestResult.resourceControl = summarizeResourceControl(runtimeResourceControl, transferTaskStore);
     bestResult.selectedShard = bestShard;
     bestResult.shardCandidates = shardResults;
   }
   return bestResult;
 }
 
+async function fetchSelectedMemorySnapshot(config) {
+  return config.explicitShard || config.memoryFixture
+    ? fetchMemorySnapshot(config)
+    : fetchWithShardFallback(config);
+}
+
 async function runOnce(config) {
-  const memory = config.explicitShard || config.memoryFixture
-    ? await fetchMemorySnapshot(config)
-    : await fetchWithShardFallback(config);
+  const memory = await fetchSelectedMemorySnapshot(config);
   const segment = config.segmentId === null ? null : await fetchSegmentSnapshot(config, config.segmentId);
   const payload = {
     capturedAt: new Date().toISOString(),
@@ -1234,8 +1443,12 @@ async function runService(config) {
     }
     memoryBusy = true;
     try {
-      const snapshot = await fetchMemorySnapshot(config);
+      const snapshot = await fetchSelectedMemorySnapshot(config);
+      if (!snapshot) {
+        throw new Error("No shard candidate returned a memory snapshot");
+      }
       state.latest.memory = snapshot;
+      state.selectedShard = snapshot.selectedShard ?? config.shard ?? null;
       pushHistory(
         state,
         {

@@ -13,10 +13,10 @@
  */
 
 import {
-  BLOCKING_ERRORS,
-  createResourceTransferTask,
+  createAutomaticResourceTransferTask,
   createResourceTransferTaskAmountIndex,
   ensureResourceTransferTaskStore,
+  isHealthyResourceTransferTaskReservation,
   type ResourceTransferTaskAmountIndex,
 } from "@/runtime/logistics/resourceTransferTasks";
 import {
@@ -524,9 +524,10 @@ export function planHubImports(
   const existingKeys = new Set<string>();
   const taskStore = ensureResourceTransferTaskStore();
   for (const task of Object.values(taskStore)) {
-    if (task.status === "pending" && task.toRoomName === cfg.hubRoomName) {
-      // Skip tasks stuck with blocking errors - they can't execute anyway
-      if (task.lastError && BLOCKING_ERRORS.has(task.lastError)) continue;
+    if (
+      task.toRoomName === cfg.hubRoomName &&
+      isHealthyResourceTransferTaskReservation(task, "incoming")
+    ) {
       existingKeys.add(`${task.fromRoomName}:${task.resource}:${task.reason}`);
     }
   }
@@ -568,7 +569,7 @@ export function planHubImports(
         const reason = `hub:import:${mineral}`;
         const key = `${satellite.name}:${mineral}:${reason}`;
         if (existingKeys.has(key)) continue;
-        const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, mineral, sendAmount, reason);
+        const result = createAutomaticResourceTransferTask(satellite.name, cfg.hubRoomName, mineral, sendAmount, reason);
         if (typeof result === "object" && result.ok) {
           actions.push(`import:${satellite.name}:${mineral}=${sendAmount}`);
         }
@@ -584,7 +585,7 @@ export function planHubImports(
         const reason = `hub:import:${compound}`;
         const key = `${satellite.name}:${compound}:${reason}`;
         if (existingKeys.has(key)) continue;
-        const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, compound, sendAmount, reason);
+        const result = createAutomaticResourceTransferTask(satellite.name, cfg.hubRoomName, compound, sendAmount, reason);
         if (typeof result === "object" && result.ok) {
           actions.push(`import:${satellite.name}:${compound}=${sendAmount}`);
         }
@@ -601,7 +602,7 @@ export function planHubImports(
       const reason = `hub:reclaim:${t3}`;
       const key = `${satellite.name}:${t3}:${reason}`;
       if (existingKeys.has(key)) continue;
-      const result = createResourceTransferTask(satellite.name, cfg.hubRoomName, t3, sendAmount, reason);
+      const result = createAutomaticResourceTransferTask(satellite.name, cfg.hubRoomName, t3, sendAmount, reason);
       if (typeof result === "object" && result.ok) {
         actions.push(`reclaim:${satellite.name}:${t3}=${sendAmount}`);
       }
@@ -631,7 +632,7 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
   const hubPendingOutgoing: Record<string, number> = {};
   for (const task of Object.values(taskStore)) {
     if (
-      task.status === "pending" &&
+      isHealthyResourceTransferTaskReservation(task, "outgoing") &&
       task.fromRoomName === cfg.hubRoomName &&
       task.reason?.startsWith("hub:export:")
     ) {
@@ -685,7 +686,7 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
       if (amount <= 0) continue;
 
       const reason = `hub:export:${t3}`;
-      const result = createResourceTransferTask(cfg.hubRoomName, satellite.name, t3, amount, reason);
+      const result = createAutomaticResourceTransferTask(cfg.hubRoomName, satellite.name, t3, amount, reason);
 
       if (typeof result === "object" && result.ok) {
         actions.push(`export:${satellite.name}:${t3}=${amount}`);
@@ -1510,6 +1511,7 @@ function upsertSynthesisRouteTask(
   for (const task of Object.values(taskStore)) {
     if (
       task.status === "pending" &&
+      task.origin === "automatic" &&
       task.fromRoomName === fromRoomName &&
       task.toRoomName === toRoomName &&
       task.resource === resource &&
@@ -1522,7 +1524,7 @@ function upsertSynthesisRouteTask(
     }
   }
 
-  createResourceTransferTask(fromRoomName, toRoomName, resource, amount, reason);
+  createAutomaticResourceTransferTask(fromRoomName, toRoomName, resource, amount, reason);
 }
 
 function cancelStaleSynthesisRouteTasks(activeRouteKeys: Set<string>): number {
@@ -1531,6 +1533,7 @@ function cancelStaleSynthesisRouteTasks(activeRouteKeys: Set<string>): number {
   for (const task of Object.values(taskStore)) {
     if (
       task.status === "pending" &&
+      task.origin === "automatic" &&
       (task.reason?.startsWith("synthesis:direct:") || task.reason?.startsWith("synthesis:hub-route:") || task.reason?.startsWith("synthesis:surplus:"))
     ) {
       const key = getSynthesisRouteTaskKey(task.fromRoomName, task.toRoomName, task.resource, task.reason);
@@ -1586,7 +1589,7 @@ export function resupplyBusySynthesisRooms(
 
       const amount = Math.min(needed, hubExportable);
       const reason = `synthesis:resupply:${rc}`;
-      const result = createResourceTransferTask(hubRoomName, room.name, rc, amount, reason);
+      const result = createAutomaticResourceTransferTask(hubRoomName, room.name, rc, amount, reason);
       if (typeof result === "object" && result.ok) {
         actions.push(`resupply:${room.name}:${rc}=${amount}`);
       }

@@ -1,5 +1,5 @@
 import { buildHubProgressSnapshot, buildHubVisualModel, collectHubProgressSnapshot, collectCarrierCargoInventory, runHubProgressAnalytics, buildHubOverlayLines, renderHubProgressOverlays, drawHubVisualPanel } from "@/runtime/hubProgress";
-import type { HubProgressSnapshot, HubVisualModel, ProductionRoomEntry } from "@/runtime/hubProgress";
+import type { HubProgressInput, HubProgressSnapshot, HubVisualModel, ProductionRoomEntry } from "@/runtime/hubProgress";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { getCreepConfigService, registerRuntimeServices } from "@/runtime/runtimeServices";
 
@@ -34,6 +34,24 @@ function makeMockTask(
     updatedAt: 100,
     reason: overrides.reason,
     lastError: undefined,
+  };
+}
+
+type ResourceControlRoomInput = NonNullable<HubProgressInput["resourceControlRooms"]>[string];
+
+function makeResourceControlRoom(
+  overrides: Partial<ResourceControlRoomInput> = {},
+): ResourceControlRoomInput {
+  return {
+    state: "balanced",
+    storageEnergy: 200000,
+    terminalEnergy: 15000,
+    energyFloor: 120000,
+    energyTarget: 200000,
+    energyExportStart: 250000,
+    canMineNative: false,
+    minerals: {},
+    ...overrides,
   };
 }
 
@@ -105,6 +123,227 @@ describe("buildHubProgressSnapshot", () => {
     expect(snapshot.hubStorageEnergy).toBe(0);
     expect(snapshot.hubTerminalEnergy).toBe(0);
     expect(snapshot.hubInventory).toEqual({});
+  });
+
+  it("reports the actual terminal energy reserve instead of the room energy floor", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "blocked" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: {
+        W2N1: makeResourceControlRoom({ energyFloor: 120000, terminalEnergyReserve: 20000 }),
+      },
+      transferTasks: null,
+      currentTick: 350,
+    });
+
+    expect(snapshot.roomTerminalBlockers).toEqual([
+      { room: "W2N1", terminalEnergy: 15000, reserve: 20000, pendingNonEnergy: 0 },
+    ]);
+  });
+
+  it("falls back to the controller default terminal reserve for legacy room memory", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "blocked" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: {
+        W2N1: makeResourceControlRoom({ energyFloor: 120000 }),
+      },
+      transferTasks: null,
+      currentTick: 351,
+    });
+
+    expect(snapshot.roomTerminalBlockers[0]?.reserve).toBe(20000);
+  });
+
+  it("uses zero projected room task health without another transfer-task store scan", () => {
+    let taskStoreScans = 0;
+    const transferTasks: Record<string, any> = new Proxy(
+      {
+        unrelated: makeMockTask({
+          id: "unrelated",
+          resource: RESOURCE_UTRIUM,
+          fromRoomName: "W8N1",
+          toRoomName: "W9N1",
+          reason: "manual:test",
+        }),
+      },
+      {
+        ownKeys(target) {
+          taskStoreScans++;
+          return Reflect.ownKeys(target);
+        },
+      },
+    );
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "blocked" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: {
+        W2N1: makeResourceControlRoom({
+          terminalEnergyReserve: 20000,
+          taskHealth: {
+            pendingIncoming: 0,
+            pendingOutgoing: 0,
+            blockedIncoming: {},
+            blockedOutgoing: {},
+          },
+        }),
+        W3N1: makeResourceControlRoom({
+          terminalEnergy: 18000,
+          terminalEnergyReserve: 20000,
+          taskHealth: {
+            pendingIncoming: 0,
+            pendingOutgoing: 0,
+            blockedIncoming: {},
+            blockedOutgoing: {},
+          },
+        }),
+      },
+      transferTasks,
+      currentTick: 352,
+    });
+
+    expect(snapshot.roomTerminalBlockers.map(({ room, pendingNonEnergy }) => ({ room, pendingNonEnergy }))).toEqual([
+      { room: "W2N1", pendingNonEnergy: 0 },
+      { room: "W3N1", pendingNonEnergy: 0 },
+    ]);
+    expect(taskStoreScans).toBe(1);
+  });
+
+  it("indexes active projected tasks once while preserving legacy non-energy semantics", () => {
+    let taskStoreScans = 0;
+    const rawTransferTasks: Record<string, any> = {
+      mineralIncoming: makeMockTask({
+        id: "mineral-incoming",
+        resource: RESOURCE_UTRIUM,
+        fromRoomName: "W8N1",
+        toRoomName: "W2N1",
+        reason: "manual:test",
+      }),
+      energyOutgoing: makeMockTask({
+        id: "energy-outgoing",
+        resource: RESOURCE_ENERGY,
+        fromRoomName: "W2N1",
+        toRoomName: "W8N1",
+        reason: "manual:test",
+      }),
+      mineralOutgoing: makeMockTask({
+        id: "mineral-outgoing",
+        resource: RESOURCE_KEANIUM,
+        fromRoomName: "W3N1",
+        toRoomName: "W8N1",
+        reason: "manual:test",
+      }),
+    };
+    const transferTasks = new Proxy(rawTransferTasks, {
+      ownKeys(target) {
+        taskStoreScans++;
+        return Reflect.ownKeys(target);
+      },
+    });
+    const projectedSnapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "blocked" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: {
+        W2N1: makeResourceControlRoom({
+          terminalEnergyReserve: 20000,
+          taskHealth: {
+            pendingIncoming: 1,
+            pendingOutgoing: 1,
+            blockedIncoming: {},
+            blockedOutgoing: {},
+          },
+        }),
+        W3N1: makeResourceControlRoom({
+          terminalEnergy: 18000,
+          terminalEnergyReserve: 20000,
+          taskHealth: {
+            pendingIncoming: 0,
+            pendingOutgoing: 1,
+            blockedIncoming: {},
+            blockedOutgoing: {},
+          },
+        }),
+      },
+      transferTasks,
+      currentTick: 353,
+    });
+    const projectedCounts = projectedSnapshot.roomTerminalBlockers.map(({ room, pendingNonEnergy }) => ({
+      room,
+      pendingNonEnergy,
+    }));
+
+    expect(projectedCounts).toEqual([
+      { room: "W2N1", pendingNonEnergy: 1 },
+      { room: "W3N1", pendingNonEnergy: 1 },
+    ]);
+    expect(taskStoreScans).toBe(2);
+
+    const legacySnapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "blocked" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: {
+        W2N1: makeResourceControlRoom(),
+        W3N1: makeResourceControlRoom({ terminalEnergy: 18000 }),
+      },
+      transferTasks: rawTransferTasks,
+      currentTick: 354,
+    });
+
+    expect(legacySnapshot.roomTerminalBlockers.map(({ room, pendingNonEnergy }) => ({ room, pendingNonEnergy }))).toEqual(
+      projectedCounts,
+    );
+  });
+
+  it("scans pending non-energy tasks for legacy room memory without task health", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "blocked" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: {
+        W2N1: makeResourceControlRoom(),
+      },
+      transferTasks: {
+        mineral: makeMockTask({
+          id: "mineral",
+          resource: RESOURCE_UTRIUM,
+          fromRoomName: "W3N1",
+          toRoomName: "W2N1",
+        }),
+        energy: makeMockTask({
+          id: "energy",
+          resource: RESOURCE_ENERGY,
+          fromRoomName: "W2N1",
+          toRoomName: "W3N1",
+        }),
+        done: makeMockTask({
+          id: "done",
+          resource: RESOURCE_KEANIUM,
+          fromRoomName: "W2N1",
+          toRoomName: "W3N1",
+          status: "done",
+        }),
+      } as any,
+      currentTick: 353,
+    });
+
+    expect(snapshot.roomTerminalBlockers[0]?.pendingNonEnergy).toBe(1);
   });
 
   it("counts pending hub transfer tasks by type", () => {
@@ -1695,5 +1934,3 @@ describe("drawHubVisualPanel T3 Reserve section", () => {
     expect(deficitLines).toHaveLength(3);
   });
 });
-
-

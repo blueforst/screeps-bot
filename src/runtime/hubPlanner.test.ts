@@ -3,6 +3,7 @@ import {
   ensureResourceTransferTaskStore,
   getIncomingResourceTransferAmount,
   getOutgoingResourceTransferAmount,
+  markResourceTransferTaskBlocked,
 } from "@/runtime/logistics/resourceTransferTasks";
 import { runHubByFlag } from "@/runtime/hubFlag";
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
@@ -1928,11 +1929,19 @@ describe("planHubDistribution", () => {
     // Shortage = 1000 - 250 = 750. Hub remaining = 5000 - 500 - 1000 = 3500. Export = min(750, 3500) = 750.
     expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=750`);
 
-    // Verify the task was merged (original 500 + new 750 = 1250)
-    const tasks = Object.values(ensureResourceTransferTaskStore());
-    const task = tasks.find((t) => t.reason === `hub:export:${XGHO2}`);
-    expect(task).toBeDefined();
-    expect(task!.amount).toBe(1250);
+    // Manual console work and automatic planner work keep distinct origins,
+    // while their combined reservation preserves the previous 1250 total.
+    const tasks = Object.values(ensureResourceTransferTaskStore()).filter(
+      (task) => task.reason === `hub:export:${XGHO2}`,
+    );
+    expect(tasks).toHaveLength(2);
+    expect(tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ origin: "manual", amount: 500 }),
+        expect.objectContaining({ origin: "automatic", amount: 750 }),
+      ]),
+    );
+    expect(tasks.reduce((total, task) => total + task.amount, 0)).toBe(1250);
   });
 
   it("creates no export task when satellite storage lacks the receive buffer", () => {
@@ -2418,7 +2427,7 @@ describe("HUB lifecycle integration", () => {
     expect(Memory.runtime.hub!.missingResources).not.toContain(RESOURCE_KEANIUM);
   });
 
-  // Progressive: blocked incoming Z must not count as available.
+  // Progressive: source-depleted incoming Z outside its grace must not count as available.
   // Use XGHO2 target (needs Z via G→ZK→Z+K chain) so blocked Z import matters.
   it("hub planner treats blocked incoming resources as unavailable", () => {
     const partialMinerals: Record<string, number> = {
@@ -2461,7 +2470,8 @@ describe("HUB lifecycle integration", () => {
 
     const store = ensureResourceTransferTaskStore();
     const zTask = Object.values(store).find((t) => t.resource === RESOURCE_ZYNTHIUM)!;
-    zTask.lastError = "insufficient_terminal_resource_or_fee";
+    markResourceTransferTaskBlocked(zTask, "source_depleted");
+    zTask.blockedSince = Game.time - 100;
 
     expect(getIncomingResourceTransferAmount(INTEGRATION_HUB, RESOURCE_ZYNTHIUM)).toBe(0);
 
@@ -2563,7 +2573,7 @@ describe("HUB lifecycle integration", () => {
       hub: { ...getDefaultHubRuntime(), needsPlan: true },
     };
 
-    // Create pending import of Z from satellite to hub — but mark it as blocked
+    // Create pending import of Z from satellite to hub — but mark its source as depleted beyond grace.
     createResourceTransferTask(
       INTEGRATION_SAT,
       INTEGRATION_HUB,
@@ -2573,7 +2583,8 @@ describe("HUB lifecycle integration", () => {
     );
     const store = ensureResourceTransferTaskStore();
     const zTask = Object.values(store).find((t) => t.resource === RESOURCE_ZYNTHIUM)!;
-    zTask.lastError = "insufficient_terminal_resource_or_fee";
+    markResourceTransferTaskBlocked(zTask, "source_depleted");
+    zTask.blockedSince = Game.time - 100;
 
     // Verify blocked import is excluded from incoming amounts
     expect(getIncomingResourceTransferAmount(INTEGRATION_HUB, RESOURCE_ZYNTHIUM)).toBe(0);

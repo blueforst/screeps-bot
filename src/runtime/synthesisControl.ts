@@ -1,7 +1,7 @@
 import {
   countPendingIncomingResourceTransferTasksByRoom,
   countPendingOutgoingResourceTransferTasksByRoom,
-  createResourceTransferTask,
+  createAutomaticResourceTransferTask,
   getIncomingResourceTransferAmount,
   getOutgoingResourceTransferAmount,
 } from "@/runtime/logistics/resourceTransferTasks";
@@ -955,7 +955,7 @@ function maybeGenerateSupplyTasks(
       continue;
     }
 
-    const task = createResourceTransferTask(
+    const task = createAutomaticResourceTransferTask(
       donor.room.name,
       room.name,
       reagent,

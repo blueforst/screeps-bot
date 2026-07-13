@@ -218,6 +218,8 @@ describe("powerBankBoost", () => {
           status: "pending",
           createdAt: 1,
           updatedAt: 1,
+          origin: "manual",
+          lastProgressAt: 1,
         };
 
         const result = prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
