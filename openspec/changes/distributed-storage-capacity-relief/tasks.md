@@ -31,4 +31,4 @@
 - [x] 5.1 Run focused task-store/resource-control/Hub/synthesis/power-bank suites and fix regressions.
 - [x] 5.2 Run the full Jest suite, `npx tsc --noEmit`, `npm run build`, and `node --check scripts/monitor-service.mjs` with clean results.
 - [x] 5.3 Review the implementation against every OpenSpec scenario, task-store CPU bounds, and the diff; fix all actionable findings.
-- [ ] 5.4 Deploy with `npm run push`, verify the active Screeps branch/deploy tag, and observe at least two resource-control cycles for stale-task reduction, relief progress, capacity recovery, and intact receiver/protection buffers.
+- [x] 5.4 Deploy with `npm run push`, verify the active Screeps branch/deploy tag, and observe at least two resource-control cycles for stale-task reduction, relief progress, capacity recovery, and intact receiver/protection buffers.
