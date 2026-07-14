@@ -1531,12 +1531,6 @@ describe("remote construction caps", () => {
     processRemoteConstruction(store, config);
 
     expect(task.roadPlan).toBeUndefined();
-    expect((task as typeof task & { roadPlanDebug?: unknown }).roadPlanDebug).toEqual({
-      at: Game.time,
-      reason: "incomplete",
-      sourceId: "src1",
-      ops: 100,
-    });
     expect(task.containerPositions).toBeDefined();
     expect(task.containerPositions!.src1).toBeDefined();
     const containerAttempts = targetRoom.__siteAttempts.filter(a => a.structureType === STRUCTURE_CONTAINER);

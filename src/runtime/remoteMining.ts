@@ -41,12 +41,6 @@ export interface RemoteMiningTask {
     positions: Array<{ x: number; y: number; roomName: string }>;
     generatedAt: number;
   };
-  roadPlanDebug?: {
-    at: number;
-    reason: "source_room_unseen" | "start_anchor_missing" | "source_unseen" | "incomplete";
-    sourceId?: string;
-    ops?: number;
-  };
   containerPositions?: Record<string, { x: number; y: number; roomName: string }>;
   defendingSince?: number;
   lastDefenseThreatAt?: number;
@@ -687,13 +681,11 @@ function generateRoadPlan(
 ): { positions: Array<{ x: number; y: number; roomName: string }>; containers: Record<string, { x: number; y: number; roomName: string }> } | null {
   const sourceRoom = Game.rooms[task.sourceRoom];
   if (!sourceRoom) {
-    task.roadPlanDebug = { at: Game.time, reason: "source_room_unseen" };
     return null;
   }
 
   const startPos = getStartAnchor(sourceRoom);
   if (!startPos) {
-    task.roadPlanDebug = { at: Game.time, reason: "start_anchor_missing" };
     return null;
   }
 
@@ -720,7 +712,6 @@ function generateRoadPlan(
   for (const sourceId of task.sourceIds) {
     const source = Game.getObjectById(sourceId as Id<Source>);
     if (!source) {
-      task.roadPlanDebug = { at: Game.time, reason: "source_unseen", sourceId };
       return null;
     }
 
@@ -749,7 +740,6 @@ function generateRoadPlan(
     );
 
     if (result.incomplete) {
-      task.roadPlanDebug = { at: Game.time, reason: "incomplete", sourceId, ops: result.ops };
       return null;
     }
 
@@ -779,7 +769,6 @@ function generateRoadPlan(
     }
   }
 
-  delete task.roadPlanDebug;
   return { positions: deduped, containers };
 }
 
