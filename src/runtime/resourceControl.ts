@@ -20,6 +20,10 @@ import {
 } from "@/runtime/logistics/resourceTransferTasks";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { normalizeBoolean, normalizeNumber } from "@/runtime/configNormalize";
+import {
+  resolveRoomEnergyPolicy,
+  type RoomEnergyPolicy,
+} from "@/runtime/roomEnergyPolicy";
 import { getReservedProductionAmount } from "@/runtime/resourceReservation";
 import { HUB_TARGET_COMPOUNDS } from "@/config/hub";
 
@@ -57,11 +61,7 @@ const HUB_INTERMEDIATES: ResourceConstant[] = [
   RESOURCE_GHODIUM_ALKALIDE,
 ];
 
-interface ResourceControlRoomConfig {
-  energyFloor: number;
-  energyTarget: number;
-  energyExportStart: number;
-  terminalEnergyReserve: number;
+interface ResourceControlRoomConfig extends RoomEnergyPolicy {
   transferBatchSize: number;
   mineralFloor: ResourceThresholdMap;
   mineralExportStart: ResourceThresholdMap;
@@ -188,11 +188,7 @@ const DEFAULT_CAPACITY_CONFIG: ResourceCapacityConfig = {
   t3ReservePerRoom: 5_000,
 };
 
-const DEFAULT_ROOM_CONFIG: ResourceControlRoomConfig = {
-  energyFloor: 120_000,
-  energyTarget: 200_000,
-  energyExportStart: 250_000,
-  terminalEnergyReserve: 20_000,
+const DEFAULT_ROOM_CONFIG: Omit<ResourceControlRoomConfig, keyof RoomEnergyPolicy> = {
   transferBatchSize: 10_000,
   mineralFloor: {
     [RESOURCE_HYDROGEN]: 5_000,
@@ -271,23 +267,22 @@ function normalizeResourceList(value: unknown, fallback: ResourceConstant[]): Re
 
 
 function normalizeRoomConfig(value: unknown): ResourceControlRoomConfig {
-  const config = value && typeof value === "object" ? (value as Partial<ResourceControlRoomConfig>) : {};
-  const energyFloor = normalizeNumber(config.energyFloor, DEFAULT_ROOM_CONFIG.energyFloor, 0, 3_000_000);
-  const energyTarget = normalizeNumber(config.energyTarget, DEFAULT_ROOM_CONFIG.energyTarget, 0, 3_000_000);
-  const energyExportStart = normalizeNumber(
-    config.energyExportStart,
-    DEFAULT_ROOM_CONFIG.energyExportStart,
-    0,
-    3_000_000,
+  const config = value && typeof value === "object"
+    ? (value as Partial<ResourceControlRoomConfig>)
+    : {};
+  const energyPolicy = resolveRoomEnergyPolicy(config);
+  const transferBatchSize = normalizeNumber(
+    config.transferBatchSize,
+    DEFAULT_ROOM_CONFIG.transferBatchSize,
+    100,
+    50_000,
   );
-  const terminalEnergyReserve = normalizeNumber(
-    config.terminalEnergyReserve,
-    DEFAULT_ROOM_CONFIG.terminalEnergyReserve,
+  const mineralFloor = normalizeResourceThresholdMap(
+    config.mineralFloor,
+    DEFAULT_ROOM_CONFIG.mineralFloor,
     0,
-    300_000,
+    500_000,
   );
-  const transferBatchSize = normalizeNumber(config.transferBatchSize, DEFAULT_ROOM_CONFIG.transferBatchSize, 100, 50_000);
-  const mineralFloor = normalizeResourceThresholdMap(config.mineralFloor, DEFAULT_ROOM_CONFIG.mineralFloor, 0, 500_000);
   const mineralExportStart = normalizeResourceThresholdMap(
     config.mineralExportStart,
     DEFAULT_ROOM_CONFIG.mineralExportStart,
@@ -304,10 +299,7 @@ function normalizeRoomConfig(value: unknown): ResourceControlRoomConfig {
   }
 
   return {
-    energyFloor,
-    energyTarget: Math.max(energyFloor, energyTarget),
-    energyExportStart: Math.max(energyTarget, energyExportStart),
-    terminalEnergyReserve,
+    ...energyPolicy,
     transferBatchSize,
     mineralFloor,
     mineralExportStart,
