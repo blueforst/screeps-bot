@@ -1154,6 +1154,77 @@ describe("terminal overflow offload above 250k", () => {
     expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_HYDROGEN}`]).toBeUndefined();
   });
 
+  it("does not stage ephemeral energy for a deficit covered by a healthy pending task", () => {
+    const taskDonor = createRoom({
+      name: "W25E0A",
+      storageResources: { [RESOURCE_ENERGY]: 260_000 },
+    });
+    taskDonor.terminal!.cooldown = 1;
+    const fallbackDonor = createRoom({
+      name: "W25E0B",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_HYDROGEN]: 10_000,
+      },
+    });
+    fallbackDonor.terminal!.cooldown = 1;
+    const energyReceiver = createRoom({
+      name: "W25E0E",
+      storageResources: { [RESOURCE_ENERGY]: 190_000 },
+    });
+    const mineralReceiver = createRoom({
+      name: "W25E0H",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+    });
+    Game.rooms[taskDonor.name] = taskDonor;
+    Game.rooms[fallbackDonor.name] = fallbackDonor;
+    Game.rooms[energyReceiver.name] = energyReceiver;
+    Game.rooms[mineralReceiver.name] = mineralReceiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [taskDonor.name]: { terminalEnergyReserve: 0 },
+      [fallbackDonor.name]: { terminalEnergyReserve: 0 },
+    };
+    createResourceTransferTask(
+      taskDonor.name,
+      energyReceiver.name,
+      RESOURCE_ENERGY,
+      10_000,
+      "manual:healthy-energy-coverage",
+    );
+    createResourceTransferTask(
+      fallbackDonor.name,
+      mineralReceiver.name,
+      RESOURCE_HYDROGEN,
+      10_000,
+      "manual:mineral-after-healthy-energy-coverage",
+    );
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(taskDonor.name)[
+        `resourceControl:terminal_feed:${taskDonor.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
+    });
+    const fallbackTasks = getCarrierTasksByRoom(fallbackDonor.name);
+    expect(
+      fallbackTasks[
+        `resourceControl:terminal_feed:${fallbackDonor.name}:${RESOURCE_HYDROGEN}`
+      ],
+    ).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    expect(
+      fallbackTasks[
+        `resourceControl:terminal_feed:${fallbackDonor.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toBeUndefined();
+  });
+
   it("shares receiver energy need and headroom across donor staging decisions", () => {
     const firstDonor = createRoom({
       name: "W25E1A",

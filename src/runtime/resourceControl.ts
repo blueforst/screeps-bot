@@ -2566,6 +2566,7 @@ function reserveEnergyDeficitStagingBatch(
 
   const receivers = snapshots
     .filter((receiver) => receiver.roomName !== source.roomName && !!receiver.storage)
+    .filter((receiver) => !context.healthyIncomingEnergyRooms.has(receiver.roomName))
     .filter(
       (receiver) =>
         (planningEnergyNeedByRoom.get(receiver.roomName) || 0) > 0,
