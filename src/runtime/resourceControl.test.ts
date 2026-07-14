@@ -303,6 +303,7 @@ describe("runResourceControl terminal feed tasks", () => {
     const receiver = createRoom({ name: "W7N4" });
     Game.rooms[donor.name] = donor;
     Game.rooms[receiver.name] = receiver;
+    donor.terminal!.cooldown = 1;
     createResourceTransferTask(donor.name, receiver.name, RESOURCE_ENERGY, 3000, "test");
 
     runResourceControl();
@@ -355,7 +356,7 @@ describe("runResourceControl terminal feed tasks", () => {
     });
     const receiver = createRoom({
       name: "W8N4",
-      storageResources: { [RESOURCE_ENERGY]: 100000 },
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
       terminalResources: {},
     });
     Game.rooms[donor.name] = donor;
@@ -1251,43 +1252,128 @@ describe("executeTransferTasks hub-aware priority ordering", () => {
     expect(reclaimDonor.terminal.send).not.toHaveBeenCalled();
   });
 
-  it("prioritizes survival energy transfers over hub exports", () => {
-    const survivalRoom = createRoom({
+  it("prioritizes energy transfers to rooms below energyTarget without survival state", () => {
+    const receiver = createRoom({
       name: "W11N1",
-      storageResources: { [RESOURCE_ENERGY]: 50000 },
-      terminalResources: { [RESOURCE_ENERGY]: 5000 },
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 5_000 },
     });
     const energyDonor = createRoom({
       name: "W11N2",
-      storageResources: { [RESOURCE_ENERGY]: 200000 },
-      terminalResources: { [RESOURCE_ENERGY]: 25000 },
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
     });
-    const hubExportRoom = createRoom({
+    const mineralDonor = createRoom({
       name: "W11N3",
-      storageResources: { [RESOURCE_ENERGY]: 200000 },
-      terminalResources: { [RESOURCE_ENERGY]: 25000, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000 },
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25_000,
+        [RESOURCE_KEANIUM]: 5_000,
+      },
     });
-    const exportTarget = createRoom({
+    const mineralReceiver = createRoom({
       name: "W11N4",
-      storageResources: { [RESOURCE_ENERGY]: 200000 },
-      terminalResources: { [RESOURCE_ENERGY]: 20000 },
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
     });
-    Game.rooms[survivalRoom.name] = survivalRoom;
-    Game.rooms[energyDonor.name] = energyDonor;
-    Game.rooms[hubExportRoom.name] = hubExportRoom;
-    Game.rooms[exportTarget.name] = exportTarget;
-
+    for (const room of [receiver, energyDonor, mineralDonor, mineralReceiver]) {
+      Game.rooms[room.name] = room;
+    }
     Memory.cfg!.resourceControl!.taskMaxPerRun = 1;
-
-    createResourceTransferTask(hubExportRoom.name, exportTarget.name, RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 3000, "hub:export:XGHO2");
-    createResourceTransferTask(energyDonor.name, survivalRoom.name, RESOURCE_ENERGY, 5000, "energy-support");
-
-    runResourceControl();
-
-    expect(energyDonor.terminal.send).toHaveBeenCalledWith(
-      RESOURCE_ENERGY, 5000, survivalRoom.name, expect.any(String),
+    createResourceTransferTask(
+      mineralDonor.name,
+      mineralReceiver.name,
+      RESOURCE_KEANIUM,
+      3_000,
+      "manual:priority",
     );
-    expect(hubExportRoom.terminal.send).not.toHaveBeenCalled();
+    createResourceTransferTask(
+      energyDonor.name,
+      receiver.name,
+      RESOURCE_ENERGY,
+      5_000,
+      "energy-support",
+    );
+    runResourceControl();
+    expect(energyDonor.terminal.send).toHaveBeenCalledWith(
+      RESOURCE_ENERGY,
+      5_000,
+      receiver.name,
+      expect.any(String),
+    );
+    expect(mineralDonor.terminal.send).not.toHaveBeenCalled();
+  });
+
+  it("keeps a queued energy transfer pending below energyExportStart", () => {
+    const donor = createRoom({
+      name: "W11N5",
+      storageResources: { [RESOURCE_ENERGY]: 249_999 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+    });
+    const receiver = createRoom({
+      name: "W11N6",
+      storageResources: { [RESOURCE_ENERGY]: 50_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    const created = createResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_ENERGY,
+      5_000,
+      "energy-support",
+    );
+    if (typeof created === "string") throw new Error(created);
+    runResourceControl();
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+    expect(created.task).toMatchObject({
+      status: "pending",
+      remainingAmount: 5_000,
+      blockedReason: "insufficient_terminal_resource_or_fee",
+    });
+  });
+
+  it("caps a queued energy transfer by target commitments and exact fee", () => {
+    const donor = createRoom({
+      name: "W11N7",
+      storageResources: { [RESOURCE_ENERGY]: 320_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 100_000 },
+    });
+    const receiver = createRoom({
+      name: "W11N8",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [donor.name]: {
+        energyTarget: 320_000,
+        energyExportStart: 320_000,
+        transferBatchSize: 50_000,
+      },
+    };
+    reserveProductionResource(donor.name, RESOURCE_ENERGY, 70_000, "factory:test");
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 10_000);
+    const created = createResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_ENERGY,
+      50_000,
+      "energy-support",
+    );
+    if (typeof created === "string") throw new Error(created);
+    runResourceControl();
+    expect(donor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_ENERGY,
+      20_000,
+      receiver.name,
+      expect.any(String),
+    );
+    expect(created.task).toMatchObject({
+      status: "pending",
+      remainingAmount: 30_000,
+    });
   });
 
   it("respects taskMaxPerRun limit with hub-aware ordering", () => {
@@ -1919,7 +2005,7 @@ describe("executeTransferTasks hub-aware priority ordering", () => {
     });
     const receiver = createRoom({
       name: "W30N5",
-      storageResources: { [RESOURCE_ENERGY]: 150000 },
+      storageResources: { [RESOURCE_ENERGY]: 200000 },
       terminalResources: { [RESOURCE_ENERGY]: 25000 },
     });
     Game.rooms[donor.name] = donor;
@@ -2334,12 +2420,13 @@ describe("terminalEnergyReserve default 20000", () => {
   it("feeds terminal to 20000 reserve plus pending send fee budget", () => {
     const donor = createRoom({
       name: "W50N3",
-      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
       terminalResources: { [RESOURCE_ENERGY]: 5000 },
     });
     const receiver = createRoom({ name: "W50N4" });
     Game.rooms[donor.name] = donor;
     Game.rooms[receiver.name] = receiver;
+    donor.terminal!.cooldown = 1;
     (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 2000);
     createResourceTransferTask(donor.name, receiver.name, RESOURCE_ENERGY, 3000, "test");
 
@@ -3596,10 +3683,10 @@ describe("resource-control capacity state", () => {
     expect((Memory.runtime?.resourceControl?.rooms[room.name] as any).capacityState).toBe("normal");
   });
 
-  it("uses total protected energy when a terminal-heavy donor supports a survival room", () => {
+  it("requires donor storage to reach energyExportStart even when total energy is high", () => {
     const donor = createRoom({
       name: "W60N5",
-      storageResources: { [RESOURCE_ENERGY]: 100_000 },
+      storageResources: { [RESOURCE_ENERGY]: 249_999 },
       terminalResources: { [RESOURCE_ENERGY]: 100_000 },
     });
     const receiver = createRoom({
@@ -3612,6 +3699,28 @@ describe("resource-control capacity state", () => {
 
     runResourceControl();
 
+    expect(donor.terminal!.send).not.toHaveBeenCalledWith(
+      RESOURCE_ENERGY,
+      expect.any(Number),
+      receiver.name,
+      "resourceControl:auto-balance",
+    );
+  });
+
+  it("balances a room below energyTarget even when legacy state is balanced", () => {
+    const donor = createRoom({
+      name: "W60N5B",
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+    });
+    const receiver = createRoom({
+      name: "W60N6B",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    runResourceControl();
     expect(donor.terminal!.send).toHaveBeenCalledWith(
       RESOURCE_ENERGY,
       10_000,
@@ -3620,11 +3729,90 @@ describe("resource-control capacity state", () => {
     );
   });
 
-  it("charges the current survival-support fee against total protected energy", () => {
+  it("uses actual terminal energy for cargo and fee below terminalEnergyReserve", () => {
+    const donor = createRoom({
+      name: "W60N5C",
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 12_000 },
+    });
+    const receiver = createRoom({
+      name: "W60N6C",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 3_000);
+    runResourceControl();
+    expect(donor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_ENERGY,
+      9_000,
+      receiver.name,
+      "resourceControl:auto-balance",
+    );
+  });
+
+  it("retains energyTarget after production commitment and exact fee", () => {
+    const donor = createRoom({
+      name: "W60N5D",
+      storageResources: { [RESOURCE_ENERGY]: 320_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 100_000 },
+    });
+    const receiver = createRoom({
+      name: "W60N6D",
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [donor.name]: {
+        energyTarget: 320_000,
+        energyExportStart: 320_000,
+        transferBatchSize: 50_000,
+      },
+    };
+    reserveProductionResource(donor.name, RESOURCE_ENERGY, 70_000, "factory:test");
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 10_000);
+    runResourceControl();
+    expect(donor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_ENERGY,
+      20_000,
+      receiver.name,
+      "resourceControl:auto-balance",
+    );
+  });
+
+  it("does not overfill one energy target across same-tick donors", () => {
+    const donors = ["W60N7A", "W60N7B"].map((name) => createRoom({
+      name,
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+    }));
+    const receiver = createRoom({
+      name: "W60N7C",
+      storageResources: { [RESOURCE_ENERGY]: 195_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+    });
+    Memory.cfg!.resourceControl!.rooms = {
+      [receiver.name]: { energyFloor: 200_000, energyTarget: 200_000 },
+    };
+    for (const room of [...donors, receiver]) Game.rooms[room.name] = room;
+    runResourceControl();
+    const sent = donors.reduce((sum, room) => {
+      const call = (room.terminal!.send as jest.Mock).mock.calls.find(
+        (entry) => entry[3] === "resourceControl:auto-balance",
+      );
+      return sum + (call?.[1] || 0);
+    }, 0);
+    expect(sent).toBe(5_000);
+  });
+
+  it("charges the current target-support fee against total protected energy", () => {
     const donor = createRoom({
       name: "W60N5A",
-      storageResources: { [RESOURCE_ENERGY]: 100_000 },
-      terminalResources: { [RESOURCE_ENERGY]: 50_000 },
+      storageResources: { [RESOURCE_ENERGY]: 320_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 10_000 },
     });
     const receiver = createRoom({
       name: "W60N6A",
@@ -3633,6 +3821,12 @@ describe("resource-control capacity state", () => {
     });
     Game.rooms[donor.name] = donor;
     Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [donor.name]: {
+        energyTarget: 320_000,
+        energyExportStart: 320_000,
+      },
+    };
     (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 1_000);
 
     runResourceControl();
@@ -3647,8 +3841,8 @@ describe("resource-control capacity state", () => {
   it("does not spend energy committed to a healthy pending outgoing task", () => {
     const donor = createRoom({
       name: "W60N7",
-      storageResources: { [RESOURCE_ENERGY]: 100_000 },
-      terminalResources: { [RESOURCE_ENERGY]: 100_000 },
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
     });
     const receiver = createRoom({
       name: "W60N8",
@@ -3661,7 +3855,13 @@ describe("resource-control capacity state", () => {
     Game.rooms[donor.name] = donor;
     Game.rooms[receiver.name] = receiver;
     Game.rooms[committedReceiver.name] = committedReceiver;
-    createResourceTransferTask(donor.name, committedReceiver.name, RESOURCE_ENERGY, 60_000, "manual:committed");
+    createResourceTransferTask(
+      donor.name,
+      committedReceiver.name,
+      RESOURCE_ENERGY,
+      80_000,
+      "manual:committed",
+    );
 
     runResourceControl();
 
@@ -3676,8 +3876,8 @@ describe("resource-control capacity state", () => {
   it("does not spend energy covered by an active production reservation", () => {
     const donor = createRoom({
       name: "W60N10",
-      storageResources: { [RESOURCE_ENERGY]: 100_000 },
-      terminalResources: { [RESOURCE_ENERGY]: 100_000 },
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
     });
     const receiver = createRoom({
       name: "W60N11",
@@ -3685,7 +3885,7 @@ describe("resource-control capacity state", () => {
     });
     Game.rooms[donor.name] = donor;
     Game.rooms[receiver.name] = receiver;
-    reserveProductionResource(donor.name, RESOURCE_ENERGY, 60_000, "factory:test");
+    reserveProductionResource(donor.name, RESOURCE_ENERGY, 80_000, "factory:test");
 
     runResourceControl();
 
@@ -3718,6 +3918,30 @@ describe("capacity-relief planning", () => {
       getAllOrders: jest.fn(() => []),
       deal: jest.fn(() => OK),
     };
+  });
+
+  it("does not plan energy relief below energyExportStart", () => {
+    const source = createRoom({
+      name: "W61N22",
+      storageResources: { [RESOURCE_ENERGY]: 249_999 },
+      terminalResources: { [RESOURCE_ENERGY]: 100_000 },
+      storageFreeCapacity: 50_000,
+    });
+    source.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W61N23",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    runResourceControl();
+    expect(
+      Object.values(ensureResourceTransferTaskStore()).filter(
+        (task) => task.reason === `capacity:relief:${RESOURCE_ENERGY}`,
+      ),
+    ).toHaveLength(0);
   });
 
   it("plans terminal-first relief to an eligible receiver", () => {
@@ -4936,7 +5160,7 @@ describe("capacity-relief execution health and priority", () => {
   it("shares the five-send budget between survival support and queued transfers", () => {
     const energyDonor = createRoom({
       name: "W69N0",
-      storageResources: { [RESOURCE_ENERGY]: 100_000 },
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
       terminalResources: { [RESOURCE_ENERGY]: 100_000 },
     });
     const taskReceiver = createRoom({
