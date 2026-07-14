@@ -1987,7 +1987,7 @@ describe("planHubDistribution", () => {
     const satRoom = createSatelliteRoom(SAT_ROOM, {});
     (satRoom.terminal!.store as any).getFreeCapacity = () => 50_000;
     Game.rooms[SAT_ROOM] = satRoom;
-    createResourceTransferTask("W3N1", SAT_ROOM, RESOURCE_ENERGY, 2000, "operator-energy");
+    createResourceTransferTask(HUB_ROOM, SAT_ROOM, RESOURCE_ENERGY, 2000, "operator-energy");
 
     const actions = planHubDistribution(Memory.cfg!.hub!);
 
@@ -2001,35 +2001,99 @@ describe("planHubDistribution", () => {
     expect(healthyIncoming).toBe(10_000);
   });
 
-  it("keeps a new Hub commitment separate from a receiver-capacity-blocked automatic task", () => {
+  it.each(["receiver_capacity", "source_depleted"] as const)(
+    "does not append Hub demand to a %s-blocked persistent automatic task",
+    (blockedReason) => {
+      Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+      Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+      const blocked = createAutomaticResourceTransferTask(
+        HUB_ROOM,
+        SAT_ROOM,
+        XGHO2,
+        500,
+        `hub:export:${XGHO2}`,
+      );
+      if (typeof blocked === "string") throw new Error(blocked);
+      markResourceTransferTaskBlocked(blocked.task, blockedReason);
+
+      const actions = planHubDistribution(Memory.cfg!.hub!);
+
+      expect(actions).toHaveLength(0);
+      const tasks = Object.values(ensureResourceTransferTaskStore()).filter(
+        (task) => task.reason === `hub:export:${XGHO2}`,
+      );
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0]).toEqual(expect.objectContaining({
+        id: blocked.task.id,
+        remainingAmount: 500,
+        blockedReason,
+      }));
+    },
+  );
+
+  it("does not append Hub demand to a no-progress-expired persistent automatic task", () => {
+    Memory.cfg!.resourceControl = {
+      capacityBalancing: {
+        automaticTaskNoProgressTtl: 100,
+      },
+    };
     Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
-    const blocked = createAutomaticResourceTransferTask(
+    const expired = createAutomaticResourceTransferTask(
       HUB_ROOM,
       SAT_ROOM,
       XGHO2,
       500,
       `hub:export:${XGHO2}`,
     );
-    if (typeof blocked === "string") throw new Error(blocked);
-    markResourceTransferTaskBlocked(blocked.task, "receiver_capacity");
+    if (typeof expired === "string") throw new Error(expired);
+    expired.task.lastProgressAt = 0;
+    Game.time = 101;
 
     const actions = planHubDistribution(Memory.cfg!.hub!);
 
-    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=1000`);
+    expect(actions).toHaveLength(0);
     const tasks = Object.values(ensureResourceTransferTaskStore()).filter(
       (task) => task.reason === `hub:export:${XGHO2}`,
     );
-    expect(tasks).toHaveLength(2);
-    expect(tasks).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: blocked.task.id, remainingAmount: 500, blockedReason: "receiver_capacity" }),
-        expect.objectContaining({ remainingAmount: 1000 }),
-      ]),
-    );
-    const fresh = tasks.find((task) => task.id !== blocked.task.id);
-    expect(fresh?.blockedReason).toBeUndefined();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toEqual(expect.objectContaining({
+      id: expired.task.id,
+      remainingAmount: 500,
+      lastProgressAt: 0,
+    }));
   });
+
+  it.each(["missing_room", "not_owned", "missing_terminal"] as const)(
+    "ignores a healthy incoming commitment whose source endpoint is %s",
+    (endpointState) => {
+      const sourceRoomName = "W3N1";
+      Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+      Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+      if (endpointState !== "missing_room") {
+        const sourceRoom = createSatelliteRoom(sourceRoomName, {});
+        if (endpointState === "not_owned") {
+          (sourceRoom.controller as any).my = false;
+        } else {
+          (sourceRoom as any).terminal = undefined;
+        }
+        Game.rooms[sourceRoomName] = sourceRoom;
+      }
+      createResourceTransferTask(sourceRoomName, SAT_ROOM, XGHO2, 500, "operator-invalid-source");
+
+      const actions = planHubDistribution(Memory.cfg!.hub!);
+
+      expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=1000`);
+      const hubTask = Object.values(ensureResourceTransferTaskStore()).find(
+        (task) => task.reason === `hub:export:${XGHO2}`,
+      );
+      expect(hubTask).toEqual(expect.objectContaining({
+        fromRoomName: HUB_ROOM,
+        toRoomName: SAT_ROOM,
+        remainingAmount: 1000,
+      }));
+    },
+  );
 
   it("creates no export task when satellite storage lacks the receive buffer", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });

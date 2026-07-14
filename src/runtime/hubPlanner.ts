@@ -641,6 +641,17 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
     string,
     { total: number; byResource: Record<string, number> }
   >();
+  const unhealthyAutomaticHubExportKeys = new Set<string>();
+  const taskKey = (
+    fromRoomName: string,
+    toRoomName: string,
+    resource: ResourceConstant,
+    reason?: string,
+  ): string => `${fromRoomName}\u0000${toRoomName}\u0000${resource}\u0000${reason || ""}`;
+  const isOwnedResourceControlEndpoint = (roomName: string): boolean => {
+    const room = Game.rooms[roomName];
+    return Boolean(room?.controller?.my && room.storage && room.terminal);
+  };
   for (const task of Object.values(taskStore)) {
     if (
       isHealthyResourceTransferTaskReservation(task, "outgoing") &&
@@ -650,7 +661,27 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
       hubPendingOutgoing[task.resource] = (hubPendingOutgoing[task.resource] || 0) + task.remainingAmount;
     }
 
-    if (isHealthyReceiverCapacityCommitment(task)) {
+    const isHealthyCommitment = isHealthyReceiverCapacityCommitment(task);
+    if (
+      task.status === "pending" &&
+      task.origin === "automatic" &&
+      task.fromRoomName === cfg.hubRoomName &&
+      task.reason?.startsWith("hub:export:") &&
+      !isHealthyCommitment
+    ) {
+      unhealthyAutomaticHubExportKeys.add(taskKey(
+        task.fromRoomName,
+        task.toRoomName,
+        task.resource,
+        task.reason,
+      ));
+    }
+
+    if (
+      isHealthyCommitment &&
+      isOwnedResourceControlEndpoint(task.fromRoomName) &&
+      isOwnedResourceControlEndpoint(task.toRoomName)
+    ) {
       const commitment = receiverCommitments.get(task.toRoomName) || { total: 0, byResource: {} };
       commitment.total += task.remainingAmount;
       commitment.byResource[task.resource] = (commitment.byResource[task.resource] || 0) + task.remainingAmount;
@@ -721,6 +752,14 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
       if (amount <= 0) continue;
 
       const reason = `hub:export:${t3}`;
+      if (unhealthyAutomaticHubExportKeys.has(taskKey(
+        cfg.hubRoomName,
+        satellite.name,
+        t3,
+        reason,
+      ))) {
+        continue;
+      }
       const result = createAutomaticResourceTransferTask(cfg.hubRoomName, satellite.name, t3, amount, reason);
 
       if (typeof result === "object" && result.ok) {

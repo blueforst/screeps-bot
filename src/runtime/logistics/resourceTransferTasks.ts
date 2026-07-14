@@ -179,9 +179,6 @@ function findMergeablePendingTask(
       task.origin === origin &&
       task.reason === reason
     ) {
-      if (origin === "automatic" && !isHealthyReceiverCapacityCommitment(task)) {
-        continue;
-      }
       return task;
     }
   }

@@ -126,7 +126,7 @@ describe("createResourceTransferTask merge behavior", () => {
   });
 
   it.each(["receiver_capacity", "source_depleted"] as const)(
-    "does not merge new automatic demand into a %s-blocked task",
+    "preserves same-key automatic merge semantics for a %s-blocked task",
     (blockedReason) => {
       const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
       const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
@@ -141,18 +141,16 @@ describe("createResourceTransferTask merge behavior", () => {
       const fresh = createAutomatic("W1N1", "W2N1", RESOURCE_ENERGY, 1000, "hub:export:energy");
       if (typeof fresh === "string") throw new Error(fresh);
 
-      expect(fresh.task.id).not.toBe(blocked.task.id);
-      expect(Object.values(ensureResourceTransferTaskStore())).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: blocked.task.id, remainingAmount: 500, blockedReason }),
-          expect.objectContaining({ id: fresh.task.id, remainingAmount: 1000 }),
-        ]),
-      );
-      expect(fresh.task.blockedReason).toBeUndefined();
+      expect(fresh.task.id).toBe(blocked.task.id);
+      expect(Object.values(ensureResourceTransferTaskStore())).toHaveLength(1);
+      expect(fresh.task).toEqual(expect.objectContaining({
+        remainingAmount: 1500,
+        blockedReason,
+      }));
     },
   );
 
-  it("does not merge new automatic demand into a no-progress-expired task", () => {
+  it("preserves same-key automatic merge semantics for a no-progress-expired task", () => {
     Memory.cfg = {
       resourceControl: {
         capacityBalancing: {
@@ -172,13 +170,12 @@ describe("createResourceTransferTask merge behavior", () => {
     const fresh = createAutomatic("W1N1", "W2N1", RESOURCE_ENERGY, 1000, "hub:export:energy");
     if (typeof fresh === "string") throw new Error(fresh);
 
-    expect(fresh.task.id).not.toBe(expired.task.id);
-    expect(Object.values(ensureResourceTransferTaskStore())).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id: expired.task.id, remainingAmount: 500, lastProgressAt: 0 }),
-        expect.objectContaining({ id: fresh.task.id, remainingAmount: 1000, lastProgressAt: 101 }),
-      ]),
-    );
+    expect(fresh.task.id).toBe(expired.task.id);
+    expect(Object.values(ensureResourceTransferTaskStore())).toHaveLength(1);
+    expect(fresh.task).toEqual(expect.objectContaining({
+      remainingAmount: 1500,
+      lastProgressAt: 0,
+    }));
   });
 });
 
