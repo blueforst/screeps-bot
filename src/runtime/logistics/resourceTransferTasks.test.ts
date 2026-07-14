@@ -13,6 +13,10 @@ import { registerRuntimeServices } from "@/runtime/runtimeServices";
 type CreatedTask = Exclude<ReturnType<typeof createResourceTransferTask>, string>["task"];
 type TaskHealthApi = {
   createAutomaticResourceTransferTask?: typeof createResourceTransferTask;
+  isHealthyReceiverCapacityCommitment?: (
+    task: CreatedTask,
+    automaticTaskNoProgressTtl?: number,
+  ) => boolean;
   markResourceTransferTaskBlocked?: (
     task: CreatedTask,
     reason: "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee",
@@ -119,6 +123,62 @@ describe("createResourceTransferTask merge behavior", () => {
     const store = ensureResourceTransferTaskStore();
     const tasks = Object.values(store);
     expect(tasks).toHaveLength(2);
+  });
+
+  it.each(["receiver_capacity", "source_depleted"] as const)(
+    "does not merge new automatic demand into a %s-blocked task",
+    (blockedReason) => {
+      const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+      const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+      expect(createAutomatic).toBeDefined();
+      expect(markBlocked).toBeDefined();
+      if (!createAutomatic || !markBlocked) return;
+
+      const blocked = createAutomatic("W1N1", "W2N1", RESOURCE_ENERGY, 500, "hub:export:energy");
+      if (typeof blocked === "string") throw new Error(blocked);
+      markBlocked(blocked.task, blockedReason);
+
+      const fresh = createAutomatic("W1N1", "W2N1", RESOURCE_ENERGY, 1000, "hub:export:energy");
+      if (typeof fresh === "string") throw new Error(fresh);
+
+      expect(fresh.task.id).not.toBe(blocked.task.id);
+      expect(Object.values(ensureResourceTransferTaskStore())).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: blocked.task.id, remainingAmount: 500, blockedReason }),
+          expect.objectContaining({ id: fresh.task.id, remainingAmount: 1000 }),
+        ]),
+      );
+      expect(fresh.task.blockedReason).toBeUndefined();
+    },
+  );
+
+  it("does not merge new automatic demand into a no-progress-expired task", () => {
+    Memory.cfg = {
+      resourceControl: {
+        capacityBalancing: {
+          automaticTaskNoProgressTtl: 100,
+        },
+      },
+    };
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    expect(createAutomatic).toBeDefined();
+    if (!createAutomatic) return;
+
+    const expired = createAutomatic("W1N1", "W2N1", RESOURCE_ENERGY, 500, "hub:export:energy");
+    if (typeof expired === "string") throw new Error(expired);
+    expired.task.lastProgressAt = 0;
+    Game.time = 101;
+
+    const fresh = createAutomatic("W1N1", "W2N1", RESOURCE_ENERGY, 1000, "hub:export:energy");
+    if (typeof fresh === "string") throw new Error(fresh);
+
+    expect(fresh.task.id).not.toBe(expired.task.id);
+    expect(Object.values(ensureResourceTransferTaskStore())).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: expired.task.id, remainingAmount: 500, lastProgressAt: 0 }),
+        expect.objectContaining({ id: fresh.task.id, remainingAmount: 1000, lastProgressAt: 101 }),
+      ]),
+    );
   });
 });
 
@@ -552,6 +612,103 @@ describe("resource transfer task health v2", () => {
     Game.time = 100;
     Memory.data = undefined;
     Memory.runtime = undefined;
+  });
+
+  it("excludes receiver-capacity and source-depleted blockers from receiver capacity commitments", () => {
+    const receiverCapacity = createResourceTransferTask(
+      "W1N1",
+      "W9N9",
+      RESOURCE_HYDROGEN,
+      100,
+      "receiver-capacity",
+    );
+    const sourceDepleted = createResourceTransferTask(
+      "W2N1",
+      "W9N9",
+      RESOURCE_UTRIUM,
+      100,
+      "source-depleted",
+    );
+    if (typeof receiverCapacity === "string" || typeof sourceDepleted === "string") {
+      throw new Error("unexpected task creation failure");
+    }
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    const isHealthyCommitment = taskHealthApi.isHealthyReceiverCapacityCommitment;
+    expect(markBlocked).toBeDefined();
+    expect(isHealthyCommitment).toBeDefined();
+    if (!markBlocked || !isHealthyCommitment) return;
+
+    markBlocked(receiverCapacity.task, "receiver_capacity");
+    markBlocked(sourceDepleted.task, "source_depleted");
+
+    expect(isHealthyCommitment(receiverCapacity.task)).toBe(false);
+    expect(isHealthyCommitment(sourceDepleted.task)).toBe(false);
+    expect(resourceTransferTaskModule.isHealthyResourceTransferTaskReservation(receiverCapacity.task, "incoming")).toBe(true);
+    expect(resourceTransferTaskModule.isHealthyResourceTransferTaskReservation(sourceDepleted.task, "incoming")).toBe(true);
+  });
+
+  it("counts fresh automatic tasks that are pending or fee-blocked as receiver capacity commitments", () => {
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    const isHealthyCommitment = taskHealthApi.isHealthyReceiverCapacityCommitment;
+    expect(createAutomatic).toBeDefined();
+    expect(markBlocked).toBeDefined();
+    expect(isHealthyCommitment).toBeDefined();
+    if (!createAutomatic || !markBlocked || !isHealthyCommitment) return;
+
+    const pending = createAutomatic("W1N1", "W9N9", RESOURCE_HYDROGEN, 100, "hub:pending");
+    const feeBlocked = createAutomatic("W2N1", "W9N9", RESOURCE_UTRIUM, 100, "hub:fee-blocked");
+    if (typeof pending === "string" || typeof feeBlocked === "string") {
+      throw new Error("unexpected task creation failure");
+    }
+    markBlocked(feeBlocked.task, "insufficient_terminal_resource_or_fee");
+
+    expect(isHealthyCommitment(pending.task)).toBe(true);
+    expect(isHealthyCommitment(feeBlocked.task)).toBe(true);
+  });
+
+  it("releases an automatic receiver capacity commitment after its no-progress TTL", () => {
+    Memory.cfg = {
+      resourceControl: {
+        capacityBalancing: {
+          automaticTaskNoProgressTtl: 100,
+        },
+      },
+    };
+    const createAutomatic = taskHealthApi.createAutomaticResourceTransferTask;
+    const isHealthyCommitment = taskHealthApi.isHealthyReceiverCapacityCommitment;
+    expect(createAutomatic).toBeDefined();
+    expect(isHealthyCommitment).toBeDefined();
+    if (!createAutomatic || !isHealthyCommitment) return;
+
+    const created = createAutomatic("W1N1", "W9N9", RESOURCE_HYDROGEN, 100, "hub:stalled");
+    if (typeof created === "string") throw new Error(created);
+
+    Game.time = 200;
+    expect(isHealthyCommitment(created.task)).toBe(true);
+    Game.time = 201;
+    expect(isHealthyCommitment(created.task)).toBe(false);
+  });
+
+  it("keeps old manual pending and fee-blocked tasks as receiver capacity commitments", () => {
+    const pending = createResourceTransferTask("W1N1", "W9N9", RESOURCE_HYDROGEN, 100, "operator-pending");
+    const feeBlocked = createResourceTransferTask("W2N1", "W9N9", RESOURCE_UTRIUM, 100, "operator-fee");
+    if (typeof pending === "string" || typeof feeBlocked === "string") {
+      throw new Error("unexpected task creation failure");
+    }
+    const markBlocked = taskHealthApi.markResourceTransferTaskBlocked;
+    const isHealthyCommitment = taskHealthApi.isHealthyReceiverCapacityCommitment;
+    expect(markBlocked).toBeDefined();
+    expect(isHealthyCommitment).toBeDefined();
+    if (!markBlocked || !isHealthyCommitment) return;
+
+    markBlocked(feeBlocked.task, "insufficient_terminal_resource_or_fee");
+    pending.task.lastProgressAt = 0;
+    feeBlocked.task.lastProgressAt = 0;
+    Game.time = 100_000;
+
+    expect(isHealthyCommitment(pending.task)).toBe(true);
+    expect(isHealthyCommitment(feeBlocked.task)).toBe(true);
   });
 
   it("creates console-compatible tasks as manual with an initialized progress timestamp", () => {

@@ -179,6 +179,9 @@ function findMergeablePendingTask(
       task.origin === origin &&
       task.reason === reason
     ) {
+      if (origin === "automatic" && !isHealthyReceiverCapacityCommitment(task)) {
+        continue;
+      }
       return task;
     }
   }
@@ -342,6 +345,25 @@ export function isHealthyResourceTransferTaskReservation(
   }
 
   return Game.time - task.blockedSince! < sourceDepletedGraceTicks;
+}
+
+export function isHealthyReceiverCapacityCommitment(
+  task: ResourceTransferTask,
+  automaticTaskNoProgressTtl?: number,
+): boolean {
+  if (task.status !== "pending") {
+    return false;
+  }
+  if (task.blockedReason === "receiver_capacity" || task.blockedReason === "source_depleted") {
+    return false;
+  }
+  if (task.origin !== "automatic") {
+    return true;
+  }
+
+  const noProgressTtl = automaticTaskNoProgressTtl
+    ?? resolveResourceTransferTaskHealthOptions().automaticTaskNoProgressTtl;
+  return Game.time - task.lastProgressAt <= noProgressTtl;
 }
 
 function cancelAutomaticTask(task: ResourceTransferTask, reason: string): void {

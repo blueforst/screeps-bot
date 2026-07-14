@@ -16,6 +16,7 @@ import {
   createAutomaticResourceTransferTask,
   createResourceTransferTaskAmountIndex,
   ensureResourceTransferTaskStore,
+  isHealthyReceiverCapacityCommitment,
   isHealthyResourceTransferTaskReservation,
   type ResourceTransferTaskAmountIndex,
 } from "@/runtime/logistics/resourceTransferTasks";
@@ -636,6 +637,10 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
 
   const taskStore = ensureResourceTransferTaskStore();
   const hubPendingOutgoing: Record<string, number> = {};
+  const receiverCommitments = new Map<
+    string,
+    { total: number; byResource: Record<string, number> }
+  >();
   for (const task of Object.values(taskStore)) {
     if (
       isHealthyResourceTransferTaskReservation(task, "outgoing") &&
@@ -643,6 +648,13 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
       task.reason?.startsWith("hub:export:")
     ) {
       hubPendingOutgoing[task.resource] = (hubPendingOutgoing[task.resource] || 0) + task.remainingAmount;
+    }
+
+    if (isHealthyReceiverCapacityCommitment(task)) {
+      const commitment = receiverCommitments.get(task.toRoomName) || { total: 0, byResource: {} };
+      commitment.total += task.remainingAmount;
+      commitment.byResource[task.resource] = (commitment.byResource[task.resource] || 0) + task.remainingAmount;
+      receiverCommitments.set(task.toRoomName, commitment);
     }
   }
 
@@ -680,12 +692,17 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
     )) {
       continue;
     }
-    const receivableCapacity = getReceiverSafeCapacity(
-      satStorageFree,
-      satTerminalFree,
-      capacityPolicy,
+    const receiverCommitment = receiverCommitments.get(satellite.name) || { total: 0, byResource: {} };
+    receiverCommitments.set(satellite.name, receiverCommitment);
+    let receiverHeadroom = Math.max(
+      0,
+      getReceiverSafeCapacity(
+        satStorageFree,
+        satTerminalFree,
+        capacityPolicy,
+      ) - receiverCommitment.total,
     );
-    if (receivableCapacity <= 0) continue;
+    if (receiverHeadroom <= 0) continue;
 
     for (const t3 of targetCompounds) {
       if (hubRemaining[t3] <= 0) continue;
@@ -694,12 +711,12 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
       const satTerminal = satellite.terminal!.store as unknown as Record<string, number>;
       const current = (satStorage[t3] || 0) + (satTerminal[t3] || 0);
 
-      const effectiveTotal = current;
+      const effectiveTotal = current + (receiverCommitment.byResource[t3] || 0);
       if (effectiveTotal >= reservePerRoom) continue;
 
       const shortage = reservePerRoom - effectiveTotal;
       const cappedByHub = Math.min(shortage, hubRemaining[t3]);
-      const amount = Math.min(cappedByHub, receivableCapacity);
+      const amount = Math.min(cappedByHub, receiverHeadroom);
 
       if (amount <= 0) continue;
 
@@ -709,6 +726,9 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
       if (typeof result === "object" && result.ok) {
         actions.push(`export:${satellite.name}:${t3}=${amount}`);
         hubRemaining[t3] -= amount;
+        receiverCommitment.total += amount;
+        receiverCommitment.byResource[t3] = (receiverCommitment.byResource[t3] || 0) + amount;
+        receiverHeadroom -= amount;
       }
     }
   }

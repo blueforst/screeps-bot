@@ -1,4 +1,5 @@
 import {
+  createAutomaticResourceTransferTask,
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
   getIncomingResourceTransferAmount,
@@ -1949,21 +1950,19 @@ describe("planHubDistribution", () => {
     expect(actions).toHaveLength(0);
   });
 
-  it("pending incoming amounts are counted (don't over-send)", () => {
+  it("only fills the target inventory gap remaining after healthy incoming commitments", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
-    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
 
     // Existing pending export: hub → satellite, 500 XGHO2
     createResourceTransferTask(HUB_ROOM, SAT_ROOM, XGHO2, 500, `hub:export:${XGHO2}`);
 
     const actions = planHubDistribution(Memory.cfg!.hub!);
 
-    // Satellite has 250, pending 500 incoming. Code counts satellite current only for shortage.
-    // Shortage = 1000 - 250 = 750. Hub remaining = 5000 - 500 - 1000 = 3500. Export = min(750, 3500) = 750.
-    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=750`);
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=500`);
 
     // Manual console work and automatic planner work keep distinct origins,
-    // while their combined reservation preserves the previous 1250 total.
+    // while their combined healthy commitment exactly fills the target.
     const tasks = Object.values(ensureResourceTransferTaskStore()).filter(
       (task) => task.reason === `hub:export:${XGHO2}`,
     );
@@ -1971,10 +1970,65 @@ describe("planHubDistribution", () => {
     expect(tasks).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ origin: "manual", amount: 500 }),
-        expect.objectContaining({ origin: "automatic", amount: 750 }),
+        expect.objectContaining({ origin: "automatic", amount: 500 }),
       ]),
     );
-    expect(tasks.reduce((total, task) => total + task.amount, 0)).toBe(1250);
+    expect(tasks.reduce((total, task) => total + task.amount, 0)).toBe(1000);
+  });
+
+  it("shares receiver headroom across existing and same-run cross-resource commitments", () => {
+    const XUH2O = RESOURCE_CATALYZED_UTRIUM_ACID;
+    Memory.cfg!.hub!.targetCompounds = [XGHO2, XUH2O];
+    Memory.cfg!.hub!.reservePerRoom = 6000;
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({
+      [XGHO2]: 50_000,
+      [XUH2O]: 50_000,
+    });
+    const satRoom = createSatelliteRoom(SAT_ROOM, {});
+    (satRoom.terminal!.store as any).getFreeCapacity = () => 50_000;
+    Game.rooms[SAT_ROOM] = satRoom;
+    createResourceTransferTask("W3N1", SAT_ROOM, RESOURCE_ENERGY, 2000, "operator-energy");
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toEqual([
+      `export:${SAT_ROOM}:${XGHO2}=6000`,
+      `export:${SAT_ROOM}:${XUH2O}=2000`,
+    ]);
+    const healthyIncoming = Object.values(ensureResourceTransferTaskStore())
+      .filter((task) => task.toRoomName === SAT_ROOM)
+      .reduce((total, task) => total + task.remainingAmount, 0);
+    expect(healthyIncoming).toBe(10_000);
+  });
+
+  it("keeps a new Hub commitment separate from a receiver-capacity-blocked automatic task", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, {});
+    const blocked = createAutomaticResourceTransferTask(
+      HUB_ROOM,
+      SAT_ROOM,
+      XGHO2,
+      500,
+      `hub:export:${XGHO2}`,
+    );
+    if (typeof blocked === "string") throw new Error(blocked);
+    markResourceTransferTaskBlocked(blocked.task, "receiver_capacity");
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=1000`);
+    const tasks = Object.values(ensureResourceTransferTaskStore()).filter(
+      (task) => task.reason === `hub:export:${XGHO2}`,
+    );
+    expect(tasks).toHaveLength(2);
+    expect(tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: blocked.task.id, remainingAmount: 500, blockedReason: "receiver_capacity" }),
+        expect.objectContaining({ remainingAmount: 1000 }),
+      ]),
+    );
+    const fresh = tasks.find((task) => task.id !== blocked.task.id);
+    expect(fresh?.blockedReason).toBeUndefined();
   });
 
   it("creates no export task when satellite storage lacks the receive buffer", () => {
@@ -3128,7 +3182,7 @@ describe("hub reserve floor (TDD RED)", () => {
     expect(actions).toContainEqual(`export:${SAT_ROOM_D}:${XGHO2}=1000`);
   });
 
-  it("hub with pending outgoing 500, stock 21500, reserve 20000, satellite deficit 1000 → exports 1000", () => {
+  it("hub with pending outgoing 500, stock 21500, reserve 20000, satellite deficit 1000 → exports 500", () => {
     const hubStorageEntries: Record<string, number> = {
       [RESOURCE_ENERGY]: 200000,
       [XGHO2]: 21500,
@@ -3167,13 +3221,10 @@ describe("hub reserve floor (TDD RED)", () => {
 
     const actions = planHubDistribution(Memory.cfg!.hub!);
 
-    // Surplus = 21500 - 20000 = 1500. Pending 500 → hubRemaining after reserve floor should be 1500.
-    // Satellite deficit = 1000. Export = min(1000, 1500) = 1000.
-    // This will FAIL because current code has no reserve floor — hubRemaining = 21500 - 500 = 21000,
-    // and it will export min(1000, 21000) = 1000 which coincidentally passes.
-    // But the intent is to test that surplus is correctly computed as 1500 after reserve.
-    // The assertion that the pending export total becomes 1500 (500 + 1000) verifies this.
-    expect(actions).toContainEqual(`export:${SAT_ROOM_D}:${XGHO2}=1000`);
+    // Hub has 1000 uncommitted surplus after reserve and the existing outgoing task.
+    // The same task is also a healthy receiver commitment, so only 500 of the
+    // satellite's original 1000 target gap remains.
+    expect(actions).toContainEqual(`export:${SAT_ROOM_D}:${XGHO2}=500`);
   });
 
   it("hub with pending outgoing 1500, stock 21500, reserve 20000 → exports 0", () => {
