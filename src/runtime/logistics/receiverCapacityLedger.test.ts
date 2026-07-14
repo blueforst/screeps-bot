@@ -140,6 +140,30 @@ describe("receiver capacity ledger", () => {
     expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM)).toBe(40_000);
   });
 
+  it("shares self-excluded physical headroom across multiple reservations owned by one task", () => {
+    const owner = createTask("owner", RESOURCE_KEANIUM, 40_000);
+    const other = createTask("other", RESOURCE_HYDROGEN, 30_000);
+    const ledger = createLedger([owner, other]);
+
+    expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM, owner.id)).toBe(20_000);
+    expect(
+      ledger.reserve("owner:send:1", "W1N2", RESOURCE_KEANIUM, 20_000, {
+        ownerTaskId: owner.id,
+      }),
+    ).toBe(20_000);
+    expect(
+      ledger.reserve("owner:send:2", "W1N2", RESOURCE_KEANIUM, 20_000, {
+        ownerTaskId: owner.id,
+      }),
+    ).toBe(0);
+    expect(ledger.getAvailability("W1N2", RESOURCE_KEANIUM)).toMatchObject({
+      totalCommitted: 70_000,
+      ownedReservationTotal: 20_000,
+      ownedReservationResource: 20_000,
+      available: 0,
+    });
+  });
+
   it("reclamps an idempotent provisional reservation after physical capacity shrinks", () => {
     const ledger = createLedger();
 

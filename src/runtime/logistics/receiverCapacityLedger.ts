@@ -256,14 +256,15 @@ export class ReceiverCapacityLedger {
         return 0;
       }
       const otherOwnedAmount = this.getOwnedReservationAmount(ownerTaskId);
+      const selfExcludedAvailable = this.getAvailableAmount(
+        roomName,
+        resource,
+        ownerTaskId,
+      );
       amount = Math.min(
         requested,
         Math.max(0, commitment.amount - otherOwnedAmount),
-        this.getAvailableAmount(
-          roomName,
-          resource,
-          options.excludeTaskId || ownerTaskId,
-        ),
+        Math.max(0, selfExcludedAvailable - otherOwnedAmount),
       );
     } else {
       amount = Math.min(
