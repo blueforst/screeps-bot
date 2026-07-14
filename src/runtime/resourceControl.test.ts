@@ -3944,6 +3944,85 @@ describe("capacity-relief planning", () => {
     ).toHaveLength(0);
   });
 
+  it("falls back to mineral relief when energy receivers are already at target", () => {
+    const source = createRoom({
+      name: "W61N24",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300_000,
+        [RESOURCE_KEANIUM]: 40_000,
+      },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+      storageFreeCapacity: 50_000,
+    });
+    source.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W61N25",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+
+    runResourceControl();
+
+    const tasks = Object.values(ensureResourceTransferTaskStore()).filter(
+      (task) => task.reason?.startsWith("capacity:relief:"),
+    );
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      fromRoomName: source.name,
+      toRoomName: receiver.name,
+      resource: RESOURCE_KEANIUM,
+      amount: 35_000,
+      remainingAmount: 35_000,
+    });
+  });
+
+  it("caps planned energy relief by uncommitted target deficit", () => {
+    const source = createRoom({
+      name: "W61N26",
+      storageResources: { [RESOURCE_ENERGY]: 300_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+      storageFreeCapacity: 50_000,
+    });
+    source.terminal!.cooldown = 1;
+    const committedDonor = createRoom({
+      name: "W61N27",
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+    });
+    committedDonor.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W61N28",
+      storageResources: { [RESOURCE_ENERGY]: 185_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    for (const room of [source, committedDonor, receiver]) {
+      Game.rooms[room.name] = room;
+    }
+    createResourceTransferTask(
+      committedDonor.name,
+      receiver.name,
+      RESOURCE_ENERGY,
+      10_000,
+      "manual:committed-energy",
+    );
+
+    runResourceControl();
+
+    const task = Object.values(ensureResourceTransferTaskStore()).find(
+      (entry) => entry.reason === `capacity:relief:${RESOURCE_ENERGY}`,
+    );
+    expect(task).toMatchObject({
+      fromRoomName: source.name,
+      toRoomName: receiver.name,
+      amount: 5_000,
+      remainingAmount: 5_000,
+    });
+  });
+
   it("plans terminal-first relief to an eligible receiver", () => {
     const source = createRoom({
       name: "W61N1",
@@ -5351,6 +5430,42 @@ describe("capacity-relief execution health and priority", () => {
       receiver.name,
       expect.any(String),
     );
+  });
+
+  it("shares one receiver energy need across queued donors in one run", () => {
+    const donors = ["W69N13", "W69N14"].map((name) => createRoom({
+      name,
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+    }));
+    const receiver = createRoom({
+      name: "W69N15",
+      storageResources: { [RESOURCE_ENERGY]: 195_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    for (const room of [...donors, receiver]) {
+      Game.rooms[room.name] = room;
+    }
+    for (const donor of donors) {
+      createResourceTransferTask(
+        donor.name,
+        receiver.name,
+        RESOURCE_ENERGY,
+        10_000,
+        "energy-support",
+      );
+    }
+
+    runResourceControl();
+
+    const sent = donors.reduce((sum, donor) => {
+      const call = (donor.terminal!.send as jest.Mock).mock.calls.find(
+        (entry) => entry[2] === receiver.name,
+      );
+      return sum + (call?.[1] || 0);
+    }, 0);
+    expect(sent).toBe(5_000);
   });
 
   it("runs emergency capacity relief before synthesis tasks", () => {

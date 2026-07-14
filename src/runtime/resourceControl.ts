@@ -1061,6 +1061,7 @@ function selectTerminalReliefResource(
   source: ResourceControlSnapshot,
   config: ResourceCapacityConfig,
   context: ResourceControlTransferContext,
+  includeEnergy = true,
 ): { resource: ResourceConstant; movableAmount: number } | null {
   if (source.terminalFreeCapacity >= config.terminalReliefTargetFreeCapacity) {
     return null;
@@ -1071,6 +1072,7 @@ function selectTerminalReliefResource(
       resource,
       movableAmount: getMovableResourceAmount(source, resource, "terminal", config, context),
     }))
+    .filter((candidate) => includeEnergy || candidate.resource !== RESOURCE_ENERGY)
     .filter((candidate) => candidate.movableAmount > 0)
     .sort((left, right) => {
       if (left.resource === RESOURCE_ENERGY && right.resource !== RESOURCE_ENERGY) return 1;
@@ -1085,6 +1087,7 @@ function selectStorageReliefResource(
   source: ResourceControlSnapshot,
   config: ResourceCapacityConfig,
   context: ResourceControlTransferContext,
+  includeEnergy = true,
 ): { resource: ResourceConstant; movableAmount: number } | null {
   if (!source.storage || source.storageFreeCapacity >= config.storageReliefTargetFreeCapacity) {
     return null;
@@ -1095,6 +1098,7 @@ function selectStorageReliefResource(
       resource,
       movableAmount: getMovableResourceAmount(source, resource, "storage", config, context),
     }))
+    .filter((candidate) => includeEnergy || candidate.resource !== RESOURCE_ENERGY)
     .filter((candidate) => candidate.movableAmount > 0)
     .sort((left, right) => {
       if (left.movableAmount !== right.movableAmount) return right.movableAmount - left.movableAmount;
@@ -1121,6 +1125,7 @@ function planCapacityReliefTasks(
   config: ResourceCapacityConfig,
   context: ResourceControlTransferContext,
   receiverCapacityByRoom: Map<string, number>,
+  remainingEnergyNeedByRoom: Map<string, number>,
 ): string[] {
   if (!config.enabled) {
     return [];
@@ -1128,6 +1133,18 @@ function planCapacityReliefTasks(
 
   const actions: string[] = [];
   let created = 0;
+  const planningEnergyNeedByRoom = new Map(
+    snapshots.map((snapshot) => [
+      snapshot.roomName,
+      Math.max(
+        0,
+        (remainingEnergyNeedByRoom.get(snapshot.roomName) || 0) -
+          (context.healthyIncomingByRoomResource.get(
+            roomResourceKey(snapshot.roomName, RESOURCE_ENERGY),
+          ) || 0),
+      ),
+    ]),
+  );
   const existingCapacityTaskBySource = new Map<string, ResourceTransferTask>();
   const activeOutgoingSourceRooms = new Set<string>();
   const incomingCommitmentByRoom = new Map<string, number>();
@@ -1196,9 +1213,48 @@ function planCapacityReliefTasks(
     if (existing && !isRetarget && !terminalRecoveryReplacement) continue;
     if (!existing && activeOutgoingSourceRooms.has(source.roomName)) continue;
 
+    const hasPlanningEnergyDemand = snapshots
+      .filter((receiver) => receiver.roomName !== source.roomName)
+      .filter(
+        (receiver) =>
+          !existing ||
+          terminalRecoveryReplacement ||
+          receiver.roomName !== existing.toRoomName,
+      )
+      .filter((receiver) => receiver.storage && receiver.capacityState === "normal")
+      .filter(
+        (receiver) =>
+          receiver.storageFreeCapacity >= config.receiverStorageMinFreeCapacity &&
+          receiver.terminalFreeCapacity >= config.receiverTerminalMinFreeCapacity,
+      )
+      .some((receiver) => {
+        const currentSafeCapacity = Math.min(
+          getCapacityReliefReceivableAmount(receiver, config),
+          receiverCapacityByRoom.get(receiver.roomName) || 0,
+        );
+        const oldReservation = terminalRecoveryReplacement &&
+          existing?.toRoomName === receiver.roomName &&
+          isHealthyResourceTransferTaskReservation(existing, "incoming")
+          ? existing.remainingAmount
+          : 0;
+        const safeCapacity = Math.min(
+          currentSafeCapacity,
+          (workingReceiverCapacity.get(receiver.roomName) || 0) + oldReservation,
+        );
+        const restoredEnergyNeed = existing?.resource === RESOURCE_ENERGY
+          ? oldReservation
+          : 0;
+        return safeCapacity > 0 &&
+          (planningEnergyNeedByRoom.get(receiver.roomName) || 0) + restoredEnergyNeed > 0;
+      });
     const terminalCandidate = existing && !terminalRecoveryReplacement
       ? null
-      : selectTerminalReliefResource(source, config, context);
+      : selectTerminalReliefResource(
+          source,
+          config,
+          context,
+          hasPlanningEnergyDemand,
+        );
     if (existing && terminalRecoveryReplacement && !terminalCandidate) {
       const cancelled = cancelResourceTransferTask(existing.id);
       if (typeof cancelled === "string") {
@@ -1223,7 +1279,12 @@ function planCapacityReliefTasks(
         }
       : terminalCandidate || (
         source.terminalFreeCapacity >= config.terminalReliefTargetFreeCapacity
-          ? selectStorageReliefResource(source, config, context)
+          ? selectStorageReliefResource(
+              source,
+              config,
+              context,
+              hasPlanningEnergyDemand,
+            )
           : null
       );
     if (!candidate) continue;
@@ -1256,6 +1317,11 @@ function planCapacityReliefTasks(
           currentSafeCapacity,
           (workingReceiverCapacity.get(receiver.roomName) || 0) + oldReservation,
         );
+        const planningEnergyNeed = Math.max(
+          0,
+          (planningEnergyNeedByRoom.get(receiver.roomName) || 0) +
+            (existing?.resource === RESOURCE_ENERGY ? oldReservation : 0),
+        );
         const estimatedAmount = Math.max(
           1,
           Math.floor(
@@ -1264,12 +1330,16 @@ function planCapacityReliefTasks(
               candidate.movableAmount,
               safeCapacity,
               config.maxPlannedAmountPerTask,
+              candidate.resource === RESOURCE_ENERGY
+                ? planningEnergyNeed
+                : Number.POSITIVE_INFINITY,
             ),
           ),
         );
         return {
           receiver,
           safeCapacity,
+          planningEnergyNeed,
           transferCost: Game.market.calcTransactionCost(
             estimatedAmount,
             source.roomName,
@@ -1277,7 +1347,11 @@ function planCapacityReliefTasks(
           ),
         };
       })
-      .filter((entry) => entry.safeCapacity > 0)
+      .filter(
+        (entry) =>
+          entry.safeCapacity > 0 &&
+          (candidate.resource !== RESOURCE_ENERGY || entry.planningEnergyNeed > 0),
+      )
       .sort((left, right) => {
         if (left.safeCapacity !== right.safeCapacity) return right.safeCapacity - left.safeCapacity;
         const leftStock = getStock(left.receiver, candidate.resource);
@@ -1300,6 +1374,9 @@ function planCapacityReliefTasks(
         candidate.movableAmount,
         target.safeCapacity,
         config.maxPlannedAmountPerTask,
+        candidate.resource === RESOURCE_ENERGY
+          ? target.planningEnergyNeed
+          : Number.POSITIVE_INFINITY,
       ),
     );
     const amount = computeSafeCapacityReliefAmount(
@@ -1344,6 +1421,12 @@ function planCapacityReliefTasks(
           `capacity-retarget:${source.roomName}:${existing.toRoomName}->${target.receiver.roomName}:${candidate.resource}=${amount}`,
         );
       }
+    }
+    if (candidate.resource === RESOURCE_ENERGY) {
+      planningEnergyNeedByRoom.set(
+        target.receiver.roomName,
+        Math.max(0, target.planningEnergyNeed - amount),
+      );
     }
     workingReceiverCapacity.set(target.receiver.roomName, Math.max(0, target.safeCapacity - amount));
     created += 1;
@@ -2559,6 +2642,7 @@ export function runResourceControl(): void {
     capacityConfig,
     planningContext,
     receiverCapacityByRoom,
+    remainingEnergyNeedByRoom,
   );
   const executionContext = createResourceControlTransferContext(snapshots);
   const taskActions = executeTransferTasks(
