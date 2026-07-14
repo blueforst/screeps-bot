@@ -58,15 +58,20 @@
 
 **Files:**
 
+- Create: `src/runtime/logistics/receiverCapacityLedger.ts`
+- Create: `src/runtime/logistics/receiverCapacityLedger.test.ts`
 - Modify: `src/runtime/resourceControl.ts`
 - Modify: `src/runtime/resourceControl.test.ts`
 - Modify: `src/runtime/resourceControl.capacityRegression.test.ts`
+- Modify: `src/runtime/hubPlanner.ts`
+- Modify: `src/runtime/hubPlanner.test.ts`
+- Modify: `src/global.d.ts`
 - Modify: `openspec/changes/terminal-headroom-recovery/tasks.md`
 
 - [ ] 3.1 先写失败测试：跨资源任务共享 receiver 容量上限；已有任务只取回自己的 reservation；新建任务立即 reservation；`receiver_capacity` blocker 不占 commitment；同 tick send 后 snapshot 的 terminal used/free 同步变化。
 - [ ] 3.2 运行 `npx jest src/runtime/resourceControl.test.ts src/runtime/resourceControl.capacityRegression.test.ts --runInBand`，确认新增断言 RED。
-- [ ] 3.3 在转运上下文中加入 receiver commitment、per-task reservation、排除原因计数和可变 capacity ledger；初始化时只扫描一次任务与 carrier board。
-- [ ] 3.4 将容量救济规划、执行和后续 staging 改为复用同一个上下文；新任务、进度、完成、取消或 blocker 变化都同步更新 ledger。
+- [ ] 3.3 提取共享 receiver capacity ledger；Hub 与 ResourceControl 使用同一实现，按房间总量、资源量、per-task commitment/reservation 和排除原因维护可变投影。Hub 新任务先写入持久 task store，ResourceControl 随后只构建一次本轮索引。
+- [ ] 3.4 将容量救济规划、执行和后续 staging 改为复用同一个 ResourceControl 上下文；新任务、进度、完成、取消或 blocker 变化都同步更新 ledger。
 - [ ] 3.5 扩展 `applyPostSendDelta`，同时更新 terminal energy、used/free 与相应资源库存，防止同 tick 后续阶段看到过期容量。
 - [ ] 3.6 用测试断言 `capacityIndexBuildCount === 1`，并确认跨资源总承诺不超过接收端安全容量。
 - [ ] 3.7 运行 Task 3 两个测试文件，确认 GREEN。
