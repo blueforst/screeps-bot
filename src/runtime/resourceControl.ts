@@ -685,36 +685,50 @@ function getEnergyAvailableForFees(snapshot: ResourceControlSnapshot): number {
   return Math.max(0, snapshot.terminalEnergy - snapshot.terminalEnergyReserve);
 }
 
+function computeLargestAffordableAmount(
+  maximum: number,
+  canAfford: (amount: number) => boolean,
+): number {
+  let low = 1;
+  let high = Math.max(0, Math.floor(maximum));
+  let result = 0;
+
+  while (low <= high) {
+    const candidate = Math.floor((low + high) / 2);
+    if (canAfford(candidate)) {
+      result = candidate;
+      low = candidate + 1;
+    } else {
+      high = candidate - 1;
+    }
+  }
+
+  return result;
+}
+
 function computeSendAmount(
   donor: ResourceControlSnapshot,
   receiverRoomName: string,
   resource: ResourceConstant,
   targetAmount: number,
 ): number {
-  if (targetAmount <= 0) {
-    return 0;
-  }
-
   const availableResource = donor.terminal.store.getUsedCapacity(resource);
-  if (availableResource <= 0) {
-    return 0;
-  }
+  const maximum = Math.floor(
+    Math.min(targetAmount, donor.transferBatchSize, availableResource),
+  );
+  const spendableEnergy = resource === RESOURCE_ENERGY
+    ? getEnergyAvailableForFees(donor)
+    : donor.terminalEnergy;
 
-  let candidate = Math.min(targetAmount, donor.transferBatchSize, availableResource);
-  while (candidate > 0) {
-    const transferCost = Game.market.calcTransactionCost(candidate, donor.roomName, receiverRoomName);
-    if (resource === RESOURCE_ENERGY) {
-      if (candidate + transferCost <= getEnergyAvailableForFees(donor)) {
-        return candidate;
-      }
-    } else if (transferCost <= getEnergyAvailableForFees(donor)) {
-      return candidate;
-    }
-
-    candidate = Math.floor(candidate / 2);
-  }
-
-  return 0;
+  return computeLargestAffordableAmount(maximum, (amount) => {
+    const fee = Game.market.calcTransactionCost(
+      amount,
+      donor.roomName,
+      receiverRoomName,
+    );
+    const requiredEnergy = resource === RESOURCE_ENERGY ? amount + fee : fee;
+    return requiredEnergy <= spendableEnergy;
+  });
 }
 
 function computeTransferAmount(
@@ -1014,6 +1028,11 @@ function computeSafeCapacityReliefAmount(
     context,
     excludeTaskId,
   );
+  const candidate = Math.floor(Math.min(requestedAmount, resourceMovable));
+  if (resource !== RESOURCE_ENERGY) {
+    return candidate;
+  }
+
   const energyBudget = getTotalMovableResourceAmount(
     source,
     RESOURCE_ENERGY,
@@ -1021,16 +1040,14 @@ function computeSafeCapacityReliefAmount(
     context,
     excludeTaskId,
   );
-  let candidate = Math.floor(Math.min(requestedAmount, resourceMovable));
-  while (candidate > 0) {
-    const fee = Game.market.calcTransactionCost(candidate, source.roomName, receiverRoomName);
-    const energyRequired = resource === RESOURCE_ENERGY ? candidate + fee : fee;
-    if (energyRequired <= energyBudget) {
-      return candidate;
-    }
-    candidate = Math.floor(candidate / 2);
-  }
-  return 0;
+  return computeLargestAffordableAmount(candidate, (amount) => {
+    const fee = Game.market.calcTransactionCost(
+      amount,
+      source.roomName,
+      receiverRoomName,
+    );
+    return amount + fee <= energyBudget;
+  });
 }
 
 function getStoredResources(store: StoreDefinition): ResourceConstant[] {

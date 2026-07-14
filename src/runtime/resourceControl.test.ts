@@ -3756,6 +3756,42 @@ describe("capacity-relief planning", () => {
     });
   });
 
+  it("plans non-energy relief even when fee energy is below floor and reserve", () => {
+    const source = createRoom({
+      name: "W61N20",
+      terminalResources: { [RESOURCE_HYDROGEN]: 260_000 },
+      storageFreeCapacity: 500_000,
+    });
+    source.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W61N21",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [source.name]: {
+        energyFloor: 250_000,
+        terminalEnergyReserve: 80_000,
+      },
+    };
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 5_000);
+
+    runResourceControl();
+
+    const task = Object.values(ensureResourceTransferTaskStore()).find(
+      (entry) => entry.reason === `capacity:relief:${RESOURCE_HYDROGEN}`,
+    );
+    expect(task).toMatchObject({
+      amount: 40_000,
+      remainingAmount: 40_000,
+      status: "pending",
+      blockedReason: "insufficient_terminal_resource_or_fee",
+    });
+  });
+
   it("plans the largest movable storage surplus and stages it through the existing carrier task", () => {
     const source = createRoom({
       name: "W61N3",
@@ -4750,13 +4786,13 @@ describe("capacity-relief execution health and priority", () => {
     });
   });
 
-  it("protects total donor energy from a non-energy relief fee", () => {
+  it("allows non-energy relief to spend terminal energy below terminalEnergyReserve", () => {
     const donor = createRoom({
       name: "W68N10E",
       storageResources: { [RESOURCE_ENERGY]: 100_000 },
       terminalResources: {
-        [RESOURCE_ENERGY]: 50_000,
-        [RESOURCE_HYDROGEN]: 1_000,
+        [RESOURCE_ENERGY]: 11_000,
+        [RESOURCE_KEANIUM]: 10_000,
       },
       storageFreeCapacity: 50_000,
     });
@@ -4768,13 +4804,85 @@ describe("capacity-relief execution health and priority", () => {
     });
     Game.rooms[donor.name] = donor;
     Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [donor.name]: { terminalEnergyReserve: 50_000 },
+    };
     (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 11_000);
     const created = createAutomaticResourceTransferTask(
       donor.name,
       receiver.name,
-      RESOURCE_HYDROGEN,
+      RESOURCE_KEANIUM,
       1_000,
-      `capacity:relief:${RESOURCE_HYDROGEN}`,
+      `capacity:relief:${RESOURCE_KEANIUM}`,
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_KEANIUM,
+      1_000,
+      receiver.name,
+      expect.any(String),
+    );
+    expect(created.task).toMatchObject({ status: "done", remainingAmount: 0 });
+  });
+
+  it("shrinks a non-energy send to the largest fee-affordable batch", () => {
+    const donor = createRoom({
+      name: "W68N20",
+      terminalResources: {
+        [RESOURCE_ENERGY]: 750,
+        [RESOURCE_KEANIUM]: 10_000,
+      },
+    });
+    const receiver = createRoom({ name: "W68N21", storageFreeCapacity: 500_000 });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(
+      (amount: number) => Math.ceil(amount / 10),
+    );
+    const created = createResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      10_000,
+      "manual:test",
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_KEANIUM,
+      7_500,
+      receiver.name,
+      expect.any(String),
+    );
+    expect(created.task).toMatchObject({
+      status: "pending",
+      remainingAmount: 2_500,
+      lastProgressAt: 10,
+    });
+  });
+
+  it("keeps a staged non-energy task pending when no positive batch is fee-affordable", () => {
+    const donor = createRoom({
+      name: "W68N22",
+      terminalResources: { [RESOURCE_KEANIUM]: 1_000 },
+    });
+    const receiver = createRoom({ name: "W68N23", storageFreeCapacity: 500_000 });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(
+      (amount: number) => Math.max(1, Math.ceil(amount / 10)),
+    );
+    const created = createResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      1_000,
+      "manual:test",
     );
     if (typeof created === "string") throw new Error(created);
 
@@ -4783,7 +4891,9 @@ describe("capacity-relief execution health and priority", () => {
     expect(donor.terminal!.send).not.toHaveBeenCalled();
     expect(created.task).toMatchObject({
       status: "pending",
+      remainingAmount: 1_000,
       blockedReason: "insufficient_terminal_resource_or_fee",
+      blockedSince: 10,
     });
   });
 
