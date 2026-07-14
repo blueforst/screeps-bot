@@ -6,8 +6,13 @@ import {
   getIncomingResourceTransferAmount,
   markResourceTransferTaskBlocked,
 } from "@/runtime/logistics/resourceTransferTasks";
+import { ReceiverCapacityLedger } from "@/runtime/logistics/receiverCapacityLedger";
 import { reserveProductionResource } from "@/runtime/resourceReservation";
-import { normalizeCapacityConfig, runResourceControl } from "@/runtime/resourceControl";
+import {
+  createResourceControlTransferContext,
+  normalizeCapacityConfig,
+  runResourceControl,
+} from "@/runtime/resourceControl";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -5827,6 +5832,20 @@ describe("resource-control logistics observability", () => {
     };
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("counts real transfer-context builds instead of reporting a constant", () => {
+    const buildCounter = { count: 0 };
+    const capacityConfig = normalizeCapacityConfig({});
+
+    createResourceControlTransferContext([], capacityConfig, buildCounter);
+    createResourceControlTransferContext([], capacityConfig, buildCounter);
+
+    expect(buildCounter.count).toBe(2);
+  });
+
   it("persists actual terminal reserve and one-pass task blocker aggregates", () => {
     Memory.cfg!.resourceControl!.capacityBalancing = { enabled: false };
     Memory.cfg!.resourceControl!.rooms = {
@@ -5903,8 +5922,17 @@ describe("resource-control logistics observability", () => {
       `capacity:relief:${RESOURCE_KEANIUM}`,
     );
     if (typeof created === "string") throw new Error(created);
+    const reserveSpy = jest.spyOn(ReceiverCapacityLedger.prototype, "reserve");
 
     runResourceControl();
+
+    expect(reserveSpy).toHaveBeenCalledWith(
+      created.task.id,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      1_000,
+      { ownerTaskId: created.task.id },
+    );
 
     expect((Memory.runtime?.resourceControl as any)?.recentCapacityReliefRoutes).toEqual([
       {
@@ -5955,5 +5983,30 @@ describe("resource-control logistics observability", () => {
 
     expect(Memory.runtime?.resourceControl?.capacityIndexBuildCount).toBe(1);
     expect(scans).toBeLessThanOrEqual(5);
+  });
+
+  it("updates only the synced task contribution while sharing one run context", () => {
+    Memory.cfg!.resourceControl!.capacityBalancing = { enabled: false };
+    const rooms = Array.from({ length: 4 }, (_, index) => createRoom({
+      name: `W73N${index + 1}`,
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    }));
+    for (const room of rooms) Game.rooms[room.name] = room;
+    createResourceTransferTask(rooms[0].name, rooms[1].name, RESOURCE_KEANIUM, 1_000, "manual:index-k");
+    createResourceTransferTask(rooms[1].name, rooms[2].name, RESOURCE_HYDROGEN, 1_000, "manual:index-h");
+    createResourceTransferTask(rooms[2].name, rooms[3].name, RESOURCE_OXYGEN, 1_000, "manual:index-o");
+
+    runResourceControl();
+
+    const probe = Memory.runtime?.resourceControl?.taskContributionIndex;
+    expect(Memory.runtime?.resourceControl?.capacityIndexBuildCount).toBe(1);
+    expect(probe).toMatchObject({ initialTaskCount: 3 });
+    if (!probe) throw new Error("missing task contribution index probe");
+    expect(probe.syncCount).toBeGreaterThanOrEqual(3);
+    expect(probe.contributionEvaluationCount).toBe(
+      probe.initialTaskCount + probe.syncCount,
+    );
   });
 });

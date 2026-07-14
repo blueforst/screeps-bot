@@ -681,6 +681,11 @@ declare global {
       resourceControl?: {
         updatedAt: number;
         capacityIndexBuildCount?: number;
+        taskContributionIndex?: {
+          initialTaskCount: number;
+          syncCount: number;
+          contributionEvaluationCount: number;
+        };
         capacityPolicy?: {
           terminalHeadroomRecoveryEnabled: boolean;
           storagePressureFreeCapacity: number;

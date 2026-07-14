@@ -31,11 +31,24 @@ export interface ReceiverCapacityAvailability {
   resourceCommitted: number;
   reservationTotal: number;
   reservationResource: number;
+  ownedReservationTotal: number;
+  ownedReservationResource: number;
   excludedTaskAmount: number;
   storageRemaining: number;
   terminalTotalRemaining: number;
   terminalResourceRemaining: number;
   available: number;
+}
+
+export interface ReceiverCapacityReservationOptions {
+  /**
+   * Associates this allocation with an existing task commitment. Owned
+   * reservations are sub-allocations of that commitment and therefore do not
+   * consume receiver headroom a second time.
+   */
+  ownerTaskId?: string;
+  /** Temporarily returns this task's commitment while calculating the grant. */
+  excludeTaskId?: string;
 }
 
 export interface ReceiverCapacityExclusionSummaryEntry {
@@ -56,6 +69,7 @@ interface CapacityEntry {
   roomName: string;
   resource: ResourceConstant;
   amount: number;
+  ownerTaskId?: string;
 }
 
 interface ExcludedTaskEntry {
@@ -88,6 +102,9 @@ export class ReceiverCapacityLedger {
   private readonly taskByRoomResource = new Map<string, number>();
   private readonly reservationTotalByRoom = new Map<string, number>();
   private readonly reservationByRoomResource = new Map<string, number>();
+  private readonly ownedReservationTotalByRoom = new Map<string, number>();
+  private readonly ownedReservationByRoomResource = new Map<string, number>();
+  private readonly reservationIdsByOwnerTask = new Map<string, Set<string>>();
   private readonly excludedTasks = new Map<string, ExcludedTaskEntry>();
 
   public constructor(private readonly options: ReceiverCapacityLedgerOptions) {
@@ -132,6 +149,8 @@ export class ReceiverCapacityLedger {
         resourceCommitted: 0,
         reservationTotal: 0,
         reservationResource: 0,
+        ownedReservationTotal: 0,
+        ownedReservationResource: 0,
         excludedTaskAmount: 0,
         storageRemaining: 0,
         terminalTotalRemaining: 0,
@@ -145,15 +164,22 @@ export class ReceiverCapacityLedger {
     const taskResource = this.taskByRoomResource.get(resourceKey) || 0;
     const reservationTotal = this.reservationTotalByRoom.get(roomName) || 0;
     const reservationResource = this.reservationByRoomResource.get(resourceKey) || 0;
+    const ownedReservationTotal = this.ownedReservationTotalByRoom.get(roomName) || 0;
+    const ownedReservationResource = this.ownedReservationByRoomResource.get(resourceKey) || 0;
     const excludedTask = excludeTaskId ? this.taskCommitments.get(excludeTaskId) : undefined;
     const excludedReservation = excludeTaskId ? this.reservations.get(excludeTaskId) : undefined;
     const excludedTaskAmount = excludedTask?.roomName === roomName ? excludedTask.amount : 0;
     const excludedTaskResourceAmount = excludedTask?.roomName === roomName && excludedTask.resource === resource
       ? excludedTask.amount
       : 0;
-    const excludedReservationAmount = excludedReservation?.roomName === roomName ? excludedReservation.amount : 0;
+    const excludedReservationAmount =
+      excludedReservation?.ownerTaskId === undefined && excludedReservation?.roomName === roomName
+        ? excludedReservation.amount
+        : 0;
     const excludedReservationResourceAmount =
-      excludedReservation?.roomName === roomName && excludedReservation.resource === resource
+      excludedReservation?.ownerTaskId === undefined &&
+      excludedReservation?.roomName === roomName &&
+      excludedReservation.resource === resource
         ? excludedReservation.amount
         : 0;
     const effectiveTaskTotal = Math.max(0, taskTotal - excludedTaskAmount);
@@ -189,6 +215,8 @@ export class ReceiverCapacityLedger {
       resourceCommitted: effectiveTaskResource,
       reservationTotal: effectiveReservationTotal,
       reservationResource: effectiveReservationResource,
+      ownedReservationTotal,
+      ownedReservationResource,
       excludedTaskAmount,
       storageRemaining,
       terminalTotalRemaining,
@@ -202,18 +230,13 @@ export class ReceiverCapacityLedger {
     roomName: string,
     resource: ResourceConstant,
     requestedAmount: number,
-    excludeTaskId?: string,
+    optionsValue?: ReceiverCapacityReservationOptions | string,
   ): number {
+    const options = typeof optionsValue === "string"
+      ? { excludeTaskId: optionsValue }
+      : optionsValue || {};
     const requested = normalizedAmount(requestedAmount);
     const existing = this.reservations.get(reservationId);
-    if (
-      existing &&
-      existing.roomName === roomName &&
-      existing.resource === resource &&
-      existing.amount === requested
-    ) {
-      return existing.amount;
-    }
     if (existing) {
       this.removeReservation(existing);
     }
@@ -221,17 +244,37 @@ export class ReceiverCapacityLedger {
       return 0;
     }
 
-    const amount = Math.min(
-      requested,
-      this.getAvailableAmount(roomName, resource, excludeTaskId),
-    );
+    const ownerTaskId = options.ownerTaskId;
+    let amount: number;
+    if (ownerTaskId) {
+      const commitment = this.taskCommitments.get(ownerTaskId);
+      if (
+        !commitment ||
+        commitment.roomName !== roomName ||
+        commitment.resource !== resource
+      ) {
+        return 0;
+      }
+      const otherOwnedAmount = this.getOwnedReservationAmount(ownerTaskId);
+      amount = Math.min(
+        requested,
+        Math.max(0, commitment.amount - otherOwnedAmount),
+        this.getAvailableAmount(
+          roomName,
+          resource,
+          options.excludeTaskId || ownerTaskId,
+        ),
+      );
+    } else {
+      amount = Math.min(
+        requested,
+        this.getAvailableAmount(roomName, resource, options.excludeTaskId),
+      );
+    }
     if (amount <= 0) {
       return 0;
     }
-    const entry = { id: reservationId, roomName, resource, amount };
-    this.reservations.set(reservationId, entry);
-    addIndexedAmount(this.reservationTotalByRoom, roomName, amount);
-    addIndexedAmount(this.reservationByRoomResource, roomResourceKey(roomName, resource), amount);
+    this.addReservation({ id: reservationId, roomName, resource, amount, ownerTaskId });
     return amount;
   }
 
@@ -240,23 +283,31 @@ export class ReceiverCapacityLedger {
   }
 
   public syncTask(task: ResourceTransferTask): void {
-    this.releaseTask(task.id);
+    this.removeTaskCommitment(task.id);
     this.excludedTasks.delete(task.id);
 
     const amount = normalizedAmount(task.remainingAmount);
     if (amount <= 0) {
+      this.releaseReservationsOwnedBy(task.id);
+      this.releaseProvisionalReservation(task.id);
       return;
     }
     const receiver = this.receivers.get(task.toRoomName);
     if (!receiver) {
+      this.releaseReservationsOwnedBy(task.id);
+      this.releaseProvisionalReservation(task.id);
       this.excludedTasks.set(task.id, { reason: "missing_receiver", amount });
       return;
     }
     if (!this.options.isTaskEndpointValid(task)) {
+      this.releaseReservationsOwnedBy(task.id);
+      this.releaseProvisionalReservation(task.id);
       this.excludedTasks.set(task.id, { reason: "invalid_endpoint", amount });
       return;
     }
     if (!this.options.isTaskHealthy(task)) {
+      this.releaseReservationsOwnedBy(task.id);
+      this.releaseProvisionalReservation(task.id);
       this.excludedTasks.set(task.id, { reason: "unhealthy_commitment", amount });
       return;
     }
@@ -266,26 +317,22 @@ export class ReceiverCapacityLedger {
       resource: task.resource,
       amount,
     };
-    this.taskCommitments.set(task.id, entry);
-    addIndexedAmount(this.taskTotalByRoom, entry.roomName, entry.amount);
-    addIndexedAmount(this.taskByRoomResource, roomResourceKey(entry.roomName, entry.resource), entry.amount);
+    this.addTaskCommitment(entry);
+
+    const sameIdReservation = this.reservations.get(task.id);
+    if (sameIdReservation && !sameIdReservation.ownerTaskId) {
+      const provisionalAmount = sameIdReservation.amount;
+      this.reserve(task.id, entry.roomName, entry.resource, provisionalAmount, {
+        ownerTaskId: task.id,
+      });
+    }
+    this.clampReservationsOwnedBy(task.id);
   }
 
   public releaseTask(taskId: string): void {
-    const commitment = this.taskCommitments.get(taskId);
-    if (commitment) {
-      this.taskCommitments.delete(taskId);
-      addIndexedAmount(this.taskTotalByRoom, commitment.roomName, -commitment.amount);
-      addIndexedAmount(
-        this.taskByRoomResource,
-        roomResourceKey(commitment.roomName, commitment.resource),
-        -commitment.amount,
-      );
-    }
-    const reservation = this.reservations.get(taskId);
-    if (reservation) {
-      this.removeReservation(reservation);
-    }
+    this.removeTaskCommitment(taskId);
+    this.releaseReservationsOwnedBy(taskId);
+    this.releaseProvisionalReservation(taskId);
     this.excludedTasks.delete(taskId);
   }
 
@@ -308,20 +355,13 @@ export class ReceiverCapacityLedger {
     if (!taskId) return;
     const commitment = this.taskCommitments.get(taskId);
     if (commitment?.roomName === roomName && commitment.resource === resource) {
-      this.taskCommitments.delete(taskId);
-      addIndexedAmount(this.taskTotalByRoom, roomName, -commitment.amount);
-      addIndexedAmount(
-        this.taskByRoomResource,
-        roomResourceKey(roomName, resource),
-        -commitment.amount,
-      );
+      this.removeTaskCommitment(taskId);
       const remaining = Math.max(0, commitment.amount - amount);
       if (remaining > 0) {
         const next = { ...commitment, amount: remaining };
-        this.taskCommitments.set(taskId, next);
-        addIndexedAmount(this.taskTotalByRoom, roomName, remaining);
-        addIndexedAmount(this.taskByRoomResource, roomResourceKey(roomName, resource), remaining);
+        this.addTaskCommitment(next);
       }
+      this.consumeOwnedReservations(taskId, roomName, resource, amount);
     }
   }
 
@@ -338,14 +378,146 @@ export class ReceiverCapacityLedger {
     return summary;
   }
 
+  private addTaskCommitment(entry: CapacityEntry): void {
+    this.taskCommitments.set(entry.id, entry);
+    addIndexedAmount(this.taskTotalByRoom, entry.roomName, entry.amount);
+    addIndexedAmount(
+      this.taskByRoomResource,
+      roomResourceKey(entry.roomName, entry.resource),
+      entry.amount,
+    );
+  }
+
+  private removeTaskCommitment(taskId: string): void {
+    const commitment = this.taskCommitments.get(taskId);
+    if (!commitment) return;
+    this.taskCommitments.delete(taskId);
+    addIndexedAmount(this.taskTotalByRoom, commitment.roomName, -commitment.amount);
+    addIndexedAmount(
+      this.taskByRoomResource,
+      roomResourceKey(commitment.roomName, commitment.resource),
+      -commitment.amount,
+    );
+  }
+
+  private addReservation(entry: CapacityEntry): void {
+    this.reservations.set(entry.id, entry);
+    const resourceKey = roomResourceKey(entry.roomName, entry.resource);
+    if (entry.ownerTaskId) {
+      addIndexedAmount(this.ownedReservationTotalByRoom, entry.roomName, entry.amount);
+      addIndexedAmount(this.ownedReservationByRoomResource, resourceKey, entry.amount);
+      const ids = this.reservationIdsByOwnerTask.get(entry.ownerTaskId) || new Set<string>();
+      ids.add(entry.id);
+      this.reservationIdsByOwnerTask.set(entry.ownerTaskId, ids);
+      return;
+    }
+    addIndexedAmount(this.reservationTotalByRoom, entry.roomName, entry.amount);
+    addIndexedAmount(this.reservationByRoomResource, resourceKey, entry.amount);
+  }
+
   private removeReservation(entry: CapacityEntry): void {
     this.reservations.delete(entry.id);
+    const resourceKey = roomResourceKey(entry.roomName, entry.resource);
+    if (entry.ownerTaskId) {
+      addIndexedAmount(this.ownedReservationTotalByRoom, entry.roomName, -entry.amount);
+      addIndexedAmount(this.ownedReservationByRoomResource, resourceKey, -entry.amount);
+      const ids = this.reservationIdsByOwnerTask.get(entry.ownerTaskId);
+      ids?.delete(entry.id);
+      if (ids?.size === 0) {
+        this.reservationIdsByOwnerTask.delete(entry.ownerTaskId);
+      }
+      return;
+    }
     addIndexedAmount(this.reservationTotalByRoom, entry.roomName, -entry.amount);
     addIndexedAmount(
       this.reservationByRoomResource,
-      roomResourceKey(entry.roomName, entry.resource),
+      resourceKey,
       -entry.amount,
     );
+  }
+
+  private resizeReservation(entry: CapacityEntry, amountValue: number): void {
+    const amount = normalizedAmount(amountValue);
+    this.removeReservation(entry);
+    if (amount > 0) {
+      this.addReservation({ ...entry, amount });
+    }
+  }
+
+  private getOwnedReservationAmount(ownerTaskId: string): number {
+    let total = 0;
+    for (const reservationId of this.reservationIdsByOwnerTask.get(ownerTaskId) || []) {
+      total += this.reservations.get(reservationId)?.amount || 0;
+    }
+    return total;
+  }
+
+  private releaseReservationsOwnedBy(ownerTaskId: string): void {
+    const reservationIds = [...(this.reservationIdsByOwnerTask.get(ownerTaskId) || [])];
+    for (const reservationId of reservationIds) {
+      const reservation = this.reservations.get(reservationId);
+      if (reservation) this.removeReservation(reservation);
+    }
+  }
+
+  private releaseProvisionalReservation(reservationId: string): void {
+    const reservation = this.reservations.get(reservationId);
+    if (reservation && !reservation.ownerTaskId) {
+      this.removeReservation(reservation);
+    }
+  }
+
+  private clampReservationsOwnedBy(ownerTaskId: string): void {
+    const commitment = this.taskCommitments.get(ownerTaskId);
+    if (!commitment) {
+      this.releaseReservationsOwnedBy(ownerTaskId);
+      return;
+    }
+    let remainingGrant = Math.min(
+      commitment.amount,
+      this.getAvailableAmount(commitment.roomName, commitment.resource, ownerTaskId),
+    );
+    const reservationIds = [...(this.reservationIdsByOwnerTask.get(ownerTaskId) || [])];
+    for (const reservationId of reservationIds) {
+      const reservation = this.reservations.get(reservationId);
+      if (!reservation) continue;
+      if (
+        reservation.roomName !== commitment.roomName ||
+        reservation.resource !== commitment.resource
+      ) {
+        this.removeReservation(reservation);
+        continue;
+      }
+      const amount = Math.min(reservation.amount, remainingGrant);
+      remainingGrant -= amount;
+      if (amount !== reservation.amount) {
+        this.resizeReservation(reservation, amount);
+      }
+    }
+  }
+
+  private consumeOwnedReservations(
+    ownerTaskId: string,
+    roomName: string,
+    resource: ResourceConstant,
+    amountValue: number,
+  ): void {
+    let remaining = normalizedAmount(amountValue);
+    const reservationIds = [...(this.reservationIdsByOwnerTask.get(ownerTaskId) || [])];
+    for (const reservationId of reservationIds) {
+      if (remaining <= 0) break;
+      const reservation = this.reservations.get(reservationId);
+      if (
+        !reservation ||
+        reservation.roomName !== roomName ||
+        reservation.resource !== resource
+      ) {
+        continue;
+      }
+      const consumed = Math.min(remaining, reservation.amount);
+      remaining -= consumed;
+      this.resizeReservation(reservation, reservation.amount - consumed);
+    }
   }
 }
 
