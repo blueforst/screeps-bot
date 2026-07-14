@@ -416,22 +416,26 @@ describe("remoteWorkerRole - builds source container site only", () => {
     expect(result).toBe(false);
   });
 
-  it("does NOT build road construction sites", () => {
+  it("builds planned road construction sites but ignores unplanned road sites", () => {
     const sourcePos = makePos(27, 25, TARGET_ROOM);
-    const roadSite = {
-      id: "road-site-1",
+    const plannedRoadSite = {
+      id: "road-site-planned",
+      structureType: STRUCTURE_ROAD,
+      my: true,
+      pos: makePos(24, 25, TARGET_ROOM),
+    } as unknown as ConstructionSite;
+    const unplannedRoadSite = {
+      id: "road-site-unplanned",
       structureType: STRUCTURE_ROAD,
       my: true,
       pos: makePos(25, 25, TARGET_ROOM),
     } as unknown as ConstructionSite;
-    const containerSite = {
-      id: "csite-1",
-      structureType: STRUCTURE_CONTAINER,
-      my: true,
-      pos: makePos(26, 25, TARGET_ROOM),
-    } as unknown as ConstructionSite;
-    const remoteRoom = makeRoom(TARGET_ROOM, { constructionSites: [roadSite, containerSite] });
+    const remoteRoom = makeRoom(TARGET_ROOM, { constructionSites: [plannedRoadSite, unplannedRoadSite] });
     Game.rooms[TARGET_ROOM] = remoteRoom;
+    Memory.data!.remoteMining![TARGET_ROOM].roadPlan = {
+      positions: [{ x: 24, y: 25, roomName: TARGET_ROOM }],
+      generatedAt: Game.time,
+    };
 
     (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
       if (id === "src-1") return { pos: sourcePos, id: "src-1" };
@@ -442,8 +446,8 @@ describe("remoteWorkerRole - builds source container site only", () => {
 
     remoteWorkerRole(TARGET_ROOM).target(creep);
 
-    expect(creep.build).toHaveBeenCalledWith(containerSite);
-    expect(creep.build).not.toHaveBeenCalledWith(roadSite);
+    expect(creep.build).toHaveBeenCalledWith(plannedRoadSite);
+    expect(creep.build).not.toHaveBeenCalledWith(unplannedRoadSite);
   });
 
   it("moves toward source container site when out of range", () => {
@@ -474,6 +478,44 @@ describe("remoteWorkerRole - builds source container site only", () => {
 // ─── TARGET PHASE: REPAIR SOURCE CONTAINERS ──────────────────────────
 
 describe("remoteWorkerRole - repairs damaged source container", () => {
+  it("repairs critically damaged source containers before planned roads", () => {
+    const sourcePos = makePos(27, 25, TARGET_ROOM);
+    const criticalContainer = {
+      id: "container-critical",
+      structureType: STRUCTURE_CONTAINER,
+      pos: makePos(26, 25, TARGET_ROOM),
+      store: createStore({ [RESOURCE_ENERGY]: 0 }),
+      hits: 70000,
+      hitsMax: 250000,
+    } as unknown as StructureContainer;
+    const plannedRoadSite = {
+      id: "road-site-planned",
+      structureType: STRUCTURE_ROAD,
+      my: true,
+      pos: makePos(25, 25, TARGET_ROOM),
+    } as unknown as ConstructionSite;
+    const remoteRoom = makeRoom(TARGET_ROOM, {
+      structures: [criticalContainer],
+      constructionSites: [plannedRoadSite],
+    });
+    Game.rooms[TARGET_ROOM] = remoteRoom;
+    Memory.data!.remoteMining![TARGET_ROOM].roadPlan = {
+      positions: [{ x: 25, y: 25, roomName: TARGET_ROOM }],
+      generatedAt: Game.time,
+    };
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src-1") return { pos: sourcePos, id: "src-1" };
+      return null;
+    });
+
+    const creep = makeCreep({ room: remoteRoom, energy: 600 });
+
+    remoteWorkerRole(TARGET_ROOM).target(creep);
+
+    expect(creep.repair).toHaveBeenCalledWith(criticalContainer);
+    expect(creep.build).not.toHaveBeenCalledWith(plannedRoadSite);
+  });
+
   it("repairs damaged source container", () => {
     const sourcePos = makePos(27, 25, TARGET_ROOM);
     const container = {
@@ -616,7 +658,7 @@ describe("remoteWorkerRole - retirement", () => {
 // ─── SCOPE VERIFICATION ──────────────────────────────────────────────
 
 describe("remoteWorkerRole - scope verification", () => {
-  it("ignores road structures completely - no repair, no build", () => {
+  it("ignores unplanned roads - no repair, no build", () => {
     const sourcePos = makePos(27, 25, TARGET_ROOM);
     const road = {
       id: "road-1",

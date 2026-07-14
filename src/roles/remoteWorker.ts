@@ -68,6 +68,18 @@ function findSourceContainerSitesInRoom(room: Room, sourceIds: string[]): Constr
   });
 }
 
+function findPlannedRoadSitesInRoom(room: Room, targetRoom: string): ConstructionSite[] {
+  const plannedPositions = Memory.data?.remoteMining?.[targetRoom]?.roadPlan?.positions ?? [];
+  const plannedKeys = new Set(plannedPositions.map(pos => `${pos.roomName}:${pos.x}:${pos.y}`));
+
+  return room.find(FIND_CONSTRUCTION_SITES, {
+    filter: (site): site is ConstructionSite =>
+      site.my &&
+      site.structureType === STRUCTURE_ROAD &&
+      plannedKeys.has(`${site.pos.roomName}:${site.pos.x}:${site.pos.y}`),
+  });
+}
+
 type RemoteEnergyCandidate =
   | { kind: "container"; target: StructureContainer; energy: number; pos: RoomPosition }
   | { kind: "dropped"; target: Resource; energy: number; pos: RoomPosition };
@@ -158,6 +170,32 @@ export const remoteWorkerRole: RoleFactory = (targetRoom: string) => {
       }
 
       const containers = findSourceContainersInRoom(creep.room, sourceIds);
+      const criticalContainers = containers.filter((container) => container.hits / container.hitsMax < 0.30);
+      if (criticalContainers.length > 0) {
+        criticalContainers.sort((a, b) => (a.hits / a.hitsMax) - (b.hits / b.hitsMax));
+        const target = criticalContainers[0];
+        const range = creep.pos.getRangeTo(target.pos);
+        if (range <= 3) {
+          creep.repair(target);
+        } else {
+          moveToTarget(creep, target, 3);
+        }
+        return false;
+      }
+
+      const roadSites = findPlannedRoadSitesInRoom(creep.room, targetRoom);
+      if (roadSites.length > 0) {
+        roadSites.sort((a, b) => creep.pos.getRangeTo(a.pos) - creep.pos.getRangeTo(b.pos));
+        const site = roadSites[0];
+        const range = creep.pos.getRangeTo(site.pos);
+        if (range <= 3) {
+          creep.build(site);
+        } else {
+          moveToTarget(creep, site, 3);
+        }
+        return false;
+      }
+
       const damagedContainers = containers.filter((c) => c.hits < c.hitsMax);
       if (damagedContainers.length > 0) {
         damagedContainers.sort((a, b) => (a.hits / a.hitsMax) - (b.hits / b.hitsMax));
