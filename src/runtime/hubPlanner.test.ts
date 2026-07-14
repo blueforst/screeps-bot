@@ -1907,6 +1907,24 @@ describe("planHubDistribution", () => {
     expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=100`);
   });
 
+  it("uses the shared configured receiver headroom watermarks", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
+    const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+    (satRoom.storage!.store as any).getFreeCapacity = () => 450_500;
+    (satRoom.terminal!.store as any).getFreeCapacity = () => 60_500;
+    Memory.cfg!.resourceControl = {
+      capacityBalancing: {
+        storagePressureFreeCapacity: 450_000,
+        terminalPressureFreeCapacity: 60_000,
+      },
+    };
+    Game.rooms[SAT_ROOM] = satRoom;
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=500`);
+  });
+
   it("no export task when hub has 0 of the T3 compound", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForDistribution({}); // No T3 in hub
     Game.rooms[SAT_ROOM] = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });

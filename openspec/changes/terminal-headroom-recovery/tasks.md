@@ -1,8 +1,8 @@
 ## 1. 共享容量策略
 
-- [ ] 1.1 为默认水位、terminal/storage 单调规范化、建筑容量上限和 feature flag 编写失败测试
-- [ ] 1.2 新增共享 `CapacityHeadroomPolicy` 纯函数模块，并在 `src/global.d.ts` 中补充 `terminalHeadroomRecoveryEnabled` 及 runtime 可选类型
-- [ ] 1.3 将 ResourceControl 的容量状态判断和 Hub distribution 的 receiver buffer 切换到共享策略，删除 Hub 重复常量并通过一致性测试
+- [x] 1.1 为默认水位、terminal/storage 单调规范化、建筑容量上限和 feature flag 编写失败测试
+- [x] 1.2 新增共享 `CapacityHeadroomPolicy` 纯函数模块，并在 `src/global.d.ts` 中补充 `terminalHeadroomRecoveryEnabled` 及 runtime 可选类型
+- [x] 1.3 将 ResourceControl 的容量状态判断和 Hub distribution 的 receiver buffer 切换到共享策略，删除 Hub 重复常量并通过一致性测试
 
 ## 2. Receiver 容量投影与预留
 

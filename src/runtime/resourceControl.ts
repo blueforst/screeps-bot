@@ -18,6 +18,15 @@ import {
   recordResourceTransferTaskProgress,
   type ResourceTransferTask,
 } from "@/runtime/logistics/resourceTransferTasks";
+import {
+  DEFAULT_CAPACITY_HEADROOM_POLICY,
+  getReceiverSafeCapacity,
+  isReceiverAdmissionEligible,
+  normalizeCapacityHeadroomPolicy,
+  resolveCapacityState,
+  type CapacityHeadroomPolicy,
+  type CapacityState,
+} from "@/runtime/logistics/capacityHeadroom";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { normalizeBoolean, normalizeNumber } from "@/runtime/configNormalize";
 import {
@@ -28,7 +37,7 @@ import { getReservedProductionAmount } from "@/runtime/resourceReservation";
 import { HUB_TARGET_COMPOUNDS } from "@/config/hub";
 
 type ResourceControlState = "survival" | "balanced" | "export";
-type ResourceCapacityState = "normal" | "pressure" | "emergency";
+type ResourceCapacityState = CapacityState;
 type ResourceThresholdMap = Partial<Record<ResourceConstant, number>>;
 
 const BASE_MINERALS: ResourceConstant[] = [RESOURCE_HYDROGEN, RESOURCE_OXYGEN, RESOURCE_UTRIUM, RESOURCE_LEMERGIUM, RESOURCE_KEANIUM, RESOURCE_ZYNTHIUM, RESOURCE_CATALYST];
@@ -81,14 +90,7 @@ interface ResourceControlMarketConfig {
   buyResources: ResourceConstant[];
 }
 
-interface ResourceCapacityConfig {
-  enabled: boolean;
-  storagePressureFreeCapacity: number;
-  storageReliefTargetFreeCapacity: number;
-  receiverStorageMinFreeCapacity: number;
-  terminalPressureFreeCapacity: number;
-  terminalReliefTargetFreeCapacity: number;
-  receiverTerminalMinFreeCapacity: number;
+interface ResourceCapacityConfig extends CapacityHeadroomPolicy {
   maxPlannedAmountPerTask: number;
   maxNewTasksPerRun: number;
   automaticTaskNoProgressTtl: number;
@@ -171,16 +173,8 @@ const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";
 const RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY = 80;
 const RESOURCE_CONTROL_TERMINAL_OFFLOAD_PRIORITY = 90;
 const TERMINAL_TOTAL_STORAGE_CAP = 250_000;
-const RECEIVER_TERMINAL_FREE_BUFFER = 40_000;
-const RECEIVER_STORAGE_FREE_BUFFER = 100_000;
 const DEFAULT_CAPACITY_CONFIG: ResourceCapacityConfig = {
-  enabled: true,
-  storagePressureFreeCapacity: RECEIVER_STORAGE_FREE_BUFFER,
-  storageReliefTargetFreeCapacity: 200_000,
-  receiverStorageMinFreeCapacity: 300_000,
-  terminalPressureFreeCapacity: RECEIVER_TERMINAL_FREE_BUFFER,
-  terminalReliefTargetFreeCapacity: 80_000,
-  receiverTerminalMinFreeCapacity: 50_000,
+  ...DEFAULT_CAPACITY_HEADROOM_POLICY,
   maxPlannedAmountPerTask: 50_000,
   maxNewTasksPerRun: 5,
   automaticTaskNoProgressTtl: 5_000,
@@ -333,52 +327,8 @@ function normalizeMarketConfig(value: unknown): ResourceControlMarketConfig {
 
 export function normalizeCapacityConfig(value: unknown): ResourceCapacityConfig {
   const raw = value && typeof value === "object" ? (value as Partial<ResourceCapacityConfig>) : {};
-  const storagePressureFreeCapacity = normalizeNumber(
-    raw.storagePressureFreeCapacity,
-    DEFAULT_CAPACITY_CONFIG.storagePressureFreeCapacity,
-    0,
-    1_000_000,
-  );
-  const terminalPressureFreeCapacity = normalizeNumber(
-    raw.terminalPressureFreeCapacity,
-    DEFAULT_CAPACITY_CONFIG.terminalPressureFreeCapacity,
-    0,
-    300_000,
-  );
   return {
-    enabled: normalizeBoolean(raw.enabled, DEFAULT_CAPACITY_CONFIG.enabled),
-    storagePressureFreeCapacity,
-    storageReliefTargetFreeCapacity: Math.max(
-      storagePressureFreeCapacity,
-      normalizeNumber(
-        raw.storageReliefTargetFreeCapacity,
-        DEFAULT_CAPACITY_CONFIG.storageReliefTargetFreeCapacity,
-        0,
-        1_000_000,
-      ),
-    ),
-    terminalPressureFreeCapacity,
-    terminalReliefTargetFreeCapacity: Math.max(
-      terminalPressureFreeCapacity,
-      normalizeNumber(
-        raw.terminalReliefTargetFreeCapacity,
-        DEFAULT_CAPACITY_CONFIG.terminalReliefTargetFreeCapacity,
-        0,
-        300_000,
-      ),
-    ),
-    receiverStorageMinFreeCapacity: normalizeNumber(
-      raw.receiverStorageMinFreeCapacity,
-      DEFAULT_CAPACITY_CONFIG.receiverStorageMinFreeCapacity,
-      0,
-      1_000_000,
-    ),
-    receiverTerminalMinFreeCapacity: normalizeNumber(
-      raw.receiverTerminalMinFreeCapacity,
-      DEFAULT_CAPACITY_CONFIG.receiverTerminalMinFreeCapacity,
-      0,
-      300_000,
-    ),
+    ...normalizeCapacityHeadroomPolicy(raw),
     maxPlannedAmountPerTask: normalizeNumber(
       raw.maxPlannedAmountPerTask,
       DEFAULT_CAPACITY_CONFIG.maxPlannedAmountPerTask,
@@ -461,32 +411,6 @@ function resolveState(storageEnergy: number, config: ResourceControlRoomConfig):
     return "export";
   }
   return "balanced";
-}
-
-function resolveCapacityState(
-  storageFreeCapacity: number,
-  terminalFreeCapacity: number,
-  config: ResourceCapacityConfig,
-  previousState?: ResourceCapacityState,
-): ResourceCapacityState {
-  if (storageFreeCapacity <= 0 || terminalFreeCapacity <= 0) {
-    return "emergency";
-  }
-  if (previousState === "pressure" || previousState === "emergency") {
-    const recovered =
-      storageFreeCapacity >= config.storageReliefTargetFreeCapacity &&
-      terminalFreeCapacity >= config.terminalReliefTargetFreeCapacity;
-    if (!recovered) {
-      return "pressure";
-    }
-  }
-  if (
-    storageFreeCapacity <= config.storagePressureFreeCapacity ||
-    terminalFreeCapacity <= config.terminalPressureFreeCapacity
-  ) {
-    return "pressure";
-  }
-  return "normal";
 }
 
 export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
@@ -868,8 +792,12 @@ function applyInternalBalancing(
   return actions;
 }
 
-function isStorageConstrained(snapshot: ResourceControlSnapshot | undefined): boolean {
-  return (snapshot?.storage?.store.getFreeCapacity() ?? 0) <= RECEIVER_STORAGE_FREE_BUFFER;
+function isStorageConstrained(
+  snapshot: ResourceControlSnapshot | undefined,
+  capacityConfig: ResourceCapacityConfig,
+): boolean {
+  return (snapshot?.storage?.store.getFreeCapacity() ?? 0) <=
+    capacityConfig.storagePressureFreeCapacity;
 }
 
 function getReceiverStorageFreeCapacity(receiver: ResourceControlSnapshot): number {
@@ -921,11 +849,11 @@ function getReceiverReceivableCapacity(
   resource: ResourceConstant,
   capacityConfig: ResourceCapacityConfig,
 ): number {
-  const terminalFreeAboveBuffer =
-    getReceiverTerminalFreeCapacity(receiver, resource) - capacityConfig.terminalPressureFreeCapacity;
-  const storageFreeAboveBuffer =
-    getReceiverStorageFreeCapacity(receiver) - capacityConfig.storagePressureFreeCapacity;
-  return Math.max(0, Math.min(terminalFreeAboveBuffer, storageFreeAboveBuffer));
+  return getReceiverSafeCapacity(
+    getReceiverStorageFreeCapacity(receiver),
+    getReceiverTerminalFreeCapacity(receiver, resource),
+    capacityConfig,
+  );
 }
 
 function getHealthyOutgoingCommitment(
@@ -1113,10 +1041,23 @@ function getCapacityReliefReceivableAmount(
 ): number {
   return Math.max(
     0,
-    Math.min(
-      receiver.storageFreeCapacity - config.storagePressureFreeCapacity,
-      receiver.terminalFreeCapacity - config.terminalPressureFreeCapacity,
+    getReceiverSafeCapacity(
+      receiver.storageFreeCapacity,
+      receiver.terminalFreeCapacity,
+      config,
     ) - 1,
+  );
+}
+
+function isCapacityReliefReceiverEligible(
+  receiver: ResourceControlSnapshot,
+  config: ResourceCapacityConfig,
+): boolean {
+  return !!receiver.storage && isReceiverAdmissionEligible(
+    receiver.storageFreeCapacity,
+    receiver.terminalFreeCapacity,
+    receiver.capacityState,
+    config,
   );
 }
 
@@ -1221,12 +1162,7 @@ function planCapacityReliefTasks(
           terminalRecoveryReplacement ||
           receiver.roomName !== existing.toRoomName,
       )
-      .filter((receiver) => receiver.storage && receiver.capacityState === "normal")
-      .filter(
-        (receiver) =>
-          receiver.storageFreeCapacity >= config.receiverStorageMinFreeCapacity &&
-          receiver.terminalFreeCapacity >= config.receiverTerminalMinFreeCapacity,
-      )
+      .filter((receiver) => isCapacityReliefReceiverEligible(receiver, config))
       .some((receiver) => {
         const currentSafeCapacity = Math.min(
           getCapacityReliefReceivableAmount(receiver, config),
@@ -1304,12 +1240,7 @@ function planCapacityReliefTasks(
           selectsReplacementResource ||
           receiver.roomName !== existing.toRoomName,
       )
-      .filter((receiver) => receiver.storage && receiver.capacityState === "normal")
-      .filter(
-        (receiver) =>
-          receiver.storageFreeCapacity >= config.receiverStorageMinFreeCapacity &&
-          receiver.terminalFreeCapacity >= config.receiverTerminalMinFreeCapacity,
-      )
+      .filter((receiver) => isCapacityReliefReceiverEligible(receiver, config))
       .map((receiver) => {
         const currentSafeCapacity = Math.min(
           getCapacityReliefReceivableAmount(receiver, config),
@@ -1487,7 +1418,9 @@ function executeTransferTasks(
       .map((snapshot) => snapshot.roomName),
   );
   const storageConstrainedRooms = new Set(
-    snapshots.filter((snapshot) => isStorageConstrained(snapshot)).map((snapshot) => snapshot.roomName),
+    snapshots
+      .filter((snapshot) => isStorageConstrained(snapshot, capacityConfig))
+      .map((snapshot) => snapshot.roomName),
   );
   const capacityStateByRoom = new Map(
     snapshots.map((snapshot) => [snapshot.roomName, snapshot.capacityState] as const),

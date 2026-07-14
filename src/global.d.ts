@@ -464,6 +464,7 @@ declare global {
         taskMaxPerRun?: number;
         capacityBalancing?: {
           enabled?: boolean;
+          terminalHeadroomRecoveryEnabled?: boolean;
           storagePressureFreeCapacity?: number;
           storageReliefTargetFreeCapacity?: number;
           receiverStorageMinFreeCapacity?: number;

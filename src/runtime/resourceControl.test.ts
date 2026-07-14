@@ -3583,17 +3583,40 @@ describe("resource-control capacity state", () => {
       }),
     ).toEqual({
       enabled: true,
+      terminalHeadroomRecoveryEnabled: true,
       storagePressureFreeCapacity: 0,
       storageReliefTargetFreeCapacity: 0,
       receiverStorageMinFreeCapacity: 1_000_000,
       terminalPressureFreeCapacity: 40_000,
       terminalReliefTargetFreeCapacity: 40_000,
-      receiverTerminalMinFreeCapacity: 0,
+      receiverTerminalMinFreeCapacity: 40_000,
       maxPlannedAmountPerTask: 50_000,
       maxNewTasksPerRun: 5,
       automaticTaskNoProgressTtl: 100,
       sourceDepletedGraceTicks: 1,
       t3ReservePerRoom: 0,
+    });
+  });
+
+  it("keeps the compatibility config export aligned with shared watermark ordering", () => {
+    expect(
+      normalizeCapacityConfig({
+        terminalHeadroomRecoveryEnabled: false,
+        storagePressureFreeCapacity: 400_000,
+        storageReliefTargetFreeCapacity: 200_000,
+        receiverStorageMinFreeCapacity: 100_000,
+        terminalPressureFreeCapacity: 60_000,
+        receiverTerminalMinFreeCapacity: 90_000,
+        terminalReliefTargetFreeCapacity: 70_000,
+      }),
+    ).toMatchObject({
+      terminalHeadroomRecoveryEnabled: false,
+      storagePressureFreeCapacity: 400_000,
+      storageReliefTargetFreeCapacity: 400_000,
+      receiverStorageMinFreeCapacity: 400_000,
+      terminalPressureFreeCapacity: 60_000,
+      receiverTerminalMinFreeCapacity: 90_000,
+      terminalReliefTargetFreeCapacity: 90_000,
     });
   });
 

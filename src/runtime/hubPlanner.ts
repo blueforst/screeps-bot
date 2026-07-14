@@ -20,6 +20,10 @@ import {
   type ResourceTransferTaskAmountIndex,
 } from "@/runtime/logistics/resourceTransferTasks";
 import {
+  getReceiverSafeCapacity,
+  normalizeCapacityHeadroomPolicy,
+} from "@/runtime/logistics/capacityHeadroom";
+import {
   HUB_DISTRIBUTED_STORAGE,
   HUB_INTERNAL_ONLY,
   HUB_PLAN_INTERVAL,
@@ -32,9 +36,6 @@ import {
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { collectCarrierCargoInventory } from "@/runtime/hubProgress";
 import { getProductReagentMap, roundUpReactionAmount } from "@/runtime/reactionMap";
-
-const DISTRIBUTION_RECEIVER_TERMINAL_FREE_BUFFER = 40_000;
-const DISTRIBUTION_RECEIVER_STORAGE_FREE_BUFFER = 100_000;
 
 export function getDefaultHubConfig(): NonNullable<Memory["cfg"]>["hub"] {
   return {
@@ -620,6 +621,9 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
 
   const reservePerRoom = cfg.reservePerRoom ?? HUB_RESERVE_PER_ROOM;
   const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : HUB_TARGET_COMPOUNDS;
+  const capacityPolicy = normalizeCapacityHeadroomPolicy(
+    Memory.cfg?.resourceControl?.capacityBalancing,
+  );
 
   const hubT3Available: Record<string, number> = {};
   const hubStorageStore = hubRoom.storage.store as unknown as Record<string, number>;
@@ -660,12 +664,10 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
   for (const satellite of satellites) {
     const satStorageFree = satellite.storage!.store.getFreeCapacity();
     const satTerminalFree = satellite.terminal!.store.getFreeCapacity();
-    const receivableCapacity = Math.max(
-      0,
-      Math.min(
-        satStorageFree - DISTRIBUTION_RECEIVER_STORAGE_FREE_BUFFER,
-        satTerminalFree - DISTRIBUTION_RECEIVER_TERMINAL_FREE_BUFFER,
-      ),
+    const receivableCapacity = getReceiverSafeCapacity(
+      satStorageFree,
+      satTerminalFree,
+      capacityPolicy,
     );
     if (receivableCapacity <= 0) continue;
 
