@@ -1,4 +1,4 @@
-import { clearCarrierTaskBoardForTest } from "@/runtime/carrierTaskBoard";
+import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
 import {
   createAutomaticResourceTransferTask,
   createResourceTransferTask,
@@ -79,6 +79,23 @@ function createMutableRoom(
       return [];
     },
   } as unknown as Room;
+}
+
+function executeTerminalOffloadTasks(room: Room): number {
+  const terminalStore = room.terminal!.store as unknown as MutableStore;
+  const storageStore = room.storage!.store as unknown as MutableStore;
+  let moved = 0;
+  for (const task of Object.values(getCarrierTasksByRoom(room.name))) {
+    if (task.type !== "terminal_offload") continue;
+    for (const step of task.steps) {
+      if (step.fromKind !== "terminal" || step.toKind !== "storage") continue;
+      const amount = Math.min(step.amount, terminalStore.getUsedCapacity(step.resource));
+      terminalStore.set(step.resource, terminalStore.getUsedCapacity(step.resource) - amount);
+      storageStore.set(step.resource, storageStore.getUsedCapacity(step.resource) + amount);
+      moved += amount;
+    }
+  }
+  return moved;
 }
 
 describe("resource control live-like capacity recovery", () => {
@@ -224,5 +241,70 @@ describe("resource control live-like capacity recovery", () => {
         (task) => task.reason?.startsWith("capacity:relief:") && task.fromRoomName === receiver.name,
       ),
     ).toHaveLength(0);
+  });
+
+  it("recovers a sticky 50000-free terminal through real carrier moves without next-cycle jitter", () => {
+    const room = createMutableRoom(
+      "W82N1",
+      { [RESOURCE_ENERGY]: 200_000 },
+      {
+        [RESOURCE_ENERGY]: 25_000,
+        [RESOURCE_HYDROGEN]: 225_000,
+      },
+    );
+    Game.rooms[room.name] = room;
+    (Memory.cfg!.resourceControl as any).capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: true,
+    };
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [room.name]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+
+    let originalCreatedAt: number | undefined;
+    for (const [index, expectedFreeCapacity] of [60_000, 70_000, 80_000].entries()) {
+      Game.time = 10 + index * 10;
+      resetRuntimeServices();
+      runResourceControl();
+
+      expect(Memory.runtime?.resourceControl?.rooms[room.name]?.capacityState).toBe("pressure");
+      const tasks = getCarrierTasksByRoom(room.name);
+      const offload = tasks[
+        `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`
+      ];
+      expect(offload).toMatchObject({
+        id: `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`,
+        type: "terminal_offload",
+        steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+      });
+      expect(Object.values(tasks).filter((task) => task.type === "terminal_feed")).toHaveLength(0);
+      originalCreatedAt = originalCreatedAt ?? offload.createdAt;
+      expect(offload.createdAt).toBe(originalCreatedAt);
+
+      expect(executeTerminalOffloadTasks(room)).toBe(10_000);
+      expect(room.terminal!.store.getFreeCapacity()).toBe(expectedFreeCapacity);
+    }
+
+    Game.time = 40;
+    resetRuntimeServices();
+    runResourceControl();
+
+    expect(room.terminal!.store.getFreeCapacity()).toBe(80_000);
+    expect(Memory.runtime?.resourceControl?.rooms[room.name]?.capacityState).toBe("normal");
+    expect(getCarrierTasksByRoom(room.name)).toEqual({});
+
+    Game.time = 50;
+    resetRuntimeServices();
+    runResourceControl();
+
+    expect(room.terminal!.store.getFreeCapacity()).toBe(80_000);
+    expect(Memory.runtime?.resourceControl?.rooms[room.name]?.capacityState).toBe("normal");
+    expect(getCarrierTasksByRoom(room.name)).toEqual({});
   });
 });

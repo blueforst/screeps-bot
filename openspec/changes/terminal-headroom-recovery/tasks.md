@@ -13,10 +13,10 @@
 
 ## 3. Terminal 恢复闭环
 
-- [ ] 3.1 为 full→50k 粘滞区、双水位恢复、正常区间滞回、storage 无空间和 protected-only terminal 编写失败测试
-- [ ] 3.2 将 pressure/emergency 房间的 terminal offload 目标改为 `terminalReliefTargetFreeCapacity`，保留 normal 房间现有日常 overflow 行为
-- [ ] 3.3 实现非 energy 优先、energy 最后且保护 admitted staging、energy reserve、交易费预算和生产库存的 offload 选择
-- [ ] 3.4 验证 carrier 尚未完成 offload 时容量状态和 receiver admission 不会提前恢复，并覆盖多周期无 feed/offload 振荡
+- [x] 3.1 为 full→50k 粘滞区、双水位恢复、正常区间滞回、storage 无空间和 protected-only terminal 编写失败测试
+- [x] 3.2 将 pressure/emergency 房间的 terminal offload 目标改为 `terminalReliefTargetFreeCapacity`，保留 normal 房间现有日常 overflow 行为
+- [x] 3.3 实现非 energy 优先、energy 最后且保护 admitted staging、energy reserve、交易费预算和生产库存的 offload 选择
+- [x] 3.4 验证 carrier 尚未完成 offload 时容量状态和 receiver admission 不会提前恢复，并覆盖多周期无 feed/offload 振荡
 
 ## 4. Staging admission
 

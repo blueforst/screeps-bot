@@ -893,7 +893,452 @@ describe("terminal overflow offload above 250k", () => {
     expect(totalOffloaded).toBeGreaterThan(0);
   });
 
-  it("does not offload pending outbound send staging even when terminal exceeds 250000", () => {
+  it("keeps recovering an exact-250000 pressured terminal toward the 80000-free watermark", () => {
+    const roomName = "W25R1";
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      terminalResources: { [RESOURCE_HYDROGEN]: 250_000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(Memory.runtime?.resourceControl?.rooms[room.name]?.capacityState).toBe("pressure");
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`
+      ],
+    ).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+  });
+
+  it("keeps the legacy exact-250000 offload threshold when terminal recovery is disabled", () => {
+    const roomName = "W25R2";
+    (Memory.cfg!.resourceControl as any).capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: false,
+    };
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      terminalResources: { [RESOURCE_HYDROGEN]: 250_000 },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`
+      ],
+    ).toBeUndefined();
+  });
+
+  it("does not recover into storage space reserved by the storage relief watermark", () => {
+    const roomName = "W25R3";
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      terminalResources: { [RESOURCE_HYDROGEN]: 260_000 },
+      storageFreeCapacity: 200_000,
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`
+      ],
+    ).toBeUndefined();
+    expect(Memory.runtime?.resourceControl?.rooms[room.name]?.capacityState).toBe("pressure");
+  });
+
+  it("does not recover by offloading terminal inventory fully committed to production", () => {
+    const roomName = "W25R4";
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      terminalResources: { [RESOURCE_HYDROGEN]: 260_000 },
+    });
+    Game.rooms[room.name] = room;
+    reserveProductionResource(
+      room.name,
+      RESOURCE_HYDROGEN,
+      260_000,
+      "factory:protected-terminal-recovery",
+    );
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`
+      ],
+    ).toBeUndefined();
+    expect(Memory.runtime?.resourceControl?.rooms[room.name]?.capacityState).toBe("pressure");
+  });
+
+  it("uses one recovery batch and selects non-energy before energy", () => {
+    const roomName = "W25R5";
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      storageResources: { [RESOURCE_ENERGY]: 150_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 35_000,
+        [RESOURCE_HYDROGEN]: 215_000,
+      },
+    });
+    Game.rooms[room.name] = room;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+    expect(
+      Object.values(tasks)
+        .filter((task) => task.type === "terminal_offload")
+        .flatMap((task) => task.steps)
+        .reduce((sum, step) => sum + step.amount, 0),
+    ).toBe(10_000);
+  });
+
+  it("protects at most one safe send batch instead of a complete pending backlog", () => {
+    const roomName = "W25R6";
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      terminalResources: { [RESOURCE_HYDROGEN]: 250_000 },
+    });
+    room.terminal!.cooldown = 1;
+    const receiver = createRoom({ name: "W25R6B" });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(
+      room.name,
+      receiver.name,
+      RESOURCE_HYDROGEN,
+      250_000,
+      "manual:large-backlog",
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_feed:${room.name}:${RESOURCE_HYDROGEN}`]).toBeUndefined();
+  });
+
+  it("caps current capacity-relief staging protection to one transfer batch", () => {
+    const roomName = "W25R6C";
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_HYDROGEN]: 20_000,
+        [RESOURCE_KEANIUM]: 230_000,
+      },
+    });
+    room.terminal!.cooldown = 1;
+    const receiver = createRoom({ name: "W25R6D" });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+    createAutomaticResourceTransferTask(
+      room.name,
+      receiver.name,
+      RESOURCE_HYDROGEN,
+      30_000,
+      `capacity:relief:${RESOURCE_HYDROGEN}`,
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_KEANIUM}`]).toBeUndefined();
+  });
+
+  it("does not protect a receiver-capacity-blocked batch from non-energy-first recovery", () => {
+    const roomName = "W25R7";
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      storageResources: { [RESOURCE_ENERGY]: 250_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 240_000,
+        [RESOURCE_HYDROGEN]: 10_000,
+      },
+    });
+    room.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W25R7B",
+      terminalResources: { [RESOURCE_KEANIUM]: 260_000 },
+    });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+    const pending = createResourceTransferTask(
+      room.name,
+      receiver.name,
+      RESOURCE_HYDROGEN,
+      10_000,
+      "manual:blocked-backlog",
+    );
+    if (typeof pending === "string") throw new Error(pending);
+
+    runResourceControl();
+
+    expect(pending.task.blockedReason).toBe("receiver_capacity");
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+  it("does not precredit a recovery offload into energy, transfer, or native-mineral feed capacity", () => {
+    const roomName = "W25R8";
+    (Memory.cfg!.resourceControl as any).market = { enabled: true };
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [roomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const room = createRoom({
+      name: roomName,
+      storageResources: {
+        [RESOURCE_ENERGY]: 200_000,
+        [RESOURCE_HYDROGEN]: 20_000,
+        [RESOURCE_OXYGEN]: 10_000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 5_000,
+        [RESOURCE_KEANIUM]: 245_000,
+      },
+      nativeMineralType: RESOURCE_HYDROGEN,
+    });
+    room.terminal!.cooldown = 1;
+    const receiver = createRoom({ name: "W25R8B" });
+    Game.rooms[room.name] = room;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(
+      room.name,
+      receiver.name,
+      RESOURCE_OXYGEN,
+      10_000,
+      "manual:needs-staging",
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(room.name);
+    expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_KEANIUM}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_KEANIUM, amount: 10_000 }],
+    });
+    for (const resource of [RESOURCE_ENERGY, RESOURCE_OXYGEN, RESOURCE_HYDROGEN]) {
+      expect(tasks[`resourceControl:terminal_feed:${room.name}:${resource}`]).toBeUndefined();
+    }
+  });
+
+  it("uses the existing transfer priority order for the single staging batch", () => {
+    const donor = createRoom({
+      name: "W25R9",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200_000,
+        [RESOURCE_HYDROGEN]: 20_000,
+        [RESOURCE_OXYGEN]: 20_000,
+      },
+      terminalResources: { [RESOURCE_ENERGY]: 25_000 },
+    });
+    const oldLowPriorityReceiver = createRoom({ name: "W25R9B" });
+    const newManualReceiver = createRoom({ name: "W25R9C" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[oldLowPriorityReceiver.name] = oldLowPriorityReceiver;
+    Game.rooms[newManualReceiver.name] = newManualReceiver;
+
+    Game.time = 1;
+    createAutomaticResourceTransferTask(
+      donor.name,
+      oldLowPriorityReceiver.name,
+      RESOURCE_HYDROGEN,
+      20_000,
+      `hub:export:${RESOURCE_HYDROGEN}`,
+    );
+    Game.time = 2;
+    createResourceTransferTask(
+      donor.name,
+      newManualReceiver.name,
+      RESOURCE_OXYGEN,
+      10_000,
+      "manual:priority-staging",
+    );
+    Game.time = 10;
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(donor.name);
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_OXYGEN}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_OXYGEN, amount: 10_000 }],
+    });
+    expect(
+      tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_HYDROGEN}`],
+    ).toBeUndefined();
+  });
+
+  it("caps capacity-relief staging protection by the current receiver ledger allowance", () => {
+    const sourceRoomName = "W25R10";
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: 0,
+        rooms: {
+          [sourceRoomName]: { capacityState: "pressure" },
+        },
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    } as any;
+    const source = createRoom({
+      name: sourceRoomName,
+      terminalResources: {
+        [RESOURCE_HYDROGEN]: 15_000,
+        [RESOURCE_KEANIUM]: 235_000,
+      },
+    });
+    source.terminal!.cooldown = 1;
+    const otherSource = createRoom({
+      name: "W25R10B",
+      terminalResources: { [RESOURCE_OXYGEN]: 45_000 },
+    });
+    otherSource.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W25R10C",
+      terminalResources: { [RESOURCE_UTRIUM]: 207_999 },
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[otherSource.name] = otherSource;
+    Game.rooms[receiver.name] = receiver;
+    createAutomaticResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_HYDROGEN,
+      10_000,
+      `capacity:relief:${RESOURCE_HYDROGEN}`,
+    );
+    createResourceTransferTask(
+      otherSource.name,
+      receiver.name,
+      RESOURCE_OXYGEN,
+      45_000,
+      "manual:receiver-commitment",
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(source.name);
+    expect(tasks[`resourceControl:terminal_offload:${source.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 8_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_offload:${source.name}:${RESOURCE_KEANIUM}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_KEANIUM, amount: 2_000 }],
+    });
+  });
+
+  it("protects one pending send batch while recovering the remaining staged inventory", () => {
     const donor = createRoom({
       name: "W25N2",
       terminalResources: { [RESOURCE_HYDROGEN]: 200_000, [RESOURCE_KEANIUM]: 100_000 },
@@ -908,7 +1353,10 @@ describe("terminal overflow offload above 250k", () => {
 
     const tasks = getCarrierTasksByRoom(donor.name);
     const hOffload = tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_HYDROGEN}`];
-    expect(hOffload).toBeUndefined();
+    expect(hOffload).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
   });
 
   it("offloads only amount above pending send protection", () => {
@@ -937,7 +1385,7 @@ describe("terminal overflow offload above 250k", () => {
     const room = createRoom({
       name: "W25N4",
       terminalResources: { [RESOURCE_HYDROGEN]: 300_000 },
-      storageFreeCapacity: 10_000,
+      storageFreeCapacity: 210_000,
     });
     Game.rooms[room.name] = room;
 
@@ -1142,7 +1590,7 @@ describe("terminal overflow offload above 250k", () => {
     expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toBeUndefined();
   });
 
-  it("energy terminal task is unaffected by mineral offload feed suppression", () => {
+  it("suppresses energy feed while a pressured terminal is recovering non-energy", () => {
     const room = createRoom({
       name: "W25O3",
       storageResources: { [RESOURCE_ENERGY]: 200_000 },
@@ -1155,10 +1603,7 @@ describe("terminal overflow offload above 250k", () => {
     runResourceControl();
 
     const tasks = getCarrierTasksByRoom(room.name);
-    expect(tasks[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toMatchObject({
-      type: "terminal_feed",
-      steps: [{ resource: RESOURCE_ENERGY, fromKind: "storage", toKind: "terminal" }],
-    });
+    expect(tasks[`resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
     expect(tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`]).toBeDefined();
   });
 });
@@ -2574,17 +3019,13 @@ describe("terminal energy 25k floor protection", () => {
     runResourceControl();
 
     const tasks = getCarrierTasksByRoom(room.name);
-    const offloadKeys = Object.keys(tasks).filter(k => k.includes("terminal_offload"));
     const hKey = `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`;
     const eKey = `resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`;
     expect(tasks[hKey]).toMatchObject({
       type: "terminal_offload",
       steps: [{ resource: RESOURCE_HYDROGEN }],
     });
-    expect(tasks[eKey]).toMatchObject({
-      type: "terminal_offload",
-      steps: [{ resource: RESOURCE_ENERGY }],
-    });
+    expect(tasks[eKey]).toBeUndefined();
   });
 
   it("mixed overflow offloads non-energy before energy and energy never drops below protected line", () => {
@@ -2636,10 +3077,7 @@ describe("terminal energy 25k floor protection", () => {
     expect(eOffload).toBeUndefined();
   });
 
-  it("overflow offload processes both minerals and energy when total far exceeds cap", () => {
-    // Terminal: 200k H + 100k energy = 300k total, overflow = 50k
-    // H offloaded 10k → total 290k, surplus 40k
-    // Energy: offloadable = 100k - 25k = 75k, amount = min(75k, 40k, 10k) = 10k
+  it("bounds far-over-cap recovery to one non-energy-first batch", () => {
     const room = createRoom({
       name: "W25KF8",
       storageResources: { [RESOURCE_ENERGY]: 200_000, [RESOURCE_HYDROGEN]: 0 },
@@ -2654,17 +3092,13 @@ describe("terminal energy 25k floor protection", () => {
     runResourceControl();
 
     const tasks = getCarrierTasksByRoom(room.name);
-    // Both H and energy should get offloaded (batch size each)
     const hOffload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`];
     expect(hOffload).toMatchObject({
       type: "terminal_offload",
       steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
     });
     const eOffload = tasks[`resourceControl:terminal_offload:${room.name}:${RESOURCE_ENERGY}`];
-    expect(eOffload).toMatchObject({
-      type: "terminal_offload",
-      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
-    });
+    expect(eOffload).toBeUndefined();
   });
 
 });
@@ -2849,7 +3283,10 @@ describe("terminal feed respects TERMINAL_TOTAL_STORAGE_CAP", () => {
       nativeMineralType: RESOURCE_HYDROGEN,
       hasExtractor: true,
       storageResources: { [RESOURCE_HYDROGEN]: 223_000, [RESOURCE_ENERGY]: 200_000 },
-      terminalResources: { [RESOURCE_KEANIUM]: 249_500 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25_000,
+        [RESOURCE_KEANIUM]: 224_500,
+      },
     });
     Game.rooms[room.name] = room;
 
@@ -2874,7 +3311,10 @@ describe("terminal feed respects TERMINAL_TOTAL_STORAGE_CAP", () => {
       nativeMineralType: RESOURCE_HYDROGEN,
       hasExtractor: true,
       storageResources: { [RESOURCE_HYDROGEN]: 223_000, [RESOURCE_ENERGY]: 200_000 },
-      terminalResources: { [RESOURCE_KEANIUM]: 250_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25_000,
+        [RESOURCE_KEANIUM]: 225_000,
+      },
     });
     Game.rooms[room.name] = room;
 
@@ -2895,7 +3335,10 @@ describe("terminal feed respects TERMINAL_TOTAL_STORAGE_CAP", () => {
       nativeMineralType: RESOURCE_HYDROGEN,
       hasExtractor: true,
       storageResources: { [RESOURCE_HYDROGEN]: 223_000, [RESOURCE_ENERGY]: 200_000 },
-      terminalResources: { [RESOURCE_KEANIUM]: 240_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25_000,
+        [RESOURCE_KEANIUM]: 215_000,
+      },
     });
     Game.rooms[room.name] = room;
 
@@ -2917,7 +3360,10 @@ describe("terminal feed respects TERMINAL_TOTAL_STORAGE_CAP", () => {
     const room = createRoom({
       name: "WFC4",
       storageResources: { [RESOURCE_KEANIUM]: 20_000, [RESOURCE_ENERGY]: 200_000 },
-      terminalResources: { [RESOURCE_HYDROGEN]: 240_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25_000,
+        [RESOURCE_HYDROGEN]: 215_000,
+      },
     });
     const receiver = createRoom({ name: "WFC4B" });
     Game.rooms[room.name] = room;
@@ -2940,7 +3386,10 @@ describe("terminal feed respects TERMINAL_TOTAL_STORAGE_CAP", () => {
     const room = createRoom({
       name: "WFC5",
       storageResources: { [RESOURCE_KEANIUM]: 20_000, [RESOURCE_ENERGY]: 200_000 },
-      terminalResources: { [RESOURCE_HYDROGEN]: 248_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25_000,
+        [RESOURCE_HYDROGEN]: 223_000,
+      },
     });
     const receiver = createRoom({ name: "WFC5B" });
     Game.rooms[room.name] = room;
