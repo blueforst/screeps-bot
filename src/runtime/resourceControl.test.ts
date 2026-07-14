@@ -954,6 +954,541 @@ describe("terminal overflow offload above 250k", () => {
     ).toBeUndefined();
   });
 
+  it("restores legacy multi-resource and energy feeds when terminal recovery is disabled", () => {
+    const donor = createRoom({
+      name: "W25L1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_HYDROGEN]: 5_000,
+        [RESOURCE_OXYGEN]: 7_000,
+      },
+    });
+    donor.terminal!.cooldown = 1;
+    const hydrogenReceiver = createRoom({ name: "W25L1H" });
+    const oxygenReceiver = createRoom({ name: "W25L1O" });
+    const energyReceiver = createRoom({
+      name: "W25L1E",
+      storageResources: { [RESOURCE_ENERGY]: 100_000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[hydrogenReceiver.name] = hydrogenReceiver;
+    Game.rooms[oxygenReceiver.name] = oxygenReceiver;
+    Game.rooms[energyReceiver.name] = energyReceiver;
+    (Memory.cfg!.resourceControl as any).capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: false,
+    };
+    createResourceTransferTask(
+      donor.name,
+      hydrogenReceiver.name,
+      RESOURCE_HYDROGEN,
+      5_000,
+      "manual:legacy-hydrogen",
+    );
+    createResourceTransferTask(
+      donor.name,
+      oxygenReceiver.name,
+      RESOURCE_OXYGEN,
+      7_000,
+      "manual:legacy-oxygen",
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(donor.name);
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 30_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 5_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_OXYGEN}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_OXYGEN, amount: 7_000 }],
+    });
+  });
+
+  it("restores legacy full pending-backlog protection when terminal recovery is disabled", () => {
+    const donor = createRoom({
+      name: "W25L2",
+      terminalResources: {
+        [RESOURCE_HYDROGEN]: 150_000,
+        [RESOURCE_OXYGEN]: 100_000,
+        [RESOURCE_KEANIUM]: 50_000,
+      },
+    });
+    donor.terminal!.cooldown = 1;
+    const hydrogenReceiver = createRoom({ name: "W25L2H" });
+    const oxygenReceiver = createRoom({ name: "W25L2O" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[hydrogenReceiver.name] = hydrogenReceiver;
+    Game.rooms[oxygenReceiver.name] = oxygenReceiver;
+    (Memory.cfg!.resourceControl as any).capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: false,
+    };
+    createResourceTransferTask(
+      donor.name,
+      hydrogenReceiver.name,
+      RESOURCE_HYDROGEN,
+      150_000,
+      "manual:legacy-protected-hydrogen",
+    );
+    createResourceTransferTask(
+      donor.name,
+      oxygenReceiver.name,
+      RESOURCE_OXYGEN,
+      100_000,
+      "manual:legacy-protected-oxygen",
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(donor.name);
+    expect(tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_HYDROGEN}`]).toBeUndefined();
+    expect(tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_OXYGEN}`]).toBeUndefined();
+    expect(tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_KEANIUM}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_KEANIUM, amount: 10_000 }],
+    });
+  });
+
+  it("restores legacy raw storage-free offload capacity when terminal recovery is disabled", () => {
+    const room = createRoom({
+      name: "W25L3",
+      terminalResources: { [RESOURCE_HYDROGEN]: 260_000 },
+      storageFreeCapacity: 10_000,
+    });
+    Game.rooms[room.name] = room;
+    (Memory.cfg!.resourceControl as any).capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: false,
+    };
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`
+      ],
+    ).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+  });
+
+  it("restores legacy planned-offload precredit when terminal recovery is disabled", () => {
+    const donor = createRoom({
+      name: "W25L4",
+      storageResources: {
+        [RESOURCE_ENERGY]: 150_000,
+        [RESOURCE_KEANIUM]: 10_000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 35_000,
+        [RESOURCE_HYDROGEN]: 215_000,
+      },
+    });
+    donor.terminal!.cooldown = 1;
+    const receiver = createRoom({ name: "W25L4K" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    (Memory.cfg!.resourceControl as any).capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: false,
+    };
+    createResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      10_000,
+      "manual:legacy-offload-precredit",
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(donor.name);
+    expect(tasks[`resourceControl:terminal_offload:${donor.name}:${RESOURCE_ENERGY}`]).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_KEANIUM}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_KEANIUM, amount: 10_000 }],
+    });
+  });
+
+  it("gives the single staging slot to a real unmet energy deficit before manual minerals", () => {
+    const donor = createRoom({
+      name: "W25E1",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_HYDROGEN]: 10_000,
+      },
+    });
+    donor.terminal!.cooldown = 1;
+    const energyReceiver = createRoom({
+      name: "W25E1E",
+      storageResources: { [RESOURCE_ENERGY]: 100_000 },
+    });
+    const mineralReceiver = createRoom({ name: "W25E1H" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[energyReceiver.name] = energyReceiver;
+    Game.rooms[mineralReceiver.name] = mineralReceiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [donor.name]: { terminalEnergyReserve: 0 },
+    };
+    createResourceTransferTask(
+      donor.name,
+      mineralReceiver.name,
+      RESOURCE_HYDROGEN,
+      10_000,
+      "manual:mineral-must-wait-for-energy",
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(donor.name);
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_HYDROGEN}`]).toBeUndefined();
+  });
+
+  it("shares receiver energy need and headroom across donor staging decisions", () => {
+    const firstDonor = createRoom({
+      name: "W25E1A",
+      storageResources: { [RESOURCE_ENERGY]: 260_000 },
+    });
+    firstDonor.terminal!.cooldown = 1;
+    const secondDonor = createRoom({
+      name: "W25E1B",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_HYDROGEN]: 10_000,
+      },
+    });
+    secondDonor.terminal!.cooldown = 1;
+    const energyReceiver = createRoom({
+      name: "W25E1E",
+      storageResources: { [RESOURCE_ENERGY]: 190_000 },
+      storageFreeCapacity: 110_000,
+    });
+    const mineralReceiver = createRoom({
+      name: "W25E1H",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+    });
+    Game.rooms[firstDonor.name] = firstDonor;
+    Game.rooms[secondDonor.name] = secondDonor;
+    Game.rooms[energyReceiver.name] = energyReceiver;
+    Game.rooms[mineralReceiver.name] = mineralReceiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [firstDonor.name]: { terminalEnergyReserve: 0 },
+      [secondDonor.name]: { terminalEnergyReserve: 0 },
+    };
+    createResourceTransferTask(
+      secondDonor.name,
+      mineralReceiver.name,
+      RESOURCE_HYDROGEN,
+      10_000,
+      "manual:mineral-after-shared-energy-staging",
+    );
+
+    runResourceControl();
+
+    const firstTasks = getCarrierTasksByRoom(firstDonor.name);
+    const secondTasks = getCarrierTasksByRoom(secondDonor.name);
+    const energyStagingAmount =
+      (firstTasks[`resourceControl:terminal_feed:${firstDonor.name}:${RESOURCE_ENERGY}`]
+        ?.steps.reduce((sum, step) => sum + step.amount, 0) || 0) +
+      (secondTasks[`resourceControl:terminal_feed:${secondDonor.name}:${RESOURCE_ENERGY}`]
+        ?.steps.reduce((sum, step) => sum + step.amount, 0) || 0);
+    expect(energyStagingAmount).toBe(10_000);
+    expect(
+      secondTasks[`resourceControl:terminal_feed:${secondDonor.name}:${RESOURCE_HYDROGEN}`],
+    ).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+  });
+
+  it("releases receiver staging when the first donor has no safe terminal feed capacity", () => {
+    const fullTerminalDonor = createRoom({
+      name: "W25E1F",
+      storageResources: { [RESOURCE_ENERGY]: 260_000 },
+      terminalResources: { [RESOURCE_HYDROGEN]: 250_000 },
+    });
+    fullTerminalDonor.terminal!.cooldown = 1;
+    const openTerminalDonor = createRoom({
+      name: "W25E1G",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_KEANIUM]: 10_000,
+      },
+    });
+    openTerminalDonor.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W25E1J",
+      storageResources: { [RESOURCE_ENERGY]: 190_000 },
+      storageFreeCapacity: 110_000,
+    });
+    const mineralReceiver = createRoom({
+      name: "W25E1K",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+    });
+    Game.rooms[fullTerminalDonor.name] = fullTerminalDonor;
+    Game.rooms[openTerminalDonor.name] = openTerminalDonor;
+    Game.rooms[receiver.name] = receiver;
+    Game.rooms[mineralReceiver.name] = mineralReceiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [fullTerminalDonor.name]: { terminalEnergyReserve: 0 },
+      [openTerminalDonor.name]: { terminalEnergyReserve: 0 },
+    };
+    createResourceTransferTask(
+      openTerminalDonor.name,
+      mineralReceiver.name,
+      RESOURCE_KEANIUM,
+      10_000,
+      "manual:mineral-after-zero-feed-capacity",
+    );
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(fullTerminalDonor.name)[
+        `resourceControl:terminal_feed:${fullTerminalDonor.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toBeUndefined();
+    expect(
+      getCarrierTasksByRoom(openTerminalDonor.name)[
+        `resourceControl:terminal_feed:${openTerminalDonor.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
+    });
+    expect(
+      getCarrierTasksByRoom(openTerminalDonor.name)[
+        `resourceControl:terminal_feed:${openTerminalDonor.name}:${RESOURCE_KEANIUM}`
+      ],
+    ).toBeUndefined();
+  });
+
+  it("shares a receiver deficit using each donor's safe terminal feed capacity", () => {
+    const constrainedDonor = createRoom({
+      name: "W25E1P",
+      storageResources: { [RESOURCE_ENERGY]: 260_000 },
+      terminalResources: { [RESOURCE_HYDROGEN]: 248_000 },
+    });
+    constrainedDonor.terminal!.cooldown = 1;
+    const openTerminalDonor = createRoom({
+      name: "W25E1Q",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_KEANIUM]: 10_000,
+      },
+    });
+    openTerminalDonor.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W25E1V",
+      storageResources: { [RESOURCE_ENERGY]: 190_000 },
+      storageFreeCapacity: 110_000,
+    });
+    const mineralReceiver = createRoom({
+      name: "W25E1W",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+    });
+    Game.rooms[constrainedDonor.name] = constrainedDonor;
+    Game.rooms[openTerminalDonor.name] = openTerminalDonor;
+    Game.rooms[receiver.name] = receiver;
+    Game.rooms[mineralReceiver.name] = mineralReceiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [constrainedDonor.name]: { terminalEnergyReserve: 0 },
+      [openTerminalDonor.name]: { terminalEnergyReserve: 0 },
+    };
+    createResourceTransferTask(
+      openTerminalDonor.name,
+      mineralReceiver.name,
+      RESOURCE_KEANIUM,
+      10_000,
+      "manual:mineral-after-partial-feed-capacity",
+    );
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(constrainedDonor.name)[
+        `resourceControl:terminal_feed:${constrainedDonor.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 2_000 }],
+    });
+    expect(
+      getCarrierTasksByRoom(openTerminalDonor.name)[
+        `resourceControl:terminal_feed:${openTerminalDonor.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 8_000 }],
+    });
+    expect(
+      getCarrierTasksByRoom(openTerminalDonor.name)[
+        `resourceControl:terminal_feed:${openTerminalDonor.name}:${RESOURCE_KEANIUM}`
+      ],
+    ).toBeUndefined();
+  });
+
+  it("releases provisional energy staging when the source needs no energy feed", () => {
+    const readyDonor = createRoom({
+      name: "W25E1R",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_HYDROGEN]: 10_000,
+      },
+      terminalResources: { [RESOURCE_ENERGY]: 10_000 },
+    });
+    readyDonor.terminal!.cooldown = 1;
+    const stagingDonor = createRoom({
+      name: "W25E1S",
+      storageResources: { [RESOURCE_ENERGY]: 260_000 },
+    });
+    stagingDonor.terminal!.cooldown = 1;
+    const energyReceiver = createRoom({
+      name: "W25E1T",
+      storageResources: { [RESOURCE_ENERGY]: 190_000 },
+      storageFreeCapacity: 110_000,
+    });
+    const mineralReceiver = createRoom({
+      name: "W25E1U",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+    });
+    Game.rooms[readyDonor.name] = readyDonor;
+    Game.rooms[stagingDonor.name] = stagingDonor;
+    Game.rooms[energyReceiver.name] = energyReceiver;
+    Game.rooms[mineralReceiver.name] = mineralReceiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [readyDonor.name]: { terminalEnergyReserve: 0 },
+      [stagingDonor.name]: { terminalEnergyReserve: 0 },
+    };
+    createResourceTransferTask(
+      readyDonor.name,
+      mineralReceiver.name,
+      RESOURCE_HYDROGEN,
+      10_000,
+      "manual:mineral-after-released-energy-staging",
+    );
+
+    runResourceControl();
+
+    const readyTasks = getCarrierTasksByRoom(readyDonor.name);
+    const stagingTasks = getCarrierTasksByRoom(stagingDonor.name);
+    expect(
+      readyTasks[`resourceControl:terminal_feed:${readyDonor.name}:${RESOURCE_HYDROGEN}`],
+    ).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    expect(
+      readyTasks[`resourceControl:terminal_feed:${readyDonor.name}:${RESOURCE_ENERGY}`],
+    ).toBeUndefined();
+    expect(
+      stagingTasks[`resourceControl:terminal_feed:${stagingDonor.name}:${RESOURCE_ENERGY}`],
+    ).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_ENERGY, amount: 10_000 }],
+    });
+  });
+
+  it("lets manual mineral staging advance when there is no unmet energy deficit", () => {
+    const donor = createRoom({
+      name: "W25E2",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_HYDROGEN]: 10_000,
+      },
+    });
+    donor.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W25E2H",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [donor.name]: { terminalEnergyReserve: 0 },
+    };
+    createResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_HYDROGEN,
+      10_000,
+      "manual:mineral-without-energy-deficit",
+    );
+
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(donor.name);
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_feed:${donor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
+  it("does not reclaim the staging slot after a direct energy send satisfies the deficit", () => {
+    const directDonor = createRoom({
+      name: "W25E3A",
+      storageResources: { [RESOURCE_ENERGY]: 260_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 10_000 },
+    });
+    const stagingDonor = createRoom({
+      name: "W25E3B",
+      storageResources: {
+        [RESOURCE_ENERGY]: 260_000,
+        [RESOURCE_HYDROGEN]: 10_000,
+      },
+    });
+    stagingDonor.terminal!.cooldown = 1;
+    const energyReceiver = createRoom({
+      name: "W25E3E",
+      storageResources: { [RESOURCE_ENERGY]: 190_000 },
+    });
+    const mineralReceiver = createRoom({
+      name: "W25E3H",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+    });
+    Game.rooms[directDonor.name] = directDonor;
+    Game.rooms[stagingDonor.name] = stagingDonor;
+    Game.rooms[energyReceiver.name] = energyReceiver;
+    Game.rooms[mineralReceiver.name] = mineralReceiver;
+    Memory.cfg!.resourceControl!.rooms = {
+      [directDonor.name]: { terminalEnergyReserve: 0 },
+      [stagingDonor.name]: { terminalEnergyReserve: 0 },
+    };
+    createResourceTransferTask(
+      stagingDonor.name,
+      mineralReceiver.name,
+      RESOURCE_HYDROGEN,
+      10_000,
+      "manual:mineral-after-direct-energy",
+    );
+
+    runResourceControl();
+
+    expect(directDonor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_ENERGY,
+      10_000,
+      energyReceiver.name,
+      "resourceControl:auto-balance",
+    );
+    const tasks = getCarrierTasksByRoom(stagingDonor.name);
+    expect(tasks[`resourceControl:terminal_feed:${stagingDonor.name}:${RESOURCE_HYDROGEN}`]).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 10_000 }],
+    });
+    expect(tasks[`resourceControl:terminal_feed:${stagingDonor.name}:${RESOURCE_ENERGY}`]).toBeUndefined();
+  });
+
   it("does not recover into storage space reserved by the storage relief watermark", () => {
     const roomName = "W25R3";
     Memory.runtime = {

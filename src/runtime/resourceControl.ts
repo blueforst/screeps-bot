@@ -173,6 +173,11 @@ interface TerminalStagingBatch {
   transactionFee: number;
 }
 
+interface TerminalEnergyPlanOptions {
+  stagingBatch?: TerminalStagingBatch;
+  legacyBacklog?: boolean;
+}
+
 const MAX_RECENT_CAPACITY_RELIEF_ROUTES = 20;
 
 export interface ResourceControlSnapshot {
@@ -2004,11 +2009,22 @@ function createTerminalOffloadTask(
 
 function getPlannedEnergySendBatch(
   room: ResourceControlSnapshot,
-  stagingBatch?: TerminalStagingBatch,
+  context: ResourceControlTransferContext,
+  options: TerminalEnergyPlanOptions = {},
 ): number {
   if (!isEnergyExportEligible(room)) return 0;
-  if (stagingBatch) {
-    return stagingBatch.resource === RESOURCE_ENERGY ? stagingBatch.amount : 0;
+  if (options.legacyBacklog) {
+    const outgoingEnergy = context.healthyOutgoingByRoomResource.get(
+      roomResourceKey(room.roomName, RESOURCE_ENERGY),
+    ) || 0;
+    return outgoingEnergy > 0
+      ? Math.min(room.transferBatchSize, outgoingEnergy)
+      : room.transferBatchSize;
+  }
+  if (options.stagingBatch) {
+    return options.stagingBatch.resource === RESOURCE_ENERGY
+      ? options.stagingBatch.amount
+      : 0;
   }
   return room.transferBatchSize;
 }
@@ -2017,10 +2033,39 @@ function getEnergySendFeeBudget(
   room: ResourceControlSnapshot,
   snapshots: ResourceControlSnapshot[],
   amount: number,
-  stagingBatch?: TerminalStagingBatch,
+  context: ResourceControlTransferContext,
+  options: TerminalEnergyPlanOptions = {},
 ): number {
-  if (stagingBatch) {
-    return stagingBatch.transactionFee;
+  if (!options.legacyBacklog && options.stagingBatch) {
+    return options.stagingBatch.transactionFee;
+  }
+  if (options.legacyBacklog) {
+    const pendingFeeBudget = context.outgoingFeeByRoom.get(room.roomName) || 0;
+    if (amount <= 0) return pendingFeeBudget;
+    const outgoingEnergy = context.healthyOutgoingByRoomResource.get(
+      roomResourceKey(room.roomName, RESOURCE_ENERGY),
+    ) || 0;
+    if (outgoingEnergy > 0 || !isEnergyExportEligible(room)) {
+      return pendingFeeBudget;
+    }
+    const receiver = snapshots
+      .filter(
+        (snapshot) =>
+          snapshot.roomName !== room.roomName &&
+          snapshot.storageEnergy < snapshot.energyTarget,
+      )
+      .sort((left, right) => {
+        const leftNeed = left.energyTarget - left.storageEnergy;
+        const rightNeed = right.energyTarget - right.storageEnergy;
+        return rightNeed - leftNeed || left.roomName.localeCompare(right.roomName);
+      })[0];
+    return receiver
+      ? pendingFeeBudget + Game.market.calcTransactionCost(
+          amount,
+          room.roomName,
+          receiver.roomName,
+        )
+      : pendingFeeBudget;
   }
   if (amount <= 0 || !isEnergyExportEligible(room)) {
     return 0;
@@ -2087,10 +2132,17 @@ function getSellResourcesForRoom(room: ResourceControlSnapshot, marketCfg: Resou
 function getReservedTerminalEnergyForPendingSends(
   room: ResourceControlSnapshot,
   snapshots: ResourceControlSnapshot[],
-  stagingBatch?: TerminalStagingBatch,
+  context: ResourceControlTransferContext,
+  options: TerminalEnergyPlanOptions = {},
 ): number {
-  const stagedEnergy = getPlannedEnergySendBatch(room, stagingBatch);
-  const feeBudget = getEnergySendFeeBudget(room, snapshots, stagedEnergy, stagingBatch);
+  const stagedEnergy = getPlannedEnergySendBatch(room, context, options);
+  const feeBudget = getEnergySendFeeBudget(
+    room,
+    snapshots,
+    stagedEnergy,
+    context,
+    options,
+  );
   return stagedEnergy + feeBudget;
 }
 
@@ -2098,27 +2150,47 @@ function getProtectedTerminalEnergy(
   snapshot: ResourceControlSnapshot,
   snapshots: ResourceControlSnapshot[],
   context: ResourceControlTransferContext,
-  stagingBatch?: TerminalStagingBatch,
+  options: TerminalEnergyPlanOptions = {},
 ): number {
-  return Math.max(
+  const protectedEnergy = Math.max(
     25_000,
-    snapshot.terminalEnergyReserve + getReservedTerminalEnergyForPendingSends(snapshot, snapshots, stagingBatch),
-  ) + getProductionCommitmentAmount(snapshot.roomName, RESOURCE_ENERGY, context);
+    snapshot.terminalEnergyReserve +
+      getReservedTerminalEnergyForPendingSends(
+        snapshot,
+        snapshots,
+        context,
+        options,
+      ),
+  );
+  return options.legacyBacklog
+    ? protectedEnergy
+    : protectedEnergy +
+        getProductionCommitmentAmount(snapshot.roomName, RESOURCE_ENERGY, context);
 }
 
 function createEnergyTerminalTask(
   room: ResourceControlSnapshot,
   snapshots: ResourceControlSnapshot[],
   context: ResourceControlTransferContext,
-  stagingBatch?: TerminalStagingBatch,
+  options: TerminalEnergyPlanOptions = {},
 ): CarrierTaskDraft | null {
   if (!room.storage) {
     return null;
   }
 
   const terminalEnergy = room.terminalEnergy;
-  const reservedTerminalEnergy = getReservedTerminalEnergyForPendingSends(room, snapshots, stagingBatch);
-  const protectedTerminalEnergy = getProtectedTerminalEnergy(room, snapshots, context, stagingBatch);
+  const reservedTerminalEnergy = getReservedTerminalEnergyForPendingSends(
+    room,
+    snapshots,
+    context,
+    options,
+  );
+  const protectedTerminalEnergy = getProtectedTerminalEnergy(
+    room,
+    snapshots,
+    context,
+    options,
+  );
   const trueOffloadableTerminalEnergy = Math.max(0, terminalEnergy - protectedTerminalEnergy);
 
   const storageDeficit = room.energyTarget - room.storageEnergy;
@@ -2131,10 +2203,274 @@ function createEnergyTerminalTask(
     );
   }
 
-  const stagedEnergy = getPlannedEnergySendBatch(room, stagingBatch);
+  const stagedEnergy = getPlannedEnergySendBatch(room, context, options);
   const feeBudget = reservedTerminalEnergy - stagedEnergy;
   const desiredTerminalEnergy = room.terminalEnergyReserve + stagedEnergy + feeBudget;
   return createTerminalFeedTask(room, RESOURCE_ENERGY, desiredTerminalEnergy);
+}
+
+interface TerminalOverflowPlan {
+  desiredUsedCapacity: number;
+  storageOffloadCapacity: number;
+  recoveryOffloadBudget?: number;
+  energyOptions?: TerminalEnergyPlanOptions;
+  getProtectedNonEnergy(resource: ResourceConstant, stored: number): number;
+}
+
+function appendTerminalOverflowDrafts(
+  snapshot: ResourceControlSnapshot,
+  snapshots: ResourceControlSnapshot[],
+  context: ResourceControlTransferContext,
+  drafts: CarrierTaskDraft[],
+  offloadedResources: Set<ResourceConstant>,
+  plan: TerminalOverflowPlan,
+): void {
+  if (!snapshot.storage || snapshot.terminalUsedCapacity <= plan.desiredUsedCapacity) {
+    return;
+  }
+
+  let overflowTotal = snapshot.terminalUsedCapacity;
+  let storageOffloadCapacity = plan.storageOffloadCapacity;
+  let recoveryOffloadBudget = plan.recoveryOffloadBudget ?? Number.POSITIVE_INFINITY;
+  const allResources = RESOURCES_ALL.filter(
+    (resource) =>
+      getTerminalResourceAmount(snapshot, resource) > 0 &&
+      !offloadedResources.has(resource),
+  );
+  allResources.sort((a, b) => {
+    if (a === RESOURCE_ENERGY && b !== RESOURCE_ENERGY) return 1;
+    if (a !== RESOURCE_ENERGY && b === RESOURCE_ENERGY) return -1;
+    return 0;
+  });
+
+  for (const resource of allResources) {
+    const stored = getTerminalResourceAmount(snapshot, resource);
+    if (stored <= 0) continue;
+    const protectedAmount = resource === RESOURCE_ENERGY
+      ? getProtectedTerminalEnergy(
+          snapshot,
+          snapshots,
+          context,
+          plan.energyOptions,
+        )
+      : plan.getProtectedNonEnergy(resource, stored);
+    const amount = Math.min(
+      stored - protectedAmount,
+      overflowTotal - plan.desiredUsedCapacity,
+      snapshot.transferBatchSize,
+      storageOffloadCapacity,
+      recoveryOffloadBudget,
+    );
+    if (amount <= 0) continue;
+    const draft = createTerminalOffloadTask(snapshot, resource, amount);
+    if (!draft) continue;
+
+    drafts.push(draft);
+    offloadedResources.add(resource);
+    overflowTotal -= amount;
+    storageOffloadCapacity -= amount;
+    recoveryOffloadBudget -= amount;
+  }
+}
+
+function appendTerminalResourceFeedDrafts(
+  snapshot: ResourceControlSnapshot,
+  marketCfg: ResourceControlMarketConfig,
+  drafts: CarrierTaskDraft[],
+  offloadedResources: Set<ResourceConstant>,
+  desiredFeedByResource: Map<ResourceConstant, number>,
+  initialFeedCapacity: number,
+): void {
+  if (
+    snapshot.nativeMineralType &&
+    !offloadedResources.has(snapshot.nativeMineralType)
+  ) {
+    const target = getNativeMineralAutoSellTerminalTarget(snapshot, marketCfg);
+    if (target > 0) {
+      desiredFeedByResource.set(
+        snapshot.nativeMineralType,
+        Math.max(
+          desiredFeedByResource.get(snapshot.nativeMineralType) || 0,
+          target,
+        ),
+      );
+    }
+  }
+
+  let feedCapacity = initialFeedCapacity;
+  for (const [resource, target] of desiredFeedByResource.entries()) {
+    if (feedCapacity <= 0) break;
+    const draft = createTerminalFeedTask(
+      snapshot,
+      resource,
+      Math.min(target, feedCapacity),
+    );
+    if (!draft) continue;
+    const feedAmount = draft.steps.reduce(
+      (sum, step) => sum + step.amount,
+      0,
+    );
+    feedCapacity -= feedAmount;
+    drafts.push(draft);
+  }
+}
+
+function commitTerminalLogisticsDrafts(
+  snapshot: ResourceControlSnapshot,
+  drafts: CarrierTaskDraft[],
+  actions: string[],
+): void {
+  replaceCarrierTasksForProducerRoom(
+    RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER,
+    snapshot.roomName,
+    drafts,
+  );
+  if (drafts.length > 0) {
+    actions.push(`terminal-logistics:${snapshot.roomName}:count=${drafts.length}`);
+  }
+}
+
+function syncLegacyTerminalFeedTasks(
+  snapshots: ResourceControlSnapshot[],
+  marketCfg: ResourceControlMarketConfig,
+  capacityConfig: ResourceCapacityConfig,
+  context: ResourceControlTransferContext,
+): string[] {
+  const pendingByRoom = new Map<string, Map<ResourceConstant, number>>();
+  const snapshotByRoom = new Map(
+    snapshots.map((snapshot) => [snapshot.roomName, snapshot] as const),
+  );
+  for (const task of context.tasks) {
+    if (task.status !== "pending" || task.resource === RESOURCE_ENERGY) {
+      continue;
+    }
+
+    let pendingAmount = task.remainingAmount;
+    if (task.reason?.startsWith("capacity:relief:")) {
+      const source = snapshotByRoom.get(task.fromRoomName);
+      const receiver = snapshotByRoom.get(task.toRoomName);
+      if (
+        !source ||
+        !receiver ||
+        source.capacityState === "normal" ||
+        receiver.capacityState !== "normal" ||
+        task.blockedReason === "receiver_capacity"
+      ) {
+        continue;
+      }
+      pendingAmount = computeSafeCapacityReliefAmount(
+        source,
+        task.toRoomName,
+        task.resource,
+        Math.min(
+          task.remainingAmount,
+          getCapacityReliefRecoveryGap(source, capacityConfig),
+        ),
+        capacityConfig,
+        context,
+        task.id,
+      );
+      if (
+        source.terminalFreeCapacity <
+        capacityConfig.terminalReliefTargetFreeCapacity
+      ) {
+        pendingAmount = Math.min(
+          pendingAmount,
+          getMovableResourceAmount(
+            source,
+            task.resource,
+            "terminal",
+            capacityConfig,
+            context,
+            task.id,
+          ),
+        );
+      }
+      if (pendingAmount <= 0) continue;
+    }
+
+    const roomPending =
+      pendingByRoom.get(task.fromRoomName) ||
+      new Map<ResourceConstant, number>();
+    roomPending.set(
+      task.resource,
+      (roomPending.get(task.resource) || 0) + pendingAmount,
+    );
+    pendingByRoom.set(task.fromRoomName, roomPending);
+  }
+
+  const validRoomNames = new Set(
+    snapshots.map((snapshot) => snapshot.roomName),
+  );
+  const actions: string[] = [];
+  for (const snapshot of snapshots) {
+    const drafts: CarrierTaskDraft[] = [];
+    const energyDraft = createEnergyTerminalTask(
+      snapshot,
+      snapshots,
+      context,
+      { legacyBacklog: true },
+    );
+    if (energyDraft) {
+      drafts.push(energyDraft);
+    }
+
+    const offloadedResources = new Set<ResourceConstant>();
+    const roomPending = pendingByRoom.get(snapshot.roomName);
+    appendTerminalOverflowDrafts(
+      snapshot,
+      snapshots,
+      context,
+      drafts,
+      offloadedResources,
+      {
+        desiredUsedCapacity: TERMINAL_TOTAL_STORAGE_CAP,
+        storageOffloadCapacity: snapshot.storage?.store.getFreeCapacity() || 0,
+        energyOptions: { legacyBacklog: true },
+        getProtectedNonEnergy: (resource, stored) =>
+          Math.min(stored, roomPending?.get(resource) ?? 0),
+      },
+    );
+
+    const offloadTotal = drafts.reduce(
+      (sum, draft) =>
+        draft.type === "terminal_offload"
+          ? sum + draft.steps.reduce((stepSum, step) => stepSum + step.amount, 0)
+          : sum,
+      0,
+    );
+    const feedCapacity = Math.max(
+      0,
+      TERMINAL_TOTAL_STORAGE_CAP -
+        (snapshot.terminalUsedCapacity - offloadTotal),
+    );
+
+    const desiredFeedByResource = new Map<ResourceConstant, number>();
+    if (roomPending) {
+      for (const [resource, amount] of roomPending.entries()) {
+        if (offloadedResources.has(resource)) continue;
+        desiredFeedByResource.set(
+          resource,
+          Math.min(snapshot.transferBatchSize, amount),
+        );
+      }
+    }
+    appendTerminalResourceFeedDrafts(
+      snapshot,
+      marketCfg,
+      drafts,
+      offloadedResources,
+      desiredFeedByResource,
+      feedCapacity,
+    );
+    commitTerminalLogisticsDrafts(snapshot, drafts, actions);
+  }
+
+  pruneCarrierTasksForProducer(
+    RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER,
+    validRoomNames,
+  );
+  return actions;
 }
 
 function limitCarrierTaskDraftAmount(
@@ -2152,6 +2488,171 @@ function limitCarrierTaskDraftAmount(
   return steps.length > 0 ? { ...draft, steps } : null;
 }
 
+function getTerminalLogisticsCapacityPlan(
+  snapshot: ResourceControlSnapshot,
+  capacityConfig: ResourceCapacityConfig,
+): {
+  recoveringTerminal: boolean;
+  desiredTerminalUsedCapacity: number;
+  feedCapacity: number;
+} {
+  const recoveringTerminal =
+    capacityConfig.terminalHeadroomRecoveryEnabled &&
+    snapshot.capacityState !== "normal";
+  const desiredTerminalUsedCapacity = recoveringTerminal
+    ? Math.max(
+        0,
+        TERMINAL_STORAGE_CAPACITY - capacityConfig.terminalReliefTargetFreeCapacity,
+      )
+    : TERMINAL_TOTAL_STORAGE_CAP;
+  return {
+    recoveringTerminal,
+    desiredTerminalUsedCapacity,
+    feedCapacity: Math.min(
+      snapshot.terminalFreeCapacity,
+      Math.max(0, desiredTerminalUsedCapacity - snapshot.terminalUsedCapacity),
+    ),
+  };
+}
+
+function reserveEnergyDeficitStagingBatch(
+  source: ResourceControlSnapshot,
+  snapshots: ResourceControlSnapshot[],
+  planningEnergyNeedByRoom: Map<string, number>,
+  context: ResourceControlTransferContext,
+  capacityConfig: ResourceCapacityConfig,
+): TerminalStagingBatch | undefined {
+  if (
+    !source.storage ||
+    !isEnergyExportEligible(source) ||
+    (context.healthyOutgoingByRoomResource.get(
+      roomResourceKey(source.roomName, RESOURCE_ENERGY),
+    ) || 0) > 0
+  ) {
+    return undefined;
+  }
+
+  const sourceEnergyBudget = getEnergyBalancingSurplus(source, context);
+  if (sourceEnergyBudget <= 0) return undefined;
+  const { feedCapacity } = getTerminalLogisticsCapacityPlan(
+    source,
+    capacityConfig,
+  );
+  if (feedCapacity <= 0) return undefined;
+
+  const canStageBatch = (amount: number, receiverRoomName: string): boolean => {
+    const transactionFee = Game.market.calcTransactionCost(
+      amount,
+      source.roomName,
+      receiverRoomName,
+    );
+    if (amount + transactionFee > sourceEnergyBudget) return false;
+    const energyDraft = createEnergyTerminalTask(
+      source,
+      snapshots,
+      context,
+      {
+        stagingBatch: {
+          resource: RESOURCE_ENERGY,
+          amount,
+          transactionFee,
+        },
+      },
+    );
+    if (!energyDraft) return true;
+    return energyDraft.type === "terminal_feed" &&
+      energyDraft.steps.reduce((sum, step) => sum + step.amount, 0) <= feedCapacity;
+  };
+
+  const receivers = snapshots
+    .filter((receiver) => receiver.roomName !== source.roomName && !!receiver.storage)
+    .filter(
+      (receiver) =>
+        (planningEnergyNeedByRoom.get(receiver.roomName) || 0) > 0,
+    )
+    .sort((left, right) => {
+      const leftNeed = planningEnergyNeedByRoom.get(left.roomName) || 0;
+      const rightNeed = planningEnergyNeedByRoom.get(right.roomName) || 0;
+      return rightNeed - leftNeed || left.roomName.localeCompare(right.roomName);
+    });
+
+  for (const receiver of receivers) {
+    const receiverNeed = planningEnergyNeedByRoom.get(receiver.roomName) || 0;
+    const receiverCapacity = context.receiverCapacityLedger.getAvailableAmount(
+      receiver.roomName,
+      RESOURCE_ENERGY,
+    );
+    const maximum = Math.floor(
+      Math.min(
+        source.transferBatchSize,
+        receiverNeed,
+        receiverCapacity,
+        sourceEnergyBudget,
+      ),
+    );
+    const amount = computeLargestAffordableAmount(
+      maximum,
+      (candidate) => canStageBatch(candidate, receiver.roomName),
+    );
+    if (amount <= 0) continue;
+
+    const reservationId = `resourceControl:terminal-energy-staging:${source.roomName}`;
+    const grantedAmount = context.receiverCapacityLedger.reserve(
+      reservationId,
+      receiver.roomName,
+      RESOURCE_ENERGY,
+      amount,
+    );
+    const reservedAmount = computeLargestAffordableAmount(
+      Math.min(grantedAmount, receiverNeed),
+      (candidate) => canStageBatch(candidate, receiver.roomName),
+    );
+    context.receiverCapacityLedger.reserve(
+      reservationId,
+      receiver.roomName,
+      RESOURCE_ENERGY,
+      reservedAmount,
+    );
+    if (reservedAmount <= 0) continue;
+
+    const batch = {
+      resource: RESOURCE_ENERGY,
+      amount: reservedAmount,
+      transactionFee: Game.market.calcTransactionCost(
+        reservedAmount,
+        source.roomName,
+        receiver.roomName,
+      ),
+    };
+    const energyDraft = createEnergyTerminalTask(
+      source,
+      snapshots,
+      context,
+      { stagingBatch: batch },
+    );
+    if (
+      energyDraft?.type !== "terminal_feed" ||
+      energyDraft.steps.reduce((sum, step) => sum + step.amount, 0) > feedCapacity
+    ) {
+      context.receiverCapacityLedger.reserve(
+        reservationId,
+        receiver.roomName,
+        RESOURCE_ENERGY,
+        0,
+      );
+      continue;
+    }
+
+    planningEnergyNeedByRoom.set(
+      receiver.roomName,
+      Math.max(0, receiverNeed - reservedAmount),
+    );
+    return batch;
+  }
+
+  return undefined;
+}
+
 function syncTerminalFeedTasks(
   snapshots: ResourceControlSnapshot[],
   marketCfg: ResourceControlMarketConfig,
@@ -2159,8 +2660,30 @@ function syncTerminalFeedTasks(
   context: ResourceControlTransferContext,
   remainingEnergyNeedByRoom: Map<string, number>,
 ): string[] {
+  if (!capacityConfig.terminalHeadroomRecoveryEnabled) {
+    return syncLegacyTerminalFeedTasks(
+      snapshots,
+      marketCfg,
+      capacityConfig,
+      context,
+    );
+  }
+
   const stagingBatchByRoom = new Map<string, TerminalStagingBatch>();
+  const planningEnergyNeedByRoom = new Map(remainingEnergyNeedByRoom);
   const snapshotByRoom = new Map(snapshots.map((snapshot) => [snapshot.roomName, snapshot] as const));
+  for (const snapshot of snapshots) {
+    const energyBatch = reserveEnergyDeficitStagingBatch(
+      snapshot,
+      snapshots,
+      planningEnergyNeedByRoom,
+      context,
+      capacityConfig,
+    );
+    if (energyBatch) {
+      stagingBatchByRoom.set(snapshot.roomName, energyBatch);
+    }
+  }
   const priorityContext = createTransferTaskPriorityContext(
     snapshots,
     capacityConfig,
@@ -2258,16 +2781,17 @@ function syncTerminalFeedTasks(
   for (const snapshot of snapshots) {
     const drafts: CarrierTaskDraft[] = [];
     const stagingBatch = stagingBatchByRoom.get(snapshot.roomName);
-    const energyDraft = createEnergyTerminalTask(snapshot, snapshots, context, stagingBatch);
-    const recoveringTerminal =
-      capacityConfig.terminalHeadroomRecoveryEnabled &&
-      snapshot.capacityState !== "normal";
-    const desiredTerminalUsedCapacity = recoveringTerminal
-      ? Math.max(
-          0,
-          TERMINAL_STORAGE_CAPACITY - capacityConfig.terminalReliefTargetFreeCapacity,
-        )
-      : TERMINAL_TOTAL_STORAGE_CAP;
+    const energyDraft = createEnergyTerminalTask(
+      snapshot,
+      snapshots,
+      context,
+      { stagingBatch },
+    );
+    const {
+      recoveringTerminal,
+      desiredTerminalUsedCapacity,
+      feedCapacity: safeFeedCapacity,
+    } = getTerminalLogisticsCapacityPlan(snapshot, capacityConfig);
 
     // Terminal overflow: offload surplus above cap to storage
     // Compute offload drafts first so we can suppress conflicting feed drafts
@@ -2292,67 +2816,37 @@ function syncTerminalFeedTasks(
       }
     }
 
-    if (snapshot.storage) {
-      let overflowTotal = snapshot.terminalUsedCapacity;
-      if (overflowTotal > desiredTerminalUsedCapacity) {
-        let recoveryOffloadBudget = recoveringTerminal
+    appendTerminalOverflowDrafts(
+      snapshot,
+      snapshots,
+      context,
+      drafts,
+      offloadedResources,
+      {
+        desiredUsedCapacity: desiredTerminalUsedCapacity,
+        storageOffloadCapacity,
+        recoveryOffloadBudget: recoveringTerminal
           ? Math.min(
-              overflowTotal - desiredTerminalUsedCapacity,
+              snapshot.terminalUsedCapacity - desiredTerminalUsedCapacity,
               snapshot.transferBatchSize,
               storageOffloadCapacity,
             )
-          : Number.POSITIVE_INFINITY;
-        const allResources = RESOURCES_ALL.filter(
-          (resource) =>
-            getTerminalResourceAmount(snapshot, resource) > 0 &&
-            !offloadedResources.has(resource),
-        );
-        allResources.sort((a, b) => {
-          if (a === RESOURCE_ENERGY && b !== RESOURCE_ENERGY) return 1;
-          if (a !== RESOURCE_ENERGY && b === RESOURCE_ENERGY) return -1;
-          return 0;
-        });
-        for (const resource of allResources) {
-          const stored = getTerminalResourceAmount(snapshot, resource);
-          if (stored <= 0) continue;
-
-          let protectedAmount: number;
-          if (resource === RESOURCE_ENERGY) {
-            protectedAmount = getProtectedTerminalEnergy(snapshot, snapshots, context, stagingBatch);
-          } else {
-            protectedAmount = Math.min(
-              stored,
-              (stagingBatch?.resource === resource ? stagingBatch.amount : 0) +
-                getProductionCommitmentAmount(snapshot.roomName, resource, context),
-            );
-          }
-
-          const offloadable = stored - protectedAmount;
-          if (offloadable <= 0) continue;
-          const amount = Math.min(
-            offloadable,
-            overflowTotal - desiredTerminalUsedCapacity,
-            snapshot.transferBatchSize,
-            storageOffloadCapacity,
-            recoveryOffloadBudget,
-          );
-          if (amount <= 0) continue;
-          const draft = createTerminalOffloadTask(snapshot, resource, amount);
-          if (draft) {
-            drafts.push(draft);
-            offloadedResources.add(resource);
-            overflowTotal -= amount;
-            storageOffloadCapacity -= amount;
-            recoveryOffloadBudget -= amount;
-          }
-        }
-      }
-    }
-
-    let feedCapacity = Math.min(
-      snapshot.terminalFreeCapacity,
-      Math.max(0, desiredTerminalUsedCapacity - snapshot.terminalUsedCapacity),
+          : Number.POSITIVE_INFINITY,
+        energyOptions: { stagingBatch },
+        getProtectedNonEnergy: (resource, stored) =>
+          Math.min(
+            stored,
+            (stagingBatch?.resource === resource ? stagingBatch.amount : 0) +
+              getProductionCommitmentAmount(
+                snapshot.roomName,
+                resource,
+                context,
+              ),
+          ),
+      },
     );
+
+    let feedCapacity = safeFeedCapacity;
     if (
       energyDraft?.type === "terminal_feed" &&
       !offloadedResources.has(RESOURCE_ENERGY)
@@ -2377,31 +2871,15 @@ function syncTerminalFeedTasks(
       );
     }
 
-    if (snapshot.nativeMineralType && !offloadedResources.has(snapshot.nativeMineralType)) {
-      const target = getNativeMineralAutoSellTerminalTarget(snapshot, marketCfg);
-      if (target > 0) {
-        desiredFeedByResource.set(
-          snapshot.nativeMineralType,
-          Math.max(desiredFeedByResource.get(snapshot.nativeMineralType) || 0, target),
-        );
-      }
-    }
-
-    for (const [resource, target] of desiredFeedByResource.entries()) {
-      if (feedCapacity <= 0) break;
-      const cappedTarget = Math.min(target, feedCapacity);
-      const draft = createTerminalFeedTask(snapshot, resource, cappedTarget);
-      if (draft) {
-        const feedAmount = draft.steps.reduce((s, step) => s + step.amount, 0);
-        feedCapacity -= feedAmount;
-        drafts.push(draft);
-      }
-    }
-
-    replaceCarrierTasksForProducerRoom(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, snapshot.roomName, drafts);
-    if (drafts.length > 0) {
-      actions.push(`terminal-logistics:${snapshot.roomName}:count=${drafts.length}`);
-    }
+    appendTerminalResourceFeedDrafts(
+      snapshot,
+      marketCfg,
+      drafts,
+      offloadedResources,
+      desiredFeedByResource,
+      feedCapacity,
+    );
+    commitTerminalLogisticsDrafts(snapshot, drafts, actions);
   }
 
   pruneCarrierTasksForProducer(RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER, validRoomNames);
