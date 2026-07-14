@@ -1053,6 +1053,13 @@ export const carrierRole: RoleFactory = () => ({
       if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0 && deliverToPlannedStoragePosition(creep)) {
         return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
       }
+      if (
+        creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0 &&
+        hasRunnablePowerBankBoostCarrierTask(getAssignedCarrierRoomName(creep))
+      ) {
+        const dropCode = measureCreepIntent(() => creep.drop(RESOURCE_ENERGY));
+        return dropCode === OK;
+      }
       if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0) {
         ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
       }

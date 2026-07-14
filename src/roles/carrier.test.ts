@@ -2181,6 +2181,74 @@ describe("carrierRole lab logistics", () => {
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("synth:lab_supply:W7N2:OH");
   });
 
+  it("drops blocked energy so an urgent power-bank boost supply can start", () => {
+    const terminal = {
+      id: "war-boost-terminal",
+      structureType: STRUCTURE_TERMINAL,
+      pos: { x: 10, y: 10, roomName: "W7N2" },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => resource === RESOURCE_CATALYZED_UTRIUM_ACID ? 300 : 0,
+        getFreeCapacity: () => 0,
+      },
+    } as unknown as StructureTerminal;
+    const storage = {
+      id: "war-boost-storage",
+      structureType: STRUCTURE_STORAGE,
+      pos: { x: 11, y: 10, roomName: "W7N2" },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 0,
+      },
+    } as unknown as StructureStorage;
+    const room = createRoom("W7N2", { terminal, storage });
+    const lab = {
+      id: "war-boost-lab",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3000,
+      },
+    } as unknown as StructureLab;
+    let carried = 800;
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => resource === undefined || resource === RESOURCE_ENERGY ? carried : 0,
+        getFreeCapacity: () => 800 - carried,
+      },
+      drop: jest.fn(() => {
+        carried = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("powerBankBoost:war:W7N2:W8N2", room.name, [{
+      id: "powerBankBoost:lab_supply:war:W7N2:W8N2:XUH2O",
+      type: "lab_supply",
+      priority: 140,
+      steps: [{
+        id: "XUH2O:terminal->lab",
+        resource: RESOURCE_CATALYZED_UTRIUM_ACID,
+        fromKind: "terminal",
+        toKind: "lab",
+        fromId: terminal.id,
+        toId: lab.id,
+        amount: 300,
+      }],
+    }]);
+
+    const done = carrierRole().target?.(creep);
+
+    expect(creep.drop).toHaveBeenCalledWith(RESOURCE_ENERGY);
+    expect(done).toBe(true);
+  });
+
   it("delivers reagent to lab via snapshot when board is cleared after pickup (lab_supply)", () => {
     const room = createRoom("W8N1");
     const terminal = room.terminal as StructureTerminal;
