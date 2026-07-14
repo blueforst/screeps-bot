@@ -1132,7 +1132,7 @@ function upsertReserverConfig(task: RemoteMiningTask, config: RemoteMiningConfig
   );
 }
 
-function remoteNeedsContainerWorker(task: RemoteMiningTask): boolean {
+function remoteNeedsInfrastructureWorker(task: RemoteMiningTask): boolean {
   if (task.status !== "active") return false;
 
   const targetRoom = Game.rooms[task.targetRoom];
@@ -1159,7 +1159,16 @@ function remoteNeedsContainerWorker(task: RemoteMiningTask): boolean {
     if (sites.length > 0) return true;
   }
 
-  return false;
+  const plannedRoadKeys = new Set(
+    (task.roadPlan?.positions ?? [])
+      .filter(pos => pos.roomName === task.targetRoom)
+      .map(pos => `${pos.x}:${pos.y}`),
+  );
+  return targetRoom.find(FIND_CONSTRUCTION_SITES).some(site =>
+    site.my &&
+    site.structureType === STRUCTURE_ROAD &&
+    plannedRoadKeys.has(`${site.pos.x}:${site.pos.y}`),
+  );
 }
 
 function upsertRemoteWorkerConfig(task: RemoteMiningTask): void {
@@ -1476,7 +1485,7 @@ export function processRemoteConfigLifecycle(
     reconcileStaleCarrierConfigs(task);
     upsertReserverConfig(task, config);
 
-    if (remoteNeedsContainerWorker(task)) {
+    if (remoteNeedsInfrastructureWorker(task)) {
       upsertRemoteWorkerConfig(task);
     } else {
       removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);

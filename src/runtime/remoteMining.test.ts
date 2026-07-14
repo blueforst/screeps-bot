@@ -4362,7 +4362,7 @@ describe("remote worker lifecycle", () => {
     expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
   });
 
-  it("does not create worker config for road construction site", () => {
+  it("creates worker config for planned road construction site", () => {
     const rcl7Room = createRclRoom("W1N1", 7);
     const src = createSourceWithPos("src1", 10, 10);
     const site = makeRoadSite(11, 10);
@@ -4384,6 +4384,44 @@ describe("remote worker lifecycle", () => {
     store["W2N1"] = {
       sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
       sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+      roadPlan: {
+        positions: [{ x: 11, y: 10, roomName: "W2N1" }],
+        generatedAt: 100,
+      },
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const configName = getRemoteWorkerConfigName("W1N1", "W2N1");
+    expect(Memory.data!.creepConfigs![configName]).toBeDefined();
+  });
+
+  it("does not create worker config for unplanned road construction site", () => {
+    const rcl7Room = createRclRoom("W1N1", 7);
+    const src = createSourceWithPos("src1", 10, 10);
+    const site = makeRoadSite(11, 10);
+    const target = createVisibleTargetRoom("W2N1", { sources: [src] });
+    (target.find as jest.Mock).mockImplementation((what: number, opts?: { filter?: (s: any) => boolean }) => {
+      if (what === FIND_STRUCTURES) return [];
+      if (what === FIND_CONSTRUCTION_SITES) return [site];
+      return [];
+    });
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src1") return src;
+      return null;
+    });
+
+    Game.rooms["W1N1"] = rcl7Room;
+    Game.rooms["W2N1"] = target;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["W2N1"] = {
+      sourceRoom: "W1N1", targetRoom: "W2N1", status: "active",
+      sourceIds: ["src1"], assignedAt: 100, updatedAt: 100,
+      roadPlan: {
+        positions: [{ x: 12, y: 10, roomName: "W2N1" }],
+        generatedAt: 100,
+      },
     };
 
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
