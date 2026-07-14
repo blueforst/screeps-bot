@@ -1,5 +1,4 @@
-const RESERVE_FLAG_CREATE_ENERGY = 50_000;
-const RESERVE_FLAG_CLEAR_ENERGY = 80_000;
+import { resolveRoomEnergyPolicy } from "@/runtime/roomEnergyPolicy";
 
 function getAutoReserveFlagName(roomName: string): string {
   return `RESERVE_${roomName}`;
@@ -21,9 +20,12 @@ export function runAutoReserveFlags(): void {
 
     const flagName = getAutoReserveFlagName(room.name);
     const flag = Game.flags[flagName];
+    const policy = resolveRoomEnergyPolicy(
+      Memory.cfg?.resourceControl?.rooms?.[room.name],
+    );
     const storageEnergy = room.storage.store.getUsedCapacity(RESOURCE_ENERGY);
 
-    if (storageEnergy < RESERVE_FLAG_CREATE_ENERGY) {
+    if (storageEnergy < policy.energyFloor) {
       if (flag) {
         if (!isAtPosition(flag, room.storage.pos)) {
           flag.setPosition(room.storage.pos);
@@ -38,7 +40,7 @@ export function runAutoReserveFlags(): void {
       continue;
     }
 
-    if (flag && storageEnergy >= RESERVE_FLAG_CLEAR_ENERGY) {
+    if (flag && storageEnergy >= policy.energyTarget) {
       flag.remove();
       console.log(`[reserve] ${room.name} cleared reserve mode at ${storageEnergy} energy`);
     }
