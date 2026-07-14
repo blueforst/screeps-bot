@@ -1473,6 +1473,9 @@ describe("remote construction caps", () => {
     const config = getRemoteMiningConfig();
     processRemoteConstruction(store, config);
 
+    expect((PathFinder.search as jest.Mock).mock.calls[0][2]).toEqual(
+      expect.objectContaining({ maxOps: 10000, maxRooms: 2 }),
+    );
     expect(targetRoom.__siteAttempts.length).toBeLessThanOrEqual(2);
     expect(targetRoom.__siteAttempts.every(a => a.structureType === STRUCTURE_ROAD || a.structureType === STRUCTURE_CONTAINER)).toBe(true);
   });

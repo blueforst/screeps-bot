@@ -129,7 +129,7 @@ describe("moveToTargetRoom", () => {
     expect(PathFinder.search).toHaveBeenCalledWith(
       creep.pos,
       { pos: new MockRoomPosition(25, 25, "W1N3"), range: 1 },
-      expect.objectContaining({ maxRooms: 16, plainCost: 2, swampCost: 10 }),
+      expect.objectContaining({ maxOps: 10000, maxRooms: 16, plainCost: 2, swampCost: 10 }),
     );
     expect(findClosestByPath).not.toHaveBeenCalled();
     expect(move).toHaveBeenCalledWith(BOTTOM);

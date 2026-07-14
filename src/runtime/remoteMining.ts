@@ -534,6 +534,7 @@ function processScoutLifecycle(store: Record<string, RemoteMiningTask>, config: 
 // ─── Remote road/container construction ─────────────────────────────
 
 const GLOBAL_SITE_SOFT_CAP = 95;
+const REMOTE_ROAD_PATH_MAX_OPS = 10000;
 
 function getStartAnchor(sourceRoom: Room): RoomPosition | null {
   if (sourceRoom.storage) {
@@ -722,7 +723,7 @@ function generateRoadPlan(
     const result = PathFinder.search(
       startPos,
       { pos: source.pos, range: 1 },
-      { maxRooms: 2, plainCost: 2, swampCost: 10, roomCallback },
+      { maxRooms: 2, maxOps: REMOTE_ROAD_PATH_MAX_OPS, plainCost: 2, swampCost: 10, roomCallback },
     );
 
     if (result.incomplete) return null;

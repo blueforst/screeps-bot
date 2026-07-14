@@ -17,6 +17,7 @@ import type {
 
 const DYNAMIC_ROUTE_CACHE_TTL = 25;
 const DYNAMIC_ROUTE_CACHE_MAX = 200;
+const MULTI_ROOM_TRAVEL_MAX_OPS = 10000;
 const dynamicNextRoomCache: Record<string, DynamicRouteCacheEntry> = {};
 
 export function getCurrentColonizationRoute(targetRoom: string, fallbackEncodedRoute?: string): string | undefined {
@@ -307,6 +308,7 @@ function moveAlongMultiRoomPath(
       {
         plainCost: options.plainCost,
         swampCost: options.swampCost,
+        maxOps: MULTI_ROOM_TRAVEL_MAX_OPS,
         maxRooms: options.maxRooms ?? 16,
         roomCallback: createMultiRoomTravelCallback(creep, targetRoom, routeRooms, dangerousRooms, hasFixedRoute, options),
       },
