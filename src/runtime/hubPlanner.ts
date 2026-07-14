@@ -21,7 +21,9 @@ import {
 } from "@/runtime/logistics/resourceTransferTasks";
 import {
   getReceiverSafeCapacity,
+  isReceiverAdmissionEligible,
   normalizeCapacityHeadroomPolicy,
+  resolveCapacityState,
 } from "@/runtime/logistics/capacityHeadroom";
 import {
   HUB_DISTRIBUTED_STORAGE,
@@ -664,6 +666,20 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
   for (const satellite of satellites) {
     const satStorageFree = satellite.storage!.store.getFreeCapacity();
     const satTerminalFree = satellite.terminal!.store.getFreeCapacity();
+    const capacityState = resolveCapacityState(
+      satStorageFree,
+      satTerminalFree,
+      capacityPolicy,
+      Memory.runtime?.resourceControl?.rooms?.[satellite.name]?.capacityState,
+    );
+    if (!isReceiverAdmissionEligible(
+      satStorageFree,
+      satTerminalFree,
+      capacityState,
+      capacityPolicy,
+    )) {
+      continue;
+    }
     const receivableCapacity = getReceiverSafeCapacity(
       satStorageFree,
       satTerminalFree,

@@ -1894,7 +1894,7 @@ describe("planHubDistribution", () => {
     expect(actions).toHaveLength(0);
   });
 
-  it("destination terminal capacity caps transfer amount", () => {
+  it("does not plan distribution below the terminal receiver admission watermark", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
     const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
     (satRoom.terminal!.store as any).getFreeCapacity = () => 40_100;
@@ -1903,8 +1903,23 @@ describe("planHubDistribution", () => {
 
     const actions = planHubDistribution(Memory.cfg!.hub!);
 
-    // Shortage is 750, hub has 5000, but terminal capacity above the 40k buffer is 100
-    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=100`);
+    expect(actions).toHaveLength(0);
+    const task = Object.values(ensureResourceTransferTaskStore()).find(
+      (entry) => entry.reason === `hub:export:${XGHO2}`,
+    );
+    expect(task).toBeUndefined();
+  });
+
+  it("caps an admitted receiver by its physical terminal headroom", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 50_000 });
+    const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+    (satRoom.terminal!.store as any).getFreeCapacity = () => 50_100;
+    Memory.cfg!.hub!.reservePerRoom = 20_000;
+    Game.rooms[SAT_ROOM] = satRoom;
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=10100`);
   });
 
   it("uses the shared configured receiver headroom watermarks", () => {

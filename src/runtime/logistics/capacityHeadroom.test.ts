@@ -83,6 +83,31 @@ describe("capacity headroom policy", () => {
       }).terminalHeadroomRecoveryEnabled,
     ).toBe(false);
   });
+
+  it("supports the normalized policy shape in optional runtime memory", () => {
+    type ResourceControlRuntime = NonNullable<
+      NonNullable<Memory["runtime"]>["resourceControl"]
+    >;
+    const capacityPolicy: NonNullable<ResourceControlRuntime["capacityPolicy"]> = {
+      terminalHeadroomRecoveryEnabled: true,
+      storagePressureFreeCapacity: 100_000,
+      storageReliefTargetFreeCapacity: 200_000,
+      receiverStorageMinFreeCapacity: 300_000,
+      terminalPressureFreeCapacity: 40_000,
+      receiverTerminalMinFreeCapacity: 50_000,
+      terminalReliefTargetFreeCapacity: 80_000,
+    };
+
+    expect(capacityPolicy).toEqual({
+      terminalHeadroomRecoveryEnabled: true,
+      storagePressureFreeCapacity: 100_000,
+      storageReliefTargetFreeCapacity: 200_000,
+      receiverStorageMinFreeCapacity: 300_000,
+      terminalPressureFreeCapacity: 40_000,
+      receiverTerminalMinFreeCapacity: 50_000,
+      terminalReliefTargetFreeCapacity: 80_000,
+    });
+  });
 });
 
 describe("capacity state hysteresis", () => {

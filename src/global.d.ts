@@ -680,6 +680,15 @@ declare global {
       };
       resourceControl?: {
         updatedAt: number;
+        capacityPolicy?: {
+          terminalHeadroomRecoveryEnabled: boolean;
+          storagePressureFreeCapacity: number;
+          storageReliefTargetFreeCapacity: number;
+          receiverStorageMinFreeCapacity: number;
+          terminalPressureFreeCapacity: number;
+          receiverTerminalMinFreeCapacity: number;
+          terminalReliefTargetFreeCapacity: number;
+        };
         rooms: Record<
           string,
           {
