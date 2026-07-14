@@ -1247,7 +1247,14 @@ function planCapacityReliefTasks(
         return safeCapacity > 0 &&
           (planningEnergyNeedByRoom.get(receiver.roomName) || 0) + restoredEnergyNeed > 0;
       });
-    const terminalCandidate = existing && !terminalRecoveryReplacement
+    const staleEnergyReliefReplacement = !!(
+      isRetarget &&
+      existing?.resource === RESOURCE_ENERGY &&
+      !hasPlanningEnergyDemand
+    );
+    const selectsReplacementResource =
+      terminalRecoveryReplacement || staleEnergyReliefReplacement;
+    const terminalCandidate = existing && !selectsReplacementResource
       ? null
       : selectTerminalReliefResource(
           source,
@@ -1266,7 +1273,7 @@ function planCapacityReliefTasks(
       continue;
     }
     const location: "terminal" | "storage" = terminalCandidate ? "terminal" : "storage";
-    const candidate = existing && !terminalRecoveryReplacement
+    const candidate = existing && !selectsReplacementResource
       ? {
           resource: existing.resource,
           movableAmount: getTotalMovableResourceAmount(
@@ -1294,7 +1301,7 @@ function planCapacityReliefTasks(
       .filter(
         (receiver) =>
           !existing ||
-          terminalRecoveryReplacement ||
+          selectsReplacementResource ||
           receiver.roomName !== existing.toRoomName,
       )
       .filter((receiver) => receiver.storage && receiver.capacityState === "normal")
@@ -1308,7 +1315,7 @@ function planCapacityReliefTasks(
           getCapacityReliefReceivableAmount(receiver, config),
           receiverCapacityByRoom.get(receiver.roomName) || 0,
         );
-        const oldReservation = terminalRecoveryReplacement &&
+        const oldReservation = selectsReplacementResource &&
           existing?.toRoomName === receiver.roomName &&
           isHealthyResourceTransferTaskReservation(existing, "incoming")
           ? existing.remainingAmount

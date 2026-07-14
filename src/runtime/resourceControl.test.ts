@@ -4692,6 +4692,109 @@ describe("capacity-relief planning", () => {
     });
   });
 
+  it("replaces stale blocked energy relief with mineral relief when no receiver needs energy", () => {
+    const source = createRoom({
+      name: "W66N4",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300_000,
+        [RESOURCE_KEANIUM]: 40_000,
+      },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+      storageFreeCapacity: 50_000,
+    });
+    source.terminal!.cooldown = 1;
+    const satisfiedReceiver = createRoom({
+      name: "W66N5",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 300_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[satisfiedReceiver.name] = satisfiedReceiver;
+    const staleEnergyRoute = createAutomaticResourceTransferTask(
+      source.name,
+      satisfiedReceiver.name,
+      RESOURCE_ENERGY,
+      200_000,
+      `capacity:relief:${RESOURCE_ENERGY}`,
+    );
+    if (typeof staleEnergyRoute === "string") throw new Error(staleEnergyRoute);
+    markResourceTransferTaskBlocked(staleEnergyRoute.task, "receiver_capacity");
+
+    runResourceControl();
+
+    expect(staleEnergyRoute.task.status).toBe("cancelled");
+    const pending = Object.values(ensureResourceTransferTaskStore()).filter(
+      (entry) =>
+        entry.status === "pending" &&
+        entry.fromRoomName === source.name &&
+        entry.reason?.startsWith("capacity:relief:"),
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      toRoomName: satisfiedReceiver.name,
+      resource: RESOURCE_KEANIUM,
+      amount: 35_000,
+      remainingAmount: 35_000,
+      origin: "automatic",
+    });
+  });
+
+  it("keeps blocked energy relief as energy when another receiver still needs it", () => {
+    const source = createRoom({
+      name: "W66N6",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300_000,
+        [RESOURCE_KEANIUM]: 40_000,
+      },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+      storageFreeCapacity: 50_000,
+    });
+    source.terminal!.cooldown = 1;
+    const satisfiedReceiver = createRoom({
+      name: "W66N7",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 300_000,
+    });
+    const needyReceiver = createRoom({
+      name: "W66N8",
+      storageResources: { [RESOURCE_ENERGY]: 185_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 20_000 },
+      storageFreeCapacity: 500_000,
+    });
+    for (const room of [source, satisfiedReceiver, needyReceiver]) {
+      Game.rooms[room.name] = room;
+    }
+    const blockedEnergyRoute = createAutomaticResourceTransferTask(
+      source.name,
+      satisfiedReceiver.name,
+      RESOURCE_ENERGY,
+      50_000,
+      `capacity:relief:${RESOURCE_ENERGY}`,
+    );
+    if (typeof blockedEnergyRoute === "string") throw new Error(blockedEnergyRoute);
+    markResourceTransferTaskBlocked(blockedEnergyRoute.task, "receiver_capacity");
+
+    runResourceControl();
+
+    expect(blockedEnergyRoute.task.status).toBe("cancelled");
+    const pending = Object.values(ensureResourceTransferTaskStore()).filter(
+      (entry) =>
+        entry.status === "pending" &&
+        entry.fromRoomName === source.name &&
+        entry.reason?.startsWith("capacity:relief:"),
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      toRoomName: needyReceiver.name,
+      resource: RESOURCE_ENERGY,
+      amount: 15_000,
+      remainingAmount: 15_000,
+      origin: "automatic",
+    });
+  });
+
   it("waits without a market deal when no safe receiver exists", () => {
     Memory.cfg!.resourceControl!.market = {
       enabled: true,
