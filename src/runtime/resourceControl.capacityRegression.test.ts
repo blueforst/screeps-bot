@@ -209,6 +209,11 @@ describe("resource control live-like capacity recovery", () => {
 
     Game.time = 10;
     runResourceControl();
+    expect(Memory.runtime?.resourceControl?.rooms[receiver.name]).toMatchObject({
+      terminalUsedCapacity: receiver.terminal!.store.getUsedCapacity(),
+      terminalFreeCapacity: receiver.terminal!.store.getFreeCapacity(),
+    });
+    expect(Memory.runtime?.resourceControl?.capacityIndexBuildCount).toBe(1);
     Game.time = 20;
     runResourceControl();
 

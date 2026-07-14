@@ -7,11 +7,11 @@ import {
 import { limitActionLog } from "@/runtime/actionLog";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import {
-  ensureResourceTransferTaskStore,
   cancelResourceTransferTask,
   clearResourceTransferTaskBlocker,
   createAutomaticResourceTransferTask,
   getResourceTransferTaskListSorted,
+  isHealthyReceiverCapacityCommitment,
   isHealthyResourceTransferTaskReservation,
   markResourceTransferTaskBlocked,
   reconcileResourceTransferTasks,
@@ -27,6 +27,10 @@ import {
   type CapacityHeadroomPolicy,
   type CapacityState,
 } from "@/runtime/logistics/capacityHeadroom";
+import {
+  createReceiverCapacityLedger,
+  type ReceiverCapacityLedger,
+} from "@/runtime/logistics/receiverCapacityLedger";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { normalizeBoolean, normalizeNumber } from "@/runtime/configNormalize";
 import {
@@ -130,6 +134,9 @@ interface CapacityReliefRoute {
 interface ResourceControlTransferContext {
   tasks: ResourceTransferTask[];
   taskById: Map<string, ResourceTransferTask>;
+  snapshotByRoom: Map<string, ResourceControlSnapshot>;
+  receiverCapacityLedger: ReceiverCapacityLedger;
+  capacityIndexBuildCount: number;
   healthyOutgoingByRoomResource: Map<string, number>;
   healthyIncomingByRoomResource: Map<string, number>;
   outgoingFeeByRoom: Map<string, number>;
@@ -155,6 +162,7 @@ export interface ResourceControlSnapshot {
   energyExportStart: number;
   terminalEnergyReserve: number;
   transferBatchSize: number;
+  terminalResourceAmounts?: Partial<Record<ResourceConstant, number>>;
   nativeMineralType?: MineralConstant;
   canMineNative: boolean;
   mineralFloor: ResourceThresholdMap;
@@ -425,6 +433,10 @@ export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
     const storageFreeCapacity = room.storage?.store.getFreeCapacity() || 0;
     const terminalUsedCapacity = room.terminal?.store.getUsedCapacity() || 0;
     const terminalFreeCapacity = room.terminal?.store.getFreeCapacity() || 0;
+    const terminalResourceAmounts: Partial<Record<ResourceConstant, number>> = {};
+    for (const resource of RESOURCES_ALL) {
+      terminalResourceAmounts[resource] = room.terminal?.store.getUsedCapacity(resource) || 0;
+    }
     const previousCapacityState = Memory.runtime?.resourceControl?.rooms?.[room.name]?.capacityState;
     const mineral = room.find(FIND_MINERALS)[0] || null;
     const extractor = room.find(FIND_STRUCTURES, {
@@ -453,6 +465,7 @@ export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
       energyExportStart: config.energyExportStart,
       terminalEnergyReserve: config.terminalEnergyReserve,
       transferBatchSize: config.transferBatchSize,
+      terminalResourceAmounts,
       nativeMineralType: mineral?.mineralType,
       canMineNative: !!mineral && !!extractor,
       mineralFloor: config.mineralFloor,
@@ -463,12 +476,31 @@ export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
   });
 }
 
+function getTerminalResourceAmount(
+  snapshot: ResourceControlSnapshot,
+  resource: ResourceConstant,
+): number {
+  const projected = snapshot.terminalResourceAmounts?.[resource];
+  return typeof projected === "number"
+    ? projected
+    : snapshot.terminal.store.getUsedCapacity(resource);
+}
+
+function setTerminalResourceAmount(
+  snapshot: ResourceControlSnapshot,
+  resource: ResourceConstant,
+  amount: number,
+): void {
+  snapshot.terminalResourceAmounts = snapshot.terminalResourceAmounts || {};
+  snapshot.terminalResourceAmounts[resource] = Math.max(0, Math.floor(amount));
+}
+
 function getStock(snapshot: ResourceControlSnapshot, resource: ResourceConstant): number {
   if (resource === RESOURCE_ENERGY) {
     return snapshot.storageEnergy + snapshot.terminalEnergy;
   }
   return (snapshot.storage?.store.getUsedCapacity(resource) || 0) +
-    snapshot.terminal.store.getUsedCapacity(resource);
+    getTerminalResourceAmount(snapshot, resource);
 }
 
 function isEnergyExportEligible(snapshot: ResourceControlSnapshot): boolean {
@@ -481,51 +513,36 @@ function roomResourceKey(roomName: string, resource: ResourceConstant): string {
 
 function createResourceControlTransferContext(
   snapshots: ResourceControlSnapshot[],
+  capacityConfig: ResourceCapacityConfig,
 ): ResourceControlTransferContext {
   const tasks = getResourceTransferTaskListSorted();
   const taskById = new Map(tasks.map((task) => [task.id, task] as const));
+  const snapshotByRoom = new Map(snapshots.map((snapshot) => [snapshot.roomName, snapshot] as const));
   const healthyOutgoingByRoomResource = new Map<string, number>();
   const healthyIncomingByRoomResource = new Map<string, number>();
   const outgoingFeeByRoom = new Map<string, number>();
   const outgoingFeeByTaskId = new Map<string, number>();
   const healthyIncomingEnergyRooms = new Set<string>();
   const carrierProductionByRoomResource = new Map<string, number>();
-  const snapshotByRoom = new Map(snapshots.map((snapshot) => [snapshot.roomName, snapshot] as const));
-
-  for (const task of tasks) {
-    if (isHealthyResourceTransferTaskReservation(task, "outgoing")) {
-      const key = roomResourceKey(task.fromRoomName, task.resource);
-      healthyOutgoingByRoomResource.set(
-        key,
-        (healthyOutgoingByRoomResource.get(key) || 0) + task.remainingAmount,
-      );
-      const source = snapshotByRoom.get(task.fromRoomName);
-      if (source) {
-        const batchAmount = Math.min(source.transferBatchSize, task.remainingAmount);
-        if (batchAmount > 0) {
-          const fee = Game.market.calcTransactionCost(batchAmount, task.fromRoomName, task.toRoomName);
-          outgoingFeeByTaskId.set(task.id, fee);
-          outgoingFeeByRoom.set(
-            task.fromRoomName,
-            (outgoingFeeByRoom.get(task.fromRoomName) || 0) + fee,
-          );
-        }
-      }
-    }
-    if (isHealthyResourceTransferTaskReservation(task, "incoming")) {
-      const key = roomResourceKey(task.toRoomName, task.resource);
-      healthyIncomingByRoomResource.set(
-        key,
-        (healthyIncomingByRoomResource.get(key) || 0) + task.remainingAmount,
-      );
-    }
-    if (
-      task.resource === RESOURCE_ENERGY &&
-      isHealthyResourceTransferTaskReservation(task, "incoming")
-    ) {
-      healthyIncomingEnergyRooms.add(task.toRoomName);
-    }
-  }
+  const receiverCapacityLedger = createReceiverCapacityLedger({
+    receivers: snapshots
+      .filter((snapshot) => !!snapshot.storage)
+      .map((snapshot) => ({
+        roomName: snapshot.roomName,
+        storageFreeCapacity: snapshot.storageFreeCapacity,
+        terminalFreeCapacity: snapshot.terminalFreeCapacity,
+        getTerminalResourceFreeCapacity: (resource: ResourceConstant) =>
+          getReceiverTerminalFreeCapacity(snapshot, resource),
+      })),
+    tasks,
+    storageSafetyReserve: capacityConfig.storagePressureFreeCapacity,
+    terminalSafetyReserve: capacityConfig.terminalPressureFreeCapacity,
+    isTaskEndpointValid: (task) =>
+      !!snapshotByRoom.get(task.fromRoomName)?.storage &&
+      !!snapshotByRoom.get(task.toRoomName)?.storage,
+    isTaskHealthy: (task) =>
+      isHealthyReceiverCapacityCommitment(task, capacityConfig.automaticTaskNoProgressTtl),
+  });
 
   for (const snapshot of snapshots) {
     for (const task of listCarrierTasksByRoom(snapshot.roomName)) {
@@ -541,9 +558,12 @@ function createResourceControlTransferContext(
     }
   }
 
-  return {
+  const context: ResourceControlTransferContext = {
     tasks,
     taskById,
+    snapshotByRoom,
+    receiverCapacityLedger,
+    capacityIndexBuildCount: 1,
     healthyOutgoingByRoomResource,
     healthyIncomingByRoomResource,
     outgoingFeeByRoom,
@@ -551,6 +571,62 @@ function createResourceControlTransferContext(
     healthyIncomingEnergyRooms,
     carrierProductionByRoomResource,
   };
+  rebuildResourceControlTransferTaskIndexes(context);
+  return context;
+}
+
+function rebuildResourceControlTransferTaskIndexes(
+  context: ResourceControlTransferContext,
+): void {
+  context.healthyOutgoingByRoomResource.clear();
+  context.healthyIncomingByRoomResource.clear();
+  context.outgoingFeeByRoom.clear();
+  context.outgoingFeeByTaskId.clear();
+  context.healthyIncomingEnergyRooms.clear();
+
+  for (const task of context.tasks) {
+    if (isHealthyResourceTransferTaskReservation(task, "outgoing")) {
+      const key = roomResourceKey(task.fromRoomName, task.resource);
+      context.healthyOutgoingByRoomResource.set(
+        key,
+        (context.healthyOutgoingByRoomResource.get(key) || 0) + task.remainingAmount,
+      );
+      const source = context.snapshotByRoom.get(task.fromRoomName);
+      if (source) {
+        const batchAmount = Math.min(source.transferBatchSize, task.remainingAmount);
+        if (batchAmount > 0) {
+          const fee = Game.market.calcTransactionCost(batchAmount, task.fromRoomName, task.toRoomName);
+          context.outgoingFeeByTaskId.set(task.id, fee);
+          context.outgoingFeeByRoom.set(
+            task.fromRoomName,
+            (context.outgoingFeeByRoom.get(task.fromRoomName) || 0) + fee,
+          );
+        }
+      }
+    }
+    if (isHealthyResourceTransferTaskReservation(task, "incoming")) {
+      const key = roomResourceKey(task.toRoomName, task.resource);
+      context.healthyIncomingByRoomResource.set(
+        key,
+        (context.healthyIncomingByRoomResource.get(key) || 0) + task.remainingAmount,
+      );
+      if (task.resource === RESOURCE_ENERGY) {
+        context.healthyIncomingEnergyRooms.add(task.toRoomName);
+      }
+    }
+  }
+}
+
+function syncResourceControlTransferTask(
+  context: ResourceControlTransferContext,
+  task: ResourceTransferTask,
+): void {
+  if (!context.taskById.has(task.id)) {
+    context.tasks.push(task);
+  }
+  context.taskById.set(task.id, task);
+  context.receiverCapacityLedger.syncTask(task);
+  rebuildResourceControlTransferTaskIndexes(context);
 }
 
 function getOutgoingTransactionFeeReserve(
@@ -654,7 +730,7 @@ function computeSendAmount(
 ): number {
   const availableResource = resource === RESOURCE_ENERGY
     ? donor.terminalEnergy
-    : donor.terminal.store.getUsedCapacity(resource);
+    : getTerminalResourceAmount(donor, resource);
   const maximum = Math.floor(
     Math.min(targetAmount, donor.transferBatchSize, availableResource),
   );
@@ -706,10 +782,31 @@ function applyPostSendDelta(
   amount: number,
 ): number {
   const transferCost = Game.market.calcTransactionCost(amount, donor.roomName, receiver.roomName);
-  donor.terminalEnergy = Math.max(0, donor.terminalEnergy - (resource === RESOURCE_ENERGY ? amount : 0) - transferCost);
+  const donorEnergyDelta = (resource === RESOURCE_ENERGY ? amount : 0) + transferCost;
+  donor.terminalEnergy = Math.max(0, donor.terminalEnergy - donorEnergyDelta);
+  setTerminalResourceAmount(donor, RESOURCE_ENERGY, donor.terminalEnergy);
+  if (resource !== RESOURCE_ENERGY) {
+    setTerminalResourceAmount(
+      donor,
+      resource,
+      getTerminalResourceAmount(donor, resource) - amount,
+    );
+  }
+  donor.terminalUsedCapacity = Math.max(0, donor.terminalUsedCapacity - amount - transferCost);
+  donor.terminalFreeCapacity = Math.max(0, donor.terminalFreeCapacity + amount + transferCost);
+
   if (resource === RESOURCE_ENERGY) {
     receiver.terminalEnergy += amount;
+    setTerminalResourceAmount(receiver, RESOURCE_ENERGY, receiver.terminalEnergy);
+  } else {
+    setTerminalResourceAmount(
+      receiver,
+      resource,
+      getTerminalResourceAmount(receiver, resource) + amount,
+    );
   }
+  receiver.terminalUsedCapacity += amount;
+  receiver.terminalFreeCapacity = Math.max(0, receiver.terminalFreeCapacity - amount);
 
   return transferCost;
 }
@@ -719,7 +816,6 @@ function applyInternalBalancing(
   terminalBusy: Set<string>,
   sendBudget: InternalSendBudget,
   context: ResourceControlTransferContext,
-  receiverCapacityByRoom: Map<string, number>,
   remainingEnergyNeedByRoom: Map<string, number>,
 ): string[] {
   const actions: string[] = [];
@@ -750,7 +846,10 @@ function applyInternalBalancing(
 
     for (const receiver of receivers) {
       if (donor.roomName === receiver.roomName) continue;
-      const receiverCapacity = receiverCapacityByRoom.get(receiver.roomName) || 0;
+      const receiverCapacity = context.receiverCapacityLedger.getAvailableAmount(
+        receiver.roomName,
+        RESOURCE_ENERGY,
+      );
       const receiverNeed = remainingEnergyNeedByRoom.get(receiver.roomName) || 0;
       const amount = computeTransferAmount(
         donor,
@@ -778,7 +877,11 @@ function applyInternalBalancing(
         RESOURCE_ENERGY,
         amount,
       );
-      receiverCapacityByRoom.set(receiver.roomName, Math.max(0, receiverCapacity - amount));
+      context.receiverCapacityLedger.applySend(
+        receiver.roomName,
+        RESOURCE_ENERGY,
+        amount,
+      );
       remainingEnergyNeedByRoom.set(receiver.roomName, Math.max(0, receiverNeed - amount));
       actions.push(
         `send:${donor.roomName}->${receiver.roomName}:energy=${amount}:cost=${transferCost}`,
@@ -832,16 +935,12 @@ function getTransferTaskPriority(
 
 function getReceiverTerminalFreeCapacity(receiver: ResourceControlSnapshot, resource: ResourceConstant): number {
   const totalFree = receiver.terminal.store.getFreeCapacity();
-  if (typeof totalFree === "number") {
-    return Math.max(0, totalFree);
-  }
-
   const resourceFree = receiver.terminal.store.getFreeCapacity(resource);
-  if (typeof resourceFree === "number") {
-    return Math.max(0, resourceFree);
+  if (typeof totalFree === "number" && typeof resourceFree === "number") {
+    return Math.max(0, Math.min(totalFree, resourceFree));
   }
-
-  return 0;
+  if (typeof totalFree === "number") return Math.max(0, totalFree);
+  return typeof resourceFree === "number" ? Math.max(0, resourceFree) : 0;
 }
 
 function getReceiverReceivableCapacity(
@@ -912,7 +1011,7 @@ function getMovableResourceAmount(
       getHealthyOutgoingCommitment(snapshot.roomName, resource, context, excludeTaskId),
   );
   const structureStock = location === "terminal"
-    ? snapshot.terminal.store.getUsedCapacity(resource)
+    ? getTerminalResourceAmount(snapshot, resource)
     : snapshot.storage?.store.getUsedCapacity(resource) || 0;
   return Math.min(structureStock, movableTotal);
 }
@@ -1049,6 +1148,22 @@ function getCapacityReliefReceivableAmount(
   );
 }
 
+function getCapacityReliefLedgerAvailableAmount(
+  receiver: ResourceControlSnapshot,
+  resource: ResourceConstant,
+  context: ResourceControlTransferContext,
+  excludeTaskId?: string,
+): number {
+  return Math.max(
+    0,
+    context.receiverCapacityLedger.getAvailableAmount(
+      receiver.roomName,
+      resource,
+      excludeTaskId,
+    ) - 1,
+  );
+}
+
 function isCapacityReliefReceiverEligible(
   receiver: ResourceControlSnapshot,
   config: ResourceCapacityConfig,
@@ -1065,7 +1180,6 @@ function planCapacityReliefTasks(
   snapshots: ResourceControlSnapshot[],
   config: ResourceCapacityConfig,
   context: ResourceControlTransferContext,
-  receiverCapacityByRoom: Map<string, number>,
   remainingEnergyNeedByRoom: Map<string, number>,
 ): string[] {
   if (!config.enabled) {
@@ -1088,14 +1202,7 @@ function planCapacityReliefTasks(
   );
   const existingCapacityTaskBySource = new Map<string, ResourceTransferTask>();
   const activeOutgoingSourceRooms = new Set<string>();
-  const incomingCommitmentByRoom = new Map<string, number>();
   for (const task of context.tasks) {
-    if (isHealthyResourceTransferTaskReservation(task, "incoming")) {
-      incomingCommitmentByRoom.set(
-        task.toRoomName,
-        (incomingCommitmentByRoom.get(task.toRoomName) || 0) + task.remainingAmount,
-      );
-    }
     if (
       !existingCapacityTaskBySource.has(task.fromRoomName) &&
       task.reason?.startsWith("capacity:relief:") &&
@@ -1110,19 +1217,6 @@ function planCapacityReliefTasks(
     ) {
       activeOutgoingSourceRooms.add(task.fromRoomName);
     }
-  }
-
-  const workingReceiverCapacity = new Map<string, number>();
-  for (const receiver of snapshots) {
-    const currentReceiverCapacity = Math.min(
-      getCapacityReliefReceivableAmount(receiver, config),
-      receiverCapacityByRoom.get(receiver.roomName) || 0,
-    );
-    workingReceiverCapacity.set(
-      receiver.roomName,
-      currentReceiverCapacity -
-        (incomingCommitmentByRoom.get(receiver.roomName) || 0),
-    );
   }
 
   const sources = snapshots
@@ -1164,19 +1258,21 @@ function planCapacityReliefTasks(
       )
       .filter((receiver) => isCapacityReliefReceiverEligible(receiver, config))
       .some((receiver) => {
-        const currentSafeCapacity = Math.min(
+        const excludesExisting = terminalRecoveryReplacement &&
+          existing?.toRoomName === receiver.roomName;
+        const safeCapacity = Math.min(
           getCapacityReliefReceivableAmount(receiver, config),
-          receiverCapacityByRoom.get(receiver.roomName) || 0,
+          getCapacityReliefLedgerAvailableAmount(
+            receiver,
+            existing?.resource || RESOURCE_ENERGY,
+            context,
+            excludesExisting ? existing?.id : undefined,
+          ),
         );
-        const oldReservation = terminalRecoveryReplacement &&
-          existing?.toRoomName === receiver.roomName &&
+        const oldReservation = excludesExisting &&
           isHealthyResourceTransferTaskReservation(existing, "incoming")
           ? existing.remainingAmount
           : 0;
-        const safeCapacity = Math.min(
-          currentSafeCapacity,
-          (workingReceiverCapacity.get(receiver.roomName) || 0) + oldReservation,
-        );
         const restoredEnergyNeed = existing?.resource === RESOURCE_ENERGY
           ? oldReservation
           : 0;
@@ -1204,6 +1300,7 @@ function planCapacityReliefTasks(
         actions.push(`capacity-terminal-priority-failed:${source.roomName}:${existing.resource}:${cancelled}`);
       } else {
         existing.lastError = "capacity_terminal_priority_replaced";
+        syncResourceControlTransferTask(context, existing);
         actions.push(`capacity-terminal-priority-cancelled:${source.roomName}:${existing.resource}`);
       }
       continue;
@@ -1242,19 +1339,21 @@ function planCapacityReliefTasks(
       )
       .filter((receiver) => isCapacityReliefReceiverEligible(receiver, config))
       .map((receiver) => {
-        const currentSafeCapacity = Math.min(
+        const excludesExisting = selectsReplacementResource &&
+          existing?.toRoomName === receiver.roomName;
+        const safeCapacity = Math.min(
           getCapacityReliefReceivableAmount(receiver, config),
-          receiverCapacityByRoom.get(receiver.roomName) || 0,
+          getCapacityReliefLedgerAvailableAmount(
+            receiver,
+            candidate.resource,
+            context,
+            excludesExisting ? existing?.id : undefined,
+          ),
         );
-        const oldReservation = selectsReplacementResource &&
-          existing?.toRoomName === receiver.roomName &&
+        const oldReservation = excludesExisting &&
           isHealthyResourceTransferTaskReservation(existing, "incoming")
           ? existing.remainingAmount
           : 0;
-        const safeCapacity = Math.min(
-          currentSafeCapacity,
-          (workingReceiverCapacity.get(receiver.roomName) || 0) + oldReservation,
-        );
         const planningEnergyNeed = Math.max(
           0,
           (planningEnergyNeedByRoom.get(receiver.roomName) || 0) +
@@ -1339,15 +1438,18 @@ function planCapacityReliefTasks(
       actions.push(`capacity-plan-failed:${source.roomName}:${candidate.resource}:${result}`);
       continue;
     }
+    syncResourceControlTransferTask(context, result.task);
     if (existing) {
       const cancelled = cancelResourceTransferTask(existing.id);
       if (typeof cancelled === "string") {
         result.task.status = "cancelled";
         result.task.updatedAt = Game.time;
         result.task.lastError = "capacity_retarget_rollback";
+        syncResourceControlTransferTask(context, result.task);
         actions.push(`capacity-retarget-failed:${source.roomName}:${candidate.resource}:${cancelled}`);
         continue;
       }
+      syncResourceControlTransferTask(context, existing);
       if (terminalRecoveryReplacement) {
         existing.lastError = "capacity_terminal_priority_replaced";
         actions.push(
@@ -1366,7 +1468,6 @@ function planCapacityReliefTasks(
         Math.max(0, target.planningEnergyNeed - amount),
       );
     }
-    workingReceiverCapacity.set(target.receiver.roomName, Math.max(0, target.safeCapacity - amount));
     created += 1;
     actions.push(
       `capacity-plan:${source.roomName}->${target.receiver.roomName}:${candidate.resource}=${amount}`,
@@ -1400,7 +1501,6 @@ function executeTransferTasks(
   capacityConfig: ResourceCapacityConfig,
   sendBudget: InternalSendBudget,
   capacityReliefRoutes: CapacityReliefRoute[],
-  receiverCapacityByRoom: Map<string, number>,
   remainingEnergyNeedByRoom: Map<string, number>,
   context: ResourceControlTransferContext,
 ): string[] {
@@ -1446,6 +1546,7 @@ function executeTransferTasks(
       task.blockedReason = undefined;
       task.blockedSince = undefined;
       task.lastError = undefined;
+      syncResourceControlTransferTask(context, task);
       actions.push(`task-auto-done:${task.id}:non_positive_remaining`);
       continue;
     }
@@ -1456,6 +1557,7 @@ function executeTransferTasks(
       task.status = "failed";
       task.updatedAt = Game.time;
       task.lastError = "room_not_ready";
+      syncResourceControlTransferTask(context, task);
       actions.push(`task-failed:${task.id}:room_not_ready`);
       continue;
     }
@@ -1463,6 +1565,7 @@ function executeTransferTasks(
       task.status = "failed";
       task.updatedAt = Game.time;
       task.lastError = "same_room";
+      syncResourceControlTransferTask(context, task);
       actions.push(`task-failed:${task.id}:same_room`);
       continue;
     }
@@ -1477,36 +1580,42 @@ function executeTransferTasks(
       task.blockedReason = undefined;
       task.blockedSince = undefined;
       task.lastError = "capacity_source_recovered";
+      syncResourceControlTransferTask(context, task);
       actions.push(`capacity-task-cancelled:${task.id}:source_recovered`);
       continue;
     }
     if (getStock(donor, task.resource) <= 0) {
       markResourceTransferTaskBlocked(task, "source_depleted");
+      syncResourceControlTransferTask(context, task);
       continue;
     }
     if (task.blockedReason === "source_depleted") {
       clearResourceTransferTaskBlocker(task);
+      syncResourceControlTransferTask(context, task);
     }
 
-    const currentReceiverCapacity = isCapacityRelief
+    const taskAvailableCapacity = context.receiverCapacityLedger.getAvailableAmount(
+      receiver.roomName,
+      task.resource,
+      task.id,
+    );
+    const receiverCapacity = isCapacityRelief
       ? Math.min(
-          getReceiverReceivableCapacity(receiver, task.resource, capacityConfig),
+          Math.max(0, taskAvailableCapacity - 1),
           getCapacityReliefReceivableAmount(receiver, capacityConfig),
         )
-      : getReceiverReceivableCapacity(receiver, task.resource, capacityConfig);
-    const receiverCapacity = Math.min(
-      currentReceiverCapacity,
-      receiverCapacityByRoom.get(receiver.roomName) || 0,
-    );
+      : taskAvailableCapacity;
     if (
       receiverCapacity <= 0 ||
       (isCapacityRelief && receiver.capacityState !== "normal")
     ) {
       markResourceTransferTaskBlocked(task, "receiver_capacity");
+      syncResourceControlTransferTask(context, task);
       continue;
     }
     if (task.blockedReason === "receiver_capacity") {
       clearResourceTransferTaskBlocker(task);
+      syncResourceControlTransferTask(context, task);
     }
 
     if (taskReason.startsWith("hub:export:")) {
@@ -1522,6 +1631,7 @@ function executeTransferTasks(
       const receiverNeed = remainingEnergyNeedByRoom.get(receiver.roomName) || 0;
       if (receiverNeed <= 0) {
         markResourceTransferTaskBlocked(task, "receiver_capacity");
+        syncResourceControlTransferTask(context, task);
         continue;
       }
       const exportBudget = getEnergyBalancingSurplus(donor, context, task.id);
@@ -1536,6 +1646,7 @@ function executeTransferTasks(
       });
       if (requestedAmount <= 0) {
         markResourceTransferTaskBlocked(task, "insufficient_terminal_resource_or_fee");
+        syncResourceControlTransferTask(context, task);
         continue;
       }
     }
@@ -1551,6 +1662,7 @@ function executeTransferTasks(
       );
       if (requestedAmount <= 0) {
         markResourceTransferTaskBlocked(task, "insufficient_terminal_resource_or_fee");
+        syncResourceControlTransferTask(context, task);
         continue;
       }
     }
@@ -1562,6 +1674,7 @@ function executeTransferTasks(
     );
     if (amount <= 0) {
       markResourceTransferTaskBlocked(task, "insufficient_terminal_resource_or_fee");
+      syncResourceControlTransferTask(context, task);
       continue;
     }
 
@@ -1572,6 +1685,7 @@ function executeTransferTasks(
     ) {
       if (task.blockedReason === "insufficient_terminal_resource_or_fee") {
         clearResourceTransferTaskBlocker(task);
+        syncResourceControlTransferTask(context, task);
       }
       continue;
     }
@@ -1582,6 +1696,7 @@ function executeTransferTasks(
       task.lastError = `send_code_${code}`;
       if (code === ERR_INVALID_ARGS || code === ERR_INVALID_TARGET) {
         task.status = "failed";
+        syncResourceControlTransferTask(context, task);
         actions.push(`task-failed:${task.id}:send_code_${code}`);
         continue;
       }
@@ -1591,9 +1706,11 @@ function executeTransferTasks(
     recordFixedCpuAction("resourceControl");
 
     const transferCost = applyPostSendDelta(donor, receiver, task.resource, amount);
-    receiverCapacityByRoom.set(
+    context.receiverCapacityLedger.applySend(
       receiver.roomName,
-      Math.max(0, receiverCapacity - amount),
+      task.resource,
+      amount,
+      task.id,
     );
     if (task.resource === RESOURCE_ENERGY) {
       remainingEnergyNeedByRoom.set(
@@ -1609,6 +1726,7 @@ function executeTransferTasks(
     if (task.remainingAmount <= 0) {
       task.status = "done";
     }
+    syncResourceControlTransferTask(context, task);
 
     terminalBusy.add(donor.roomName);
     sendBudget.remaining -= 1;
@@ -1637,9 +1755,12 @@ function createTerminalFeedTask(room: ResourceControlSnapshot, resource: Resourc
     return null;
   }
 
-  const terminalAmount = room.terminal.store.getUsedCapacity(resource);
+  const terminalAmount = getTerminalResourceAmount(room, resource);
   const storageAmount = room.storage.store.getUsedCapacity(resource);
-  const terminalFree = room.terminal.store.getFreeCapacity(resource);
+  const terminalFree = Math.min(
+    room.terminalFreeCapacity,
+    room.terminal.store.getFreeCapacity(resource),
+  );
   const missing = Math.min(storageAmount, terminalFree, Math.max(0, targetStock - terminalAmount));
   if (missing <= 0) {
     return null;
@@ -1667,7 +1788,7 @@ function createTerminalOffloadTask(
   room: ResourceControlSnapshot,
   resource: ResourceConstant,
   amount: number,
-  availableAmount = room.terminal.store.getUsedCapacity(resource),
+  availableAmount = getTerminalResourceAmount(room, resource),
 ): CarrierTaskDraft | null {
   if (!room.storage || amount <= 0) {
     return null;
@@ -1905,19 +2026,21 @@ function syncTerminalFeedTasks(
     // Compute offload drafts first so we can suppress conflicting feed drafts
     const offloadedResources = new Set<ResourceConstant>();
     if (snapshot.storage) {
-      let overflowTotal = snapshot.terminal.store.getUsedCapacity();
+      let overflowTotal = snapshot.terminalUsedCapacity;
       if (overflowTotal > TERMINAL_TOTAL_STORAGE_CAP) {
         const roomPending = pendingByRoom.get(snapshot.roomName);
         let storageFree = snapshot.storage.store.getFreeCapacity();
-        const allResources = Object.keys(snapshot.terminal.store) as ResourceConstant[];
+        const allResources = RESOURCES_ALL.filter(
+          (resource) => getTerminalResourceAmount(snapshot, resource) > 0,
+        );
         allResources.sort((a, b) => {
           if (a === RESOURCE_ENERGY && b !== RESOURCE_ENERGY) return 1;
           if (a !== RESOURCE_ENERGY && b === RESOURCE_ENERGY) return -1;
           return 0;
         });
         for (const resource of allResources) {
-          const stored = snapshot.terminal.store[resource];
-          if (typeof stored !== "number" || stored <= 0) continue;
+          const stored = getTerminalResourceAmount(snapshot, resource);
+          if (stored <= 0) continue;
 
           let protectedAmount: number;
           if (resource === RESOURCE_ENERGY) {
@@ -1945,7 +2068,7 @@ function syncTerminalFeedTasks(
       (sum, d) => (d.type === "terminal_offload" ? sum + d.steps.reduce((s, step) => s + step.amount, 0) : sum),
       0,
     );
-    let feedCapacity = Math.max(0, TERMINAL_TOTAL_STORAGE_CAP - (snapshot.terminal.store.getUsedCapacity() - offloadTotal));
+    let feedCapacity = Math.max(0, TERMINAL_TOTAL_STORAGE_CAP - (snapshot.terminalUsedCapacity - offloadTotal));
 
     const desiredFeedByResource = new Map<ResourceConstant, number>();
     const roomPending = pendingByRoom.get(snapshot.roomName);
@@ -2189,7 +2312,7 @@ function applyMarketOps(
         continue;
       }
 
-      const terminalResource = room.terminal.store.getUsedCapacity(resource);
+      const terminalResource = getTerminalResourceAmount(room, resource);
       let amount = Math.min(surplus, terminalResource, marketCfg.maxDealAmount);
       if (amount < marketCfg.minDealAmount) {
         continue;
@@ -2248,7 +2371,7 @@ function applyMarketOps(
         const surplusAmount = Memory.runtime?.hub?.marketSellSurplus?.[resource];
         if (surplusAmount == null || surplusAmount < marketCfg.minDealAmount) continue;
 
-        const terminalResource = hubSnapshot.terminal.store.getUsedCapacity(resource);
+        const terminalResource = getTerminalResourceAmount(hubSnapshot, resource);
         const amount = Math.min(surplusAmount, terminalResource, marketCfg.maxDealAmount);
         if (amount < marketCfg.minDealAmount) continue;
 
@@ -2299,7 +2422,10 @@ function applyMarketOps(
       continue;
     }
 
-    const terminalFree = room.terminal.store.getFreeCapacity(RESOURCE_ENERGY);
+    const terminalFree = Math.min(
+      room.terminalFreeCapacity,
+      room.terminal.store.getFreeCapacity(RESOURCE_ENERGY),
+    );
     const amount = Math.min(need, marketCfg.maxDealAmount, terminalFree);
     if (amount < marketCfg.minDealAmount) {
       continue;
@@ -2378,7 +2504,10 @@ function applyMarketOps(
         continue;
       }
 
-      const terminalFree = room.terminal.store.getFreeCapacity(resource);
+      const terminalFree = Math.min(
+        room.terminalFreeCapacity,
+        room.terminal.store.getFreeCapacity(resource),
+      );
       const amount = Math.min(deficit, marketCfg.maxDealAmount, terminalFree);
       if (amount < marketCfg.minDealAmount) {
         continue;
@@ -2421,6 +2550,7 @@ function persistResourceControlState(
   snapshots: ResourceControlSnapshot[],
   actions: string[],
   marketActions: string[],
+  context: ResourceControlTransferContext,
   synthesisBindings?: SynthesisBindingStore,
   capacityReliefRoutes: CapacityReliefRoute[] = [],
 ): void {
@@ -2443,7 +2573,7 @@ function persistResourceControlState(
     automaticPending: 0,
     blockedByReason: {} as Partial<Record<NonNullable<ResourceTransferTask["blockedReason"]>, number>>,
   };
-  for (const task of Object.values(ensureResourceTransferTaskStore())) {
+  for (const task of context.tasks) {
     if (task.status !== "pending") continue;
     taskSummary.pending += 1;
     if (task.origin === "automatic") taskSummary.automaticPending += 1;
@@ -2473,6 +2603,7 @@ function persistResourceControlState(
   ].slice(-MAX_RECENT_CAPACITY_RELIEF_ROUTES);
   runtime.resourceControl = {
     updatedAt: Game.time,
+    capacityIndexBuildCount: context.capacityIndexBuildCount,
     rooms: snapshots.reduce(
       (result, snapshot) => {
         const minerals: Partial<Record<ResourceConstant, number>> = {};
@@ -2552,17 +2683,11 @@ export function runResourceControl(): void {
   }
 
   const marketConfig = resolveMarketConfig();
-  const planningContext = createResourceControlTransferContext(snapshots);
+  const context = createResourceControlTransferContext(snapshots, capacityConfig);
 
   const terminalBusy = new Set<string>();
   const sendBudget: InternalSendBudget = { remaining: resolveTaskMaxPerRun() };
   const capacityReliefRoutes: CapacityReliefRoute[] = [];
-  const receiverCapacityByRoom = new Map(
-    snapshots.map((snapshot) => [
-      snapshot.roomName,
-      getReceiverReceivableCapacity(snapshot, RESOURCE_ENERGY, capacityConfig),
-    ]),
-  );
   const remainingEnergyNeedByRoom = new Map(
     snapshots.map((snapshot) => [
       snapshot.roomName,
@@ -2573,45 +2698,41 @@ export function runResourceControl(): void {
     snapshots,
     terminalBusy,
     sendBudget,
-    planningContext,
-    receiverCapacityByRoom,
+    context,
     remainingEnergyNeedByRoom,
   );
   const capacityActions = planCapacityReliefTasks(
     snapshots,
     capacityConfig,
-    planningContext,
-    receiverCapacityByRoom,
+    context,
     remainingEnergyNeedByRoom,
   );
-  const executionContext = createResourceControlTransferContext(snapshots);
   const taskActions = executeTransferTasks(
     snapshots,
     terminalBusy,
     capacityConfig,
     sendBudget,
     capacityReliefRoutes,
-    receiverCapacityByRoom,
     remainingEnergyNeedByRoom,
-    executionContext,
+    context,
   );
-  const postExecutionContext = createResourceControlTransferContext(snapshots);
   const preloadActions = syncTerminalFeedTasks(
     snapshots,
     marketConfig,
     capacityConfig,
-    postExecutionContext,
+    context,
   );
   const marketActions = applyMarketOps(
     snapshots,
     marketConfig,
     terminalBusy,
-    postExecutionContext,
+    context,
   );
   persistResourceControlState(
     snapshots,
     [...actions, ...capacityActions, ...taskActions, ...preloadActions],
     marketActions,
+    context,
     undefined,
     capacityReliefRoutes,
   );

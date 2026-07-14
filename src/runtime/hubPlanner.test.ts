@@ -1923,6 +1923,19 @@ describe("planHubDistribution", () => {
     expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=10100`);
   });
 
+  it("uses terminal resource-specific free capacity as a receiver lower bound", () => {
+    Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 50_000 });
+    const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });
+    (satRoom.terminal!.store as any).getFreeCapacity = (resource?: ResourceConstant) =>
+      resource === XGHO2 ? 400 : 100_000;
+    Memory.cfg!.hub!.reservePerRoom = 20_000;
+    Game.rooms[SAT_ROOM] = satRoom;
+
+    const actions = planHubDistribution(Memory.cfg!.hub!);
+
+    expect(actions).toContainEqual(`export:${SAT_ROOM}:${XGHO2}=400`);
+  });
+
   it("uses the shared configured receiver headroom watermarks", () => {
     Game.rooms[HUB_ROOM] = createHubRoomForDistribution({ [XGHO2]: 5000 });
     const satRoom = createSatelliteRoom(SAT_ROOM, { [XGHO2]: 250 });

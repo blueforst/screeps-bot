@@ -680,6 +680,7 @@ declare global {
       };
       resourceControl?: {
         updatedAt: number;
+        capacityIndexBuildCount?: number;
         capacityPolicy?: {
           terminalHeadroomRecoveryEnabled: boolean;
           storagePressureFreeCapacity: number;

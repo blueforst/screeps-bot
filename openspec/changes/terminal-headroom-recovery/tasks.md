@@ -6,10 +6,10 @@
 
 ## 2. Receiver 容量投影与预留
 
-- [ ] 2.1 为多 producer 同 tick 竞争、任务自身承诺排除、失效承诺释放和未完成 offload 不提前增容编写失败测试
-- [ ] 2.2 实现单轮复用的 room capacity/commitment index，按 terminal 总空闲、资源空闲、storage 空闲和健康承诺计算安全可接收量
-- [ ] 2.3 为 admission 增加同 tick reservation 账本，并让 Hub planner、capacity planner 与 transfer executor 共用该账本
-- [ ] 2.4 在 `terminal.send` 前重验 receiver 物理容量，并验证所有 producer 的累计承诺不超过安全 headroom
+- [x] 2.1 为多 producer 同 tick 竞争、任务自身承诺排除、失效承诺释放和未完成 offload 不提前增容编写失败测试
+- [x] 2.2 实现单轮复用的 room capacity/commitment index，按 terminal 总空闲、资源空闲、storage 空闲和健康承诺计算安全可接收量
+- [x] 2.3 为 admission 增加同 tick reservation 账本，并让 Hub planner、capacity planner 与 transfer executor 共用该账本
+- [x] 2.4 在 `terminal.send` 前重验 receiver 物理容量，并验证所有 producer 的累计承诺不超过安全 headroom
 
 ## 3. Terminal 恢复闭环
 
@@ -30,7 +30,7 @@
 
 - [ ] 5.1 扩展 `Memory.runtime.resourceControl`，输出规范化水位、eligible receiver 数、每房恢复 gap/可排空量、粘滞原因、reservation 与 admitted/suppressed staging 摘要
 - [ ] 5.2 更新 `scripts/monitor-service.mjs` 及其 fixture/test，展示新增字段并兼容缺少字段的旧 runtime 快照
-- [ ] 5.3 增加索引构建次数或等价测试钩子，证明 planner、executor 与 feed sync 在单轮内复用同一 capacity/commitment index
+- [x] 5.3 增加索引构建次数或等价测试钩子，证明 planner、executor 与 feed sync 在单轮内复用同一 capacity/commitment index
 
 ## 6. 验证与上线准备
 

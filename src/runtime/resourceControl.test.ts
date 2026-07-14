@@ -4560,6 +4560,9 @@ describe("capacity-relief planning", () => {
   });
 
   it("does not overcommit one receiver across newly planned routes", () => {
+    (Memory.cfg!.resourceControl as any).capacityBalancing = {
+      maxPlannedAmountPerTask: 5_000,
+    };
     const receiver = createRoom({
       name: "W63N0",
       storageResources: { [RESOURCE_ENERGY]: 200_000 },
@@ -4587,8 +4590,117 @@ describe("capacity-relief planning", () => {
     const tasks = Object.values(ensureResourceTransferTaskStore()).filter(
       (entry) => entry.status === "pending" && entry.reason?.startsWith("capacity:relief:"),
     );
-    expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({ toRoomName: receiver.name, remainingAmount: 9_999 });
+    expect(tasks).toHaveLength(2);
+    expect(new Set(tasks.map((task) => task.resource))).toEqual(
+      new Set([RESOURCE_HYDROGEN, RESOURCE_KEANIUM]),
+    );
+    expect(tasks.reduce((sum, task) => sum + task.remainingAmount, 0)).toBe(9_999);
+    expect(tasks.every((task) => task.toRoomName === receiver.name)).toBe(true);
+  });
+
+  it("does not admit against terminal space promised only by an unfinished offload", () => {
+    const source = createRoom({
+      name: "W63N2A",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 230_000,
+      },
+      storageFreeCapacity: 500_000,
+    });
+    source.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W63N2B",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 200_000,
+        [RESOURCE_KEANIUM]: 50_000,
+      },
+      storageFreeCapacity: 500_000,
+    });
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", receiver.name, [
+      {
+        id: `resourceControl:terminal_offload:${receiver.name}:${RESOURCE_KEANIUM}`,
+        type: "terminal_offload",
+        priority: 90,
+        steps: [
+          {
+            id: `${RESOURCE_KEANIUM}:${receiver.terminal!.id}->${receiver.storage!.id}`,
+            resource: RESOURCE_KEANIUM,
+            fromKind: "terminal",
+            toKind: "storage",
+            fromId: receiver.terminal!.id,
+            toId: receiver.storage!.id,
+            amount: 50_000,
+          },
+        ],
+      },
+    ]);
+
+    runResourceControl();
+
+    expect(
+      Object.values(ensureResourceTransferTaskStore()).find(
+        (task) => task.reason === `capacity:relief:${RESOURCE_HYDROGEN}`,
+      ),
+    ).toMatchObject({
+      toRoomName: receiver.name,
+      remainingAmount: 9_999,
+    });
+  });
+
+  it("reuses receiver capacity released by a receiver-capacity blocker in the same planning pass", () => {
+    const blockedDonor = createRoom({
+      name: "W63N3",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_KEANIUM]: 10_000,
+      },
+      storageFreeCapacity: 250_000,
+    });
+    blockedDonor.terminal!.cooldown = 1;
+    const pressureSource = createRoom({
+      name: "W63N4",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_HYDROGEN]: 230_000,
+      },
+      storageFreeCapacity: 500_000,
+    });
+    pressureSource.terminal!.cooldown = 1;
+    const receiver = createRoom({
+      name: "W63N5",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 250_000 },
+      storageFreeCapacity: 500_000,
+    });
+    for (const room of [blockedDonor, pressureSource, receiver]) {
+      Game.rooms[room.name] = room;
+    }
+    const blocked = createAutomaticResourceTransferTask(
+      blockedDonor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      9_999,
+      "synthesis:blocked-capacity",
+    );
+    if (typeof blocked === "string") throw new Error(blocked);
+    markResourceTransferTaskBlocked(blocked.task, "receiver_capacity");
+
+    runResourceControl();
+
+    expect(
+      Object.values(ensureResourceTransferTaskStore()).find(
+        (task) =>
+          task.fromRoomName === pressureSource.name &&
+          task.toRoomName === receiver.name &&
+          task.reason === `capacity:relief:${RESOURCE_HYDROGEN}`,
+      ),
+    ).toMatchObject({ remainingAmount: 9_999 });
   });
 
   it("creates at most five new relief tasks per planning run", () => {
@@ -5546,7 +5658,7 @@ describe("capacity-relief execution health and priority", () => {
 
     expect(firstDonor.terminal!.send).toHaveBeenCalledWith(
       RESOURCE_KEANIUM,
-      10_000,
+      5_000,
       receiver.name,
       expect.any(String),
     );
@@ -5805,6 +5917,18 @@ describe("resource-control logistics observability", () => {
         transferCost: 123,
       },
     ]);
+    expect(Memory.runtime?.resourceControl?.rooms[donor.name]).toMatchObject({
+      terminalUsedCapacity: 44_877,
+      terminalFreeCapacity: 255_123,
+      terminalEnergy: 39_877,
+      minerals: { [RESOURCE_KEANIUM]: 5_000 },
+    });
+    expect(Memory.runtime?.resourceControl?.rooms[receiver.name]).toMatchObject({
+      terminalUsedCapacity: 21_000,
+      terminalFreeCapacity: 279_000,
+      minerals: { [RESOURCE_KEANIUM]: 1_000 },
+    });
+    expect(Memory.runtime?.resourceControl?.capacityIndexBuildCount).toBe(1);
   });
 
   it("keeps transfer-task store scans bounded independently of room count", () => {
@@ -5829,6 +5953,7 @@ describe("resource-control logistics observability", () => {
 
     runResourceControl();
 
+    expect(Memory.runtime?.resourceControl?.capacityIndexBuildCount).toBe(1);
     expect(scans).toBeLessThanOrEqual(5);
   });
 });
