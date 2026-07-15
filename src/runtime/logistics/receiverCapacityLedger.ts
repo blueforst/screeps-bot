@@ -49,6 +49,8 @@ export interface ReceiverCapacityReservationOptions {
   ownerTaskId?: string;
   /** Temporarily returns this task's commitment while calculating the grant. */
   excludeTaskId?: string;
+  /** Allows a critical shipment to use real terminal headroom below safety reserves. */
+  allowTerminalSafetyReserve?: boolean;
 }
 
 export interface ReceiverCapacityExclusionSummaryEntry {
@@ -130,6 +132,28 @@ export class ReceiverCapacityLedger {
     excludeTaskId?: string,
   ): number {
     return this.getAvailability(roomName, resource, excludeTaskId).available;
+  }
+
+  public getTerminalAvailableAmount(
+    roomName: string,
+    resource: ResourceConstant,
+    excludeTaskId?: string,
+  ): number {
+    const receiver = this.receivers.get(roomName);
+    if (!receiver) return 0;
+
+    const availability = this.getAvailability(roomName, resource, excludeTaskId);
+    const terminalTotalFreeCapacity = Math.max(
+      0,
+      normalizedAmount(receiver.view.terminalFreeCapacity) - receiver.receivedAmount,
+    );
+    const terminalTotalRemaining = Math.max(
+      0,
+      terminalTotalFreeCapacity
+        - availability.totalCommitted
+        - availability.reservationTotal,
+    );
+    return Math.min(terminalTotalRemaining, availability.terminalResourceRemaining);
   }
 
   public getAvailability(
@@ -245,6 +269,10 @@ export class ReceiverCapacityLedger {
     }
 
     const ownerTaskId = options.ownerTaskId;
+    const getAvailable = (excludeTaskId?: string): number =>
+      options.allowTerminalSafetyReserve
+        ? this.getTerminalAvailableAmount(roomName, resource, excludeTaskId)
+        : this.getAvailableAmount(roomName, resource, excludeTaskId);
     let amount: number;
     if (ownerTaskId) {
       const commitment = this.taskCommitments.get(ownerTaskId);
@@ -256,11 +284,7 @@ export class ReceiverCapacityLedger {
         return 0;
       }
       const otherOwnedAmount = this.getOwnedReservationAmount(ownerTaskId);
-      const selfExcludedAvailable = this.getAvailableAmount(
-        roomName,
-        resource,
-        ownerTaskId,
-      );
+      const selfExcludedAvailable = getAvailable(ownerTaskId);
       amount = Math.min(
         requested,
         Math.max(0, commitment.amount - otherOwnedAmount),
@@ -269,7 +293,7 @@ export class ReceiverCapacityLedger {
     } else {
       amount = Math.min(
         requested,
-        this.getAvailableAmount(roomName, resource, options.excludeTaskId),
+        getAvailable(options.excludeTaskId),
       );
     }
     if (amount <= 0) {

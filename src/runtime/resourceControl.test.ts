@@ -6882,6 +6882,41 @@ describe("capacity-relief execution health and priority", () => {
     );
   });
 
+  it("admits a war boost shipment into physical terminal headroom below the normal safety buffer", () => {
+    const donor = createRoom({
+      name: "W68N9B",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 40_000,
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 1_200,
+      },
+    });
+    const receiver = createRoom({
+      name: "W68N10B",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 296_000 },
+      storageFreeCapacity: 20_000,
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+      1_200,
+      "powerBankBoost:war:E1N57:E2N54:g1",
+    );
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+      1_200,
+      receiver.name,
+      expect.stringContaining("resourceControl:task:"),
+    );
+  });
+
   it("does not execute capacity relief into a hysteresis-pressure receiver", () => {
     const donor = createRoom({
       name: "W68N10A",

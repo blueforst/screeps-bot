@@ -1805,6 +1805,11 @@ function getHubPendingImportResources(tasks: ResourceTransferTask[]): Map<string
   return result;
 }
 
+function isWarBoostShipment(task: ResourceTransferTask): boolean {
+  const reason = task.reason || "";
+  return reason.startsWith("powerBankBoost:war:") || reason.startsWith("war boost ");
+}
+
 function executeTransferTasks(
   snapshots: ResourceControlSnapshot[],
   terminalBusy: Set<string>,
@@ -1901,11 +1906,18 @@ function executeTransferTasks(
       syncResourceControlTransferTask(context, task);
     }
 
-    const taskAvailableCapacity = context.receiverCapacityLedger.getAvailableAmount(
-      receiver.roomName,
-      task.resource,
-      task.id,
-    );
+    const usePhysicalTerminalHeadroom = isWarBoostShipment(task);
+    const taskAvailableCapacity = usePhysicalTerminalHeadroom
+      ? context.receiverCapacityLedger.getTerminalAvailableAmount(
+          receiver.roomName,
+          task.resource,
+          task.id,
+        )
+      : context.receiverCapacityLedger.getAvailableAmount(
+          receiver.roomName,
+          task.resource,
+          task.id,
+        );
     const receiverCapacity = isCapacityRelief
       ? Math.min(
           Math.max(0, taskAvailableCapacity - 1),
@@ -2002,7 +2014,9 @@ function executeTransferTasks(
       receiver.roomName,
       task.resource,
       amount,
-      { ownerTaskId: task.id },
+      usePhysicalTerminalHeadroom
+        ? { ownerTaskId: task.id, allowTerminalSafetyReserve: true }
+        : { ownerTaskId: task.id },
     );
     if (allocatedAmount <= 0) {
       markResourceTransferTaskBlocked(task, "receiver_capacity");
@@ -2814,11 +2828,18 @@ function assessTransferTaskStagingBatch(
   if (sourceSafeAmount <= 0) {
     return { affordableAmount: 0, suppressedReason: "source_inventory" };
   }
-  const receiverAllowance = context.receiverCapacityLedger.getAvailableAmount(
-    receiver.roomName,
-    task.resource,
-    task.id,
-  );
+  const usePhysicalTerminalHeadroom = isWarBoostShipment(task);
+  const receiverAllowance = usePhysicalTerminalHeadroom
+    ? context.receiverCapacityLedger.getTerminalAvailableAmount(
+        receiver.roomName,
+        task.resource,
+        task.id,
+      )
+    : context.receiverCapacityLedger.getAvailableAmount(
+        receiver.roomName,
+        task.resource,
+        task.id,
+      );
   if (receiverAllowance <= 0) {
     return { affordableAmount: 0, suppressedReason: "receiver_capacity" };
   }
@@ -2910,7 +2931,9 @@ function reserveTransferTaskStagingBatch(
     receiver.roomName,
     task.resource,
     assessment.affordableAmount,
-    { ownerTaskId: task.id },
+    isWarBoostShipment(task)
+      ? { ownerTaskId: task.id, allowTerminalSafetyReserve: true }
+      : { ownerTaskId: task.id },
   );
   if (grantedAmount <= 0) {
     return { suppressedReason: "receiver_capacity" };
@@ -2921,7 +2944,9 @@ function reserveTransferTaskStagingBatch(
     receiver.roomName,
     task.resource,
     amount,
-    { ownerTaskId: task.id },
+    isWarBoostShipment(task)
+      ? { ownerTaskId: task.id, allowTerminalSafetyReserve: true }
+      : { ownerTaskId: task.id },
   );
   if (reservedAmount <= 0) {
     return { suppressedReason: "receiver_capacity" };

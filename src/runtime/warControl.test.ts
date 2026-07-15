@@ -462,6 +462,7 @@ describe("runWarControl", () => {
       boostGateOpenedAt: Game.time,
       configNames: { meleeAttacker: attackerConfig, healer: healerConfig },
     });
+    expect(Memory.data?.war?.E3N57?.boostStatus).toBe("preparing");
     expect(spawn.memory.spawnList).toContain(healerConfig);
     expect(Memory.data?.creepConfigs?.[healerConfig]).toBeDefined();
   });

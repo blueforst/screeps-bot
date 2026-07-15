@@ -782,6 +782,9 @@ function prepareT3DuoBoosts(task: WarTask): boolean {
     task.boostLabs = result.labs;
     task.boostStatus = result.status;
     task.failReason = result.reason;
+    if (result.status === "failed" && result.reason === "insufficient_labs") {
+      task.boostStatus = "preparing";
+    }
     return true;
   }
 
