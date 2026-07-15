@@ -252,6 +252,89 @@ describe("spawnPlanner emergency carrier flow", () => {
     expect(activeSpawn.memory.spawnList![0]).toContain(":manual:maxcarrier:");
   });
 
+  it("uses a healthy emergency carrier to cover one queued managed carrier", () => {
+    const room = createRoom("W1N7");
+    const spawn = createSpawn(room);
+    const managed = `${room.name}:carrier:0`;
+    spawn.memory.spawnList = [managed];
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.emergencyCarrier = {
+      name: "emergencyCarrier",
+      room,
+      ticksToLive: 1400,
+      memory: {
+        role: "carrier",
+        configName: `${room.name}:manual:maxcarrier:${Game.time - 100}`,
+      },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [managed]: { role: "carrier", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(managed);
+  });
+
+  it("covers only one managed carrier slot with one emergency carrier", () => {
+    const room = createRoom("W1N8");
+    const spawn = createSpawn(room);
+    const first = `${room.name}:carrier:0`;
+    const second = `${room.name}:carrier:1`;
+    spawn.memory.spawnList = [first, second];
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.emergencyCarrier = {
+      name: "emergencyCarrier",
+      room,
+      ticksToLive: 1400,
+      memory: {
+        role: "carrier",
+        configName: `${room.name}:manual:maxcarrier:${Game.time - 100}`,
+      },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [first]: { role: "carrier", args: [], roomName: room.name },
+        [second]: { role: "carrier", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    const managedQueue = spawn.memory.spawnList!.filter((name) => name.startsWith(`${room.name}:carrier:`));
+    expect(managedQueue).toHaveLength(1);
+  });
+
+  it("queues the managed replacement when the emergency carrier is near expiry", () => {
+    const room = createRoom("W1N9");
+    const spawn = createSpawn(room);
+    const managed = `${room.name}:carrier:0`;
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.emergencyCarrier = {
+      name: "emergencyCarrier",
+      room,
+      ticksToLive: 1,
+      memory: {
+        role: "carrier",
+        configName: `${room.name}:manual:maxcarrier:${Game.time - 1400}`,
+      },
+    } as Creep;
+    Memory.data = {
+      creepConfigs: {
+        [managed]: { role: "carrier", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(managed);
+  });
+
   it("exposes the same max-carrier behavior through the console wrapper", () => {
     const room = createRoom("W1N2");
     const spawn = createSpawn(room);
