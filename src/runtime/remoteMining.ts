@@ -1263,6 +1263,12 @@ export function processRemoteConfigLifecycle(
     if (task.status === "suspended") {
       cleanupAllRemoteConfigs(task);
 
+      if (task.suspendReason === "manual_war_pause") {
+        removeScoutConfig(task.sourceRoom, task.targetRoom);
+        removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+        continue;
+      }
+
       let resumed = false;
       const visibleTarget = Game.rooms[task.targetRoom];
       if (visibleTarget) {

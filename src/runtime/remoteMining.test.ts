@@ -6355,6 +6355,65 @@ describe("suspended scout recovery", () => {
     expect(Memory.data!.creepConfigs![scoutName].roomName).toBe("E1N57");
   });
 
+  it("removes the scout config and queue while manually paused for war", () => {
+    const rcl7Room = createRclRoom("E1N57", 7);
+    const spawn = createSpawn(rcl7Room);
+    Game.rooms["E1N57"] = rcl7Room;
+    Game.spawns["Spawn1"] = spawn;
+
+    store["E1N58"] = {
+      sourceRoom: "E1N57",
+      targetRoom: "E1N58",
+      status: "suspended",
+      sourceIds: ["src1", "src2"],
+      assignedAt: 50,
+      updatedAt: 100,
+      suspendReason: "manual_war_pause",
+      suspendedAt: 100,
+    };
+
+    const scoutName = getRemoteMiningScoutConfigName("E1N57", "E1N58");
+    Memory.data!.creepConfigs![scoutName] = {
+      role: "scout",
+      args: ["E1N58"],
+      roomName: "E1N57",
+    };
+    spawn.memory.spawnList = [scoutName, "E1N57:worker:0"];
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(Memory.data!.creepConfigs![scoutName]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual(["E1N57:worker:0"]);
+  });
+
+  it("does not auto-resume a manually paused task after the normal safe interval", () => {
+    Game.time = 300;
+    const rcl7Room = createRclRoom("E1N57", 7);
+    const targetRoom = createVisibleTargetRoom("E1N58", {
+      sources: [createSource("src1"), createSource("src2")],
+    });
+    Game.rooms["E1N57"] = rcl7Room;
+    Game.rooms["E1N58"] = targetRoom;
+    Game.spawns["Spawn1"] = createSpawn(rcl7Room);
+
+    store["E1N58"] = {
+      sourceRoom: "E1N57",
+      targetRoom: "E1N58",
+      status: "suspended",
+      sourceIds: ["src1", "src2"],
+      assignedAt: 50,
+      updatedAt: 100,
+      suspendReason: "manual_war_pause",
+      suspendedAt: 100,
+      safeSince: 0,
+    };
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(store["E1N58"].status).toBe("suspended");
+    expect(store["E1N58"].suspendReason).toBe("manual_war_pause");
+  });
+
   it("does not create spawnable scout for invalid source room (RCL < 7)", () => {
     const rcl6Room = createRclRoom("E1N57", 6);
     Game.rooms["E1N57"] = rcl6Room;
