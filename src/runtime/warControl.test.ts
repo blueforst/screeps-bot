@@ -7,6 +7,8 @@ type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
 };
 
+const MAX_STAGING_TICKS_FOR_TEST = 2_500;
+
 type WarTaskWithBoostState = NonNullable<NonNullable<Memory["data"]>["war"]>[string] & {
   boostStatus?: "preparing" | "ready" | "failed";
   boostLabs?: string[];
@@ -182,6 +184,34 @@ describe("runWarControl", () => {
     expect(task.activeGeneration).toMatchObject({ id: 1, phase: "preparing" });
     expect(task.activeGeneration?.boostGateOpenedAt).toBeUndefined();
     expect(Game.spawns.Spawn1.memory.spawnList).toEqual([]);
+  });
+
+  it("waits for boost labs reserved by another war instead of failing permanently", () => {
+    const waitingLabs = [
+      createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 600),
+      createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, 900),
+    ];
+    const waitingRoom = createSourceRoom(waitingLabs);
+    const waitingSpawn = createSpawn(waitingRoom);
+    Game.rooms.E1N57 = waitingRoom;
+    Game.spawns.Spawn1 = waitingSpawn;
+    Game.getObjectById = jest.fn((id: string) =>
+      waitingLabs.find((lab) => lab.id === id) ?? null
+    ) as typeof Game.getObjectById;
+
+    runWarControl();
+
+    const waitingTask = Memory.data!.war!.E3N57;
+    expect(waitingTask.status).toBe("staging");
+    expect(waitingTask.boostStatus).toBe("preparing");
+    expect(waitingTask.failReason).toBe("insufficient_labs");
+    expect(waitingTask.activeGeneration).toMatchObject({ id: 1, phase: "preparing" });
+    expect(waitingSpawn.memory.spawnList).toEqual([]);
+
+    Game.time += MAX_STAGING_TICKS_FOR_TEST + 1;
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.status).toBe("staging");
   });
 
   it("opens generation one once and queues generation-scoped configs", () => {

@@ -796,6 +796,11 @@ function prepareT3DuoBoosts(task: WarTask): boolean {
   task.boostStatus = result.status;
   task.failReason = result.reason;
 
+  if (result.status === "failed" && result.reason === "insufficient_labs") {
+    task.boostStatus = "preparing";
+    return false;
+  }
+
   if (result.status === "failed") {
     setTaskStatus(task, "failed");
     releaseBoostLabs(generation.boostTaskId, task.sourceRoom);
@@ -938,7 +943,9 @@ function processTask(task: WarTask): void {
   const room = Game.rooms[task.targetRoom];
   task.statusSince ??= task.createdAt;
   const stagingTooLong =
-    task.status === "staging" && Game.time - task.statusSince > MAX_STAGING_TICKS;
+    task.status === "staging"
+    && task.failReason !== "insufficient_labs"
+    && Game.time - task.statusSince > MAX_STAGING_TICKS;
   if (stagingTooLong) {
     setTaskStatus(task, "failed");
     clearTaskConfigs(task);
