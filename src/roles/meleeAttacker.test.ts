@@ -988,6 +988,49 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.memory._warBreachTargetId).toBe(trackedWall.id);
   });
 
+  it("allows target-room pathing through the paired healer tile in a narrow passage", () => {
+    const rampart = hostileStructure(STRUCTURE_RAMPART, "narrow-passage-rampart", 2, 32, 386_381) as StructureRampart;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 28,
+      y: 17,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warBreachTargetId: rampart.id,
+      },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 28,
+      y: 18,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_STRUCTURES || type === FIND_STRUCTURES) return [rampart];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
+    attacker.attack = jest.fn(() => ERR_NOT_IN_RANGE) as Creep["attack"];
+    Game.getObjectById = jest.fn((id: string) => id === rampart.id ? rampart : null) as typeof Game.getObjectById;
+    Game.creeps = { attacker, healer };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      attacker,
+      rampart,
+      1,
+      expect.objectContaining({ costCallback: expect.any(Function), ignoreCreeps: false }),
+    );
+    const options = moveToTarget.mock.calls.find((call) => call[0] === attacker && call[1] === rampart)?.[3];
+    const matrix = new PathFinder.CostMatrix();
+    options.costCallback(TARGET_ROOM, matrix);
+    expect(matrix.get(healer.pos.x, healer.pos.y)).toBe(1);
+  });
+
   it("keeps working toward a tracked breach instead of chasing an exposed defender", () => {
     const defender = hostileCreep("exposed-moving-defender", 4800, { [RANGED_ATTACK]: 8, [HEAL]: 8 });
     defender.pos = {
