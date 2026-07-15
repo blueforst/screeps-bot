@@ -441,4 +441,53 @@ describe("runWarControl", () => {
     expect(spawn.memory.spawnList).toEqual(["worker:keep"]);
     expect(Memory.analytics?.war?.tasks).toEqual({});
   });
+
+  it("removes production configs when stopping while the current squad remains alive", () => {
+    const attackerConfig = "E1N57:war:E3N57:meleeAttacker:0";
+    const healerConfig = "E1N57:war:E3N57:healer:0";
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "clearing",
+          reason: "manual",
+          attempts: 1,
+          createdAt: Game.time - 50,
+          updatedAt: Game.time,
+        },
+      },
+      creepConfigs: {
+        [attackerConfig]: { role: "meleeAttacker", args: ["E3N57"], roomName: "E1N57" },
+        [healerConfig]: { role: "healer", args: ["E3N57"], roomName: "E1N57" },
+      },
+    } as Memory["data"];
+    const attackerSuicide = jest.fn(() => OK);
+    const healerSuicide = jest.fn(() => OK);
+    Game.creeps = {
+      attacker: {
+        name: "attacker",
+        room: { name: "E1N57" },
+        memory: { role: "meleeAttacker", configName: attackerConfig },
+        suicide: attackerSuicide,
+      } as unknown as Creep,
+      healer: {
+        name: "healer",
+        room: { name: "E1N57" },
+        memory: { role: "healer", configName: healerConfig },
+        suicide: healerSuicide,
+      } as unknown as Creep,
+    };
+    const sourceRoom = createSourceRoom([]);
+    Game.rooms.E1N57 = sourceRoom;
+    Game.spawns.Spawn1 = createSpawn(sourceRoom);
+
+    const result = stopWarRoom("E3N57");
+
+    expect(result).toEqual(expect.objectContaining({ removedConfigs: 2, suicidedCreeps: 0 }));
+    expect(Memory.data?.creepConfigs?.[attackerConfig]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[healerConfig]).toBeUndefined();
+    expect(attackerSuicide).not.toHaveBeenCalled();
+    expect(healerSuicide).not.toHaveBeenCalled();
+  });
 });

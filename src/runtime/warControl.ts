@@ -735,11 +735,7 @@ export function stopWarRoom(targetRoom: string, options: StopWarOptions = {}): S
       suicidedCreeps += suicideCreepsByConfig(configName);
       removedConfigs += removeConfig(configName);
     } else {
-      const hadConfig = !!ensureConfigStore()[configName];
-      removeConfigWhenIdle(configName);
-      if (hadConfig && !ensureConfigStore()[configName]) {
-        removedConfigs += 1;
-      }
+      removedConfigs += removeConfig(configName);
     }
   }
 
