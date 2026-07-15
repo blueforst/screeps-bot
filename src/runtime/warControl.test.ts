@@ -1,5 +1,6 @@
 import { getWarStatus, runWarControl, startWarRoom, stopWarRoom } from "@/runtime/warControl";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import { listCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
 import { createMockStore, MockPos } from "@mock/powerBank";
 
 type RuntimeGlobal = typeof global & {
@@ -116,6 +117,24 @@ function setupWarBoostRoom(attackAmount = 900): { spawn: StructureSpawn; labs: S
   Game.spawns.Spawn1 = spawn;
   Game.getObjectById = jest.fn((id: string) => labs.find((lab) => lab.id === id) ?? null) as typeof Game.getObjectById;
   return { spawn, labs };
+}
+
+function createWarCreep(
+  name: string,
+  role: "meleeAttacker" | "healer",
+  configName: string,
+  roomName = "E1N57",
+): Creep {
+  return {
+    name,
+    room: { name: roomName } as Room,
+    pos: new MockPos(25, 25, roomName) as unknown as RoomPosition,
+    memory: { role, configName },
+    body: [],
+    hits: 5_000,
+    hitsMax: 5_000,
+    spawning: false,
+  } as unknown as Creep;
 }
 
 function countParts(body: BodyPartConstant[], part: BodyPartConstant): number {
@@ -354,7 +373,7 @@ describe("runWarControl", () => {
 
     runWarControl();
 
-    expect((Memory.data?.war?.E3N57 as WarTaskWithBoostState | undefined)?.boostStatus).toBe("ready");
+    expect((Memory.data?.war?.E3N57 as WarTaskWithBoostState | undefined)?.boostStatus).toBe("preparing");
     expect(Memory.data?.war?.E3N57?.activeGeneration).toMatchObject({
       id: 0,
       phase: "assembling",
@@ -401,6 +420,127 @@ describe("runWarControl", () => {
     });
     expect(spawn.memory.spawnList).toContain(healerConfig);
     expect(Memory.data?.creepConfigs?.[healerConfig]).toBeDefined();
+  });
+
+  it("requeues only the missing generation slot before the squad departs", () => {
+    const { spawn } = setupWarBoostRoom();
+    runWarControl();
+    const generation = Memory.data!.war!.E3N57!.activeGeneration!;
+    spawn.memory.spawnList = [];
+    Game.creeps = {
+      healer: createWarCreep("healer", "healer", generation.configNames.healer),
+    };
+    Game.time += 1;
+
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.activeGeneration).toMatchObject({ id: 1, phase: "assembling" });
+    expect(spawn.memory.spawnList).toEqual([generation.configNames.meleeAttacker]);
+    expect(Memory.data!.creepConfigs![generation.configNames.healer]).toBeDefined();
+  });
+
+  it("keeps an opened gate while replenishing only the missing pre-departure slot", () => {
+    const { spawn, labs } = setupWarBoostRoom();
+    runWarControl();
+    const generation = Memory.data!.war!.E3N57!.activeGeneration!;
+    const attacker = createWarCreep("attacker", "meleeAttacker", generation.configNames.meleeAttacker);
+    attacker.body = [
+      ...Array.from({ length: 10 }, () => ({ type: TOUGH, hits: 100, boost: RESOURCE_CATALYZED_GHODIUM_ALKALIDE })),
+      ...Array.from({ length: 30 }, () => ({ type: ATTACK, hits: 100, boost: RESOURCE_CATALYZED_UTRIUM_ACID })),
+      ...Array.from({ length: 10 }, () => ({ type: MOVE, hits: 100, boost: RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE })),
+    ] as BodyPartDefinition[];
+    const healLab = labs.find((lab) => lab.id === "lab-heal")!;
+    healLab.store = createMockStore({
+      [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 0,
+      [RESOURCE_ENERGY]: 0,
+    }) as unknown as StructureLab["store"];
+    const sourceRoom = Game.rooms.E1N57;
+    sourceRoom.storage!.store = createMockStore({
+      [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: 600,
+      [RESOURCE_ENERGY]: 100_000,
+    }) as unknown as StructureStorage["store"];
+    spawn.memory.spawnList = [generation.configNames.healer];
+    Game.creeps = { attacker };
+    Game.time += 1;
+
+    runWarControl();
+
+    const task = Memory.data!.war!.E3N57!;
+    expect(task.activeGeneration).toMatchObject({
+      id: 1,
+      phase: "assembling",
+      boostGateOpenedAt: 1000,
+    });
+    expect(task.boostStatus).toBe("preparing");
+    expect(spawn.memory.spawnList).toContain(generation.configNames.healer);
+    expect(listCarrierTasksByRoom("E1N57")).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        steps: [expect.objectContaining({
+          resource: RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+          amount: 600,
+          toId: healLab.id,
+        })],
+      }),
+    ]));
+  });
+
+  it("detaches a deployed survivor and creates a full next generation after its partner dies", () => {
+    const { spawn } = setupWarBoostRoom();
+    runWarControl();
+    const generation = Memory.data!.war!.E3N57!.activeGeneration!;
+    const attacker = createWarCreep(
+      "attacker",
+      "meleeAttacker",
+      generation.configNames.meleeAttacker,
+      "E3N57",
+    );
+    const healer = createWarCreep("healer", "healer", generation.configNames.healer);
+    spawn.memory.spawnList = [];
+    Game.creeps = { attacker, healer };
+    Game.time += 1;
+
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.activeGeneration).toMatchObject({ id: 1, phase: "deployed" });
+    Game.creeps = { attacker };
+    Game.time += 1;
+
+    runWarControl();
+
+    expect(attacker.memory._warDetached).toBe(true);
+    expect(Memory.data!.war!.E3N57!.activeGeneration).toMatchObject({ id: 2, phase: "preparing" });
+    expect(Memory.data!.war!.E3N57!.activeGeneration!.configNames).toEqual({
+      meleeAttacker: "E1N57:war:E3N57:g2:meleeAttacker:0",
+      healer: "E1N57:war:E3N57:g2:healer:0",
+    });
+  });
+
+  it("detaches a broken one-shot squad without creating another generation", () => {
+    Memory.data!.war!.E3N57!.oneShot = true;
+    const { spawn } = setupWarBoostRoom();
+    runWarControl();
+    const generation = Memory.data!.war!.E3N57!.activeGeneration!;
+    const attacker = createWarCreep(
+      "attacker",
+      "meleeAttacker",
+      generation.configNames.meleeAttacker,
+      "E3N57",
+    );
+    const healer = createWarCreep("healer", "healer", generation.configNames.healer);
+    spawn.memory.spawnList = [];
+    Game.creeps = { attacker, healer };
+    Game.time += 1;
+    runWarControl();
+    Game.creeps = { attacker };
+    Game.time += 1;
+
+    runWarControl();
+
+    expect(attacker.memory._warDetached).toBe(true);
+    expect(Memory.data!.war!.E3N57!.generationCounter).toBe(1);
+    expect(Memory.data!.war!.E3N57!.activeGeneration).toMatchObject({ id: 1, phase: "deployed" });
+    expect(Object.keys(Memory.data!.creepConfigs ?? {}).some((name) => name.includes(":g2:"))).toBe(false);
+    expect(spawn.memory.spawnList.some((name) => name.includes(":g2:"))).toBe(false);
   });
 
   it("debounces a visible clear room before completing and writes war telemetry", () => {

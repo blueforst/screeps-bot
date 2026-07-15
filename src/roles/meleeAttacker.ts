@@ -316,7 +316,9 @@ function findPairedWarHealer(creep: Creep): Creep | null {
 }
 
 function expectsWarHealer(creep: Creep): boolean {
-  return creep.memory.configName?.includes(":war:") === true && creep.memory.configName.includes(":meleeAttacker:");
+  return creep.memory._warDetached !== true
+    && creep.memory.configName?.includes(":war:") === true
+    && creep.memory.configName.includes(":meleeAttacker:");
 }
 
 function isOnExitDirection(pos: RoomPosition, direction: DirectionConstant): boolean {

@@ -26,7 +26,9 @@ function findPairedWarAttacker(creep: Creep): Creep | null {
 }
 
 function expectsWarAttacker(creep: Creep): boolean {
-  return creep.memory.configName?.includes(":war:") === true && creep.memory.configName.includes(":healer:");
+  return creep.memory._warDetached !== true
+    && creep.memory.configName?.includes(":war:") === true
+    && creep.memory.configName.includes(":healer:");
 }
 
 function isOnExitDirection(pos: RoomPosition, direction: DirectionConstant): boolean {

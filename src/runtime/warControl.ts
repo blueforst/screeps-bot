@@ -155,6 +155,12 @@ const T3_HEALER_BODY: BodyPartConstant[] = [
 
 const T3_ATTACKER_BOOSTS: ResourceConstant[] = [WAR_T3_MOVE, WAR_T3_TOUGH, WAR_T3_ATTACK];
 const T3_HEALER_BOOSTS: ResourceConstant[] = [WAR_T3_MOVE, WAR_T3_TOUGH, WAR_T3_HEAL];
+const T3_BOOST_PARTS: Partial<Record<ResourceConstant, BodyPartConstant>> = {
+  [WAR_T3_MOVE]: MOVE,
+  [WAR_T3_TOUGH]: TOUGH,
+  [WAR_T3_ATTACK]: ATTACK,
+  [WAR_T3_HEAL]: HEAL,
+};
 const T3_DUO_BOOST_AMOUNTS = new Map<ResourceConstant, number>([
   [WAR_T3_TOUGH, 20 * LAB_BOOST_MINERAL],
   [WAR_T3_ATTACK, 30 * LAB_BOOST_MINERAL],
@@ -530,6 +536,7 @@ function ensureCombatConfigs(task: WarTask): void {
   const store = ensureConfigStore();
   const encodedRoute = task.routeRooms?.join("|") || "";
   const generation = isT3DuoTask(task) ? ensureActiveGeneration(task) : undefined;
+  if (generation?.phase === "deployed") return;
 
   for (let i = 0; i < getMeleeCount(task); i++) {
     const configName = getCombatConfigName(task, "meleeAttacker", i);
@@ -583,13 +590,111 @@ function ensureCombatConfigs(task: WarTask): void {
   }
 }
 
+function getGenerationCreeps(generation: WarGenerationState): Creep[] {
+  return Object.values(generation.configNames).flatMap((configName) =>
+    getLiveCreepsByConfig(configName)
+  );
+}
+
+function cleanupGenerationConfigs(task: WarTask, generation: WarGenerationState): void {
+  for (const configName of Object.values(generation.configNames)) {
+    removeQueuedConfig(task, configName);
+    removeConfig(configName);
+  }
+}
+
+function reconcileGenerationLifecycle(task: WarTask): boolean {
+  if (!isT3DuoTask(task)) return false;
+
+  const generation = ensureActiveGeneration(task);
+  const generationCreeps = getGenerationCreeps(generation);
+
+  if (
+    generation.phase === "assembling"
+    && generationCreeps.some((creep) => creep.room.name !== task.sourceRoom)
+  ) {
+    generation.phase = "deployed";
+    generation.deployedAt = Game.time;
+    releaseBoostLabs(generation.boostTaskId, task.sourceRoom);
+    task.boostLabs = [];
+    cleanupGenerationConfigs(task, generation);
+  }
+
+  if (generation.phase !== "deployed" || generationCreeps.length >= 2) {
+    return false;
+  }
+
+  for (const survivor of generationCreeps) {
+    survivor.memory._warDetached = true;
+  }
+  cleanupGenerationConfigs(task, generation);
+
+  if (task.oneShot) {
+    return true;
+  }
+
+  const nextId = Math.max(task.generationCounter ?? generation.id, generation.id) + 1;
+  task.generationCounter = nextId;
+  task.activeGeneration = createGeneration(task, nextId);
+  task.boostStatus = "preparing";
+  task.failReason = undefined;
+  return true;
+}
+
+function getGenerationRemainingBoostAmounts(
+  task: WarTask,
+  generation: WarGenerationState,
+): Map<ResourceConstant, number> {
+  const amounts = new Map<ResourceConstant, number>();
+  const spawns = getSpawnsForRoom(task.sourceRoom);
+
+  for (const role of ["meleeAttacker", "healer"] as const) {
+    const configName = generation.configNames[role];
+    const creep = getLiveCreepsByConfig(configName)[0];
+    if (!creep && task.oneShot) {
+      const config = ensureConfigStore()[configName];
+      const active = isConfigQueuedInSpawns(spawns, configName) || isConfigSpawning(configName);
+      if (!active && config?.spawnOnce?.queuedAt !== undefined) {
+        continue;
+      }
+    }
+
+    const body = creep?.body ?? (getRoleBody(task, role) ?? []).map((type) => ({
+      type,
+      hits: 100,
+    } as BodyPartDefinition));
+    const compounds = role === "meleeAttacker" ? T3_ATTACKER_BOOSTS : T3_HEALER_BOOSTS;
+    for (const compound of compounds) {
+      const partType = T3_BOOST_PARTS[compound];
+      if (!partType) continue;
+      const partCount = body.filter((part) =>
+        part.type === partType && part.hits > 0 && part.boost !== compound
+      ).length;
+      if (partCount <= 0) continue;
+      amounts.set(compound, (amounts.get(compound) ?? 0) + partCount * LAB_BOOST_MINERAL);
+    }
+  }
+
+  return amounts;
+}
+
 function prepareT3DuoBoosts(task: WarTask): boolean {
   if (!isT3DuoTask(task)) return true;
 
   const generation = ensureActiveGeneration(task);
+  if (generation.phase === "deployed") return true;
   if (generation.boostGateOpenedAt !== undefined) {
-    task.boostStatus = "ready";
-    task.failReason = undefined;
+    const remainingAmounts = getGenerationRemainingBoostAmounts(task, generation);
+    const result = prepareBoosts(
+      generation.boostTaskId,
+      task.sourceRoom,
+      0,
+      remainingAmounts,
+      { requireLabEnergy: true },
+    );
+    task.boostLabs = result.labs;
+    task.boostStatus = result.status;
+    task.failReason = result.reason;
     return true;
   }
 
@@ -716,6 +821,10 @@ function processTask(task: WarTask): void {
     setTaskStatus(task, "failed");
     clearTaskConfigs(task);
     releaseWarBoosts(task);
+    return;
+  }
+
+  if (reconcileGenerationLifecycle(task)) {
     return;
   }
 

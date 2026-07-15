@@ -1245,6 +1245,7 @@ declare global {
     _rmcSelectedSource?: string;
     _warBreachTargetId?: Id<StructureRampart | StructureWall>;
     _warBreachResumeUntil?: number;
+    _warDetached?: boolean;
     _move?: {
       dest?: {
         x: number;

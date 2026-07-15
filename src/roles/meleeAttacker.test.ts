@@ -85,6 +85,27 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.attack).not.toHaveBeenCalled();
   });
 
+  it("continues toward the target without its fixed healer after being detached", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      roomName: "E2N57",
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warDetached: true,
+      },
+    });
+    Game.creeps = { attacker };
+
+    meleeAttackerRole(TARGET_ROOM).source?.(attacker);
+
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      attacker,
+      TARGET_ROOM,
+      undefined,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+  });
+
   it("waits outside target room until paired healer is adjacent", () => {
     const attacker = createMockPowerBankCreep("meleeAttacker", {
       name: "attacker",
