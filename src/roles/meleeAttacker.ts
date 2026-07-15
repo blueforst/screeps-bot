@@ -206,8 +206,19 @@ function isDangerousHostile(creep: Creep): boolean {
 }
 
 function attackAdjacentHostileOnRoute(creep: Creep): boolean {
+  const protectedPositions = new Set(
+    findAdjacentStructures(creep)
+      .filter(
+        (structure): structure is StructureRampart =>
+          structure.structureType === STRUCTURE_RAMPART && !(structure as StructureRampart).my,
+      )
+      .map((rampart) => `${rampart.pos.x}:${rampart.pos.y}`),
+  );
   const adjacent = findAdjacentHostiles(creep).filter(
-    (hostile) => hostile.owner?.username && hostile.owner.username !== "Source Keeper",
+    (hostile) =>
+      hostile.owner?.username &&
+      hostile.owner.username !== "Source Keeper" &&
+      !protectedPositions.has(`${hostile.pos.x}:${hostile.pos.y}`),
   );
   if (adjacent.length === 0) return false;
 

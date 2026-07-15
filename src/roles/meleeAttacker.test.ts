@@ -652,6 +652,59 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.attack).not.toHaveBeenCalledWith(storage);
   });
 
+  it("ignores an adjacent defender protected by a hostile rampart and continues breaching", () => {
+    const defender = hostileCreep("protected-ranged-defender", 4800, { [RANGED_ATTACK]: 8, [HEAL]: 8 });
+    defender.pos = {
+      x: 26,
+      y: 25,
+      roomName: TARGET_ROOM,
+      getRangeTo: jest.fn(() => 1),
+    } as unknown as RoomPosition;
+    const rampart = hostileStructure(STRUCTURE_RAMPART, "defender-rampart", 26, 25, 680_000);
+    const wall = hostileStructure(STRUCTURE_WALL, "safe-breach-wall", 24, 25, 1_100_000);
+    const storage = hostileStructure(STRUCTURE_STORAGE, "storage-behind-defense", 20, 20, 10_000);
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 25,
+      y: 25,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [defender];
+      if (type === FIND_HOSTILE_STRUCTURES) return [storage, rampart, wall];
+      if (type === FIND_STRUCTURES) return [storage, rampart, wall];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [defender];
+      if (type === FIND_STRUCTURES) return [rampart, wall];
+      return [];
+    }) as unknown as RoomPosition["findInRange"];
+    (PathFinder.search as jest.Mock).mockReturnValue({
+      path: [{ x: wall.pos.x, y: wall.pos.y, roomName: TARGET_ROOM }],
+      incomplete: false,
+      cost: 100,
+      ops: 20,
+    });
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 25,
+        y: 24,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).not.toHaveBeenCalledWith(defender);
+    expect(attacker.attack).toHaveBeenCalledWith(wall);
+    expect(attacker.memory._warBreachTargetId).toBe(wall.id);
+  });
+
   it("attacks the weakest adjacent hostile structure when extensions block the objective", () => {
     moveToTarget.mockReturnValue(ERR_NO_PATH);
     const storage = hostileStructure(STRUCTURE_STORAGE, "blocked-storage", 22, 26, 10_000);
