@@ -1032,6 +1032,7 @@ declare global {
           lastHostileSeenAt?: number;
           clearSince?: number;
           completedAt?: number;
+          controllerAttackerLastQueuedAt?: number;
           generationCounter?: number;
           activeGeneration?: {
             id: number;

@@ -37,6 +37,7 @@ interface WarTask {
   lastHostileSeenAt?: number;
   clearSince?: number;
   completedAt?: number;
+  controllerAttackerLastQueuedAt?: number;
   generationCounter?: number;
   activeGeneration?: WarGenerationState;
 }
@@ -129,6 +130,8 @@ export interface WarStatusTaskSnapshot {
   controllerTicksToDowngrade?: number;
   controllerUpgradeBlocked?: number;
   controllerAttackerConfigName?: string;
+  controllerAttackerLastQueuedAt?: number;
+  controllerAttackerNextQueueAt?: number;
 }
 
 export interface WarStatusSnapshot {
@@ -142,6 +145,7 @@ const HEALER_COUNT = 1;
 const T3_DUO_MELEE_COUNT = 1;
 const T3_DUO_HEALER_COUNT = 1;
 const MAX_STAGING_TICKS = 2500;
+const CONTROLLER_ATTACKER_QUEUE_INTERVAL = 1000;
 const WAR_CLEAR_DEBOUNCE_TICKS = 20;
 const WAR_CONTROLLER_ATTACK_CONFIG_SUFFIX = "controllerAttacker:0";
 const WAR_CONTROLLER_CORE_STRUCTURES = new Set<StructureConstant>([
@@ -600,28 +604,61 @@ function getControllerAttackBody(sourceRoomName: string): BodyPartConstant[] {
   ];
 }
 
+function inferControllerAttackerQueuedAt(creep: Creep): number | undefined {
+  if (creep.ticksToLive === undefined) return undefined;
+  const livedTicks = Math.max(0, CREEP_CLAIM_LIFE_TIME - creep.ticksToLive);
+  return Game.time - livedTicks - creep.body.length * CREEP_SPAWN_TIME;
+}
+
 function ensureControllerAttackConfig(task: WarTask): void {
   const configName = getControllerAttackConfigName(task);
   const encodedRoute = task.routeRooms?.join("|") || "";
-  ensureConfigStore()[configName] = {
+  const store = ensureConfigStore();
+  const existing = store[configName];
+  const liveCreeps = getLiveCreepsByConfig(configName);
+  const existingQueuedAt = existing?.spawnOnce?.queuedAt;
+  if (
+    existingQueuedAt !== undefined
+    && (task.controllerAttackerLastQueuedAt === undefined || existingQueuedAt > task.controllerAttackerLastQueuedAt)
+  ) {
+    task.controllerAttackerLastQueuedAt = existingQueuedAt;
+  }
+  if (task.controllerAttackerLastQueuedAt === undefined) {
+    const inferredQueuedAt = liveCreeps
+      .map(inferControllerAttackerQueuedAt)
+      .filter((tick): tick is number => tick !== undefined)
+      .reduce<number | undefined>((earliest, tick) => earliest === undefined ? tick : Math.min(earliest, tick), undefined);
+    task.controllerAttackerLastQueuedAt = inferredQueuedAt;
+  }
+
+  const lastQueuedAt = task.controllerAttackerLastQueuedAt;
+  const queueDue = lastQueuedAt === undefined || Game.time - lastQueuedAt >= CONTROLLER_ATTACKER_QUEUE_INTERVAL;
+  const spawns = getSpawnsForRoom(task.sourceRoom);
+  const queued = isConfigQueuedInSpawns(spawns, configName);
+  const spawning = isConfigSpawning(configName);
+  const active = liveCreeps.length > 0 || queued || spawning;
+
+  store[configName] = {
     role: "claimer",
     args: [task.targetRoom, encodedRoute, "attack"],
     roomName: task.sourceRoom,
     body: getControllerAttackBody(task.sourceRoom),
+    spawnOnce: queueDue && !active ? {} : { queuedAt: lastQueuedAt },
   };
 
-  const spawns = getSpawnsForRoom(task.sourceRoom);
   if (
     spawns.length === 0
-    || getLiveCreepsByConfig(configName).length > 0
-    || isConfigQueuedInSpawns(spawns, configName)
-    || isConfigSpawning(configName)
+    || active
+    || !queueDue
   ) {
     return;
   }
 
   const spawn = selectLeastLoadedSpawn(spawns);
-  if (spawn) enqueueConfig(spawn, configName, true);
+  if (spawn) {
+    enqueueConfig(spawn, configName, true);
+    task.controllerAttackerLastQueuedAt = Game.time;
+  }
 }
 
 function clearControllerAttackConfig(task: WarTask): void {
@@ -939,6 +976,10 @@ function buildTaskStatusSnapshot(task: WarTask): WarStatusTaskSnapshot {
     controllerUpgradeBlocked: controller?.upgradeBlocked,
     controllerAttackerConfigName:
       task.status === "downgrading" ? getControllerAttackConfigName(task) : undefined,
+    controllerAttackerLastQueuedAt: task.controllerAttackerLastQueuedAt,
+    controllerAttackerNextQueueAt: task.controllerAttackerLastQueuedAt === undefined
+      ? undefined
+      : task.controllerAttackerLastQueuedAt + CONTROLLER_ATTACKER_QUEUE_INTERVAL,
   };
 }
 
@@ -1089,6 +1130,7 @@ export function requestWarRoomClear(
     clearSince: existing?.clearSince,
     updatedAt: now,
     completedAt: existing?.completedAt,
+    controllerAttackerLastQueuedAt: restart ? undefined : existing?.controllerAttackerLastQueuedAt,
     generationCounter: restart
       ? (existing?.sourceRoom === sourceRoom ? existing?.generationCounter : undefined)
       : existing?.generationCounter,

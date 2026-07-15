@@ -715,7 +715,9 @@ describe("runWarControl", () => {
       role: "claimer",
       args: ["E3N57", "", "attack"],
       roomName: "E1N57",
+      spawnOnce: { queuedAt: 1000 },
     });
+    expect(Memory.data!.war!.E3N57!.controllerAttackerLastQueuedAt).toBe(1000);
     const body = Memory.data!.creepConfigs![configName].body ?? [];
     expect(countParts(body, CLAIM)).toBe(8);
     expect(countParts(body, MOVE)).toBe(8);
@@ -726,7 +728,41 @@ describe("runWarControl", () => {
     Game.time += 1;
     runWarControl();
 
+    expect(spawn.memory.spawnList).not.toContain(configName);
+
+    Game.time = 1999;
+    runWarControl();
+    expect(spawn.memory.spawnList).not.toContain(configName);
+
+    Game.time = 2000;
+    runWarControl();
     expect(spawn.memory.spawnList).toContain(configName);
+    expect(Memory.data!.war!.E3N57!.controllerAttackerLastQueuedAt).toBe(2000);
+  });
+
+  it("infers the previous controller attacker production tick during live migration", () => {
+    Memory.data!.war!.E3N57!.squad = "standard";
+    Memory.data!.war!.E3N57!.boostTier = undefined;
+    const sourceRoom = createSourceRoom([]);
+    sourceRoom.energyCapacityAvailable = 5_600;
+    const spawn = createSpawn(sourceRoom);
+    Game.rooms.E1N57 = sourceRoom;
+    Game.rooms.E3N57 = createTargetRoom({ ownerUsername: "enemy", controllerLevel: 8 });
+    Game.spawns.Spawn1 = spawn;
+    Game.time = 1600;
+    const configName = "E1N57:war:E3N57:controllerAttacker:0";
+    const claimer = createWarCreep("claimer-1000", "claimer" as never, configName, "E3N57");
+    claimer.ticksToLive = 48;
+    claimer.body = [
+      ...Array(8).fill(null).map(() => ({ type: CLAIM, hits: 100 })),
+      ...Array(8).fill(null).map(() => ({ type: MOVE, hits: 100 })),
+    ] as BodyPartDefinition[];
+    Game.creeps = { [claimer.name]: claimer };
+
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.controllerAttackerLastQueuedAt).toBe(1000);
+    expect(spawn.memory.spawnList).not.toContain(configName);
   });
 
   it.each([STRUCTURE_SPAWN, STRUCTURE_TOWER])(
