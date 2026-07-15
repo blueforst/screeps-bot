@@ -70,4 +70,23 @@ describe("claimerRole", () => {
     expect(result).toBe(false);
     expect(moveToTargetRoom).toHaveBeenCalledWith(creep, "W9N9", "W8N9|W9N9", { plainCost: 2, swampCost: 10 });
   });
+
+  it("attacks an owned controller directly in war downgrade mode", () => {
+    const room = createRoom();
+    room.controller!.owner = { username: "enemy" };
+    room.controller!.reservation = undefined;
+    const creep = createCreep(room);
+    creep.attackController = jest.fn(() => ERR_NOT_IN_RANGE);
+
+    claimerRole(room.name, "", "attack").target(creep);
+
+    expect(creep.claimController).not.toHaveBeenCalled();
+    expect(creep.attackController).toHaveBeenCalledWith(room.controller);
+    expect(moveToTarget).toHaveBeenCalledWith(
+      creep,
+      room.controller,
+      1,
+      { plainCost: 2, swampCost: 8, maxRooms: 1 },
+    );
+  });
 });

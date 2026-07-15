@@ -1015,7 +1015,7 @@ declare global {
         {
           targetRoom: string;
           sourceRoom: string;
-          status: "staging" | "clearing" | "done" | "failed";
+          status: "staging" | "clearing" | "downgrading" | "done" | "failed";
           reason: "npc_reservation" | "manual";
           routeRooms?: string[];
           squad?: "standard" | "t3Duo";

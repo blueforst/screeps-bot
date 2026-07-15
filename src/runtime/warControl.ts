@@ -2,7 +2,7 @@ import { getCreepConfigService, getMemoryService, getTickContextService } from "
 import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
 import type { CreepConfig } from "@/types/system";
 
-type WarStatus = "staging" | "clearing" | "done" | "failed";
+type WarStatus = "staging" | "clearing" | "downgrading" | "done" | "failed";
 export type WarSquad = "standard" | "t3Duo";
 export type WarBoostTier = "t3";
 type WarRole = "meleeAttacker" | "healer";
@@ -132,6 +132,18 @@ const T3_DUO_MELEE_COUNT = 1;
 const T3_DUO_HEALER_COUNT = 1;
 const MAX_STAGING_TICKS = 2500;
 const WAR_CLEAR_DEBOUNCE_TICKS = 20;
+const WAR_CONTROLLER_ATTACK_CONFIG_SUFFIX = "controllerAttacker:0";
+const WAR_CONTROLLER_ATTACK_BODY: BodyPartConstant[] = [
+  ...Array(20).fill(CLAIM),
+  ...Array(18).fill(MOVE),
+];
+const WAR_CONTROLLER_CORE_STRUCTURES = new Set<StructureConstant>([
+  STRUCTURE_SPAWN,
+  STRUCTURE_TOWER,
+  STRUCTURE_STORAGE,
+  STRUCTURE_TERMINAL,
+  STRUCTURE_INVADER_CORE,
+]);
 
 const WAR_T3_TOUGH = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
 const WAR_T3_ATTACK = RESOURCE_CATALYZED_UTRIUM_ACID;
@@ -532,6 +544,70 @@ function getCombatConfigName(task: WarTask, role: WarRole, index: number): strin
   return getConfigName(task, role, index);
 }
 
+function getControllerAttackConfigName(task: WarTask): string {
+  return `${task.sourceRoom}:war:${task.targetRoom}:${WAR_CONTROLLER_ATTACK_CONFIG_SUFFIX}`;
+}
+
+function isDangerousHostileCreep(creep: Creep): boolean {
+  if (typeof creep.getActiveBodyparts !== "function") return true;
+  return creep.getActiveBodyparts(ATTACK) > 0
+    || creep.getActiveBodyparts(RANGED_ATTACK) > 0
+    || creep.getActiveBodyparts(HEAL) > 0;
+}
+
+function hasControllerAttackBlockers(room: Room): boolean {
+  const dangerousHostiles = room.find(FIND_HOSTILE_CREEPS, {
+    filter: (creep) =>
+      creep.owner.username !== "Source Keeper" && isDangerousHostileCreep(creep),
+  });
+  if (dangerousHostiles.length > 0) return true;
+
+  return room.find(FIND_HOSTILE_STRUCTURES, {
+    filter: (structure) => WAR_CONTROLLER_CORE_STRUCTURES.has(structure.structureType),
+  }).length > 0;
+}
+
+function isControllerDowngradeReady(room: Room): boolean {
+  const controller = room.controller;
+  if (!controller?.owner || controller.my || controller.level <= 0) return false;
+  return !hasControllerAttackBlockers(room);
+}
+
+function isControllerDefeated(room: Room): boolean {
+  const controller = room.controller;
+  return !!controller && (controller.my || !controller.owner || controller.level <= 0);
+}
+
+function ensureControllerAttackConfig(task: WarTask): void {
+  const configName = getControllerAttackConfigName(task);
+  const encodedRoute = task.routeRooms?.join("|") || "";
+  ensureConfigStore()[configName] = {
+    role: "claimer",
+    args: [task.targetRoom, encodedRoute, "attack"],
+    roomName: task.sourceRoom,
+    body: [...WAR_CONTROLLER_ATTACK_BODY],
+  };
+
+  const spawns = getSpawnsForRoom(task.sourceRoom);
+  if (
+    spawns.length === 0
+    || getLiveCreepsByConfig(configName).length > 0
+    || isConfigQueuedInSpawns(spawns, configName)
+    || isConfigSpawning(configName)
+  ) {
+    return;
+  }
+
+  const spawn = selectLeastLoadedSpawn(spawns);
+  if (spawn) enqueueConfig(spawn, configName, true);
+}
+
+function clearControllerAttackConfig(task: WarTask): void {
+  const configName = getControllerAttackConfigName(task);
+  removeQueuedConfig(task, configName);
+  removeConfig(configName);
+}
+
 function ensureCombatConfigs(task: WarTask): void {
   const store = ensureConfigStore();
   const encodedRoute = task.routeRooms?.join("|") || "";
@@ -742,6 +818,27 @@ function clearTaskConfigs(task: WarTask): void {
   }
 }
 
+function disableTaskProduction(task: WarTask): void {
+  for (const configName of getTaskConfigNames(task)) {
+    removeQueuedConfig(task, configName);
+    removeConfig(configName);
+  }
+}
+
+function processControllerVictory(task: WarTask): void {
+  task.clearSince ??= Game.time;
+  setTaskStatus(task, "clearing");
+  disableTaskProduction(task);
+  releaseWarBoosts(task);
+
+  if (Game.time - task.clearSince + 1 < WAR_CLEAR_DEBOUNCE_TICKS) {
+    return;
+  }
+
+  setTaskStatus(task, "done");
+  task.completedAt = Game.time;
+}
+
 function getQueuedConfigs(task: WarTask): string[] {
   const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
   const queued = new Set<string>();
@@ -824,6 +921,16 @@ function processTask(task: WarTask): void {
     return;
   }
 
+  if (
+    room
+    && task.reason === "manual"
+    && isControllerDefeated(room)
+    && !hasControllerAttackBlockers(room)
+  ) {
+    processControllerVictory(task);
+    return;
+  }
+
   if (reconcileGenerationLifecycle(task)) {
     return;
   }
@@ -837,6 +944,16 @@ function processTask(task: WarTask): void {
   }
 
   const hostile = getHostilePresence(room);
+  if (task.reason === "manual" && isControllerDowngradeReady(room)) {
+    task.clearSince = undefined;
+    const combatReady = prepareT3DuoBoosts(task);
+    if (combatReady) ensureCombatConfigs(task);
+    setTaskStatus(task, "downgrading");
+    ensureControllerAttackConfig(task);
+    return;
+  }
+
+  clearControllerAttackConfig(task);
   if (!hostile.present) {
     task.clearSince ??= Game.time;
     if (Game.time - task.clearSince + 1 < WAR_CLEAR_DEBOUNCE_TICKS) {

@@ -56,12 +56,19 @@ function createSourceRoom(labs: StructureLab[]): Room {
   } as unknown as Room;
 }
 
-function createTargetRoom(options?: { hostileCreeps?: Creep[]; hostileStructures?: Structure[]; reservationUsername?: string }): Room {
+function createTargetRoom(options?: {
+  hostileCreeps?: Creep[];
+  hostileStructures?: Structure[];
+  reservationUsername?: string;
+  ownerUsername?: string;
+  controllerLevel?: number;
+}): Room {
   return {
     name: "E3N57",
     controller: {
       my: false,
-      owner: undefined,
+      owner: options?.ownerUsername ? { username: options.ownerUsername } : undefined,
+      level: options?.controllerLevel ?? 0,
       reservation: options?.reservationUsername ? { username: options.reservationUsername, ticksToEnd: 1000 } : undefined,
     } as StructureController,
     find: jest.fn((type: FindConstant) => {
@@ -589,6 +596,63 @@ describe("runWarControl", () => {
     expect(Memory.data?.war?.E3N57?.status).toBe("done");
     expect(Memory.data?.war?.E3N57?.completedAt).toBe(1019);
     expect(Memory.analytics?.war?.tasks.E3N57.status).toBe("done");
+  });
+
+  it("enters controller downgrade mode and continuously queues a maximum claim attacker after core structures fall", () => {
+    Memory.data!.war!.E3N57!.squad = "standard";
+    Memory.data!.war!.E3N57!.boostTier = undefined;
+    const sourceRoom = createSourceRoom([]);
+    const spawn = createSpawn(sourceRoom);
+    Game.rooms.E1N57 = sourceRoom;
+    Game.rooms.E3N57 = createTargetRoom({ ownerUsername: "enemy", controllerLevel: 8 });
+    Game.spawns.Spawn1 = spawn;
+
+    runWarControl();
+
+    const configName = "E1N57:war:E3N57:controllerAttacker:0";
+    expect(Memory.data!.war!.E3N57!.status).toBe("downgrading");
+    expect(Memory.data!.creepConfigs![configName]).toMatchObject({
+      role: "claimer",
+      args: ["E3N57", "", "attack"],
+      roomName: "E1N57",
+    });
+    expect(countParts(Memory.data!.creepConfigs![configName].body ?? [], CLAIM)).toBe(20);
+    expect(countParts(Memory.data!.creepConfigs![configName].body ?? [], MOVE)).toBe(18);
+    expect(spawn.memory.spawnList).toContain(configName);
+
+    spawn.memory.spawnList = [];
+    Game.time += 1;
+    runWarControl();
+
+    expect(spawn.memory.spawnList).toContain(configName);
+  });
+
+  it("marks a manual war done only after the enemy controller reaches level zero", () => {
+    Memory.data!.war!.E3N57!.squad = "standard";
+    Memory.data!.war!.E3N57!.boostTier = undefined;
+    const sourceRoom = createSourceRoom([]);
+    const spawn = createSpawn(sourceRoom);
+    const targetRoom = createTargetRoom({ ownerUsername: "enemy", controllerLevel: 8 });
+    Game.rooms.E1N57 = sourceRoom;
+    Game.rooms.E3N57 = targetRoom;
+    Game.spawns.Spawn1 = spawn;
+    runWarControl();
+    expect(Memory.data!.war!.E3N57!.status).toBe("downgrading");
+
+    targetRoom.controller!.owner = undefined;
+    targetRoom.controller!.level = 0;
+    Game.time = 1001;
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.status).toBe("clearing");
+    expect(Memory.data!.war!.E3N57!.clearSince).toBe(1001);
+    expect(spawn.memory.spawnList).not.toContain("E1N57:war:E3N57:controllerAttacker:0");
+
+    Game.time = 1020;
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.status).toBe("done");
+    expect(Memory.data!.war!.E3N57!.completedAt).toBe(1020);
   });
 
   it("resets clear debounce when hostiles reappear", () => {

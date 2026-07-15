@@ -2,7 +2,11 @@ import type { RoleFactory } from "@/types/system";
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 
-export const claimerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: string) => ({
+export const claimerRole: RoleFactory = (
+  targetRoom?: string,
+  encodedRouteRooms?: string,
+  controllerMode?: string,
+) => ({
   source: (creep): boolean => {
     if (targetRoom && creep.room.name !== targetRoom) {
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, { plainCost: 2, swampCost: 10 });
@@ -18,6 +22,14 @@ export const claimerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?
     }
 
     if (controller.my) {
+      return false;
+    }
+
+    if (controllerMode === "attack") {
+      const attackCode = measureCreepIntent(() => creep.attackController(controller));
+      if (attackCode === ERR_NOT_IN_RANGE) {
+        moveToTarget(creep, controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
+      }
       return false;
     }
 
