@@ -73,10 +73,13 @@ function createTargetRoom(options?: {
       level: options?.controllerLevel ?? 0,
       reservation: options?.reservationUsername ? { username: options.reservationUsername, ticksToEnd: 1000 } : undefined,
     } as StructureController,
-    find: jest.fn((type: FindConstant) => {
-      if (type === FIND_HOSTILE_CREEPS) return options?.hostileCreeps ?? [];
-      if (type === FIND_HOSTILE_STRUCTURES) return options?.hostileStructures ?? [];
-      return [];
+    find: jest.fn((type: FindConstant, opts?: { filter?: (value: Creep | Structure) => boolean }) => {
+      const values: Array<Creep | Structure> = type === FIND_HOSTILE_CREEPS
+        ? options?.hostileCreeps ?? []
+        : type === FIND_HOSTILE_STRUCTURES
+          ? options?.hostileStructures ?? []
+          : [];
+      return opts?.filter ? values.filter((value) => opts.filter?.(value)) : values;
     }),
   } as unknown as Room;
 }
@@ -831,6 +834,57 @@ describe("runWarControl", () => {
       expect(Memory.data!.war!.E3N57!.status).toBe("clearing");
       expect(Memory.data!.creepConfigs!["E1N57:war:E3N57:controllerAttacker:0"]).toBeUndefined();
       expect(spawn.memory.spawnList).not.toContain("E1N57:war:E3N57:controllerAttacker:0");
+    },
+  );
+
+  it("dispatches the controller attacker while a dangerous hostile creep remains after spawn and towers are gone", () => {
+    Memory.data!.war!.E3N57!.squad = "standard";
+    Memory.data!.war!.E3N57!.boostTier = undefined;
+    const sourceRoom = createSourceRoom([]);
+    sourceRoom.energyCapacityAvailable = 5_600;
+    const spawn = createSpawn(sourceRoom);
+    const defender = {
+      owner: { username: "enemy" },
+      getActiveBodyparts: jest.fn((part: BodyPartConstant) => part === RANGED_ATTACK ? 8 : 0),
+    } as unknown as Creep;
+    Game.rooms.E1N57 = sourceRoom;
+    Game.rooms.E3N57 = createTargetRoom({
+      ownerUsername: "enemy",
+      controllerLevel: 8,
+      hostileCreeps: [defender],
+    });
+    Game.spawns.Spawn1 = spawn;
+
+    runWarControl();
+
+    const configName = "E1N57:war:E3N57:controllerAttacker:0";
+    expect(Memory.data!.war!.E3N57!.status).toBe("downgrading");
+    expect(Memory.data!.creepConfigs![configName]).toMatchObject({ role: "claimer" });
+    expect(spawn.memory.spawnList).toContain(configName);
+  });
+
+  it.each([STRUCTURE_STORAGE, STRUCTURE_TERMINAL, STRUCTURE_RAMPART])(
+    "dispatches the controller attacker while a residual enemy %s remains",
+    (structureType) => {
+      Memory.data!.war!.E3N57!.squad = "standard";
+      Memory.data!.war!.E3N57!.boostTier = undefined;
+      const sourceRoom = createSourceRoom([]);
+      sourceRoom.energyCapacityAvailable = 5_600;
+      const spawn = createSpawn(sourceRoom);
+      Game.rooms.E1N57 = sourceRoom;
+      Game.rooms.E3N57 = createTargetRoom({
+        ownerUsername: "enemy",
+        controllerLevel: 8,
+        hostileStructures: [{ structureType } as Structure],
+      });
+      Game.spawns.Spawn1 = spawn;
+
+      runWarControl();
+
+      const configName = "E1N57:war:E3N57:controllerAttacker:0";
+      expect(Memory.data!.war!.E3N57!.status).toBe("downgrading");
+      expect(Memory.data!.creepConfigs![configName]).toMatchObject({ role: "claimer" });
+      expect(spawn.memory.spawnList).toContain(configName);
     },
   );
 

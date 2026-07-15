@@ -151,9 +151,6 @@ const WAR_CONTROLLER_ATTACK_CONFIG_SUFFIX = "controllerAttacker:0";
 const WAR_CONTROLLER_CORE_STRUCTURES = new Set<StructureConstant>([
   STRUCTURE_SPAWN,
   STRUCTURE_TOWER,
-  STRUCTURE_STORAGE,
-  STRUCTURE_TERMINAL,
-  STRUCTURE_INVADER_CORE,
 ]);
 
 const WAR_T3_TOUGH = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
@@ -559,20 +556,19 @@ function getControllerAttackConfigName(task: WarTask): string {
   return `${task.sourceRoom}:war:${task.targetRoom}:${WAR_CONTROLLER_ATTACK_CONFIG_SUFFIX}`;
 }
 
-function isDangerousHostileCreep(creep: Creep): boolean {
-  if (typeof creep.getActiveBodyparts !== "function") return true;
-  return creep.getActiveBodyparts(ATTACK) > 0
-    || creep.getActiveBodyparts(RANGED_ATTACK) > 0
-    || creep.getActiveBodyparts(HEAL) > 0;
+function hasDangerousHostileCreeps(room: Room): boolean {
+  return room.find(FIND_HOSTILE_CREEPS, {
+    filter: (creep) => {
+      if (creep.owner.username === "Source Keeper") return false;
+      if (typeof creep.getActiveBodyparts !== "function") return true;
+      return creep.getActiveBodyparts(ATTACK) > 0
+        || creep.getActiveBodyparts(RANGED_ATTACK) > 0
+        || creep.getActiveBodyparts(HEAL) > 0;
+    },
+  }).length > 0;
 }
 
 function hasControllerAttackBlockers(room: Room): boolean {
-  const dangerousHostiles = room.find(FIND_HOSTILE_CREEPS, {
-    filter: (creep) =>
-      creep.owner.username !== "Source Keeper" && isDangerousHostileCreep(creep),
-  });
-  if (dangerousHostiles.length > 0) return true;
-
   return room.find(FIND_HOSTILE_STRUCTURES, {
     filter: (structure) => WAR_CONTROLLER_CORE_STRUCTURES.has(structure.structureType),
   }).length > 0;
@@ -1018,6 +1014,7 @@ function processTask(task: WarTask): void {
     && task.reason === "manual"
     && isControllerDefeated(room)
     && !hasControllerAttackBlockers(room)
+    && !hasDangerousHostileCreeps(room)
   ) {
     processControllerVictory(task);
     return;
