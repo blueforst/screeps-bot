@@ -35,6 +35,14 @@ export interface BoostPrepResult {
   labs: string[];
 }
 
+export interface BoostPrepOptions {
+  requireLabEnergy?: boolean;
+}
+
+function getRequiredLabEnergy(mineralAmount: number): number {
+  return Math.ceil(mineralAmount / LAB_BOOST_MINERAL) * LAB_BOOST_ENERGY;
+}
+
 function getRequiredCompounds(tier: number, requiredAmounts?: ReadonlyMap<ResourceConstant, number>): ResourceConstant[] {
   if (requiredAmounts) {
     return [...requiredAmounts.entries()]
@@ -147,6 +155,7 @@ export function prepareBoosts(
   sourceRoomName: string,
   tier: number,
   requiredAmountsOverride?: ReadonlyMap<ResourceConstant, number>,
+  options: BoostPrepOptions = {},
 ): BoostPrepResult {
   const requiredAmounts = requiredAmountsOverride ?? getRequiredCompoundAmounts(tier);
   const compounds = getRequiredCompounds(tier, requiredAmounts);
@@ -247,6 +256,42 @@ export function prepareBoosts(
       }
     }
 
+    if (options.requireLabEnergy) {
+      const requiredEnergy = getRequiredLabEnergy(needed);
+      const energyDeficit = Math.max(0, requiredEnergy - lab.store.getUsedCapacity(RESOURCE_ENERGY));
+      if (energyDeficit > 0) {
+        const energySource = resolveBoostSupplySource(room, RESOURCE_ENERGY);
+        const transferAmount = Math.min(
+          energyDeficit,
+          energySource?.store.getUsedCapacity(RESOURCE_ENERGY) ?? 0,
+          lab.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0,
+        );
+        if (!energySource || transferAmount < energyDeficit) {
+          return {
+            status: "failed",
+            reason: "insufficient_lab_energy",
+            labs: labs.map((item) => item.id),
+          };
+        }
+        drafts.push({
+          id: `powerBankBoost:lab_energy:${taskId}:${lab.id}`,
+          type: "lab_supply",
+          priority: BOOST_LAB_SUPPLY_PRIORITY,
+          steps: [
+            {
+              id: `${RESOURCE_ENERGY}:${energySource.id}->${lab.id}`,
+              resource: RESOURCE_ENERGY,
+              fromKind: energySource.structureType === STRUCTURE_TERMINAL ? "terminal" : "storage",
+              toKind: "lab",
+              fromId: energySource.id,
+              toId: lab.id,
+              amount: transferAmount,
+            },
+          ],
+        });
+      }
+    }
+
     const remainingDeficit = Math.max(0, deficit - localSupplyAmount);
     const incoming = getIncomingResourceTransferAmount(sourceRoomName, compound);
     const donorDeficit = Math.max(0, remainingDeficit - incoming);
@@ -283,7 +328,7 @@ export function prepareBoosts(
     drafts,
   );
 
-  if (checkBoostReadiness(taskId, compounds, requiredAmounts)) {
+  if (checkBoostReadiness(taskId, compounds, requiredAmounts, options)) {
     return { status: "ready", labs: labs.map((l) => l.id) };
   }
 
@@ -297,6 +342,7 @@ export function checkBoostReadiness(
   taskId: string,
   requiredCompounds: ResourceConstant[],
   requiredAmounts?: ReadonlyMap<ResourceConstant, number>,
+  options: BoostPrepOptions = {},
 ): boolean {
   if (requiredCompounds.length === 0) return true;
 
@@ -316,6 +362,10 @@ export function checkBoostReadiness(
     const labAmount = lab.store.getUsedCapacity(compound);
     const requiredAmount = requiredAmounts?.get(compound) ?? LAB_BOOST_MINERAL;
     if (labAmount < requiredAmount) return false;
+    if (options.requireLabEnergy) {
+      const requiredEnergy = getRequiredLabEnergy(requiredAmount);
+      if (lab.store.getUsedCapacity(RESOURCE_ENERGY) < requiredEnergy) return false;
+    }
   }
 
   return true;

@@ -22,8 +22,14 @@ function resetRuntimeServices(): void {
   delete (global as RuntimeGlobal).__runtimeServices;
 }
 
-function createLabWithCompound(id: string, roomName: string, compound: ResourceConstant | null, amount: number): StructureLab {
-  const storeResources: Record<string, number> = {};
+function createLabWithCompound(
+  id: string,
+  roomName: string,
+  compound: ResourceConstant | null,
+  amount: number,
+  energy = 0,
+): StructureLab {
+  const storeResources: Record<string, number> = { [RESOURCE_ENERGY]: energy };
   if (compound && amount > 0) {
     storeResources[compound] = amount;
   }
@@ -148,6 +154,28 @@ describe("powerBankBoost", () => {
     });
 
     describe("with local stock sufficient", () => {
+      it("creates separate mineral and energy supply tasks for war boost labs", () => {
+        const compound = RESOURCE_CATALYZED_UTRIUM_ACID;
+        const lab = createLabWithCompound(`${SOURCE_ROOM}-lab-1`, SOURCE_ROOM, null, 0, 0);
+        const required = new Map<ResourceConstant, number>([[compound, 60]]);
+        Game.rooms[SOURCE_ROOM] = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          storageResources: { [compound]: 60, [RESOURCE_ENERGY]: 10_000 },
+          labs: [lab],
+        });
+
+        const result = prepareBoosts(TASK_ID, SOURCE_ROOM, 6, required, { requireLabEnergy: true });
+
+        expect(result.status).toBe("preparing");
+        const supplySteps = listCarrierTasksByRoom(SOURCE_ROOM)
+          .filter((task) => task.producer === `powerBankBoost:${TASK_ID}`)
+          .map((task) => task.steps[0]);
+        expect(supplySteps).toEqual(expect.arrayContaining([
+          expect.objectContaining({ resource: compound, amount: 60, toId: lab.id }),
+          expect.objectContaining({ resource: RESOURCE_ENERGY, amount: 40, toId: lab.id }),
+        ]));
+      });
+
       it("returns preparing and creates carrier tasks for tier 6", () => {
         const compounds = [
           RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
@@ -471,6 +499,23 @@ describe("powerBankBoost", () => {
 
     it("returns false when no prep memory exists for task", () => {
       expect(checkBoostReadiness(TASK_ID, [RESOURCE_CATALYZED_GHODIUM_ALKALIDE])).toBe(false);
+    });
+
+    it("requires the full lab energy budget only when requested by war prep", () => {
+      const compound = RESOURCE_CATALYZED_UTRIUM_ACID;
+      const required = new Map<ResourceConstant, number>([[compound, 60]]);
+      const lab = createLabWithCompound(`${SOURCE_ROOM}-lab-1`, SOURCE_ROOM, compound, 60, 0);
+      Game.rooms[SOURCE_ROOM] = createRoomWithInfrastructure({ name: SOURCE_ROOM, labs: [lab] });
+      Memory.runtime = {};
+      ensurePowerBankBoostPrepStore()[TASK_ID] = {
+        taskId: TASK_ID,
+        sourceRoomName: SOURCE_ROOM,
+        labs: { [lab.id]: { labId: lab.id, compound } },
+      };
+      Game.getObjectById = jest.fn(() => lab) as typeof Game.getObjectById;
+
+      expect(checkBoostReadiness(TASK_ID, [compound], required)).toBe(true);
+      expect(checkBoostReadiness(TASK_ID, [compound], required, { requireLabEnergy: true })).toBe(false);
     });
 
     it("returns true when all compounds loaded in labs", () => {

@@ -40,6 +40,7 @@ export function prepareCombatBoost(
   if (!lab) return false;
 
   if (lab.store.getUsedCapacity(nextCompound) < LAB_BOOST_MINERAL) return false;
+  if (lab.store.getUsedCapacity(RESOURCE_ENERGY) < LAB_BOOST_ENERGY) return false;
 
   if (!creep.pos.isNearTo(lab)) {
     moveToTarget(creep, lab, 1, { reusePath: 3, maxRooms: 1 });
