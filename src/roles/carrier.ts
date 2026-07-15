@@ -903,7 +903,8 @@ export const carrierRole: RoleFactory = () => ({
       pickupEnergyForCarrier(creep, {
         includeStorage: isSupplyingSpawnOrExtension,
         includeProtoStorage: isSupplyingSpawnOrExtension,
-        includeTerminal: isTerminalPickupEnabledForRoom(assignedRoomName),
+        includeTerminal:
+          isSupplyingSpawnOrExtension && isTerminalPickupEnabledForRoom(assignedRoomName),
       });
       const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
       if (hasEnergy) {
@@ -971,7 +972,7 @@ export const carrierRole: RoleFactory = () => ({
 
     pickupEnergyForCarrier(creep, {
       includeStorage: false,
-      includeTerminal: isTerminalPickupEnabledForRoom(assignedRoomName),
+      includeTerminal: false,
     });
     const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
     if (hasEnergy) {
