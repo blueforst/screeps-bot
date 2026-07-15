@@ -704,7 +704,8 @@ describe("runWarControl", () => {
     sourceRoom.energyCapacityAvailable = 5_600;
     const spawn = createSpawn(sourceRoom);
     Game.rooms.E1N57 = sourceRoom;
-    Game.rooms.E3N57 = createTargetRoom({ ownerUsername: "enemy", controllerLevel: 8 });
+    const targetRoom = createTargetRoom({ ownerUsername: "enemy", controllerLevel: 8 });
+    Game.rooms.E3N57 = targetRoom;
     Game.spawns.Spawn1 = spawn;
 
     runWarControl();
@@ -725,19 +726,60 @@ describe("runWarControl", () => {
     expect(spawn.memory.spawnList).toContain(configName);
 
     spawn.memory.spawnList = [];
+    targetRoom.controller!.upgradeBlocked = 999;
     Game.time += 1;
     runWarControl();
 
     expect(spawn.memory.spawnList).not.toContain(configName);
 
     Game.time = 1999;
+    targetRoom.controller!.upgradeBlocked = 1;
     runWarControl();
     expect(spawn.memory.spawnList).not.toContain(configName);
 
     Game.time = 2000;
+    targetRoom.controller!.upgradeBlocked = 0;
     runWarControl();
     expect(spawn.memory.spawnList).toContain(configName);
     expect(Memory.data!.war!.E3N57!.controllerAttackerLastQueuedAt).toBe(2000);
+  });
+
+  it("requeues a controller attacker immediately when the previous one was cleared before attacking", () => {
+    Memory.data!.war!.E3N57!.squad = "standard";
+    Memory.data!.war!.E3N57!.boostTier = undefined;
+    const sourceRoom = createSourceRoom([]);
+    sourceRoom.energyCapacityAvailable = 5_600;
+    const spawn = createSpawn(sourceRoom);
+    const targetOptions = {
+      ownerUsername: "enemy",
+      controllerLevel: 8,
+      hostileStructures: [] as Structure[],
+    };
+    const targetRoom = createTargetRoom(targetOptions);
+    Game.rooms.E1N57 = sourceRoom;
+    Game.rooms.E3N57 = targetRoom;
+    Game.spawns.Spawn1 = spawn;
+
+    runWarControl();
+
+    const configName = "E1N57:war:E3N57:controllerAttacker:0";
+    expect(spawn.memory.spawnList).toContain(configName);
+    expect(Memory.data!.war!.E3N57!.controllerAttackerLastQueuedAt).toBe(1000);
+
+    targetOptions.hostileStructures = [{ structureType: STRUCTURE_TOWER } as Structure];
+    Game.time = 1001;
+    runWarControl();
+    expect(Memory.data!.war!.E3N57!.status).toBe("clearing");
+    expect(spawn.memory.spawnList).not.toContain(configName);
+    expect(targetRoom.controller!.upgradeBlocked ?? 0).toBe(0);
+
+    targetOptions.hostileStructures = [];
+    Game.time = 1002;
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.status).toBe("downgrading");
+    expect(spawn.memory.spawnList).toContain(configName);
+    expect(Memory.data!.war!.E3N57!.controllerAttackerLastQueuedAt).toBe(1002);
   });
 
   it("infers the previous controller attacker production tick during live migration", () => {

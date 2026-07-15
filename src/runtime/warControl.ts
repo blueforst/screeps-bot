@@ -631,12 +631,17 @@ function ensureControllerAttackConfig(task: WarTask): void {
     task.controllerAttackerLastQueuedAt = inferredQueuedAt;
   }
 
-  const lastQueuedAt = task.controllerAttackerLastQueuedAt;
-  const queueDue = lastQueuedAt === undefined || Game.time - lastQueuedAt >= CONTROLLER_ATTACKER_QUEUE_INTERVAL;
   const spawns = getSpawnsForRoom(task.sourceRoom);
   const queued = isConfigQueuedInSpawns(spawns, configName);
   const spawning = isConfigSpawning(configName);
   const active = liveCreeps.length > 0 || queued || spawning;
+  const targetController = Game.rooms[task.targetRoom]?.controller;
+  if (!active && targetController && (targetController.upgradeBlocked ?? 0) <= 0) {
+    task.controllerAttackerLastQueuedAt = undefined;
+  }
+
+  const lastQueuedAt = task.controllerAttackerLastQueuedAt;
+  const queueDue = lastQueuedAt === undefined || Game.time - lastQueuedAt >= CONTROLLER_ATTACKER_QUEUE_INTERVAL;
 
   store[configName] = {
     role: "claimer",
