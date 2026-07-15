@@ -65,6 +65,13 @@ export function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): Scr
     return measureCreepIntent(() => creep.move(direction));
   }
 
+  if (isHeadOnWarDuoSwap(creep, blockingCreep)) {
+    if (pushBlockingCreep(creep, blockingCreep)) {
+      return measureCreepIntent(() => creep.move(direction));
+    }
+    return ERR_BUSY;
+  }
+
   if (isBlockerActivelyMoving(blockingCreep)) {
     return measureCreepIntent(() => creep.move(direction));
   }
@@ -74,6 +81,36 @@ export function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): Scr
   }
 
   return ERR_BUSY;
+}
+
+function isHeadOnWarDuoSwap(attacker: Creep, healer: Creep): boolean {
+  if (attacker.memory.role !== "meleeAttacker" || healer.memory.role !== "healer") return false;
+
+  const attackerConfig = attacker.memory.configName;
+  if (!attackerConfig?.includes(":war:") || !attackerConfig.includes(":meleeAttacker:")) return false;
+  if (healer.memory.configName !== attackerConfig.replace(":meleeAttacker:", ":healer:")) return false;
+
+  const nextStep = getPlannedNextStep(healer);
+  return nextStep?.x === attacker.pos.x && nextStep.y === attacker.pos.y;
+}
+
+function getPlannedNextStep(creep: Creep): { x: number; y: number } | null {
+  const steps = getCreepMovementState(creep.name)?.movePathState?.steps;
+  if (!steps || steps.length === 0) return null;
+
+  const exactIndex = steps.findIndex((step) => step.x === creep.pos.x && step.y === creep.pos.y);
+  if (exactIndex >= 0) return steps[exactIndex + 1] ?? null;
+
+  let closest: { x: number; y: number } | null = null;
+  let closestRange = Infinity;
+  for (const step of steps) {
+    const range = Math.max(Math.abs(creep.pos.x - step.x), Math.abs(creep.pos.y - step.y));
+    if (range >= closestRange) continue;
+    closest = step;
+    closestRange = range;
+  }
+
+  return closestRange <= 1 ? closest : null;
 }
 
 function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: RoomPosition): boolean {

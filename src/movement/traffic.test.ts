@@ -180,6 +180,39 @@ describe("moveToAdjacentPosition", () => {
     expect(state.movePathState).toBeDefined();
   });
 
+  it("swaps a paired war healer behind its attacker during a head-on path conflict", () => {
+    const attacker = makeCreep("attacker", 10, 10);
+    attacker.memory.role = "meleeAttacker";
+    attacker.memory.configName = "W1N1:war:W2N2:meleeAttacker:0";
+    const healer = makeCreep("healer", 11, 10);
+    healer.memory.role = "healer";
+    healer.memory.configName = "W1N1:war:W2N2:healer:0";
+    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
+    setupRoomContext([attacker, healer]);
+
+    const healerState = ensureCreepMovementState(healer.name);
+    healerState.pathingRequestedAt = Game.time;
+    healerState.movePathState = {
+      key: "head-on",
+      path: "6",
+      steps: [{ x: 10, y: 10 }],
+      targetRoom: "W1N1",
+      targetX: 5,
+      targetY: 5,
+      range: 2,
+      stuckTicks: 2,
+      expiresAt: Game.time + 10,
+    };
+
+    const result = moveToAdjacentPosition(attacker, nextPos);
+
+    expect(result).toBe(OK);
+    expect(healer.move).toHaveBeenCalledWith(LEFT);
+    expect(attacker.move).toHaveBeenCalledWith(RIGHT);
+    expect(healerState.movePathState).toBeUndefined();
+    expect(healerState.movementPushedAt).toBe(Game.time);
+  });
+
   it("does not push a blocker with current-tick pathingRequestedAt", () => {
     const pusher = makeCreep("pusher", 10, 10);
     const blocker = makeCreep("blocker", 11, 10);
