@@ -1,5 +1,5 @@
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
-import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
+import { checkBoostReadiness, prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
 import type { CreepConfig } from "@/types/system";
 
 type WarStatus = "staging" | "clearing" | "done" | "failed";
@@ -142,6 +142,12 @@ const T3_HEALER_BODY: BodyPartConstant[] = [
 
 const T3_ATTACKER_BOOSTS: ResourceConstant[] = [WAR_T3_MOVE, WAR_T3_TOUGH, WAR_T3_ATTACK];
 const T3_HEALER_BOOSTS: ResourceConstant[] = [WAR_T3_MOVE, WAR_T3_TOUGH, WAR_T3_HEAL];
+const T3_BOOST_PARTS: Partial<Record<ResourceConstant, BodyPartConstant>> = {
+  [WAR_T3_MOVE]: MOVE,
+  [WAR_T3_TOUGH]: TOUGH,
+  [WAR_T3_ATTACK]: ATTACK,
+  [WAR_T3_HEAL]: HEAL,
+};
 const T3_DUO_BOOST_AMOUNTS = new Map<ResourceConstant, number>([
   [WAR_T3_TOUGH, 20 * LAB_BOOST_MINERAL],
   [WAR_T3_ATTACK, 30 * LAB_BOOST_MINERAL],
@@ -487,6 +493,38 @@ function ensureCombatConfigs(task: WarTask): void {
   }
 }
 
+function getCurrentT3DuoBoostAmounts(task: WarTask): Map<ResourceConstant, number> {
+  const amounts = new Map<ResourceConstant, number>();
+  const roles: WarRole[] = ["meleeAttacker", "healer"];
+
+  for (const role of roles) {
+    const configName = getConfigName(task, role, 0);
+    const creep = getLiveCreepsByConfig(configName)[0];
+    const body = getRoleBody(task, role) || [];
+    const compounds = role === "meleeAttacker" ? T3_ATTACKER_BOOSTS : T3_HEALER_BOOSTS;
+
+    for (const compound of compounds) {
+      const partType = T3_BOOST_PARTS[compound];
+      if (!partType) continue;
+
+      const partCount = creep
+        ? creep.body.filter((part) => part.type === partType && part.hits > 0 && part.boost !== compound).length
+        : body.filter((part) => part === partType).length;
+      if (partCount <= 0) continue;
+
+      amounts.set(compound, (amounts.get(compound) || 0) + partCount * LAB_BOOST_MINERAL);
+    }
+  }
+
+  return amounts;
+}
+
+function currentT3DuoCanFinishBoosting(task: WarTask): boolean {
+  const amounts = getCurrentT3DuoBoostAmounts(task);
+  const compounds = [...amounts.keys()];
+  return checkBoostReadiness(getWarBoostTaskId(task), compounds, amounts);
+}
+
 function prepareT3DuoBoosts(task: WarTask): boolean {
   if (!isT3DuoTask(task)) return true;
 
@@ -494,6 +532,11 @@ function prepareT3DuoBoosts(task: WarTask): boolean {
   task.boostLabs = result.labs;
   task.boostStatus = result.status;
   task.failReason = result.reason;
+
+  if (result.status !== "ready" && currentT3DuoCanFinishBoosting(task)) {
+    task.boostStatus = "preparing";
+    return true;
+  }
 
   if (result.status === "failed") {
     setTaskStatus(task, "failed");

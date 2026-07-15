@@ -315,6 +315,74 @@ describe("runWarControl", () => {
     expect(Memory.data?.creepConfigs?.[healerConfig]).toBeUndefined();
   });
 
+  it("keeps the healer queued when a boosted attacker has consumed only its share of the prepared compounds", () => {
+    const fullLabs = [
+      createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 600),
+      createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, 900),
+      createBoostLab("lab-heal", RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, 600),
+      createBoostLab("lab-move", RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, 540),
+    ];
+    let activeLabs = fullLabs;
+    let sourceRoom = createSourceRoom(activeLabs);
+    const spawn = createSpawn(sourceRoom);
+    Game.rooms.E1N57 = sourceRoom;
+    Game.spawns.Spawn1 = spawn;
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) =>
+      activeLabs.find((lab) => lab.id === id) ?? null
+    ) as Game["getObjectById"];
+
+    runWarControl();
+
+    const attackerConfig = "E1N57:war:E3N57:meleeAttacker:0";
+    const healerConfig = "E1N57:war:E3N57:healer:0";
+    const boostedBody: BodyPartDefinition[] = [
+      ...Array.from({ length: 10 }, () => ({
+        type: TOUGH,
+        hits: 100,
+        boost: RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+      } as BodyPartDefinition)),
+      ...Array.from({ length: 30 }, () => ({
+        type: ATTACK,
+        hits: 100,
+        boost: RESOURCE_CATALYZED_UTRIUM_ACID,
+      } as BodyPartDefinition)),
+      ...Array.from({ length: 10 }, () => ({
+        type: MOVE,
+        hits: 100,
+        boost: RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
+      } as BodyPartDefinition)),
+    ];
+    Game.creeps = {
+      attacker: {
+        name: "attacker",
+        room: sourceRoom,
+        pos: new MockPos(25, 25, "E1N57") as unknown as RoomPosition,
+        memory: { role: "meleeAttacker", configName: attackerConfig },
+        body: boostedBody,
+        hits: 5000,
+        hitsMax: 5000,
+        spawning: false,
+      } as unknown as Creep,
+    };
+    spawn.memory.spawnList = [healerConfig];
+
+    activeLabs = [
+      createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 300),
+      createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, 0),
+      createBoostLab("lab-heal", RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, 600),
+      createBoostLab("lab-move", RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, 240),
+    ];
+    sourceRoom = createSourceRoom(activeLabs);
+    Game.rooms.E1N57 = sourceRoom;
+    Game.time += 1;
+
+    runWarControl();
+
+    expect(Memory.data?.war?.E3N57?.status).not.toBe("failed");
+    expect(spawn.memory.spawnList).toContain(healerConfig);
+    expect(Memory.data?.creepConfigs?.[healerConfig]).toBeDefined();
+  });
+
   it("debounces a visible clear room before completing and writes war telemetry", () => {
     Memory.data = {
       war: {
