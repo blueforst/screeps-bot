@@ -133,7 +133,7 @@ describe("healerRole war duo staging", () => {
 
     healerRole(TARGET_ROOM).target(healer);
 
-    expect(healer.move).toHaveBeenCalledWith(RIGHT);
+    expect(moveOffExit).toHaveBeenCalledWith(healer);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 

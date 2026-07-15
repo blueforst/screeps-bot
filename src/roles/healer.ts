@@ -42,24 +42,9 @@ function isOnRoomExit(pos: RoomPosition): boolean {
 }
 
 function moveOffExitIntoRoom(creep: Creep): boolean {
-  if (creep.pos.x <= 0) {
-    measureCreepIntent(() => creep.move(RIGHT));
-    return true;
-  }
-  if (creep.pos.x >= 49) {
-    measureCreepIntent(() => creep.move(LEFT));
-    return true;
-  }
-  if (creep.pos.y <= 0) {
-    measureCreepIntent(() => creep.move(BOTTOM));
-    return true;
-  }
-  if (creep.pos.y >= 49) {
-    measureCreepIntent(() => creep.move(TOP));
-    return true;
-  }
-
-  return false;
+  if (!isOnRoomExit(creep.pos)) return false;
+  moveOffExit(creep);
+  return true;
 }
 
 function moveToPartnerRoom(creep: Creep, roomName: string): void {

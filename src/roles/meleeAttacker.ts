@@ -1,5 +1,6 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { isWalkableStructure, parseEncodedRouteRooms } from "@/movement/common";
+import { moveOffExit } from "@/movement/traffic";
 import { prepareCombatBoost } from "@/roles/combatBoosts";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
@@ -303,24 +304,9 @@ function isOnExitDirection(pos: RoomPosition, direction: DirectionConstant): boo
 }
 
 function moveOffExitIntoRoom(creep: Creep): boolean {
-  if (creep.pos.x <= 0) {
-    measureCreepIntent(() => creep.move(RIGHT));
-    return true;
-  }
-  if (creep.pos.x >= 49) {
-    measureCreepIntent(() => creep.move(LEFT));
-    return true;
-  }
-  if (creep.pos.y <= 0) {
-    measureCreepIntent(() => creep.move(BOTTOM));
-    return true;
-  }
-  if (creep.pos.y >= 49) {
-    measureCreepIntent(() => creep.move(TOP));
-    return true;
-  }
-
-  return false;
+  if (creep.pos.x > 0 && creep.pos.x < 49 && creep.pos.y > 0 && creep.pos.y < 49) return false;
+  moveOffExit(creep);
+  return true;
 }
 
 function moveToPartnerRoom(creep: Creep, roomName: string): void {
@@ -410,7 +396,10 @@ function waitForWarHealerFormation(
     return true;
   }
 
-  if (!creep.pos.isNearTo(healer.pos)) return true;
+  if (!creep.pos.isNearTo(healer.pos)) {
+    moveOffExitIntoRoom(creep);
+    return true;
+  }
   return !isReadyToCrossWithHealer(creep, healer, targetRoom);
 }
 

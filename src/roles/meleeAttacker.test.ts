@@ -8,12 +8,19 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
   measureCreepIntent: (fn: () => unknown) => fn(),
 }));
 
+jest.mock("@/movement/traffic", () => ({
+  moveOffExit: jest.fn(() => OK),
+}));
+
 import { meleeAttackerRole } from "@/roles/meleeAttacker";
 import { createMockPowerBankCreep } from "@mock/powerBank";
 
 const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
   moveToTarget: jest.Mock;
   moveToTargetRoom: jest.Mock;
+};
+const { moveOffExit } = jest.requireMock("@/movement/traffic") as {
+  moveOffExit: jest.Mock;
 };
 
 const TARGET_ROOM = "E3N57";
@@ -224,7 +231,7 @@ describe("meleeAttackerRole war duo staging", () => {
 
     meleeAttackerRole(TARGET_ROOM).target(attacker);
 
-    expect(attacker.move).toHaveBeenCalledWith(TOP);
+    expect(moveOffExit).toHaveBeenCalledWith(attacker);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 
@@ -245,7 +252,30 @@ describe("meleeAttackerRole war duo staging", () => {
 
     meleeAttackerRole(TARGET_ROOM).source?.(attacker);
 
-    expect(attacker.move).toHaveBeenCalledWith(RIGHT);
+    expect(moveOffExit).toHaveBeenCalledWith(attacker);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("steps off an intermediate landing while waiting for the healer to close formation", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: "E3N55",
+      x: 0,
+      y: 35,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E3N55",
+      x: 2,
+      y: 33,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+
+    meleeAttackerRole("E2N54", "E1N56|E2N56|E2N55|E3N55|E3N54").source?.(attacker);
+
+    expect(moveOffExit).toHaveBeenCalledWith(attacker);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 
