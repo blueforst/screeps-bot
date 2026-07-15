@@ -1,6 +1,7 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { prepareCombatBoost } from "@/roles/combatBoosts";
 import { findWarObjectiveTarget } from "@/roles/meleeAttacker";
+import { moveOffExit } from "@/movement/traffic";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
@@ -34,6 +35,10 @@ function isOnExitDirection(pos: RoomPosition, direction: DirectionConstant): boo
   if (direction === BOTTOM) return pos.y >= 49;
   if (direction === LEFT) return pos.x <= 0;
   return false;
+}
+
+function isOnRoomExit(pos: RoomPosition): boolean {
+  return pos.x <= 0 || pos.x >= 49 || pos.y <= 0 || pos.y >= 49;
 }
 
 function moveOffExitIntoRoom(creep: Creep): boolean {
@@ -148,6 +153,11 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
       return true;
     }
     moveToPartnerRoom(creep, attacker.room.name);
+    return true;
+  }
+
+  if (creep.room.name === targetRoom && attacker.room.name === targetRoom && isOnRoomExit(creep.pos)) {
+    moveOffExit(creep);
     return true;
   }
 

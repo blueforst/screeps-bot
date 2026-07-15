@@ -8,12 +8,19 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
   measureCreepIntent: (fn: () => unknown) => fn(),
 }));
 
+jest.mock("@/movement/traffic", () => ({
+  moveOffExit: jest.fn(() => OK),
+}));
+
 import { healerRole } from "@/roles/healer";
 import { createMockPowerBankCreep } from "@mock/powerBank";
 
 const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
   moveToTarget: jest.Mock;
   moveToTargetRoom: jest.Mock;
+};
+const { moveOffExit } = jest.requireMock("@/movement/traffic") as {
+  moveOffExit: jest.Mock;
 };
 
 const TARGET_ROOM = "E3N57";
@@ -427,6 +434,30 @@ describe("healerRole war duo staging", () => {
 
     healerRole(TARGET_ROOM).target(healer);
 
+    expect(moveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("steps off the target-room exit after crossing with the attacker", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 46,
+      y: 48,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn(() => []) as Room["find"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 45,
+      y: 49,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(moveOffExit).toHaveBeenCalledWith(healer);
     expect(moveToTarget).not.toHaveBeenCalled();
   });
 
