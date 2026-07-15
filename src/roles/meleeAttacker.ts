@@ -1,5 +1,5 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
-import { isWalkableStructure } from "@/movement/common";
+import { isWalkableStructure, parseEncodedRouteRooms } from "@/movement/common";
 import { prepareCombatBoost } from "@/roles/combatBoosts";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
@@ -363,7 +363,25 @@ function moveAcrossExitToTargetRoom(creep: Creep, targetRoom: string): boolean {
   return true;
 }
 
-function waitForWarHealerFormation(creep: Creep, targetRoom: string): boolean {
+function isNextWarRouteRoom(
+  creep: Creep,
+  partnerRoom: string,
+  targetRoom: string,
+  encodedRouteRooms?: string,
+): boolean {
+  const sourceRoom = creep.memory.configName?.split(":")[0];
+  const orderedRooms = [sourceRoom, ...parseEncodedRouteRooms(encodedRouteRooms), targetRoom].filter(
+    (roomName, index, rooms): roomName is string => !!roomName && rooms.indexOf(roomName) === index,
+  );
+  const currentIndex = orderedRooms.indexOf(creep.room.name);
+  return currentIndex >= 0 && orderedRooms[currentIndex + 1] === partnerRoom;
+}
+
+function waitForWarHealerFormation(
+  creep: Creep,
+  targetRoom: string,
+  encodedRouteRooms?: string,
+): boolean {
   if (!expectsWarHealer(creep)) return false;
 
   const healer = findPairedWarHealer(creep);
@@ -383,6 +401,10 @@ function waitForWarHealerFormation(creep: Creep, targetRoom: string): boolean {
   }
 
   if (healer.room.name !== creep.room.name) {
+    if (isNextWarRouteRoom(creep, healer.room.name, targetRoom, encodedRouteRooms)) {
+      moveToPartnerRoom(creep, healer.room.name);
+      return true;
+    }
     if (healer.room.name === targetRoom && moveAcrossExitToTargetRoom(creep, targetRoom)) return true;
     moveOffExitIntoRoom(creep);
     return true;
@@ -400,7 +422,7 @@ export const meleeAttackerRole: RoleFactory = (
 ) => ({
   prepare: (creep): boolean => prepareCombatBoost(creep, boostTaskId, encodedBoostCompounds),
   source: (creep): boolean => {
-    if (targetRoom && waitForWarHealerFormation(creep, targetRoom)) {
+    if (targetRoom && waitForWarHealerFormation(creep, targetRoom, encodedRouteRooms)) {
       attackAdjacentWhileHoldingFormation(creep, creep.room.name === targetRoom);
       return false;
     }
@@ -414,7 +436,7 @@ export const meleeAttackerRole: RoleFactory = (
     return true;
   },
   target: (creep): boolean => {
-    if (targetRoom && waitForWarHealerFormation(creep, targetRoom)) {
+    if (targetRoom && waitForWarHealerFormation(creep, targetRoom, encodedRouteRooms)) {
       attackAdjacentWhileHoldingFormation(creep, creep.room.name === targetRoom);
       return false;
     }

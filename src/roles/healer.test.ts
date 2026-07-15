@@ -188,7 +188,7 @@ describe("healerRole war duo staging", () => {
       healer,
       attacker,
       1,
-      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1, avoidExitTiles: true }),
     );
     expect(moveToTargetRoom).not.toHaveBeenCalledWith(healer, TARGET_ROOM, expect.anything(), expect.anything());
   });

@@ -167,7 +167,13 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
   }
 
   if (!creep.pos.isNearTo(attacker.pos)) {
-    moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+    moveToTarget(creep, attacker, 1, {
+      plainCost: 2,
+      swampCost: 8,
+      reusePath: 3,
+      maxRooms: 1,
+      avoidExitTiles: true,
+    });
     return true;
   }
 
@@ -179,7 +185,13 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
 
   const combatTarget = getSharedWarBreachTarget(attacker) || findWarObjectiveTarget(attacker);
   if (combatTarget) {
-    moveToTarget(creep, combatTarget, 2, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+    moveToTarget(creep, combatTarget, 2, {
+      plainCost: 2,
+      swampCost: 8,
+      reusePath: 3,
+      maxRooms: 1,
+      avoidExitTiles: true,
+    });
   }
 
   return true;

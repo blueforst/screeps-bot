@@ -273,6 +273,31 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 
+  it("continues forward when the healer has already crossed into the next fixed-route room", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: "E2N55",
+      x: 49,
+      y: 36,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.findExitTo = jest.fn((roomName: string) => (roomName === "E3N55" ? RIGHT : ERR_NO_PATH)) as Room["findExitTo"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E3N55",
+      x: 1,
+      y: 35,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+
+    meleeAttackerRole("E2N54", "E1N56|E2N56|E2N55|E3N55|E3N54").source?.(attacker);
+
+    expect(attacker.move).toHaveBeenCalledWith(RIGHT);
+    expect(attacker.move).not.toHaveBeenCalledWith(LEFT);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
   it("attacks the weakest adjacent wall while formation-blocked inside target room", () => {
     const weakWall = {
       id: "weak-wall" as Id<StructureWall>,
