@@ -284,6 +284,37 @@ describe("runWarControl", () => {
     ]);
   });
 
+  it("removes queued replacement combat creeps while T3 boost replenishment is still preparing", () => {
+    const labs = [
+      createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 600),
+      createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, 0),
+      createBoostLab("lab-heal", RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, 600),
+      createBoostLab("lab-move", RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, 540),
+    ];
+    const sourceRoom = createSourceRoom(labs);
+    const spawn = createSpawn(sourceRoom);
+    const attackerConfig = "E1N57:war:E3N57:meleeAttacker:0";
+    const healerConfig = "E1N57:war:E3N57:healer:0";
+    spawn.memory.spawnList = [attackerConfig, healerConfig];
+    Memory.data!.creepConfigs = {
+      [attackerConfig]: { role: "meleeAttacker", args: ["E3N57"], roomName: "E1N57" },
+      [healerConfig]: { role: "healer", args: ["E3N57"], roomName: "E1N57" },
+    };
+    Game.rooms.E1N57 = sourceRoom;
+    Game.rooms.E2N57 = createDonorRoom("E2N57", { [RESOURCE_CATALYZED_UTRIUM_ACID]: 900 });
+    Game.spawns.Spawn1 = spawn;
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) =>
+      labs.find((lab) => lab.id === id) ?? null
+    ) as Game["getObjectById"];
+
+    runWarControl();
+
+    expect((Memory.data?.war?.E3N57 as WarTaskWithBoostState | undefined)?.boostStatus).toBe("preparing");
+    expect(spawn.memory.spawnList).toEqual([]);
+    expect(Memory.data?.creepConfigs?.[attackerConfig]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[healerConfig]).toBeUndefined();
+  });
+
   it("debounces a visible clear room before completing and writes war telemetry", () => {
     Memory.data = {
       war: {

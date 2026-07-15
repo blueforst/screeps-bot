@@ -502,7 +502,12 @@ function prepareT3DuoBoosts(task: WarTask): boolean {
     return false;
   }
 
-  return result.status === "ready";
+  if (result.status === "preparing") {
+    clearTaskConfigs(task);
+    return false;
+  }
+
+  return true;
 }
 
 function releaseWarBoosts(task: WarTask): void {
