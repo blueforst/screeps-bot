@@ -1,4 +1,5 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { isWalkableStructure } from "@/movement/common";
 import { prepareCombatBoost } from "@/roles/combatBoosts";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
@@ -76,6 +77,57 @@ export function findWarObjectiveTarget(creep: Creep): Creep | Structure | null {
 function isBreachTarget(structure: Structure): structure is StructureRampart | StructureWall {
   if (structure.structureType === STRUCTURE_WALL) return true;
   return structure.structureType === STRUCTURE_RAMPART;
+}
+
+function getCombatBreachCost(structure: StructureRampart | StructureWall): number {
+  return Math.min(0xfe, 20 + Math.ceil(structure.hits / 50_000));
+}
+
+function findFirstBreachOnCombatPath(creep: Creep, target: Creep | Structure): StructureRampart | StructureWall | null {
+  if (target.pos.roomName !== creep.room.name) return null;
+
+  const structures = creep.room.find(FIND_STRUCTURES);
+  const breaches = structures.filter(
+    (structure): structure is StructureRampart | StructureWall =>
+      isBreachTarget(structure) && !(structure.structureType === STRUCTURE_RAMPART && structure.my),
+  );
+  if (breaches.length === 0) return null;
+
+  const matrix = new PathFinder.CostMatrix();
+  for (const structure of structures) {
+    if (isBreachTarget(structure)) continue;
+    if (structure.structureType === STRUCTURE_ROAD) {
+      matrix.set(structure.pos.x, structure.pos.y, 1);
+      continue;
+    }
+    if (!isWalkableStructure(structure)) {
+      matrix.set(structure.pos.x, structure.pos.y, 0xff);
+    }
+  }
+
+  const breachByPosition = new Map<string, StructureRampart | StructureWall>();
+  for (const breach of breaches) {
+    matrix.set(breach.pos.x, breach.pos.y, getCombatBreachCost(breach));
+    breachByPosition.set(`${breach.pos.x}:${breach.pos.y}`, breach);
+  }
+
+  const result = PathFinder.search(
+    creep.pos,
+    { pos: target.pos, range: 1 },
+    {
+      plainCost: 2,
+      swampCost: 8,
+      maxRooms: 1,
+      roomCallback: (roomName) => (roomName === creep.room.name ? matrix : false),
+    },
+  );
+  if (result.incomplete) return null;
+
+  for (const step of result.path) {
+    const breach = breachByPosition.get(`${step.x}:${step.y}`);
+    if (breach) return breach;
+  }
+  return null;
 }
 
 function findAdjacentStructures(creep: Creep): Structure[] {
@@ -334,6 +386,17 @@ export const meleeAttackerRole: RoleFactory = (
         });
       }
       return false;
+    }
+
+    if (targetRoom) {
+      const plannedBreach = measureCreepDecision(() => findFirstBreachOnCombatPath(creep, target));
+      if (plannedBreach) {
+        const breachCode = measureCreepIntent(() => creep.attack(plannedBreach));
+        if (breachCode === ERR_NOT_IN_RANGE) {
+          moveToTarget(creep, plannedBreach, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+        }
+        return false;
+      }
     }
 
     const code = measureCreepIntent(() => creep.attack(target));

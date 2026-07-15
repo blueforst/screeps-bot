@@ -47,6 +47,14 @@ describe("meleeAttackerRole war duo staging", () => {
     moveToTarget.mockReturnValue(OK);
     moveToTargetRoom.mockReturnValue(OK);
     Game.creeps = {};
+    Object.assign(global, {
+      PathFinder: {
+        CostMatrix: class {
+          public set(): void {}
+        },
+        search: jest.fn(),
+      },
+    });
   });
 
   it("waits outside target room until paired healer exists", () => {
@@ -499,6 +507,56 @@ describe("meleeAttackerRole war duo staging", () => {
 
     expect(attacker.attack).toHaveBeenCalledWith(storage);
     expect(attacker.attack).toHaveBeenCalledWith(extension);
+  });
+
+  it("approaches the first wall on a complete combat path instead of looping in an entry pocket", () => {
+    const spawn = hostileStructure(STRUCTURE_SPAWN, "pocket-blocked-spawn", 29, 37, 5_000);
+    const wall = hostileStructure(STRUCTURE_WALL, "reachable-breach-wall", 33, 47, 3_180_000) as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 36,
+      y: 47,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_STRUCTURES) return [spawn, wall];
+      if (type === FIND_STRUCTURES) return [spawn, wall];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
+    attacker.attack = jest.fn(() => ERR_NOT_IN_RANGE) as Creep["attack"];
+    (PathFinder.search as jest.Mock).mockReturnValue({
+      path: [
+        { x: 36, y: 48, roomName: TARGET_ROOM },
+        { x: 35, y: 48, roomName: TARGET_ROOM },
+        { x: 34, y: 48, roomName: TARGET_ROOM },
+        { x: 33, y: 47, roomName: TARGET_ROOM },
+      ],
+      incomplete: false,
+      cost: 260,
+      ops: 40,
+    });
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 37,
+        y: 47,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      attacker,
+      wall,
+      1,
+      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+    );
+    expect(moveToTarget).not.toHaveBeenCalledWith(attacker, spawn, 1, expect.anything());
   });
 
   it("focuses hostile spawn before non-adjacent creeps and towers for war objectives", () => {
