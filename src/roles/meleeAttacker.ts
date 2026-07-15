@@ -99,12 +99,6 @@ export function findWarObjectiveTarget(creep: Creep): Creep | Structure | null {
     if (target) return target;
   }
 
-  const exposedDangerous = hostileCreeps.filter(
-    (hostile) => isDangerousHostile(hostile) && !isProtected(hostile),
-  );
-  const dangerousTarget = closest(exposedDangerous);
-  if (dangerousTarget) return dangerousTarget;
-
   const nonBarriers = hostileStructures.filter(
     (structure) => structure.structureType !== STRUCTURE_RAMPART && structure.structureType !== STRUCTURE_WALL,
   );
@@ -288,10 +282,6 @@ function isDangerousHostile(creep: Creep): boolean {
     creep.getActiveBodyparts(ATTACK) > 0 ||
     creep.getActiveBodyparts(RANGED_ATTACK) > 0
   );
-}
-
-function isCreepTarget(target: Creep | Structure): target is Creep {
-  return typeof (target as Creep).getActiveBodyparts === "function";
 }
 
 function attackAdjacentHostileOnRoute(creep: Creep): boolean {
@@ -555,16 +545,6 @@ export const meleeAttackerRole: RoleFactory = (
     }
 
     if (targetRoom) {
-      // A remembered residual breach must not pin the squad to the room edge when
-      // an exposed combat threat arrives. Replan the path to the threat; if a
-      // barrier really blocks that path, pathfinding will select it. Builders are
-      // handled only when adjacent so a melee squad cannot be kited indefinitely.
-      if (isCreepTarget(target) && isDangerousHostile(target)) {
-        const trackedBreach = getTrackedWarBreachTarget(creep);
-        if (!trackedBreach || creep.pos.getRangeTo(trackedBreach.pos) > 1) {
-          delete creep.memory._warBreachTargetId;
-        }
-      }
       const plannedBreach =
         getTrackedWarBreachTarget(creep) ||
         measureCreepDecision(() => findFirstBreachOnCombatPath(creep, target));

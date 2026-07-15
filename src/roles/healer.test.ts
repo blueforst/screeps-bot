@@ -322,8 +322,9 @@ describe("healerRole war duo staging", () => {
     );
   });
 
-  it("moves toward the paired attacker's combat target at range 2 inside target room", () => {
+  it("moves toward the paired attacker's residual barrier instead of a distant hostile", () => {
     const hostile = hostileCreep("hostile-attacker");
+    const rampart = hostileStructure(STRUCTURE_RAMPART, "residual-healer-objective", 24, 20, 27_801);
     const attacker = createMockPowerBankCreep("meleeAttacker", {
       name: "attacker",
       roomName: TARGET_ROOM,
@@ -331,7 +332,11 @@ describe("healerRole war duo staging", () => {
       y: 20,
       memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
     });
-    attacker.room.find = jest.fn((type: FindConstant) => (type === FIND_HOSTILE_CREEPS ? [hostile] : [])) as Room["find"];
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [hostile];
+      if (type === FIND_HOSTILE_STRUCTURES) return [rampart];
+      return [];
+    }) as Room["find"];
     const healer = createMockPowerBankCreep("healer", {
       name: "healer",
       roomName: TARGET_ROOM,
@@ -344,6 +349,12 @@ describe("healerRole war duo staging", () => {
     healerRole(TARGET_ROOM).target(healer);
 
     expect(moveToTarget).toHaveBeenCalledWith(
+      healer,
+      rampart,
+      2,
+      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+    );
+    expect(moveToTarget).not.toHaveBeenCalledWith(
       healer,
       hostile,
       2,
