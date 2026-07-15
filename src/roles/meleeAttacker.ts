@@ -175,6 +175,11 @@ function findFirstBreachOnCombatPath(creep: Creep, target: Creep | Structure): S
   );
   if (breaches.length === 0) return null;
 
+  const coveringBreach = breaches.find(
+    (breach) => breach.pos.x === target.pos.x && breach.pos.y === target.pos.y,
+  );
+  if (coveringBreach) return coveringBreach;
+
   const matrix = new PathFinder.CostMatrix();
   for (const structure of structures) {
     if (isBreachTarget(structure)) continue;

@@ -812,6 +812,59 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.memory._warBreachTargetId).toBe(wall.id);
   });
 
+  it("breaches the hostile rampart covering a core structure before attacking the structure", () => {
+    const tower = hostileStructure(STRUCTURE_TOWER, "covered-core-tower", 39, 43, 3000) as StructureTower;
+    const coveringRampart = hostileStructure(
+      STRUCTURE_RAMPART,
+      "covering-core-rampart",
+      39,
+      43,
+      4801,
+    ) as StructureRampart;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 35,
+      y: 43,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [];
+      if (type === FIND_HOSTILE_STRUCTURES || type === FIND_STRUCTURES) return [tower, coveringRampart];
+      if (type === FIND_MY_CREEPS) return [attacker];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
+    attacker.attack = jest.fn(() => ERR_NOT_IN_RANGE) as Creep["attack"];
+    (PathFinder.search as jest.Mock).mockReturnValue({
+      path: [
+        { x: 36, y: 43, roomName: TARGET_ROOM },
+        { x: 37, y: 43, roomName: TARGET_ROOM },
+        { x: 38, y: 43, roomName: TARGET_ROOM },
+      ],
+      incomplete: false,
+      cost: 6,
+      ops: 10,
+    });
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 35,
+        y: 42,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(coveringRampart);
+    expect(attacker.attack).not.toHaveBeenCalledWith(tower);
+    expect(moveToTarget).toHaveBeenCalledWith(attacker, coveringRampart, 1, expect.anything());
+    expect(attacker.memory._warBreachTargetId).toBe(coveringRampart.id);
+  });
+
   it("keeps attacking a tracked target-room breach until that structure is gone", () => {
     const spawn = hostileStructure(STRUCTURE_SPAWN, "tracked-breach-spawn", 20, 20, 5_000);
     const trackedWall = hostileStructure(
