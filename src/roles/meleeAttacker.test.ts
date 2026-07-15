@@ -572,6 +572,17 @@ describe("meleeAttackerRole war duo staging", () => {
     const spawn = hostileStructure(STRUCTURE_SPAWN, "mixed-defense-spawn", 29, 37, 5_000);
     const wall = hostileStructure(STRUCTURE_WALL, "safe-wall", 33, 47, 3_182_901) as StructureWall;
     const rampart = hostileStructure(STRUCTURE_RAMPART, "guarded-rampart", 42, 47, 3_178_301) as StructureRampart;
+    const unsafeWall = hostileStructure(STRUCTURE_WALL, "ranged-guarded-wall", 43, 47, 3_183_001) as StructureWall;
+    const rangedGuard = hostileCreep("ranged-guard", 5_000, { [RANGED_ATTACK]: 20 });
+    rangedGuard.pos = {
+      x: 42,
+      y: 47,
+      roomName: TARGET_ROOM,
+      getRangeTo: jest.fn((target: RoomPosition | { pos: RoomPosition }) => {
+        const pos = "pos" in target ? target.pos : target;
+        return Math.max(Math.abs(42 - pos.x), Math.abs(47 - pos.y));
+      }),
+    } as unknown as RoomPosition;
     const attacker = createMockPowerBankCreep("meleeAttacker", {
       name: "attacker",
       roomName: TARGET_ROOM,
@@ -580,8 +591,9 @@ describe("meleeAttackerRole war duo staging", () => {
       memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
     });
     attacker.room.find = jest.fn((type: FindConstant) => {
-      if (type === FIND_HOSTILE_STRUCTURES) return [spawn, wall, rampart];
-      if (type === FIND_STRUCTURES) return [spawn, wall, rampart];
+      if (type === FIND_HOSTILE_CREEPS) return [rangedGuard];
+      if (type === FIND_HOSTILE_STRUCTURES) return [spawn, wall, rampart, unsafeWall];
+      if (type === FIND_STRUCTURES) return [spawn, wall, rampart, unsafeWall];
       return [];
     }) as Room["find"];
     attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
@@ -590,6 +602,7 @@ describe("meleeAttackerRole war duo staging", () => {
       (_origin: RoomPosition, _goal: unknown, options: { roomCallback: (roomName: string) => CostMatrix | false }) => {
         const matrix = options.roomCallback(TARGET_ROOM) as CostMatrix;
         expect(matrix.get(wall.pos.x, wall.pos.y)).toBeLessThan(matrix.get(rampart.pos.x, rampart.pos.y));
+        expect(matrix.get(wall.pos.x, wall.pos.y)).toBeLessThan(matrix.get(unsafeWall.pos.x, unsafeWall.pos.y));
         return {
           path: [{ x: wall.pos.x, y: wall.pos.y, roomName: TARGET_ROOM }],
           incomplete: false,

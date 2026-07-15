@@ -79,8 +79,15 @@ function isBreachTarget(structure: Structure): structure is StructureRampart | S
   return structure.structureType === STRUCTURE_RAMPART;
 }
 
-function getCombatBreachCost(structure: StructureRampart | StructureWall): number {
+function getCombatBreachCost(structure: StructureRampart | StructureWall, hostileCreeps: Creep[]): number {
   if (structure.structureType === STRUCTURE_RAMPART) return 0xfe;
+  if (
+    hostileCreeps.some(
+      (hostile) => hostile.getActiveBodyparts(RANGED_ATTACK) > 0 && hostile.pos.getRangeTo(structure.pos) <= 3,
+    )
+  ) {
+    return 0xfe;
+  }
   return Math.min(0xfe, 20 + Math.ceil(structure.hits / 50_000));
 }
 
@@ -107,8 +114,9 @@ function findFirstBreachOnCombatPath(creep: Creep, target: Creep | Structure): S
   }
 
   const breachByPosition = new Map<string, StructureRampart | StructureWall>();
+  const hostileCreeps = getHostileCreeps(creep.room);
   for (const breach of breaches) {
-    matrix.set(breach.pos.x, breach.pos.y, getCombatBreachCost(breach));
+    matrix.set(breach.pos.x, breach.pos.y, getCombatBreachCost(breach, hostileCreeps));
     breachByPosition.set(`${breach.pos.x}:${breach.pos.y}`, breach);
   }
 
