@@ -144,10 +144,6 @@ const T3_DUO_HEALER_COUNT = 1;
 const MAX_STAGING_TICKS = 2500;
 const WAR_CLEAR_DEBOUNCE_TICKS = 20;
 const WAR_CONTROLLER_ATTACK_CONFIG_SUFFIX = "controllerAttacker:0";
-const WAR_CONTROLLER_ATTACK_BODY: BodyPartConstant[] = [
-  ...Array(20).fill(CLAIM),
-  ...Array(18).fill(MOVE),
-];
 const WAR_CONTROLLER_CORE_STRUCTURES = new Set<StructureConstant>([
   STRUCTURE_SPAWN,
   STRUCTURE_TOWER,
@@ -589,6 +585,21 @@ function isControllerDefeated(room: Room): boolean {
   return !!controller && (controller.my || !controller.owner || controller.level <= 0);
 }
 
+function getControllerAttackBody(sourceRoomName: string): BodyPartConstant[] {
+  const roomCapacity = Game.rooms[sourceRoomName]?.energyCapacityAvailable ?? 0;
+  const spawnCapacity = getSpawnsForRoom(sourceRoomName).reduce(
+    (maximum, spawn) => Math.max(maximum, spawn.room.energyCapacityAvailable ?? 0),
+    0,
+  );
+  const energyCapacity = Math.max(roomCapacity, spawnCapacity);
+  const pairCost = BODYPART_COST[CLAIM] + BODYPART_COST[MOVE];
+  const pairCount = Math.max(1, Math.min(25, Math.floor(energyCapacity / pairCost)));
+  return [
+    ...Array(pairCount).fill(CLAIM),
+    ...Array(pairCount).fill(MOVE),
+  ];
+}
+
 function ensureControllerAttackConfig(task: WarTask): void {
   const configName = getControllerAttackConfigName(task);
   const encodedRoute = task.routeRooms?.join("|") || "";
@@ -596,7 +607,7 @@ function ensureControllerAttackConfig(task: WarTask): void {
     role: "claimer",
     args: [task.targetRoom, encodedRoute, "attack"],
     roomName: task.sourceRoom,
-    body: [...WAR_CONTROLLER_ATTACK_BODY],
+    body: getControllerAttackBody(task.sourceRoom),
   };
 
   const spawns = getSpawnsForRoom(task.sourceRoom);

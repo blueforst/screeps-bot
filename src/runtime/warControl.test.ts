@@ -697,10 +697,11 @@ describe("runWarControl", () => {
     expect(Memory.analytics?.war?.tasks.E3N57.status).toBe("done");
   });
 
-  it("enters controller downgrade mode and continuously queues a maximum claim attacker after core structures fall", () => {
+  it("enters controller downgrade mode and queues the largest mobile claim attacker the source room can spawn", () => {
     Memory.data!.war!.E3N57!.squad = "standard";
     Memory.data!.war!.E3N57!.boostTier = undefined;
     const sourceRoom = createSourceRoom([]);
+    sourceRoom.energyCapacityAvailable = 5_600;
     const spawn = createSpawn(sourceRoom);
     Game.rooms.E1N57 = sourceRoom;
     Game.rooms.E3N57 = createTargetRoom({ ownerUsername: "enemy", controllerLevel: 8 });
@@ -715,8 +716,10 @@ describe("runWarControl", () => {
       args: ["E3N57", "", "attack"],
       roomName: "E1N57",
     });
-    expect(countParts(Memory.data!.creepConfigs![configName].body ?? [], CLAIM)).toBe(20);
-    expect(countParts(Memory.data!.creepConfigs![configName].body ?? [], MOVE)).toBe(18);
+    const body = Memory.data!.creepConfigs![configName].body ?? [];
+    expect(countParts(body, CLAIM)).toBe(8);
+    expect(countParts(body, MOVE)).toBe(8);
+    expect(body.reduce((sum, part) => sum + BODYPART_COST[part], 0)).toBeLessThanOrEqual(5_600);
     expect(spawn.memory.spawnList).toContain(configName);
 
     spawn.memory.spawnList = [];
@@ -725,6 +728,33 @@ describe("runWarControl", () => {
 
     expect(spawn.memory.spawnList).toContain(configName);
   });
+
+  it.each([STRUCTURE_SPAWN, STRUCTURE_TOWER])(
+    "does not dispatch the controller attacker while an enemy %s remains",
+    (structureType) => {
+      Memory.data!.war!.E3N57!.squad = "standard";
+      Memory.data!.war!.E3N57!.boostTier = undefined;
+      const sourceRoom = createSourceRoom([]);
+      sourceRoom.energyCapacityAvailable = 5_600;
+      const spawn = createSpawn(sourceRoom);
+      const blocker = {
+        structureType,
+      } as Structure;
+      Game.rooms.E1N57 = sourceRoom;
+      Game.rooms.E3N57 = createTargetRoom({
+        ownerUsername: "enemy",
+        controllerLevel: 8,
+        hostileStructures: [blocker],
+      });
+      Game.spawns.Spawn1 = spawn;
+
+      runWarControl();
+
+      expect(Memory.data!.war!.E3N57!.status).toBe("clearing");
+      expect(Memory.data!.creepConfigs!["E1N57:war:E3N57:controllerAttacker:0"]).toBeUndefined();
+      expect(spawn.memory.spawnList).not.toContain("E1N57:war:E3N57:controllerAttacker:0");
+    },
+  );
 
   it("marks a manual war done only after the enemy controller reaches level zero", () => {
     Memory.data!.war!.E3N57!.squad = "standard";
