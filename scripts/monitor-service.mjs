@@ -781,6 +781,56 @@ function summarizeCountMap(value) {
   );
 }
 
+function booleanOrNull(value) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function summarizeCountMapOrNull(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return summarizeCountMap(value);
+}
+
+function summarizeCapacityPolicy(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    enabled: booleanOrNull(value.enabled),
+    terminalHeadroomRecoveryEnabled: booleanOrNull(value.terminalHeadroomRecoveryEnabled),
+    storagePressureFreeCapacity: finiteNumberOrNull(value.storagePressureFreeCapacity),
+    storageReliefTargetFreeCapacity: finiteNumberOrNull(value.storageReliefTargetFreeCapacity),
+    receiverStorageMinFreeCapacity: finiteNumberOrNull(value.receiverStorageMinFreeCapacity),
+    terminalPressureFreeCapacity: finiteNumberOrNull(value.terminalPressureFreeCapacity),
+    terminalReliefTargetFreeCapacity: finiteNumberOrNull(value.terminalReliefTargetFreeCapacity),
+    receiverTerminalMinFreeCapacity: finiteNumberOrNull(value.receiverTerminalMinFreeCapacity),
+  };
+}
+
+function summarizeCapacityReservation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    committed: finiteNumberOrNull(value.committed),
+    remaining: finiteNumberOrNull(value.remaining),
+  };
+}
+
+function summarizeStaging(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    admittedAmount: finiteNumberOrNull(value.admittedAmount),
+    admittedTaskCount: finiteNumberOrNull(value.admittedTaskCount),
+    admittedByResource: summarizeCountMap(value.admittedByResource),
+    suppressedCount: finiteNumberOrNull(value.suppressedCount),
+    suppressedByReason: summarizeCountMap(value.suppressedByReason),
+  };
+}
+
 function summarizeTaskHealth(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -856,6 +906,13 @@ function summarizeResourceControl(runtimeResourceControl, transferTaskStore) {
         energyTarget: finiteNumberOrNull(room.energyTarget),
         energyExportStart: finiteNumberOrNull(room.energyExportStart),
         terminalEnergyReserve: finiteNumberOrNull(room.terminalEnergyReserve),
+        desiredTerminalFreeCapacity: finiteNumberOrNull(room.desiredTerminalFreeCapacity),
+        terminalRecoveryGap: finiteNumberOrNull(room.terminalRecoveryGap),
+        recoverableOffloadAmount: finiteNumberOrNull(room.recoverableOffloadAmount),
+        stickyHeadroom: booleanOrNull(room.stickyHeadroom),
+        stickyHeadroomReason: typeof room.stickyHeadroomReason === "string" ? room.stickyHeadroomReason : null,
+        capacityReservation: summarizeCapacityReservation(room.capacityReservation),
+        staging: summarizeStaging(room.staging),
         taskHealth: summarizeTaskHealth(room.taskHealth),
       };
     });
@@ -891,6 +948,11 @@ function summarizeResourceControl(runtimeResourceControl, transferTaskStore) {
     updatedAt: referenceTick,
     roomCount: rooms.length,
     rooms,
+    capacityPolicy: summarizeCapacityPolicy(runtime?.capacityPolicy),
+    eligibleReceiverCount: finiteNumberOrNull(runtime?.eligibleReceiverCount),
+    receiverExcludedByReason: summarizeCountMapOrNull(runtime?.receiverExcludedByReason),
+    suppressedStagingCount: summarizeCountMapOrNull(runtime?.suppressedStagingCount),
+    capacityIndexBuildCount: finiteNumberOrNull(runtime?.capacityIndexBuildCount),
     taskSummary: summarizeTaskSummary(runtime?.taskSummary),
     recentCapacityReliefRoutes: summarizeCapacityReliefRoutes(runtime?.recentCapacityReliefRoutes),
     pendingTaskCount: pendingTasks.length,

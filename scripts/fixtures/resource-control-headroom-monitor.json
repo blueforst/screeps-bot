@@ -1,0 +1,98 @@
+{
+  "rooms": {},
+  "analytics": {
+    "production": {
+      "rooms": {}
+    }
+  },
+  "runtime": {
+    "resourceControl": {
+      "updatedAt": 2000,
+      "capacityPolicy": {
+        "enabled": true,
+        "terminalHeadroomRecoveryEnabled": true,
+        "storagePressureFreeCapacity": 80000,
+        "storageReliefTargetFreeCapacity": 120000,
+        "receiverStorageMinFreeCapacity": 140000,
+        "terminalPressureFreeCapacity": 30000,
+        "terminalReliefTargetFreeCapacity": 60000,
+        "receiverTerminalMinFreeCapacity": 50000
+      },
+      "eligibleReceiverCount": 1,
+      "receiverExcludedByReason": {
+        "storage_headroom": 1
+      },
+      "suppressedStagingCount": {
+        "receiver_capacity": 2,
+        "fee_budget": 1
+      },
+      "capacityIndexBuildCount": 1,
+      "rooms": {
+        "W1N1": {
+          "state": "balanced",
+          "capacityState": "pressure",
+          "storageUsedCapacity": 870000,
+          "storageFreeCapacity": 130000,
+          "terminalUsedCapacity": 270000,
+          "terminalFreeCapacity": 30000,
+          "storageEnergy": 300000,
+          "terminalEnergy": 50000,
+          "energyFloor": 120000,
+          "energyTarget": 200000,
+          "energyExportStart": 250000,
+          "terminalEnergyReserve": 20000,
+          "desiredTerminalFreeCapacity": 60000,
+          "terminalRecoveryGap": 30000,
+          "recoverableOffloadAmount": 10000,
+          "stickyHeadroom": true,
+          "stickyHeadroomReason": "carrier_backlog",
+          "capacityReservation": {
+            "committed": 22000,
+            "remaining": 0
+          },
+          "staging": {
+            "admittedAmount": 2000,
+            "admittedTaskCount": 1,
+            "admittedByResource": {
+              "O": 2000
+            },
+            "suppressedCount": 3,
+            "suppressedByReason": {
+              "receiver_capacity": 2,
+              "fee_budget": 1
+            }
+          }
+        },
+        "W2N1": {
+          "state": "balanced",
+          "capacityState": "normal",
+          "storageUsedCapacity": 860000,
+          "storageFreeCapacity": 140000,
+          "terminalUsedCapacity": 200000,
+          "terminalFreeCapacity": 100000,
+          "desiredTerminalFreeCapacity": 50000,
+          "terminalRecoveryGap": 0,
+          "recoverableOffloadAmount": 0,
+          "stickyHeadroom": false,
+          "capacityReservation": {
+            "committed": 0,
+            "remaining": 60000
+          },
+          "staging": {
+            "admittedAmount": 0,
+            "admittedTaskCount": 0,
+            "admittedByResource": {},
+            "suppressedCount": 0,
+            "suppressedByReason": {}
+          }
+        }
+      }
+    }
+  },
+  "data": {
+    "resourceControl": {
+      "taskSchemaVersion": 2,
+      "tasks": {}
+    }
+  }
+}

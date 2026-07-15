@@ -687,6 +687,7 @@ declare global {
           contributionEvaluationCount: number;
         };
         capacityPolicy?: {
+          enabled?: boolean;
           terminalHeadroomRecoveryEnabled: boolean;
           storagePressureFreeCapacity: number;
           storageReliefTargetFreeCapacity: number;
@@ -695,6 +696,25 @@ declare global {
           receiverTerminalMinFreeCapacity: number;
           terminalReliefTargetFreeCapacity: number;
         };
+        eligibleReceiverCount?: number;
+        receiverExcludedByReason?: Partial<
+          Record<
+            "capacity_state" | "storage_headroom" | "terminal_headroom" | "commitment_exhausted",
+            number
+          >
+        >;
+        suppressedStagingCount?: Partial<
+          Record<
+            | "receiver_capacity"
+            | "source_depleted"
+            | "source_inventory"
+            | "fee_budget"
+            | "terminal_headroom"
+            | "window_limit"
+            | "invalid_endpoint",
+            number
+          >
+        >;
         rooms: Record<
           string,
           {
@@ -704,6 +724,37 @@ declare global {
             storageFreeCapacity?: number;
             terminalUsedCapacity?: number;
             terminalFreeCapacity?: number;
+            desiredTerminalFreeCapacity?: number;
+            terminalRecoveryGap?: number;
+            recoverableOffloadAmount?: number;
+            stickyHeadroom?: boolean;
+            stickyHeadroomReason?:
+              | "storage_full"
+              | "protected_inventory"
+              | "carrier_backlog"
+              | "no_offloadable_resource";
+            capacityReservation?: {
+              committed: number;
+              remaining: number;
+            };
+            staging?: {
+              admittedAmount: number;
+              admittedTaskCount: number;
+              admittedByResource: Partial<Record<ResourceConstant, number>>;
+              suppressedCount: number;
+              suppressedByReason: Partial<
+                Record<
+                  | "receiver_capacity"
+                  | "source_depleted"
+                  | "source_inventory"
+                  | "fee_budget"
+                  | "terminal_headroom"
+                  | "window_limit"
+                  | "invalid_endpoint",
+                  number
+                >
+              >;
+            };
             storageEnergy: number;
             terminalEnergy: number;
             energyFloor: number;
