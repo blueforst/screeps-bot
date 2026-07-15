@@ -204,6 +204,30 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.attack).not.toHaveBeenCalled();
   });
 
+  it("holds inside the target room while the healer is poised to cross in", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 49,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E2N57",
+      x: 20,
+      y: 0,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    healer.room.findExitTo = jest.fn(() => TOP) as Room["findExitTo"];
+    Game.creeps = { attacker, healer };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).toHaveBeenCalledWith(TOP);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
   it("waits as leader and steps off the exit when healer is still in the previous room", () => {
     const attacker = createMockPowerBankCreep("meleeAttacker", {
       name: "attacker",

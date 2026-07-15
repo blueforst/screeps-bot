@@ -305,6 +305,14 @@ function moveToPartnerRoom(creep: Creep, roomName: string): void {
   moveToTargetRoom(creep, roomName, undefined, TRAVEL_OPTIONS);
 }
 
+function isPoisedToCrossInto(creep: Creep, targetRoom: string): boolean {
+  if (creep.room.name === targetRoom) return false;
+
+  const exitDirection = creep.room.findExitTo?.(targetRoom);
+  if (typeof exitDirection !== "number" || exitDirection < TOP || exitDirection > LEFT) return false;
+  return isOnExitDirection(creep.pos, exitDirection as DirectionConstant);
+}
+
 function isReadyToCrossWithHealer(creep: Creep, healer: Creep, targetRoom: string): boolean {
   const exitDirection = creep.room.findExitTo?.(targetRoom);
   if (typeof exitDirection !== "number" || exitDirection < TOP || exitDirection > LEFT) return true;
@@ -330,6 +338,10 @@ function waitForWarHealerFormation(creep: Creep, targetRoom: string): boolean {
 
   if (creep.room.name === targetRoom) {
     if (healer.room.name !== creep.room.name) {
+      if (isPoisedToCrossInto(healer, targetRoom)) {
+        moveOffExitIntoRoom(creep);
+        return true;
+      }
       moveToPartnerRoom(creep, healer.room.name);
       return true;
     }
