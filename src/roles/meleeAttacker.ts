@@ -5,6 +5,7 @@ import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProf
 import type { RoleFactory } from "@/types/system";
 
 const TRAVEL_OPTIONS = { plainCost: 2, swampCost: 8 } as const;
+const ROUTE_BREACH_RESUME_TICKS = 5;
 
 function getHostileCreeps(room: Room): Creep[] {
   return room.find(FIND_HOSTILE_CREEPS, {
@@ -233,10 +234,42 @@ function attackAdjacentWhileHoldingFormation(creep: Creep, includeBreach: boolea
   if (includeBreach) attackWeakestAdjacentBreachTarget(creep);
 }
 
-function attackAdjacentWhileTraveling(creep: Creep): boolean {
+function attackRouteBreachWhileTraveling(creep: Creep): boolean {
   if (attackAdjacentHostileOnRoute(creep)) return false;
-  if (creep.room.controller?.my) return false;
-  return attackWeakestAdjacentBreachTarget(creep);
+  if (creep.room.controller?.my) {
+    delete creep.memory._warBreachTargetId;
+    delete creep.memory._warBreachResumeUntil;
+    return false;
+  }
+
+  const trackedId = creep.memory._warBreachTargetId;
+  if (trackedId) {
+    const tracked = Game.getObjectById(trackedId);
+    if (!tracked || tracked.pos.roomName !== creep.room.name) {
+      delete creep.memory._warBreachTargetId;
+      creep.memory._warBreachResumeUntil = Game.time + ROUTE_BREACH_RESUME_TICKS;
+      return false;
+    }
+
+    const attackCode = measureCreepIntent(() => creep.attack(tracked));
+    if (attackCode === ERR_NOT_IN_RANGE) {
+      moveToTarget(creep, tracked, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+    }
+    return true;
+  }
+
+  const resumeUntil = creep.memory._warBreachResumeUntil;
+  if (resumeUntil !== undefined) {
+    if (Game.time < resumeUntil) return false;
+    delete creep.memory._warBreachResumeUntil;
+  }
+
+  const blocker = findWeakestAdjacentBreachTarget(creep);
+  if (!blocker) return false;
+
+  creep.memory._warBreachTargetId = blocker.id;
+  measureCreepIntent(() => creep.attack(blocker));
+  return true;
 }
 
 function findPairedWarHealer(creep: Creep): Creep | null {
@@ -373,7 +406,7 @@ export const meleeAttackerRole: RoleFactory = (
     }
 
     if (targetRoom && creep.room.name !== targetRoom) {
-      if (attackAdjacentWhileTraveling(creep)) return false;
+      if (attackRouteBreachWhileTraveling(creep)) return false;
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }
@@ -387,7 +420,7 @@ export const meleeAttackerRole: RoleFactory = (
     }
 
     if (targetRoom && creep.room.name !== targetRoom) {
-      if (attackAdjacentWhileTraveling(creep)) return false;
+      if (attackRouteBreachWhileTraveling(creep)) return false;
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }

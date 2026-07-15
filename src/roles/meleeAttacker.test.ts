@@ -374,6 +374,97 @@ describe("meleeAttackerRole war duo staging", () => {
 
     expect(attacker.attack).toHaveBeenCalledWith(wall);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
+    expect(attacker.memory._warBreachTargetId).toBe(wall.id);
+  });
+
+  it("keeps attacking the tracked route wall instead of switching to a weaker adjacent wall", () => {
+    const trackedWall = {
+      id: "tracked-route-wall" as Id<StructureWall>,
+      structureType: STRUCTURE_WALL,
+      hits: 460_000,
+      pos: { x: 25, y: 26, roomName: "E2N57", getRangeTo: jest.fn(() => 1) } as unknown as RoomPosition,
+    } as StructureWall;
+    const weakerWall = {
+      id: "weaker-route-wall" as Id<StructureWall>,
+      structureType: STRUCTURE_WALL,
+      hits: 10_000,
+      pos: { x: 24, y: 25, roomName: "E2N57", getRangeTo: jest.fn(() => 1) } as unknown as RoomPosition,
+    } as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: "E2N57",
+      x: 25,
+      y: 25,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warBreachTargetId: trackedWall.id,
+      },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E2N57",
+      x: 26,
+      y: 25,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    attacker.room.controller = { my: false } as StructureController;
+    attacker.pos.findInRange = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [];
+      if (type === FIND_STRUCTURES) return [weakerWall, trackedWall];
+      return [];
+    }) as unknown as RoomPosition["findInRange"];
+    Game.getObjectById = jest.fn((id: Id<_HasId>) => (id === trackedWall.id ? trackedWall : null)) as typeof Game.getObjectById;
+    Game.creeps = { attacker, healer };
+
+    meleeAttackerRole(TARGET_ROOM).source?.(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(trackedWall);
+    expect(attacker.attack).not.toHaveBeenCalledWith(weakerWall);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("moves through a fresh breach instead of locking onto the next wall", () => {
+    const nextWall = {
+      id: "next-route-wall" as Id<StructureWall>,
+      structureType: STRUCTURE_WALL,
+      hits: 460_000,
+      pos: { x: 24, y: 26, roomName: "E2N57", getRangeTo: jest.fn(() => 1) } as unknown as RoomPosition,
+    } as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: "E2N57",
+      x: 25,
+      y: 25,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warBreachTargetId: "destroyed-route-wall" as Id<StructureWall>,
+      },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E2N57",
+      x: 26,
+      y: 25,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    attacker.room.controller = { my: false } as StructureController;
+    attacker.pos.findInRange = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [];
+      if (type === FIND_STRUCTURES) return [nextWall];
+      return [];
+    }) as unknown as RoomPosition["findInRange"];
+    Game.getObjectById = jest.fn(() => null) as typeof Game.getObjectById;
+    Game.time = 100;
+    Game.creeps = { attacker, healer };
+
+    meleeAttackerRole(TARGET_ROOM).source?.(attacker);
+
+    expect(attacker.attack).not.toHaveBeenCalledWith(nextWall);
+    expect(moveToTargetRoom).toHaveBeenCalled();
+    expect(attacker.memory._warBreachTargetId).toBeUndefined();
+    expect(attacker.memory._warBreachResumeUntil).toBe(105);
   });
 
   it("attacks adjacent hostile creeps while traveling and still moves toward target room", () => {

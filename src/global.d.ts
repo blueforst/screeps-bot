@@ -1231,6 +1231,7 @@ declare global {
     _rmcWait?: { ticks: number };
     _rmcSelectedSource?: string;
     _warBreachTargetId?: Id<StructureRampart | StructureWall>;
+    _warBreachResumeUntil?: number;
     _move?: {
       dest?: {
         x: number;
