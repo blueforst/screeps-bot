@@ -924,6 +924,122 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.memory._warBreachTargetId).toBe(trackedWall.id);
   });
 
+  it("keeps an adjacent tracked breach locked when a distant defender moves", () => {
+    const defender = hostileCreep("moving-ranged-defender", 4800, { [RANGED_ATTACK]: 8, [HEAL]: 8 });
+    defender.pos = {
+      x: 40,
+      y: 40,
+      roomName: TARGET_ROOM,
+      getRangeTo: jest.fn(() => 10),
+    } as unknown as RoomPosition;
+    const trackedWall = hostileStructure(
+      STRUCTURE_WALL,
+      "entry-wall-in-progress",
+      26,
+      25,
+      240_000,
+    ) as StructureWall;
+    const replannedWall = hostileStructure(
+      STRUCTURE_WALL,
+      "moving-target-alternate-wall",
+      24,
+      25,
+      450_000,
+    ) as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 25,
+      y: 25,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warBreachTargetId: trackedWall.id,
+      },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [defender];
+      if (type === FIND_HOSTILE_STRUCTURES || type === FIND_STRUCTURES) return [trackedWall, replannedWall];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
+    Game.getObjectById = jest.fn((id: string) => (id === trackedWall.id ? trackedWall : null)) as typeof Game.getObjectById;
+    (PathFinder.search as jest.Mock).mockReturnValue({
+      path: [{ x: replannedWall.pos.x, y: replannedWall.pos.y, roomName: TARGET_ROOM }],
+      incomplete: false,
+      cost: 100,
+      ops: 20,
+    });
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 25,
+        y: 24,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(trackedWall);
+    expect(attacker.attack).not.toHaveBeenCalledWith(replannedWall);
+    expect(attacker.memory._warBreachTargetId).toBe(trackedWall.id);
+  });
+
+  it("replans a distant tracked breach when an exposed defender arrives", () => {
+    const defender = hostileCreep("exposed-moving-defender", 4800, { [RANGED_ATTACK]: 8, [HEAL]: 8 });
+    defender.pos = {
+      x: 20,
+      y: 20,
+      roomName: TARGET_ROOM,
+      getRangeTo: jest.fn(() => 10),
+    } as unknown as RoomPosition;
+    const staleWall = hostileStructure(STRUCTURE_WALL, "distant-stale-wall", 40, 40, 240_000) as StructureWall;
+    const routeWall = hostileStructure(STRUCTURE_WALL, "current-route-wall", 26, 25, 450_000) as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 25,
+      y: 25,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warBreachTargetId: staleWall.id,
+      },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [defender];
+      if (type === FIND_HOSTILE_STRUCTURES || type === FIND_STRUCTURES) return [staleWall, routeWall];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
+    Game.getObjectById = jest.fn((id: string) => (id === staleWall.id ? staleWall : null)) as typeof Game.getObjectById;
+    (PathFinder.search as jest.Mock).mockReturnValue({
+      path: [{ x: routeWall.pos.x, y: routeWall.pos.y, roomName: TARGET_ROOM }],
+      incomplete: false,
+      cost: 100,
+      ops: 20,
+    });
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 25,
+        y: 24,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(routeWall);
+    expect(attacker.attack).not.toHaveBeenCalledWith(staleWall);
+    expect(attacker.memory._warBreachTargetId).toBe(routeWall.id);
+  });
+
   it("assigns a higher combat path cost to ramparts than walls", () => {
     const spawn = hostileStructure(STRUCTURE_SPAWN, "mixed-defense-spawn", 29, 37, 5_000);
     const wall = hostileStructure(STRUCTURE_WALL, "safe-wall", 33, 47, 3_182_901) as StructureWall;

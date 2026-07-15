@@ -560,7 +560,10 @@ export const meleeAttackerRole: RoleFactory = (
       // barrier really blocks that path, pathfinding will select it. Builders are
       // handled only when adjacent so a melee squad cannot be kited indefinitely.
       if (isCreepTarget(target) && isDangerousHostile(target)) {
-        delete creep.memory._warBreachTargetId;
+        const trackedBreach = getTrackedWarBreachTarget(creep);
+        if (!trackedBreach || creep.pos.getRangeTo(trackedBreach.pos) > 1) {
+          delete creep.memory._warBreachTargetId;
+        }
       }
       const plannedBreach =
         getTrackedWarBreachTarget(creep) ||
