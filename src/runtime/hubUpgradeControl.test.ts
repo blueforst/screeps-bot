@@ -80,6 +80,20 @@ describe("runHubUpgradeControl", () => {
     expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(2);
   });
 
+  it("removes a noncanonical third upgrader config in the active hub", () => {
+    Memory.data!.creepConfigs!["E4N58:hubUpgrader:legacy"] = {
+      role: "hubUpgrader",
+      args: ["E4N58", "hubUpgrade:E4N58"],
+      roomName: "E4N58",
+      body: [...HUB_UPGRADER_BODY],
+    };
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:legacy"]).toBeUndefined();
+    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(2);
+  });
+
   it("requests 900 XGH2O while both upgrader configs have no creep", () => {
     runHubUpgradeControl();
 
@@ -113,14 +127,6 @@ describe("runHubUpgradeControl", () => {
   it("releases the shared boost lab when both upgraders are fully boosted", () => {
     Game.creeps.upgrader0 = createUpgrader("upgrader0", "E4N58:hubUpgrader:0", 15);
     Game.creeps.upgrader1 = createUpgrader("upgrader1", "E4N58:hubUpgrader:1", 15);
-    Memory.runtime!.powerBankBoost = {
-      "hubUpgrade:E4N58": {
-        taskId: "hubUpgrade:E4N58",
-        sourceRoomName: "E4N58",
-        labs: {},
-      },
-    };
-
     runHubUpgradeControl();
 
     expect(mockedPrepareBoosts).not.toHaveBeenCalled();

@@ -724,26 +724,36 @@ describe("synthesis boost pause/resume contract", () => {
     expect(roomState.stage).toBe("idle");
   });
 
-  it("pausing when no active plan (idle stage) returns false", () => {
+  it("pausing when no active plan still reserves the room for boost", () => {
     setupActiveRoom();
     Memory.runtime!.synthesisControl!.rooms[ROOM].stage = "idle";
     Memory.runtime!.synthesisControl!.rooms[ROOM].activeProduct = undefined;
 
     const result = pauseSynthesisForBoost(ROOM, "pb-task-2");
-    expect(result).toBe(false);
-    expect(isSynthesisPaused(ROOM)).toBe(false);
+    expect(result).toBe(true);
+    expect(isSynthesisPaused(ROOM)).toBe(true);
+    expect(Memory.runtime!.synthesisControl!.rooms[ROOM].boostPause?.pausedPlan).toBeNull();
   });
 
-  it("double-pause returns false", () => {
+  it("tracks concurrent boost tasks and resumes only after the last release", () => {
     setupActiveRoom();
     const first = pauseSynthesisForBoost(ROOM, "pb-task-1");
     expect(first).toBe(true);
 
     const second = pauseSynthesisForBoost(ROOM, "pb-task-2");
-    expect(second).toBe(false);
+    expect(second).toBe(true);
 
     const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
     expect(roomState.boostPause!.taskId).toBe("pb-task-1");
+    expect(roomState.boostPause!.taskIds).toEqual(["pb-task-1", "pb-task-2"]);
+
+    resumeSynthesisAfterBoost(ROOM, "pb-task-1");
+    expect(roomState.boostPause!.taskId).toBe("pb-task-2");
+    expect(roomState.activeProduct).toBeUndefined();
+
+    resumeSynthesisAfterBoost(ROOM, "pb-task-2");
+    expect(roomState.boostPause).toBeUndefined();
+    expect(roomState.activeProduct).toBe(RESOURCE_UTRIUM_HYDRIDE);
   });
 
   it("pauseSynthesisForBoost for unknown room returns false", () => {

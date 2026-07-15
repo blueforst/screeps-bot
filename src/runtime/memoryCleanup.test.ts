@@ -292,6 +292,80 @@ describe("runMemoryCleanup", () => {
     expect((Memory.runtime as any).synthesisControl.rooms.W1N1.boostPause).toBeDefined();
   });
 
+  it("keeps hub and war boost prep while their owning workflows are active", () => {
+    Memory.cfg = { hub: { enabled: true, hubRoomName: "W1N1" } } as Memory["cfg"];
+    Memory.data = {
+      creepConfigs: {
+        "W1N1:hubUpgrader:0": {
+          role: "hubUpgrader",
+          roomName: "W1N1",
+          args: ["W1N1", "hubUpgrade:W1N1"],
+          body: [WORK, CARRY, MOVE],
+        },
+      },
+      war: {
+        W2N2: {
+          targetRoom: "W2N2",
+          sourceRoom: "W1N1",
+          status: "staging",
+          reason: "manual",
+          attempts: 1,
+          createdAt: Game.time,
+          updatedAt: Game.time,
+          activeGeneration: {
+            id: 1,
+            phase: "preparing",
+            createdAt: Game.time,
+            boostTaskId: "war:W1N1:W2N2:g1",
+            configNames: { meleeAttacker: "attacker", healer: "healer" },
+          },
+        },
+      },
+    } as Memory["data"];
+    Memory.runtime = {
+      powerBankBoost: Object.fromEntries(["hubUpgrade:W1N1", "war:W1N1:W2N2:g1"].map((taskId) => [taskId, {
+        taskId,
+        sourceRoomName: "W1N1",
+        labs: {},
+      }])),
+      synthesisControl: {
+        updatedAt: Game.time,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          W1N1: {
+            stage: "idle",
+            reagentLabIds: [],
+            productLabIds: [],
+            successfulRuns: 0,
+            pendingTasks: 0,
+            lastTransitionAt: Game.time,
+            boostPause: {
+              reason: "powerBankBoost",
+              taskId: "hubUpgrade:W1N1",
+              taskIds: ["hubUpgrade:W1N1", "war:W1N1:W2N2:g1"],
+              createdTick: Game.time,
+              pausedPlan: null,
+              pausedStage: "idle",
+            },
+          },
+        },
+      },
+    } as Memory["runtime"];
+
+    runMemoryCleanup();
+
+    expect(Object.keys(Memory.runtime?.powerBankBoost || {}).sort()).toEqual([
+      "hubUpgrade:W1N1",
+      "war:W1N1:W2N2:g1",
+    ]);
+    expect(Memory.runtime?.synthesisControl?.rooms.W1N1.boostPause?.taskIds).toHaveLength(2);
+    expect(Memory.data?.creepConfigs?.["W1N1:hubUpgrader:0"]).toBeDefined();
+  });
+
   describe("hub runtime cleanup", () => {
     it("sets hub runtime to blocked when hub room no longer owned", () => {
       Memory.cfg = {

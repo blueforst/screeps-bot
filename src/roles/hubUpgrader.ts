@@ -7,6 +7,8 @@ type ControllerEnergySource = StructureLink | StructureContainer;
 
 function getActiveController(roomName: string | undefined): StructureController | null {
   if (!roomName) return null;
+  const hub = Memory.cfg?.hub;
+  if (!hub?.enabled || hub.hubRoomName !== roomName) return null;
   const controller = Game.rooms[roomName]?.controller;
   if (!controller?.my || controller.level !== 7) return null;
   return controller;
@@ -33,11 +35,13 @@ export const hubUpgraderRole: RoleFactory = (
   roomName?: string,
   boostTaskId?: string,
 ) => ({
-  prepare: (creep): boolean => prepareCombatBoost(
-    creep,
-    boostTaskId,
-    RESOURCE_CATALYZED_GHODIUM_ACID,
-  ),
+  prepare: (creep): boolean => getActiveController(roomName)
+    ? prepareCombatBoost(
+      creep,
+      boostTaskId,
+      RESOURCE_CATALYZED_GHODIUM_ACID,
+    )
+    : true,
 
   source: (creep): boolean => {
     const controller = getActiveController(roomName);

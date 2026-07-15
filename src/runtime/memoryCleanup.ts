@@ -32,6 +32,7 @@ const VALID_ROLES = new Set([
   "powerBankAttacker",
   "powerBankHealer",
   "powerBankHauler",
+  "hubUpgrader",
   "remoteMiningReserver",
   "remoteWorker",
   "remoteDefender",
@@ -319,6 +320,14 @@ function cleanupPowerBankBoostMemory(): number {
   }
 
   const activeTaskIds = new Set(Object.keys(Memory.data?.powerBankHarvest || {}));
+  for (const config of Object.values(Memory.data?.creepConfigs || {})) {
+    for (const arg of config.args || []) {
+      if (typeof arg === "string") activeTaskIds.add(arg);
+    }
+  }
+  for (const task of Object.values(Memory.data?.war || {})) {
+    if (task.activeGeneration?.boostTaskId) activeTaskIds.add(task.activeGeneration.boostTaskId);
+  }
   let removed = 0;
 
   if (runtime.powerBankBoost) {
@@ -342,11 +351,15 @@ function cleanupPowerBankBoostMemory(): number {
 
   for (const roomState of Object.values(synthesisRooms)) {
     const pause = roomState.boostPause;
-    if (!pause || activeTaskIds.has(pause.taskId)) {
-      continue;
+    if (!pause) continue;
+    const activePauseTaskIds = (pause.taskIds || [pause.taskId]).filter((taskId) => activeTaskIds.has(taskId));
+    if (activePauseTaskIds.length > 0) {
+      pause.taskId = activePauseTaskIds[0];
+      pause.taskIds = activePauseTaskIds;
+    } else {
+      delete roomState.boostPause;
+      removed += 1;
     }
-    delete roomState.boostPause;
-    removed += 1;
   }
 
   return removed;

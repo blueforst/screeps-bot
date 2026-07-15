@@ -1,6 +1,5 @@
 import { HUB_UPGRADER_BODY } from "@/config/spawnProfiles";
 import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
-import { getPowerBankBoostPrep } from "@/runtime/powerBankBoostMemory";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
@@ -31,9 +30,12 @@ function removeQueuedConfigs(configNames: Set<string>): void {
 
 function cleanupHubUpgraders(keepRoomName?: string): void {
   const configs = getMemoryService().getCreepConfigStore();
-  const entries = getConfiguredHubUpgraders().filter(([, config]) =>
-    !keepRoomName || (config.roomName || config.args[0]) !== keepRoomName
+  const keptConfigNames = new Set(
+    keepRoomName
+      ? Array.from({ length: HUB_UPGRADER_COUNT }, (_, index) => getConfigName(keepRoomName, index))
+      : [],
   );
+  const entries = getConfiguredHubUpgraders().filter(([configName]) => !keptConfigNames.has(configName));
   const configNames = new Set(entries.map(([configName]) => configName));
   const roomNames = new Set(
     entries
@@ -57,9 +59,7 @@ function cleanupHubUpgraders(keepRoomName?: string): void {
 
   for (const roomName of roomNames) {
     const taskId = getBoostTaskId(roomName);
-    if (getPowerBankBoostPrep(taskId)) {
-      releaseBoostLabs(taskId, roomName);
-    }
+    releaseBoostLabs(taskId, roomName);
   }
 }
 
@@ -106,9 +106,7 @@ export function runHubUpgradeControl(): void {
   ).reduce((sum, count) => sum + count, 0);
 
   if (remainingWorkParts <= 0) {
-    if (getPowerBankBoostPrep(boostTaskId)) {
-      releaseBoostLabs(boostTaskId, roomName);
-    }
+    releaseBoostLabs(boostTaskId, roomName);
     return;
   }
 

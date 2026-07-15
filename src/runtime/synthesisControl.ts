@@ -60,6 +60,7 @@ type SynthesisBindingStore = Record<string, SynthesisBinding>;
 interface BoostPauseState {
   reason: "powerBankBoost";
   taskId: string;
+  taskIds?: string[];
   createdTick: number;
   pausedPlan: SynthesisReactionPlan | null;
   pausedStage: SynthesisStage;
@@ -1322,14 +1323,17 @@ export function isSynthesisPaused(roomName: string): boolean {
 
 export function pauseSynthesisForBoost(roomName: string, taskId: string): boolean {
   const runtime = getRuntimeState();
-  const roomState = runtime.rooms[roomName];
-  if (!roomState || roomState.boostPause) {
+  if (!Game.rooms[roomName]) {
     return false;
   }
+  const roomState = runtime.rooms[roomName] || createRoomState("idle", Game.time);
+  runtime.rooms[roomName] = roomState;
 
-  // Only pause if there is an active production (not idle/blocked)
-  if (roomState.stage === "idle" || roomState.stage === "blocked") {
-    return false;
+  if (roomState.boostPause) {
+    const taskIds = roomState.boostPause.taskIds || [roomState.boostPause.taskId];
+    if (!taskIds.includes(taskId)) taskIds.push(taskId);
+    roomState.boostPause.taskIds = taskIds;
+    return true;
   }
 
   const pausedPlan: SynthesisReactionPlan | null = roomState.activeProduct
@@ -1344,6 +1348,7 @@ export function pauseSynthesisForBoost(roomName: string, taskId: string): boolea
   roomState.boostPause = {
     reason: "powerBankBoost",
     taskId,
+    taskIds: [taskId],
     createdTick: Game.time,
     pausedPlan,
     pausedStage: roomState.stage,
@@ -1362,7 +1367,7 @@ export function pauseSynthesisForBoost(roomName: string, taskId: string): boolea
   return true;
 }
 
-export function resumeSynthesisAfterBoost(roomName: string): void {
+export function resumeSynthesisAfterBoost(roomName: string, taskId?: string): void {
   const runtime = getRuntimeState();
   const roomState = runtime.rooms[roomName];
   if (!roomState?.boostPause) {
@@ -1370,6 +1375,14 @@ export function resumeSynthesisAfterBoost(roomName: string): void {
   }
 
   const pause = roomState.boostPause;
+  if (taskId) {
+    const remainingTaskIds = (pause.taskIds || [pause.taskId]).filter((id) => id !== taskId);
+    if (remainingTaskIds.length > 0) {
+      pause.taskId = remainingTaskIds[0];
+      pause.taskIds = remainingTaskIds;
+      return;
+    }
+  }
 
   if (pause.pausedPlan) {
     roomState.activeProduct = pause.pausedPlan.product;

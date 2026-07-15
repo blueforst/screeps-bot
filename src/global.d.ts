@@ -875,6 +875,7 @@ declare global {
             boostPause?: {
               reason: "powerBankBoost";
               taskId: string;
+              taskIds?: string[];
               createdTick: number;
               pausedPlan: {
                 product: ResourceConstant;

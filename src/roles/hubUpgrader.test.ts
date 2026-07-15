@@ -81,6 +81,7 @@ describe("hubUpgraderRole", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedPrepareBoost.mockReturnValue(false);
+    Memory.cfg = { hub: { enabled: true, hubRoomName: "E4N58" } } as Memory["cfg"];
   });
 
   it("waits for its shared XGH2O boost task during prepare", () => {
@@ -148,6 +149,22 @@ describe("hubUpgraderRole", () => {
     const room = createRoom([], 8);
     Game.rooms.E4N58 = room;
     const creep = createCreep(room, 100);
+    const role = hubUpgraderRole("E4N58", "hubUpgrade:E4N58");
+
+    expect(role.prepare?.(creep)).toBe(true);
+    expect(role.source?.(creep)).toBe(false);
+    expect(role.target(creep)).toBe(false);
+    expect(mockedPrepareBoost).not.toHaveBeenCalled();
+    expect(creep.withdraw).not.toHaveBeenCalled();
+    expect(creep.upgradeController).not.toHaveBeenCalled();
+  });
+
+  it("stops an existing creep after the hub is disabled or moved", () => {
+    const room = createRoom();
+    Game.rooms.E4N58 = room;
+    const creep = createCreep(room, 100);
+    Memory.cfg!.hub = { enabled: false, hubRoomName: "E4N58" } as typeof Memory.cfg.hub;
+
     const role = hubUpgraderRole("E4N58", "hubUpgrade:E4N58");
 
     expect(role.source?.(creep)).toBe(false);

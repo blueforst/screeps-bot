@@ -84,4 +84,3 @@
 - `hubUpgrader` 优先从控制器 link/container 取能并只升级本房控制器。
 - spawn 排序中 Hub upgrader 低于战争 creep、高于普通生产，且现有母房 carrier 最高优先级保持不变。
 - 全量 Jest、TypeScript 类型检查和 Rollup 构建通过后才允许部署。
-

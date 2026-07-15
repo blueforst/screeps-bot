@@ -650,6 +650,53 @@ describe("powerBankBoost", () => {
   });
 
   describe("releaseBoostLabs", () => {
+    it("keeps synthesis paused while another boost task still owns labs", () => {
+      const room = createRoomWithInfrastructure({
+        name: SOURCE_ROOM,
+        storageResources: {
+          [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 5000,
+          [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
+        },
+        labs: [
+          createLabWithCompound(`${SOURCE_ROOM}-lab-1`, SOURCE_ROOM, null, 0),
+          createLabWithCompound(`${SOURCE_ROOM}-lab-2`, SOURCE_ROOM, null, 0),
+        ],
+      });
+      Game.rooms[SOURCE_ROOM] = room;
+      Memory.runtime = Memory.runtime ?? {};
+      Memory.runtime.synthesisControl = {
+        updatedAt: Game.time,
+        generatedTaskCount: 0,
+        failedTaskCount: 0,
+        successfulRunCount: 0,
+        lastActions: [],
+        bindings: {},
+        rooms: {
+          [SOURCE_ROOM]: {
+            stage: "synthesizing",
+            activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+            targetAmount: 5000,
+            batchSize: 500,
+            reagentLabIds: [],
+            productLabIds: [],
+            successfulRuns: 0,
+            pendingTasks: 0,
+            lastTransitionAt: Game.time,
+          },
+        },
+      };
+
+      prepareBoosts("boost-a", SOURCE_ROOM, 0, new Map([[RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 30]]));
+      prepareBoosts("boost-b", SOURCE_ROOM, 0, new Map([[RESOURCE_CATALYZED_UTRIUM_ACID, 30]]));
+      releaseBoostLabs("boost-a", SOURCE_ROOM);
+
+      expect(isSynthesisPaused(SOURCE_ROOM)).toBe(true);
+      expect(Memory.runtime.synthesisControl.rooms[SOURCE_ROOM].boostPause?.taskId).toBe("boost-b");
+
+      releaseBoostLabs("boost-b", SOURCE_ROOM);
+      expect(isSynthesisPaused(SOURCE_ROOM)).toBe(false);
+    });
+
     it("resumes synthesis after release", () => {
       const storageResources: Record<string, number> = {};
       storageResources[RESOURCE_CATALYZED_GHODIUM_ALKALIDE] = 5000;

@@ -385,7 +385,7 @@ export function releaseBoostLabs(taskId: string, sourceRoomName: string): void {
   const prepStore = ensurePowerBankBoostPrepStore();
   delete prepStore[taskId];
 
-  resumeSynthesisAfterBoost(sourceRoomName);
+  resumeSynthesisAfterBoost(sourceRoomName, taskId);
 }
 
 /**
