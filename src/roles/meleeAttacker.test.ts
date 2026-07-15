@@ -791,6 +791,65 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.memory._warBreachTargetId).toBe(wall.id);
   });
 
+  it("keeps attacking a tracked target-room breach until that structure is gone", () => {
+    const spawn = hostileStructure(STRUCTURE_SPAWN, "tracked-breach-spawn", 20, 20, 5_000);
+    const trackedWall = hostileStructure(
+      STRUCTURE_WALL,
+      "tracked-target-wall",
+      26,
+      25,
+      1_700_000,
+    ) as StructureWall;
+    const replannedWall = hostileStructure(
+      STRUCTURE_WALL,
+      "replanned-target-wall",
+      24,
+      25,
+      1_600_000,
+    ) as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 25,
+      y: 25,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warBreachTargetId: trackedWall.id,
+      },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [];
+      if (type === FIND_HOSTILE_STRUCTURES) return [spawn, trackedWall, replannedWall];
+      if (type === FIND_STRUCTURES) return [spawn, trackedWall, replannedWall];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
+    Game.getObjectById = jest.fn((id: string) => (id === trackedWall.id ? trackedWall : null)) as typeof Game.getObjectById;
+    (PathFinder.search as jest.Mock).mockReturnValue({
+      path: [{ x: replannedWall.pos.x, y: replannedWall.pos.y, roomName: TARGET_ROOM }],
+      incomplete: false,
+      cost: 100,
+      ops: 20,
+    });
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 25,
+        y: 24,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(trackedWall);
+    expect(attacker.attack).not.toHaveBeenCalledWith(replannedWall);
+    expect(attacker.memory._warBreachTargetId).toBe(trackedWall.id);
+  });
+
   it("assigns a higher combat path cost to ramparts than walls", () => {
     const spawn = hostileStructure(STRUCTURE_SPAWN, "mixed-defense-spawn", 29, 37, 5_000);
     const wall = hostileStructure(STRUCTURE_WALL, "safe-wall", 33, 47, 3_182_901) as StructureWall;
