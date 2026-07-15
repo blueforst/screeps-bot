@@ -172,10 +172,10 @@ function attackAdjacentWhileHoldingFormation(creep: Creep, includeBreach: boolea
   if (includeBreach) attackWeakestAdjacentBreachTarget(creep);
 }
 
-function attackAdjacentWhileTraveling(creep: Creep): void {
-  if (attackAdjacentHostileOnRoute(creep)) return;
-  if (creep.room.controller?.my) return;
-  attackWeakestAdjacentBreachTarget(creep);
+function attackAdjacentWhileTraveling(creep: Creep): boolean {
+  if (attackAdjacentHostileOnRoute(creep)) return false;
+  if (creep.room.controller?.my) return false;
+  return attackWeakestAdjacentBreachTarget(creep);
 }
 
 function findPairedWarHealer(creep: Creep): Creep | null {
@@ -300,7 +300,7 @@ export const meleeAttackerRole: RoleFactory = (
     }
 
     if (targetRoom && creep.room.name !== targetRoom) {
-      attackAdjacentWhileTraveling(creep);
+      if (attackAdjacentWhileTraveling(creep)) return false;
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }
@@ -314,7 +314,7 @@ export const meleeAttackerRole: RoleFactory = (
     }
 
     if (targetRoom && creep.room.name !== targetRoom) {
-      attackAdjacentWhileTraveling(creep);
+      if (attackAdjacentWhileTraveling(creep)) return false;
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
       return false;
     }

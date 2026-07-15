@@ -301,7 +301,7 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 
-  it("attacks an adjacent wall while traveling with its healer and keeps moving", () => {
+  it("holds position while attacking an adjacent route wall with its healer", () => {
     const wall = {
       id: "route-blocking-wall" as Id<StructureWall>,
       structureType: STRUCTURE_WALL,
@@ -333,12 +333,7 @@ describe("meleeAttackerRole war duo staging", () => {
     meleeAttackerRole(TARGET_ROOM).source?.(attacker);
 
     expect(attacker.attack).toHaveBeenCalledWith(wall);
-    expect(moveToTargetRoom).toHaveBeenCalledWith(
-      attacker,
-      TARGET_ROOM,
-      undefined,
-      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
-    );
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 
   it("attacks adjacent hostile creeps while traveling and still moves toward target room", () => {
