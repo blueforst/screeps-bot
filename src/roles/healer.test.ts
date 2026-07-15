@@ -387,7 +387,13 @@ describe("healerRole war duo staging", () => {
       healer,
       spawn,
       2,
-      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+      expect.objectContaining({
+        plainCost: 2,
+        swampCost: 8,
+        maxRooms: 1,
+        ignoreCreeps: false,
+        reusePath: 0,
+      }),
     );
     expect(moveToTarget).not.toHaveBeenCalledWith(
       healer,
@@ -430,7 +436,13 @@ describe("healerRole war duo staging", () => {
       healer,
       wall,
       2,
-      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+      expect.objectContaining({
+        plainCost: 2,
+        swampCost: 8,
+        maxRooms: 1,
+        ignoreCreeps: false,
+        reusePath: 0,
+      }),
     );
     expect(moveToTarget).not.toHaveBeenCalledWith(healer, spawn, 2, expect.anything());
   });

@@ -197,6 +197,12 @@ function buildRoomCostMatrix(
       }
       roomMatrix.set(otherCreep.pos.x, otherCreep.pos.y, 0xfe);
     }
+    for (const hostileCreep of roomContext.getHostileCreeps()) {
+      roomMatrix.set(hostileCreep.pos.x, hostileCreep.pos.y, 0xfe);
+    }
+    for (const hostilePowerCreep of roomContext.getHostilePowerCreeps()) {
+      roomMatrix.set(hostilePowerCreep.pos.x, hostilePowerCreep.pos.y, 0xfe);
+    }
   }
 
   if (options.costCallback && roomName === creep.room.name) {

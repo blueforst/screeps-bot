@@ -86,7 +86,7 @@ describe("claimerRole", () => {
       creep,
       room.controller,
       1,
-      { plainCost: 2, swampCost: 8, maxRooms: 1 },
+      { plainCost: 2, swampCost: 8, maxRooms: 1, ignoreCreeps: false, reusePath: 0 },
     );
   });
 });

@@ -28,7 +28,13 @@ export const claimerRole: RoleFactory = (
     if (controllerMode === "attack") {
       const attackCode = measureCreepIntent(() => creep.attackController(controller));
       if (attackCode === ERR_NOT_IN_RANGE) {
-        moveToTarget(creep, controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
+        moveToTarget(creep, controller, 1, {
+          plainCost: 2,
+          swampCost: 8,
+          maxRooms: 1,
+          ignoreCreeps: false,
+          reusePath: 0,
+        });
       }
       return false;
     }

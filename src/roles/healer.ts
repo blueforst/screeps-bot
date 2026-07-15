@@ -6,6 +6,14 @@ import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProf
 import type { RoleFactory } from "@/types/system";
 
 const TRAVEL_OPTIONS = { plainCost: 2, swampCost: 8 } as const;
+const TARGET_ROOM_MOVE_OPTIONS = {
+  plainCost: 2,
+  swampCost: 8,
+  reusePath: 0,
+  maxRooms: 1,
+  avoidExitTiles: true,
+  ignoreCreeps: false,
+} as const;
 
 function findPairedWarAttacker(creep: Creep): Creep | null {
   const configName = creep.memory.configName;
@@ -154,13 +162,7 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
   }
 
   if (!creep.pos.isNearTo(attacker.pos)) {
-    moveToTarget(creep, attacker, 1, {
-      plainCost: 2,
-      swampCost: 8,
-      reusePath: 3,
-      maxRooms: 1,
-      avoidExitTiles: true,
-    });
+    moveToTarget(creep, attacker, 1, TARGET_ROOM_MOVE_OPTIONS);
     return true;
   }
 
@@ -172,13 +174,7 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
 
   const combatTarget = getSharedWarBreachTarget(attacker) || findWarObjectiveTarget(attacker);
   if (combatTarget) {
-    moveToTarget(creep, combatTarget, 2, {
-      plainCost: 2,
-      swampCost: 8,
-      reusePath: 3,
-      maxRooms: 1,
-      avoidExitTiles: true,
-    });
+    moveToTarget(creep, combatTarget, 2, TARGET_ROOM_MOVE_OPTIONS);
   }
 
   return true;

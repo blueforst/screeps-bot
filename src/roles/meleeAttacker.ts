@@ -6,6 +6,13 @@ import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProf
 import type { RoleFactory } from "@/types/system";
 
 const TRAVEL_OPTIONS = { plainCost: 2, swampCost: 8 } as const;
+const TARGET_ROOM_MOVE_OPTIONS = {
+  plainCost: 2,
+  swampCost: 8,
+  reusePath: 0,
+  maxRooms: 1,
+  ignoreCreeps: false,
+} as const;
 const ROUTE_BREACH_RESUME_TICKS = 5;
 
 function getHostileCreeps(room: Room): Creep[] {
@@ -185,6 +192,14 @@ function findFirstBreachOnCombatPath(creep: Creep, target: Creep | Structure): S
   for (const breach of breaches) {
     matrix.set(breach.pos.x, breach.pos.y, getCombatBreachCost(breach, hostileCreeps));
     breachByPosition.set(`${breach.pos.x}:${breach.pos.y}`, breach);
+  }
+  for (const otherCreep of creep.room.find(FIND_MY_CREEPS)) {
+    if (otherCreep.name !== creep.name) {
+      matrix.set(otherCreep.pos.x, otherCreep.pos.y, 0xfe);
+    }
+  }
+  for (const hostileCreep of hostileCreeps) {
+    matrix.set(hostileCreep.pos.x, hostileCreep.pos.y, 0xfe);
   }
 
   const result = PathFinder.search(
@@ -528,10 +543,7 @@ export const meleeAttackerRole: RoleFactory = (
       delete creep.memory._warBreachTargetId;
       if (targetRoom) {
         moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 3, {
-          plainCost: 2,
-          swampCost: 8,
-          reusePath: 5,
-          maxRooms: 1,
+          ...TARGET_ROOM_MOVE_OPTIONS,
         });
       }
       return false;
@@ -552,7 +564,7 @@ export const meleeAttackerRole: RoleFactory = (
         creep.memory._warBreachTargetId = plannedBreach.id;
         const breachCode = measureCreepIntent(() => creep.attack(plannedBreach));
         if (breachCode === ERR_NOT_IN_RANGE) {
-          moveToTarget(creep, plannedBreach, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+          moveToTarget(creep, plannedBreach, 1, TARGET_ROOM_MOVE_OPTIONS);
         }
         return false;
       }
@@ -561,7 +573,7 @@ export const meleeAttackerRole: RoleFactory = (
 
     const code = measureCreepIntent(() => creep.attack(target));
     if (code === ERR_NOT_IN_RANGE) {
-      const moveCode = moveToTarget(creep, target, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+      const moveCode = moveToTarget(creep, target, 1, TARGET_ROOM_MOVE_OPTIONS);
       if (moveCode === ERR_NO_PATH && creep.room.name === target.pos.roomName) {
         attackAdjacentBreachTarget(creep, target);
       }
@@ -573,7 +585,7 @@ export const meleeAttackerRole: RoleFactory = (
       if (fallback) {
         const fallbackCode = measureCreepIntent(() => creep.attack(fallback));
         if (fallbackCode === ERR_NOT_IN_RANGE) {
-          moveToTarget(creep, fallback, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+          moveToTarget(creep, fallback, 1, TARGET_ROOM_MOVE_OPTIONS);
         }
       }
     }

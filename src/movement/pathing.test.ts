@@ -146,6 +146,43 @@ describe("moveToTarget baseline", () => {
     expect(creep.moveTo).not.toHaveBeenCalled();
   });
 
+  it("marks hostile creep positions as high-cost when dynamic creep avoidance is requested", () => {
+    const creeps: Creep[] = [];
+    const room = createRoom("W1N1", creeps);
+    const creep = createCreep("war-attacker", "meleeAttacker", 10, 10, room);
+    const hostile = {
+      name: "hostile-blocker",
+      pos: new MockRoomPosition(11, 10, room.name),
+    } as unknown as Creep;
+    creeps.push(creep);
+    Game.creeps[creep.name] = creep;
+    room.find = jest.fn((findConstant: FindConstant) => {
+      if (findConstant === FIND_MY_CREEPS) return creeps;
+      if (findConstant === FIND_HOSTILE_CREEPS) return [hostile];
+      return [];
+    }) as Room["find"];
+
+    let capturedMatrix: RealCostMatrix | undefined;
+    (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(
+      (_target: unknown, opts: { costCallback?: (roomName: string, matrix: CostMatrix) => CostMatrix }) => {
+        capturedMatrix = opts.costCallback?.(
+          room.name,
+          new RealCostMatrix() as unknown as CostMatrix,
+        ) as unknown as RealCostMatrix;
+        return [{ x: 10, y: 11, dx: 0, dy: 1, direction: BOTTOM }];
+      },
+    );
+
+    moveToTarget(
+      creep,
+      new MockRoomPosition(15, 10, room.name) as unknown as RoomPosition,
+      1,
+      { ignoreCreeps: false, reusePath: 0 },
+    );
+
+    expect(capturedMatrix?.get(11, 10)).toBe(0xfe);
+  });
+
   it("reuses a cached path on subsequent calls in the same room", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N1", creeps);

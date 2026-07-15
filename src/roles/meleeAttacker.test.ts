@@ -959,7 +959,13 @@ describe("meleeAttackerRole war duo staging", () => {
       attacker,
       spawn,
       1,
-      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+      expect.objectContaining({
+        plainCost: 2,
+        swampCost: 8,
+        maxRooms: 1,
+        ignoreCreeps: false,
+        reusePath: 0,
+      }),
     );
   });
 
