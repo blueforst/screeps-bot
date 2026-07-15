@@ -597,8 +597,9 @@ function writeWarTelemetry(): void {
 function processTask(task: WarTask): void {
   const room = Game.rooms[task.targetRoom];
   task.statusSince ??= task.createdAt;
-  const stagingTooLong = Game.time - task.createdAt > MAX_STAGING_TICKS;
-  if (stagingTooLong && task.status !== "done") {
+  const stagingTooLong =
+    task.status === "staging" && Game.time - task.statusSince > MAX_STAGING_TICKS;
+  if (stagingTooLong) {
     setTaskStatus(task, "failed");
     clearTaskConfigs(task);
     releaseWarBoosts(task);

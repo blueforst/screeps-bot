@@ -391,6 +391,39 @@ describe("runWarControl", () => {
     expect(Memory.analytics?.war?.tasks.E3N57.hostileCreeps).toBe(1);
   });
 
+  it("does not expire an old task that is already clearing visible hostiles", () => {
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "clearing",
+          statusSince: Game.time - 3000,
+          reason: "manual",
+          attempts: 1,
+          createdAt: Game.time - 3000,
+          updatedAt: Game.time,
+        },
+      },
+    } as Memory["data"];
+    const hostile = { owner: { username: "enemy" } } as Creep;
+    Game.rooms.E1N57 = createSourceRoom([]);
+    Game.rooms.E3N57 = createTargetRoom({ hostileCreeps: [hostile] });
+
+    runWarControl();
+
+    expect(Memory.data?.war?.E3N57?.status).toBe("clearing");
+    expect(Memory.data?.war?.E3N57?.lastHostileSeenAt).toBe(Game.time);
+  });
+
+  it("still expires a task that remains in staging past the timeout", () => {
+    Memory.data!.war!.E3N57!.createdAt = Game.time - 3000;
+
+    runWarControl();
+
+    expect(Memory.data?.war?.E3N57?.status).toBe("failed");
+  });
+
   it("reports war status and stops manual war production", () => {
     Memory.data = {
       war: {
