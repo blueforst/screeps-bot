@@ -71,6 +71,45 @@ describe("mountSpawn war energy reservation", () => {
     expect(remoteSpawn.memory.spawnList).toEqual([remoteConfig]);
   });
 
+  it("keeps reserving energy when the spawn holding the war task is still busy with a source-room carrier", () => {
+    const room = {
+      name: "E1N57",
+      energyAvailable: 3_482,
+      energyCapacityAvailable: 5_600,
+    } as Room;
+    const warConfig = "E1N57:war:E3N57:controllerAttacker:0";
+    const remoteConfig = "E1N57:remoteMine:E1N56:carrier:1";
+    Memory.data!.creepConfigs = {
+      [warConfig]: {
+        role: "claimer",
+        args: ["E3N57", "", "attack"],
+        roomName: room.name,
+        body: [...Array(8).fill(CLAIM), ...Array(8).fill(MOVE)],
+      },
+      [remoteConfig]: {
+        role: "remoteMiningCarrier",
+        args: ["E1N56"],
+        roomName: room.name,
+        body: [CARRY, CARRY, MOVE],
+      },
+    };
+    const warSpawn = createSpawn("Spawn5", room, [warConfig]);
+    warSpawn.spawning = {
+      name: "carrier-72350194",
+      remainingTime: 58,
+      needTime: 96,
+    } as Spawning;
+    const remoteSpawn = createSpawn("Spawn11", room, [remoteConfig]);
+    Object.setPrototypeOf(warSpawn, prototype);
+    Object.setPrototypeOf(remoteSpawn, prototype);
+    Game.spawns = { Spawn5: warSpawn, Spawn11: remoteSpawn };
+
+    prototype.work.call(remoteSpawn);
+
+    expect(remoteSpawn.spawnCreep).not.toHaveBeenCalled();
+    expect(remoteSpawn.memory.spawnList).toEqual([remoteConfig]);
+  });
+
   it("allows a source-room carrier to spawn ahead of a waiting war task", () => {
     const room = {
       name: "E1N57",

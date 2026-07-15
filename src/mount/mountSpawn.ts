@@ -51,24 +51,22 @@ function isSourceRoomCarrierConfig(spawn: StructureSpawn, configName: string): b
 
 function hasWaitingWarSpawn(spawn: StructureSpawn): boolean {
   return Object.values(Game.spawns).some((candidate) => {
-    if (candidate.name === spawn.name || candidate.room.name !== spawn.room.name) {
+    if (candidate.room.name !== spawn.room.name) {
       return false;
     }
-    if (candidate.spawning || !isSpawnActive(candidate)) {
-      return false;
-    }
-
-    const configName = candidate.memory.spawnList?.[0];
-    if (!configName || !isWarConfigName(configName)) {
-      return false;
-    }
-    if (!getCreepConfigService().get(configName)) {
+    if (!isSpawnActive(candidate)) {
       return false;
     }
 
-    const bodyCost = chooseBody(candidate, configName)
-      .reduce((sum, part) => sum + BODYPART_COST[part], 0);
-    return bodyCost <= candidate.room.energyCapacityAvailable;
+    return (candidate.memory.spawnList ?? []).some((configName) => {
+      if (!isWarConfigName(configName) || !getCreepConfigService().get(configName)) {
+        return false;
+      }
+
+      const bodyCost = chooseBody(candidate, configName)
+        .reduce((sum, part) => sum + BODYPART_COST[part], 0);
+      return bodyCost <= candidate.room.energyCapacityAvailable;
+    });
   });
 }
 
