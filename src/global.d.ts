@@ -1230,6 +1230,7 @@ declare global {
     _lastHits?: number;
     _rmcWait?: { ticks: number };
     _rmcSelectedSource?: string;
+    _warBreachTargetId?: Id<StructureRampart | StructureWall>;
     _move?: {
       dest?: {
         x: number;

@@ -45,6 +45,7 @@ describe("healerRole war duo staging", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     Game.creeps = {};
+    Game.getObjectById = jest.fn(() => null) as typeof Game.getObjectById;
   });
 
   it("waits while paired attacker does not exist", () => {
@@ -366,6 +367,44 @@ describe("healerRole war duo staging", () => {
       2,
       expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
     );
+  });
+
+  it("follows the attacker's selected breach instead of independently pathing to the core", () => {
+    const spawn = hostileStructure(STRUCTURE_SPAWN, "spawn-behind-breach", 29, 37, 5_000);
+    const wall = hostileStructure(STRUCTURE_WALL, "shared-breach-wall", 33, 47, 3_180_000) as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 38,
+      y: 48,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warBreachTargetId: wall.id,
+      },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) =>
+      type === FIND_HOSTILE_STRUCTURES ? [spawn, wall] : []
+    ) as Room["find"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 37,
+      y: 48,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.getObjectById = jest.fn((id: Id<_HasId>) => (id === wall.id ? wall : null)) as typeof Game.getObjectById;
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      healer,
+      wall,
+      2,
+      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
+    );
+    expect(moveToTarget).not.toHaveBeenCalledWith(healer, spawn, 2, expect.anything());
   });
 
   it("holds adjacent in target room when the attacker has no combat target", () => {

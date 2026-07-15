@@ -50,7 +50,15 @@ describe("meleeAttackerRole war duo staging", () => {
     Object.assign(global, {
       PathFinder: {
         CostMatrix: class {
-          public set(): void {}
+          private readonly values = new Map<string, number>();
+
+          public set(x: number, y: number, value: number): void {
+            this.values.set(`${x}:${y}`, value);
+          }
+
+          public get(x: number, y: number): number {
+            return this.values.get(`${x}:${y}`) ?? 0;
+          }
         },
         search: jest.fn(),
       },
@@ -557,6 +565,53 @@ describe("meleeAttackerRole war duo staging", () => {
       expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
     );
     expect(moveToTarget).not.toHaveBeenCalledWith(attacker, spawn, 1, expect.anything());
+    expect(attacker.memory._warBreachTargetId).toBe(wall.id);
+  });
+
+  it("assigns a higher combat path cost to ramparts than walls", () => {
+    const spawn = hostileStructure(STRUCTURE_SPAWN, "mixed-defense-spawn", 29, 37, 5_000);
+    const wall = hostileStructure(STRUCTURE_WALL, "safe-wall", 33, 47, 3_182_901) as StructureWall;
+    const rampart = hostileStructure(STRUCTURE_RAMPART, "guarded-rampart", 42, 47, 3_178_301) as StructureRampart;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 36,
+      y: 48,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_STRUCTURES) return [spawn, wall, rampart];
+      if (type === FIND_STRUCTURES) return [spawn, wall, rampart];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
+    attacker.attack = jest.fn(() => ERR_NOT_IN_RANGE) as Creep["attack"];
+    (PathFinder.search as jest.Mock).mockImplementation(
+      (_origin: RoomPosition, _goal: unknown, options: { roomCallback: (roomName: string) => CostMatrix | false }) => {
+        const matrix = options.roomCallback(TARGET_ROOM) as CostMatrix;
+        expect(matrix.get(wall.pos.x, wall.pos.y)).toBeLessThan(matrix.get(rampart.pos.x, rampart.pos.y));
+        return {
+          path: [{ x: wall.pos.x, y: wall.pos.y, roomName: TARGET_ROOM }],
+          incomplete: false,
+          cost: 100,
+          ops: 20,
+        };
+      },
+    );
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 37,
+        y: 48,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(moveToTarget).toHaveBeenCalledWith(attacker, wall, 1, expect.anything());
   });
 
   it("focuses hostile spawn before non-adjacent creeps and towers for war objectives", () => {

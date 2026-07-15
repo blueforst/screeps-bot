@@ -80,6 +80,7 @@ function isBreachTarget(structure: Structure): structure is StructureRampart | S
 }
 
 function getCombatBreachCost(structure: StructureRampart | StructureWall): number {
+  if (structure.structureType === STRUCTURE_RAMPART) return 0xfe;
   return Math.min(0xfe, 20 + Math.ceil(structure.hits / 50_000));
 }
 
@@ -372,11 +373,13 @@ export const meleeAttackerRole: RoleFactory = (
     }
 
     if (targetRoom && attackAdjacentHostileOnRoute(creep)) {
+      delete creep.memory._warBreachTargetId;
       return false;
     }
 
     const target = measureCreepDecision(() => (targetRoom ? findWarObjectiveTarget(creep) : findTarget(creep)));
     if (!target) {
+      delete creep.memory._warBreachTargetId;
       if (targetRoom) {
         moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 3, {
           plainCost: 2,
@@ -391,12 +394,14 @@ export const meleeAttackerRole: RoleFactory = (
     if (targetRoom) {
       const plannedBreach = measureCreepDecision(() => findFirstBreachOnCombatPath(creep, target));
       if (plannedBreach) {
+        creep.memory._warBreachTargetId = plannedBreach.id;
         const breachCode = measureCreepIntent(() => creep.attack(plannedBreach));
         if (breachCode === ERR_NOT_IN_RANGE) {
           moveToTarget(creep, plannedBreach, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
         }
         return false;
       }
+      delete creep.memory._warBreachTargetId;
     }
 
     const code = measureCreepIntent(() => creep.attack(target));

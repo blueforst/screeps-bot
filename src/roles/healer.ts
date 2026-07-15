@@ -118,6 +118,22 @@ function healAttacker(creep: Creep, attacker: Creep): void {
   }
 }
 
+function getSharedWarBreachTarget(attacker: Creep): StructureRampart | StructureWall | null {
+  const targetId = attacker.memory._warBreachTargetId;
+  if (!targetId) return null;
+
+  const target = Game.getObjectById(targetId);
+  if (
+    !target ||
+    target.pos.roomName !== attacker.room.name ||
+    (target.structureType !== STRUCTURE_WALL && target.structureType !== STRUCTURE_RAMPART)
+  ) {
+    delete attacker.memory._warBreachTargetId;
+    return null;
+  }
+  return target;
+}
+
 function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedRouteRooms?: string): boolean {
   if (!expectsWarAttacker(creep)) return false;
 
@@ -151,7 +167,7 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
     return true;
   }
 
-  const combatTarget = findWarObjectiveTarget(attacker);
+  const combatTarget = getSharedWarBreachTarget(attacker) || findWarObjectiveTarget(attacker);
   if (combatTarget) {
     moveToTarget(creep, combatTarget, 2, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
   }
