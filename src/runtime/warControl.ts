@@ -556,18 +556,6 @@ function getControllerAttackConfigName(task: WarTask): string {
   return `${task.sourceRoom}:war:${task.targetRoom}:${WAR_CONTROLLER_ATTACK_CONFIG_SUFFIX}`;
 }
 
-function hasDangerousHostileCreeps(room: Room): boolean {
-  return room.find(FIND_HOSTILE_CREEPS, {
-    filter: (creep) => {
-      if (creep.owner.username === "Source Keeper") return false;
-      if (typeof creep.getActiveBodyparts !== "function") return true;
-      return creep.getActiveBodyparts(ATTACK) > 0
-        || creep.getActiveBodyparts(RANGED_ATTACK) > 0
-        || creep.getActiveBodyparts(HEAL) > 0;
-    },
-  }).length > 0;
-}
-
 function hasControllerAttackBlockers(room: Room): boolean {
   return room.find(FIND_HOSTILE_STRUCTURES, {
     filter: (structure) => WAR_CONTROLLER_CORE_STRUCTURES.has(structure.structureType),
@@ -1014,7 +1002,6 @@ function processTask(task: WarTask): void {
     && task.reason === "manual"
     && isControllerDefeated(room)
     && !hasControllerAttackBlockers(room)
-    && !hasDangerousHostileCreeps(room)
   ) {
     processControllerVictory(task);
     return;

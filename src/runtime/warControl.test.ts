@@ -916,6 +916,31 @@ describe("runWarControl", () => {
     expect(Memory.data!.war!.E3N57!.completedAt).toBe(1020);
   });
 
+  it("completes a defeated manual target even when a dangerous hostile creep remains", () => {
+    Memory.data!.war!.E3N57!.squad = "standard";
+    Memory.data!.war!.E3N57!.boostTier = undefined;
+    const sourceRoom = createSourceRoom([]);
+    const spawn = createSpawn(sourceRoom);
+    const hostile = {
+      owner: { username: "enemy" },
+      getActiveBodyparts: jest.fn((part: BodyPartConstant) => part === RANGED_ATTACK ? 8 : 0),
+    } as unknown as Creep;
+    Game.rooms.E1N57 = sourceRoom;
+    Game.rooms.E3N57 = createTargetRoom({ hostileCreeps: [hostile] });
+    Game.spawns.Spawn1 = spawn;
+
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.status).toBe("clearing");
+    expect(Memory.data!.war!.E3N57!.clearSince).toBe(1000);
+
+    Game.time = 1019;
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57!.status).toBe("done");
+    expect(Memory.data!.war!.E3N57!.completedAt).toBe(1019);
+  });
+
   it("resets clear debounce when hostiles reappear", () => {
     Memory.data = {
       war: {
@@ -923,7 +948,7 @@ describe("runWarControl", () => {
           targetRoom: "E3N57",
           sourceRoom: "E1N57",
           status: "clearing",
-          reason: "manual",
+          reason: "npc_reservation",
           attempts: 1,
           createdAt: Game.time,
           updatedAt: Game.time,
@@ -952,7 +977,7 @@ describe("runWarControl", () => {
           sourceRoom: "E1N57",
           status: "clearing",
           statusSince: Game.time - 3000,
-          reason: "manual",
+          reason: "npc_reservation",
           attempts: 1,
           createdAt: Game.time - 3000,
           updatedAt: Game.time,
