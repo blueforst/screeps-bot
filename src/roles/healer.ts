@@ -96,10 +96,17 @@ function shouldHoldForAttackerAtExit(creep: Creep, attacker: Creep, targetRoom: 
 }
 
 function healAttacker(creep: Creep, attacker: Creep): void {
+  const shouldHealSelf =
+    creep.hits < creep.hitsMax &&
+    (attacker.room.name !== creep.room.name ||
+      attacker.hits >= attacker.hitsMax ||
+      creep.hits * attacker.hitsMax <= attacker.hits * creep.hitsMax);
+  if (shouldHealSelf) {
+    measureCreepIntent(() => creep.heal(creep));
+    return;
+  }
+
   if (attacker.room.name !== creep.room.name) {
-    if (creep.hits < creep.hitsMax) {
-      measureCreepIntent(() => creep.heal(creep));
-    }
     return;
   }
 

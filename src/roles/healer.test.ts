@@ -390,4 +390,56 @@ describe("healerRole war duo staging", () => {
 
     expect(moveToTarget).not.toHaveBeenCalled();
   });
+
+  it("heals itself while maintaining formation when the attacker is already full", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 20,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn(() => []) as Room["find"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 21,
+      hits: 2_800,
+      hitsMax: 3_800,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(healer.heal).toHaveBeenCalledWith(healer);
+  });
+
+  it("heals itself when split tower fire leaves it proportionally weaker than the attacker", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 20,
+      hits: 4_000,
+      hitsMax: 5_000,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn(() => []) as Room["find"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 21,
+      hits: 2_800,
+      hitsMax: 3_800,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(healer.heal).toHaveBeenCalledWith(healer);
+  });
 });
