@@ -196,6 +196,13 @@ describe("runWarControl", () => {
       "E1N57:war:E3N57:g1:meleeAttacker:0",
       "E1N57:war:E3N57:g1:healer:0",
     ]));
+    expect(Memory.analytics?.war?.tasks.E3N57).toEqual(expect.objectContaining({
+      generationId: 1,
+      generationPhase: "assembling",
+      boostGateOpen: true,
+      generationAge: 0,
+      deployedAge: 0,
+    }));
   });
 
   it("creates a front-tough T3 duo with boosted MOVE ratio and queued configs", () => {
@@ -520,6 +527,9 @@ describe("runWarControl", () => {
       meleeAttacker: "E1N57:war:E3N57:g2:meleeAttacker:0",
       healer: "E1N57:war:E3N57:g2:healer:0",
     });
+    expect(Memory.analytics!.war!.tasks.E3N57.creeps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "attacker", detached: true }),
+    ]));
   });
 
   it("detaches a broken one-shot squad without creating another generation", () => {
@@ -814,5 +824,69 @@ describe("runWarControl", () => {
     expect(Memory.data?.creepConfigs?.[healerConfig]).toBeUndefined();
     expect(attackerSuicide).not.toHaveBeenCalled();
     expect(healerSuicide).not.toHaveBeenCalled();
+  });
+
+  it("removes queued and configured members from every generation when stopping a war", () => {
+    const g0Attacker = "E1N57:war:E3N57:g0:meleeAttacker:0";
+    const g1Attacker = "E1N57:war:E3N57:g1:meleeAttacker:0";
+    const g2Attacker = "E1N57:war:E3N57:g2:meleeAttacker:0";
+    const g2Healer = "E1N57:war:E3N57:g2:healer:0";
+    const boostTaskId = "war:E1N57:E3N57:g2";
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "staging",
+          reason: "manual",
+          squad: "t3Duo",
+          boostTier: "t3",
+          attempts: 1,
+          createdAt: Game.time,
+          updatedAt: Game.time,
+          generationCounter: 2,
+          activeGeneration: {
+            id: 2,
+            phase: "assembling",
+            createdAt: Game.time,
+            boostTaskId,
+            boostGateOpenedAt: Game.time,
+            configNames: { meleeAttacker: g2Attacker, healer: g2Healer },
+          },
+        },
+      },
+      creepConfigs: Object.fromEntries(
+        [g0Attacker, g1Attacker, g2Attacker, g2Healer].map((name) => [
+          name,
+          { role: "meleeAttacker", args: ["E3N57"], roomName: "E1N57" },
+        ]),
+      ),
+    } as Memory["data"];
+    Memory.runtime = {
+      powerBankBoost: {
+        [boostTaskId]: {
+          taskId: boostTaskId,
+          sourceRoomName: "E1N57",
+          labs: {},
+        },
+      },
+    } as Memory["runtime"];
+    const sourceRoom = createSourceRoom([]);
+    const spawn = createSpawn(sourceRoom);
+    spawn.memory.spawnList = [g0Attacker, g2Attacker, g2Healer, "worker:keep"];
+    const survivor = createWarCreep("g1-survivor", "meleeAttacker", g1Attacker, "E3N57");
+    survivor.memory._warDetached = true;
+    survivor.suicide = jest.fn(() => OK);
+    Game.rooms.E1N57 = sourceRoom;
+    Game.spawns.Spawn1 = spawn;
+    Game.creeps = { survivor };
+
+    const result = stopWarRoom("E3N57");
+
+    expect(result).toEqual(expect.objectContaining({ removedConfigs: 4, removedQueuedTasks: 3 }));
+    expect(Object.keys(Memory.data!.creepConfigs ?? {}).filter((name) => name.includes(":war:E3N57:"))).toEqual([]);
+    expect(spawn.memory.spawnList).toEqual(["worker:keep"]);
+    expect(Memory.runtime?.powerBankBoost?.[boostTaskId]).toBeUndefined();
+    expect(survivor.suicide).not.toHaveBeenCalled();
   });
 });

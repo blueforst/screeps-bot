@@ -95,6 +95,7 @@ export interface WarStatusCreepSnapshot {
   hitsMax: number;
   boostedParts: number;
   spawning: boolean;
+  detached: boolean;
 }
 
 export interface WarStatusTaskSnapshot {
@@ -118,6 +119,16 @@ export interface WarStatusTaskSnapshot {
   sourceEnergyCapacity?: number;
   creeps: WarStatusCreepSnapshot[];
   queuedConfigs: string[];
+  generationId?: number;
+  generationPhase?: WarGenerationPhase;
+  boostGateOpen: boolean;
+  generationAge: number;
+  deployedAge: number;
+  controllerLevel?: number;
+  controllerOwner?: string;
+  controllerTicksToDowngrade?: number;
+  controllerUpgradeBlocked?: number;
+  controllerAttackerConfigName?: string;
 }
 
 export interface WarStatusSnapshot {
@@ -853,9 +864,9 @@ function getQueuedConfigs(task: WarTask): string[] {
 }
 
 function getTaskCreeps(task: WarTask): WarStatusCreepSnapshot[] {
-  const configNames = new Set(getTaskConfigNames(task));
+  const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
   return Object.values(Game.creeps)
-    .filter((creep) => creep.memory.configName && configNames.has(creep.memory.configName))
+    .filter((creep) => creep.memory.configName?.startsWith(prefix))
     .map((creep) => ({
       name: creep.name,
       role: creep.memory.role,
@@ -867,6 +878,7 @@ function getTaskCreeps(task: WarTask): WarStatusCreepSnapshot[] {
       hitsMax: creep.hitsMax,
       boostedParts: creep.body.filter((part) => !!part.boost).length,
       spawning: !!creep.spawning,
+      detached: creep.memory._warDetached === true,
     }));
 }
 
@@ -874,6 +886,8 @@ function buildTaskStatusSnapshot(task: WarTask): WarStatusTaskSnapshot {
   const room = Game.rooms[task.targetRoom];
   const hostile = room ? getHostilePresence(room) : undefined;
   const sourceRoom = Game.rooms[task.sourceRoom];
+  const generation = task.activeGeneration;
+  const controller = room?.controller;
   return {
     targetRoom: task.targetRoom,
     sourceRoom: task.sourceRoom,
@@ -895,6 +909,17 @@ function buildTaskStatusSnapshot(task: WarTask): WarStatusTaskSnapshot {
     sourceEnergyCapacity: sourceRoom?.energyCapacityAvailable,
     creeps: getTaskCreeps(task),
     queuedConfigs: getQueuedConfigs(task),
+    generationId: generation?.id,
+    generationPhase: generation?.phase,
+    boostGateOpen: generation?.boostGateOpenedAt !== undefined,
+    generationAge: generation ? Math.max(0, Game.time - generation.createdAt) : 0,
+    deployedAge: generation?.deployedAt === undefined ? 0 : Math.max(0, Game.time - generation.deployedAt),
+    controllerLevel: controller?.level,
+    controllerOwner: controller?.owner?.username,
+    controllerTicksToDowngrade: controller?.ticksToDowngrade,
+    controllerUpgradeBlocked: controller?.upgradeBlocked,
+    controllerAttackerConfigName:
+      task.status === "downgrading" ? getControllerAttackConfigName(task) : undefined,
   };
 }
 
