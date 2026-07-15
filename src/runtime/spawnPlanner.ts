@@ -48,6 +48,20 @@ function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
   return 3;
 }
 
+function getSpawnConfigPriority(roomName: string, configName: string): number {
+  const config = getCreepConfigService().get(configName);
+  if (config?.role === "carrier" && config.roomName === roomName) {
+    return 0;
+  }
+  if (configName.includes(":war:")) {
+    return 1;
+  }
+  if (config?.role === "hubUpgrader") {
+    return 2;
+  }
+  return 3 + getSpawnRolePriority(config?.role);
+}
+
 function ensureQueue(spawn: StructureSpawn): string[] {
   if (!spawn.memory.spawnList) {
     spawn.memory.spawnList = [];
@@ -534,19 +548,16 @@ function prioritizeSpawnQueue(spawn: StructureSpawn): void {
     return;
   }
 
-  const creepConfigs = getCreepConfigService();
-
-  let previousPriority = getSpawnRolePriority(creepConfigs.get(queue[0])?.role);
+  let previousPriority = getSpawnConfigPriority(spawn.room.name, queue[0]);
   for (let index = 1; index < queue.length; index++) {
-    const priority = getSpawnRolePriority(creepConfigs.get(queue[index])?.role);
+    const priority = getSpawnConfigPriority(spawn.room.name, queue[index]);
     if (priority < previousPriority) {
       spawn.memory.spawnList = [...queue]
         .map((configName, queueIndex) => {
-          const role = creepConfigs.get(configName)?.role;
           return {
             configName,
             index: queueIndex,
-            priority: getSpawnRolePriority(role),
+            priority: getSpawnConfigPriority(spawn.room.name, configName),
           };
         })
         .sort((a, b) => {

@@ -104,4 +104,41 @@ describe("mountSpawn war energy reservation", () => {
     expect(carrierSpawn.spawnCreep).toHaveBeenCalled();
     expect(carrierSpawn.memory.spawnList).toEqual([]);
   });
+
+  it("holds a hub upgrader until the other spawn's waiting war task starts", () => {
+    const room = {
+      name: "E4N58",
+      energyAvailable: 5_600,
+      energyCapacityAvailable: 5_600,
+    } as Room;
+    const warConfig = "E4N58:war:E5N58:g1:healer:0";
+    const upgraderConfig = "E4N58:hubUpgrader:0";
+    Memory.data!.creepConfigs = {
+      [warConfig]: {
+        role: "healer",
+        args: [],
+        roomName: room.name,
+        body: [...Array(10).fill(TOUGH), ...Array(20).fill(HEAL), ...Array(8).fill(MOVE)],
+      },
+      [upgraderConfig]: {
+        role: "hubUpgrader",
+        args: [],
+        roomName: room.name,
+        body: [...Array(15).fill(WORK), ...Array(5).fill(CARRY), ...Array(10).fill(MOVE)],
+      },
+    };
+    const warSpawn = createSpawn("Spawn2", room, [warConfig]);
+    const upgraderSpawn = createSpawn("Spawn10", room, [upgraderConfig]);
+    Object.setPrototypeOf(warSpawn, prototype);
+    Object.setPrototypeOf(upgraderSpawn, prototype);
+    Game.spawns = { Spawn2: warSpawn, Spawn10: upgraderSpawn };
+
+    prototype.work.call(upgraderSpawn);
+    expect(upgraderSpawn.spawnCreep).not.toHaveBeenCalled();
+
+    warSpawn.memory.spawnList = [];
+    prototype.work.call(upgraderSpawn);
+    expect(upgraderSpawn.spawnCreep).toHaveBeenCalled();
+    expect(upgraderSpawn.memory.spawnList).toEqual([]);
+  });
 });
