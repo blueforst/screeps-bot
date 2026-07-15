@@ -301,6 +301,46 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
 
+  it("attacks an adjacent wall while traveling with its healer and keeps moving", () => {
+    const wall = {
+      id: "route-blocking-wall" as Id<StructureWall>,
+      structureType: STRUCTURE_WALL,
+      hits: 460_000,
+      pos: { x: 25, y: 26, roomName: "E2N57", getRangeTo: jest.fn(() => 1) } as unknown as RoomPosition,
+    } as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: "E2N57",
+      x: 25,
+      y: 25,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: "E2N57",
+      x: 24,
+      y: 25,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    attacker.room.controller = { my: false } as StructureController;
+    attacker.pos.findInRange = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [];
+      if (type === FIND_STRUCTURES) return [wall];
+      return [];
+    }) as unknown as RoomPosition["findInRange"];
+    Game.creeps = { attacker, healer };
+
+    meleeAttackerRole(TARGET_ROOM).source?.(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(wall);
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      attacker,
+      TARGET_ROOM,
+      undefined,
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+  });
+
   it("attacks adjacent hostile creeps while traveling and still moves toward target room", () => {
     const hostile = hostileCreep("hostile-carry", 1200);
     const attacker = createMockPowerBankCreep("meleeAttacker", {
