@@ -181,4 +181,29 @@ describe("runHubUpgradeControl", () => {
     expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(2);
     expect(mockedPrepareBoosts).toHaveBeenCalledTimes(2);
   });
+
+  it("removes stale upgrader configs when the configured hub room changes", () => {
+    Memory.data!.creepConfigs = {
+      "E3N59:hubUpgrader:0": {
+        role: "hubUpgrader",
+        args: ["E3N59", "hubUpgrade:E3N59"],
+        roomName: "E3N59",
+        body: [...HUB_UPGRADER_BODY],
+      },
+    };
+    Memory.runtime!.powerBankBoost = {
+      "hubUpgrade:E3N59": {
+        taskId: "hubUpgrade:E3N59",
+        sourceRoomName: "E3N59",
+        labs: {},
+      },
+    };
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["E3N59:hubUpgrader:0"]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]).toBeDefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:1"]).toBeDefined();
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E3N59", "E3N59");
+  });
 });

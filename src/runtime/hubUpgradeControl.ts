@@ -29,9 +29,11 @@ function removeQueuedConfigs(configNames: Set<string>): void {
   }
 }
 
-function cleanupHubUpgraders(): void {
+function cleanupHubUpgraders(keepRoomName?: string): void {
   const configs = getMemoryService().getCreepConfigStore();
-  const entries = getConfiguredHubUpgraders();
+  const entries = getConfiguredHubUpgraders().filter(([, config]) =>
+    !keepRoomName || (config.roomName || config.args[0]) !== keepRoomName
+  );
   const configNames = new Set(entries.map(([configName]) => configName));
   const roomNames = new Set(
     entries
@@ -41,7 +43,10 @@ function cleanupHubUpgraders(): void {
 
   for (const taskId of Object.keys(Memory.runtime?.powerBankBoost || {})) {
     if (taskId.startsWith("hubUpgrade:")) {
-      roomNames.add(taskId.slice("hubUpgrade:".length));
+      const taskRoomName = taskId.slice("hubUpgrade:".length);
+      if (!keepRoomName || taskRoomName !== keepRoomName) {
+        roomNames.add(taskRoomName);
+      }
     }
   }
 
@@ -82,6 +87,8 @@ export function runHubUpgradeControl(): void {
     cleanupHubUpgraders();
     return;
   }
+
+  cleanupHubUpgraders(roomName);
 
   const configs = getMemoryService().getCreepConfigStore();
   const boostTaskId = getBoostTaskId(roomName);
