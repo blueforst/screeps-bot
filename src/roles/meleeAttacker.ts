@@ -108,8 +108,26 @@ function findWeakestAdjacentBreachTarget(creep: Creep, target?: Creep | Structur
   })[0];
 }
 
+function findWeakestAdjacentHostileStructure(creep: Creep, target?: Creep | Structure): Structure | null {
+  const hostileIds = new Set(getHostileStructures(creep.room).map((structure) => structure.id));
+  const candidates = findAdjacentStructures(creep).filter((structure) => hostileIds.has(structure.id));
+  if (candidates.length === 0) return null;
+
+  return candidates.sort((left, right) => {
+    if (left.hits !== right.hits) return left.hits - right.hits;
+    if (target) {
+      const leftRange = left.pos.getRangeTo(target.pos);
+      const rightRange = right.pos.getRangeTo(target.pos);
+      if (leftRange !== rightRange) return leftRange - rightRange;
+    }
+    return creep.pos.getRangeTo(left.pos) - creep.pos.getRangeTo(right.pos);
+  })[0];
+}
+
 function attackAdjacentBreachTarget(creep: Creep, target: Creep | Structure): boolean {
-  const blocker = findWeakestAdjacentBreachTarget(creep, target);
+  const blocker =
+    findWeakestAdjacentBreachTarget(creep, target) ||
+    findWeakestAdjacentHostileStructure(creep, target);
   if (!blocker) return false;
 
   measureCreepIntent(() => creep.attack(blocker));
@@ -125,7 +143,9 @@ function isDangerousHostile(creep: Creep): boolean {
 }
 
 function attackAdjacentHostileOnRoute(creep: Creep): boolean {
-  const adjacent = findAdjacentHostiles(creep).filter((hostile) => hostile.owner.username !== "Source Keeper");
+  const adjacent = findAdjacentHostiles(creep).filter(
+    (hostile) => hostile.owner?.username && hostile.owner.username !== "Source Keeper",
+  );
   if (adjacent.length === 0) return false;
 
   return adjacent
@@ -290,6 +310,10 @@ export const meleeAttackerRole: RoleFactory = (
     if (targetRoom && creep.room.name !== targetRoom) {
       attackAdjacentHostileOnRoute(creep);
       moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
+      return false;
+    }
+
+    if (targetRoom && attackAdjacentHostileOnRoute(creep)) {
       return false;
     }
 

@@ -396,6 +396,76 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.attack).not.toHaveBeenCalledWith(closerWall);
   });
 
+  it("attacks an adjacent dangerous defender before pursuing a war objective", () => {
+    const defender = hostileCreep("defender-on-rampart", 1600, { [RANGED_ATTACK]: 4, [HEAL]: 4 });
+    const storage = hostileStructure(STRUCTURE_STORAGE, "storage-behind-defender", 22, 26, 10_000);
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 25,
+      y: 15,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [defender];
+      if (type === FIND_HOSTILE_STRUCTURES) return [storage];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn((type: FindConstant) =>
+      type === FIND_HOSTILE_CREEPS ? [defender] : []
+    ) as unknown as RoomPosition["findInRange"];
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 24,
+        y: 14,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(defender);
+    expect(attacker.attack).not.toHaveBeenCalledWith(storage);
+  });
+
+  it("attacks the weakest adjacent hostile structure when extensions block the objective", () => {
+    moveToTarget.mockReturnValue(ERR_NO_PATH);
+    const storage = hostileStructure(STRUCTURE_STORAGE, "blocked-storage", 22, 26, 10_000);
+    const extension = hostileStructure(STRUCTURE_EXTENSION, "blocking-extension", 25, 16, 1_000);
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 25,
+      y: 15,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) =>
+      type === FIND_HOSTILE_STRUCTURES ? [storage, extension] : []
+    ) as Room["find"];
+    attacker.pos.findInRange = jest.fn((type: FindConstant) =>
+      type === FIND_STRUCTURES ? [extension] : []
+    ) as unknown as RoomPosition["findInRange"];
+    attacker.attack = jest.fn((target: Creep | Structure) => (target === storage ? ERR_NOT_IN_RANGE : OK)) as Creep["attack"];
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 24,
+        y: 14,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(storage);
+    expect(attacker.attack).toHaveBeenCalledWith(extension);
+  });
+
   it("focuses hostile spawn before non-adjacent creeps and towers for war objectives", () => {
     const hostile = hostileCreep("hostile-defender", 800, { [ATTACK]: 5 });
     const spawn = hostileStructure(STRUCTURE_SPAWN, "spawn-war-objective", 20, 20, 5000);
