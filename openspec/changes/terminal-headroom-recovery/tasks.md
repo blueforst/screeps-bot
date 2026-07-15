@@ -28,8 +28,8 @@
 
 ## 5. 观测与兼容
 
-- [ ] 5.1 扩展 `Memory.runtime.resourceControl`，输出规范化水位、eligible receiver 数、每房恢复 gap/可排空量、粘滞原因、reservation 与 admitted/suppressed staging 摘要
-- [ ] 5.2 更新 `scripts/monitor-service.mjs` 及其 fixture/test，展示新增字段并兼容缺少字段的旧 runtime 快照
+- [x] 5.1 扩展 `Memory.runtime.resourceControl`，输出规范化水位、eligible receiver 数、每房恢复 gap/可排空量、粘滞原因、reservation 与 admitted/suppressed staging 摘要
+- [x] 5.2 更新 `scripts/monitor-service.mjs` 及其 fixture/test，展示新增字段并兼容缺少字段的旧 runtime 快照
 - [x] 5.3 增加索引构建次数或等价测试钩子，证明 planner、executor 与 feed sync 在单轮内复用同一 capacity/commitment index
 
 ## 6. 验证与上线准备
