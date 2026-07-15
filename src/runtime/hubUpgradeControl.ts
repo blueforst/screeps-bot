@@ -5,7 +5,7 @@ import type { CreepConfig } from "@/types/system";
 
 export { HUB_UPGRADER_BODY };
 
-export const HUB_UPGRADER_COUNT = 2;
+export const HUB_UPGRADER_COUNT = 1;
 
 function getBoostTaskId(roomName: string): string {
   return `hubUpgrade:${roomName}`;
@@ -53,6 +53,11 @@ function cleanupHubUpgraders(keepRoomName?: string): void {
   }
 
   removeQueuedConfigs(configNames);
+  for (const configName of configNames) {
+    for (const creep of getTickContextService().getCreepsByConfigName(configName)) {
+      creep.suicide();
+    }
+  }
   for (const configName of configNames) {
     delete configs[configName];
   }

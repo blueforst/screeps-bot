@@ -40,6 +40,7 @@ function createUpgrader(
       hits: 100,
       boost: index < boostedWorkParts ? RESOURCE_CATALYZED_GHODIUM_ACID : undefined,
     })),
+    suicide: jest.fn(() => OK),
     room: { name: "E4N58" } as Room,
   } as unknown as Creep;
 }
@@ -62,7 +63,7 @@ describe("runHubUpgradeControl", () => {
     mockedPrepareBoosts.mockReturnValue({ status: "preparing", labs: [] });
   });
 
-  it("creates exactly two fixed-body upgrader configs for an owned RCL7 hub", () => {
+  it("creates exactly one fixed-body upgrader config for an owned RCL7 hub", () => {
     runHubUpgradeControl();
 
     expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]).toEqual({
@@ -71,13 +72,8 @@ describe("runHubUpgradeControl", () => {
       roomName: "E4N58",
       body: HUB_UPGRADER_BODY,
     });
-    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:1"]).toEqual({
-      role: "hubUpgrader",
-      args: ["E4N58", "hubUpgrade:E4N58"],
-      roomName: "E4N58",
-      body: HUB_UPGRADER_BODY,
-    });
-    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(2);
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:1"]).toBeUndefined();
+    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(1);
   });
 
   it("removes a noncanonical third upgrader config in the active hub", () => {
@@ -91,28 +87,10 @@ describe("runHubUpgradeControl", () => {
     runHubUpgradeControl();
 
     expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:legacy"]).toBeUndefined();
-    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(2);
+    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(1);
   });
 
-  it("requests 900 XGH2O while both upgrader configs have no creep", () => {
-    runHubUpgradeControl();
-
-    expect(mockedPrepareBoosts).toHaveBeenCalledWith(
-      "hubUpgrade:E4N58",
-      "E4N58",
-      0,
-      new Map([[RESOURCE_CATALYZED_GHODIUM_ACID, 900]]),
-      { requireLabEnergy: true },
-    );
-  });
-
-  it("requests only 450 XGH2O when one upgrader is already fully boosted", () => {
-    Game.creeps.upgrader0 = createUpgrader(
-      "upgrader0",
-      "E4N58:hubUpgrader:0",
-      15,
-    );
-
+  it("requests 450 XGH2O while the upgrader config has no creep", () => {
     runHubUpgradeControl();
 
     expect(mockedPrepareBoosts).toHaveBeenCalledWith(
@@ -124,13 +102,43 @@ describe("runHubUpgradeControl", () => {
     );
   });
 
-  it("releases the shared boost lab when both upgraders are fully boosted", () => {
-    Game.creeps.upgrader0 = createUpgrader("upgrader0", "E4N58:hubUpgrader:0", 15);
-    Game.creeps.upgrader1 = createUpgrader("upgrader1", "E4N58:hubUpgrader:1", 15);
+  it("releases the shared boost lab when the upgrader is fully boosted", () => {
+    Game.creeps.upgrader0 = createUpgrader(
+      "upgrader0",
+      "E4N58:hubUpgrader:0",
+      15,
+    );
+
     runHubUpgradeControl();
 
     expect(mockedPrepareBoosts).not.toHaveBeenCalled();
     expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E4N58", "E4N58");
+  });
+
+  it("retires the second live upgrader while keeping the canonical first upgrader", () => {
+    const upgrader0 = createUpgrader("upgrader0", "E4N58:hubUpgrader:0", 15);
+    const upgrader1 = createUpgrader("upgrader1", "E4N58:hubUpgrader:1", 15);
+    Game.creeps = { upgrader0, upgrader1 };
+    Memory.data!.creepConfigs = {
+      "E4N58:hubUpgrader:0": {
+        role: "hubUpgrader",
+        args: ["E4N58", "hubUpgrade:E4N58"],
+        roomName: "E4N58",
+        body: [...HUB_UPGRADER_BODY],
+      },
+      "E4N58:hubUpgrader:1": {
+        role: "hubUpgrader",
+        args: ["E4N58", "hubUpgrade:E4N58"],
+        roomName: "E4N58",
+        body: [...HUB_UPGRADER_BODY],
+      },
+    };
+
+    runHubUpgradeControl();
+
+    expect(upgrader0.suicide).not.toHaveBeenCalled();
+    expect(upgrader1.suicide).toHaveBeenCalled();
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:1"]).toBeUndefined();
   });
 
   it("removes configs, queued entries, and boost prep at RCL8", () => {
@@ -174,7 +182,7 @@ describe("runHubUpgradeControl", () => {
     expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E4N58", "E4N58");
   });
 
-  it("keeps both configs and retries a temporary lab shortage", () => {
+  it("keeps the config and retries a temporary lab shortage", () => {
     mockedPrepareBoosts.mockReturnValue({
       status: "failed",
       reason: "insufficient_labs",
@@ -184,7 +192,7 @@ describe("runHubUpgradeControl", () => {
     runHubUpgradeControl();
     runHubUpgradeControl();
 
-    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(2);
+    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(1);
     expect(mockedPrepareBoosts).toHaveBeenCalledTimes(2);
   });
 
@@ -209,7 +217,7 @@ describe("runHubUpgradeControl", () => {
 
     expect(Memory.data?.creepConfigs?.["E3N59:hubUpgrader:0"]).toBeUndefined();
     expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]).toBeDefined();
-    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:1"]).toBeDefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:1"]).toBeUndefined();
     expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E3N59", "E3N59");
   });
 });

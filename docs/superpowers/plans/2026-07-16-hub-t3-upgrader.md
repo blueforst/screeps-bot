@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 RCL7 Hub 自动维持两只 15 WORK 的 XGH2O 强化专用 upgrader，并在 RCL8 后自动停产和释放 boost 资源。
+**Goal:** 在 RCL7 Hub 自动维持一只 15 WORK 的 XGH2O 强化专用 upgrader，并在 RCL8 后自动停产和释放 boost 资源。
 
 **Architecture:** 新增独立的 `hubUpgradeControl` 维护固定配置和共享 boost 任务；新增 `hubUpgrader` 角色只从控制器附近 link/container 取能并升级控制器。复用现有 `powerBankBoost` lab 准备设施和 spawn planner，不进入普通 worker 任务池。
 
@@ -11,9 +11,9 @@
 ## Global Constraints
 
 - Hub 来源只能是 `Memory.cfg.hub.hubRoomName`。
-- 仅在己方 RCL7 房间维持恰好 2 只；RCL8、失去房间或 Hub 停用时停止补产。
+- 仅在己方 RCL7 房间维持恰好 1 只；RCL8、失去房间或 Hub 停用时停止补产。
 - 固定身体必须是 `15 WORK + 5 CARRY + 10 MOVE`，单只 2250 energy。
-- 两只合计 boost 需求为 900 XGH2O；共享一个 boost task 和一个 lab。
+- 单只 boost 需求为 450 XGH2O；使用一个 boost task 和一个 lab。
 - Spawn 实际优先级必须保持：母房 carrier > 战争 creep > Hub T3 upgrader > 非关键普通生产；等待战争 creep 时 Hub upgrader 不得抢 energy。
 - 不修改普通 worker 数量和任务池逻辑。
 - 所有生产代码必须先有能够正确失败的测试。
@@ -111,7 +111,7 @@ git commit -m "feat(hub): register T3 upgrader role"
 - Modify: `src/main.ts`
 
 **Interfaces:**
-- Produces: `HUB_UPGRADER_COUNT = 2`。
+- Produces: `HUB_UPGRADER_COUNT = 1`。
 - Produces: `HUB_UPGRADER_BODY: readonly BodyPartConstant[]`。
 - Produces: `runHubUpgradeControl(): void`。
 - Consumes: `prepareBoosts(taskId, roomName, 0, requiredAmounts, { requireLabEnergy: true })`。
@@ -128,21 +128,21 @@ expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]).toEqual({
   roomName: "E4N58",
   body: HUB_UPGRADER_BODY,
 });
-expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:1"]).toBeDefined();
+expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:1"]).toBeUndefined();
 ```
 
 - [ ] **Step 2: 运行测试并确认模块不存在或配置未创建**
 
 Run: `npm test -- --runInBand src/runtime/hubUpgradeControl.test.ts`
 
-Expected: FAIL，原因是 `runHubUpgradeControl` 尚不存在或没有创建两个配置。
+Expected: FAIL，原因是 `runHubUpgradeControl` 尚不存在或没有创建唯一配置。
 
 - [ ] **Step 3: 写最小配置协调器使测试通过**
 
 实现常量和固定配置写入：
 
 ```ts
-export const HUB_UPGRADER_COUNT = 2;
+export const HUB_UPGRADER_COUNT = 1;
 export const HUB_UPGRADER_BODY: BodyPartConstant[] = [
   ...Array(15).fill(WORK),
   ...Array(5).fill(CARRY),
@@ -154,7 +154,7 @@ function getConfigName(roomName: string, index: number): string {
 }
 ```
 
-只在已启用、可见、己方 RCL7 Hub 写入两个配置。
+只在已启用、可见、己方 RCL7 Hub 写入一个配置，并退役旧配置对应的存量 creep。
 
 - [ ] **Step 4: 运行目标测试确认 GREEN**
 
@@ -168,9 +168,9 @@ Expected: PASS。
 
 ```ts
 it("removes configs and queued entries at RCL8", ...);
-it("requests 900 XGH2O for two missing upgraders", ...);
-it("requests only 450 XGH2O when one upgrader is already fully boosted", ...);
-it("releases the shared boost lab when both upgraders are fully boosted", ...);
+it("requests 450 XGH2O for the missing upgrader", ...);
+it("releases the shared boost lab when the upgrader is fully boosted", ...);
+it("retires a stale second upgrader", ...);
 it("keeps retrying when boost labs are temporarily unavailable", ...);
 ```
 
@@ -181,7 +181,7 @@ expect(prepareBoosts).toHaveBeenCalledWith(
   "hubUpgrade:E4N58",
   "E4N58",
   0,
-  new Map([[RESOURCE_CATALYZED_GHODIUM_ACID, 900]]),
+  new Map([[RESOURCE_CATALYZED_GHODIUM_ACID, 450]]),
   { requireLabEnergy: true },
 );
 ```
@@ -425,20 +425,20 @@ Expected: `Uploaded 1 module(s) to Screeps branch default.`
 
 ```text
 Memory.runtime.lastDeployTag 包含最新 commit hash
-E4N58:hubUpgrader:0 和 :1 配置存在
-每个配置 body 为 15 WORK + 5 CARRY + 10 MOVE
+仅 E4N58:hubUpgrader:0 配置存在
+配置 body 为 15 WORK + 5 CARRY + 10 MOVE
 战争配置等待时 Hub upgrader 不消耗 spawn energy
 共享 boost task 只占用一个 XGH2O lab
 ```
 
 - [ ] **Step 5: 验证 creep 行为和 RCL 进度**
 
-两只 creep 出生后确认：
+creep 出生后确认：
 
 ```text
-每只 15 个 WORK 均带 XGH2O boost
+15 个 WORK 均带 XGH2O boost
 从控制器附近 link/container 取能
-控制器进度持续增长，目标合计约 60 progress/tick
+控制器进度持续增长，目标约 30 progress/tick
 ```
 
 若线上出现任何逻辑错误，先写失败回归测试，再在 `main` 修复、重新执行全量验证并部署。
