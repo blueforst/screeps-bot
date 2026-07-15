@@ -15,7 +15,12 @@ function resetRuntimeServices(): void {
   delete (global as RuntimeGlobal).__runtimeServices;
 }
 
-function createBoostLab(id: string, compound: ResourceConstant, amount: number): StructureLab {
+function createBoostLab(
+  id: string,
+  compound: ResourceConstant,
+  amount: number,
+  energy = 2_000,
+): StructureLab {
   return {
     id: id as Id<StructureLab>,
     pos: new MockPos(20, 20, "E1N57") as unknown as RoomPosition,
@@ -23,7 +28,7 @@ function createBoostLab(id: string, compound: ResourceConstant, amount: number):
     structureType: STRUCTURE_LAB,
     mineralType: compound as MineralConstant,
     mineralAmount: amount,
-    store: createMockStore({ [compound]: amount }),
+    store: createMockStore({ [compound]: amount, [RESOURCE_ENERGY]: energy }),
     boostCreep: jest.fn(() => OK),
   } as unknown as StructureLab;
 }
@@ -98,6 +103,21 @@ function createSpawn(room: Room): StructureSpawn {
   return spawn;
 }
 
+function setupWarBoostRoom(attackAmount = 900): { spawn: StructureSpawn; labs: StructureLab[] } {
+  const labs = [
+    createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 600),
+    createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, attackAmount),
+    createBoostLab("lab-heal", RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, 600),
+    createBoostLab("lab-move", RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, 540),
+  ];
+  const sourceRoom = createSourceRoom(labs);
+  const spawn = createSpawn(sourceRoom);
+  Game.rooms.E1N57 = sourceRoom;
+  Game.spawns.Spawn1 = spawn;
+  Game.getObjectById = jest.fn((id: string) => labs.find((lab) => lab.id === id) ?? null) as typeof Game.getObjectById;
+  return { spawn, labs };
+}
+
 function countParts(body: BodyPartConstant[], part: BodyPartConstant): number {
   return body.filter((bodyPart) => bodyPart === part).length;
 }
@@ -127,6 +147,31 @@ describe("runWarControl", () => {
     Game.creeps = {};
   });
 
+  it("migrates an empty legacy T3 task into generation one without queuing before boosts are ready", () => {
+    setupWarBoostRoom(0);
+
+    runWarControl();
+
+    const task = Memory.data!.war!.E3N57;
+    expect(task.activeGeneration).toMatchObject({ id: 1, phase: "preparing" });
+    expect(task.activeGeneration?.boostGateOpenedAt).toBeUndefined();
+    expect(Game.spawns.Spawn1.memory.spawnList).toEqual([]);
+  });
+
+  it("opens generation one once and queues generation-scoped configs", () => {
+    const { spawn } = setupWarBoostRoom();
+
+    runWarControl();
+
+    const task = Memory.data!.war!.E3N57;
+    expect(task.activeGeneration).toMatchObject({ id: 1, phase: "assembling" });
+    expect(task.activeGeneration?.boostGateOpenedAt).toBe(Game.time);
+    expect(spawn.memory.spawnList).toEqual(expect.arrayContaining([
+      "E1N57:war:E3N57:g1:meleeAttacker:0",
+      "E1N57:war:E3N57:g1:healer:0",
+    ]));
+  });
+
   it("creates a front-tough T3 duo with boosted MOVE ratio and queued configs", () => {
     const labs = [
       createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 600),
@@ -149,15 +194,15 @@ describe("runWarControl", () => {
     expect(task?.boostLabs).toHaveLength(4);
 
     const configs = Memory.data?.creepConfigs ?? {};
-    const attacker = configs["E1N57:war:E3N57:meleeAttacker:0"];
-    const healer = configs["E1N57:war:E3N57:healer:0"];
+    const attacker = configs["E1N57:war:E3N57:g1:meleeAttacker:0"];
+    const healer = configs["E1N57:war:E3N57:g1:healer:0"];
 
     expect(configs["E1N57:war:E3N57:meleeAttacker:1"]).toBeUndefined();
     expect(configs["E1N57:war:E3N57:healer:1"]).toBeUndefined();
     expect(attacker.args).toEqual([
       "E3N57",
       "",
-      "war:E1N57:E3N57",
+      "war:E1N57:E3N57:g1",
       `${RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE}|${RESOURCE_CATALYZED_GHODIUM_ALKALIDE}|${RESOURCE_CATALYZED_UTRIUM_ACID}`,
     ]);
     expect(healer.args[3]).toBe(
@@ -174,8 +219,8 @@ describe("runWarControl", () => {
     expect(countParts(healer.body ?? [], MOVE)).toBe(8);
 
     expect(spawn.memory.spawnList).toEqual([
-      "E1N57:war:E3N57:healer:0",
-      "E1N57:war:E3N57:meleeAttacker:0",
+      "E1N57:war:E3N57:g1:healer:0",
+      "E1N57:war:E3N57:g1:meleeAttacker:0",
     ]);
     expect(attacker.spawnOnce?.queuedAt).toBeUndefined();
   });
@@ -235,17 +280,17 @@ describe("runWarControl", () => {
     runWarControl();
 
     expect(spawn.memory.spawnList).toEqual([
-      "E1N57:war:E3N57:healer:0",
-      "E1N57:war:E3N57:meleeAttacker:0",
+      "E1N57:war:E3N57:g1:healer:0",
+      "E1N57:war:E3N57:g1:meleeAttacker:0",
     ]);
-    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:meleeAttacker:0"].spawnOnce?.queuedAt).toBe(Game.time);
+    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:g1:meleeAttacker:0"].spawnOnce?.queuedAt).toBe(Game.time);
 
     spawn.memory.spawnList = [];
     Game.time += 1;
     runWarControl();
 
     expect(spawn.memory.spawnList).toEqual([]);
-    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:meleeAttacker:0"].spawnOnce?.queuedAt).toBe(1000);
+    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:g1:meleeAttacker:0"].spawnOnce?.queuedAt).toBe(1000);
   });
 
   it("keeps preparing and requests cross-room transfer when a boost compound is not local", () => {
@@ -279,12 +324,12 @@ describe("runWarControl", () => {
         amount: 900,
         remainingAmount: 900,
         status: "pending",
-        reason: "powerBankBoost:war:E1N57:E3N57",
+        reason: "powerBankBoost:war:E1N57:E3N57:g1",
       }),
     ]);
   });
 
-  it("removes queued replacement combat creeps while T3 boost replenishment is still preparing", () => {
+  it("migrates queued legacy combat configs into generation zero without closing their boost gate", () => {
     const labs = [
       createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 600),
       createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, 0),
@@ -309,76 +354,51 @@ describe("runWarControl", () => {
 
     runWarControl();
 
-    expect((Memory.data?.war?.E3N57 as WarTaskWithBoostState | undefined)?.boostStatus).toBe("preparing");
-    expect(spawn.memory.spawnList).toEqual([]);
-    expect(Memory.data?.creepConfigs?.[attackerConfig]).toBeUndefined();
-    expect(Memory.data?.creepConfigs?.[healerConfig]).toBeUndefined();
+    expect((Memory.data?.war?.E3N57 as WarTaskWithBoostState | undefined)?.boostStatus).toBe("ready");
+    expect(Memory.data?.war?.E3N57?.activeGeneration).toMatchObject({
+      id: 0,
+      phase: "assembling",
+      boostGateOpenedAt: Game.time,
+      configNames: { meleeAttacker: attackerConfig, healer: healerConfig },
+    });
+    expect(spawn.memory.spawnList).toEqual([attackerConfig, healerConfig]);
+    expect(Memory.data?.creepConfigs?.[attackerConfig]).toBeDefined();
+    expect(Memory.data?.creepConfigs?.[healerConfig]).toBeDefined();
   });
 
-  it("keeps the healer queued when a boosted attacker has consumed only its share of the prepared compounds", () => {
-    const fullLabs = [
-      createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 600),
-      createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, 900),
-      createBoostLab("lab-heal", RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, 600),
-      createBoostLab("lab-move", RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, 540),
-    ];
-    let activeLabs = fullLabs;
-    let sourceRoom = createSourceRoom(activeLabs);
+  it("migrates a live legacy attacker and queued healer into generation zero", () => {
+    const sourceRoom = createSourceRoom([]);
     const spawn = createSpawn(sourceRoom);
-    Game.rooms.E1N57 = sourceRoom;
-    Game.spawns.Spawn1 = spawn;
-    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) =>
-      activeLabs.find((lab) => lab.id === id) ?? null
-    ) as Game["getObjectById"];
-
-    runWarControl();
-
     const attackerConfig = "E1N57:war:E3N57:meleeAttacker:0";
     const healerConfig = "E1N57:war:E3N57:healer:0";
-    const boostedBody: BodyPartDefinition[] = [
-      ...Array.from({ length: 10 }, () => ({
-        type: TOUGH,
-        hits: 100,
-        boost: RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
-      } as BodyPartDefinition)),
-      ...Array.from({ length: 30 }, () => ({
-        type: ATTACK,
-        hits: 100,
-        boost: RESOURCE_CATALYZED_UTRIUM_ACID,
-      } as BodyPartDefinition)),
-      ...Array.from({ length: 10 }, () => ({
-        type: MOVE,
-        hits: 100,
-        boost: RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
-      } as BodyPartDefinition)),
-    ];
+    Memory.data!.creepConfigs = {
+      [attackerConfig]: { role: "meleeAttacker", args: ["E3N57"], roomName: "E1N57" },
+      [healerConfig]: { role: "healer", args: ["E3N57"], roomName: "E1N57" },
+    };
     Game.creeps = {
       attacker: {
         name: "attacker",
         room: sourceRoom,
         pos: new MockPos(25, 25, "E1N57") as unknown as RoomPosition,
         memory: { role: "meleeAttacker", configName: attackerConfig },
-        body: boostedBody,
+        body: [],
         hits: 5000,
         hitsMax: 5000,
         spawning: false,
       } as unknown as Creep,
     };
     spawn.memory.spawnList = [healerConfig];
-
-    activeLabs = [
-      createBoostLab("lab-tough", RESOURCE_CATALYZED_GHODIUM_ALKALIDE, 300),
-      createBoostLab("lab-attack", RESOURCE_CATALYZED_UTRIUM_ACID, 0),
-      createBoostLab("lab-heal", RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE, 600),
-      createBoostLab("lab-move", RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE, 240),
-    ];
-    sourceRoom = createSourceRoom(activeLabs);
     Game.rooms.E1N57 = sourceRoom;
-    Game.time += 1;
+    Game.spawns.Spawn1 = spawn;
 
     runWarControl();
 
-    expect(Memory.data?.war?.E3N57?.status).not.toBe("failed");
+    expect(Memory.data?.war?.E3N57?.activeGeneration).toMatchObject({
+      id: 0,
+      phase: "assembling",
+      boostGateOpenedAt: Game.time,
+      configNames: { meleeAttacker: attackerConfig, healer: healerConfig },
+    });
     expect(spawn.memory.spawnList).toContain(healerConfig);
     expect(Memory.data?.creepConfigs?.[healerConfig]).toBeDefined();
   });

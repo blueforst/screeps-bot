@@ -1031,6 +1031,19 @@ declare global {
           lastHostileSeenAt?: number;
           clearSince?: number;
           completedAt?: number;
+          generationCounter?: number;
+          activeGeneration?: {
+            id: number;
+            phase: "preparing" | "assembling" | "deployed";
+            createdAt: number;
+            boostTaskId: string;
+            boostGateOpenedAt?: number;
+            deployedAt?: number;
+            configNames: {
+              meleeAttacker: string;
+              healer: string;
+            };
+          };
         }
       >;
       roomPlanner?: {
