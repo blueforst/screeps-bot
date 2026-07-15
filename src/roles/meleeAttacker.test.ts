@@ -12,7 +12,7 @@ jest.mock("@/movement/traffic", () => ({
   moveOffExit: jest.fn(() => OK),
 }));
 
-import { meleeAttackerRole } from "@/roles/meleeAttacker";
+import { findWarObjectiveTarget, meleeAttackerRole } from "@/roles/meleeAttacker";
 import { createMockPowerBankCreep } from "@mock/powerBank";
 
 const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
@@ -1003,6 +1003,75 @@ describe("meleeAttackerRole war duo staging", () => {
 
     expect(attacker.attack).toHaveBeenCalledWith(storage);
     expect(attacker.attack).not.toHaveBeenCalledWith(terminal);
+  });
+
+  it("targets exposed utilities before harmless creeps and residual ramparts", () => {
+    const harmless = hostileCreep("harmless-hauler", 800, { [CARRY]: 10 });
+    const rampart = hostileStructure(STRUCTURE_RAMPART, "residual-rampart", 12, 12, 1_000_000);
+    const extension = hostileStructure(STRUCTURE_EXTENSION, "exposed-extension", 15, 15, 1000);
+    const lab = hostileStructure(STRUCTURE_LAB, "exposed-lab", 20, 20, 500);
+    const attacker = createMockPowerBankCreep("meleeAttacker", { roomName: TARGET_ROOM });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [harmless];
+      if (type === FIND_HOSTILE_STRUCTURES) return [rampart, extension, lab];
+      return [];
+    }) as Room["find"];
+
+    expect(findWarObjectiveTarget(attacker)).toBe(lab);
+  });
+
+  it("does not chase a distant harmless creep when no hostile structures remain", () => {
+    const harmless = hostileCreep("harmless-runner", 800, { [MOVE]: 10, [CARRY]: 10 });
+    const attacker = createMockPowerBankCreep("meleeAttacker", { roomName: TARGET_ROOM });
+    attacker.room.find = jest.fn((type: FindConstant) =>
+      type === FIND_HOSTILE_CREEPS ? [harmless] : []
+    ) as Room["find"];
+
+    expect(findWarObjectiveTarget(attacker)).toBeNull();
+  });
+
+  it("targets an exposed dangerous creep but not one protected by a hostile rampart", () => {
+    const exposed = hostileCreep("exposed-attacker", 800, { [ATTACK]: 5 });
+    exposed.pos = { x: 10, y: 10, roomName: TARGET_ROOM } as RoomPosition;
+    const protectedRanged = hostileCreep("protected-ranged", 800, { [RANGED_ATTACK]: 5 });
+    protectedRanged.pos = { x: 20, y: 20, roomName: TARGET_ROOM } as RoomPosition;
+    const rampart = hostileStructure(STRUCTURE_RAMPART, "guard-rampart", 20, 20, 100_000);
+    const lab = hostileStructure(STRUCTURE_LAB, "unguarded-lab", 25, 25, 500);
+    const attacker = createMockPowerBankCreep("meleeAttacker", { roomName: TARGET_ROOM });
+    let creeps = [protectedRanged, exposed];
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return creeps;
+      if (type === FIND_HOSTILE_STRUCTURES) return [rampart, lab];
+      return [];
+    }) as Room["find"];
+
+    expect(findWarObjectiveTarget(attacker)).toBe(exposed);
+    creeps = [protectedRanged];
+    expect(findWarObjectiveTarget(attacker)).toBe(lab);
+  });
+
+  it("prefers a wall outside hostile ranged coverage when only barriers remain", () => {
+    const ranged = hostileCreep("ranged-guard", 800, { [RANGED_ATTACK]: 5 });
+    ranged.pos = {
+      x: 40,
+      y: 40,
+      roomName: TARGET_ROOM,
+      getRangeTo: jest.fn((target: RoomPosition | { pos: RoomPosition }) => {
+        const pos = "pos" in target ? target.pos : target;
+        return Math.max(Math.abs(40 - pos.x), Math.abs(40 - pos.y));
+      }),
+    } as unknown as RoomPosition;
+    const safeWall = hostileStructure(STRUCTURE_WALL, "safe-wall", 10, 10, 1_000_000);
+    const coveredWall = hostileStructure(STRUCTURE_WALL, "covered-wall", 42, 42, 1000);
+    const rampart = hostileStructure(STRUCTURE_RAMPART, "residual-rampart-2", 40, 40, 100);
+    const attacker = createMockPowerBankCreep("meleeAttacker", { roomName: TARGET_ROOM });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [ranged];
+      if (type === FIND_HOSTILE_STRUCTURES) return [rampart, coveredWall, safeWall];
+      return [];
+    }) as Room["find"];
+
+    expect(findWarObjectiveTarget(attacker)).toBe(safeWall);
   });
 
   it("keeps non-war melee targeting hostile creeps before structures", () => {

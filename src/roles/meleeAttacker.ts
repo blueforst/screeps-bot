@@ -57,23 +57,75 @@ export function findTarget(creep: Creep): Creep | Structure | null {
 }
 
 export function findWarObjectiveTarget(creep: Creep): Creep | Structure | null {
+  const hostileCreeps = getHostileCreeps(creep.room);
   const hostileStructures = getHostileStructures(creep.room);
-  const objectiveOrder: StructureConstant[] = [
+  const rampartPositions = new Set(
+    hostileStructures
+      .filter((structure) => structure.structureType === STRUCTURE_RAMPART)
+      .map((structure) => `${structure.pos.x}:${structure.pos.y}`),
+  );
+  const isProtected = (target: Creep | Structure): boolean =>
+    rampartPositions.has(`${target.pos.x}:${target.pos.y}`);
+  const closest = <T extends Creep | Structure>(targets: T[]): T | null =>
+    targets.length > 0 ? creep.pos.findClosestByRange(targets) : null;
+  const coreOrder: StructureConstant[] = [
     STRUCTURE_SPAWN,
     STRUCTURE_TOWER,
     STRUCTURE_STORAGE,
     STRUCTURE_TERMINAL,
     STRUCTURE_INVADER_CORE,
   ];
+  const utilityOrder: StructureConstant[] = [
+    STRUCTURE_POWER_SPAWN,
+    STRUCTURE_NUKER,
+    STRUCTURE_LAB,
+    STRUCTURE_FACTORY,
+    STRUCTURE_OBSERVER,
+    STRUCTURE_LINK,
+    STRUCTURE_EXTENSION,
+    STRUCTURE_EXTRACTOR,
+  ];
 
-  for (const structureType of objectiveOrder) {
+  for (const structureType of coreOrder) {
     const candidates = hostileStructures.filter((structure) => structure.structureType === structureType);
-    if (candidates.length > 0) {
-      return creep.pos.findClosestByRange(candidates);
-    }
+    const target = closest(candidates);
+    if (target) return target;
   }
 
-  return findTarget(creep);
+  const exposedDangerous = hostileCreeps.filter(
+    (hostile) => isDangerousHostile(hostile) && !isProtected(hostile),
+  );
+  const dangerousTarget = closest(exposedDangerous);
+  if (dangerousTarget) return dangerousTarget;
+
+  const nonBarriers = hostileStructures.filter(
+    (structure) => structure.structureType !== STRUCTURE_RAMPART && structure.structureType !== STRUCTURE_WALL,
+  );
+  for (const protectedState of [false, true]) {
+    for (const structureType of utilityOrder) {
+      const candidates = nonBarriers.filter(
+        (structure) => structure.structureType === structureType && isProtected(structure) === protectedState,
+      );
+      const target = closest(candidates);
+      if (target) return target;
+    }
+
+    const remaining = nonBarriers.filter(
+      (structure) => !utilityOrder.includes(structure.structureType) && isProtected(structure) === protectedState,
+    );
+    const fallback = closest(remaining);
+    if (fallback) return fallback;
+  }
+
+  const residualBarriers = hostileStructures
+    .filter(isBreachTarget)
+    .sort((left, right) => {
+      const costDiff = getCombatBreachCost(left, hostileCreeps) - getCombatBreachCost(right, hostileCreeps);
+      if (costDiff !== 0) return costDiff;
+      if (left.hits !== right.hits) return left.hits - right.hits;
+      return creep.pos.getRangeTo(left.pos) - creep.pos.getRangeTo(right.pos);
+    });
+  return residualBarriers[0] ?? null;
 }
 
 function isBreachTarget(structure: Structure): structure is StructureRampart | StructureWall {
