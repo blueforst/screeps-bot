@@ -1247,6 +1247,20 @@ declare global {
     _rmcSelectedSource?: string;
     _warBreachTargetId?: Id<StructureRampart | StructureWall>;
     _warBreachResumeUntil?: number;
+    _warCounterstrike?: {
+      targetId: Id<Creep>;
+      targetX: number;
+      targetY: number;
+      createdAt: number;
+      originX: number;
+      originY: number;
+      approachX: number;
+      approachY: number;
+      healerCoordinated?: boolean;
+      healerReadyAt?: number;
+      healerSwap?: boolean;
+    };
+    _warCounterstrikeSuppressedTargetIds?: Id<Creep>[];
     _warDetached?: boolean;
     _warQueued?: boolean;
     _move?: {

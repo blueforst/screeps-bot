@@ -1,6 +1,10 @@
-import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { clearMovementState, moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { prepareCombatBoost } from "@/roles/combatBoosts";
-import { findWarObjectiveTarget } from "@/roles/meleeAttacker";
+import {
+  findWarObjectiveTarget,
+  isWarCounterstrikeCoordinationValid,
+  shouldWarHealerHoldForCounterstrike,
+} from "@/roles/meleeAttacker";
 import { moveOffExit } from "@/movement/traffic";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
@@ -118,6 +122,33 @@ function healAttacker(creep: Creep, attacker: Creep): void {
   }
 }
 
+function coordinateCounterstrike(creep: Creep, attacker: Creep): boolean {
+  const state = attacker.memory._warCounterstrike;
+  if (!state?.healerCoordinated) return false;
+  const elapsed = Game.time - state.createdAt;
+  if (elapsed < 0 || elapsed > 2) return false;
+  if (!isWarCounterstrikeCoordinationValid(attacker, creep, state)) {
+    delete attacker.memory._warCounterstrike;
+    return false;
+  }
+  if (elapsed === 0) return true;
+  if (elapsed === 1) {
+    state.healerReadyAt = Game.time;
+    return true;
+  }
+  if (state.healerReadyAt !== state.createdAt + 1) {
+    delete attacker.memory._warCounterstrike;
+    return false;
+  }
+  if (!state.healerSwap) return true;
+
+  const direction = creep.pos.getDirectionTo(attacker.pos);
+  if (!direction) return false;
+  clearMovementState(creep);
+  measureCreepIntent(() => creep.move(direction));
+  return true;
+}
+
 function getSharedWarBreachTarget(attacker: Creep): StructureRampart | StructureWall | null {
   const targetId = attacker.memory._warBreachTargetId;
   if (!targetId) return null;
@@ -141,6 +172,8 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
   if (!attacker) return true;
 
   healAttacker(creep, attacker);
+  if (coordinateCounterstrike(creep, attacker)) return true;
+  if (shouldWarHealerHoldForCounterstrike(attacker, creep, targetRoom)) return true;
 
   if (creep.room.name === targetRoom && attacker.room.name !== targetRoom) {
     if (isPoisedToCrossInto(attacker, targetRoom)) {

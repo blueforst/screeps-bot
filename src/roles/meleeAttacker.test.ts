@@ -1,4 +1,5 @@
 jest.mock("@/roles/shared", () => ({
+  clearMovementState: jest.fn(),
   moveToTarget: jest.fn(() => OK),
   moveToTargetRoom: jest.fn(() => OK),
 }));
@@ -13,7 +14,7 @@ jest.mock("@/movement/traffic", () => ({
 }));
 
 import { findWarObjectiveTarget, meleeAttackerRole } from "@/roles/meleeAttacker";
-import { createMockPowerBankCreep } from "@mock/powerBank";
+import { createMockPowerBankCreep, MockPos } from "@mock/powerBank";
 
 const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
   moveToTarget: jest.Mock;
@@ -46,6 +47,83 @@ function hostileStructure(type: StructureConstant, id: string, x: number, y: num
     hitsMax: hits,
     pos: { x, y, roomName: TARGET_ROOM, getRangeTo: jest.fn(() => 1) } as unknown as RoomPosition,
   } as Structure;
+}
+
+function setupCounterstrikeScenario(overrides: {
+  hostileX?: number;
+  hostileY?: number;
+  protectedByRampart?: boolean;
+  approachOccupantRole?: "worker";
+  approachObstacle?: "powerCreep" | "source";
+} = {}) {
+  const hostileX = overrides.hostileX ?? 27;
+  const hostileY = overrides.hostileY ?? 27;
+  const hostile = hostileCreep("counterstrike-hostile", 4_800, { [RANGED_ATTACK]: 8, [HEAL]: 8 });
+  hostile.pos = new MockPos(hostileX, hostileY, TARGET_ROOM) as unknown as RoomPosition;
+  const wall = hostileStructure(STRUCTURE_WALL, "tracked-counterstrike-wall", 24, 25, 400_000) as StructureWall;
+  const protectingRampart = overrides.protectedByRampart
+    ? hostileStructure(STRUCTURE_RAMPART, "counterstrike-cover", hostileX, hostileY, 200_000) as StructureRampart
+    : null;
+  const attacker = createMockPowerBankCreep("meleeAttacker", {
+    name: "attacker",
+    roomName: TARGET_ROOM,
+    x: 25,
+    y: 25,
+    memory: {
+      role: "meleeAttacker",
+      configName: ATTACKER_CONFIG,
+      _warBreachTargetId: wall.id,
+    },
+  });
+  const healer = createMockPowerBankCreep("healer", {
+    name: "healer",
+    roomName: TARGET_ROOM,
+    x: 26,
+    y: 25,
+    memory: { role: "healer", configName: HEALER_CONFIG },
+  });
+  const occupant = overrides.approachOccupantRole
+    ? createMockPowerBankCreep(overrides.approachOccupantRole, {
+        name: "approach-occupant",
+        roomName: TARGET_ROOM,
+        x: 26,
+        y: 26,
+        memory: { role: overrides.approachOccupantRole },
+      })
+    : null;
+  const structures = [wall, ...(protectingRampart ? [protectingRampart] : [])];
+  const myCreeps = [attacker, healer, ...(occupant ? [occupant] : [])];
+  const powerCreep = overrides.approachObstacle === "powerCreep"
+    ? ({ name: "approach-power-creep", pos: new MockPos(26, 26, TARGET_ROOM) } as unknown as PowerCreep)
+    : null;
+  const source = overrides.approachObstacle === "source"
+    ? ({ id: "approach-source", pos: new MockPos(26, 26, TARGET_ROOM) } as unknown as Source)
+    : null;
+  attacker.room.find = jest.fn((type: FindConstant) => {
+    if (type === FIND_HOSTILE_CREEPS) return [hostile];
+    if (type === FIND_HOSTILE_STRUCTURES || type === FIND_STRUCTURES) return structures;
+    if (type === FIND_MY_CREEPS) return myCreeps;
+    if (type === FIND_CREEPS) return [...myCreeps, hostile];
+    if (type === FIND_POWER_CREEPS) return powerCreep ? [powerCreep] : [];
+    if (type === FIND_SOURCES) return source ? [source] : [];
+    return [];
+  }) as Room["find"];
+  attacker.room.getTerrain = jest.fn(() => ({ get: jest.fn(() => 0) }) as unknown as RoomTerrain);
+  attacker.pos.findInRange = jest.fn((type: FindConstant) => {
+    if (type === FIND_HOSTILE_CREEPS) return attacker.pos.getRangeTo(hostile.pos) <= 1 ? [hostile] : [];
+    if (type === FIND_STRUCTURES) {
+      return structures.filter((structure) => attacker.pos.getRangeTo(structure.pos) <= 1);
+    }
+    return [];
+  }) as unknown as RoomPosition["findInRange"];
+  Game.getObjectById = jest.fn((id: string) => {
+    if (id === wall.id) return wall;
+    if (id === hostile.id) return hostile;
+    return null;
+  }) as typeof Game.getObjectById;
+  Game.creeps = { attacker, healer, ...(occupant ? { [occupant.name]: occupant } : {}) };
+
+  return { attacker, healer, hostile, wall, protectingRampart, occupant };
 }
 
 describe("meleeAttackerRole war duo staging", () => {
@@ -922,6 +1000,163 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(attacker.attack).toHaveBeenCalledWith(trackedWall);
     expect(attacker.attack).not.toHaveBeenCalledWith(replannedWall);
     expect(attacker.memory._warBreachTargetId).toBe(trackedWall.id);
+  });
+
+  it("takes one step toward an exposed dangerous hostile at range two", () => {
+    Game.time = 100;
+    const { attacker, hostile, wall } = setupCounterstrikeScenario();
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).not.toHaveBeenCalled();
+    expect((attacker.memory as any)._warCounterstrike?.targetId).toBe(hostile.id);
+    expect(attacker.memory._warBreachTargetId).toBe(wall.id);
+
+    (attacker.memory as any)._warCounterstrike.healerReadyAt = 101;
+    Game.time = 102;
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).toHaveBeenCalledWith(BOTTOM_RIGHT);
+  });
+
+  it("does not repeat the approach while the same hostile remains at range two", () => {
+    const { attacker, hostile, wall } = setupCounterstrikeScenario();
+    (attacker.memory as any)._warCounterstrikeSuppressedTargetIds = [hostile.id];
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).not.toHaveBeenCalled();
+    expect(attacker.attack).toHaveBeenCalledWith(wall);
+    expect(attacker.attack).not.toHaveBeenCalledWith(hostile);
+  });
+
+  it("allows a new approach after the suppressed hostile leaves range two", () => {
+    const { attacker, hostile } = setupCounterstrikeScenario({ hostileX: 30 });
+    (attacker.memory as any)._warCounterstrikeSuppressedTargetIds = [hostile.id];
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect((attacker.memory as any)._warCounterstrikeSuppressedTargetIds).toBeUndefined();
+    expect(attacker.move).not.toHaveBeenCalled();
+
+    hostile.pos = new MockPos(27, 27, TARGET_ROOM) as unknown as RoomPosition;
+    Game.time += 1;
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).not.toHaveBeenCalled();
+    Game.time += 1;
+    (attacker.memory as any)._warCounterstrike.healerReadyAt = Game.time;
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+    Game.time += 1;
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).toHaveBeenCalledTimes(1);
+    expect(attacker.move).toHaveBeenCalledWith(BOTTOM_RIGHT);
+  });
+
+  it("consumes at most one approach per nearby hostile instead of alternating forever", () => {
+    Game.time = 200;
+    const { attacker, hostile, wall } = setupCounterstrikeScenario();
+    const second = hostileCreep("second-counterstrike-hostile", 4_800, { [RANGED_ATTACK]: 8, [HEAL]: 8 });
+    second.pos = new MockPos(27, 23, TARGET_ROOM) as unknown as RoomPosition;
+    const originalFind = attacker.room.find as jest.Mock;
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      const base = originalFind(type) as unknown[];
+      if (type === FIND_HOSTILE_CREEPS) return [hostile, second];
+      if (type === FIND_CREEPS) return [...base, second];
+      return base;
+    }) as Room["find"];
+    Game.getObjectById = jest.fn((id: string) => {
+      if (id === hostile.id) return hostile;
+      if (id === second.id) return second;
+      if (id === wall.id) return wall;
+      return null;
+    }) as typeof Game.getObjectById;
+
+    for (let tick = 0; tick < 8; tick += 1) {
+      const state = attacker.memory._warCounterstrike as any;
+      if (state?.healerCoordinated && state.healerReadyAt === undefined && Game.time === state.createdAt + 1) {
+        state.healerReadyAt = Game.time;
+      }
+      meleeAttackerRole(TARGET_ROOM).target(attacker);
+      Game.time += 1;
+    }
+
+    expect(attacker.move).toHaveBeenCalledTimes(2);
+    expect(new Set(attacker.memory._warCounterstrikeSuppressedTargetIds ?? [])).toEqual(
+      new Set([hostile.id, second.id]),
+    );
+  });
+
+  it("preserves the tracked breach after attacking an adjacent hostile", () => {
+    const { attacker, healer, hostile, wall } = setupCounterstrikeScenario({ hostileX: 26, hostileY: 25 });
+    healer.pos = new MockPos(25, 24, TARGET_ROOM) as unknown as RoomPosition;
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(hostile);
+    expect(attacker.memory._warBreachTargetId).toBe(wall.id);
+  });
+
+  it.each([
+    ["range three", 28, 28, false],
+    ["protected by a hostile rampart", 27, 27, true],
+  ])("does not counterstrike a hostile that is %s", (_label, x, y, protectedByRampart) => {
+    const { attacker, hostile, wall } = setupCounterstrikeScenario({
+      hostileX: x,
+      hostileY: y,
+      protectedByRampart,
+    });
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).not.toHaveBeenCalled();
+    expect(attacker.attack).toHaveBeenCalledWith(wall);
+    expect(attacker.attack).not.toHaveBeenCalledWith(hostile);
+  });
+
+  it("does not displace an unrelated friendly creep from the only approach tile", () => {
+    const { attacker, wall } = setupCounterstrikeScenario({ approachOccupantRole: "worker" });
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).not.toHaveBeenCalled();
+    expect(attacker.attack).toHaveBeenCalledWith(wall);
+  });
+
+  it.each(["powerCreep", "source"] as const)(
+    "does not counterstrike through a %s occupying the only approach tile",
+    (approachObstacle) => {
+      const { attacker, wall } = setupCounterstrikeScenario({ approachObstacle });
+
+      meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+      expect(attacker.memory._warCounterstrike).toBeUndefined();
+      expect(attacker.move).not.toHaveBeenCalled();
+      expect(attacker.attack).toHaveBeenCalledWith(wall);
+    },
+  );
+
+  it("does not use a detached healer as a counterstrike swap partner", () => {
+    const { attacker, healer, wall } = setupCounterstrikeScenario();
+    healer.pos = new MockPos(26, 26, TARGET_ROOM) as unknown as RoomPosition;
+    healer.memory._warDetached = true;
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).not.toHaveBeenCalled();
+    expect(attacker.attack).toHaveBeenCalledWith(wall);
+    expect(attacker.memory._warCounterstrike).toBeUndefined();
+  });
+
+  it("does not take a free approach that would break healer adjacency", () => {
+    const { attacker, healer, wall } = setupCounterstrikeScenario();
+    healer.pos = new MockPos(25, 24, TARGET_ROOM) as unknown as RoomPosition;
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).not.toHaveBeenCalled();
+    expect(attacker.attack).toHaveBeenCalledWith(wall);
   });
 
   it("keeps an adjacent tracked breach locked when a distant defender moves", () => {

@@ -1,4 +1,4 @@
-import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { clearMovementState, moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { isWalkableStructure, parseEncodedRouteRooms } from "@/movement/common";
 import { moveOffExit } from "@/movement/traffic";
 import { prepareCombatBoost } from "@/roles/combatBoosts";
@@ -14,6 +14,8 @@ const TARGET_ROOM_MOVE_OPTIONS = {
   ignoreCreeps: false,
 } as const;
 const ROUTE_BREACH_RESUME_TICKS = 5;
+const COUNTERSTRIKE_RANGE = 2;
+const COUNTERSTRIKE_SWAP_GRACE_TICKS = 1;
 
 function getHostileCreeps(room: Room): Creep[] {
   return room.find(FIND_HOSTILE_CREEPS, {
@@ -284,6 +286,282 @@ function isDangerousHostile(creep: Creep): boolean {
   );
 }
 
+function getHostileRampartPositions(room: Room): Set<string> {
+  return new Set(
+    getHostileStructures(room)
+      .filter((structure) => structure.structureType === STRUCTURE_RAMPART)
+      .map((rampart) => `${rampart.pos.x}:${rampart.pos.y}`),
+  );
+}
+
+function isHostileProtectedByRampart(creep: Creep, hostile: Creep): boolean {
+  return getHostileRampartPositions(creep.room).has(`${hostile.pos.x}:${hostile.pos.y}`);
+}
+
+function clearExpiredCounterstrikeSuppression(creep: Creep): void {
+  const suppressedIds = creep.memory._warCounterstrikeSuppressedTargetIds;
+  if (!suppressedIds?.length) return;
+
+  const activeIds = suppressedIds.filter((suppressedId) => {
+    const target = Game.getObjectById(suppressedId);
+    return !!(
+      target &&
+      target.pos.roomName === creep.room.name &&
+      creep.pos.getRangeTo(target.pos) <= COUNTERSTRIKE_RANGE &&
+      !isHostileProtectedByRampart(creep, target)
+    );
+  });
+  if (activeIds.length > 0) {
+    creep.memory._warCounterstrikeSuppressedTargetIds = activeIds;
+  } else {
+    delete creep.memory._warCounterstrikeSuppressedTargetIds;
+  }
+}
+
+interface CounterstrikeApproach {
+  target: Creep;
+  x: number;
+  y: number;
+  healerCoordinated: boolean;
+  healerSwap: boolean;
+}
+
+interface CounterstrikeRoomState {
+  terrain: RoomTerrain;
+  occupants: Map<string, Creep | PowerCreep>;
+  blockedStructures: Set<string>;
+  naturalObstacles: Set<string>;
+}
+
+function getCounterstrikeRoomState(room: Room): CounterstrikeRoomState {
+  return {
+    terrain: room.getTerrain(),
+    occupants: new Map(
+      [...room.find(FIND_CREEPS), ...room.find(FIND_POWER_CREEPS)]
+        .map((occupant) => [`${occupant.pos.x}:${occupant.pos.y}`, occupant]),
+    ),
+    blockedStructures: new Set(
+      room
+        .find(FIND_STRUCTURES)
+        .filter((structure) => !isWalkableStructure(structure))
+        .map((structure) => `${structure.pos.x}:${structure.pos.y}`),
+    ),
+    naturalObstacles: new Set(
+      [
+        ...room.find(FIND_SOURCES),
+        ...room.find(FIND_MINERALS),
+        ...room.find(FIND_DEPOSITS),
+      ].map((obstacle) => `${obstacle.pos.x}:${obstacle.pos.y}`),
+    ),
+  };
+}
+
+function isCounterstrikeApproachWalkable(
+  roomState: CounterstrikeRoomState,
+  x: number,
+  y: number,
+  allowedOccupantName?: string,
+): boolean {
+  const key = `${x}:${y}`;
+  if (roomState.terrain.get(x, y) === TERRAIN_MASK_WALL) return false;
+  if (roomState.blockedStructures.has(key) || roomState.naturalObstacles.has(key)) return false;
+  const occupant = roomState.occupants.get(key);
+  return !occupant || occupant.name === allowedOccupantName;
+}
+
+function getCounterstrikeThreat(hostile: Creep): number {
+  return (
+    hostile.getActiveBodyparts(HEAL) * 3 +
+    hostile.getActiveBodyparts(RANGED_ATTACK) * 2 +
+    hostile.getActiveBodyparts(ATTACK)
+  );
+}
+
+function findCounterstrikeApproach(creep: Creep): CounterstrikeApproach | null {
+  clearExpiredCounterstrikeSuppression(creep);
+  const suppressedIds = new Set(creep.memory._warCounterstrikeSuppressedTargetIds ?? []);
+  const protectedPositions = getHostileRampartPositions(creep.room);
+  const candidates = getHostileCreeps(creep.room)
+    .filter(
+      (hostile) =>
+        !suppressedIds.has(hostile.id) &&
+        isDangerousHostile(hostile) &&
+        creep.pos.getRangeTo(hostile.pos) === COUNTERSTRIKE_RANGE &&
+        !protectedPositions.has(`${hostile.pos.x}:${hostile.pos.y}`),
+    )
+    .sort((left, right) => {
+      const rangeDiff = creep.pos.getRangeTo(left.pos) - creep.pos.getRangeTo(right.pos);
+      if (rangeDiff !== 0) return rangeDiff;
+      if (left.hits !== right.hits) return left.hits - right.hits;
+      return getCounterstrikeThreat(right) - getCounterstrikeThreat(left);
+    });
+  if (candidates.length === 0) return null;
+
+  const healer = findPairedWarHealer(creep);
+  const healerCanCoordinate = !!(
+    healer &&
+    !creep.memory._warDetached &&
+    !healer.memory._warDetached &&
+    healer.room.name === creep.room.name &&
+    creep.pos.isNearTo(healer.pos)
+  );
+  const roomState = getCounterstrikeRoomState(creep.room);
+
+  for (const target of candidates) {
+    const approaches: CounterstrikeApproach[] = [];
+    for (let x = Math.max(1, target.pos.x - 1); x <= Math.min(48, target.pos.x + 1); x += 1) {
+      for (let y = Math.max(1, target.pos.y - 1); y <= Math.min(48, target.pos.y + 1); y += 1) {
+        if (x === target.pos.x && y === target.pos.y) continue;
+        if (Math.max(Math.abs(x - creep.pos.x), Math.abs(y - creep.pos.y)) !== 1) continue;
+        const occupant = roomState.occupants.get(`${x}:${y}`);
+        const healerSwap = !!occupant && healerCanCoordinate && occupant.name === healer?.name;
+        if (!isCounterstrikeApproachWalkable(roomState, x, y, healerSwap ? healer?.name : undefined)) continue;
+        if (
+          !occupant &&
+          healerCanCoordinate &&
+          healer &&
+          Math.max(Math.abs(x - healer.pos.x), Math.abs(y - healer.pos.y)) > 1
+        ) {
+          continue;
+        }
+        approaches.push({ target, x, y, healerCoordinated: healerCanCoordinate, healerSwap });
+      }
+    }
+    approaches.sort((left, right) => Number(left.healerSwap) - Number(right.healerSwap));
+    if (approaches.length > 0) return approaches[0];
+  }
+
+  return null;
+}
+
+function getDirectionToCoordinates(creep: Creep, x: number, y: number): DirectionConstant | null {
+  return creep.pos.getDirectionTo({ x, y, roomName: creep.room.name } as RoomPosition);
+}
+
+function hasExposedAdjacentHostile(creep: Creep): boolean {
+  const protectedPositions = getHostileRampartPositions(creep.room);
+  return getHostileCreeps(creep.room).some(
+    (hostile) =>
+      creep.pos.isNearTo(hostile.pos) &&
+      !protectedPositions.has(`${hostile.pos.x}:${hostile.pos.y}`),
+  );
+}
+
+function isCounterstrikeCoordinationValid(
+  creep: Creep,
+  healer: Creep,
+  target: Creep,
+  state: NonNullable<CreepMemory["_warCounterstrike"]>,
+): boolean {
+  if (!state.healerCoordinated || creep.memory._warDetached || healer.memory._warDetached) return false;
+  if (creep.pos.x !== state.originX || creep.pos.y !== state.originY) return false;
+  if (healer.room.name !== creep.room.name || !creep.pos.isNearTo(healer.pos)) return false;
+  if (target.pos.roomName !== creep.room.name || !isDangerousHostile(target)) return false;
+  if (target.pos.x !== state.targetX || target.pos.y !== state.targetY) return false;
+  if (creep.pos.getRangeTo(target.pos) !== COUNTERSTRIKE_RANGE) return false;
+  if (Math.max(Math.abs(state.approachX - target.pos.x), Math.abs(state.approachY - target.pos.y)) > 1) return false;
+  if (isHostileProtectedByRampart(creep, target) || hasExposedAdjacentHostile(creep)) return false;
+
+  if (state.healerSwap) {
+    if (healer.pos.x !== state.approachX || healer.pos.y !== state.approachY) return false;
+  } else if (Math.max(Math.abs(state.approachX - healer.pos.x), Math.abs(state.approachY - healer.pos.y)) > 1) {
+    return false;
+  }
+
+  const roomState = getCounterstrikeRoomState(creep.room);
+  return isCounterstrikeApproachWalkable(
+    roomState,
+    state.approachX,
+    state.approachY,
+    state.healerSwap ? healer.name : undefined,
+  );
+}
+
+export function isWarCounterstrikeCoordinationValid(
+  attacker: Creep,
+  healer: Creep,
+  state: NonNullable<CreepMemory["_warCounterstrike"]>,
+): boolean {
+  const target = Game.getObjectById(state.targetId);
+  return !!target && isCounterstrikeCoordinationValid(attacker, healer, target, state);
+}
+
+export function shouldWarHealerHoldForCounterstrike(attacker: Creep, healer: Creep, targetRoom: string): boolean {
+  if (attacker.room.name !== targetRoom || healer.room.name !== targetRoom) return false;
+  if (attacker.memory._warDetached || healer.memory._warDetached || !attacker.pos.isNearTo(healer.pos)) return false;
+  if (attacker.memory._warCounterstrike || hasExposedAdjacentHostile(attacker)) return false;
+  if (findPairedWarHealer(attacker)?.name !== healer.name) return false;
+  return findCounterstrikeApproach(attacker)?.healerCoordinated === true;
+}
+
+function isCoordinatedCounterstrikeReady(
+  creep: Creep,
+  target: Creep,
+  state: NonNullable<CreepMemory["_warCounterstrike"]>,
+): boolean {
+  if (!state.healerCoordinated || Game.time !== state.createdAt + 2) return false;
+  if (state.healerReadyAt !== state.createdAt + COUNTERSTRIKE_SWAP_GRACE_TICKS) return false;
+  const healer = findPairedWarHealer(creep);
+  return !!healer && isCounterstrikeCoordinationValid(creep, healer, target, state);
+}
+
+function runCounterstrikeApproach(creep: Creep): boolean {
+  clearExpiredCounterstrikeSuppression(creep);
+  const state = creep.memory._warCounterstrike;
+  if (state) {
+    const target = Game.getObjectById(state.targetId);
+    if (
+      !target ||
+      target.pos.roomName !== creep.room.name ||
+      !isDangerousHostile(target) ||
+      isHostileProtectedByRampart(creep, target)
+    ) {
+      delete creep.memory._warCounterstrike;
+      return false;
+    }
+    if (creep.pos.isNearTo(target.pos)) return false;
+    if (state.healerCoordinated && Game.time <= state.createdAt + 1) return true;
+    if (isCoordinatedCounterstrikeReady(creep, target, state)) {
+      const direction = getDirectionToCoordinates(creep, state.approachX, state.approachY);
+      if (direction) {
+        clearMovementState(creep);
+        measureCreepIntent(() => creep.move(direction));
+      }
+      return true;
+    }
+    delete creep.memory._warCounterstrike;
+    return false;
+  }
+
+  const approach = findCounterstrikeApproach(creep);
+  if (!approach) return false;
+
+  creep.memory._warCounterstrike = {
+    targetId: approach.target.id,
+    targetX: approach.target.pos.x,
+    targetY: approach.target.pos.y,
+    createdAt: Game.time,
+    originX: creep.pos.x,
+    originY: creep.pos.y,
+    approachX: approach.x,
+    approachY: approach.y,
+    healerCoordinated: approach.healerCoordinated || undefined,
+    healerSwap: approach.healerSwap || undefined,
+  };
+  const suppressedIds = creep.memory._warCounterstrikeSuppressedTargetIds ?? [];
+  if (!suppressedIds.includes(approach.target.id)) {
+    creep.memory._warCounterstrikeSuppressedTargetIds = [...suppressedIds, approach.target.id];
+  }
+  if (approach.healerCoordinated) return true;
+
+  const direction = getDirectionToCoordinates(creep, approach.x, approach.y);
+  if (direction) {
+    clearMovementState(creep);
+    measureCreepIntent(() => creep.move(direction));
+  }
+  return true;
+}
+
 function attackAdjacentHostileOnRoute(creep: Creep): boolean {
   const protectedPositions = new Set(
     findAdjacentStructures(creep)
@@ -546,9 +824,11 @@ export const meleeAttackerRole: RoleFactory = (
     }
 
     if (targetRoom && attackAdjacentHostileOnRoute(creep)) {
-      delete creep.memory._warBreachTargetId;
+      delete creep.memory._warCounterstrike;
       return false;
     }
+
+    if (targetRoom && creep.room.name === targetRoom && runCounterstrikeApproach(creep)) return false;
 
     const targetMoveOptions = targetRoom ? getTargetRoomMoveOptions(creep) : TARGET_ROOM_MOVE_OPTIONS;
     const target = measureCreepDecision(() => (targetRoom ? findWarObjectiveTarget(creep) : findTarget(creep)));
