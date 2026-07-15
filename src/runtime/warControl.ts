@@ -2,7 +2,7 @@ import { getCreepConfigService, getMemoryService, getTickContextService } from "
 import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
 import type { CreepConfig } from "@/types/system";
 
-type WarStatus = "staging" | "clearing" | "downgrading" | "done" | "failed";
+type WarStatus = "queued" | "staging" | "clearing" | "downgrading" | "done" | "failed";
 export type WarSquad = "standard" | "t3Duo";
 export type WarBoostTier = "t3";
 type WarRole = "meleeAttacker" | "healer";
@@ -1012,6 +1012,41 @@ function processTask(task: WarTask): void {
   ensureCombatConfigs(task);
 }
 
+function setTaskCreepsQueued(task: WarTask, queued: boolean): void {
+  const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
+  for (const creep of Object.values(Game.creeps)) {
+    if (!creep.memory.configName?.startsWith(prefix)) continue;
+    if (queued) {
+      creep.memory._warQueued = true;
+    } else {
+      delete creep.memory._warQueued;
+    }
+  }
+}
+
+function parkQueuedFrontline(task: WarTask): void {
+  setTaskStatus(task, "queued");
+  task.clearSince = undefined;
+  task.boostStatus = undefined;
+  task.failReason = "frontline_queued";
+  disableTaskProduction(task);
+  releaseWarBoosts(task);
+  setTaskCreepsQueued(task, true);
+}
+
+function activateFrontline(task: WarTask): void {
+  if (task.status === "queued") {
+    setTaskStatus(task, "staging");
+    if (task.failReason === "frontline_queued") {
+      task.failReason = undefined;
+    }
+    if (isT3DuoTask(task)) {
+      task.boostStatus = "preparing";
+    }
+  }
+  setTaskCreepsQueued(task, false);
+}
+
 export function requestWarRoomClear(
   targetRoom: string,
   sourceRoom: string,
@@ -1147,8 +1182,33 @@ export function getWarStatus(targetRoom?: string): WarStatusSnapshot {
 
 export function runWarControl(): void {
   const store = ensureWarStore();
-  for (const task of Object.values(store)) {
-    processTask(task);
+  const tasks = Object.values(store);
+  const tasksBySource = new Map<string, WarTask[]>();
+  for (const task of tasks) {
+    const sourceTasks = tasksBySource.get(task.sourceRoom) ?? [];
+    sourceTasks.push(task);
+    tasksBySource.set(task.sourceRoom, sourceTasks);
+  }
+
+  for (const sourceTasks of tasksBySource.values()) {
+    const candidates = sourceTasks.filter(
+      (task) => task.status !== "done" && task.status !== "failed",
+    );
+    const active = candidates.find((task) => task.status !== "queued") ?? candidates[0];
+
+    for (const task of candidates) {
+      if (task !== active) {
+        parkQueuedFrontline(task);
+      }
+    }
+
+    if (active) {
+      activateFrontline(active);
+      processTask(active);
+    }
+  }
+
+  for (const task of tasks) {
     task.updatedAt = Game.time;
   }
   writeWarTelemetry();

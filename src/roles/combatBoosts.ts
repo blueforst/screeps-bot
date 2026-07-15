@@ -27,6 +27,8 @@ export function prepareCombatBoost(
   boostTaskId?: string,
   encodedBoostCompounds?: string,
 ): boolean {
+  if (creep.memory._warQueued === true) return false;
+
   const compounds = parseBoostCompounds(encodedBoostCompounds);
   if (!boostTaskId || compounds.length === 0) return true;
 

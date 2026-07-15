@@ -214,6 +214,64 @@ describe("runWarControl", () => {
     expect(Memory.data!.war!.E3N57!.status).toBe("staging");
   });
 
+  it("runs only one active frontline per source room and queues the rest", () => {
+    Memory.data!.war!.E3N53 = {
+      targetRoom: "E3N53",
+      sourceRoom: "E1N57",
+      status: "staging",
+      reason: "manual",
+      squad: "t3Duo",
+      boostTier: "t3",
+      attempts: 1,
+      createdAt: Game.time + 1,
+      updatedAt: Game.time + 1,
+    };
+    const { spawn } = setupWarBoostRoom();
+
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N57).toMatchObject({
+      status: "staging",
+      activeGeneration: { id: 1, phase: "assembling" },
+    });
+    expect(Memory.data!.war!.E3N53).toMatchObject({ status: "queued" });
+    expect(Memory.data!.war!.E3N53!.activeGeneration).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual(expect.arrayContaining([
+      "E1N57:war:E3N57:g1:meleeAttacker:0",
+      "E1N57:war:E3N57:g1:healer:0",
+    ]));
+    expect(spawn.memory.spawnList.some((configName) => configName.includes(":E3N53:"))).toBe(false);
+    expect(Memory.analytics!.war!.tasks.E3N53.status).toBe("queued");
+  });
+
+  it("activates the next queued frontline after the current target is done", () => {
+    Memory.data!.war!.E3N57!.status = "done";
+    Memory.data!.war!.E3N53 = {
+      targetRoom: "E3N53",
+      sourceRoom: "E1N57",
+      status: "queued",
+      reason: "manual",
+      squad: "t3Duo",
+      boostTier: "t3",
+      attempts: 1,
+      createdAt: Game.time + 1,
+      updatedAt: Game.time + 1,
+      statusSince: Game.time,
+    };
+    const { spawn } = setupWarBoostRoom();
+
+    runWarControl();
+
+    expect(Memory.data!.war!.E3N53).toMatchObject({
+      status: "staging",
+      activeGeneration: { id: 1, phase: "assembling" },
+    });
+    expect(spawn.memory.spawnList).toEqual(expect.arrayContaining([
+      "E1N57:war:E3N53:g1:meleeAttacker:0",
+      "E1N57:war:E3N53:g1:healer:0",
+    ]));
+  });
+
   it("opens generation one once and queues generation-scoped configs", () => {
     const { spawn } = setupWarBoostRoom();
 

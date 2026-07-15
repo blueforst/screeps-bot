@@ -1015,7 +1015,7 @@ declare global {
         {
           targetRoom: string;
           sourceRoom: string;
-          status: "staging" | "clearing" | "downgrading" | "done" | "failed";
+          status: "queued" | "staging" | "clearing" | "downgrading" | "done" | "failed";
           reason: "npc_reservation" | "manual";
           routeRooms?: string[];
           squad?: "standard" | "t3Duo";
@@ -1246,6 +1246,7 @@ declare global {
     _warBreachTargetId?: Id<StructureRampart | StructureWall>;
     _warBreachResumeUntil?: number;
     _warDetached?: boolean;
+    _warQueued?: boolean;
     _move?: {
       dest?: {
         x: number;

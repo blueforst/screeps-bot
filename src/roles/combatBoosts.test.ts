@@ -21,6 +21,7 @@ const mockedGetAssignedLabId = getAssignedPowerBankBoostLabId as jest.MockedFunc
 function createAttacker(): Creep {
   return {
     body: [{ type: ATTACK, hits: 100 }],
+    memory: {},
     pos: { isNearTo: jest.fn(() => true) } as unknown as RoomPosition,
   } as unknown as Creep;
 }
@@ -69,5 +70,22 @@ describe("prepareCombatBoost", () => {
 
     expect(ready).toBe(false);
     expect(lab.boostCreep).toHaveBeenCalledWith(creep);
+  });
+
+  it("holds a queued frontline creep in the source room", () => {
+    const lab = createBoostLab(LAB_BOOST_ENERGY);
+    Game.getObjectById = jest.fn(() => lab) as typeof Game.getObjectById;
+    const creep = createAttacker();
+    creep.memory._warQueued = true;
+
+    const ready = prepareCombatBoost(
+      creep,
+      "war:E1N57:E3N53:g1",
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+    );
+
+    expect(ready).toBe(false);
+    expect(mockedGetAssignedLabId).not.toHaveBeenCalled();
+    expect(lab.boostCreep).not.toHaveBeenCalled();
   });
 });
