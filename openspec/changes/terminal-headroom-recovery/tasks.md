@@ -20,11 +20,11 @@
 
 ## 4. Staging admission
 
-- [ ] 4.1 为 `receiver_capacity`、`source_depleted`、真实 fee 不足、terminal cooldown、25 单位尾数和 receiver reservation 上限编写失败测试
-- [ ] 4.2 按现有优先级为每个 source room 构建当前/下一发送机会的有界 staging window，并细分资源缺料与 fee/保护库存不足
-- [ ] 4.3 让 terminal feed 仅装载已获 admission 的安全批次，在 blocker 变化时移除或恢复旧 feed
-- [ ] 4.4 保证同房同资源同轮不会同时生成冲突 feed/offload，且被抑制 staging 不再保护 terminal 库存
-- [ ] 4.5 增加覆盖 carrier draft 替换、任务恢复且无需重建持久 transfer task 的集成测试
+- [x] 4.1 为 `receiver_capacity`、`source_depleted`、真实 fee 不足、terminal cooldown、25 单位尾数和 receiver reservation 上限编写失败测试
+- [x] 4.2 按现有优先级为每个 source room 构建当前/下一发送机会的有界 staging window，并细分资源缺料与 fee/保护库存不足
+- [x] 4.3 让 terminal feed 仅装载已获 admission 的安全批次，在 blocker 变化时移除或恢复旧 feed
+- [x] 4.4 保证同房同资源同轮不会同时生成冲突 feed/offload，且被抑制 staging 不再保护 terminal 库存
+- [x] 4.5 增加覆盖 carrier draft 替换、任务恢复且无需重建持久 transfer task 的集成测试
 
 ## 5. 观测与兼容
 

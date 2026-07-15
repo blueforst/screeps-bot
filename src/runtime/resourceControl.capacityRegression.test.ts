@@ -307,4 +307,89 @@ describe("resource control live-like capacity recovery", () => {
     expect(Memory.runtime?.resourceControl?.rooms[room.name]?.capacityState).toBe("normal");
     expect(getCarrierTasksByRoom(room.name)).toEqual({});
   });
+
+  it("restores staging for the same persistent task after receiver capacity recovers", () => {
+    const source = createMutableRoom(
+      "W83N1",
+      {
+        [RESOURCE_ENERGY]: 220_001,
+        [RESOURCE_KEANIUM]: 6_000,
+      },
+      {},
+    );
+    source.terminal!.cooldown = 1;
+    const receiver = createMutableRoom(
+      "W83N2",
+      { [RESOURCE_ENERGY]: 950_000 },
+      { [RESOURCE_ENERGY]: 20_000 },
+    );
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 1);
+
+    Game.time = 1;
+    const created = createResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      1_000,
+      "manual:receiver-recovery",
+    );
+    if (typeof created === "string") throw new Error(created);
+    const originalTaskId = created.task.id;
+    const originalTaskCreatedAt = created.task.createdAt;
+
+    Game.time = 10;
+    resetRuntimeServices();
+    runResourceControl();
+
+    expect(created.task).toMatchObject({
+      id: originalTaskId,
+      createdAt: originalTaskCreatedAt,
+      status: "pending",
+      blockedReason: "receiver_capacity",
+    });
+    expect(
+      getCarrierTasksByRoom(source.name)[
+        `resourceControl:terminal_feed:${source.name}:${RESOURCE_KEANIUM}`
+      ],
+    ).toBeUndefined();
+
+    (receiver.storage!.store as unknown as MutableStore).set(
+      RESOURCE_ENERGY,
+      200_000,
+    );
+    Game.time = 20;
+    resetRuntimeServices();
+    runResourceControl();
+
+    const recoveredFeed = getCarrierTasksByRoom(source.name)[
+      `resourceControl:terminal_feed:${source.name}:${RESOURCE_KEANIUM}`
+    ];
+    expect(ensureResourceTransferTaskStore()[originalTaskId]).toMatchObject({
+      id: originalTaskId,
+      createdAt: originalTaskCreatedAt,
+      status: "pending",
+    });
+    expect(recoveredFeed).toMatchObject({
+      type: "terminal_feed",
+      steps: [{ resource: RESOURCE_KEANIUM, amount: 1_000 }],
+    });
+
+    Game.time = 30;
+    resetRuntimeServices();
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(source.name)[
+        `resourceControl:terminal_feed:${source.name}:${RESOURCE_KEANIUM}`
+      ],
+    ).toMatchObject({
+      createdAt: recoveredFeed.createdAt,
+      steps: [{ resource: RESOURCE_KEANIUM, amount: 1_000 }],
+    });
+    expect(ensureResourceTransferTaskStore()[originalTaskId].createdAt).toBe(
+      originalTaskCreatedAt,
+    );
+  });
 });

@@ -778,6 +778,14 @@ function getEnergyBalancingSurplus(
   if (!isEnergyExportEligible(snapshot)) {
     return 0;
   }
+  return getProtectedEnergySurplus(snapshot, context, excludeTaskId);
+}
+
+function getProtectedEnergySurplus(
+  snapshot: ResourceControlSnapshot,
+  context: ResourceControlTransferContext,
+  excludeTaskId?: string,
+): number {
   return Math.max(
     0,
     getStock(snapshot, RESOURCE_ENERGY) -
@@ -1876,6 +1884,15 @@ function executeTransferTasks(
       `resourceControl:task:${task.id}`,
     );
     if (code !== OK) {
+      if (capacityConfig.terminalHeadroomRecoveryEnabled) {
+        context.receiverCapacityLedger.reserve(
+          task.id,
+          receiver.roomName,
+          task.resource,
+          0,
+          { ownerTaskId: task.id },
+        );
+      }
       task.updatedAt = Game.time;
       task.lastError = `send_code_${code}`;
       if (code === ERR_INVALID_ARGS || code === ERR_INVALID_TARGET) {
@@ -2280,6 +2297,7 @@ function appendTerminalResourceFeedDrafts(
   offloadedResources: Set<ResourceConstant>,
   desiredFeedByResource: Map<ResourceConstant, number>,
   initialFeedCapacity: number,
+  limitByAdditionalCapacity = false,
 ): void {
   if (
     snapshot.nativeMineralType &&
@@ -2300,11 +2318,15 @@ function appendTerminalResourceFeedDrafts(
   let feedCapacity = initialFeedCapacity;
   for (const [resource, target] of desiredFeedByResource.entries()) {
     if (feedCapacity <= 0) break;
-    const draft = createTerminalFeedTask(
+    const requestedDraft = createTerminalFeedTask(
       snapshot,
       resource,
-      Math.min(target, feedCapacity),
+      limitByAdditionalCapacity ? target : Math.min(target, feedCapacity),
     );
+    if (!requestedDraft) continue;
+    const draft = limitByAdditionalCapacity
+      ? limitCarrierTaskDraftAmount(requestedDraft, feedCapacity)
+      : requestedDraft;
     if (!draft) continue;
     const feedAmount = draft.steps.reduce(
       (sum, step) => sum + step.amount,
@@ -2511,6 +2533,114 @@ function getTerminalLogisticsCapacityPlan(
     feedCapacity: Math.min(
       snapshot.terminalFreeCapacity,
       Math.max(0, desiredTerminalUsedCapacity - snapshot.terminalUsedCapacity),
+    ),
+  };
+}
+
+function getRequiredTerminalStagingFeedAmount(
+  source: ResourceControlSnapshot,
+  resource: ResourceConstant,
+  amount: number,
+  transactionFee: number,
+): { energy: number; resource: number; total: number } {
+  const resourceFeedAmount = resource === RESOURCE_ENERGY
+    ? 0
+    : Math.max(0, amount - getTerminalResourceAmount(source, resource));
+  const desiredEnergy = transactionFee +
+    (resource === RESOURCE_ENERGY ? amount : 0);
+  const energyFeedAmount = Math.max(0, desiredEnergy - source.terminalEnergy);
+  return {
+    energy: energyFeedAmount,
+    resource: resourceFeedAmount,
+    total: energyFeedAmount + resourceFeedAmount,
+  };
+}
+
+function reserveTransferTaskStagingBatch(
+  source: ResourceControlSnapshot,
+  receiver: ResourceControlSnapshot,
+  task: ResourceTransferTask,
+  maximumAmount: number,
+  capacityConfig: ResourceCapacityConfig,
+  context: ResourceControlTransferContext,
+): TerminalStagingBatch | undefined {
+  const sourceSafeAmount = task.resource === RESOURCE_ENERGY
+    ? getEnergyBalancingSurplus(source, context, task.id)
+    : getTotalMovableResourceAmount(
+        source,
+        task.resource,
+        capacityConfig,
+        context,
+        task.id,
+      );
+  const receiverAllowance = context.receiverCapacityLedger.getAvailableAmount(
+    receiver.roomName,
+    task.resource,
+    task.id,
+  );
+  const maximum = Math.floor(Math.min(
+    maximumAmount,
+    sourceSafeAmount,
+    receiverAllowance,
+  ));
+  if (maximum <= 0) return undefined;
+
+  const energyBudget = task.resource === RESOURCE_ENERGY
+    ? sourceSafeAmount
+    : getProtectedEnergySurplus(source, context, task.id);
+  const { feedCapacity } = getTerminalLogisticsCapacityPlan(
+    source,
+    capacityConfig,
+  );
+  const canStage = (amount: number): boolean => {
+    const transactionFee = Game.market.calcTransactionCost(
+      amount,
+      source.roomName,
+      receiver.roomName,
+    );
+    const spentEnergy = transactionFee +
+      (task.resource === RESOURCE_ENERGY ? amount : 0);
+    const requiredFeed = getRequiredTerminalStagingFeedAmount(
+      source,
+      task.resource,
+      amount,
+      transactionFee,
+    );
+    return spentEnergy <= energyBudget &&
+      requiredFeed.energy <= source.storage!.store.getUsedCapacity(RESOURCE_ENERGY) &&
+      requiredFeed.resource <= source.storage!.store.getUsedCapacity(task.resource) &&
+      requiredFeed.total <= feedCapacity;
+  };
+
+  const affordableAmount = computeLargestAffordableAmount(maximum, canStage);
+  if (affordableAmount <= 0) return undefined;
+  const grantedAmount = context.receiverCapacityLedger.reserve(
+    task.id,
+    receiver.roomName,
+    task.resource,
+    affordableAmount,
+    { ownerTaskId: task.id },
+  );
+  const amount = computeLargestAffordableAmount(
+    Math.min(affordableAmount, grantedAmount),
+    canStage,
+  );
+  const reservedAmount = context.receiverCapacityLedger.reserve(
+    task.id,
+    receiver.roomName,
+    task.resource,
+    amount,
+    { ownerTaskId: task.id },
+  );
+  if (reservedAmount <= 0) return undefined;
+
+  return {
+    resource: task.resource,
+    amount: reservedAmount,
+    transactionFee: Game.market.calcTransactionCost(
+      reservedAmount,
+      source.roomName,
+      receiver.roomName,
     ),
   };
 }
@@ -2746,35 +2876,18 @@ function syncTerminalFeedTasks(
         );
       }
       if (pendingAmount <= 0) continue;
-    } else {
-      pendingAmount = Math.min(
-        pendingAmount,
-        context.receiverCapacityLedger.getAvailableAmount(
-          receiver.roomName,
-          task.resource,
-          task.id,
-        ),
-      );
     }
 
-    pendingAmount = Math.min(pendingAmount, getStock(source, task.resource));
-    if (task.resource === RESOURCE_ENERGY && !isEnergyExportEligible(source)) continue;
-    if (pendingAmount <= 0) continue;
-
-    const transactionFee = Game.market.calcTransactionCost(
+    const stagingBatch = reserveTransferTaskStagingBatch(
+      source,
+      receiver,
+      task,
       pendingAmount,
-      source.roomName,
-      receiver.roomName,
+      capacityConfig,
+      context,
     );
-    const requiredEnergy = transactionFee +
-      (task.resource === RESOURCE_ENERGY ? pendingAmount : 0);
-    if (getStock(source, RESOURCE_ENERGY) < requiredEnergy) continue;
-
-    stagingBatchByRoom.set(task.fromRoomName, {
-      resource: task.resource,
-      amount: pendingAmount,
-      transactionFee,
-    });
+    if (!stagingBatch) continue;
+    stagingBatchByRoom.set(task.fromRoomName, stagingBatch);
   }
 
   const validRoomNames = new Set(snapshots.map((snapshot) => snapshot.roomName));
@@ -2793,6 +2906,14 @@ function syncTerminalFeedTasks(
       desiredTerminalUsedCapacity,
       feedCapacity: safeFeedCapacity,
     } = getTerminalLogisticsCapacityPlan(snapshot, capacityConfig);
+    const stagingFeedRequirement = stagingBatch
+      ? getRequiredTerminalStagingFeedAmount(
+          snapshot,
+          stagingBatch.resource,
+          stagingBatch.amount,
+          stagingBatch.transactionFee,
+        )
+      : undefined;
 
     // Terminal overflow: offload surplus above cap to storage
     // Compute offload drafts first so we can suppress conflicting feed drafts
@@ -2852,7 +2973,17 @@ function syncTerminalFeedTasks(
       energyDraft?.type === "terminal_feed" &&
       !offloadedResources.has(RESOURCE_ENERGY)
     ) {
-      const limitedEnergyFeed = limitCarrierTaskDraftAmount(energyDraft, feedCapacity);
+      const maximumEnergyFeed = stagingBatch?.resource !== RESOURCE_ENERGY &&
+        stagingFeedRequirement
+        ? Math.max(
+            stagingFeedRequirement.energy,
+            feedCapacity - stagingFeedRequirement.resource,
+          )
+        : feedCapacity;
+      const limitedEnergyFeed = limitCarrierTaskDraftAmount(
+        energyDraft,
+        maximumEnergyFeed,
+      );
       if (limitedEnergyFeed) {
         const amount = limitedEnergyFeed.steps.reduce((sum, step) => sum + step.amount, 0);
         drafts.push(limitedEnergyFeed);
@@ -2879,6 +3010,7 @@ function syncTerminalFeedTasks(
       offloadedResources,
       desiredFeedByResource,
       feedCapacity,
+      true,
     );
     commitTerminalLogisticsDrafts(snapshot, drafts, actions);
   }
