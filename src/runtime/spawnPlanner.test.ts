@@ -159,6 +159,99 @@ describe("spawnPlanner emergency carrier flow", () => {
     });
   });
 
+  it("keeps only one emergency carrier request while the spawn is busy", () => {
+    const room = createRoom("W1N3");
+    const spawn = createSpawn(room);
+    spawn.spawning = {
+      name: "meleeAttacker-busy",
+    } as Spawning;
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Memory.creeps[spawn.spawning.name] = {
+      role: "meleeAttacker",
+      configName: `${room.name}:war:W2N3:g1:meleeAttacker:0`,
+    } as CreepMemory;
+
+    scheduleSpawnTasks();
+    Game.time += 1;
+    scheduleSpawnTasks();
+
+    const emergencyConfigs = spawn.memory.spawnList!.filter((name) => name.includes(":manual:maxcarrier:"));
+    expect(emergencyConfigs).toHaveLength(1);
+    expect(Object.keys(Memory.data!.creepConfigs!).filter((name) => name.includes(":manual:maxcarrier:"))).toHaveLength(1);
+  });
+
+  it("recognizes a spawning transient carrier after its config has been removed", () => {
+    const room = createRoom("W1N4");
+    const spawn = createSpawn(room);
+    spawn.spawning = {
+      name: "carrier-spawning",
+    } as Spawning;
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Memory.creeps[spawn.spawning.name] = {
+      role: "carrier",
+      configName: `${room.name}:manual:maxcarrier:${Game.time}`,
+    } as CreepMemory;
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList!.some((name) => name.includes(":manual:maxcarrier:"))).toBe(false);
+  });
+
+  it("removes stale queued emergency carriers once a carrier is spawning", () => {
+    const room = createRoom("W1N5");
+    const spawn = createSpawn(room);
+    const staleA = `${room.name}:manual:maxcarrier:${Game.time - 2}`;
+    const staleB = `${room.name}:manual:maxcarrier:${Game.time - 1}`;
+    spawn.spawning = {
+      name: "carrier-spawning-cleanup",
+    } as Spawning;
+    spawn.memory.spawnList = [staleA, "unrelated:worker", staleB];
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Memory.creeps[spawn.spawning.name] = {
+      role: "carrier",
+      configName: `${room.name}:manual:maxcarrier:${Game.time}`,
+    } as CreepMemory;
+    Memory.data = {
+      creepConfigs: {
+        [staleA]: { role: "carrier", args: [], roomName: room.name },
+        [staleB]: { role: "carrier", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toEqual(["unrelated:worker"]);
+    expect(Memory.data!.creepConfigs![staleA]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![staleB]).toBeUndefined();
+  });
+
+  it("moves an emergency carrier request off an inactive spawn", () => {
+    const room = createRoom("W1N6");
+    const inactiveSpawn = createSpawn(room, 2, "W1N6-spawn-inactive");
+    const activeSpawn = createSpawn(room, 2, "W1N6-spawn-active");
+    const stale = `${room.name}:manual:maxcarrier:${Game.time - 1}`;
+    inactiveSpawn.isActive = jest.fn(() => false);
+    activeSpawn.isActive = jest.fn(() => true);
+    inactiveSpawn.memory.spawnList = [stale];
+    Game.rooms[room.name] = room;
+    Game.spawns[inactiveSpawn.name] = inactiveSpawn;
+    Game.spawns[activeSpawn.name] = activeSpawn;
+    Memory.data = {
+      creepConfigs: {
+        [stale]: { role: "carrier", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(inactiveSpawn.memory.spawnList).toEqual([]);
+    expect(activeSpawn.memory.spawnList).toHaveLength(1);
+    expect(activeSpawn.memory.spawnList![0]).toContain(":manual:maxcarrier:");
+  });
+
   it("exposes the same max-carrier behavior through the console wrapper", () => {
     const room = createRoom("W1N2");
     const spawn = createSpawn(room);
