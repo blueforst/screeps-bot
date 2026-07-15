@@ -9,6 +9,19 @@ function makeRoom(energyCapacityAvailable: number): Room {
 }
 
 describe("spawnProfiles", () => {
+  it("builds the fixed 15 WORK, 5 CARRY, 10 MOVE hub upgrader body", () => {
+    const profile = (spawnProfiles as unknown as Record<string, (room: Room) => BodyPartConstant[]>).hubUpgrader;
+
+    expect(profile).toBeDefined();
+
+    const body = profile(makeRoom(5600));
+    expect(body).toHaveLength(30);
+    expect(body.filter((part) => part === WORK)).toHaveLength(15);
+    expect(body.filter((part) => part === CARRY)).toHaveLength(5);
+    expect(body.filter((part) => part === MOVE)).toHaveLength(10);
+    expect(bodyCost(body)).toBe(2250);
+  });
+
   it("builds powerBankHauler up to the 50 body part hard limit", () => {
     const room = makeRoom(12_000);
 

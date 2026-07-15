@@ -3,6 +3,7 @@ import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { getAssignedPowerBankBoostLabId } from "@/runtime/powerBankBoostMemory";
 
 const BOOSTED_PARTS: Partial<Record<ResourceConstant, BodyPartConstant>> = {
+  [RESOURCE_CATALYZED_GHODIUM_ACID]: WORK,
   [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: TOUGH,
   [RESOURCE_CATALYZED_UTRIUM_ACID]: ATTACK,
   [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: HEAL,

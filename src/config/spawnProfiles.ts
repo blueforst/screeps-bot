@@ -9,6 +9,12 @@ type SpawnBodyGenerator = (room: Room) => BodyPartConstant[];
 
 const MAX_BODY_SIZE = 50;
 
+export const HUB_UPGRADER_BODY: BodyPartConstant[] = [
+  ...Array(15).fill(WORK),
+  ...Array(5).fill(CARRY),
+  ...Array(10).fill(MOVE),
+];
+
 function clampByCapacity(parts: BodyPartConstant[], room: Room): BodyPartConstant[] {
   const result: BodyPartConstant[] = [];
   let total = 0;
@@ -262,6 +268,7 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   miner: () => [...LINK_MINER_BODY],
   carrier: carryMoveBody,
   worker: oneOneOneBody,
+  hubUpgrader: () => [...HUB_UPGRADER_BODY],
   scout: () => [MOVE],
   claimer: () => [CLAIM, MOVE],
   colonizerHarvester: () => [...COLONIZER_HARVESTER_BODY],

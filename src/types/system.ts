@@ -4,6 +4,7 @@ export type RoleName =
   | "miner"
   | "carrier"
   | "worker"
+  | "hubUpgrader"
   | "scout"
   | "claimer"
   | "colonizerHarvester"

@@ -8,6 +8,7 @@ import { crossShardColonizerWorkerRole } from "@/roles/crossShardColonizerWorker
 import { crossShardClaimerRole } from "@/roles/crossShardClaimer";
 import { harvesterRole } from "@/roles/harvester";
 import { healerRole } from "@/roles/healer";
+import { hubUpgraderRole } from "@/roles/hubUpgrader";
 import { homeDefenderRole } from "@/roles/homeDefender";
 import { meleeAttackerRole } from "@/roles/meleeAttacker";
 import { minerRole } from "@/roles/miner";
@@ -31,6 +32,7 @@ export const roleRegistry: Record<RoleName, RoleFactory> = {
   miner: minerRole,
   carrier: carrierRole,
   worker: workerRole,
+  hubUpgrader: hubUpgraderRole,
   scout: scoutRole,
   claimer: claimerRole,
   colonizerHarvester: colonizerHarvesterRole,
