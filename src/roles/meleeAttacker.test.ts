@@ -1030,6 +1030,70 @@ describe("meleeAttackerRole war duo staging", () => {
     expect(findWarObjectiveTarget(attacker)).toBeNull();
   });
 
+  it("does not chase a distant hostile builder instead of working on residual barriers", () => {
+    const builder = hostileCreep("hostile-builder", 1200, { [WORK]: 8, [CARRY]: 4, [MOVE]: 4 });
+    const rampart = hostileStructure(STRUCTURE_RAMPART, "residual-builder-rampart", 12, 12, 1_000_000);
+    const attacker = createMockPowerBankCreep("meleeAttacker", { roomName: TARGET_ROOM });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [builder];
+      if (type === FIND_HOSTILE_STRUCTURES) return [rampart];
+      return [];
+    }) as Room["find"];
+
+    expect(findWarObjectiveTarget(attacker)).toBe(rampart);
+  });
+
+  it("keeps working on a tracked residual breach instead of chasing a distant hostile builder", () => {
+    const builder = hostileCreep("hostile-builder-intercept", 1200, { [WORK]: 8, [CARRY]: 4, [MOVE]: 4 });
+    builder.pos = { x: 30, y: 30, roomName: TARGET_ROOM } as RoomPosition;
+    const trackedWall = hostileStructure(
+      STRUCTURE_WALL,
+      "obsolete-builder-wall",
+      2,
+      16,
+      1_000_000,
+    ) as StructureWall;
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 3,
+      y: 17,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warBreachTargetId: trackedWall.id,
+      },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) => {
+      if (type === FIND_HOSTILE_CREEPS) return [builder];
+      if (type === FIND_HOSTILE_STRUCTURES) return [trackedWall];
+      if (type === FIND_STRUCTURES) return [trackedWall];
+      return [];
+    }) as Room["find"];
+    attacker.pos.findInRange = jest.fn(() => []) as unknown as RoomPosition["findInRange"];
+    attacker.attack = jest.fn((target: Creep | Structure) =>
+      target === builder ? ERR_NOT_IN_RANGE : OK
+    ) as Creep["attack"];
+    Game.getObjectById = jest.fn((id: string) => (id === trackedWall.id ? trackedWall : null)) as typeof Game.getObjectById;
+    (PathFinder.search as jest.Mock).mockReturnValue({ path: [], incomplete: false, cost: 0, ops: 1 });
+    Game.creeps = {
+      attacker,
+      healer: createMockPowerBankCreep("healer", {
+        name: "healer",
+        roomName: TARGET_ROOM,
+        x: 4,
+        y: 17,
+        memory: { role: "healer", configName: HEALER_CONFIG },
+      }),
+    };
+
+    meleeAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(trackedWall);
+    expect(attacker.attack).not.toHaveBeenCalledWith(builder);
+    expect(attacker.memory._warBreachTargetId).toBe(trackedWall.id);
+  });
+
   it("targets an exposed dangerous creep but not one protected by a hostile rampart", () => {
     const exposed = hostileCreep("exposed-attacker", 800, { [ATTACK]: 5 });
     exposed.pos = { x: 10, y: 10, roomName: TARGET_ROOM } as RoomPosition;
