@@ -11,6 +11,7 @@ import { runResourceControl } from "@/runtime/resourceControl";
 import { runSynthesisControl } from "@/runtime/synthesisControl";
 import { runFactoryControl } from "@/runtime/factoryControl";
 import { runHubPlanner } from "@/runtime/hubPlanner";
+import { runHubUpgradeControl } from "@/runtime/hubUpgradeControl";
 import { runMineralExtraction } from "@/runtime/mineralExtraction";
 import { runExternalTelemetryExport } from "@/runtime/externalTelemetry";
 import { bootstrapRooms } from "@/runtime/bootstrap";
@@ -60,6 +61,7 @@ function gameLoop(): void {
   cpuProfiler.measure("pixelGenerator", runPixelGenerator);
   cpuProfiler.measure("productionMonitor", runProductionMonitor);
   cpuProfiler.measure("hubPlanner", runHubPlanner);
+  cpuProfiler.measure("hubUpgradeControl", runHubUpgradeControl);
   cpuProfiler.measure("synthesisControl", runSynthesisControl);
   cpuProfiler.measure("factoryControl", runFactoryControl);
   cpuProfiler.measure("mineralExtraction", runMineralExtraction);

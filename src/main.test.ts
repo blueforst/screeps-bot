@@ -52,6 +52,16 @@ describe("main loop phase ordering", () => {
     expect(hubIdx).toBeLessThan(synthIdx);
   });
 
+  it("runs hubUpgradeControl after hubPlanner and before synthesisControl", () => {
+    const order = extractMeasureOrder(mainSrc);
+    const hubPlannerIdx = order.indexOf("hubPlanner");
+    const hubUpgradeIdx = order.indexOf("hubUpgradeControl");
+    const synthesisIdx = order.indexOf("synthesisControl");
+
+    expect(hubUpgradeIdx).toBeGreaterThan(hubPlannerIdx);
+    expect(hubUpgradeIdx).toBeLessThan(synthesisIdx);
+  });
+
   it("remoteMining is after bootstrapRooms and before scheduleSpawnTasks", () => {
     const order = extractMeasureOrder(mainSrc);
     const bootstrapIdx = order.indexOf("bootstrapRooms");
