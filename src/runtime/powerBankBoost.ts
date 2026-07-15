@@ -12,6 +12,7 @@ import {
   type CarrierTaskDraft,
 } from "@/runtime/carrierTaskBoard";
 import { getTickContextService } from "@/runtime/runtimeServices";
+import { TERMINAL_ENERGY_PICKUP_RESERVE } from "@/runtime/energyPickupReservation";
 import {
   ensurePowerBankBoostPrepStore,
   getActivePowerBankBoostLabIds,
@@ -263,7 +264,7 @@ export function prepareBoosts(
         const energySource = resolveBoostSupplySource(room, RESOURCE_ENERGY);
         const transferAmount = Math.min(
           energyDeficit,
-          energySource?.store.getUsedCapacity(RESOURCE_ENERGY) ?? 0,
+          energySource ? getBoostSupplyAmount(energySource, RESOURCE_ENERGY) : 0,
           lab.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0,
         );
         if (!energySource || transferAmount < energyDeficit) {
@@ -429,8 +430,8 @@ function resolveBoostSupplySource(
   room: Room,
   resource: ResourceConstant,
 ): StructureStorage | StructureTerminal | null {
-  const terminalAmount = room.terminal?.store.getUsedCapacity(resource) ?? 0;
-  const storageAmount = room.storage?.store.getUsedCapacity(resource) ?? 0;
+  const terminalAmount = room.terminal ? getBoostSupplyAmount(room.terminal, resource) : 0;
+  const storageAmount = room.storage ? getBoostSupplyAmount(room.storage, resource) : 0;
 
   if (storageAmount >= terminalAmount && room.storage && storageAmount > 0) {
     return room.storage;
@@ -442,4 +443,15 @@ function resolveBoostSupplySource(
     return room.storage;
   }
   return null;
+}
+
+function getBoostSupplyAmount(
+  structure: StructureStorage | StructureTerminal,
+  resource: ResourceConstant,
+): number {
+  const amount = structure.store.getUsedCapacity(resource);
+  if (resource === RESOURCE_ENERGY && structure.structureType === STRUCTURE_TERMINAL) {
+    return Math.max(0, amount - TERMINAL_ENERGY_PICKUP_RESERVE);
+  }
+  return amount;
 }

@@ -466,6 +466,9 @@ describe("carrierRole mineral hauling", () => {
       pos: { x: 5, y: 5, roomName: room.name },
     });
     getReservedPickupTarget.mockReturnValue(protoStorage);
+    getPickupTargetEnergyAmount.mockImplementation((target: { id: string }) =>
+      target.id === protoStorage.id ? 300 : 0
+    );
     reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === protoStorage.id);
 
     const switched = carrierRole().source?.(creep);
@@ -1274,7 +1277,7 @@ describe("carrierRole mineral hauling", () => {
         getFreeCapacity: () => 10000,
       },
     } as unknown as StructureStorage;
-    const room = createRoom("W4N1", { storage });
+    const room = createRoom("W4N1", { storage, terminal: null });
     const configName = `${room.name}:manual:maxcarrier:test`;
     let carried = 0;
     const creep = {
@@ -1936,7 +1939,32 @@ describe("carrierRole mineral hauling", () => {
 
   // ── Terminal energy pickup config ──────────────────────────────────
 
-  it("does not pick up energy from terminal by default for any room", () => {
+  it("picks only terminal energy above the 50k reserve by default", () => {
+    Memory.cfg = {};
+    const room = createRoom("E7N58");
+    const terminal = {
+      id: "E7N58-terminal-surplus",
+      pos: { x: 15, y: 15, roomName: "E7N58" },
+      structureType: STRUCTURE_TERMINAL,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 50_600 : 0),
+        getFreeCapacity: () => 10000,
+      },
+    } as unknown as StructureTerminal;
+    (room as { terminal: StructureTerminal }).terminal = terminal;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(null);
+    getPickupTargetEnergyAmount.mockImplementation((target: { id: string }) =>
+      target.id === terminal.id ? 600 : 0
+    );
+    reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === terminal.id);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 600);
+  });
+
+  it("does not pick up terminal energy at or below the 50k reserve", () => {
     const room = createRoom("E7N58");
     const terminal = {
       id: "E7N58-terminal",
@@ -1950,7 +1978,7 @@ describe("carrierRole mineral hauling", () => {
     (room as any).terminal = terminal;
     const creep = createCreep(room);
     getEnergyStoreTarget.mockReturnValue(null);
-    getPickupTargetEnergyAmount.mockImplementation((target: { id: string }) => (target.id === terminal.id ? 5000 : 0));
+    getPickupTargetEnergyAmount.mockReturnValue(0);
     reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === terminal.id);
 
     const switched = carrierRole().source?.(creep);
@@ -1959,14 +1987,14 @@ describe("carrierRole mineral hauling", () => {
     expect(switched).toBe(false);
   });
 
-  it("picks up energy from terminal when room is explicitly enabled via config", () => {
+  it("keeps explicit terminal pickup enablement compatible with the reserve", () => {
     const room = createRoom("E7N58");
     const terminal = {
       id: "E7N58-terminal-enabled",
       pos: { x: 15, y: 15, roomName: "E7N58" },
       structureType: STRUCTURE_TERMINAL,
       store: {
-        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 55_000 : 0),
         getFreeCapacity: () => 10000,
       },
     } as unknown as StructureTerminal;
@@ -1987,23 +2015,24 @@ describe("carrierRole mineral hauling", () => {
 
     const switched = carrierRole().source?.(creep);
 
-    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+    expect(creep.withdraw).toHaveBeenCalledWith(terminal, RESOURCE_ENERGY, 800);
     expect(switched).toBe(true);
   });
 
-  it("does not pick up energy from terminal for non-enabled room", () => {
+  it("allows an explicit room config to disable terminal surplus pickup", () => {
     const room = createRoom("W1N1");
     const terminal = {
       id: "W1N1-terminal",
       pos: { x: 15, y: 15, roomName: "W1N1" },
       structureType: STRUCTURE_TERMINAL,
       store: {
-        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 5000 : 0),
+        getUsedCapacity: (resource?: ResourceConstant) => (resource === RESOURCE_ENERGY ? 55_000 : 0),
         getFreeCapacity: () => 10000,
       },
     } as unknown as StructureTerminal;
     (room as any).terminal = terminal;
     const creep = createCreep(room);
+    Memory.cfg = { energyPickup: { terminalPickupRooms: { W1N1: false } } };
     getEnergyStoreTarget.mockReturnValue(null);
     getPickupTargetEnergyAmount.mockImplementation((target: { id: string }) => (target.id === terminal.id ? 5000 : 0));
     reservePickupTarget.mockImplementation((_creep: Creep, target: { id: string }) => target.id === terminal.id);

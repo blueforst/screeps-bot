@@ -31,14 +31,12 @@ interface CarrierPickupOptions {
   includeTerminal?: boolean;
 }
 
-const DEFAULT_TERMINAL_PICKUP_ROOMS: Record<string, boolean> = {};
-
 function isTerminalPickupEnabledForRoom(roomName: string): boolean {
   const configRooms = Memory.cfg?.energyPickup?.terminalPickupRooms;
   if (configRooms && roomName in configRooms) {
     return !!configRooms[roomName];
   }
-  return !!DEFAULT_TERMINAL_PICKUP_ROOMS[roomName];
+  return true;
 }
 
 function getCarrierPickupAmount(target: CarrierPickupTarget): number {
@@ -134,7 +132,7 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPicku
         ? [creep.room.storage]
         : [];
     const terminal =
-      options?.includeTerminal && creep.room.terminal && creep.room.terminal.store.getUsedCapacity(RESOURCE_ENERGY) > 0
+      options?.includeTerminal && creep.room.terminal && getCarrierPickupAmount(creep.room.terminal) > 0
         ? [creep.room.terminal]
         : [];
 
@@ -189,7 +187,7 @@ function isCarrierPickupTarget(
   }
 
   if (options?.includeTerminal && structureType === STRUCTURE_TERMINAL) {
-    return true;
+    return getCarrierPickupAmount(target as StructureTerminal) > 0;
   }
 
   if (structureType === STRUCTURE_CONTAINER) {
@@ -219,7 +217,10 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
     sourceTarget = null;
   }
 
-  if (sourceTarget && !reservePickupTarget(creep, sourceTarget, desiredAmount)) {
+  const reservedAmount = sourceTarget
+    ? Math.min(desiredAmount, getCarrierPickupAmount(sourceTarget as CarrierPickupTarget))
+    : 0;
+  if (sourceTarget && (reservedAmount <= 0 || !reservePickupTarget(creep, sourceTarget, reservedAmount))) {
     releasePickupReservation(creep, sourceTarget.id);
     sourceTarget = null;
   }
@@ -227,7 +228,8 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
   if (!sourceTarget) {
     const candidates = getWeightedCarrierPickupCandidates(creep, options);
     for (const candidate of candidates) {
-      if (reservePickupTarget(creep, candidate, desiredAmount)) {
+      const candidateAmount = Math.min(desiredAmount, getCarrierPickupAmount(candidate));
+      if (candidateAmount > 0 && reservePickupTarget(creep, candidate, candidateAmount)) {
         sourceTarget = candidate;
         break;
       }
@@ -268,7 +270,17 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
     return { picked: withdrawCode === OK, outOfRange: false };
   }
 
-  const withdrawCode = measureCreepIntent(() => creep.withdraw(sourceTarget, RESOURCE_ENERGY));
+  const withdrawCode = measureCreepIntent(() => {
+    if ("structureType" in sourceTarget && sourceTarget.structureType === STRUCTURE_TERMINAL) {
+      const amount = Math.min(
+        creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0,
+        getCarrierPickupAmount(sourceTarget),
+      );
+      if (amount <= 0) return ERR_NOT_ENOUGH_RESOURCES;
+      return creep.withdraw(sourceTarget, RESOURCE_ENERGY, amount);
+    }
+    return creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+  });
   if (withdrawCode === ERR_NOT_IN_RANGE) {
     moveToTarget(creep, sourceTarget);
     return { picked: false, outOfRange: true };

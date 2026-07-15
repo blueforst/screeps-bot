@@ -176,6 +176,32 @@ describe("powerBankBoost", () => {
         ]));
       });
 
+      it("does not use terminal energy below the 50k reserve for war lab supply", () => {
+        const compound = RESOURCE_CATALYZED_UTRIUM_ACID;
+        const lab = createLabWithCompound(
+          `${SOURCE_ROOM}-lab-1`,
+          SOURCE_ROOM,
+          compound,
+          LAB_BOOST_MINERAL,
+          0,
+        );
+        Game.rooms[SOURCE_ROOM] = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          terminalResources: { [RESOURCE_ENERGY]: 50_000 + LAB_BOOST_ENERGY - 1 },
+          labs: [lab],
+        });
+
+        const result = prepareBoosts(
+          TASK_ID,
+          SOURCE_ROOM,
+          6,
+          new Map([[compound, LAB_BOOST_MINERAL]]),
+          { requireLabEnergy: true },
+        );
+
+        expect(result).toMatchObject({ status: "failed", reason: "insufficient_lab_energy" });
+      });
+
       it("returns preparing and creates carrier tasks for tier 6", () => {
         const compounds = [
           RESOURCE_CATALYZED_GHODIUM_ALKALIDE,

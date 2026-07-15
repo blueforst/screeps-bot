@@ -1,6 +1,7 @@
 import { ensureCreepAssignmentState } from "@/runtime/creepAssignmentState";
 
 const RESERVATION_TTL = 12;
+export const TERMINAL_ENERGY_PICKUP_RESERVE = 50_000;
 
 type PickupTargetKind = "resource" | "structure";
 type PickupTarget = Resource | AnyStoreStructure | Tombstone | Ruin;
@@ -41,7 +42,11 @@ export function getPickupTargetEnergyAmount(target: PickupTarget): number {
   }
 
   if ("store" in target) {
-    return target.store.getUsedCapacity(RESOURCE_ENERGY);
+    const amount = target.store.getUsedCapacity(RESOURCE_ENERGY);
+    if ((target as Structure).structureType === STRUCTURE_TERMINAL) {
+      return Math.max(0, amount - TERMINAL_ENERGY_PICKUP_RESERVE);
+    }
+    return amount;
   }
 
   return 0;
