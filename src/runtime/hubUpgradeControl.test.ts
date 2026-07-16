@@ -17,9 +17,9 @@ function resetRuntimeServices(): void {
   delete (global as RuntimeGlobal).__runtimeServices;
 }
 
-function createHubRoom(level = 7, my = true): Room {
+function createHubRoom(level = 7, my = true, name = "E4N58"): Room {
   return {
-    name: "E4N58",
+    name,
     controller: { level, my } as StructureController,
   } as Room;
 }
@@ -60,6 +60,7 @@ describe("runHubUpgradeControl", () => {
     Game.creeps = {};
     Game.spawns = {};
     Game.rooms.E4N58 = createHubRoom();
+    delete Game.rooms.W1N57;
     mockedPrepareBoosts.mockReturnValue({ status: "preparing", labs: [] });
   });
 
@@ -76,6 +77,63 @@ describe("runHubUpgradeControl", () => {
     expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(1);
   });
 
+  it("creates one upgrader for each configured extra RCL7 room", () => {
+    (Memory.cfg!.hub as any).upgraderRoomNames = ["W1N57"];
+    Game.rooms.W1N57 = createHubRoom(7, true, "W1N57");
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]).toBeDefined();
+    expect(Memory.data?.creepConfigs?.["W1N57:hubUpgrader:0"]).toEqual({
+      role: "hubUpgrader",
+      args: ["W1N57", "hubUpgrade:W1N57"],
+      roomName: "W1N57",
+      body: HUB_UPGRADER_BODY,
+    });
+    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(2);
+    expect(mockedPrepareBoosts).toHaveBeenCalledWith(
+      "hubUpgrade:W1N57",
+      "W1N57",
+      0,
+      new Map([[RESOURCE_CATALYZED_GHODIUM_ACID, 450]]),
+      { requireLabEnergy: true },
+    );
+  });
+
+  it("does not duplicate the primary hub when it is also listed as an extra room", () => {
+    (Memory.cfg!.hub as any).upgraderRoomNames = ["E4N58", "E4N58"];
+
+    runHubUpgradeControl();
+
+    expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toEqual([
+      "E4N58:hubUpgrader:0",
+    ]);
+  });
+
+  it("cleans an extra upgrader when its room reaches RCL8", () => {
+    (Memory.cfg!.hub as any).upgraderRoomNames = ["W1N57"];
+    Game.rooms.W1N57 = createHubRoom(8, true, "W1N57");
+    Memory.data!.creepConfigs!["W1N57:hubUpgrader:0"] = {
+      role: "hubUpgrader",
+      args: ["W1N57", "hubUpgrade:W1N57"],
+      roomName: "W1N57",
+      body: [...HUB_UPGRADER_BODY],
+    };
+    Memory.runtime!.powerBankBoost = {
+      "hubUpgrade:W1N57": {
+        taskId: "hubUpgrade:W1N57",
+        sourceRoomName: "W1N57",
+        labs: {},
+      },
+    };
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["W1N57:hubUpgrader:0"]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]).toBeDefined();
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:W1N57", "W1N57");
+  });
+
   it("removes a noncanonical third upgrader config in the active hub", () => {
     Memory.data!.creepConfigs!["E4N58:hubUpgrader:legacy"] = {
       role: "hubUpgrader",
@@ -88,6 +146,25 @@ describe("runHubUpgradeControl", () => {
 
     expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:legacy"]).toBeUndefined();
     expect(Object.keys(Memory.data?.creepConfigs || {}).filter((name) => name.includes(":hubUpgrader:"))).toHaveLength(1);
+  });
+
+  it("removes orphaned legacy queue entries and live upgraders even without a config entry", () => {
+    const legacyConfigName = "E4N58:hubUpgrader:legacy";
+    const legacy = createUpgrader("legacy-upgrader", legacyConfigName, 15);
+    Game.creeps = { legacy };
+    const cancel = jest.fn(() => OK);
+    Memory.creeps = { "legacy-spawning": { configName: legacyConfigName } as CreepMemory };
+    Game.spawns.Spawn1 = {
+      memory: { spawnList: [legacyConfigName, "E4N58:worker:0"] },
+      spawning: { name: "legacy-spawning", cancel } as unknown as Spawning,
+    } as StructureSpawn;
+
+    runHubUpgradeControl();
+
+    expect(legacy.suicide).toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalled();
+    expect(Game.spawns.Spawn1.memory.spawnList).toEqual(["E4N58:worker:0"]);
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]).toBeDefined();
   });
 
   it("requests 450 XGH2O while the upgrader config has no creep", () => {

@@ -5,10 +5,20 @@ import type { RoleFactory } from "@/types/system";
 
 type ControllerEnergySource = StructureLink | StructureContainer;
 
-function getActiveController(roomName: string | undefined): StructureController | null {
+function getActiveController(roomName: string | undefined, creep: Creep): StructureController | null {
   if (!roomName) return null;
   const hub = Memory.cfg?.hub;
-  if (!hub?.enabled || hub.hubRoomName !== roomName) return null;
+  const isConfiguredRoom = hub?.hubRoomName === roomName || hub?.upgraderRoomNames?.includes(roomName) === true;
+  if (!hub?.enabled || !isConfiguredRoom) return null;
+  const canonicalConfigName = `${roomName}:hubUpgrader:0`;
+  const config = Memory.data?.creepConfigs?.[canonicalConfigName];
+  if (
+    creep.memory.configName !== canonicalConfigName ||
+    config?.role !== "hubUpgrader" ||
+    config.roomName !== roomName
+  ) {
+    return null;
+  }
   const controller = Game.rooms[roomName]?.controller;
   if (!controller?.my || controller.level !== 7) return null;
   return controller;
@@ -35,7 +45,7 @@ export const hubUpgraderRole: RoleFactory = (
   roomName?: string,
   boostTaskId?: string,
 ) => ({
-  prepare: (creep): boolean => getActiveController(roomName)
+  prepare: (creep): boolean => getActiveController(roomName, creep)
     ? prepareCombatBoost(
       creep,
       boostTaskId,
@@ -44,7 +54,7 @@ export const hubUpgraderRole: RoleFactory = (
     : true,
 
   source: (creep): boolean => {
-    const controller = getActiveController(roomName);
+    const controller = getActiveController(roomName, creep);
     if (!controller) return false;
     if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0) return true;
 
@@ -62,7 +72,7 @@ export const hubUpgraderRole: RoleFactory = (
   },
 
   target: (creep): boolean => {
-    const controller = getActiveController(roomName);
+    const controller = getActiveController(roomName, creep);
     if (!controller) return false;
     if (creep.store.getUsedCapacity(RESOURCE_ENERGY) <= 0) return true;
 

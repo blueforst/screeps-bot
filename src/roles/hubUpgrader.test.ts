@@ -43,6 +43,7 @@ function createRoom(
   structures: Structure[] = [],
   level = 7,
   my = true,
+  name = "E4N58",
 ): Room {
   const controller = {
     my,
@@ -51,7 +52,7 @@ function createRoom(
   } as StructureController;
 
   const room = {
-    name: "E4N58",
+    name,
     controller,
     find: jest.fn((type: FindConstant, options?: { filter?: (structure: Structure) => boolean }) => {
       if (type !== FIND_STRUCTURES) return [];
@@ -82,6 +83,15 @@ describe("hubUpgraderRole", () => {
     jest.clearAllMocks();
     mockedPrepareBoost.mockReturnValue(false);
     Memory.cfg = { hub: { enabled: true, hubRoomName: "E4N58" } } as Memory["cfg"];
+    Memory.data = {
+      creepConfigs: {
+        "E4N58:hubUpgrader:0": {
+          role: "hubUpgrader",
+          args: ["E4N58", "hubUpgrade:E4N58"],
+          roomName: "E4N58",
+        },
+      },
+    };
   });
 
   it("waits for its shared XGH2O boost task during prepare", () => {
@@ -143,6 +153,34 @@ describe("hubUpgraderRole", () => {
 
     expect(shouldRefill).toBe(false);
     expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
+  });
+
+  it("upgrades a configured extra RCL7 room", () => {
+    (Memory.cfg!.hub as any).upgraderRoomNames = ["W1N57"];
+    const room = createRoom([], 7, true, "W1N57");
+    Game.rooms.W1N57 = room;
+    const creep = createCreep(room, 100);
+    creep.memory.configName = "W1N57:hubUpgrader:0";
+    Memory.data!.creepConfigs!["W1N57:hubUpgrader:0"] = {
+      role: "hubUpgrader",
+      args: ["W1N57", "hubUpgrade:W1N57"],
+      roomName: "W1N57",
+    };
+
+    hubUpgraderRole("W1N57", "hubUpgrade:W1N57").target(creep);
+
+    expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
+  });
+
+  it("stops an orphaned noncanonical upgrader in an otherwise active room", () => {
+    const room = createRoom();
+    Game.rooms.E4N58 = room;
+    const creep = createCreep(room, 100);
+    creep.memory.configName = "E4N58:hubUpgrader:legacy";
+
+    hubUpgraderRole("E4N58", "hubUpgrade:E4N58").target(creep);
+
+    expect(creep.upgradeController).not.toHaveBeenCalled();
   });
 
   it("stops acting after the controller reaches RCL8", () => {

@@ -517,6 +517,8 @@ declare global {
       hub?: {
         enabled?: boolean;
         hubRoomName?: string;
+        /** Additional owned RCL7 rooms that each maintain one T3 controller upgrader. */
+        upgraderRoomNames?: string[];
         planInterval?: number;
         reservePerRoom?: number;
         hubReservePerCompound?: number;
