@@ -6,9 +6,12 @@ import {
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import {
   getWarStatus,
+  startWarPatrol,
   startWarRoom,
   stopWarRoom,
   type StartWarOptions,
+  type StartWarPatrolOptions,
+  type StartWarPatrolResult,
   type StartWarResult,
   type StopWarOptions,
   type StopWarResult,
@@ -234,7 +237,7 @@ export function stopColonizationCommand(targetRoom?: string): string {
   return formatStopColonizationResult(stopColonization(targetRoom));
 }
 
-function formatWarResult(result: StartWarResult | StopWarResult | WarStatusSnapshot | string): string {
+function formatWarResult(result: StartWarResult | StartWarPatrolResult | StopWarResult | WarStatusSnapshot | string): string {
   if (typeof result === "string") {
     return result;
   }
@@ -272,6 +275,23 @@ export function startWarCommand(
     routeRooms: parseRouteRooms(routeRooms),
     oneShot,
   }));
+}
+
+export function startWarPatrolRaw(
+  sourceRoom: string,
+  targetRooms: string[] | string,
+  options: StartWarPatrolOptions = {},
+): StartWarPatrolResult | string {
+  const rooms = Array.isArray(targetRooms) ? targetRooms : (parseRouteRooms(targetRooms) ?? []);
+  return startWarPatrol(sourceRoom, rooms, options);
+}
+
+export function startWarPatrolCommand(
+  sourceRoom: string,
+  targetRooms: string[] | string,
+  intervalTicks = 1000,
+): string {
+  return formatWarResult(startWarPatrolRaw(sourceRoom, targetRooms, { intervalTicks }));
 }
 
 export function stopWarRaw(targetRoom: string, options?: StopWarOptions): StopWarResult | string {
@@ -319,6 +339,8 @@ export function registerOperationsConsoleCommands(): void {
   global.stopWarRaw = stopWarRaw;
   global.startWar = startWarCommand;
   global.startWarRaw = startWarRaw;
+  global.startWarPatrol = startWarPatrolCommand;
+  global.startWarPatrolRaw = startWarPatrolRaw;
   global.warStatus = warStatusCommand;
   global.warStatusRaw = warStatusRaw;
 }

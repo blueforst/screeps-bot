@@ -11,7 +11,7 @@ import type {
 } from "@/runtime/hubPlanner";
 import type { CpuMonitorMemoryV2, CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
 import type { AddFactoryTaskResult, CancelFactoryTaskResult, FactoryTask } from "@/runtime/factoryControl";
-import type { StartWarOptions, StartWarResult, StopWarOptions, StopWarResult, WarStatusSnapshot, WarStatusTaskSnapshot } from "@/runtime/warControl";
+import type { StartWarOptions, StartWarPatrolOptions, StartWarPatrolResult, StartWarResult, StopWarOptions, StopWarResult, WarStatusSnapshot, WarStatusTaskSnapshot } from "@/runtime/warControl";
 import type { RemoteDefenseStatusSnapshot } from "@/runtime/console/remoteDefenseCommands";
 
 declare const _: LoDashStatic;
@@ -109,6 +109,8 @@ declare global {
   var stopWarRaw: (targetRoom: string, options?: StopWarOptions) => StopWarResult | string;
   var startWar: (targetRoom: string, sourceRoom: string, squad?: "standard" | "t3Duo", routeRooms?: string[] | string, oneShot?: boolean) => string;
   var startWarRaw: (targetRoom: string, sourceRoom: string, options?: StartWarOptions) => StartWarResult | string;
+  var startWarPatrol: (sourceRoom: string, targetRooms: string[] | string, intervalTicks?: number) => string;
+  var startWarPatrolRaw: (sourceRoom: string, targetRooms: string[] | string, options?: StartWarPatrolOptions) => StartWarPatrolResult | string;
   var warStatus: (targetRoom?: string) => string;
   var warStatusRaw: (targetRoom?: string) => WarStatusSnapshot;
   var startTelemetry: (sampleInterval?: number, segmentId?: number) => string;
@@ -1018,7 +1020,7 @@ declare global {
         {
           targetRoom: string;
           sourceRoom: string;
-          status: "queued" | "staging" | "clearing" | "downgrading" | "done" | "failed";
+          status: "queued" | "staging" | "clearing" | "downgrading" | "patrol_waiting" | "done" | "failed";
           reason: "npc_reservation" | "manual";
           routeRooms?: string[];
           squad?: "standard" | "t3Duo";
@@ -1048,6 +1050,10 @@ declare global {
               healer: string;
             };
           };
+          patrolRooms?: string[];
+          patrolIndex?: number;
+          patrolInterval?: number;
+          patrolNextSweepAt?: number;
         }
       >;
       roomPlanner?: {
@@ -1359,6 +1365,8 @@ declare namespace NodeJS {
     stopWarRaw: (targetRoom: string, options?: StopWarOptions) => StopWarResult | string;
     startWar: (targetRoom: string, sourceRoom: string, squad?: "standard" | "t3Duo", routeRooms?: string[] | string, oneShot?: boolean) => string;
     startWarRaw: (targetRoom: string, sourceRoom: string, options?: StartWarOptions) => StartWarResult | string;
+    startWarPatrol: (sourceRoom: string, targetRooms: string[] | string, intervalTicks?: number) => string;
+    startWarPatrolRaw: (sourceRoom: string, targetRooms: string[] | string, options?: StartWarPatrolOptions) => StartWarPatrolResult | string;
     warStatus: (targetRoom?: string) => string;
     warStatusRaw: (targetRoom?: string) => WarStatusSnapshot;
     startTelemetry: (sampleInterval?: number, segmentId?: number) => string;

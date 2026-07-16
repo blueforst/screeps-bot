@@ -1,4 +1,4 @@
-import { getWarStatus, runWarControl, startWarRoom, stopWarRoom } from "@/runtime/warControl";
+import { getWarStatus, runWarControl, startWarPatrol, startWarRoom, stopWarRoom } from "@/runtime/warControl";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { listCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
 import { createMockStore, MockPos } from "@mock/powerBank";
@@ -1164,5 +1164,261 @@ describe("runWarControl", () => {
     expect(spawn.memory.spawnList).toEqual(["worker:keep"]);
     expect(Memory.runtime?.powerBankBoost?.[boostTaskId]).toBeUndefined();
     expect(survivor.suicide).not.toHaveBeenCalled();
+  });
+});
+
+describe("war patrol", () => {
+  const patrolRooms = ["E3N57", "E2N54", "E3N53"];
+
+  function createPatrolTask(index: number, status: string = "clearing") {
+    const targetRoom = patrolRooms[index];
+    const attackerConfig = `E1N57:war:${patrolRooms[0]}:g1:meleeAttacker:0`;
+    const healerConfig = `E1N57:war:${patrolRooms[0]}:g1:healer:0`;
+    return {
+      targetRoom,
+      sourceRoom: "E1N57",
+      status,
+      reason: "manual",
+      squad: "t3Duo",
+      boostTier: "t3",
+      oneShot: false,
+      attempts: 1,
+      createdAt: Game.time,
+      updatedAt: Game.time,
+      statusSince: Game.time,
+      clearSince: status === "clearing" ? Game.time - 19 : undefined,
+      generationCounter: 1,
+      activeGeneration: {
+        id: 1,
+        phase: "deployed",
+        createdAt: Game.time - 100,
+        deployedAt: Game.time - 50,
+        boostTaskId: `war:E1N57:${patrolRooms[0]}:g1`,
+        configNames: { meleeAttacker: attackerConfig, healer: healerConfig },
+      },
+      patrolRooms,
+      patrolIndex: index,
+      patrolInterval: 1000,
+      patrolNextSweepAt: status === "patrol_waiting" ? Game.time + 1000 : undefined,
+    } as any;
+  }
+
+  function createNamedClearRoom(roomName: string): Room {
+    const room = createTargetRoom();
+    (room as Room & { name: string }).name = roomName;
+    return room;
+  }
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time = 1000;
+    Memory.runtime = {};
+    Memory.data = { war: {}, creepConfigs: {} };
+    Game.rooms = { E1N57: createSourceRoom([]) };
+    Game.spawns = { Spawn1: createSpawn(Game.rooms.E1N57) };
+    Game.creeps = {};
+  });
+
+  it("starts one reusable T3 patrol task at the first room", () => {
+    const result = startWarPatrol("E1N57", patrolRooms, { intervalTicks: 1000 });
+
+    expect(result).toMatchObject({
+      ok: true,
+      sourceRoom: "E1N57",
+      targetRoom: "E3N57",
+      patrolRooms,
+      patrolIndex: 0,
+      patrolInterval: 1000,
+    });
+    expect(Object.keys(Memory.data!.war!)).toEqual(["E3N57"]);
+    expect(Memory.data!.war!.E3N57).toMatchObject({ oneShot: false, squad: "t3Duo" });
+  });
+
+  it("deduplicates patrol rooms and enforces the minimum interval", () => {
+    const result = startWarPatrol("E1N57", ["E3N57", "E3N57", "E2N54"], { intervalTicks: 1 });
+
+    expect(result).toMatchObject({
+      ok: true,
+      patrolRooms: ["E3N57", "E2N54"],
+      patrolInterval: 20,
+    });
+  });
+
+  it("refuses to create a second frontline for the same source room", () => {
+    startWarRoom("E4N57", "E1N57");
+
+    expect(startWarPatrol("E1N57", patrolRooms)).toBe("ERR_SOURCE_FRONTLINE_ACTIVE:E1N57:E4N57");
+    expect(Object.keys(Memory.data!.war!)).toEqual(["E4N57"]);
+  });
+
+  it("refuses to start while a completed task still has a live squad from the source room", () => {
+    const oldTask = createPatrolTask(0, "done");
+    delete oldTask.patrolRooms;
+    delete oldTask.patrolIndex;
+    delete oldTask.patrolInterval;
+    Memory.data!.war = { E3N57: oldTask } as any;
+    const survivor = createWarCreep(
+      "old-war-survivor",
+      "meleeAttacker",
+      oldTask.activeGeneration.configNames.meleeAttacker,
+      "E3N57",
+    );
+    Game.creeps = { survivor };
+
+    expect(startWarPatrol("E1N57", patrolRooms)).toBe("ERR_SOURCE_WAR_ACTIVITY:E1N57:E3N57");
+    expect(Object.keys(Memory.data!.war!)).toEqual(["E3N57"]);
+  });
+
+  it("removes inactive terminal history for later patrol rooms before starting", () => {
+    const oldTask = createPatrolTask(1, "done");
+    delete oldTask.patrolRooms;
+    delete oldTask.patrolIndex;
+    delete oldTask.patrolInterval;
+    Memory.data!.war = { E2N54: oldTask } as any;
+    Memory.data!.creepConfigs = {
+      [oldTask.activeGeneration.configNames.meleeAttacker]: {
+        role: "meleeAttacker",
+        args: ["E2N54", ""],
+        roomName: "E1N57",
+      },
+      [oldTask.activeGeneration.configNames.healer]: {
+        role: "healer",
+        args: ["E2N54", ""],
+        roomName: "E1N57",
+      },
+    } as any;
+
+    expect(startWarPatrol("E1N57", patrolRooms)).toMatchObject({ ok: true });
+    expect(Object.keys(Memory.data!.war!)).toEqual(["E3N57"]);
+    expect(Memory.data!.creepConfigs).toEqual({});
+  });
+
+  it("keeps the patrol active and retries when its next target becomes occupied", () => {
+    const task = createPatrolTask(0);
+    const collision = {
+      targetRoom: "E2N54",
+      sourceRoom: "E1N57",
+      status: "staging",
+      reason: "manual",
+      attempts: 1,
+      createdAt: Game.time,
+      updatedAt: Game.time,
+      statusSince: Game.time,
+    };
+    Memory.data!.war = { E3N57: task, E2N54: collision } as any;
+    Game.rooms.E3N57 = createNamedClearRoom("E3N57");
+    const attacker = createWarCreep("patrol-attacker", "meleeAttacker", task.activeGeneration.configNames.meleeAttacker, "E3N57");
+    const healer = createWarCreep("patrol-healer", "healer", task.activeGeneration.configNames.healer, "E3N57");
+    attacker.suicide = jest.fn(() => OK);
+    Game.creeps = { attacker, healer };
+
+    runWarControl();
+
+    expect(task).toMatchObject({ targetRoom: "E3N57", status: "clearing", failReason: "patrol_target_busy:E2N54" });
+    expect(task.clearSince).toBe(Game.time);
+    expect(collision.status).toBe("queued");
+    expect(attacker.suicide).not.toHaveBeenCalled();
+    expect(attacker.memory._warDetached).toBeUndefined();
+  });
+
+  it("cleans terminal production history created while the patrol is running", () => {
+    const task = createPatrolTask(0);
+    const collision = createPatrolTask(1, "done");
+    delete collision.patrolRooms;
+    delete collision.patrolIndex;
+    delete collision.patrolInterval;
+    collision.activeGeneration.configNames = {
+      meleeAttacker: "E1N57:war:E2N54:g9:meleeAttacker:0",
+      healer: "E1N57:war:E2N54:g9:healer:0",
+    };
+    Memory.data!.war = { E3N57: task, E2N54: collision } as any;
+    Memory.data!.creepConfigs = {
+      [collision.activeGeneration.configNames.meleeAttacker]: {
+        role: "meleeAttacker",
+        args: ["E2N54", ""],
+        roomName: "E1N57",
+      },
+    } as any;
+    Game.rooms.E3N57 = createNamedClearRoom("E3N57");
+    const attacker = createWarCreep("patrol-attacker", "meleeAttacker", task.activeGeneration.configNames.meleeAttacker, "E3N57");
+    const healer = createWarCreep("patrol-healer", "healer", task.activeGeneration.configNames.healer, "E3N57");
+    Game.creeps = { attacker, healer };
+
+    runWarControl();
+
+    expect(task).toMatchObject({ targetRoom: "E2N54", status: "staging" });
+    expect(Object.keys(Memory.data!.war!)).toEqual(["E2N54"]);
+    expect(Memory.data!.creepConfigs).toEqual({});
+  });
+
+  it("moves the same deployed duo to the next room after a clear debounce", () => {
+    const task = createPatrolTask(0);
+    Memory.data!.war = { E3N57: task } as any;
+    Game.rooms.E3N57 = createNamedClearRoom("E3N57");
+    const attacker = createWarCreep("patrol-attacker", "meleeAttacker", task.activeGeneration.configNames.meleeAttacker, "E3N57");
+    const healer = createWarCreep("patrol-healer", "healer", task.activeGeneration.configNames.healer, "E3N57");
+    attacker.memory.roleArgs = ["E3N57", ""];
+    healer.memory.roleArgs = ["E3N57", ""];
+    Game.creeps = { attacker, healer };
+
+    runWarControl();
+
+    expect(Object.keys(Memory.data!.war!)).toEqual(["E2N54"]);
+    expect(Memory.data!.war!.E2N54).toBe(task);
+    expect(task).toMatchObject({ targetRoom: "E2N54", patrolIndex: 1, status: "staging" });
+    expect(attacker.memory.roleArgs?.[0]).toBe("E2N54");
+    expect(healer.memory.roleArgs?.[0]).toBe("E2N54");
+    expect(task.activeGeneration.id).toBe(1);
+  });
+
+  it("waits after the last room then starts the next sweep from the first room", () => {
+    const task = createPatrolTask(2);
+    Memory.data!.war = { E3N53: task } as any;
+    Game.rooms.E3N53 = createNamedClearRoom("E3N53");
+    const attacker = createWarCreep("patrol-attacker", "meleeAttacker", task.activeGeneration.configNames.meleeAttacker, "E3N53");
+    const healer = createWarCreep("patrol-healer", "healer", task.activeGeneration.configNames.healer, "E3N53");
+    Game.creeps = { attacker, healer };
+
+    runWarControl();
+
+    expect(task.status).toBe("patrol_waiting");
+    expect(task.patrolNextSweepAt).toBe(2000);
+    expect(Object.keys(Memory.data!.war!)).toEqual(["E3N53"]);
+
+    Game.time = 1999;
+    runWarControl();
+    expect(task.targetRoom).toBe("E3N53");
+
+    Game.time = 2000;
+    runWarControl();
+    expect(task).toMatchObject({ targetRoom: "E3N57", patrolIndex: 0, status: "staging" });
+    expect(Object.keys(Memory.data!.war!)).toEqual(["E3N57"]);
+  });
+
+  it("retires a lone patrol survivor before creating the replacement generation", () => {
+    const task = createPatrolTask(2, "patrol_waiting");
+    Memory.data!.war = { E3N53: task } as any;
+    const survivor = createWarCreep(
+      "patrol-survivor",
+      "meleeAttacker",
+      task.activeGeneration.configNames.meleeAttacker,
+      "E3N53",
+    );
+    survivor.suicide = jest.fn(() => OK);
+    Game.creeps = { survivor };
+
+    runWarControl();
+
+    expect(survivor.suicide).toHaveBeenCalled();
+    expect(task.activeGeneration).toMatchObject({ id: 2, phase: "preparing" });
+    expect(task.activeGeneration.configNames.meleeAttacker).toContain(":E3N53:g2:");
+  });
+
+  it("stops an active patrol when addressed by its original first room", () => {
+    const task = createPatrolTask(1);
+    Memory.data!.war = { E2N54: task } as any;
+
+    expect(stopWarRoom("E3N57")).toMatchObject({ ok: true, targetRoom: "E2N54", removedTask: true });
+    expect(Memory.data!.war).toEqual({});
   });
 });

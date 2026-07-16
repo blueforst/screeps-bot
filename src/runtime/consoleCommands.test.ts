@@ -783,10 +783,12 @@ describe("remoteDefenseStatus commands", () => {
     expect(parsed).toMatchObject({ ok: true, targetRoom: "W1N0", roomVisible: false });
   });
 
-  it("registerConsoleCommands exposes remote defense commands globally", () => {
+  it("registerConsoleCommands exposes remote defense and war patrol commands globally", () => {
     registerConsoleCommands();
 
     expect(global.remoteDefenseStatusRaw).toBe(remoteDefenseStatusRaw);
     expect(global.remoteDefenseStatus).toBe(remoteDefenseStatusCommand);
+    expect(global.startWarPatrolRaw).toEqual(expect.any(Function));
+    expect(global.startWarPatrol).toEqual(expect.any(Function));
   });
 });

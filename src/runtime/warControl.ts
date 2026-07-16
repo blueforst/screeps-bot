@@ -1,8 +1,9 @@
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
+import { clearMovementState } from "@/roles/shared";
 import type { CreepConfig } from "@/types/system";
 
-type WarStatus = "queued" | "staging" | "clearing" | "downgrading" | "done" | "failed";
+type WarStatus = "queued" | "staging" | "clearing" | "downgrading" | "patrol_waiting" | "done" | "failed";
 export type WarSquad = "standard" | "t3Duo";
 export type WarBoostTier = "t3";
 type WarRole = "meleeAttacker" | "healer";
@@ -40,6 +41,10 @@ interface WarTask {
   controllerAttackerLastQueuedAt?: number;
   generationCounter?: number;
   activeGeneration?: WarGenerationState;
+  patrolRooms?: string[];
+  patrolIndex?: number;
+  patrolInterval?: number;
+  patrolNextSweepAt?: number;
 }
 
 interface HostilePresenceSnapshot {
@@ -58,6 +63,10 @@ export interface StartWarOptions {
   squad?: WarSquad;
   boostTier?: WarBoostTier;
   oneShot?: boolean;
+}
+
+export interface StartWarPatrolOptions {
+  intervalTicks?: number;
 }
 
 export interface StartWarResult {
@@ -83,6 +92,12 @@ export interface StopWarResult {
   cancelledSpawns: number;
   suicidedCreeps: number;
   releasedBoosts: boolean;
+}
+
+export interface StartWarPatrolResult extends StartWarResult {
+  patrolRooms: string[];
+  patrolIndex: number;
+  patrolInterval: number;
 }
 
 export interface WarStatusCreepSnapshot {
@@ -132,6 +147,11 @@ export interface WarStatusTaskSnapshot {
   controllerAttackerConfigName?: string;
   controllerAttackerLastQueuedAt?: number;
   controllerAttackerNextQueueAt?: number;
+  patrolRooms?: string[];
+  patrolIndex?: number;
+  patrolInterval?: number;
+  patrolNextSweepAt?: number;
+  patrolNextSweepIn?: number;
 }
 
 export interface WarStatusSnapshot {
@@ -147,6 +167,8 @@ const T3_DUO_HEALER_COUNT = 1;
 const MAX_STAGING_TICKS = 2500;
 const CONTROLLER_ATTACKER_QUEUE_INTERVAL = 1000;
 const WAR_CLEAR_DEBOUNCE_TICKS = 20;
+const DEFAULT_PATROL_INTERVAL_TICKS = 1000;
+const MIN_PATROL_INTERVAL_TICKS = 20;
 const WAR_CONTROLLER_ATTACK_CONFIG_SUFFIX = "controllerAttacker:0";
 const WAR_CONTROLLER_CORE_STRUCTURES = new Set<StructureConstant>([
   STRUCTURE_SPAWN,
@@ -251,6 +273,14 @@ function getLegacyWarBoostTaskId(task: WarTask): string {
   return `war:${task.sourceRoom}:${task.targetRoom}`;
 }
 
+function isPatrolTask(task: WarTask): boolean {
+  return Array.isArray(task.patrolRooms) && task.patrolRooms.length > 0;
+}
+
+function getPatrolInterval(task: WarTask): number {
+  return Math.max(MIN_PATROL_INTERVAL_TICKS, task.patrolInterval ?? DEFAULT_PATROL_INTERVAL_TICKS);
+}
+
 function encodeBoosts(compounds: ResourceConstant[]): string {
   return compounds.join("|");
 }
@@ -276,6 +306,92 @@ function getRoleArgs(
 function getRoleBody(task: WarTask, role: WarRole): BodyPartConstant[] | undefined {
   if (!isT3DuoTask(task)) return undefined;
   return role === "meleeAttacker" ? [...T3_ATTACKER_BODY] : [...T3_HEALER_BODY];
+}
+
+function resetWarCreepTargetState(creep: Creep): void {
+  clearMovementState(creep);
+  delete creep.memory._warBreachTargetId;
+  delete creep.memory._warBreachResumeUntil;
+  delete creep.memory._warCounterstrike;
+  delete creep.memory._warCounterstrikeSuppressedTargetIds;
+  delete creep.memory._warQueued;
+}
+
+function updatePatrolAssignments(task: WarTask): void {
+  const generation = task.activeGeneration;
+  if (!generation) return;
+
+  const encodedRoute = task.routeRooms?.join("|") || "";
+  const store = ensureConfigStore();
+  for (const role of ["meleeAttacker", "healer"] as const) {
+    const configName = generation.configNames[role];
+    const args = getRoleArgs(task, role, encodedRoute, generation.boostTaskId);
+    if (store[configName]) {
+      store[configName].args = args;
+    }
+    for (const creep of getLiveCreepsByConfig(configName)) {
+      creep.memory.roleArgs = [...args];
+      resetWarCreepTargetState(creep);
+    }
+  }
+}
+
+function advancePatrol(task: WarTask, nextIndex: number): boolean {
+  const patrolRooms = task.patrolRooms;
+  if (!patrolRooms?.[nextIndex]) return false;
+
+  const store = ensureWarStore();
+  const previousTarget = task.targetRoom;
+  const nextTarget = patrolRooms[nextIndex];
+  const collision = store[nextTarget];
+  if (collision && collision !== task) {
+    const terminal = collision.status === "done" || collision.status === "failed";
+    if (terminal) {
+      disableTaskProduction(collision);
+      releaseWarBoosts(collision);
+    }
+    if (!terminal || hasTaskWarActivity(collision)) {
+      task.failReason = `patrol_target_busy:${nextTarget}`;
+      task.clearSince = Game.time;
+      setTaskStatus(task, "clearing");
+      return false;
+    }
+    delete store[nextTarget];
+  }
+
+  if (store[previousTarget] === task) {
+    delete store[previousTarget];
+  }
+  task.targetRoom = nextTarget;
+  task.patrolIndex = nextIndex;
+  task.patrolNextSweepAt = undefined;
+  task.routeRooms = undefined;
+  task.clearSince = undefined;
+  task.completedAt = undefined;
+  task.controllerAttackerLastQueuedAt = undefined;
+  task.failReason = undefined;
+  task.attempts += 1;
+  setTaskStatus(task, "staging");
+  store[nextTarget] = task;
+  updatePatrolAssignments(task);
+  return true;
+}
+
+function completePatrolTarget(task: WarTask): boolean {
+  if (!isPatrolTask(task)) return false;
+
+  const patrolRooms = task.patrolRooms!;
+  const currentIndex = Math.max(0, task.patrolIndex ?? patrolRooms.indexOf(task.targetRoom));
+  if (currentIndex + 1 < patrolRooms.length) {
+    advancePatrol(task, currentIndex + 1);
+    return true;
+  }
+
+  task.clearSince = undefined;
+  task.patrolIndex = patrolRooms.length - 1;
+  task.patrolNextSweepAt = Game.time + getPatrolInterval(task);
+  setTaskStatus(task, "patrol_waiting");
+  return true;
 }
 
 function getExpectedTaskConfigNames(task: WarTask): string[] {
@@ -305,6 +421,15 @@ function getTaskConfigNames(task: WarTask): string[] {
     }
   }
   return [...names];
+}
+
+function hasTaskWarActivity(task: WarTask): boolean {
+  const spawns = getSpawnsForRoom(task.sourceRoom);
+  return getTaskConfigNames(task).some((configName) =>
+    getLiveCreepsByConfig(configName).length > 0
+    || isConfigQueuedInSpawns(spawns, configName)
+    || isConfigSpawning(configName)
+  );
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {
@@ -749,7 +874,11 @@ function reconcileGenerationLifecycle(task: WarTask): boolean {
   }
 
   for (const survivor of generationCreeps) {
-    survivor.memory._warDetached = true;
+    if (isPatrolTask(task)) {
+      survivor.suicide();
+    } else {
+      survivor.memory._warDetached = true;
+    }
   }
   cleanupGenerationConfigs(task, generation);
 
@@ -884,23 +1013,27 @@ function disableTaskProduction(task: WarTask): void {
 function processControllerVictory(task: WarTask): void {
   task.clearSince ??= Game.time;
   setTaskStatus(task, "clearing");
-  disableTaskProduction(task);
-  releaseWarBoosts(task);
+  if (!isPatrolTask(task)) {
+    disableTaskProduction(task);
+    releaseWarBoosts(task);
+  }
 
   if (Game.time - task.clearSince + 1 < WAR_CLEAR_DEBOUNCE_TICKS) {
     return;
   }
 
+  if (completePatrolTarget(task)) return;
   setTaskStatus(task, "done");
   task.completedAt = Game.time;
 }
 
 function getQueuedConfigs(task: WarTask): string[] {
   const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
+  const generationConfigs = new Set(Object.values(task.activeGeneration?.configNames ?? {}));
   const queued = new Set<string>();
   for (const spawn of getSpawnsForRoom(task.sourceRoom)) {
     for (const configName of spawn.memory.spawnList || []) {
-      if (configName.startsWith(prefix)) {
+      if (configName.startsWith(prefix) || generationConfigs.has(configName)) {
         queued.add(configName);
       }
     }
@@ -910,8 +1043,12 @@ function getQueuedConfigs(task: WarTask): string[] {
 
 function getTaskCreeps(task: WarTask): WarStatusCreepSnapshot[] {
   const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
+  const generationConfigs = new Set(Object.values(task.activeGeneration?.configNames ?? {}));
   return Object.values(Game.creeps)
-    .filter((creep) => creep.memory.configName?.startsWith(prefix))
+    .filter((creep) => {
+      const configName = creep.memory.configName;
+      return !!configName && (configName.startsWith(prefix) || generationConfigs.has(configName));
+    })
     .map((creep) => ({
       name: creep.name,
       role: creep.memory.role,
@@ -969,6 +1106,13 @@ function buildTaskStatusSnapshot(task: WarTask): WarStatusTaskSnapshot {
     controllerAttackerNextQueueAt: task.controllerAttackerLastQueuedAt === undefined
       ? undefined
       : task.controllerAttackerLastQueuedAt + CONTROLLER_ATTACKER_QUEUE_INTERVAL,
+    patrolRooms: task.patrolRooms,
+    patrolIndex: task.patrolIndex,
+    patrolInterval: task.patrolInterval,
+    patrolNextSweepAt: task.patrolNextSweepAt,
+    patrolNextSweepIn: task.patrolNextSweepAt === undefined
+      ? undefined
+      : Math.max(0, task.patrolNextSweepAt - Game.time),
   };
 }
 
@@ -984,8 +1128,19 @@ function writeWarTelemetry(): void {
 }
 
 function processTask(task: WarTask): void {
-  const room = Game.rooms[task.targetRoom];
   task.statusSince ??= task.createdAt;
+
+  if (task.status === "patrol_waiting") {
+    if (reconcileGenerationLifecycle(task)) return;
+    if (Game.time < (task.patrolNextSweepAt ?? Game.time)) {
+      if (!prepareT3DuoBoosts(task)) return;
+      ensureCombatConfigs(task);
+      return;
+    }
+    if (!advancePatrol(task, 0)) return;
+  }
+
+  const room = Game.rooms[task.targetRoom];
   const stagingTooLong =
     task.status === "staging"
     && task.failReason !== "insufficient_labs"
@@ -1000,6 +1155,7 @@ function processTask(task: WarTask): void {
   if (
     room
     && task.reason === "manual"
+    && !isPatrolTask(task)
     && isControllerDefeated(room)
     && !hasControllerAttackBlockers(room)
   ) {
@@ -1020,7 +1176,7 @@ function processTask(task: WarTask): void {
   }
 
   const hostile = getHostilePresence(room);
-  if (task.reason === "manual" && isControllerDowngradeReady(room)) {
+  if (task.reason === "manual" && !isPatrolTask(task) && isControllerDowngradeReady(room)) {
     task.clearSince = undefined;
     const combatReady = prepareT3DuoBoosts(task);
     if (combatReady) ensureCombatConfigs(task);
@@ -1039,10 +1195,12 @@ function processTask(task: WarTask): void {
       return;
     }
 
-    setTaskStatus(task, "done");
-    task.completedAt = Game.time;
-    clearTaskConfigs(task);
-    releaseWarBoosts(task);
+    if (!completePatrolTarget(task)) {
+      setTaskStatus(task, "done");
+      task.completedAt = Game.time;
+      clearTaskConfigs(task);
+      releaseWarBoosts(task);
+    }
     return;
   }
 
@@ -1055,8 +1213,10 @@ function processTask(task: WarTask): void {
 
 function setTaskCreepsQueued(task: WarTask, queued: boolean): void {
   const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
+  const generationConfigs = new Set(Object.values(task.activeGeneration?.configNames ?? {}));
   for (const creep of Object.values(Game.creeps)) {
-    if (!creep.memory.configName?.startsWith(prefix)) continue;
+    const configName = creep.memory.configName;
+    if (!configName || (!configName.startsWith(prefix) && !generationConfigs.has(configName))) continue;
     if (queued) {
       creep.memory._warQueued = true;
     } else {
@@ -1096,7 +1256,7 @@ export function requestWarRoomClear(
   const store = ensureWarStore();
   const existing = store[targetRoom];
   const now = Game.time;
-  const restart = !existing || existing.status === "failed" || existing.sourceRoom !== sourceRoom;
+  const restart = !existing || existing.status === "done" || existing.status === "failed" || existing.sourceRoom !== sourceRoom;
   const nextStatus: WarStatus = restart ? "staging" : existing.status;
   const nextAttempts = restart ? (existing?.attempts ?? 0) + 1 : (existing?.attempts ?? 1);
 
@@ -1160,6 +1320,92 @@ export function startWarRoom(targetRoom: string, sourceRoom: string, options: St
   };
 }
 
+export function startWarPatrol(
+  sourceRoom: string,
+  targetRooms: string[],
+  options: StartWarPatrolOptions = {},
+): StartWarPatrolResult | string {
+  const patrolRooms = [...new Set(targetRooms.filter((roomName) => roomName.length > 0))];
+  if (!sourceRoom || patrolRooms.length === 0) {
+    return "ERR_INVALID_ARGS:startWarPatrol(sourceRoom, targetRooms, options?)";
+  }
+
+  const store = ensureWarStore();
+  for (const task of Object.values(store)) {
+    const terminal = task.status === "done" || task.status === "failed";
+    const overlapsPatrol = patrolRooms.some((roomName) =>
+      task.targetRoom === roomName || task.patrolRooms?.includes(roomName)
+    );
+    if (terminal && (task.sourceRoom === sourceRoom || overlapsPatrol)) {
+      disableTaskProduction(task);
+      releaseWarBoosts(task);
+    }
+  }
+
+  const sourceConflict = Object.values(store).find((task) =>
+    task.sourceRoom === sourceRoom && task.status !== "done" && task.status !== "failed"
+  );
+  if (sourceConflict) {
+    return `ERR_SOURCE_FRONTLINE_ACTIVE:${sourceRoom}:${sourceConflict.targetRoom}`;
+  }
+
+  const sourceActivity = Object.values(store).find((task) =>
+    task.sourceRoom === sourceRoom && hasTaskWarActivity(task)
+  );
+  if (sourceActivity) {
+    return `ERR_SOURCE_WAR_ACTIVITY:${sourceRoom}:${sourceActivity.targetRoom}`;
+  }
+
+  for (const roomName of patrolRooms) {
+    const collision = Object.values(store).find((task) =>
+      task.targetRoom === roomName || task.patrolRooms?.includes(roomName)
+    );
+    if (!collision) continue;
+
+    const terminal = collision.status === "done" || collision.status === "failed";
+    if (!terminal) {
+      return `ERR_PATROL_TARGET_ACTIVE:${roomName}`;
+    }
+    if (hasTaskWarActivity(collision)) {
+      return `ERR_PATROL_TARGET_ACTIVITY:${roomName}`;
+    }
+  }
+
+  for (const [key, task] of Object.entries(store)) {
+    const overlapsPatrol = patrolRooms.some((roomName) =>
+      task.targetRoom === roomName || task.patrolRooms?.includes(roomName)
+    );
+    if (
+      (task.sourceRoom === sourceRoom || overlapsPatrol)
+      && (task.status === "done" || task.status === "failed")
+    ) {
+      delete store[key];
+    }
+  }
+
+  const intervalTicks = Number.isFinite(options.intervalTicks)
+    ? Math.max(MIN_PATROL_INTERVAL_TICKS, Math.floor(options.intervalTicks!))
+    : DEFAULT_PATROL_INTERVAL_TICKS;
+  const result = startWarRoom(patrolRooms[0], sourceRoom, {
+    squad: "t3Duo",
+    boostTier: "t3",
+    oneShot: false,
+  });
+  if (typeof result === "string") return result;
+
+  const task = store[patrolRooms[0]];
+  task.patrolRooms = patrolRooms;
+  task.patrolIndex = 0;
+  task.patrolInterval = intervalTicks;
+  task.patrolNextSweepAt = undefined;
+  return {
+    ...result,
+    patrolRooms: [...patrolRooms],
+    patrolIndex: 0,
+    patrolInterval: intervalTicks,
+  };
+}
+
 export function isWarRoomClearDone(roomName: string): boolean {
   const task = Memory.data?.war?.[roomName];
   return task?.status === "done";
@@ -1173,10 +1419,13 @@ export function clearWarRoomTask(roomName: string): void {
 
 export function stopWarRoom(targetRoom: string, options: StopWarOptions = {}): StopWarResult | string {
   const store = ensureWarStore();
-  const task = store[targetRoom];
-  if (!task) {
+  const taskEntry = Object.entries(store).find(([key, candidate]) =>
+    key === targetRoom || candidate.targetRoom === targetRoom || candidate.patrolRooms?.includes(targetRoom)
+  );
+  if (!taskEntry) {
     return `ERR_NO_WAR_TASK:${targetRoom}`;
   }
+  const [taskKey, task] = taskEntry;
 
   const configNames = getTaskConfigNames(task);
   let removedConfigs = 0;
@@ -1197,12 +1446,12 @@ export function stopWarRoom(targetRoom: string, options: StopWarOptions = {}): S
 
   const releasedBoosts = isT3DuoTask(task);
   releaseWarBoosts(task);
-  delete store[targetRoom];
+  delete store[taskKey];
   writeWarTelemetry();
 
   return {
     ok: true,
-    targetRoom,
+    targetRoom: task.targetRoom,
     removedTask: true,
     removedConfigs,
     removedQueuedTasks,
@@ -1217,7 +1466,7 @@ export function getWarStatus(targetRoom?: string): WarStatusSnapshot {
     ok: true,
     tick: Game.time,
     tasks: Object.values(ensureWarStore())
-      .filter((task) => !targetRoom || task.targetRoom === targetRoom)
+      .filter((task) => !targetRoom || task.targetRoom === targetRoom || task.patrolRooms?.includes(targetRoom))
       .map((task) => buildTaskStatusSnapshot(task)),
   };
 }
