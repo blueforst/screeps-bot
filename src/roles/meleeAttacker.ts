@@ -17,6 +17,21 @@ const ROUTE_BREACH_RESUME_TICKS = 5;
 const COUNTERSTRIKE_RANGE = 2;
 const COUNTERSTRIKE_SWAP_GRACE_TICKS = 1;
 
+function moveWarAttackerToTarget(
+  creep: Creep,
+  target: RoomPosition | { pos: RoomPosition },
+  range: 0 | 1 | 2 | 3,
+  options: Parameters<typeof moveToTarget>[3],
+): ScreepsReturnCode {
+  const targetPos = "pos" in target ? target.pos : target;
+  const wasOutOfRange = creep.pos.getRangeTo(targetPos) > range;
+  const code = moveToTarget(creep, target, range, options);
+  if (code === OK && wasOutOfRange) {
+    creep.memory._warMoveIntentAt = Game.time;
+  }
+  return code;
+}
+
 function getHostileCreeps(room: Room): Creep[] {
   return room.find(FIND_HOSTILE_CREEPS, {
     filter: (creep) => creep.owner.username !== "Source Keeper",
@@ -835,7 +850,7 @@ export const meleeAttackerRole: RoleFactory = (
     if (!target) {
       delete creep.memory._warBreachTargetId;
       if (targetRoom) {
-        moveToTarget(creep, new RoomPosition(25, 25, targetRoom), 3, targetMoveOptions);
+        moveWarAttackerToTarget(creep, new RoomPosition(25, 25, targetRoom), 3, targetMoveOptions);
       }
       return false;
     }
@@ -848,7 +863,7 @@ export const meleeAttackerRole: RoleFactory = (
         creep.memory._warBreachTargetId = plannedBreach.id;
         const breachCode = measureCreepIntent(() => creep.attack(plannedBreach));
         if (breachCode === ERR_NOT_IN_RANGE) {
-          moveToTarget(creep, plannedBreach, 1, targetMoveOptions);
+          moveWarAttackerToTarget(creep, plannedBreach, 1, targetMoveOptions);
         }
         return false;
       }
@@ -857,7 +872,7 @@ export const meleeAttackerRole: RoleFactory = (
 
     const code = measureCreepIntent(() => creep.attack(target));
     if (code === ERR_NOT_IN_RANGE) {
-      const moveCode = moveToTarget(creep, target, 1, targetMoveOptions);
+      const moveCode = moveWarAttackerToTarget(creep, target, 1, targetMoveOptions);
       if (moveCode === ERR_NO_PATH && creep.room.name === target.pos.roomName) {
         attackAdjacentBreachTarget(creep, target);
       }
@@ -869,7 +884,7 @@ export const meleeAttackerRole: RoleFactory = (
       if (fallback) {
         const fallbackCode = measureCreepIntent(() => creep.attack(fallback));
         if (fallbackCode === ERR_NOT_IN_RANGE) {
-          moveToTarget(creep, fallback, 1, targetMoveOptions);
+          moveWarAttackerToTarget(creep, fallback, 1, targetMoveOptions);
         }
       }
     }

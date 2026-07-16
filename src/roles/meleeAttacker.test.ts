@@ -1415,6 +1415,7 @@ describe("meleeAttackerRole war duo staging", () => {
         reusePath: 0,
       }),
     );
+    expect((attacker.memory as CreepMemory & { _warMoveIntentAt?: number })._warMoveIntentAt).toBe(Game.time);
   });
 
   it("targets tower before storage after hostile spawns are gone", () => {

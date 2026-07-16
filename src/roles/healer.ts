@@ -1,10 +1,10 @@
 import { clearMovementState, moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { prepareCombatBoost } from "@/roles/combatBoosts";
 import {
-  findWarObjectiveTarget,
   isWarCounterstrikeCoordinationValid,
   shouldWarHealerHoldForCounterstrike,
 } from "@/roles/meleeAttacker";
+import { getCreepMovementState } from "@/movement/creepState";
 import { moveOffExit } from "@/movement/traffic";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
@@ -149,20 +149,13 @@ function coordinateCounterstrike(creep: Creep, attacker: Creep): boolean {
   return true;
 }
 
-function getSharedWarBreachTarget(attacker: Creep): StructureRampart | StructureWall | null {
-  const targetId = attacker.memory._warBreachTargetId;
-  if (!targetId) return null;
-
-  const target = Game.getObjectById(targetId);
-  if (
-    !target ||
-    target.pos.roomName !== attacker.room.name ||
-    (target.structureType !== STRUCTURE_WALL && target.structureType !== STRUCTURE_RAMPART)
-  ) {
-    delete attacker.memory._warBreachTargetId;
-    return null;
-  }
-  return target;
+function followMovingWarAttacker(creep: Creep, attacker: Creep): void {
+  if (attacker.memory._warMoveIntentAt !== Game.time) return;
+  if (getCreepMovementState(creep.name)?.movementPushedAt === Game.time) return;
+  const direction = creep.pos.getDirectionTo(attacker.pos);
+  if (!direction) return;
+  clearMovementState(creep);
+  measureCreepIntent(() => creep.move(direction));
 }
 
 function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedRouteRooms?: string): boolean {
@@ -205,11 +198,7 @@ function moveWithWarAttackerFormation(creep: Creep, targetRoom: string, encodedR
     return true;
   }
 
-  const combatTarget = getSharedWarBreachTarget(attacker) || findWarObjectiveTarget(attacker);
-  if (combatTarget) {
-    moveToTarget(creep, combatTarget, 2, TARGET_ROOM_MOVE_OPTIONS);
-  }
-
+  followMovingWarAttacker(creep, attacker);
   return true;
 }
 

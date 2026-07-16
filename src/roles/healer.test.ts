@@ -15,6 +15,7 @@ jest.mock("@/movement/traffic", () => ({
 
 import { healerRole } from "@/roles/healer";
 import { meleeAttackerRole } from "@/roles/meleeAttacker";
+import { clearCreepMovementStateForTest, ensureCreepMovementState } from "@/movement/creepState";
 import { createMockPowerBankCreep, MockPos } from "@mock/powerBank";
 
 const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
@@ -120,6 +121,7 @@ function setupCounterstrikeSwapScenario(overrides: {
 describe("healerRole war duo staging", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    clearCreepMovementStateForTest();
     Game.creeps = {};
     Game.getObjectById = jest.fn(() => null) as typeof Game.getObjectById;
   });
@@ -391,7 +393,7 @@ describe("healerRole war duo staging", () => {
     );
   });
 
-  it("moves toward the paired attacker's residual barrier instead of a distant hostile", () => {
+  it("holds adjacent at a residual barrier until the paired attacker moves", () => {
     const hostile = hostileCreep("hostile-attacker");
     const rampart = hostileStructure(STRUCTURE_RAMPART, "residual-healer-objective", 24, 20, 27_801);
     const attacker = createMockPowerBankCreep("meleeAttacker", {
@@ -417,27 +419,10 @@ describe("healerRole war duo staging", () => {
 
     healerRole(TARGET_ROOM).target(healer);
 
-    expect(moveToTarget).toHaveBeenCalledWith(
-      healer,
-      rampart,
-      2,
-      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
-    );
-    expect(moveToTarget).not.toHaveBeenCalledWith(
-      healer,
-      hostile,
-      2,
-      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
-    );
-    expect(moveToTarget).not.toHaveBeenCalledWith(
-      healer,
-      attacker,
-      1,
-      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
-    );
+    expect(moveToTarget).not.toHaveBeenCalled();
   });
 
-  it("moves toward the paired attacker's war core objective at range 2", () => {
+  it("holds adjacent when the paired attacker has not moved toward its core objective", () => {
     const hostile = hostileCreep("hostile-attacker");
     const spawn = hostileStructure(STRUCTURE_SPAWN, "spawn-healer-objective", 23, 20, 5000);
     const attacker = createMockPowerBankCreep("meleeAttacker", {
@@ -463,27 +448,67 @@ describe("healerRole war duo staging", () => {
 
     healerRole(TARGET_ROOM).target(healer);
 
-    expect(moveToTarget).toHaveBeenCalledWith(
-      healer,
-      spawn,
-      2,
-      expect.objectContaining({
-        plainCost: 2,
-        swampCost: 8,
-        maxRooms: 1,
-        ignoreCreeps: false,
-        reusePath: 0,
-      }),
-    );
-    expect(moveToTarget).not.toHaveBeenCalledWith(
-      healer,
-      hostile,
-      2,
-      expect.objectContaining({ plainCost: 2, swampCost: 8, maxRooms: 1 }),
-    );
+    expect(moveToTarget).not.toHaveBeenCalled();
   });
 
-  it("follows the attacker's selected breach instead of independently pathing to the core", () => {
+  it("steps into the attacker's previous tile when the paired attacker moves this tick", () => {
+    const spawn = hostileStructure(STRUCTURE_SPAWN, "spawn-following-move", 23, 20, 5000);
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 20,
+      memory: { role: "meleeAttacker", configName: ATTACKER_CONFIG },
+    });
+    attacker.room.find = jest.fn((type: FindConstant) =>
+      type === FIND_HOSTILE_STRUCTURES ? [spawn] : []
+    ) as Room["find"];
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 19,
+      y: 19,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    Game.creeps = { attacker, healer };
+    (attacker.memory as CreepMemory & { _warMoveIntentAt?: number })._warMoveIntentAt = Game.time;
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(healer.move).toHaveBeenCalledWith(healer.pos.getDirectionTo(attacker.pos));
+    expect(moveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("does not override a traffic push while following a moving attacker", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "attacker",
+      roomName: TARGET_ROOM,
+      x: 20,
+      y: 20,
+      memory: {
+        role: "meleeAttacker",
+        configName: ATTACKER_CONFIG,
+        _warMoveIntentAt: Game.time,
+      },
+    });
+    const healer = createMockPowerBankCreep("healer", {
+      name: "healer",
+      roomName: TARGET_ROOM,
+      x: 19,
+      y: 19,
+      memory: { role: "healer", configName: HEALER_CONFIG },
+    });
+    attacker.room.find = jest.fn(() => []) as Room["find"];
+    Game.creeps = { attacker, healer };
+    ensureCreepMovementState(healer.name).movementPushedAt = Game.time;
+
+    healerRole(TARGET_ROOM).target(healer);
+
+    expect(healer.move).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("holds adjacent at the attacker's selected breach until the attacker moves", () => {
     const spawn = hostileStructure(STRUCTURE_SPAWN, "spawn-behind-breach", 29, 37, 5_000);
     const wall = hostileStructure(STRUCTURE_WALL, "shared-breach-wall", 33, 47, 3_180_000) as StructureWall;
     const attacker = createMockPowerBankCreep("meleeAttacker", {
@@ -512,19 +537,7 @@ describe("healerRole war duo staging", () => {
 
     healerRole(TARGET_ROOM).target(healer);
 
-    expect(moveToTarget).toHaveBeenCalledWith(
-      healer,
-      wall,
-      2,
-      expect.objectContaining({
-        plainCost: 2,
-        swampCost: 8,
-        maxRooms: 1,
-        ignoreCreeps: false,
-        reusePath: 0,
-      }),
-    );
-    expect(moveToTarget).not.toHaveBeenCalledWith(healer, spawn, 2, expect.anything());
+    expect(moveToTarget).not.toHaveBeenCalled();
   });
 
   it("holds adjacent in target room when the attacker has no combat target", () => {
