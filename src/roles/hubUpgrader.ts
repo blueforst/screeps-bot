@@ -3,7 +3,8 @@ import { moveToTarget } from "@/roles/shared";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
-type ControllerEnergySource = StructureLink | StructureContainer;
+type ControllerLocalEnergySource = StructureLink | StructureContainer;
+type ControllerEnergySource = ControllerLocalEnergySource | StructureStorage;
 
 function getActiveController(roomName: string | undefined, creep: Creep): StructureController | null {
   if (!roomName) return null;
@@ -26,7 +27,7 @@ function getActiveController(roomName: string | undefined, creep: Creep): Struct
 
 function findControllerEnergySource(creep: Creep, controller: StructureController): ControllerEnergySource | null {
   const candidates = measureCreepDecision(() => controller.room.find(FIND_STRUCTURES, {
-    filter: (structure): structure is ControllerEnergySource =>
+    filter: (structure): structure is ControllerLocalEnergySource =>
       (structure.structureType === STRUCTURE_LINK || structure.structureType === STRUCTURE_CONTAINER) &&
       structure.pos.getRangeTo(controller.pos) <= 3 &&
       structure.store.getUsedCapacity(RESOURCE_ENERGY) > 0,
@@ -38,7 +39,10 @@ function findControllerEnergySource(creep: Creep, controller: StructureControlle
     }
     return creep.pos.getRangeTo(left.pos) - creep.pos.getRangeTo(right.pos);
   });
-  return candidates[0] || null;
+  if (candidates[0]) return candidates[0];
+
+  const storage = controller.room.storage;
+  return storage?.store.getUsedCapacity(RESOURCE_ENERGY) > 0 ? storage : null;
 }
 
 export const hubUpgraderRole: RoleFactory = (

@@ -54,6 +54,7 @@ function createRoom(
   const room = {
     name,
     controller,
+    storage: structures.find((structure) => structure.structureType === STRUCTURE_STORAGE),
     find: jest.fn((type: FindConstant, options?: { filter?: (structure: Structure) => boolean }) => {
       if (type !== FIND_STRUCTURES) return [];
       return options?.filter ? structures.filter(options.filter) : structures;
@@ -131,7 +132,7 @@ describe("hubUpgraderRole", () => {
     expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_ENERGY);
   });
 
-  it("does not use storage or terminal as an energy source", () => {
+  it("falls back to storage when controller-local sources are empty", () => {
     const storage = createEnergyStructure(STRUCTURE_STORAGE, 100_000);
     const terminal = createEnergyStructure(STRUCTURE_TERMINAL, 100_000);
     const room = createRoom([storage as Structure, terminal as Structure]);
@@ -140,8 +141,8 @@ describe("hubUpgraderRole", () => {
 
     hubUpgraderRole("E4N58", "hubUpgrade:E4N58").source?.(creep);
 
-    expect(creep.withdraw).not.toHaveBeenCalled();
-    expect(mockedMoveToTarget).toHaveBeenCalledWith(creep, room.controller, 3);
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
+    expect(creep.withdraw).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
   });
 
   it("upgrades only the configured owned RCL7 controller", () => {
