@@ -49,6 +49,21 @@ function isSourceRoomCarrierConfig(spawn: StructureSpawn, configName: string): b
   return config?.role === "carrier" && config.roomName === spawn.room.name;
 }
 
+function isEmergencyCarrierConfigName(roomName: string, configName: string): boolean {
+  return configName.startsWith(`${roomName}:manual:maxcarrier:`);
+}
+
+function hasWaitingEmergencyCarrierOnAnotherSpawn(spawn: StructureSpawn): boolean {
+  return Object.values(Game.spawns).some((candidate) => {
+    if (candidate === spawn || candidate.room.name !== spawn.room.name || !isSpawnActive(candidate)) {
+      return false;
+    }
+
+    const configName = candidate.memory.spawnList?.[0];
+    return !!configName && isEmergencyCarrierConfigName(spawn.room.name, configName);
+  });
+}
+
 function hasWaitingWarSpawn(spawn: StructureSpawn): boolean {
   return Object.values(Game.spawns).some((candidate) => {
     if (candidate.room.name !== spawn.room.name) {
@@ -75,6 +90,12 @@ function shouldYieldEnergyToWar(spawn: StructureSpawn, configName: string): bool
     return false;
   }
   return hasWaitingWarSpawn(spawn);
+}
+
+function shouldYieldToEmergencyCarrier(spawn: StructureSpawn, configName: string): boolean {
+  return isSourceRoomCarrierConfig(spawn, configName) &&
+    !isEmergencyCarrierConfigName(spawn.room.name, configName) &&
+    hasWaitingEmergencyCarrierOnAnotherSpawn(spawn);
 }
 
 export function mountSpawn(): void {
@@ -143,6 +164,9 @@ export function mountSpawn(): void {
 
     const currentTask = queue[0];
     if (shouldYieldEnergyToWar(this, currentTask)) {
+      return;
+    }
+    if (shouldYieldToEmergencyCarrier(this, currentTask)) {
       return;
     }
     const success = this.mainSpawn(currentTask);

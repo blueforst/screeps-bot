@@ -15,6 +15,8 @@
 - 紧急 carrier 的生产优先级高于标准 carrier。
 - 标准 carrier 的生产优先级高于所有非 carrier creep。
 - 标准 carrier 出生后，已有紧急 carrier 继续工作到自然死亡。
+- 多 Spawn 时，紧急 carrier 必须先获得 active 且 idle 的 Spawn；紧急 carrier 尚未开工前，其他 Spawn 不得开工本房间标准 carrier。
+- RCL1 且房间零 creep 时，bootstrap 只允许一个 harvester；这是 carrier 优先级的唯一例外。
 - 不改变 carrier 的搬运目标选择、任务优先级或 body 生成策略。
 - 不改变非 carrier creep 之间现有的相对生产顺序。
 - 不新增 creep role，不对紧急 carrier 执行 `suicide`。
@@ -23,9 +25,11 @@
 
 ## 文件结构
 
-- `src/runtime/spawnPlanner.ts`：移除紧急 carrier 对标准 carrier 的覆盖逻辑，并定义严格的生产优先级。
-- `src/runtime/spawnPlanner.test.ts`：以行为测试固定两套 carrier 的独立补充、自然共存和严格队列顺序。
-- `docs/superpowers/specs/2026-07-20-carrier-spawn-priority-design.md`：已确认的需求与验收标准，只读参考，不在实施中修改。
+- `src/runtime/emergencySpawning.ts`：为紧急 carrier 选择最早可开工的 active Spawn，并保持队首插入。
+- `src/runtime/spawnPlanner.ts`：移除紧急 carrier 对标准 carrier 的覆盖逻辑，并定义严格的生产优先级与同 Spawn 排队约束。
+- `src/mount/mountSpawn.ts`：仅在另一台 Spawn 的队首紧急 carrier 尚未开工时，暂缓本房间标准 carrier。
+- `src/runtime/spawnPlanner.test.ts`、`src/mount/mountSpawn.test.ts`：以行为测试固定两套 carrier 的独立补充、自然共存、RCL1 bootstrap 例外与多 Spawn 实际开工顺序。
+- `docs/superpowers/specs/2026-07-20-carrier-spawn-priority-design.md`：已确认的需求与验收标准，随最终审查约束同步更新。
 
 ### Task 1: 解除紧急 carrier 对标准 carrier 的覆盖
 

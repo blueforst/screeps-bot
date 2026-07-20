@@ -252,6 +252,60 @@ describe("spawnPlanner emergency carrier flow", () => {
     expect(activeSpawn.memory.spawnList![0]).toContain(":manual:maxcarrier:");
   });
 
+  it("queues only the bootstrap harvester for an RCL1 room with zero creeps", () => {
+    const room = createRoom("W1N6");
+    room.controller = { my: true, level: 1 } as StructureController;
+    const spawn = createSpawn(room);
+    const harvester = `${room.name}:harvester:source0`;
+    const managedCarrier = `${room.name}:carrier:0`;
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Memory.data = {
+      creepConfigs: {
+        [harvester]: { role: "harvester", args: ["source0"], roomName: room.name },
+        [managedCarrier]: { role: "carrier", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toEqual([harvester]);
+    expect(spawn.memory.spawnList!.some((name) => name.includes(":manual:maxcarrier:"))).toBe(false);
+    expect(spawn.memory.spawnList).not.toContain(managedCarrier);
+  });
+
+  it("keeps a live emergency carrier when a managed carrier is queued later", () => {
+    const room = createRoom("W1N7");
+    const spawn = createSpawn(room);
+    const managed = `${room.name}:carrier:0`;
+    const suicide = jest.fn();
+    const emergencyCarrier = {
+      name: "emergencyCarrier",
+      room,
+      ticksToLive: 1400,
+      suicide,
+      memory: {
+        role: "carrier",
+        configName: `${room.name}:manual:maxcarrier:${Game.time - 100}`,
+      },
+    } as unknown as Creep;
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps.emergencyCarrier = emergencyCarrier;
+    Memory.data = {
+      creepConfigs: {
+        [managed]: { role: "carrier", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toEqual([managed]);
+    expect(spawn.memory.spawnList!.some((name) => name.includes(":manual:maxcarrier:"))).toBe(false);
+    expect(Game.creeps.emergencyCarrier).toBe(emergencyCarrier);
+    expect(suicide).not.toHaveBeenCalled();
+  });
+
   it("queues a missing managed carrier while a healthy emergency carrier keeps working", () => {
     const room = createRoom("W1N7");
     const spawn = createSpawn(room);
@@ -335,6 +389,36 @@ describe("spawnPlanner emergency carrier flow", () => {
     scheduleSpawnTasks();
 
     expect(spawn.memory.spawnList).toContain(managed);
+  });
+
+  it("keeps the managed carrier behind the emergency request on the earliest available spawn", () => {
+    const room = createRoom("W1N10");
+    room.controller = { my: true, level: 6 } as StructureController;
+    const primarySpawn = createSpawn(room, 2, "W1N10-spawn-a");
+    const availableSpawn = createSpawn(room, 2, "W1N10-spawn-b");
+    const managed = `${room.name}:carrier:0`;
+    primarySpawn.spawning = { name: "worker-busy" } as Spawning;
+    availableSpawn.memory.spawnList = [managed];
+    Game.rooms[room.name] = room;
+    Game.spawns[primarySpawn.name] = primarySpawn;
+    Game.spawns[availableSpawn.name] = availableSpawn;
+    Memory.creeps[primarySpawn.spawning.name] = {
+      role: "worker",
+      configName: `${room.name}:worker:0`,
+    } as CreepMemory;
+    Memory.data = {
+      creepConfigs: {
+        [managed]: { role: "carrier", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(primarySpawn.memory.spawnList).toEqual([]);
+    expect(availableSpawn.memory.spawnList).toEqual([
+      expect.stringMatching(new RegExp(`^${room.name}:manual:maxcarrier:`)),
+      managed,
+    ]);
   });
 
   it("exposes the same max-carrier behavior through the console wrapper", () => {

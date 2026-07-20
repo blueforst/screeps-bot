@@ -144,6 +144,41 @@ describe("mountSpawn war energy reservation", () => {
     expect(carrierSpawn.memory.spawnList).toEqual([]);
   });
 
+  it("holds a managed carrier until another spawn starts its queued emergency carrier", () => {
+    const room = {
+      name: "E1N58",
+      energyAvailable: 300,
+      energyCapacityAvailable: 300,
+    } as Room;
+    const emergencyConfig = `${room.name}:manual:maxcarrier:${Game.time}`;
+    const managedConfig = `${room.name}:carrier:0`;
+    Memory.data!.creepConfigs = {
+      [emergencyConfig]: {
+        role: "carrier",
+        args: [],
+        roomName: room.name,
+        body: [CARRY, MOVE],
+      },
+      [managedConfig]: {
+        role: "carrier",
+        args: [],
+        roomName: room.name,
+        body: [CARRY, MOVE],
+      },
+    };
+    const emergencySpawn = createSpawn("Spawn5", room, [emergencyConfig]);
+    emergencySpawn.spawning = { name: "worker-busy" } as Spawning;
+    const managedSpawn = createSpawn("Spawn11", room, [managedConfig]);
+    Object.setPrototypeOf(emergencySpawn, prototype);
+    Object.setPrototypeOf(managedSpawn, prototype);
+    Game.spawns = { Spawn5: emergencySpawn, Spawn11: managedSpawn };
+
+    prototype.work.call(managedSpawn);
+
+    expect(managedSpawn.spawnCreep).not.toHaveBeenCalled();
+    expect(managedSpawn.memory.spawnList).toEqual([managedConfig]);
+  });
+
   it("holds a hub upgrader until the other spawn's waiting war task starts", () => {
     const room = {
       name: "E4N58",

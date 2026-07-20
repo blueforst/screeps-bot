@@ -476,13 +476,16 @@ function queueMissingConfig(
   config: CreepConfig,
   context: SpawnPlanningContext,
 ): void {
-  const targetSpawn = selectLeastLoadedSpawn(spawns);
+  const emergencySpawn = config.role === "carrier" && config.roomName
+    ? findQueuedEmergencyCarrierSpawn(spawns, config.roomName)
+    : undefined;
+  const targetSpawn = emergencySpawn || selectLeastLoadedSpawn(spawns);
   if (!targetSpawn) {
     return;
   }
 
   if (shouldQueueConfig(spawns, targetSpawn, configName, config, context)) {
-    const shouldInsertCarrierAtFront = config.role === "carrier" && getConfigCreeps(configName, context).length === 0;
+    const shouldInsertCarrierAtFront = !emergencySpawn && config.role === "carrier" && getConfigCreeps(configName, context).length === 0;
     queueConfig(targetSpawn, configName, { toFront: shouldInsertCarrierAtFront });
   }
 }
@@ -508,6 +511,14 @@ function selectLeastLoadedSpawn(spawns: StructureSpawn[]): StructureSpawn | unde
     if (loadDiff !== 0) return loadDiff;
     return left.name.localeCompare(right.name);
   })[0];
+}
+
+function findQueuedEmergencyCarrierSpawn(spawns: StructureSpawn[], roomName: string): StructureSpawn | undefined {
+  const activeSpawns = spawns.filter(isSpawnActive);
+  const candidates = activeSpawns.length > 0 ? activeSpawns : spawns;
+  return candidates.find((spawn) =>
+    spawn.memory.spawnList?.some((configName) => isEmergencyCarrierConfigName(roomName, configName)),
+  );
 }
 
 function queuePowerBankHaulerConfig(
