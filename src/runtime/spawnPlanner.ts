@@ -50,16 +50,19 @@ function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
 
 function getSpawnConfigPriority(roomName: string, configName: string): number {
   const config = getCreepConfigService().get(configName);
-  if (config?.role === "carrier" && config.roomName === roomName) {
+  if (isEmergencyCarrierConfigName(roomName, configName)) {
     return 0;
   }
-  if (configName.includes(":war:")) {
+  if (config?.role === "carrier" && config.roomName === roomName) {
     return 1;
   }
-  if (config?.role === "hubUpgrader") {
+  if (configName.includes(":war:")) {
     return 2;
   }
-  return 3 + getSpawnRolePriority(config?.role);
+  if (config?.role === "hubUpgrader") {
+    return 3;
+  }
+  return 4 + getSpawnRolePriority(config?.role);
 }
 
 function ensureQueue(spawn: StructureSpawn): string[] {

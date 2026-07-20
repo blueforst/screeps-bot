@@ -360,7 +360,7 @@ describe("spawnPlanner strategic priority", () => {
     Game.time += 1;
   });
 
-  it("orders only the source-room carrier ahead of war, then the hub upgrader", () => {
+  it("orders emergency carrier before managed carrier and both before every other creep", () => {
     const room = createRoom("E4N58");
     room.controller!.level = 7;
     const spawn = createSpawn(room);
@@ -370,16 +370,26 @@ describe("spawnPlanner strategic priority", () => {
     const remoteCarrier = "E4N58:remoteMine:E4N59:carrier:0";
     const miner = "E4N58:miner:source0";
     const worker = "E4N58:worker:0";
-    spawn.memory.spawnList = [worker, miner, remoteCarrier, hubUpgrader, warHealer, homeCarrier];
+    const emergencyCarrier = `E4N58:manual:maxcarrier:${Game.time}`;
+    spawn.memory.spawnList = [
+      worker,
+      miner,
+      remoteCarrier,
+      hubUpgrader,
+      warHealer,
+      homeCarrier,
+      emergencyCarrier,
+    ];
     Game.rooms[room.name] = room;
     Game.spawns[spawn.name] = spawn;
-    Game.creeps.homeCarrier = {
-      name: "homeCarrier",
-      room,
-      memory: { role: "carrier" },
-    } as Creep;
     Memory.data = {
       creepConfigs: {
+        [emergencyCarrier]: {
+          role: "carrier",
+          args: [],
+          roomName: room.name,
+          body: [CARRY, MOVE],
+        },
         [homeCarrier]: { role: "carrier", args: [], roomName: room.name },
         [warHealer]: { role: "healer", args: [], roomName: room.name },
         [hubUpgrader]: { role: "hubUpgrader", args: [], roomName: room.name },
@@ -392,6 +402,7 @@ describe("spawnPlanner strategic priority", () => {
     scheduleSpawnTasks();
 
     expect(spawn.memory.spawnList).toEqual([
+      emergencyCarrier,
       homeCarrier,
       warHealer,
       hubUpgrader,
