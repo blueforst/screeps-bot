@@ -53,6 +53,20 @@ function isEmergencyCarrierConfigName(roomName: string, configName: string): boo
   return configName.startsWith(`${roomName}:manual:maxcarrier:`);
 }
 
+function isSpawnableEmergencyCarrierConfig(spawn: StructureSpawn, configName: string): boolean {
+  if (!isEmergencyCarrierConfigName(spawn.room.name, configName)) {
+    return false;
+  }
+
+  const config = getCreepConfigService().get(configName);
+  if (config?.role !== "carrier" || config.roomName !== spawn.room.name || !config.body || config.body.length === 0) {
+    return false;
+  }
+
+  const bodyCost = config.body.reduce((sum, part) => sum + BODYPART_COST[part], 0);
+  return bodyCost <= spawn.room.energyCapacityAvailable;
+}
+
 function hasWaitingEmergencyCarrierOnAnotherSpawn(spawn: StructureSpawn): boolean {
   return Object.values(Game.spawns).some((candidate) => {
     if (candidate === spawn || candidate.room.name !== spawn.room.name || !isSpawnActive(candidate)) {
@@ -60,7 +74,7 @@ function hasWaitingEmergencyCarrierOnAnotherSpawn(spawn: StructureSpawn): boolea
     }
 
     const configName = candidate.memory.spawnList?.[0];
-    return !!configName && isEmergencyCarrierConfigName(spawn.room.name, configName);
+    return !!configName && isSpawnableEmergencyCarrierConfig(candidate, configName);
   });
 }
 
@@ -93,8 +107,7 @@ function shouldYieldEnergyToWar(spawn: StructureSpawn, configName: string): bool
 }
 
 function shouldYieldToEmergencyCarrier(spawn: StructureSpawn, configName: string): boolean {
-  return isSourceRoomCarrierConfig(spawn, configName) &&
-    !isEmergencyCarrierConfigName(spawn.room.name, configName) &&
+  return !isEmergencyCarrierConfigName(spawn.room.name, configName) &&
     hasWaitingEmergencyCarrierOnAnotherSpawn(spawn);
 }
 
