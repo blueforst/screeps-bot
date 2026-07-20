@@ -1,3 +1,4 @@
+import { isSpawnActive } from "@/runtime/tickContext";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
@@ -28,7 +29,28 @@ function buildCarrierBodyByEnergy(energyAvailable: number): BodyPartConstant[] {
 }
 
 function resolveSpawnByRoom(roomName: string): StructureSpawn | null {
-  return getTickContextService().getPrimarySpawnByRoom(roomName) || null;
+  const spawns = getTickContextService().getSpawnsByRoom(roomName);
+  if (spawns.length === 0) {
+    return null;
+  }
+
+  const activeSpawns = spawns.filter(isSpawnActive);
+  const candidates = activeSpawns.length > 0 ? activeSpawns : spawns;
+  return [...candidates].sort((left, right) => {
+    const leftBusy = left.spawning ? 1 : 0;
+    const rightBusy = right.spawning ? 1 : 0;
+    if (leftBusy !== rightBusy) {
+      return leftBusy - rightBusy;
+    }
+
+    const leftLoad = (left.memory.spawnList?.length ?? 0) + leftBusy;
+    const rightLoad = (right.memory.spawnList?.length ?? 0) + rightBusy;
+    if (leftLoad !== rightLoad) {
+      return leftLoad - rightLoad;
+    }
+
+    return left.name.localeCompare(right.name);
+  })[0];
 }
 
 function enqueueAtFront(spawn: StructureSpawn, configName: string): void {

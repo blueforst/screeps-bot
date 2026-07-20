@@ -144,6 +144,123 @@ describe("mountSpawn war energy reservation", () => {
     expect(carrierSpawn.memory.spawnList).toEqual([]);
   });
 
+  it("holds a managed carrier until another spawn starts its queued emergency carrier", () => {
+    const room = {
+      name: "E1N58",
+      energyAvailable: 300,
+      energyCapacityAvailable: 300,
+    } as Room;
+    const emergencyConfig = `${room.name}:manual:maxcarrier:${Game.time}`;
+    const managedConfig = `${room.name}:carrier:0`;
+    Memory.data!.creepConfigs = {
+      [emergencyConfig]: {
+        role: "carrier",
+        args: [],
+        roomName: room.name,
+        body: [CARRY, MOVE],
+      },
+      [managedConfig]: {
+        role: "carrier",
+        args: [],
+        roomName: room.name,
+        body: [CARRY, MOVE],
+      },
+    };
+    const emergencySpawn = createSpawn("Spawn5", room, [emergencyConfig]);
+    emergencySpawn.spawning = { name: "worker-busy" } as Spawning;
+    const managedSpawn = createSpawn("Spawn11", room, [managedConfig]);
+    Object.setPrototypeOf(emergencySpawn, prototype);
+    Object.setPrototypeOf(managedSpawn, prototype);
+    Game.spawns = { Spawn5: emergencySpawn, Spawn11: managedSpawn };
+
+    prototype.work.call(managedSpawn);
+
+    expect(managedSpawn.spawnCreep).not.toHaveBeenCalled();
+    expect(managedSpawn.memory.spawnList).toEqual([managedConfig]);
+  });
+
+  it("holds worker and war tasks until another spawn starts a valid emergency carrier", () => {
+    const room = { name: "E1N59", energyAvailable: 300, energyCapacityAvailable: 300 } as Room;
+    const emergencyConfig = `${room.name}:manual:maxcarrier:${Game.time}`;
+    const workerConfig = `${room.name}:worker:0`;
+    const warConfig = `${room.name}:war:E2N59:g1:healer:0`;
+    Memory.data!.creepConfigs = {
+      [emergencyConfig]: { role: "carrier", args: [], roomName: room.name, body: [CARRY, MOVE] },
+      [workerConfig]: { role: "worker", args: [], roomName: room.name, body: [WORK, CARRY, MOVE] },
+      [warConfig]: { role: "healer", args: [], roomName: room.name, body: [HEAL, MOVE] },
+    };
+    const emergencySpawn = createSpawn("Spawn5", room, [emergencyConfig]);
+    emergencySpawn.spawning = { name: "busy" } as Spawning;
+    const workerSpawn = createSpawn("Spawn11", room, [workerConfig]);
+    const warSpawn = createSpawn("Spawn12", room, [warConfig]);
+    Object.setPrototypeOf(emergencySpawn, prototype);
+    Object.setPrototypeOf(workerSpawn, prototype);
+    Object.setPrototypeOf(warSpawn, prototype);
+    Game.spawns = { Spawn5: emergencySpawn, Spawn11: workerSpawn, Spawn12: warSpawn };
+
+    prototype.work.call(workerSpawn);
+    prototype.work.call(warSpawn);
+
+    expect(workerSpawn.spawnCreep).not.toHaveBeenCalled();
+    expect(warSpawn.spawnCreep).not.toHaveBeenCalled();
+  });
+
+  it("does not yield to a missing or unspawnable emergency config", () => {
+    const room = { name: "E1N60", energyAvailable: 300, energyCapacityAvailable: 300 } as Room;
+    const emergencyConfig = `${room.name}:manual:maxcarrier:${Game.time}`;
+    const workerConfig = `${room.name}:worker:0`;
+    const emergencySpawn = createSpawn("Spawn5", room, [emergencyConfig]);
+    emergencySpawn.spawning = { name: "busy" } as Spawning;
+    const workerSpawn = createSpawn("Spawn11", room, [workerConfig]);
+    Object.setPrototypeOf(emergencySpawn, prototype);
+    Object.setPrototypeOf(workerSpawn, prototype);
+    Game.spawns = { Spawn5: emergencySpawn, Spawn11: workerSpawn };
+    Memory.data!.creepConfigs = {
+      [workerConfig]: { role: "worker", args: [], roomName: room.name, body: [WORK, CARRY, MOVE] },
+    };
+
+    prototype.work.call(workerSpawn);
+    expect(workerSpawn.spawnCreep).toHaveBeenCalledTimes(1);
+
+    workerSpawn.spawnCreep = jest.fn(() => OK);
+    workerSpawn.memory.spawnList = [workerConfig];
+    Memory.data!.creepConfigs![emergencyConfig] = {
+      role: "carrier",
+      args: [],
+      roomName: room.name,
+      body: [CARRY, CARRY, CARRY, CARRY, CARRY, CARRY, MOVE],
+    };
+    prototype.work.call(workerSpawn);
+
+    expect(workerSpawn.spawnCreep).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not yield to a 51-part or invalid-part emergency config", () => {
+    const room = { name: "E1N61", energyAvailable: 3000, energyCapacityAvailable: 3000 } as Room;
+    const emergencyConfig = `${room.name}:manual:maxcarrier:${Game.time}`;
+    const workerConfig = `${room.name}:worker:0`;
+    const emergencySpawn = createSpawn("Spawn5", room, [emergencyConfig]);
+    emergencySpawn.spawning = { name: "busy" } as Spawning;
+    const workerSpawn = createSpawn("Spawn11", room, [workerConfig]);
+    Object.setPrototypeOf(emergencySpawn, prototype);
+    Object.setPrototypeOf(workerSpawn, prototype);
+    Game.spawns = { Spawn5: emergencySpawn, Spawn11: workerSpawn };
+    Memory.data!.creepConfigs = {
+      [emergencyConfig]: { role: "carrier", args: [], roomName: room.name, body: Array(51).fill(CARRY) },
+      [workerConfig]: { role: "worker", args: [], roomName: room.name, body: [WORK, CARRY, MOVE] },
+    };
+
+    prototype.work.call(workerSpawn);
+    expect(workerSpawn.spawnCreep).toHaveBeenCalledTimes(1);
+
+    workerSpawn.spawnCreep = jest.fn(() => OK);
+    workerSpawn.memory.spawnList = [workerConfig];
+    Memory.data!.creepConfigs![emergencyConfig].body = ["invalid" as BodyPartConstant];
+    prototype.work.call(workerSpawn);
+
+    expect(workerSpawn.spawnCreep).toHaveBeenCalledTimes(1);
+  });
+
   it("holds a hub upgrader until the other spawn's waiting war task starts", () => {
     const room = {
       name: "E4N58",

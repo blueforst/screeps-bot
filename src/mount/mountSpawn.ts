@@ -49,6 +49,39 @@ function isSourceRoomCarrierConfig(spawn: StructureSpawn, configName: string): b
   return config?.role === "carrier" && config.roomName === spawn.room.name;
 }
 
+function isEmergencyCarrierConfigName(roomName: string, configName: string): boolean {
+  return configName.startsWith(`${roomName}:manual:maxcarrier:`);
+}
+
+function isSpawnableEmergencyCarrierConfig(spawn: StructureSpawn, configName: string): boolean {
+  if (!isEmergencyCarrierConfigName(spawn.room.name, configName)) {
+    return false;
+  }
+
+  const config = getCreepConfigService().get(configName);
+  if (config?.role !== "carrier" || config.roomName !== spawn.room.name || !config.body ||
+      config.body.length === 0 || config.body.length > MAX_CREEP_SIZE) {
+    return false;
+  }
+
+  const bodyCost = config.body.reduce((sum, part) => {
+    const partCost = BODYPART_COST[part];
+    return typeof partCost === "number" && Number.isFinite(partCost) ? sum + partCost : Number.NaN;
+  }, 0);
+  return Number.isFinite(bodyCost) && bodyCost <= spawn.room.energyCapacityAvailable;
+}
+
+function hasWaitingEmergencyCarrierOnAnotherSpawn(spawn: StructureSpawn): boolean {
+  return Object.values(Game.spawns).some((candidate) => {
+    if (candidate === spawn || candidate.room.name !== spawn.room.name || !isSpawnActive(candidate)) {
+      return false;
+    }
+
+    const configName = candidate.memory.spawnList?.[0];
+    return !!configName && isSpawnableEmergencyCarrierConfig(candidate, configName);
+  });
+}
+
 function hasWaitingWarSpawn(spawn: StructureSpawn): boolean {
   return Object.values(Game.spawns).some((candidate) => {
     if (candidate.room.name !== spawn.room.name) {
@@ -75,6 +108,11 @@ function shouldYieldEnergyToWar(spawn: StructureSpawn, configName: string): bool
     return false;
   }
   return hasWaitingWarSpawn(spawn);
+}
+
+function shouldYieldToEmergencyCarrier(spawn: StructureSpawn, configName: string): boolean {
+  return !isEmergencyCarrierConfigName(spawn.room.name, configName) &&
+    hasWaitingEmergencyCarrierOnAnotherSpawn(spawn);
 }
 
 export function mountSpawn(): void {
@@ -143,6 +181,9 @@ export function mountSpawn(): void {
 
     const currentTask = queue[0];
     if (shouldYieldEnergyToWar(this, currentTask)) {
+      return;
+    }
+    if (shouldYieldToEmergencyCarrier(this, currentTask)) {
       return;
     }
     const success = this.mainSpawn(currentTask);

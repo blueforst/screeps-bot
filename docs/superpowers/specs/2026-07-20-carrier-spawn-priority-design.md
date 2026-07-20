@@ -11,6 +11,7 @@
 - 紧急 carrier 的生产优先级高于标准 carrier。
 - 标准 carrier 的生产优先级高于所有非 carrier creep。
 - 标准 carrier 出生后，已有紧急 carrier 继续工作到自然死亡。
+- RCL1 且房间零 creep 时，首个 harvester 是上述优先级的唯一 bootstrap 例外。
 
 ## 非目标
 
@@ -54,6 +55,12 @@
 
 同一优先级内继续保持原始队列顺序，避免无关任务抖动。紧急 carrier 即使晚于标准 carrier 被发现或加入，也必须稳定排到标准 carrier 前面。
 
+此顺序约束覆盖同房间多 Spawn 的实际开工顺序，而不只是单条队列排序：紧急请求优先放入 active 且 idle 的 Spawn；若多个候选都 idle 或都 busy，再按有效队列负载和 Spawn 名稳定选择。即使选中的 idle Spawn 已有标准 carrier 队列，紧急项也插到队首。紧急项尚未开工时，其他 Spawn 不得先开工本房间标准 carrier；该跨 Spawn 门控只持续到紧急 carrier 开始生产，不覆盖、删除或取消任何标准配置。
+
+### RCL1 零 creep bootstrap 例外
+
+RCL1 房间且当前没有任何 creep 时，只入队一个受管 harvester，并跳过紧急 carrier、标准 carrier 和其他配置。这是防止首个 creep 纯搬运而无法恢复经济的唯一例外；一旦房间不再满足该 bootstrap 条件，正常的“紧急 carrier > 标准 carrier > 其他 creep”规则立即恢复。
+
 ## 生命周期
 
 紧急 carrier 成功出生后，其临时配置仍按现有机制删除，但 creep 继续凭自身 Memory 正常执行 carrier 角色。
@@ -91,4 +98,7 @@
 - 房间已有任意存活或正在生产的 carrier 时，不新增紧急 carrier。
 - 紧急 carrier 不再导致任何标准 carrier 队列项被删除。
 - 队列顺序稳定满足：紧急 carrier > 标准 carrier > 所有其他 creep。
+- 多 Spawn 时，紧急 carrier 选择可立即开工的 active Spawn，并在其开始生产前不允许其他 Spawn 抢先开工标准 carrier。
+- RCL1 零 creep 时仅入队一个 harvester，不创建纯搬运紧急 carrier。
+- 现有紧急 carrier 与随后排队的标准 carrier 共存；调度不创建额外紧急 carrier，也不删除或 `suicide` 现有紧急 carrier。
 - 相关 Jest 测试、TypeScript 类型检查和项目构建全部通过。

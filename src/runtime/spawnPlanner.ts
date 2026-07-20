@@ -50,16 +50,19 @@ function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
 
 function getSpawnConfigPriority(roomName: string, configName: string): number {
   const config = getCreepConfigService().get(configName);
-  if (config?.role === "carrier" && config.roomName === roomName) {
+  if (isEmergencyCarrierConfigName(roomName, configName)) {
     return 0;
   }
-  if (configName.includes(":war:")) {
+  if (config?.role === "carrier" && config.roomName === roomName) {
     return 1;
   }
-  if (config?.role === "hubUpgrader") {
+  if (configName.includes(":war:")) {
     return 2;
   }
-  return 3 + getSpawnRolePriority(config?.role);
+  if (config?.role === "hubUpgrader") {
+    return 3;
+  }
+  return 4 + getSpawnRolePriority(config?.role);
 }
 
 function ensureQueue(spawn: StructureSpawn): string[] {
@@ -473,13 +476,16 @@ function queueMissingConfig(
   config: CreepConfig,
   context: SpawnPlanningContext,
 ): void {
-  const targetSpawn = selectLeastLoadedSpawn(spawns);
+  const emergencySpawn = config.role === "carrier" && config.roomName
+    ? findQueuedEmergencyCarrierSpawn(spawns, config.roomName)
+    : undefined;
+  const targetSpawn = emergencySpawn || selectLeastLoadedSpawn(spawns);
   if (!targetSpawn) {
     return;
   }
 
   if (shouldQueueConfig(spawns, targetSpawn, configName, config, context)) {
-    const shouldInsertCarrierAtFront = config.role === "carrier" && getConfigCreeps(configName, context).length === 0;
+    const shouldInsertCarrierAtFront = !emergencySpawn && config.role === "carrier" && getConfigCreeps(configName, context).length === 0;
     queueConfig(targetSpawn, configName, { toFront: shouldInsertCarrierAtFront });
   }
 }
@@ -505,6 +511,14 @@ function selectLeastLoadedSpawn(spawns: StructureSpawn[]): StructureSpawn | unde
     if (loadDiff !== 0) return loadDiff;
     return left.name.localeCompare(right.name);
   })[0];
+}
+
+function findQueuedEmergencyCarrierSpawn(spawns: StructureSpawn[], roomName: string): StructureSpawn | undefined {
+  const activeSpawns = spawns.filter(isSpawnActive);
+  const candidates = activeSpawns.length > 0 ? activeSpawns : spawns;
+  return candidates.find((spawn) =>
+    spawn.memory.spawnList?.some((configName) => isEmergencyCarrierConfigName(roomName, configName)),
+  );
 }
 
 function queuePowerBankHaulerConfig(
@@ -611,6 +625,24 @@ function isEmergencyCarrierConfigName(roomName: string, configName: string): boo
   return configName.startsWith(`${roomName}:manual:maxcarrier:`);
 }
 
+function isSpawnableEmergencyCarrierConfig(spawn: StructureSpawn, roomName: string, configName: string): boolean {
+  if (!isEmergencyCarrierConfigName(roomName, configName)) {
+    return false;
+  }
+
+  const config = getCreepConfigService().get(configName);
+  if (config?.role !== "carrier" || config.roomName !== roomName || !config.body ||
+      config.body.length === 0 || config.body.length > MAX_CREEP_SIZE) {
+    return false;
+  }
+
+  const bodyCost = config.body.reduce((sum, part) => {
+    const partCost = BODYPART_COST[part];
+    return typeof partCost === "number" && Number.isFinite(partCost) ? sum + partCost : Number.NaN;
+  }, 0);
+  return Number.isFinite(bodyCost) && bodyCost <= spawn.room.energyCapacityAvailable;
+}
+
 function pruneEmergencyCarrierQueue(roomName: string, keepOne: boolean): boolean {
   const creepConfigs = getCreepConfigService();
   const spawns = getTickContextService().getSpawnsByRoom(roomName);
@@ -629,6 +661,11 @@ function pruneEmergencyCarrierQueue(roomName: string, keepOne: boolean): boolean
         return true;
       }
 
+      if (!isSpawnableEmergencyCarrierConfig(spawn, roomName, configName)) {
+        creepConfigs.remove(configName);
+        return false;
+      }
+
       if (keepOne && !kept && eligibleSpawns.has(spawn)) {
         kept = true;
         return true;
@@ -640,81 +677,6 @@ function pruneEmergencyCarrierQueue(roomName: string, keepOne: boolean): boolean
   }
 
   return kept;
-}
-
-function getEmergencyCarrierConfigName(roomName: string, creepName: string): string | undefined {
-  const memory = Memory.creeps?.[creepName];
-  if (memory?.role !== "carrier" || typeof memory.configName !== "string") {
-    return undefined;
-  }
-
-  return isEmergencyCarrierConfigName(roomName, memory.configName) ? memory.configName : undefined;
-}
-
-function suppressManagedCarriersCoveredByEmergency(
-  roomName: string,
-  spawns: StructureSpawn[],
-  configs: Record<string, CreepConfig>,
-  context: SpawnPlanningContext,
-): Set<string> {
-  const estimateSpawn = selectLeastLoadedSpawn(spawns);
-  if (!estimateSpawn) {
-    return new Set();
-  }
-
-  let spawningEmergencyCount = spawns.reduce((count, spawn) => {
-    if (!spawn.spawning) {
-      return count;
-    }
-    return getEmergencyCarrierConfigName(roomName, spawn.spawning.name) ? count + 1 : count;
-  }, 0);
-  const liveEmergencies = getTickContextService().getCreepsByRole("carrier")
-    .filter((creep) => {
-      const configName = creep.memory.configName;
-      return typeof configName === "string" && isEmergencyCarrierConfigName(roomName, configName);
-    })
-    .sort((left, right) => (right.ticksToLive ?? 0) - (left.ticksToLive ?? 0));
-
-  const covered = new Set<string>();
-  const managedConfigNames = Object.keys(configs)
-    .filter((configName) => {
-      const config = configs[configName];
-      return config.role === "carrier" &&
-        config.roomName === roomName &&
-        configName.startsWith(`${roomName}:carrier:`);
-    })
-    .sort();
-
-  for (const configName of managedConfigNames) {
-    if (getConfigCreeps(configName, context).length > 0 || isConfigSpawning(configName, context)) {
-      continue;
-    }
-
-    if (spawningEmergencyCount > 0) {
-      spawningEmergencyCount -= 1;
-      covered.add(configName);
-      continue;
-    }
-
-    const emergency = liveEmergencies[0];
-    const replacementThreshold = getSpawnTime(estimateSpawn, configName, context) + CARRIER_PRESPAWN_BUFFER_TICKS;
-    if (!emergency || (emergency.ticksToLive ?? 0) <= replacementThreshold) {
-      continue;
-    }
-
-    liveEmergencies.shift();
-    covered.add(configName);
-  }
-
-  if (covered.size > 0) {
-    for (const spawn of spawns) {
-      if (spawn.memory.spawnList) {
-        spawn.memory.spawnList = spawn.memory.spawnList.filter((configName) => !covered.has(configName));
-      }
-    }
-  }
-
-  return covered;
 }
 
 function ensureEmergencyCarrier(spawn: StructureSpawn): void {
@@ -739,22 +701,40 @@ function ensureEmergencyCarrier(spawn: StructureSpawn): void {
  * land is always a harvester, not a carrier.
  */
 function tryQueueInitialHarvester(
-  spawn: StructureSpawn,
+  room: Room,
+  spawns: StructureSpawn[],
   configs: Record<string, CreepConfig>,
   context: SpawnPlanningContext,
 ): boolean {
-  const room = spawn.room;
   if ((room.controller?.level ?? 0) !== 1) return false;
   if (getTickContextService().getCreepsByRoom(room.name).length > 0) return false;
 
   const harvesterEntry = Object.entries(configs).find(
     ([, cfg]) => cfg.roomName === room.name && cfg.role === "harvester",
   );
-  if (!harvesterEntry) return false;
+  const creepConfigs = getCreepConfigService();
+  for (const configName of Object.keys(configs)) {
+    if (isEmergencyCarrierConfigName(room.name, configName)) {
+      creepConfigs.remove(configName);
+    }
+  }
+  for (const spawn of spawns) {
+    for (const configName of spawn.memory.spawnList ?? []) {
+      const config = creepConfigs.get(configName);
+      if (config?.spawnOnce?.queuedAt !== undefined && !isConfigSpawning(configName, context)) {
+        delete config.spawnOnce.queuedAt;
+      }
+    }
+    spawn.memory.spawnList = [];
+  }
+  if (!harvesterEntry) return true;
 
-  const [configName, config] = harvesterEntry;
-  if (!isConfigQueued(spawn, configName)) {
-    queueMissingConfig([spawn], configName, config, context);
+  const [configName] = harvesterEntry;
+  if (!isConfigSpawning(configName, context)) {
+    const targetSpawn = selectLeastLoadedSpawn(spawns);
+    if (targetSpawn) {
+      queueConfig(targetSpawn, configName);
+    }
   }
   return true;
 }
@@ -776,9 +756,10 @@ export function scheduleSpawnTasks(): void {
 
   // RCL1 rooms with no creeps get exactly one harvester queued; skip all other logic.
   const initialHarvesterRooms = new Set<string>();
-  for (const [roomName, spawn] of spawnByRoom) {
-    if (tryQueueInitialHarvester(spawn, initialConfigs, planningContext)) {
-      initialHarvesterRooms.add(roomName);
+  for (const room of tickContext.getMyRooms()) {
+    const spawns = spawnsByRoom.get(room.name) ?? [];
+    if (tryQueueInitialHarvester(room, spawns, initialConfigs, planningContext)) {
+      initialHarvesterRooms.add(room.name);
     }
   }
 
@@ -789,19 +770,8 @@ export function scheduleSpawnTasks(): void {
   }
 
   const configs = getCreepConfigService().list();
-  const emergencyCoveredCarrierConfigs = new Set<string>();
-  for (const [roomName, spawns] of spawnsByRoom) {
-    for (const configName of suppressManagedCarriersCoveredByEmergency(roomName, spawns, configs, planningContext)) {
-      emergencyCoveredCarrierConfigs.add(configName);
-    }
-  }
-
   for (const [configName, config] of Object.entries(configs)) {
     if (!config.roomName) {
-      continue;
-    }
-
-    if (emergencyCoveredCarrierConfigs.has(configName)) {
       continue;
     }
 
