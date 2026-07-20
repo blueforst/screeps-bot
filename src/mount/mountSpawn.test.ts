@@ -235,6 +235,32 @@ describe("mountSpawn war energy reservation", () => {
     expect(workerSpawn.spawnCreep).toHaveBeenCalledTimes(1);
   });
 
+  it("does not yield to a 51-part or invalid-part emergency config", () => {
+    const room = { name: "E1N61", energyAvailable: 3000, energyCapacityAvailable: 3000 } as Room;
+    const emergencyConfig = `${room.name}:manual:maxcarrier:${Game.time}`;
+    const workerConfig = `${room.name}:worker:0`;
+    const emergencySpawn = createSpawn("Spawn5", room, [emergencyConfig]);
+    emergencySpawn.spawning = { name: "busy" } as Spawning;
+    const workerSpawn = createSpawn("Spawn11", room, [workerConfig]);
+    Object.setPrototypeOf(emergencySpawn, prototype);
+    Object.setPrototypeOf(workerSpawn, prototype);
+    Game.spawns = { Spawn5: emergencySpawn, Spawn11: workerSpawn };
+    Memory.data!.creepConfigs = {
+      [emergencyConfig]: { role: "carrier", args: [], roomName: room.name, body: Array(51).fill(CARRY) },
+      [workerConfig]: { role: "worker", args: [], roomName: room.name, body: [WORK, CARRY, MOVE] },
+    };
+
+    prototype.work.call(workerSpawn);
+    expect(workerSpawn.spawnCreep).toHaveBeenCalledTimes(1);
+
+    workerSpawn.spawnCreep = jest.fn(() => OK);
+    workerSpawn.memory.spawnList = [workerConfig];
+    Memory.data!.creepConfigs![emergencyConfig].body = ["invalid" as BodyPartConstant];
+    prototype.work.call(workerSpawn);
+
+    expect(workerSpawn.spawnCreep).toHaveBeenCalledTimes(1);
+  });
+
   it("holds a hub upgrader until the other spawn's waiting war task starts", () => {
     const room = {
       name: "E4N58",

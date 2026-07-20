@@ -144,6 +144,35 @@ describe("carrierRole mineral hauling", () => {
     getProtoControllerLinkContainer.mockReturnValue(null);
   });
 
+  it("does not suicide an emergency carrier when a newer managed carrier has a different config", () => {
+    const room = createRoom("W1N1", { level: 6 });
+    const emergencyConfig = `${room.name}:manual:maxcarrier:test`;
+    const managedConfig = `${room.name}:carrier:0`;
+    const emergencyCarrier = {
+      ...createCreep(room),
+      name: "emergencyCarrier",
+      ticksToLive: 100,
+      memory: { configName: emergencyConfig },
+    } as Creep;
+    const managedCarrier = {
+      ...createCreep(room),
+      name: "managedCarrier",
+      ticksToLive: 1400,
+      memory: { configName: managedConfig },
+    } as Creep;
+    Game.creeps = {
+      emergencyCarrier,
+      managedCarrier,
+    };
+    getCreepConfigService().upsert(emergencyConfig, "carrier", [], room.name);
+    getCreepConfigService().upsert(managedConfig, "carrier", [], room.name);
+    getEnergyStoreTarget.mockReturnValue({ structureType: STRUCTURE_SPAWN } as StructureSpawn);
+
+    carrierRole().source?.(emergencyCarrier);
+
+    expect(emergencyCarrier.suicide).not.toHaveBeenCalled();
+  });
+
   it("picks mineral board tasks when there is no energy demand target", () => {
     const room = createRoom();
     const container = {

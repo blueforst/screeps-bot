@@ -631,12 +631,16 @@ function isSpawnableEmergencyCarrierConfig(spawn: StructureSpawn, roomName: stri
   }
 
   const config = getCreepConfigService().get(configName);
-  if (config?.role !== "carrier" || config.roomName !== roomName || !config.body || config.body.length === 0) {
+  if (config?.role !== "carrier" || config.roomName !== roomName || !config.body ||
+      config.body.length === 0 || config.body.length > MAX_CREEP_SIZE) {
     return false;
   }
 
-  const bodyCost = config.body.reduce((sum, part) => sum + BODYPART_COST[part], 0);
-  return bodyCost <= spawn.room.energyCapacityAvailable;
+  const bodyCost = config.body.reduce((sum, part) => {
+    const partCost = BODYPART_COST[part];
+    return typeof partCost === "number" && Number.isFinite(partCost) ? sum + partCost : Number.NaN;
+  }, 0);
+  return Number.isFinite(bodyCost) && bodyCost <= spawn.room.energyCapacityAvailable;
 }
 
 function pruneEmergencyCarrierQueue(roomName: string, keepOne: boolean): boolean {
@@ -715,6 +719,12 @@ function tryQueueInitialHarvester(
     }
   }
   for (const spawn of spawns) {
+    for (const configName of spawn.memory.spawnList ?? []) {
+      const config = creepConfigs.get(configName);
+      if (config?.spawnOnce?.queuedAt !== undefined && !isConfigSpawning(configName, context)) {
+        delete config.spawnOnce.queuedAt;
+      }
+    }
     spawn.memory.spawnList = [];
   }
   if (!harvesterEntry) return true;

@@ -329,6 +329,76 @@ describe("spawnPlanner emergency carrier flow", () => {
     expect(spawn.memory.spawnList).toEqual([]);
   });
 
+  it("resets removed bootstrap spawnOnce configs so they requeue after the harvester arrives", () => {
+    const room = createRoom("W1N6");
+    room.controller = { my: true, level: 1 } as StructureController;
+    const spawn = createSpawn(room);
+    const harvester = `${room.name}:harvester:source0`;
+    const carrier = `${room.name}:carrier:once`;
+    const war = `${room.name}:war:W1N7:g1:healer:once`;
+    const manualWorker = `${room.name}:manual:worker:once`;
+    const queuedAt = Game.time - 1;
+    spawn.memory.spawnList = [carrier, war, manualWorker];
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Memory.data = {
+      creepConfigs: {
+        [harvester]: { role: "harvester", args: ["source0"], roomName: room.name },
+        [carrier]: { role: "carrier", args: [], roomName: room.name, spawnOnce: { queuedAt, spawnedAt: 7 } as any },
+        [war]: { role: "healer", args: [], roomName: room.name, spawnOnce: { queuedAt } },
+        [manualWorker]: { role: "worker", args: [], roomName: room.name, spawnOnce: { queuedAt } },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toEqual([harvester]);
+    expect(Memory.data!.creepConfigs![carrier].spawnOnce).toEqual({ spawnedAt: 7 });
+    expect(Memory.data!.creepConfigs![war].spawnOnce?.queuedAt).toBeUndefined();
+    expect(Memory.data!.creepConfigs![manualWorker].spawnOnce?.queuedAt).toBeUndefined();
+
+    Game.time += 1;
+    resetRuntimeServices();
+    Game.creeps.bootstrapHarvester = {
+      name: "bootstrapHarvester",
+      room,
+      memory: { role: "harvester", configName: harvester },
+    } as Creep;
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toEqual(expect.arrayContaining([carrier, war, manualWorker]));
+    expect(Memory.data!.creepConfigs![carrier].spawnOnce?.queuedAt).toBe(Game.time);
+    expect(Memory.data!.creepConfigs![war].spawnOnce?.queuedAt).toBe(Game.time);
+    expect(Memory.data!.creepConfigs![manualWorker].spawnOnce?.queuedAt).toBe(Game.time);
+  });
+
+  it("keeps spawnOnce queuedAt when the removed config is already spawning on another spawn", () => {
+    const room = createRoom("W1N6");
+    room.controller = { my: true, level: 1 } as StructureController;
+    const primarySpawn = createSpawn(room, 2, "W1N6-spawn-a");
+    const spawningSpawn = createSpawn(room, 2, "W1N6-spawn-b");
+    const harvester = `${room.name}:harvester:source0`;
+    const war = `${room.name}:war:W1N7:g1:healer:once`;
+    const queuedAt = Game.time - 1;
+    primarySpawn.memory.spawnList = [war];
+    spawningSpawn.spawning = { name: "war-spawning" } as Spawning;
+    Game.rooms[room.name] = room;
+    Game.spawns[primarySpawn.name] = primarySpawn;
+    Game.spawns[spawningSpawn.name] = spawningSpawn;
+    Memory.creeps[spawningSpawn.spawning.name] = { role: "healer", configName: war } as CreepMemory;
+    Memory.data = {
+      creepConfigs: {
+        [harvester]: { role: "harvester", args: ["source0"], roomName: room.name },
+        [war]: { role: "healer", args: [], roomName: room.name, spawnOnce: { queuedAt } },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(Memory.data!.creepConfigs![war].spawnOnce?.queuedAt).toBe(queuedAt);
+  });
+
   it("keeps a live emergency carrier when a managed carrier is queued later", () => {
     const room = createRoom("W1N7");
     const spawn = createSpawn(room);
@@ -533,6 +603,29 @@ describe("spawnPlanner emergency carrier flow", () => {
     expect(emergencyConfigs).toHaveLength(1);
     expect(emergencyConfigs[0]).not.toBe(staleEmergency);
     expect(Memory.data!.creepConfigs![staleEmergency]).toBeUndefined();
+  });
+
+  it("replaces a 51-part emergency carrier even when its cost fits room capacity", () => {
+    const room = createRoom("W1N12");
+    room.controller = { my: true, level: 6 } as StructureController;
+    room.energyAvailable = 3000;
+    room.energyCapacityAvailable = 3000;
+    const spawn = createSpawn(room);
+    const staleEmergency = `${room.name}:manual:maxcarrier:${Game.time - 1}`;
+    spawn.memory.spawnList = [staleEmergency];
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Memory.data = {
+      creepConfigs: {
+        [staleEmergency]: { role: "carrier", args: [], roomName: room.name, body: Array(51).fill(CARRY) },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(staleEmergency);
+    expect(Memory.data!.creepConfigs![staleEmergency]).toBeUndefined();
+    expect(spawn.memory.spawnList!.filter((name) => name.includes(":manual:maxcarrier:"))).toHaveLength(1);
   });
 
   it("exposes the same max-carrier behavior through the console wrapper", () => {
