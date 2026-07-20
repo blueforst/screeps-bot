@@ -252,22 +252,23 @@ describe("spawnPlanner emergency carrier flow", () => {
     expect(activeSpawn.memory.spawnList![0]).toContain(":manual:maxcarrier:");
   });
 
-  it("uses a healthy emergency carrier to cover one queued managed carrier", () => {
+  it("queues a missing managed carrier while a healthy emergency carrier keeps working", () => {
     const room = createRoom("W1N7");
     const spawn = createSpawn(room);
     const managed = `${room.name}:carrier:0`;
-    spawn.memory.spawnList = [managed];
+    const suicide = jest.fn();
     Game.rooms[room.name] = room;
     Game.spawns[spawn.name] = spawn;
     Game.creeps.emergencyCarrier = {
       name: "emergencyCarrier",
       room,
       ticksToLive: 1400,
+      suicide,
       memory: {
         role: "carrier",
         configName: `${room.name}:manual:maxcarrier:${Game.time - 100}`,
       },
-    } as Creep;
+    } as unknown as Creep;
     Memory.data = {
       creepConfigs: {
         [managed]: { role: "carrier", args: [], roomName: room.name },
@@ -276,10 +277,11 @@ describe("spawnPlanner emergency carrier flow", () => {
 
     scheduleSpawnTasks();
 
-    expect(spawn.memory.spawnList).not.toContain(managed);
+    expect(spawn.memory.spawnList).toContain(managed);
+    expect(suicide).not.toHaveBeenCalled();
   });
 
-  it("covers only one managed carrier slot with one emergency carrier", () => {
+  it("does not let one emergency carrier cover any managed carrier slots", () => {
     const room = createRoom("W1N8");
     const spawn = createSpawn(room);
     const first = `${room.name}:carrier:0`;
@@ -306,7 +308,7 @@ describe("spawnPlanner emergency carrier flow", () => {
     scheduleSpawnTasks();
 
     const managedQueue = spawn.memory.spawnList!.filter((name) => name.startsWith(`${room.name}:carrier:`));
-    expect(managedQueue).toHaveLength(1);
+    expect(managedQueue).toEqual([first, second]);
   });
 
   it("queues the managed replacement when the emergency carrier is near expiry", () => {
