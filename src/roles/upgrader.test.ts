@@ -113,4 +113,13 @@ describe("upgraderRole", () => {
     expect(upgraderRole("E4N58", "upgrader:E4N58").source?.(creep)).toBe(false);
     expect(mockedMoveToTarget).not.toHaveBeenCalled();
   });
+
+  it("works at RCL6 with an active manual task", () => {
+    const room = createRoom([], 6);
+    Game.rooms.E4N58 = room;
+    const creep = createCreep(room, 100);
+
+    expect(upgraderRole("E4N58", "upgrader:E4N58").target(creep)).toBe(false);
+    expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
+  });
 });

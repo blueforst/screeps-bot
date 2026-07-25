@@ -134,12 +134,12 @@ function getLocalUpgraderBoostAmount(room: Room): number {
 
 function isActiveManualUpgraderRoom(roomName: string): boolean {
   const controller = Game.rooms[roomName]?.controller;
-  return controller?.my === true && controller.level === 7;
+  return controller?.my === true && controller.level >= 6 && controller.level < 8;
 }
 
 export function startUpgrader(roomName: string): ManualUpgraderResult | string {
   if (!isActiveManualUpgraderRoom(roomName)) {
-    return `ERR_UPGRADER_REQUIRES_OWNED_RCL7_ROOM:${roomName}`;
+    return `ERR_UPGRADER_REQUIRES_OWNED_RCL6_OR_RCL7_ROOM:${roomName}`;
   }
 
   const tasks = getManualUpgraderStore();

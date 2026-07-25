@@ -20,7 +20,7 @@ function getActiveController(roomName: string | undefined, creep: Creep): Struct
     return null;
   }
   const controller = Game.rooms[roomName]?.controller;
-  if (!controller?.my || controller.level !== 7) return null;
+  if (!controller?.my || controller.level < 6 || controller.level >= 8) return null;
   return controller;
 }
 

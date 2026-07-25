@@ -104,10 +104,17 @@ describe("runHubUpgradeControl", () => {
     });
   });
 
-  it("rejects a room that is not an owned RCL7 room", () => {
+  it("starts one fixed-body manual upgrader for an owned RCL6 room", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(6);
+
+    expect(startUpgrader("E4N58")).toMatchObject({ ok: true, active: true, roomName: "E4N58" });
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.body).toEqual(HUB_UPGRADER_BODY);
+  });
+
+  it("rejects a room that is not an owned RCL6 or RCL7 room", () => {
     Game.rooms.E4N58 = createUpgraderRoom(8);
 
-    expect(startUpgrader("E4N58")).toBe("ERR_UPGRADER_REQUIRES_OWNED_RCL7_ROOM:E4N58");
+    expect(startUpgrader("E4N58")).toBe("ERR_UPGRADER_REQUIRES_OWNED_RCL6_OR_RCL7_ROOM:E4N58");
     expect(Memory.data?.manualUpgraders).toBeUndefined();
   });
 
