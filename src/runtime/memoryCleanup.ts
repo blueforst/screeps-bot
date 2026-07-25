@@ -32,6 +32,7 @@ const VALID_ROLES = new Set([
   "powerBankAttacker",
   "powerBankHealer",
   "powerBankHauler",
+  "upgrader",
   "hubUpgrader",
   "remoteMiningReserver",
   "remoteWorker",

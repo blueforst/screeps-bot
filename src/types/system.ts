@@ -4,6 +4,8 @@ export type RoleName =
   | "miner"
   | "carrier"
   | "worker"
+  | "upgrader"
+  /** @deprecated 仅用于清理部署前遗留配置。 */
   | "hubUpgrader"
   | "scout"
   | "claimer"

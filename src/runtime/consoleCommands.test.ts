@@ -1,4 +1,4 @@
-import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand, hubProgressRaw, hubProgressCommand, memoryAuditRaw, memoryAudit, remoteDefenseStatusCommand, remoteDefenseStatusRaw, registerConsoleCommands } from "@/runtime/consoleCommands";
+import { cpuMonitorCommand, cpuMonitorRaw, startTelemetryCommand, statusTelemetryCommand, stopTelemetryCommand, statusHubRaw, statusHubCommand, stopHubRaw, stopHubCommand, hubProgressRaw, hubProgressCommand, memoryAuditRaw, memoryAudit, remoteDefenseStatusCommand, remoteDefenseStatusRaw, registerConsoleCommands, startUpgraderCommand, startUpgraderRaw, stopUpgraderCommand, stopUpgraderRaw, upgraderStatusCommand, upgraderStatusRaw } from "@/runtime/consoleCommands";
 import type { CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
 
 const fullHeap: CpuMonitorHeapSnapshot = {
@@ -783,11 +783,17 @@ describe("remoteDefenseStatus commands", () => {
     expect(parsed).toMatchObject({ ok: true, targetRoom: "W1N0", roomVisible: false });
   });
 
-  it("registerConsoleCommands exposes remote defense and war patrol commands globally", () => {
+  it("registerConsoleCommands exposes remote defense, upgrader, and war patrol commands globally", () => {
     registerConsoleCommands();
 
     expect(global.remoteDefenseStatusRaw).toBe(remoteDefenseStatusRaw);
     expect(global.remoteDefenseStatus).toBe(remoteDefenseStatusCommand);
+    expect(global.startUpgraderRaw).toBe(startUpgraderRaw);
+    expect(global.startUpgrader).toBe(startUpgraderCommand);
+    expect(global.stopUpgraderRaw).toBe(stopUpgraderRaw);
+    expect(global.stopUpgrader).toBe(stopUpgraderCommand);
+    expect(global.upgraderStatusRaw).toBe(upgraderStatusRaw);
+    expect(global.upgraderStatus).toBe(upgraderStatusCommand);
     expect(global.startWarPatrolRaw).toEqual(expect.any(Function));
     expect(global.startWarPatrol).toEqual(expect.any(Function));
   });

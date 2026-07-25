@@ -90,6 +90,12 @@ declare global {
         queueTop: string[];
       }
     | string;
+  var startUpgrader: (roomName: string) => string;
+  var startUpgraderRaw: (roomName: string) => unknown;
+  var stopUpgrader: (roomName: string) => string;
+  var stopUpgraderRaw: (roomName: string) => unknown;
+  var upgraderStatus: (roomName?: string) => string;
+  var upgraderStatusRaw: (roomName?: string) => unknown;
   var stopColonization: (targetRoom?: string) => string;
   var stopColonizationRaw: (targetRoom?: string) =>
     | {
@@ -946,6 +952,13 @@ declare global {
     };
     data?: {
       creepConfigs?: Record<string, CreepConfig>;
+      manualUpgraders?: Record<
+        string,
+        {
+          createdAt: number;
+          updatedAt: number;
+        }
+      >;
       resourceControl?: {
         taskSchemaVersion?: number;
         tasks?: Record<
@@ -1347,6 +1360,12 @@ declare namespace NodeJS {
           queueTop: string[];
         }
       | string;
+    startUpgrader: (roomName: string) => string;
+    startUpgraderRaw: (roomName: string) => unknown;
+    stopUpgrader: (roomName: string) => string;
+    stopUpgraderRaw: (roomName: string) => unknown;
+    upgraderStatus: (roomName?: string) => string;
+    upgraderStatusRaw: (roomName?: string) => unknown;
     stopColonization: (targetRoom?: string) => string;
     stopColonizationRaw: (targetRoom?: string) =>
       | {

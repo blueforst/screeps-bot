@@ -3,6 +3,11 @@ import {
   spawnMaxCarrierRaw as spawnMaxCarrierRawCore,
   type SpawnMaxCarrierResult,
 } from "@/runtime/emergencySpawning";
+import {
+  getUpgraderStatus,
+  startUpgrader,
+  stopUpgrader,
+} from "@/runtime/hubUpgradeControl";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import {
   getWarStatus,
@@ -330,9 +335,43 @@ export function spawnMaxCarrierCommand(roomName: string): string {
   return formatSpawnMaxCarrierResult(spawnMaxCarrier(roomName));
 }
 
+function formatUpgraderResult(result: ReturnType<typeof startUpgrader> | ReturnType<typeof stopUpgrader> | ReturnType<typeof getUpgraderStatus>): string {
+  return typeof result === "string" ? result : JSON.stringify(result);
+}
+
+export function startUpgraderRaw(roomName: string): ReturnType<typeof startUpgrader> {
+  return startUpgrader(roomName);
+}
+
+export function startUpgraderCommand(roomName: string): string {
+  return formatUpgraderResult(startUpgraderRaw(roomName));
+}
+
+export function stopUpgraderRaw(roomName: string): ReturnType<typeof stopUpgrader> {
+  return stopUpgrader(roomName);
+}
+
+export function stopUpgraderCommand(roomName: string): string {
+  return formatUpgraderResult(stopUpgraderRaw(roomName));
+}
+
+export function upgraderStatusRaw(roomName?: string): ReturnType<typeof getUpgraderStatus> {
+  return getUpgraderStatus(roomName);
+}
+
+export function upgraderStatusCommand(roomName?: string): string {
+  return formatUpgraderResult(upgraderStatusRaw(roomName));
+}
+
 export function registerOperationsConsoleCommands(): void {
   global.spawnMaxCarrier = spawnMaxCarrierCommand;
   global.spawnMaxCarrierRaw = spawnMaxCarrierRaw;
+  global.startUpgrader = startUpgraderCommand;
+  global.startUpgraderRaw = startUpgraderRaw;
+  global.stopUpgrader = stopUpgraderCommand;
+  global.stopUpgraderRaw = stopUpgraderRaw;
+  global.upgraderStatus = upgraderStatusCommand;
+  global.upgraderStatusRaw = upgraderStatusRaw;
   global.stopColonization = stopColonizationCommand;
   global.stopColonizationRaw = stopColonizationRaw;
   global.stopWar = stopWarCommand;

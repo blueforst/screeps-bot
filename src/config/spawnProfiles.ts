@@ -268,6 +268,7 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   miner: () => [...LINK_MINER_BODY],
   carrier: carryMoveBody,
   worker: oneOneOneBody,
+  upgrader: () => [...HUB_UPGRADER_BODY],
   hubUpgrader: () => [...HUB_UPGRADER_BODY],
   scout: () => [MOVE],
   claimer: () => [CLAIM, MOVE],
