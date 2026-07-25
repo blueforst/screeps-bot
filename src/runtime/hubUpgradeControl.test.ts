@@ -17,11 +17,46 @@ function resetRuntimeServices(): void {
   delete (global as RuntimeGlobal).__runtimeServices;
 }
 
-function createHubRoom(level = 7, my = true, name = "E4N58"): Room {
+interface LocalXgh2o {
+  storage?: number;
+  terminal?: number;
+  labs?: number[];
+}
+
+function createResourceStructure(
+  structureType: StructureConstant,
+  xgh2o: number,
+): StructureStorage | StructureTerminal | StructureLab {
+  return {
+    structureType,
+    store: {
+      getUsedCapacity: (resource?: ResourceConstant) => resource === RESOURCE_CATALYZED_GHODIUM_ACID ? xgh2o : 0,
+    },
+  } as unknown as StructureStorage | StructureTerminal | StructureLab;
+}
+
+function createHubRoom(
+  level = 7,
+  my = true,
+  name = "E4N58",
+  localXgh2o: LocalXgh2o = { storage: 450 },
+): Room {
+  const storage = localXgh2o.storage === undefined
+    ? undefined
+    : createResourceStructure(STRUCTURE_STORAGE, localXgh2o.storage) as StructureStorage;
+  const terminal = localXgh2o.terminal === undefined
+    ? undefined
+    : createResourceStructure(STRUCTURE_TERMINAL, localXgh2o.terminal) as StructureTerminal;
+  const labs = (localXgh2o.labs || []).map((amount) =>
+    createResourceStructure(STRUCTURE_LAB, amount) as StructureLab
+  );
   return {
     name,
     controller: { level, my } as StructureController,
-  } as Room;
+    storage,
+    terminal,
+    find: jest.fn((type: FindConstant) => type === FIND_MY_STRUCTURES ? labs : []),
+  } as unknown as Room;
 }
 
 function createUpgrader(
@@ -170,6 +205,55 @@ describe("runHubUpgradeControl", () => {
   it("requests 450 XGH2O while the upgrader config has no creep", () => {
     runHubUpgradeControl();
 
+    expect(mockedPrepareBoosts).toHaveBeenCalledWith(
+      "hubUpgrade:E4N58",
+      "E4N58",
+      0,
+      new Map([[RESOURCE_CATALYZED_GHODIUM_ACID, 450]]),
+      { requireLabEnergy: true },
+    );
+  });
+
+  it("runs unboosted and releases boost prep when the room has no local XGH2O", () => {
+    Game.rooms.E4N58 = createHubRoom(7, true, "E4N58", { storage: 0 });
+    Memory.runtime!.powerBankBoost = {
+      "hubUpgrade:E4N58": {
+        taskId: "hubUpgrade:E4N58",
+        sourceRoomName: "E4N58",
+        labs: {},
+      },
+    };
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]?.args).toEqual(["E4N58"]);
+    expect(mockedPrepareBoosts).not.toHaveBeenCalled();
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E4N58", "E4N58");
+  });
+
+  it("runs unboosted when local XGH2O cannot cover every remaining work part", () => {
+    Game.rooms.E4N58 = createHubRoom(7, true, "E4N58", { storage: 449 });
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]?.args).toEqual(["E4N58"]);
+    expect(mockedPrepareBoosts).not.toHaveBeenCalled();
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E4N58", "E4N58");
+  });
+
+  it("prepares the boost when local storage, terminal, and labs cover the full requirement", () => {
+    Game.rooms.E4N58 = createHubRoom(7, true, "E4N58", {
+      storage: 200,
+      terminal: 100,
+      labs: [150],
+    });
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]?.args).toEqual([
+      "E4N58",
+      "hubUpgrade:E4N58",
+    ]);
     expect(mockedPrepareBoosts).toHaveBeenCalledWith(
       "hubUpgrade:E4N58",
       "E4N58",

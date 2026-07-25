@@ -96,6 +96,24 @@ function countRemainingWorkParts(configName: string): number {
   ).length, 0);
 }
 
+function getLocalUpgraderBoostAmount(room: Room): number {
+  let total = 0;
+  if (room.storage) {
+    total += room.storage.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID);
+  }
+  if (room.terminal) {
+    total += room.terminal.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID);
+  }
+
+  const labs = room.find(FIND_MY_STRUCTURES, {
+    filter: (structure): structure is StructureLab => structure.structureType === STRUCTURE_LAB,
+  });
+  for (const lab of labs) {
+    total += lab.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID);
+  }
+  return total;
+}
+
 export function runHubUpgradeControl(): void {
   const hubConfig = Memory.cfg?.hub;
   if (!hubConfig?.enabled) {
@@ -118,20 +136,23 @@ export function runHubUpgradeControl(): void {
   const configs = getMemoryService().getCreepConfigStore();
   for (const roomName of activeRoomNames) {
     const boostTaskId = getBoostTaskId(roomName);
+    const room = Game.rooms[roomName]!;
+    const remainingWorkParts = Array.from({ length: HUB_UPGRADER_COUNT }, (_, index) =>
+      countRemainingWorkParts(getConfigName(roomName, index))
+    ).reduce((sum, count) => sum + count, 0);
+    const requiredBoostAmount = remainingWorkParts * LAB_BOOST_MINERAL;
+    const canBoostLocally = requiredBoostAmount > 0 && getLocalUpgraderBoostAmount(room) >= requiredBoostAmount;
+
     for (let index = 0; index < HUB_UPGRADER_COUNT; index += 1) {
       configs[getConfigName(roomName, index)] = {
         role: "hubUpgrader",
-        args: [roomName, boostTaskId],
+        args: canBoostLocally ? [roomName, boostTaskId] : [roomName],
         roomName,
         body: [...HUB_UPGRADER_BODY],
       };
     }
 
-    const remainingWorkParts = Array.from({ length: HUB_UPGRADER_COUNT }, (_, index) =>
-      countRemainingWorkParts(getConfigName(roomName, index))
-    ).reduce((sum, count) => sum + count, 0);
-
-    if (remainingWorkParts <= 0) {
+    if (!canBoostLocally) {
       releaseBoostLabs(boostTaskId, roomName);
       continue;
     }
