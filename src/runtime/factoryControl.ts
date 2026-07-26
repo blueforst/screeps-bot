@@ -1166,11 +1166,6 @@ function attemptRegionalRawPurchase(
     const terminalFreeCapacity = room.terminal!.store.getFreeCapacity();
     if (terminalFreeCapacity <= 0) break;
 
-    declareMarketActionIntent(
-      "factoryControl:purchase",
-      "market_deal",
-      roomName,
-    );
     const selection = findSafeSellOrder(
       res,
       amount,
@@ -1229,6 +1224,11 @@ function attemptRegionalRawPurchase(
       continue;
     }
 
+    declareMarketActionIntent(
+      "factoryControl:purchase",
+      "market_deal",
+      roomName,
+    );
     const code = executeMarketDeal(
       selection.order.id,
       selection.dealAmount,

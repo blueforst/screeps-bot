@@ -3,6 +3,7 @@ import { buyBoostIfNeeded, DEFENSE_BOOST_COMPOUND } from "@/runtime/boostControl
 import {
   clearMarketActionArbiterForTest,
   executeTerminalAction,
+  getMarketActionJournal,
   getTerminalActionClaim,
 } from "@/runtime/marketActionArbiter";
 
@@ -81,6 +82,13 @@ describe("boost control market gateway", () => {
       kind: "market_deal",
       tick: 100,
     });
+    expect(getMarketActionJournal()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actor: "boostControl",
+        outcome: "intent",
+        roomName: room.name,
+      }),
+    ]));
   });
 
   it("已有内部发送 claim 时不执行市场购买", () => {
@@ -91,5 +99,39 @@ describe("boost control market gateway", () => {
 
     expect(Game.market.deal).not.toHaveBeenCalled();
     expect(getTerminalActionClaim("W1N1")?.actor).toBe("resourceControl");
+  });
+
+  it("没有可执行订单时不声明市场 intent", () => {
+    const room = createRoom();
+    (Game.market.getAllOrders as jest.Mock).mockReturnValue([]);
+
+    buyBoostIfNeeded(room);
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
+  });
+
+  it("交易能量不足时不声明市场 intent", () => {
+    const room = createRoom();
+    room.terminal!.store = createMockStore({
+      [RESOURCE_ENERGY]: 50,
+      [DEFENSE_BOOST_COMPOUND]: 0,
+    }, 300_000);
+
+    buyBoostIfNeeded(room);
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
+  });
+
+  it("terminal 冷却时不扫描订单或声明市场 intent", () => {
+    const room = createRoom();
+    room.terminal!.cooldown = 1;
+
+    buyBoostIfNeeded(room);
+
+    expect(Game.market.getAllOrders).not.toHaveBeenCalled();
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
   });
 });

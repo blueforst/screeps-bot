@@ -303,8 +303,9 @@ export function hasMarketActionIntentThisTick(): boolean {
 }
 
 /**
- * 生产模块可在盘口选择前声明本 tick 的市场需求。即使最终无订单或动作失败，
- * 后置 Direct 也会看到该 intent 并让生产优先。
+ * 生产模块在选出可执行订单并通过本地写前检查后、调用市场网关前声明本 tick
+ * 的市场动作。后置 Direct 会看到该 intent 并让真实可执行的生产动作优先；
+ * 只有需求但没有安全订单时不得制造永久阻塞 Direct Shadow 的空 intent。
  */
 export function declareMarketActionIntent(
   actor: string,

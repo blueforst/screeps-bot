@@ -203,14 +203,14 @@ Direct executor 只在以下条件全部成立时写入：
 - 保护条目 revision/observedAt/expiresAt 都等于当前 tick；
 - 排除已有 pending Direct exposure 后仍有足够 sellable amount；
 - current-tick BUY book 重读与完整重排仍把同一个 order ID 选为最高安全净价，且 `getOrderById(orderId)` 的 type/resource/room/price/amount 与计划完全一致并可覆盖成交量；
-- `Game.market.orders` 中没有任何 `remainingAmount>0` 的自有 BUY/SELL order（无论 active），Maker managed/pending/exposure 全零，且不存在生产 emergency buy 或其他市场 action intent；
+- `Game.market.orders` 中没有任何 `remainingAmount>0` 的自有 BUY/SELL order（无论 active），Maker managed/pending/exposure 全零，且不存在已经选出 current-tick 可执行订单并通过本地写前检查的生产 emergency buy 或其他市场 action intent；只有需求但没有安全订单不得产生空 intent；
 - 重新计算后的完整提交量 transaction energy、energy reserve、保守 milli-credit 净价，以及 `amount=1` 的 `worstCaseNetCreditsMilli` 都安全；
 - terminal 当前资源量、cooldown 和 energy 足够；
 - 该房间本 tick 没有 terminal claim，且账户级 market arbiter claim 可被 Direct 独占到 `attemptAt+1` 的最早 preflight；之后长期只保留资源/能量 reservation 与账户 action journal；
 - 全局 Direct action budget 和同房动作预算均未用完；
 - 没有 unresolved pending Direct、reconcile gap 或 emergency stop。
 
-调用必须经过 `marketActionArbiter.executeMarketDeal`。新建 `prepared` 时即保守预留本房 terminal 与账户级 market claim；返回 OK 或调用抛出/结果不确定时，该账户级 claim 只保持到 `attemptAt+1` 的最早 Direct preflight（它必须先于其他市场动作运行），只有明确返回非 OK 才可同 tick 提前释放。完成首个 preflight 后释放账户级 claim，让 Factory/Boost/emergency buy 恢复；若首个证据缺失则 Direct 进入 gap，但不能无限期阻塞生产购买。pending exposure 仍同时预留待售资源和 `transactionEnergy`，后置 generic Carrier（包括 terminal-energy withdraw）、remoteCarrier、Synthesis、购买和其他 terminal/market 使用者只能使用扣除 reservation 后的余量。Direct executor 之外的生产源码仍不得直接调用 `Game.market.deal`。Direct 写前若已有生产 emergency buy 需求则优先生产、Direct 本轮等待；gap 期间生产市场动作可以继续，但全部写入账户 action journal，且不得释放 Direct exposure 或恢复 Direct 写。
+调用必须经过 `marketActionArbiter.executeMarketDeal`。新建 `prepared` 时即保守预留本房 terminal 与账户级 market claim；返回 OK 或调用抛出/结果不确定时，该账户级 claim 只保持到 `attemptAt+1` 的最早 Direct preflight（它必须先于其他市场动作运行），只有明确返回非 OK 才可同 tick 提前释放。完成首个 preflight 后释放账户级 claim，让 Factory/Boost/emergency buy 恢复；若首个证据缺失则 Direct 进入 gap，但不能无限期阻塞生产购买。pending exposure 仍同时预留待售资源和 `transactionEnergy`，后置 generic Carrier（包括 terminal-energy withdraw）、remoteCarrier、Synthesis、购买和其他 terminal/market 使用者只能使用扣除 reservation 后的余量。Direct executor 之外的生产源码仍不得直接调用 `Game.market.deal`。生产模块只有在选出 current-tick 可执行订单并通过本地价格、数量、能量与订单重验后，才在 `executeMarketDeal` 紧前声明 intent；此时必须优先生产、Direct 本轮等待。只有需求但没有安全订单时不得制造空 intent 或永久清零 Shadow。gap 期间生产市场动作可以继续，但全部写入账户 action journal，且不得释放 Direct exposure 或恢复 Direct 写。
 
 ### 6. Pending Direct 写前日志和成交对账
 

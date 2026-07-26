@@ -3838,11 +3838,6 @@ function applyMarketOps(
     }
 
     const maxBuyPrice = marketCfg.maxBuyPrice[RESOURCE_ENERGY];
-    declareMarketActionIntent(
-      "resourceControl:legacy-energy-buy",
-      "market_deal",
-      room.roomName,
-    );
     const order = findBestBuyOrder(
       ORDER_SELL,
       RESOURCE_ENERGY,
@@ -3861,6 +3856,11 @@ function applyMarketOps(
       continue;
     }
 
+    declareMarketActionIntent(
+      "resourceControl:legacy-energy-buy",
+      "market_deal",
+      room.roomName,
+    );
     const code = executeMarketDeal(
       order.id,
       amount,
@@ -3935,11 +3935,6 @@ function applyMarketOps(
         continue;
       }
 
-      declareMarketActionIntent(
-        "resourceControl:legacy-mineral-buy",
-        "market_deal",
-        room.roomName,
-      );
       const order = findBestBuyOrder(
         ORDER_SELL,
         resource,
@@ -3958,6 +3953,11 @@ function applyMarketOps(
         continue;
       }
 
+      declareMarketActionIntent(
+        "resourceControl:legacy-mineral-buy",
+        "market_deal",
+        room.roomName,
+      );
       const code = executeMarketDeal(
         order.id,
         amount,

@@ -30,7 +30,7 @@
 
 ## 4. Direct 写入、仲裁与对账
 
-- [x] 4.1 实现 exact config/fingerprint/canary/protection/current book/self orders/terminal/effective energy shadow/arbiter 的同 tick写前重验；生产 emergency buy 或其他 market intent 优先。
+- [x] 4.1 实现 exact config/fingerprint/canary/protection/current book/self orders/terminal/effective energy shadow/arbiter 的同 tick写前重验；生产 emergency buy 或其他 market intent 优先，但 intent 仅在选出 current-tick 可执行订单并通过本地写前检查后、调用紧前声明，空需求不得形成 Shadow 活锁。
 - [x] 4.2 `deal` 前写 active pending，保存 exact attemptAt、outgoing key/window baseline、terminal/credits 前态、冻结定价与资源/transaction-energy exposure；OK 按 resultCode→submittedAt→status commit marker 顺序写，跨 tick prepared 视为不确定已提交且绝不重提。
 - [x] 4.3 仅由 arbiter 执行 Direct；prepared 后 claim terminal/account，OK/异常保守到 attemptAt+1 最早 preflight，非 OK 写 failed outcome；preflight 后生产购买可用 reservation 外余额并写 action journal。
 - [x] 4.4 只接受基线后新增、`time===attemptAt`、ORDER_BUY、from/to/order/resource/price/amount 唯一匹配的 transaction；按 actualAmount 与冻结 effective energy shadow 重算 milli net，先写 outcome 再释放整笔 exposure/增加一次 confirmed。

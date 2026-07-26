@@ -176,8 +176,12 @@
 - **THEN** Direct 本 tick 不得调用市场写 API
 
 #### Scenario: 生产紧急购买优先
-- **WHEN** 任一房间存在 emergency buy 需求、其他 market action intent 或账户级 market claim
+- **WHEN** 生产模块已经选出 current-tick 可执行订单、通过本地写前检查并声明 emergency buy/其他 market action intent，或已有账户级 market claim
 - **THEN** 系统必须优先生产动作并让 Direct 等待；不得让 Direct 抢占生产紧急购买
+
+#### Scenario: 只有需求但没有可执行生产订单
+- **WHEN** 生产模块存在购买需求，但 current-tick 没有通过价格、数量、能量和订单重验的可执行订单
+- **THEN** 生产模块不得声明空 market intent；Direct Shadow 可继续计完整周期，Direct 仍必须通过自身全部写前门禁
 
 #### Scenario: 交易能量会穿透储备
 - **WHEN** 实际 transaction energy 会使 terminal energy 低于配置储备

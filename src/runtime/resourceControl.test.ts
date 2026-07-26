@@ -14,6 +14,10 @@ import {
   runResourceControl,
 } from "@/runtime/resourceControl";
 import { runMarketSalePreflight } from "@/runtime/marketSaleAutomation";
+import {
+  clearMarketActionArbiterForTest,
+  getMarketActionJournal,
+} from "@/runtime/marketActionArbiter";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -106,6 +110,7 @@ function createRoom(options: {
 describe("runResourceControl terminal feed tasks", () => {
   beforeEach(() => {
     clearCarrierTaskBoardForTest();
+    clearMarketActionArbiterForTest();
     resetRuntimeServices();
     Game.time = 10;
     Memory.cfg = {
@@ -3850,6 +3855,13 @@ describe("hub internalOnly market buy", () => {
     runResourceControl();
 
     expect(Game.market.deal).toHaveBeenCalledWith("sell-h-internal", 5000, room.name);
+    expect(getMarketActionJournal()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actor: "resourceControl:legacy-mineral-buy",
+        outcome: "intent",
+        roomName: room.name,
+      }),
+    ]));
     expect(Memory.runtime?.resourceControl?.lastMarketActions).toContain(
       `market-buy:${room.name}:${RESOURCE_HYDROGEN}=5000:price=0.500:cost=200`,
     );
@@ -3908,8 +3920,119 @@ describe("hub internalOnly market buy", () => {
     runResourceControl();
 
     expect(Game.market.deal).toHaveBeenCalledWith("sell-energy-hub", expect.any(Number), room.name);
+    expect(getMarketActionJournal()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actor: "resourceControl:legacy-energy-buy",
+        outcome: "intent",
+        roomName: room.name,
+      }),
+    ]));
     const actions = Memory.runtime?.resourceControl?.lastMarketActions || [];
     expect(actions.some((a: string) => a.includes("market-buy") && a.includes("energy"))).toBe(true);
+  });
+
+  it("没有可执行应急能量买单时不声明市场 intent", () => {
+    Memory.cfg!.resourceControl!.market = {
+      enabled: false,
+      emergencyBuyEnabled: true,
+      maxBuyPrice: { [RESOURCE_ENERGY]: 1 },
+    };
+    const room = createRoom({
+      name: "W1N7",
+      storageResources: { [RESOURCE_ENERGY]: 50_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25_000 },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => []);
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
+  });
+
+  it("应急能量买单的交易能量超过 terminal 余额时不声明 intent", () => {
+    Memory.cfg!.resourceControl!.market = {
+      enabled: false,
+      emergencyBuyEnabled: true,
+      maxBuyPrice: { [RESOURCE_ENERGY]: 1 },
+    };
+    const room = createRoom({
+      name: "W1N9",
+      storageResources: { [RESOURCE_ENERGY]: 50_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 500 },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(
+      () => 1_000,
+    );
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(
+      (filter: OrderFilter) =>
+        filter.type === ORDER_SELL &&
+        filter.resourceType === RESOURCE_ENERGY
+          ? [{
+              id: "sell-energy-too-far",
+              type: ORDER_SELL,
+              resourceType: RESOURCE_ENERGY,
+              price: 0.1,
+              amount: 5_000,
+              roomName: "W2N9",
+            } as Order]
+          : [],
+    );
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
+  });
+
+  it("没有可执行矿物买单时不声明市场 intent", () => {
+    setHubSynthesisDemand("W1N8", RESOURCE_HYDROGEN, 5_000);
+    const room = createRoom({
+      name: "W1N8",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25_000 },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => []);
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
+  });
+
+  it("矿物买单的交易能量超过 terminal 余额时不声明 intent", () => {
+    setHubSynthesisDemand("W2N1", RESOURCE_HYDROGEN, 5_000);
+    const room = createRoom({
+      name: "W2N1",
+      storageResources: { [RESOURCE_ENERGY]: 200_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 500 },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(
+      () => 1_000,
+    );
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(
+      (filter: OrderFilter) =>
+        filter.type === ORDER_SELL &&
+        filter.resourceType === RESOURCE_HYDROGEN
+          ? [{
+              id: "sell-hydrogen-too-far",
+              type: ORDER_SELL,
+              resourceType: RESOURCE_HYDROGEN,
+              price: 0.5,
+              amount: 5_000,
+              roomName: "W3N1",
+            } as Order]
+          : [],
+    );
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
   });
 
   it("keeps emergency energy buy reachable after the market-sale preflight disables legacy selling", () => {

@@ -112,6 +112,7 @@ function findBestSellOrder(roomName: string, amount: number): Order | null {
 
 export function buyBoostIfNeeded(room: Room): void {
   if (!room.terminal) return;
+  if (room.terminal.cooldown !== 0) return;
   if (Game.time % 5 !== 0) return;
 
   const stock = getBoostStock(room);
@@ -123,17 +124,17 @@ export function buyBoostIfNeeded(room: Room): void {
 
   if (getMaxBuyPrice() <= 0) return;
 
-  declareMarketActionIntent(
-    BOOST_CONTROL_PRODUCER,
-    "market_deal",
-    room.name,
-  );
   const order = findBestSellOrder(room.name, amount);
   if (!order?.roomName) return;
 
   const transferCost = Game.market.calcTransactionCost(amount, room.name, order.roomName);
   if (transferCost > room.terminal.store.getUsedCapacity(RESOURCE_ENERGY)) return;
 
+  declareMarketActionIntent(
+    BOOST_CONTROL_PRODUCER,
+    "market_deal",
+    room.name,
+  );
   const code = executeMarketDeal(
     order.id,
     amount,

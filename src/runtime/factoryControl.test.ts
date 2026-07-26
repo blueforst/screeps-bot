@@ -17,6 +17,10 @@ import {
   type MarketConfig,
   type FactoryControlRuntime,
 } from "@/runtime/factoryControl";
+import {
+  clearMarketActionArbiterForTest,
+  getMarketActionJournal,
+} from "@/runtime/marketActionArbiter";
 
 type GameWithPartialMarket = Omit<Game, "market"> & {
   market: Partial<Market> & {
@@ -1226,8 +1230,39 @@ describe("regional raw purchase", () => {
   beforeEach(() => {
     const { clearCarrierTaskBoardForTest } = require("@/runtime/carrierTaskBoard");
     clearCarrierTaskBoardForTest();
+    clearMarketActionArbiterForTest();
     setupMarketMocks();
     (Game.market as any).credits = 100000;
+  });
+
+  it("没有安全订单时不声明生产市场 intent", () => {
+    const { room, terminal } = createFactoryRoom({
+      terminalResources: { [RESOURCE_ENERGY]: 25_000, silicon: 0 },
+    });
+    (terminal as any).store = createMockStore(
+      { [RESOURCE_ENERGY]: 25_000, silicon: 0 },
+      300_000,
+    );
+    setupGameRooms({ W1N1: room });
+    setupMarketMocks();
+    (Game.market as any).credits = 100_000;
+    Memory.data = undefined;
+
+    const config = parseConfig();
+    config.market = makePurchaseMarketConfig();
+    const runtime = makeRuntime();
+    const state: TestSaleState = {
+      stage: "blocked",
+      activeTarget: "wire" as ResourceConstant,
+      missing: { silicon: 500 },
+      lastTransitionAt: 1_000,
+    };
+
+    attemptRegionalRawPurchase(room, state, config, runtime, "W1N1");
+
+    expect(state.lastError).toBe("purchase_no_safe_order");
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
   });
 
   it("keeps regional raw purchases reachable while the legacy sale latch is disabled", () => {
@@ -1285,6 +1320,13 @@ describe("regional raw purchase", () => {
     const buyClaim = runtime!.claimedOrders!.find(c => c.purpose === "buy");
     expect(buyClaim).toBeDefined();
     expect((buyClaim as any).credits).toBeGreaterThan(0);
+    expect(getMarketActionJournal()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actor: "factoryControl:purchase",
+        outcome: "intent",
+        roomName: room.name,
+      }),
+    ]));
   });
 
   it("findSafeSellOrder selects cheapest valid sell order", () => {
@@ -1461,6 +1503,7 @@ describe("regional raw purchase", () => {
 
     expect(state.lastError).toBe("purchase_order_gone");
     expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
   });
 
   it("rejects sell order via revalidation when price changed", () => {
@@ -1492,6 +1535,7 @@ describe("regional raw purchase", () => {
 
     expect(state.lastError).toBe("purchase_order_changed");
     expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getMarketActionJournal()).toEqual([]);
   });
 });
 
