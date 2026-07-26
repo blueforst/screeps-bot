@@ -46,5 +46,5 @@
 - [x] 6.5 运行聚焦测试、全量测试、`tsc --noEmit`、构建和 OpenSpec strict 验证
 - [x] 6.6 完成独立 subagent 代码审查并关闭全部阻断发现
 - [x] 6.7 合并至 `main`，部署旧 market disabled + 新模式 off 的安全版本并实时复核
-- [ ] 6.8 冻结与 canary 相同的配置 revision，在该 revision 连续 Shadow 100 个 ResourceControl 周期（配置变化重置），验证零写和完整拒绝解释
-- [ ] 6.9 按 live 前置条件选择一个非 Hub 基础矿物执行小批 maker canary，并验证成交/过期清理与生产无回归
+- [x] 6.8 **取消并由 `market-direct-canary` 取代**：Maker Shadow 因 SELL 参考深度不足未形成合格 canary；未宣称完成 100 周期，保留零写 live 证据并由 follow-up Direct Shadow 重新累计独立资格
+- [x] 6.9 **取消并由 `market-direct-canary` 取代**：未执行 Maker 市场写或成交；后续仅按独立 Direct capability、重新审查和 live canary 合同启用
