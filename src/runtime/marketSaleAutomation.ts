@@ -8,7 +8,24 @@ import {
   enforceLegacyMarketSafetyLatch,
   resolveMarketSaleAutomationConfig,
   type MarketSaleAutomationConfig,
+  type ResolvedMarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
+import {
+  directAutomationExposure,
+  directAutomationSnapshotStatus,
+  normalizeDirectAutomationState,
+  resolveDirectAutomationPending,
+  runDirectAutomationPlanning,
+  runDirectAutomationPreflight,
+  type DirectAutomationState,
+  type DirectRuntimeCandidate,
+} from "@/runtime/marketSaleDirectAutomation";
+import {
+  isResolvedDirectPendingCompatibilityAlias,
+  recoverPendingDirectDeal,
+  type OperatorDirectPendingEvidence,
+  type PendingDirectDeal,
+} from "@/runtime/marketSaleDirectPending";
 import {
   calculateProspectiveFeeMilli,
   evaluatePostActionInvariant,
@@ -79,6 +96,17 @@ export interface MarketSalePlanCandidate {
   makerPrice?: number;
   /** Per-unit maker value after current and prospective fee debt. */
   makerNetPrice?: number;
+  /** Direct 只使用历史/ratchet/底价证据，不继承 Maker SELL 深度门禁。 */
+  directHistoryTrusted?: boolean;
+  effectiveEnergyShadowPrice?: number;
+  energyShadowObservedAt?: number;
+  energyShadowComponents?: {
+    hardFloor: number;
+    explicit?: number;
+    historyFloor?: number;
+    ratchetFloor?: number;
+  };
+  directAdditionalRejectionReasons?: readonly string[];
   trustedPrice: boolean;
   trustedDepth: boolean;
   capacityState?: "normal" | "pressure" | "emergency";
@@ -93,6 +121,7 @@ export interface MarketSaleAutomationInput {
   candidates?: readonly MarketSalePlanCandidate[];
   stagingAmount?: number;
   reservationAmount?: number;
+  marketDomainActivityValid?: boolean;
 }
 
 export interface MarketSaleAutomationResult {
@@ -110,16 +139,6 @@ interface PendingCreateEvidence {
   outgoingKeysBefore?: string[];
   baselineOrderFingerprints?: Record<string, string>;
   operatorResolutionCandidateIds?: string[];
-}
-
-interface PendingDirectDeal {
-  requestId: string;
-  orderId: string;
-  roomName: string;
-  resourceType: ResourceConstant;
-  amount: number;
-  requestedAt: number;
-  status: "prepared" | "submitted" | "reconcile_gap";
 }
 
 interface ExpansionGrant {
@@ -175,7 +194,11 @@ interface MarketSaleDataState {
     requestId?: string;
     candidateIds?: string[];
   }>;
+  directAutomation?: DirectAutomationState;
   pendingDirectDeals?: Record<string, PendingDirectDeal>;
+  /** Canonical stores for any market-sale-owned staged or reserved amount. */
+  marketStaging?: unknown;
+  marketReservations?: unknown;
   expansionGrant?: ExpansionGrant;
 }
 
@@ -187,7 +210,7 @@ type MarketSaleRuntimeState = NonNullable<
 };
 
 interface RunContext {
-  config: MarketSaleAutomationConfig;
+  config: ResolvedMarketSaleAutomationConfig;
   data: MarketSaleDataState;
   runtime: MarketSaleRuntimeState;
   liveOrders: MarketOrderSnapshot[];
@@ -196,6 +219,9 @@ interface RunContext {
   rejectedByReason: Record<string, number>;
   writes: number;
   shadowPlanComplete: boolean;
+  stagingAmount: number;
+  reservationAmount: number;
+  marketDomainActivityValid: boolean;
 }
 
 type OperatorResult =
@@ -224,6 +250,9 @@ type OperatorGlobals = typeof global & {
   expandMarketSaleCanary?: (configRevision: string) => OperatorResult;
   emergencyStopMarketSaleAutomation?: (reason?: string) => OperatorResult;
   marketSaleAutomationStatus?: () => unknown;
+  resolveMarketSaleDirectPending?: (
+    evidence: OperatorDirectPendingEvidence,
+  ) => OperatorResult;
 };
 
 const operatorGlobals = global as OperatorGlobals;
@@ -239,22 +268,522 @@ function nonNegativeInteger(value: unknown): number {
     : 0;
 }
 
+export interface MarketSaleDomainActivity {
+  stagingAmount: number;
+  reservationAmount: number;
+  valid: boolean;
+}
+
+function sumDomainActivity(
+  value: unknown,
+): { amount: number; valid: boolean } {
+  if (value === undefined) return { amount: 0, valid: true };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { amount: 1, valid: false };
+  }
+  let amount = 0;
+  for (const [key, entry] of Object.entries(value)) {
+    if (
+      key.length === 0 ||
+      !entry ||
+      typeof entry !== "object" ||
+      Array.isArray(entry)
+    ) {
+      return { amount: 1, valid: false };
+    }
+    const candidate = (entry as { amount?: unknown }).amount;
+    if (
+      !Number.isSafeInteger(candidate) ||
+      (candidate as number) <= 0 ||
+      !Number.isSafeInteger(amount + (candidate as number))
+    ) {
+      return { amount: 1, valid: false };
+    }
+    amount += candidate as number;
+  }
+  return { amount, valid: true };
+}
+
+/**
+ * Canonical live evidence for market-sale-owned staging/reservation. No
+ * previous bundle produced these stores, so absence is an empty migration;
+ * malformed state is conservatively projected as non-zero.
+ */
+export function collectMarketSaleDomainActivity(
+  value: unknown,
+): MarketSaleDomainActivity {
+  const data =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as {
+          marketStaging?: unknown;
+          marketReservations?: unknown;
+        })
+      : undefined;
+  const staging = sumDomainActivity(data?.marketStaging);
+  const reservations = sumDomainActivity(data?.marketReservations);
+  return {
+    stagingAmount: staging.amount,
+    reservationAmount: reservations.amount,
+    valid: staging.valid && reservations.valid,
+  };
+}
+
+function recoverableDirectPendingAlias(
+  value: unknown,
+): Record<string, PendingDirectDeal> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const recovered: Record<string, PendingDirectDeal> = {};
+  for (const [requestId, pending] of Object.entries(value)) {
+    const normalized = recoverPendingDirectDeal(
+      pending,
+      requestId,
+    );
+    if (normalized) recovered[requestId] = normalized;
+  }
+  return recovered;
+}
+
+function quarantinedDirectPendingAlias(
+  value: unknown,
+): Record<string, unknown> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { "__compatibility_alias__": value };
+  }
+  const quarantined: Record<string, unknown> = {};
+  for (const [requestId, pending] of Object.entries(value)) {
+    if (!recoverPendingDirectDeal(pending, requestId)) {
+      quarantined[requestId] = pending;
+    }
+  }
+  return quarantined;
+}
+
+function isPlainRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value),
+  );
+}
+
+function createBaseMarketSaleDataState(): MarketSaleDataState {
+  return {
+    managedOrders: {},
+    pendingMutations: {},
+    feeEvents: [],
+    carriedFeeDebtMilli: {},
+    trustedFloors: {},
+    processedTransactionKeys: [],
+    operatorAudit: [],
+  };
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value > 0
+  );
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isRoomName(value: unknown): value is string {
+  return (
+    isNonEmptyString(value) &&
+    /^[WE]\d+[NS]\d+$/.test(value)
+  );
+}
+
+function isResourceConstant(
+  value: unknown,
+): value is ResourceConstant {
+  return (
+    typeof value === "string" &&
+    RESOURCES_ALL.includes(value as ResourceConstant)
+  );
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((entry) => isNonEmptyString(entry))
+  );
+}
+
+function isRecoverableManagedOrder(
+  value: unknown,
+  orderId: string,
+): value is OwnedManagedOrder {
+  if (!isPlainRecord(value)) return false;
+  const externalGap = value.externalMutationGap;
+  const disappearanceGap = value.disappearanceGap;
+  const exposureInvariant =
+    externalGap === undefined
+      ? value.remainingExposure === value.lastRemainingAmount
+      : isPlainRecord(externalGap) &&
+        value.remainingExposure ===
+          externalGap.conservativeExposure &&
+        (value.remainingExposure as number) >=
+          (value.lastRemainingAmount as number);
+  return Boolean(
+    value.orderId === orderId &&
+      isRoomName(value.roomName) &&
+      isResourceConstant(value.resourceType) &&
+      isPositiveFiniteNumber(value.price) &&
+      isNonNegativeSafeInteger(value.originalAmount) &&
+      value.originalAmount > 0 &&
+      isNonNegativeSafeInteger(value.lastRemainingAmount) &&
+      value.lastRemainingAmount <= value.originalAmount &&
+      isNonNegativeSafeInteger(value.remainingExposure) &&
+      isNonNegativeSafeInteger(value.feeDebtMilli) &&
+      isNonNegativeSafeInteger(value.createdAt) &&
+      isNonNegativeSafeInteger(value.lastSeenAt) &&
+      (value.lastFillAt === undefined ||
+        isNonNegativeSafeInteger(value.lastFillAt)) &&
+      isNonNegativeSafeInteger(value.policyCancelAtTick) &&
+      isNonNegativeSafeInteger(value.serverCreatedTick) &&
+      (value.backoffUntil === undefined ||
+        isNonNegativeSafeInteger(value.backoffUntil)) &&
+      exposureInvariant &&
+      !(
+        externalGap !== undefined &&
+        disappearanceGap !== undefined
+      ) &&
+      (externalGap === undefined ||
+        (isPlainRecord(externalGap) &&
+          isNonNegativeSafeInteger(externalGap.detectedAt) &&
+          isPositiveFiniteNumber(externalGap.expectedPrice) &&
+          isPositiveFiniteNumber(externalGap.observedPrice) &&
+          isNonNegativeSafeInteger(
+            externalGap.expectedTotalAmount,
+          ) &&
+          (externalGap.observedTotalAmount === undefined ||
+            isNonNegativeSafeInteger(
+              externalGap.observedTotalAmount,
+            )) &&
+          isNonNegativeSafeInteger(
+            externalGap.conservativeExposure,
+          ))) &&
+      (disappearanceGap === undefined ||
+        (isPlainRecord(disappearanceGap) &&
+          isNonNegativeSafeInteger(disappearanceGap.detectedAt) &&
+          (disappearanceGap.reason === "unknown_disappearance" ||
+            disappearanceGap.reason ===
+              "server_expiry_refund_mismatch"))),
+  );
+}
+
+function isRecoverablePendingMutation(
+  value: unknown,
+  orderId: string,
+): value is PendingOrderMutation {
+  if (!isPlainRecord(value)) return false;
+  const pre = value.pre;
+  const requested = value.requested;
+  const requestedExposure =
+    isPlainRecord(pre) &&
+    isNonNegativeSafeInteger(pre.remainingAmount) &&
+    isPlainRecord(requested) &&
+    value.kind === "extend" &&
+    isNonNegativeSafeInteger(requested.addAmount)
+      ? pre.remainingAmount + requested.addAmount
+      : isPlainRecord(pre)
+        ? pre.remainingAmount
+        : undefined;
+  let expectedProspectiveFeeMilli: number | undefined;
+  try {
+    if (value.kind === "cancel") {
+      expectedProspectiveFeeMilli = 0;
+    } else if (
+      value.kind === "extend" &&
+      isPlainRecord(pre) &&
+      isPositiveFiniteNumber(pre.price) &&
+      isNonNegativeSafeInteger(pre.remainingAmount) &&
+      isPlainRecord(requested) &&
+      isNonNegativeSafeInteger(requested.addAmount) &&
+      requested.addAmount > 0
+    ) {
+      expectedProspectiveFeeMilli =
+        calculateProspectiveFeeMilli({
+          kind: "extend",
+          currentPrice: pre.price,
+          currentRemainingAmount: pre.remainingAmount,
+          addAmount: requested.addAmount,
+        });
+    } else if (
+      value.kind === "reprice" &&
+      isPlainRecord(pre) &&
+      isPositiveFiniteNumber(pre.price) &&
+      isNonNegativeSafeInteger(pre.remainingAmount) &&
+      isPlainRecord(requested) &&
+      isPositiveFiniteNumber(requested.price)
+    ) {
+      expectedProspectiveFeeMilli =
+        requested.price > pre.price
+          ? calculateProspectiveFeeMilli(
+              {
+                kind: "repriceUp",
+                currentPrice: pre.price,
+                remainingAmount: pre.remainingAmount,
+              },
+              requested.price,
+            )
+          : calculateProspectiveFeeMilli(
+              {
+                kind: "repriceDown",
+                currentPrice: pre.price,
+                remainingAmount: pre.remainingAmount,
+              },
+              requested.price,
+            );
+    }
+  } catch {
+    expectedProspectiveFeeMilli = undefined;
+  }
+  return Boolean(
+    value.orderId === orderId &&
+      (value.kind === "cancel" ||
+        value.kind === "extend" ||
+        value.kind === "reprice") &&
+      isNonNegativeSafeInteger(value.requestedAt) &&
+      isPlainRecord(pre) &&
+      isPositiveFiniteNumber(pre.price) &&
+      isNonNegativeSafeInteger(pre.totalAmount) &&
+      isNonNegativeSafeInteger(pre.remainingAmount) &&
+      pre.remainingAmount <= pre.totalAmount &&
+      (pre.active === undefined ||
+        typeof pre.active === "boolean") &&
+      isPlainRecord(requested) &&
+      (requested.price === undefined ||
+        isPositiveFiniteNumber(requested.price)) &&
+      (requested.addAmount === undefined ||
+        (isNonNegativeSafeInteger(requested.addAmount) &&
+          requested.addAmount > 0)) &&
+      ((value.kind === "cancel" &&
+        requested.price === undefined &&
+        requested.addAmount === undefined) ||
+        (value.kind === "extend" &&
+          requested.price === undefined &&
+          isNonNegativeSafeInteger(requested.addAmount) &&
+          requested.addAmount > 0) ||
+        (value.kind === "reprice" &&
+          isPositiveFiniteNumber(requested.price) &&
+          requested.addAmount === undefined)) &&
+      isNonNegativeSafeInteger(value.prospectiveFeeMilli) &&
+      value.prospectiveFeeMilli ===
+        expectedProspectiveFeeMilli &&
+      isNonNegativeSafeInteger(value.conservativeExposure) &&
+      isNonNegativeSafeInteger(requestedExposure) &&
+      value.conservativeExposure >= requestedExposure &&
+      (value.status === "prepared" ||
+        value.status === "submitted" ||
+        value.status === "reconcile_gap"),
+  );
+}
+
+function isRecoverablePendingCreate(
+  value: unknown,
+): value is OwnedPendingCreate {
+  if (!isPlainRecord(value)) return false;
+  const tuple = value.tuple;
+  const audit = value.audit;
+  const baselineFingerprints = value.baselineOrderFingerprints;
+  const baselineOrderIds = value.baselineOrderIds;
+  const baselineOrderIdsCanonical =
+    isStringArray(baselineOrderIds) &&
+    new Set(baselineOrderIds).size === baselineOrderIds.length &&
+    baselineOrderIds.every(
+      (entry, index) =>
+        entry === [...baselineOrderIds].sort()[index],
+    );
+  const baselineFingerprintKeys =
+    isPlainRecord(baselineFingerprints)
+      ? Object.keys(baselineFingerprints).sort()
+      : [];
+  let expectedCreateFeeMilli: number | undefined;
+  try {
+    if (
+      isPlainRecord(tuple) &&
+      isNonNegativeSafeInteger(tuple.totalAmount) &&
+      tuple.totalAmount > 0 &&
+      isPositiveFiniteNumber(tuple.price)
+    ) {
+      expectedCreateFeeMilli =
+        calculateProspectiveFeeMilli(
+          {
+            kind: "create",
+            amount: tuple.totalAmount,
+          },
+          tuple.price,
+        );
+    }
+  } catch {
+    expectedCreateFeeMilli = undefined;
+  }
+  return Boolean(
+    isNonEmptyString(value.requestId) &&
+      isNonNegativeSafeInteger(value.requestedAt) &&
+      baselineOrderIdsCanonical &&
+      isNonEmptyString(value.baselineHash) &&
+      value.baselineHash === hashOrderIds(baselineOrderIds) &&
+      isNonEmptyString(value.leaseEpoch) &&
+      isPlainRecord(tuple) &&
+      tuple.type === ORDER_SELL &&
+      isResourceConstant(tuple.resourceType) &&
+      isRoomName(tuple.roomName) &&
+      isPositiveFiniteNumber(tuple.price) &&
+      isNonNegativeSafeInteger(tuple.totalAmount) &&
+      tuple.totalAmount > 0 &&
+      isNonNegativeSafeInteger(tuple.createdNotBefore) &&
+      isNonNegativeSafeInteger(tuple.createdNotAfter) &&
+      tuple.createdNotBefore === value.requestedAt &&
+      tuple.createdNotAfter === value.requestedAt + 2 &&
+      isNonNegativeSafeInteger(value.feeMilli) &&
+      value.feeMilli === expectedCreateFeeMilli &&
+      isNonNegativeSafeInteger(value.exposure) &&
+      value.exposure === tuple.totalAmount &&
+      isNonNegativeSafeInteger(value.zeroDeltaConfirmations) &&
+      (value.lastZeroDeltaTick === undefined ||
+        isNonNegativeSafeInteger(value.lastZeroDeltaTick)) &&
+      ((value.zeroDeltaConfirmations === 0 &&
+        value.lastZeroDeltaTick === undefined) ||
+        (value.zeroDeltaConfirmations > 0 &&
+          value.lastZeroDeltaTick !== undefined)) &&
+      (value.status === "prepared" ||
+        value.status === "submitted" ||
+        value.status === "ambiguous") &&
+      Array.isArray(audit) &&
+      audit.every(
+        (entry) =>
+          isPlainRecord(entry) &&
+          isNonNegativeSafeInteger(entry.tick) &&
+          isNonEmptyString(entry.action) &&
+          isStringArray(entry.candidateIds),
+      ) &&
+      typeof value.creditsBefore === "number" &&
+          Number.isFinite(value.creditsBefore) &&
+          value.creditsBefore >= 0 &&
+      isNonNegativeSafeInteger(value.terminalStockBefore) &&
+      isStringArray(value.outgoingKeysBefore) &&
+      isPlainRecord(baselineFingerprints) &&
+          Object.values(baselineFingerprints).every(
+            (entry) => typeof entry === "string",
+          ) &&
+      baselineFingerprintKeys.length === baselineOrderIds.length &&
+      baselineFingerprintKeys.every(
+        (entry, index) => entry === baselineOrderIds[index],
+      ) &&
+      (value.operatorResolutionCandidateIds === undefined ||
+        isStringArray(value.operatorResolutionCandidateIds)),
+  );
+}
+
+function recoverMarketStateRecord<T extends object>(
+  value: unknown,
+  containerSentinel: string,
+  entrySentinelPrefix: string,
+  quarantine: Record<string, unknown>,
+  isRecoverable: (entry: unknown, key: string) => entry is T,
+): Record<string, T> {
+  if (value === undefined) return {};
+  if (!isPlainRecord(value)) {
+    quarantine[containerSentinel] = value;
+    return {};
+  }
+  const recovered: Record<string, T> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!key || !isRecoverable(entry, key)) {
+      quarantine[`${entrySentinelPrefix}:${key || "<empty>"}`] =
+        entry;
+      continue;
+    }
+    recovered[key] = entry as T;
+  }
+  return recovered;
+}
+
 function ensureDataState(): MarketSaleDataState {
   if (!Memory.data) Memory.data = {};
-  if (!Memory.data.marketSaleAutomation) {
+  const rawMarketSaleAutomation =
+    Memory.data.marketSaleAutomation as unknown;
+  if (rawMarketSaleAutomation === undefined) {
+    Memory.data.marketSaleAutomation =
+      createBaseMarketSaleDataState() as unknown as NonNullable<
+        NonNullable<Memory["data"]>["marketSaleAutomation"]
+      >;
+  } else if (!isPlainRecord(rawMarketSaleAutomation)) {
+    const direct = normalizeDirectAutomationState(undefined);
+    direct.quarantinedPendingDirectDeals[
+      "__market_sale_automation_container__"
+    ] = rawMarketSaleAutomation;
+    direct.migrationBlockedReason =
+      "market_sale_automation_container_invalid";
     Memory.data.marketSaleAutomation = {
-      managedOrders: {},
-      pendingMutations: {},
-      feeEvents: [],
-      carriedFeeDebtMilli: {},
-      trustedFloors: {},
-      processedTransactionKeys: [],
-      operatorAudit: [],
-    };
+      ...createBaseMarketSaleDataState(),
+      pendingDirectDeals: direct.pendingDirectDeals,
+      directAutomation: direct,
+    } as unknown as NonNullable<
+      NonNullable<Memory["data"]>["marketSaleAutomation"]
+    >;
   }
   const data = Memory.data.marketSaleAutomation as unknown as MarketSaleDataState;
-  data.managedOrders ||= {};
-  data.pendingMutations ||= {};
+  const quarantinedMarketState: Record<string, unknown> = {};
+  const recoveredManagedOrders =
+    recoverMarketStateRecord<OwnedManagedOrder>(
+    data.managedOrders as unknown,
+    "__managed_orders_container__",
+    "__managed_order__",
+    quarantinedMarketState,
+    isRecoverableManagedOrder,
+  );
+  const recoveredPendingMutations =
+    recoverMarketStateRecord<PendingOrderMutation>(
+      data.pendingMutations as unknown,
+      "__pending_mutations_container__",
+      "__pending_mutation__",
+      quarantinedMarketState,
+      isRecoverablePendingMutation,
+    );
+  const rawPendingMutationRecord = isPlainRecord(
+    data.pendingMutations as unknown,
+  )
+    ? (data.pendingMutations as unknown as Record<string, unknown>)
+    : {};
+  for (const orderId of Object.keys(
+    recoveredPendingMutations,
+  )) {
+    if (recoveredManagedOrders[orderId]) continue;
+    quarantinedMarketState[
+      `__orphan_pending_mutation__:${orderId}`
+    ] =
+      rawPendingMutationRecord[orderId] ??
+      recoveredPendingMutations[orderId];
+    delete recoveredPendingMutations[orderId];
+  }
+  const rawPendingCreate = data.pendingCreate as unknown;
+  let recoveredPendingCreate: OwnedPendingCreate | undefined;
+  if (
+    rawPendingCreate !== undefined &&
+    !isRecoverablePendingCreate(rawPendingCreate)
+  ) {
+    quarantinedMarketState["__pending_create__"] =
+      rawPendingCreate;
+  } else {
+    recoveredPendingCreate =
+      rawPendingCreate as OwnedPendingCreate | undefined;
+  }
   data.feeEvents ||= [];
   data.feeLedger ||= createEmptyMarketSaleFeeLedger();
   data.carriedFeeDebtMilli ||= {};
@@ -262,8 +791,152 @@ function ensureDataState(): MarketSaleDataState {
   data.processedTransactionKeys ||= [];
   data.operatorAudit ||= [];
   data.drain ||= { phase: "off", zeroConfirmations: 0 };
-  data.pendingDirectDeals ||= {};
-  return data;
+  if (data.marketStaging === undefined) data.marketStaging = {};
+  if (data.marketReservations === undefined) {
+    data.marketReservations = {};
+  }
+  const rawDirectAutomation =
+    data.directAutomation as unknown;
+  if (rawDirectAutomation === undefined) {
+    const legacyPending = data.pendingDirectDeals as unknown;
+    let initializedDirect =
+      normalizeDirectAutomationState(undefined);
+    const legacyIsSafeEmpty =
+      legacyPending === undefined ||
+      (isPlainRecord(legacyPending) &&
+        Object.keys(legacyPending).length === 0);
+    if (!legacyIsSafeEmpty) {
+      // 旧版仅有简化 pending 结构，无法证明是否已经成交。完整、可恢复
+      // 的记录保留在 typed WAL；损坏记录不得流入投影/算术，但 blocker
+      // 永久保留其“不确定市场写入”语义，禁止自动迁移或恢复交易。
+      initializedDirect = normalizeDirectAutomationState({
+        ...initializedDirect,
+        pendingDirectDeals: legacyPending as never,
+      });
+      initializedDirect.migrationBlockedReason =
+        "legacy_pending_direct_deals_require_operator";
+    }
+    // Alias 先写、canonical 最后写；任一 CPU 截断都能在下一 tick
+    // 从旧 canonical 重新归一化，而不会把已解决 pending 合并回来。
+    data.pendingDirectDeals =
+      initializedDirect.pendingDirectDeals;
+    data.directAutomation = initializedDirect;
+  } else if (!isPlainRecord(rawDirectAutomation)) {
+    let initializedDirect =
+      normalizeDirectAutomationState(undefined);
+    const legacyPending = data.pendingDirectDeals as unknown;
+    const legacyIsSafeEmpty =
+      legacyPending === undefined ||
+      (isPlainRecord(legacyPending) &&
+        Object.keys(legacyPending).length === 0);
+    if (!legacyIsSafeEmpty) {
+      const legacyState = normalizeDirectAutomationState({
+        ...initializedDirect,
+        pendingDirectDeals: legacyPending as never,
+      });
+      initializedDirect.pendingDirectDeals =
+        legacyState.pendingDirectDeals;
+      initializedDirect.quarantinedPendingDirectDeals = {
+        ...legacyState.quarantinedPendingDirectDeals,
+        ...initializedDirect.quarantinedPendingDirectDeals,
+      };
+    }
+    initializedDirect.quarantinedPendingDirectDeals[
+      "__direct_automation_container__"
+    ] = rawDirectAutomation;
+    initializedDirect.migrationBlockedReason =
+      "direct_automation_container_invalid";
+    data.pendingDirectDeals =
+      initializedDirect.pendingDirectDeals;
+    data.directAutomation = initializedDirect;
+  } else {
+    const compatibilityPending = data.pendingDirectDeals;
+    const directBeforeNormalization =
+      rawDirectAutomation as unknown as DirectAutomationState;
+    const canonicalPendingBeforeNormalization =
+      directBeforeNormalization.pendingDirectDeals;
+    const normalizedDirect = normalizeDirectAutomationState(
+      directBeforeNormalization,
+    );
+    const compatibilityMatchesPreRecovery =
+      compatibilityPending === canonicalPendingBeforeNormalization ||
+      JSON.stringify(compatibilityPending) ===
+        JSON.stringify(canonicalPendingBeforeNormalization);
+    const compatibilityMatchesPostRecovery =
+      compatibilityPending ===
+        normalizedDirect.pendingDirectDeals ||
+      JSON.stringify(compatibilityPending) ===
+        JSON.stringify(
+          normalizedDirect.pendingDirectDeals,
+        );
+    const compatibilityResolvedByCanonicalOutcome =
+      isResolvedDirectPendingCompatibilityAlias(
+        compatibilityPending,
+        normalizedDirect.directDealOutcomes,
+      );
+    if (
+      compatibilityPending !== undefined &&
+      !compatibilityMatchesPreRecovery &&
+      !compatibilityMatchesPostRecovery &&
+      !compatibilityResolvedByCanonicalOutcome
+    ) {
+      const recoveredCompatibility =
+        recoverableDirectPendingAlias(
+          compatibilityPending,
+        );
+      normalizedDirect.pendingDirectDeals = {
+        ...recoveredCompatibility,
+        ...normalizedDirect.pendingDirectDeals,
+      };
+      normalizedDirect.quarantinedPendingDirectDeals = {
+        ...quarantinedDirectPendingAlias(
+          compatibilityPending,
+        ),
+        ...normalizedDirect.quarantinedPendingDirectDeals,
+      };
+      normalizedDirect.migrationBlockedReason =
+        "direct_pending_alias_mismatch";
+    }
+    data.pendingDirectDeals =
+      normalizedDirect.pendingDirectDeals;
+    data.directAutomation = normalizedDirect;
+  }
+  let committedDirect = data.directAutomation!;
+  if (Object.keys(quarantinedMarketState).length > 0) {
+    const existingBlocker =
+      committedDirect.migrationBlockedReason;
+    committedDirect = {
+      ...committedDirect,
+      quarantinedPendingDirectDeals: {
+      ...quarantinedMarketState,
+        ...committedDirect.quarantinedPendingDirectDeals,
+      },
+      migrationBlockedReason:
+        !existingBlocker ||
+        existingBlocker ===
+          "direct_qualification_state_invalid"
+          ? "market_sale_data_state_invalid"
+          : existingBlocker,
+    };
+  }
+  const committedData: MarketSaleDataState = {
+    ...data,
+    managedOrders: recoveredManagedOrders,
+    pendingMutations: recoveredPendingMutations,
+    pendingCreate: recoveredPendingCreate,
+    pendingDirectDeals: committedDirect.pendingDirectDeals,
+    directAutomation: committedDirect,
+  };
+  // 右值先完整构造，最后以单次 canonical container assignment 作为
+  // commit marker。CPU 若在它之前中断，原始损坏记录仍在；若在它之后
+  // 中断，quarantine/blocker 与 typed 清理已经不可分割地同时落盘。
+  Memory.data.marketSaleAutomation =
+    committedData as unknown as NonNullable<
+      NonNullable<Memory["data"]>["marketSaleAutomation"]
+    >;
+  // 保护账本和 carrier 仍读取兼容字段；正常返回时它与 Direct WAL
+  // 使用同一对象，写入顺序同时覆盖 CPU 截断恢复。
+  return committedData;
 }
 
 function ensureRuntimeState(): MarketSaleRuntimeState {
@@ -281,6 +954,8 @@ function ensureRuntimeState(): MarketSaleRuntimeState {
     managedOrderCount: 0,
     pendingCreateCount: 0,
     pendingMutationCount: 0,
+    stagingAmount: 0,
+    reservationAmount: 0,
     exposureAmount: 0,
     rollingFeeMilli: 0,
     terminalClaims: [],
@@ -344,6 +1019,7 @@ function orderFingerprint(order: MarketOrderSnapshot): string {
 function makeContext(): RunContext {
   const config = resolveMarketSaleAutomationConfig();
   const data = ensureDataState();
+  const domainActivity = collectMarketSaleDomainActivity(data);
   const runtime = ensureRuntimeState();
   const liveOrders = readLiveOrders();
   return {
@@ -356,12 +1032,186 @@ function makeContext(): RunContext {
     rejectedByReason: {},
     writes: 0,
     shadowPlanComplete: false,
+    stagingAmount: domainActivity.stagingAmount,
+    reservationAmount: domainActivity.reservationAmount,
+    marketDomainActivityValid: domainActivity.valid,
   };
 }
 
 function reject(context: RunContext, reason: string): void {
   context.rejectedByReason[reason] =
     (context.rejectedByReason[reason] || 0) + 1;
+}
+
+function usesDirectStrategy(
+  config: MarketSaleAutomationConfig,
+): boolean {
+  return (
+    config.mode === "direct" ||
+    (config.mode === "shadow" && config.shadowStrategy === "direct")
+  );
+}
+
+function mergeDirectResult(
+  context: RunContext,
+  result: ReturnType<typeof runDirectAutomationPlanning>,
+): void {
+  context.writes += result.writes;
+  for (const action of result.actions) recordAction(context, action);
+  for (const [reason, count] of Object.entries(result.rejectedByReason)) {
+    context.rejectedByReason[reason] =
+      (context.rejectedByReason[reason] || 0) +
+      nonNegativeInteger(count);
+  }
+}
+
+function directCandidateRejectionReasons(
+  context: RunContext,
+  candidate: MarketSalePlanCandidate,
+): string[] {
+  const reasons = new Set<string>();
+  const entry = candidate.protectionEntry;
+  const terminal = roomTerminal(candidate.roomName);
+  const terminalEnergy =
+    terminal?.store.getUsedCapacity(RESOURCE_ENERGY);
+  for (const reason of candidate.directAdditionalRejectionReasons || []) {
+    const normalized =
+      typeof reason === "string" ? reason.trim().slice(0, 120) : "";
+    if (normalized) reasons.add(normalized);
+  }
+  if (!isMarketProtectionEntryFresh(entry, Game.time)) {
+    reasons.add("direct_protection_not_current");
+  }
+  if (!context.config.sellResources.includes(candidate.resourceType)) {
+    reasons.add("direct_resource_not_allowed");
+  }
+  if (candidate.hasCriticalConflict || entry.blocked) {
+    reasons.add("direct_critical_conflict");
+  }
+  if (candidate.capacityState === undefined) {
+    reasons.add("direct_capacity_state_unknown");
+  } else if (candidate.capacityState === "emergency") {
+    reasons.add("direct_capacity_emergency");
+  }
+  if (candidate.isHubRoom === undefined) {
+    reasons.add("direct_hub_state_unknown");
+  } else if (candidate.isHubRoom) {
+    reasons.add("direct_hub_room_blocked");
+  }
+  if (!terminal) {
+    reasons.add("direct_terminal_missing");
+  } else {
+    if (
+      !Number.isSafeInteger(terminal.cooldown) ||
+      terminal.cooldown !== 0
+    ) {
+      reasons.add("direct_terminal_cooldown");
+    }
+    if (
+      !Number.isSafeInteger(terminalEnergy) ||
+      terminalEnergy! < context.config.terminalEnergyReserve
+    ) {
+      reasons.add("direct_terminal_energy_unsafe");
+    }
+  }
+  if (
+    !Number.isFinite(candidate.effectiveNetFloor) ||
+    candidate.effectiveNetFloor <= 0
+  ) {
+    reasons.add("direct_effective_floor_invalid");
+  }
+  if (candidate.directHistoryTrusted !== true) {
+    reasons.add("direct_history_untrusted");
+  }
+  if (
+    !Number.isFinite(candidate.effectiveEnergyShadowPrice) ||
+    candidate.energyShadowObservedAt === undefined ||
+    !candidate.energyShadowComponents
+  ) {
+    reasons.add("direct_energy_shadow_untrusted");
+  }
+  return [...reasons].sort();
+}
+
+function toDirectRuntimeCandidates(
+  context: RunContext,
+  candidates: readonly MarketSalePlanCandidate[],
+): DirectRuntimeCandidate[] {
+  return candidates.map((candidate) => {
+    const terminal = roomTerminal(candidate.roomName);
+    const terminalEnergy =
+      terminal?.store.getUsedCapacity(RESOURCE_ENERGY);
+    return {
+      roomName: candidate.roomName,
+      resourceType: candidate.resourceType,
+      protectionRevision: candidate.protectionEntry.revision,
+      observedAt: candidate.protectionEntry.observedAt,
+      expiresAt: candidate.protectionEntry.expiresAt,
+      sellableAmount: getMarketProtectionSellableAmount(
+        candidate.protectionEntry,
+        Game.time,
+      ),
+      terminalStock: candidate.protectionEntry.terminalStock,
+      terminalCooldown: terminal?.cooldown,
+      terminalEnergy:
+        typeof terminalEnergy === "number"
+          ? terminalEnergy
+          : undefined,
+      protectedAmount: candidate.protectionEntry.protectedAmount,
+      effectiveNetFloor: candidate.effectiveNetFloor,
+      directHistoryTrusted: candidate.directHistoryTrusted === true,
+      effectiveEnergyShadowPrice:
+        candidate.effectiveEnergyShadowPrice,
+      energyShadowObservedAt: candidate.energyShadowObservedAt,
+      energyShadowComponents: candidate.energyShadowComponents,
+      capacityState: candidate.capacityState,
+      isHubRoom: candidate.isHubRoom,
+      rejectionReasons: directCandidateRejectionReasons(
+        context,
+        candidate,
+      ),
+    };
+  });
+}
+
+function makerExposurePresent(
+  context: RunContext,
+): boolean {
+  return Boolean(
+    Object.keys(context.data.managedOrders).length > 0 ||
+      context.data.pendingCreate ||
+      Object.keys(context.data.pendingMutations).length > 0 ||
+      context.data.feeLedger?.reconcileGap ||
+      Object.values(context.data.managedOrders).some(
+        (managed) =>
+          managed.externalMutationGap !== undefined ||
+          managed.disappearanceGap !== undefined,
+      ) ||
+      context.stagingAmount > 0 ||
+      context.reservationAmount > 0,
+  );
+}
+
+function structuralMarketSaleWriteBlocker(
+  data: MarketSaleDataState,
+): string | undefined {
+  const direct = data.directAutomation;
+  if (!direct) return "direct_state_missing";
+  const blocker = direct.migrationBlockedReason;
+  if (
+    blocker &&
+    blocker !== "direct_qualification_state_invalid"
+  ) {
+    return blocker;
+  }
+  if (
+    Object.keys(
+      direct.quarantinedPendingDirectDeals || {},
+    ).length > 0
+  ) {
+    return "direct_quarantine_present";
+  }
+  return undefined;
 }
 
 function recordAction(context: RunContext, action: string): void {
@@ -1076,10 +1926,14 @@ function totalExposure(data: MarketSaleDataState): number {
     0,
   );
   const pendingCreate = nonNegativeInteger(data.pendingCreate?.exposure);
-  const pendingDirect = Object.values(data.pendingDirectDeals || {}).reduce(
-    (sum, deal) => sum + nonNegativeInteger(deal.amount),
-    0,
-  );
+  const pendingDirect = data.directAutomation
+    ? directAutomationExposure(data.directAutomation)
+        .resourceAmount
+    : Object.values(data.pendingDirectDeals || {}).reduce(
+        (sum, deal) =>
+          sum + nonNegativeInteger(deal.dealAmount),
+        0,
+      );
   return managed + pendingCreate + pendingDirect;
 }
 
@@ -1087,6 +1941,7 @@ function effectiveMode(config: MarketSaleAutomationConfig): MarketSaleAutomation
   if (
     (config.mode === "shadow" ||
       config.mode === "maker" ||
+      config.mode === "direct" ||
       config.mode === "hybrid") &&
     !config.validForPlanning
   ) {
@@ -1151,7 +2006,6 @@ function retryPreparedCancels(context: RunContext): void {
 function updateDrain(
   context: RunContext,
   mode: MarketSaleAutomationConfig["mode"],
-  input: MarketSaleAutomationInput,
 ): void {
   context.data.drain = updateDrainState({
     state: context.data.drain || { phase: "off", zeroConfirmations: 0 },
@@ -1162,15 +2016,19 @@ function updateDrain(
     ).length,
     pendingCreateCount: context.data.pendingCreate ? 1 : 0,
     pendingMutationCount: Object.keys(context.data.pendingMutations).length,
-    stagingAmount: nonNegativeInteger(input.stagingAmount),
-    reservationAmount: nonNegativeInteger(input.reservationAmount),
+    stagingAmount: context.stagingAmount,
+    reservationAmount: context.reservationAmount,
     exposureAmount: totalExposure(context.data),
     reconcileGapCount:
+      context.data.directAutomation?.migrationBlockedReason ||
       context.data.feeLedger?.reconcileGap ||
       Object.values(context.data.managedOrders).some(
         (managed) =>
           managed.externalMutationGap !== undefined ||
           managed.disappearanceGap !== undefined,
+      ) ||
+      Object.values(context.data.pendingDirectDeals || {}).some(
+        (pending) => pending.status === "reconcile_gap",
       )
         ? 1
         : 0,
@@ -1180,17 +2038,16 @@ function updateDrain(
 function drainIfRequired(
   context: RunContext,
   mode: MarketSaleAutomationConfig["mode"],
-  input: MarketSaleAutomationInput,
 ): void {
   const passive =
     mode === "off" || mode === "shadow" || mode === "emergencyStop";
-  updateDrain(context, mode, input);
+  updateDrain(context, mode);
   if (!passive || context.data.drain?.phase === "shadow") return;
   retryPreparedCancels(context);
   for (const orderId of Object.keys(context.data.managedOrders).sort()) {
     requestCancel(context, orderId);
   }
-  updateDrain(context, mode, input);
+  updateDrain(context, mode);
 }
 
 function roomTerminal(roomName: string): StructureTerminal | undefined {
@@ -2020,6 +2877,19 @@ function updateShadowCount(
   context: RunContext,
   phase: DrainState["phase"],
 ): void {
+  if (usesDirectStrategy(context.config)) {
+    const qualification =
+      context.data.directAutomation!.shadowQualification;
+    context.runtime.shadowConsecutiveCycles =
+      qualification.consecutiveCycles;
+    context.runtime.shadowConfigRevision =
+      qualification.configRevision;
+    context.runtime.shadowConfigSignature =
+      qualification.safetyFingerprint;
+    context.runtime.lastShadowCycleTick =
+      qualification.lastCycleTick;
+    return;
+  }
   const revision = context.config.configRevision;
   const signature = planningConfigSignature(context.config);
   const freshResourceControlCycle =
@@ -2120,6 +2990,8 @@ function projectRuntime(
   context.runtime.pendingMutationCount = Object.keys(
     context.data.pendingMutations,
   ).length;
+  context.runtime.stagingAmount = context.stagingAmount;
+  context.runtime.reservationAmount = context.reservationAmount;
   context.runtime.exposureAmount = totalExposure(context.data);
   context.runtime.rollingFeeMilli = rollingFeeMilli(
     context.data,
@@ -2169,6 +3041,73 @@ function projectRuntime(
   );
   context.runtime.rejectedByReason = { ...context.rejectedByReason };
   context.runtime.canaryLock = context.data.canaryLock;
+  const directState = context.data.directAutomation!;
+  const directSnapshotStatus = directAutomationSnapshotStatus(
+    directState,
+    Game.time,
+  );
+  const directSnapshot = directState.lastPlanningSnapshot;
+  const directPendingByStatus = Object.values(
+    directState.pendingDirectDeals,
+  ).reduce<Record<string, number>>((summary, pending) => {
+    summary[pending.status] = (summary[pending.status] || 0) + 1;
+    return summary;
+  }, {});
+  const directExposure = directAutomationExposure(directState);
+  if (directExposure.quarantinedCount > 0) {
+    directPendingByStatus.quarantined =
+      directExposure.quarantinedCount;
+  }
+  context.runtime.direct = {
+    strategyActive: usesDirectStrategy(context.config),
+    shadowConsecutiveCycles:
+      directState.shadowQualification.consecutiveCycles,
+    qualifiedAt: directState.shadowQualification.qualifiedAt,
+    activationAuthorized:
+      directState.shadowQualification.activationAuthorized,
+    canary: directState.shadowQualification.canary,
+    pendingCount: directExposure.pendingCount,
+    pendingByStatus: directPendingByStatus,
+    confirmedDealCount: directState.directConfirmedDealCount,
+    pausedForReview: directState.directPausedForReview,
+    migrationBlockedReason: directState.migrationBlockedReason,
+    exposure: directExposure,
+    snapshot:
+      directSnapshot && directSnapshotStatus.age !== undefined
+        ? {
+            observedAt: directSnapshot.observedAt,
+            age: directSnapshotStatus.age,
+            maxAgeTicks: directSnapshotStatus.maxAgeTicks,
+            fresh: directSnapshotStatus.fresh,
+            configRevision: directSnapshot.configRevision,
+            safetyFingerprint: directSnapshot.safetyFingerprint,
+            canary: directSnapshot.canary,
+            result: directSnapshot.result,
+            structuralCandidateCount:
+              directSnapshot.structuralCandidateCount,
+            eligibleStructuralCandidateCount:
+              directSnapshot.eligibleStructuralCandidateCount,
+            buyBook: directSnapshot.buyBook,
+            opportunity: directSnapshot.opportunity,
+            manualBuyOrderCount:
+              directSnapshot.manualBuyOrderCount,
+            manualSellOrderCount:
+              directSnapshot.manualSellOrderCount,
+            zeroRemainingOwnOrderCount:
+              directSnapshot.zeroRemainingOwnOrderCount,
+            effectiveNetFloor: directSnapshot.effectiveNetFloor,
+            effectiveEnergyShadowPrice:
+              directSnapshot.effectiveEnergyShadowPrice,
+            energyShadowObservedAt:
+              directSnapshot.energyShadowObservedAt,
+            energyShadowComponents:
+              directSnapshot.energyShadowComponents,
+            rejectedByReason: {
+              ...directSnapshot.rejectedByReason,
+            },
+          }
+        : undefined,
+  };
   for (const action of context.actions) {
     boundedPush(
       context.runtime.recentActions,
@@ -2210,19 +3149,48 @@ function registerOperatorControls(): void {
   operatorGlobals.emergencyStopMarketSaleAutomation =
     emergencyStopMarketSaleAutomation;
   operatorGlobals.marketSaleAutomationStatus = marketSaleAutomationStatus;
+  operatorGlobals.resolveMarketSaleDirectPending =
+    resolveMarketSaleDirectPending;
 }
 
 export function runMarketSalePreflight(): MarketSaleAutomationResult {
   enforceLegacyMarketSafetyLatch();
   registerOperatorControls();
   const context = makeContext();
+  if (!context.marketDomainActivityValid) {
+    reject(context, "market_domain_activity_invalid");
+  }
   for (const reason of context.config.invalidReasons) reject(context, reason);
   if (context.config.mode === "hybrid") {
     reject(context, "hybrid_not_implemented");
   }
+  mergeDirectResult(
+    context,
+    runDirectAutomationPreflight(context.data.directAutomation!, {
+      tick: Game.time,
+      config: context.config,
+    }),
+  );
+  context.data.pendingDirectDeals =
+    context.data.directAutomation!.pendingDirectDeals;
+  const structuralWriteBlocker =
+    structuralMarketSaleWriteBlocker(context.data);
+  if (structuralWriteBlocker) {
+    if (!context.rejectedByReason[structuralWriteBlocker]) {
+      reject(context, structuralWriteBlocker);
+    }
+    // 损坏的 intent/market-data 无法证明任何 Maker mutation 是否安全。
+    // 仍投影保守 exposure/drain，但禁止 reconcile、retry 和 cancel 写入。
+    updateDrain(context, "emergencyStop");
+    return finalizeResult(
+      context,
+      context.config.mode,
+      "emergencyStop",
+    );
+  }
   reconcilePersistentState(context);
   const mode = effectiveMode(context.config);
-  drainIfRequired(context, mode, {});
+  drainIfRequired(context, mode);
   return finalizeResult(context, context.config.mode, mode);
 }
 
@@ -2232,9 +3200,34 @@ export function runMarketSaleAutomation(
   enforceLegacyMarketSafetyLatch();
   registerOperatorControls();
   const context = makeContext();
+  if (input.stagingAmount !== undefined) {
+    context.stagingAmount = nonNegativeInteger(input.stagingAmount);
+  }
+  if (input.reservationAmount !== undefined) {
+    context.reservationAmount = nonNegativeInteger(
+      input.reservationAmount,
+    );
+  }
+  if (input.marketDomainActivityValid === false) {
+    context.marketDomainActivityValid = false;
+  }
+  if (!context.marketDomainActivityValid) {
+    reject(context, "market_domain_activity_invalid");
+  }
   for (const reason of context.config.invalidReasons) reject(context, reason);
   if (context.config.mode === "hybrid") {
     reject(context, "hybrid_not_implemented");
+  }
+  const structuralWriteBlocker =
+    structuralMarketSaleWriteBlocker(context.data);
+  if (structuralWriteBlocker) {
+    reject(context, structuralWriteBlocker);
+    updateDrain(context, "emergencyStop");
+    return finalizeResult(
+      context,
+      context.config.mode,
+      "emergencyStop",
+    );
   }
   reconcilePersistentState(context);
   const candidates = input.candidates || [];
@@ -2263,11 +3256,48 @@ export function runMarketSaleAutomation(
     // ticks even when the current protection failure below also forces drain.
     revalidateManagedOrdersForPlanning(context, candidates);
   }
-  drainIfRequired(context, mode, input);
-  context.runtime.candidates = {};
+  drainIfRequired(context, mode);
+  const directStrategy = usesDirectStrategy(context.config);
+  const phase = context.data.drain?.phase;
+
+  if (directStrategy) {
+    if (planningCycleCurrent) {
+      context.runtime.candidates = {};
+      for (const candidate of candidates) {
+        projectCandidate(
+          context,
+          candidate,
+          directCandidateRejectionReasons(context, candidate),
+        );
+      }
+    }
+    const lifecyclePhaseReady =
+      (context.config.mode === "shadow" && phase === "shadow") ||
+      (context.config.mode === "direct" && phase === "direct");
+    const directResult = runDirectAutomationPlanning(
+      context.data.directAutomation!,
+      {
+        tick: Game.time,
+        fullPlanningTick:
+          planningCycleCurrent && lifecyclePhaseReady,
+        config: context.config,
+        candidates: toDirectRuntimeCandidates(context, candidates),
+        makerExposurePresent: makerExposurePresent(context),
+      },
+    );
+    context.shadowPlanComplete = directResult.planComplete;
+    mergeDirectResult(context, directResult);
+    context.data.pendingDirectDeals =
+      context.data.directAutomation!.pendingDirectDeals;
+    updateDrain(context, mode);
+    return finalizeResult(context, context.config.mode, mode);
+  }
+
+  if (planningCycleCurrent) {
+    context.runtime.candidates = {};
+  }
 
   context.shadowPlanComplete = false;
-  const phase = context.data.drain?.phase;
   for (const candidate of candidates) {
     projectCandidate(
       context,
@@ -2326,8 +3356,44 @@ export function runMarketSaleAutomation(
     }
   }
 
-  updateDrain(context, mode, input);
+  updateDrain(context, mode);
   return finalizeResult(context, context.config.mode, mode);
+}
+
+export function resolveMarketSaleDirectPending(
+  evidence: OperatorDirectPendingEvidence,
+): OperatorResult {
+  enforceLegacyMarketSafetyLatch();
+  const data = ensureDataState();
+  if (
+    data.directAutomation?.migrationBlockedReason &&
+    data.directAutomation.migrationBlockedReason !==
+      "direct_qualification_state_invalid"
+  ) {
+    return {
+      ok: false,
+      error: data.directAutomation.migrationBlockedReason,
+    };
+  }
+  if (!evidence || typeof evidence !== "object") {
+    return { ok: false, error: "direct_operator_evidence_required" };
+  }
+  const result = resolveDirectAutomationPending(
+    data.directAutomation!,
+    evidence,
+    Game.time,
+  );
+  data.pendingDirectDeals =
+    data.directAutomation!.pendingDirectDeals;
+  if (result.ok) {
+    appendAudit(data, {
+      action: result.duplicate
+        ? "direct_pending_operator_duplicate"
+        : "direct_pending_operator_resolved",
+      requestId: evidence.requestId,
+    });
+  }
+  return result;
 }
 
 export function grantMarketSaleMutationLease(

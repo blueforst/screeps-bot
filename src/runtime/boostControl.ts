@@ -1,6 +1,9 @@
 import { replaceCarrierTasksForProducerRoom, type CarrierTaskDraft } from "@/runtime/carrierTaskBoard";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
-import { executeMarketDeal } from "@/runtime/marketActionArbiter";
+import {
+  declareMarketActionIntent,
+  executeMarketDeal,
+} from "@/runtime/marketActionArbiter";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { calcEffectiveDamage } from "@/runtime/towerControl";
 
@@ -120,13 +123,28 @@ export function buyBoostIfNeeded(room: Room): void {
 
   if (getMaxBuyPrice() <= 0) return;
 
+  declareMarketActionIntent(
+    BOOST_CONTROL_PRODUCER,
+    "market_deal",
+    room.name,
+  );
   const order = findBestSellOrder(room.name, amount);
   if (!order?.roomName) return;
 
   const transferCost = Game.market.calcTransactionCost(amount, room.name, order.roomName);
   if (transferCost > room.terminal.store.getUsedCapacity(RESOURCE_ENERGY)) return;
 
-  const code = executeMarketDeal(order.id, amount, room.name, BOOST_CONTROL_PRODUCER);
+  const code = executeMarketDeal(
+    order.id,
+    amount,
+    room.name,
+    BOOST_CONTROL_PRODUCER,
+    {
+      orderType: ORDER_SELL,
+      resourceType: DEFENSE_BOOST_COMPOUND,
+      orderRoomName: order.roomName,
+    },
+  );
   if (code === OK) {
     recordFixedCpuAction("boostControl");
     console.log(

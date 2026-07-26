@@ -118,6 +118,66 @@ function readMarket(input: {
 }
 
 describe("collectMarketSalePriceSnapshots", () => {
+  it("Direct 的低显式 energy override 不能压低可信历史与 ratchet", () => {
+    const cfg = resolveMarketSaleAutomationConfig({
+      mode: "shadow",
+      shadowStrategy: "direct",
+      configRevision: "direct-energy-v1",
+      sellResources: [RESOURCE_CATALYST],
+      hardFloor: { [RESOURCE_CATALYST]: 600 },
+      economicFloor: { [RESOURCE_CATALYST]: 600 },
+      forecastBuffer: { [RESOURCE_CATALYST]: 100_000 },
+      creditReserve: 1_000_000,
+      minDealAmount: 1_000,
+      energyShadowPrice: 1,
+      energyShadowHardFloor: 20,
+      terminalEnergyReserve: 25_000,
+      minHistoryDays: 5,
+      minHistoryTransactions: 1,
+      minHistoryVolume: 1,
+      historyFloorRatio: 1,
+      historyMaxAgeDays: 2,
+      canary: { enabled: true, allowExpansion: false },
+    });
+    const api = readMarket({
+      historyPrice: (resource) =>
+        resource === RESOURCE_ENERGY ? 30 : 650,
+      orderPrice: 700,
+    });
+    const dataStore: MarketSalePricingDataStore = {
+      trustedFloors: {
+        [RESOURCE_ENERGY]: {
+          value: 40,
+          marketDate: "2026-07-24",
+          updatedAt: 100,
+        },
+      },
+    };
+
+    const result = collectMarketSalePriceSnapshots(
+      cfg,
+      dataStore,
+      [RESOURCE_CATALYST],
+      { market: api.market, gameTime: 200, utcNow: UTC_NOW },
+    );
+
+    expect(result.energyShadowPrice).toBe(38);
+    expect(result.energyShadowEvidence).toEqual({
+      trusted: true,
+      observedAt: 200,
+      hardFloor: 20,
+      explicit: 1,
+      historyFloor: 30,
+      ratchetFloor: 38,
+      effective: 38,
+    });
+    expect(dataStore.trustedFloors?.[RESOURCE_ENERGY]).toEqual({
+      value: 38,
+      marketDate: "2026-07-25",
+      updatedAt: 200,
+    });
+  });
+
   it("每周期对每个 unique resource 的 history 和 order book 最多读取一次", () => {
     const cfg = config({
       sellResources: [RESOURCE_KEANIUM, RESOURCE_UTRIUM],

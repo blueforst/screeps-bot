@@ -1,9 +1,11 @@
 import {
+  collectMarketSaleDomainActivity,
   runMarketSaleAutomation,
   type MarketSaleAutomationResult,
   type MarketSalePlanCandidate,
 } from "@/runtime/marketSaleAutomation";
 import {
+  directSafetyFingerprint,
   resolveMarketSaleAutomationConfig,
   type MarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
@@ -69,6 +71,41 @@ function uniqueReasons(reasons: readonly string[]): string[] {
   return [...new Set(reasons.filter(Boolean))].slice(0, 40);
 }
 
+function isPlainRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value),
+  );
+}
+
+function containerHasEntriesOrIsInvalid(value: unknown): boolean {
+  if (value === undefined) return false;
+  return !isPlainRecord(value) || Object.keys(value).length > 0;
+}
+
+function isResourceConstant(
+  value: unknown,
+): value is ResourceConstant {
+  return (
+    typeof value === "string" &&
+    RESOURCES_ALL.includes(value as ResourceConstant)
+  );
+}
+
+const MAKER_ONLY_PRICING_REJECTIONS = new Set([
+  "order_book_api_unavailable",
+  "order_book_fetch_failed",
+  "reference_order_book_untrusted",
+  "history_ask_divergence",
+  "maker_amount_invalid",
+  "maker_volume_cap_unavailable",
+  "maker_amount_exceeds_history_volume_cap",
+  "maker_price_unavailable",
+]);
+
 function makerNetPrice(
   snapshot: MarketSalePriceSnapshotCollection["snapshots"][ResourceConstant],
 ): number | undefined {
@@ -118,6 +155,14 @@ export function composeMarketSalePlanCandidates(
       const priceReasons =
         price?.rejections.map((rejection) => `pricing:${rejection.reason}`) ??
         ["pricing:snapshot_missing"];
+      const directPriceReasons =
+        price?.rejections
+          .filter(
+            (rejection) =>
+              !MAKER_ONLY_PRICING_REJECTIONS.has(rejection.reason),
+          )
+          .map((rejection) => `pricing:${rejection.reason}`) ??
+        ["pricing:snapshot_missing"];
       const integrationReasons: string[] = [];
       if (!resourceControlCurrent) {
         integrationReasons.push("resource_control_cycle_stale");
@@ -143,6 +188,37 @@ export function composeMarketSalePlanCandidates(
         ratchetFloor: price?.ratchetFloor,
         makerPrice: price?.makerPrice,
         makerNetPrice: makerNetPrice(price),
+        directHistoryTrusted:
+          price?.historyResult?.trusted === true &&
+          Number.isFinite(price.historyFloor) &&
+          Number.isFinite(price.ratchetFloor) &&
+          Number.isFinite(price.effectiveNetFloor),
+        effectiveEnergyShadowPrice:
+          pricing.energyShadowEvidence?.trusted === true
+            ? pricing.energyShadowEvidence.effective
+            : undefined,
+        energyShadowObservedAt: pricing.energyShadowEvidence?.observedAt,
+        energyShadowComponents: pricing.energyShadowEvidence
+          ? {
+              hardFloor: pricing.energyShadowEvidence.hardFloor,
+              explicit: pricing.energyShadowEvidence.explicit,
+              historyFloor: pricing.energyShadowEvidence.historyFloor,
+              ratchetFloor: pricing.energyShadowEvidence.ratchetFloor,
+            }
+          : undefined,
+        directAdditionalRejectionReasons: uniqueReasons([
+          ...protectionReasons,
+          ...directPriceReasons,
+          ...integrationReasons,
+          ...(pricing.energyShadowEvidence?.trusted === true
+            ? []
+            : [
+                `pricing:${
+                  pricing.energyShadowEvidence?.rejectionReason ||
+                  "energy_shadow_unavailable"
+                }`,
+              ]),
+        ]),
         trustedPrice:
           context.pricingEvidenceFresh !== false && price?.trusted === true,
         trustedDepth:
@@ -203,6 +279,7 @@ function cacheSignature(config: MarketSaleAutomationConfig): string {
     maxHistoryAskDeviationRatio: config.maxHistoryAskDeviationRatio,
     makerAskFloorRatio: config.makerAskFloorRatio,
     makerHistoryVolumeRatio: config.makerHistoryVolumeRatio,
+    directSafetyFingerprint: directSafetyFingerprint(config),
   });
 }
 
@@ -410,15 +487,20 @@ function resolveCompositionContext(): MarketSaleRuntimeCompositionContext {
 }
 
 function exposureProtectionCandidates(
-  data: NonNullable<NonNullable<Memory["data"]>["marketSaleAutomation"]>,
+  data: unknown,
 ): MarketProtectionCandidate[] {
   const candidates: MarketProtectionCandidate[] = [];
-  for (const managed of Object.values(data.managedOrders || {})) {
+  const dataRecord = isPlainRecord(data) ? data : {};
+  const managedOrders = isPlainRecord(dataRecord.managedOrders)
+    ? dataRecord.managedOrders
+    : {};
+  for (const rawManaged of Object.values(managedOrders)) {
+    if (!isPlainRecord(rawManaged)) continue;
+    const managed = rawManaged;
     if (
       typeof managed.roomName === "string" &&
       managed.roomName.length > 0 &&
-      typeof managed.resourceType === "string" &&
-      managed.resourceType.length > 0
+      isResourceConstant(managed.resourceType)
     ) {
       candidates.push({
         roomName: managed.roomName,
@@ -426,17 +508,48 @@ function exposureProtectionCandidates(
       });
     }
   }
-  const pendingTuple = data.pendingCreate?.tuple;
+  const pendingCreate = isPlainRecord(dataRecord.pendingCreate)
+    ? dataRecord.pendingCreate
+    : undefined;
+  const pendingTuple = isPlainRecord(pendingCreate?.tuple)
+    ? pendingCreate.tuple
+    : undefined;
   if (
     typeof pendingTuple?.roomName === "string" &&
     pendingTuple.roomName.length > 0 &&
-    typeof pendingTuple.resourceType === "string" &&
-    pendingTuple.resourceType.length > 0
+    isResourceConstant(pendingTuple.resourceType)
   ) {
     candidates.push({
       roomName: pendingTuple.roomName,
       resource: pendingTuple.resourceType,
     });
+  }
+  const directAutomation = isPlainRecord(
+    dataRecord.directAutomation,
+  )
+    ? dataRecord.directAutomation
+    : undefined;
+  const pendingContainers = [
+    dataRecord.pendingDirectDeals,
+    directAutomation?.pendingDirectDeals,
+  ];
+  for (const pendingContainer of pendingContainers) {
+    if (!isPlainRecord(pendingContainer)) continue;
+    for (const rawPending of Object.values(pendingContainer)) {
+      if (!isPlainRecord(rawPending)) continue;
+      const pending = rawPending;
+      const roomName =
+        pending.canaryRoomName || pending.roomName;
+      const resource =
+        pending.resource || pending.resourceType;
+      if (
+        typeof roomName === "string" &&
+        roomName.length > 0 &&
+        isResourceConstant(resource)
+      ) {
+        candidates.push({ roomName, resource });
+      }
+    }
   }
   const seen = new Set<string>();
   return candidates.filter((candidate) => {
@@ -462,28 +575,68 @@ export function runLiveMarketSaleAutomation(
     dependencies.collectPricing || collectMarketSalePriceSnapshots;
   const runAutomation = dependencies.runAutomation || runMarketSaleAutomation;
   const config = resolveMarketSaleAutomationConfig();
-  const data = Memory.data?.marketSaleAutomation;
+  const rawData =
+    Memory.data?.marketSaleAutomation as unknown;
+  const data = isPlainRecord(rawData)
+    ? (rawData as unknown as NonNullable<
+        NonNullable<Memory["data"]>["marketSaleAutomation"]
+      >)
+    : undefined;
+  const domainActivity = collectMarketSaleDomainActivity(rawData);
+  const domainActivityInput = {
+    stagingAmount: domainActivity.stagingAmount,
+    reservationAmount: domainActivity.reservationAmount,
+    ...(domainActivity.valid
+      ? {}
+      : { marketDomainActivityValid: false }),
+  };
   const resourceControlCurrent =
     Memory.runtime?.resourceControl?.updatedAt === Game.time;
-  const exposureCandidates = data
-    ? exposureProtectionCandidates(data)
-    : [];
+  const exposureCandidates =
+    exposureProtectionCandidates(rawData);
+  const dataRecord = isPlainRecord(rawData)
+    ? rawData
+    : undefined;
+  const directAutomation = isPlainRecord(
+    dataRecord?.directAutomation,
+  )
+    ? dataRecord?.directAutomation
+    : undefined;
   const hasExposureState = Boolean(
-    data &&
-      (Object.keys(data.managedOrders || {}).length > 0 ||
-        data.pendingCreate ||
-        Object.keys(data.pendingMutations || {}).length > 0),
+    rawData !== undefined &&
+      (!dataRecord ||
+        containerHasEntriesOrIsInvalid(
+          dataRecord.managedOrders,
+        ) ||
+        dataRecord.pendingCreate !== undefined ||
+        containerHasEntriesOrIsInvalid(
+          dataRecord.pendingMutations,
+        ) ||
+        containerHasEntriesOrIsInvalid(
+          dataRecord.pendingDirectDeals,
+        ) ||
+        (dataRecord.directAutomation !== undefined &&
+          (!directAutomation ||
+            containerHasEntriesOrIsInvalid(
+              directAutomation.pendingDirectDeals,
+            ) ||
+            containerHasEntriesOrIsInvalid(
+              directAutomation.quarantinedPendingDirectDeals,
+            ) ||
+            directAutomation.migrationBlockedReason !==
+              undefined))),
   );
 
   if (
     !config.validForPlanning ||
     (config.mode !== "shadow" &&
       config.mode !== "maker" &&
+      config.mode !== "direct" &&
       config.mode !== "hybrid") ||
     !data ||
     (!resourceControlCurrent && !hasExposureState)
   ) {
-    return runAutomation();
+    return runAutomation(domainActivityInput);
   }
 
   try {
@@ -491,7 +644,9 @@ export function runLiveMarketSaleAutomation(
     // This lets stale-price candidates fail closed and cancel existing exposure.
     const protection = collectProtection(
       config,
-      data.managedOrders,
+      isPlainRecord(data.managedOrders)
+        ? data.managedOrders
+        : undefined,
       resourceControlCurrent
         ? undefined
         : { candidates: exposureCandidates },
@@ -552,8 +707,7 @@ export function runLiveMarketSaleAutomation(
     );
     const result = runAutomation({
       candidates,
-      stagingAmount: 0,
-      reservationAmount: 0,
+      ...domainActivityInput,
     });
     if (resourceControlCurrent && !pricingEvidenceFresh) {
       resetShadowQualification(pricingRejectionReason);
@@ -568,6 +722,6 @@ export function runLiveMarketSaleAutomation(
       }`,
     );
     resetShadowQualification("live_adapter_failed");
-    return runAutomation();
+    return runAutomation(domainActivityInput);
   }
 }

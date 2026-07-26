@@ -2492,6 +2492,7 @@ describe("carrierRole lab logistics", () => {
     protectTerminalKeanium(room.name, 800);
     const market = {
       deal: jest.fn(() => OK),
+      calcTransactionCost: jest.fn(() => 0),
     };
     (Game as unknown as { market: typeof market }).market = market;
     const carrier = {
@@ -2507,6 +2508,11 @@ describe("carrierRole lab logistics", () => {
         500,
         room.name,
         "boostControl:buy",
+        {
+          orderType: ORDER_SELL,
+          resourceType: RESOURCE_CATALYZED_UTRIUM_ACID,
+          orderRoomName: "W75N1",
+        },
       ),
     ).toBe(OK);
     carrierRole().source?.(carrier);
@@ -2517,6 +2523,231 @@ describe("carrierRole lab logistics", () => {
       room.name,
     );
     expect(carrier.withdraw).not.toHaveBeenCalled();
+  });
+
+  it("generic carrier 从 Terminal 取 energy 时只使用 Direct transaction-energy reservation 外余量", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const room = createRoom("W77N1");
+    const terminal = room.terminal as StructureTerminal;
+    Object.assign(terminal, {
+      room,
+      pos: {
+        getRangeTo: () => 1,
+      },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 2_000 : 0,
+        getFreeCapacity: () => 10_000,
+      },
+    });
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-terminal-energy",
+            status: "submitted",
+            canaryRoomName: room.name,
+            resource: RESOURCE_KEANIUM,
+            dealAmount: 1_000,
+            transactionEnergy: 1_500,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+    const spawnTarget = {
+      structureType: STRUCTURE_SPAWN,
+    } as AnyStoreStructure;
+    const carrier = {
+      ...createCreep(room),
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(spawnTarget);
+    getPickupTargetEnergyAmount.mockImplementation(
+      (target: unknown) => target === terminal ? 2_000 : 0,
+    );
+    reservePickupTarget.mockReturnValue(true);
+
+    carrierRole().source?.(carrier);
+
+    expect(carrier.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_ENERGY,
+      500,
+    );
+  });
+
+  it("task-bound Synthesis carrier 只搬 Direct 待售资源 reservation 外余量", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const { room, terminal } = installTerminalKeaniumPickupScenario(
+      "W78N1",
+      1_800,
+    );
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-synthesis",
+            status: "reconcile_gap",
+            canaryRoomName: room.name,
+            resource: RESOURCE_KEANIUM,
+            dealAmount: 1_000,
+            transactionEnergy: 500,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+    const carrier = {
+      ...createCreep(room),
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    carrierRole().source?.(carrier);
+
+    expect(carrier.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      800,
+    );
+  });
+
+  it("完全预留的高优先级 Terminal task 不得连续饿死 reservation 外生产 task", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const room = createRoom("W79N1");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    Object.assign(terminal, {
+      room,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_KEANIUM ? 1_000 : 0,
+        getFreeCapacity: () => 10_000,
+      },
+    });
+    Object.assign(storage, {
+      room,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_UTRIUM ? 800 : 0,
+        getFreeCapacity: () => 10_000,
+      },
+    });
+    const keaniumLab = {
+      id: "W79N1-k-lab",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3_000,
+      },
+    } as unknown as StructureLab;
+    const utriumLab = {
+      id: "W79N1-u-lab",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 13, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3_000,
+      },
+    } as unknown as StructureLab;
+    (
+      Game as Game & { getObjectById: Game["getObjectById"] }
+    ).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      if (id === keaniumLab.id) return keaniumLab;
+      if (id === utriumLab.id) return utriumLab;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom(
+      "synthesisControl:reserved",
+      room.name,
+      [{
+        id: "reserved-k-task",
+        type: "lab_supply",
+        priority: 200,
+        steps: [{
+          id: "K:terminal->lab",
+          resource: RESOURCE_KEANIUM,
+          fromKind: "terminal",
+          toKind: "lab",
+          fromId: terminal.id,
+          toId: keaniumLab.id,
+          amount: 1_000,
+        }],
+      }],
+    );
+    replaceCarrierTasksForProducerRoom(
+      "synthesisControl:available",
+      room.name,
+      [{
+        id: "available-u-task",
+        type: "lab_supply",
+        priority: 100,
+        steps: [{
+          id: "U:storage->lab",
+          resource: RESOURCE_UTRIUM,
+          fromKind: "storage",
+          toKind: "lab",
+          fromId: storage.id,
+          toId: utriumLab.id,
+          amount: 800,
+        }],
+      }],
+    );
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-full-k-reservation",
+            status: "reconcile_gap",
+            canaryRoomName: room.name,
+            resource: RESOURCE_KEANIUM,
+            dealAmount: 1_000,
+            transactionEnergy: 0,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+    const carrier = {
+      ...createCreep(room),
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    carrierRole().source?.(carrier);
+    Game.time += 1;
+    carrierRole().source?.(carrier);
+
+    expect(carrier.withdraw).not.toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      expect.anything(),
+    );
+    expect(carrier.withdraw).toHaveBeenNthCalledWith(
+      1,
+      storage,
+      RESOURCE_UTRIUM,
+      800,
+    );
+    expect(carrier.withdraw).toHaveBeenNthCalledWith(
+      2,
+      storage,
+      RESOURCE_UTRIUM,
+      800,
+    );
+    expect(
+      getCreepAssignmentState(carrier.name)
+        ?.synthesisCarrierTaskId,
+    ).toBe("available-u-task");
   });
 
   it("supplies reagent lab from storage when terminal is empty (lab_supply fallback)", () => {

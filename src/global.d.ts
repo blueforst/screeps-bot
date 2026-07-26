@@ -14,6 +14,15 @@ import type { AddFactoryTaskResult, CancelFactoryTaskResult, FactoryTask } from 
 import type { StartWarOptions, StartWarPatrolOptions, StartWarPatrolResult, StartWarResult, StopWarOptions, StopWarResult, WarStatusSnapshot, WarStatusTaskSnapshot } from "@/runtime/warControl";
 import type { RemoteDefenseStatusSnapshot } from "@/runtime/console/remoteDefenseCommands";
 import type { MarketSaleFeeLedgerState } from "@/runtime/marketSaleFeeLedger";
+import type { DirectAutomationState } from "@/runtime/marketSaleDirectAutomation";
+import type {
+  OperatorDirectPendingEvidence,
+  PendingDirectDeal,
+} from "@/runtime/marketSaleDirectPending";
+import type {
+  MarketAccountClaim,
+  MarketActionJournalEntry,
+} from "@/runtime/marketActionArbiter";
 
 declare const _: LoDashStatic;
 
@@ -87,6 +96,15 @@ declare global {
         error?: string;
         refundedFeeDebtMilli?: number;
         carriedFeeDebtMilli?: number;
+      })
+    | undefined;
+  var resolveMarketSaleDirectPending:
+    | ((
+        evidence: OperatorDirectPendingEvidence,
+      ) => {
+        ok: boolean;
+        error?: string;
+        duplicate?: boolean;
       })
     | undefined;
   var spawnMaxCarrier: (roomName: string) =>
@@ -546,7 +564,8 @@ declare global {
         };
       };
       marketSaleAutomation?: {
-        mode?: "off" | "shadow" | "maker" | "hybrid" | "emergencyStop";
+        mode?: "off" | "shadow" | "maker" | "direct" | "hybrid" | "emergencyStop";
+        shadowStrategy?: "maker" | "direct";
         configRevision?: string;
         sellResources?: ResourceConstant[];
         hardFloor?: Partial<Record<ResourceConstant, number>>;
@@ -578,6 +597,16 @@ declare global {
         makerHistoryVolumeRatio?: number;
         orderPolicyTtl?: number;
         mutationBackoffTicks?: number;
+        maxDirectDealAmount?: number;
+        maxDirectDealsPerCycle?: number;
+        minDirectOrderAmount?: number;
+        minDirectOrderNotional?: number;
+        maxDirectRawOrdersScannedPerCycle?: number;
+        maxDirectEligibleOrdersPricedPerCycle?: number;
+        maxDirectTransactionEnergy?: number;
+        directCanaryMaxConfirmedDeals?: number;
+        energyShadowHardFloor?: number;
+        planningSnapshotMaxAgeTicks?: number;
         canary?: {
           enabled?: boolean;
           allowExpansion?: boolean;
@@ -894,8 +923,8 @@ declare global {
       };
       marketSaleAutomation?: {
         updatedAt: number;
-        requestedMode: "off" | "shadow" | "maker" | "hybrid" | "emergencyStop";
-        phase: "off" | "shadow" | "maker" | "hybrid" | "requested" | "draining" | "stopped";
+        requestedMode: "off" | "shadow" | "maker" | "direct" | "hybrid" | "emergencyStop";
+        phase: "off" | "shadow" | "maker" | "direct" | "hybrid" | "requested" | "draining" | "stopped";
         configRevision?: string;
         shadowConfigRevision?: string;
         shadowConfigSignature?: string;
@@ -928,6 +957,8 @@ declare global {
         };
         pendingCreateCount: number;
         pendingMutationCount: number;
+        stagingAmount?: number;
+        reservationAmount?: number;
         exposureAmount: number;
         rollingFeeMilli: number;
         creditReserve?: number;
@@ -974,6 +1005,92 @@ declare global {
           resourceType: ResourceConstant;
           lockedAt: number;
           configRevision: string;
+        };
+        direct?: {
+          strategyActive: boolean;
+          shadowConsecutiveCycles: number;
+          qualifiedAt?: number;
+          activationAuthorized: boolean;
+          canary?: {
+            roomName: string;
+            resourceType: ResourceConstant;
+            lockedAt: number;
+            configRevision: string;
+            safetyFingerprint: string;
+          };
+          pendingCount: number;
+          pendingByStatus: Record<string, number>;
+          confirmedDealCount: number;
+          pausedForReview: boolean;
+          migrationBlockedReason?: string;
+          exposure: {
+            pendingCount: number;
+            quarantinedCount: number;
+            resourceAmount: number;
+            transactionEnergy: number;
+            reconcileGapCount: number;
+          };
+          snapshot?: {
+            observedAt: number;
+            age: number;
+            maxAgeTicks: number;
+            fresh: boolean;
+            configRevision: string;
+            safetyFingerprint: string;
+            canary?: {
+              roomName: string;
+              resourceType: ResourceConstant;
+              lockedAt: number;
+              configRevision: string;
+              safetyFingerprint: string;
+            };
+            result:
+              | "safe_opportunity"
+              | "safe_no_opportunity"
+              | "production_priority_wait"
+              | "incomplete";
+            structuralCandidateCount: number;
+            eligibleStructuralCandidateCount: number;
+            buyBook: {
+              rawOrderCount: number;
+              rawOrderLimit: number;
+              eligibleOrderCount: number;
+              eligibleOrderLimit: number;
+              eligibleDepth: number;
+              eligibleDistinctRoomCount: number;
+              pricedOrderCount: number;
+              safeCandidateCount: number;
+              rejectedOrderCount: number;
+              highestGrossPrice?: number;
+              selectedOrderId?: string;
+              cycleRejection?: string;
+              orderRejectionCounts: Record<string, number>;
+            };
+            opportunity?: {
+              orderId: string;
+              orderRoomName: string;
+              price: number;
+              orderAmount: number;
+              dealAmount: number;
+              transactionEnergy: number;
+              netCreditsMilli: number;
+              worstCaseNetCreditsMilli: number;
+              effectiveNetFloorMilli: number;
+            };
+            manualBuyOrderCount: number;
+            manualSellOrderCount: number;
+            zeroRemainingOwnOrderCount: number;
+            effectiveNetFloor?: number;
+            effectiveEnergyShadowPrice?: number;
+            energyShadowObservedAt?: number;
+            energyShadowComponents?: {
+              hardFloor: number;
+              explicit?: number;
+              historyFloor?: number;
+              ratchetFloor?: number;
+            };
+            rejectedByReason: Record<string, number>;
+          };
         };
         recentActions: string[];
         safetyViolationCount: number;
@@ -1228,7 +1345,7 @@ declare global {
           configRevision: string;
         };
         drain?: {
-          phase: "off" | "shadow" | "maker" | "hybrid" | "requested" | "draining" | "stopped";
+          phase: "off" | "shadow" | "maker" | "direct" | "hybrid" | "requested" | "draining" | "stopped";
           targetMode?: "off" | "shadow";
           zeroConfirmations: number;
           lastZeroConfirmationTick?: number;
@@ -1240,6 +1357,12 @@ declare global {
           requestId?: string;
           candidateIds?: string[];
         }>;
+        directAutomation?: DirectAutomationState;
+        pendingDirectDeals?: Record<string, Partial<PendingDirectDeal>>;
+        marketStaging?: Record<string, { amount: number }>;
+        marketReservations?: Record<string, { amount: number }>;
+        directMarketClaim?: MarketAccountClaim;
+        marketActionJournal?: MarketActionJournalEntry[];
       };
       resourceControl?: {
         taskSchemaVersion?: number;

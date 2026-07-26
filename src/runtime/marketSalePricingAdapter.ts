@@ -113,6 +113,17 @@ export interface MarketSalePriceSnapshotCollection {
   asOfDate: string;
   energyShadowPrice?: number;
   energyHistoryDate?: string;
+  /** Direct 使用的完整能源影子价证据；Maker 不依赖该字段。 */
+  energyShadowEvidence?: {
+    trusted: boolean;
+    observedAt: number;
+    hardFloor: number;
+    explicit?: number;
+    historyFloor?: number;
+    ratchetFloor?: number;
+    effective?: number;
+    rejectionReason?: string;
+  };
   snapshots: Partial<Record<ResourceConstant, MarketSalePriceSnapshot>>;
 }
 
@@ -556,7 +567,95 @@ export function collectMarketSalePriceSnapshots(
   let energyShadowPrice: number | undefined;
   let energyHistoryDate: string | undefined;
   let energyFailureDetail: string | undefined;
-  if (
+  let energyShadowEvidence:
+    | MarketSalePriceSnapshotCollection["energyShadowEvidence"]
+    | undefined;
+  const usesDirectStrategy =
+    config.mode === "direct" ||
+    (config.mode === "shadow" && config.shadowStrategy === "direct");
+  if (hasStaticEligibleCandidate && usesDirectStrategy) {
+    const hardFloor = config.energyShadowHardFloor ?? 20;
+    const energyHistory = buildFreshHistory(RESOURCE_ENERGY, 1);
+    if (
+      energyHistory.ok &&
+      finitePositive(energyHistory.value.result.trustedFloor)
+    ) {
+      energyHistoryDate = energyHistory.value.historyDate;
+      const historyFloor = energyHistory.value.result.trustedFloor!;
+      let ratchetFloor: number | undefined;
+      const previousEntry = dataStore.trustedFloors?.[RESOURCE_ENERGY];
+      if (previousEntry && !validateCachedFloor(previousEntry)) {
+        energyFailureDetail = "trusted_floor_cache_invalid";
+      } else {
+        try {
+          const advanced = advanceTrustedFloor(
+            previousEntry
+              ? {
+                  historyDate: previousEntry.marketDate,
+                  floor: previousEntry.value,
+                  observedFloor: previousEntry.value,
+                }
+              : undefined,
+            {
+              historyDate: energyHistory.value.historyDate,
+              floor: historyFloor,
+            },
+            { maxDailyDropRatio: 0.05 },
+          );
+          if (advanced.reason === "older_history_day") {
+            energyFailureDetail = "history_date_rollback";
+          } else {
+            ratchetFloor = advanced.state.floor;
+            if (!dataStore.trustedFloors) dataStore.trustedFloors = {};
+            dataStore.trustedFloors[RESOURCE_ENERGY] = {
+              value: advanced.state.floor,
+              marketDate: advanced.state.historyDate,
+              updatedAt: observedAt,
+            };
+          }
+        } catch (error) {
+          energyFailureDetail = `trusted_floor_cache_invalid:${detailOf(error)}`;
+        }
+      }
+      if (!energyFailureDetail && finitePositive(ratchetFloor)) {
+        const shadow = computeEnergyShadowPrice({
+          hardFloor,
+          economicFloor: config.energyShadowPrice,
+          historyFloor,
+          ratchetFloor,
+        });
+        energyShadowPrice = shadow.valid ? shadow.price : undefined;
+        if (!energyShadowPrice) {
+          energyFailureDetail = shadow.reason || "component_invalid";
+        }
+        energyShadowEvidence = {
+          trusted: shadow.valid && finitePositive(shadow.price),
+          observedAt,
+          hardFloor,
+          explicit: config.energyShadowPrice,
+          historyFloor,
+          ratchetFloor,
+          effective: shadow.price,
+          rejectionReason: shadow.valid
+            ? undefined
+            : shadow.reason || "component_invalid",
+        };
+      }
+    } else if (energyHistory.ok === false) {
+      energyFailureDetail = `${energyHistory.reason}${
+        energyHistory.detail ? `:${energyHistory.detail}` : ""
+      }`;
+    }
+    if (!energyShadowEvidence) {
+      energyShadowEvidence = {
+        trusted: false,
+        observedAt,
+        hardFloor,
+        explicit: config.energyShadowPrice,
+        rejectionReason: energyFailureDetail || "energy_shadow_unavailable",
+      };
+    }
+  } else if (
     hasStaticEligibleCandidate &&
     finitePositive(config.energyShadowPrice)
   ) {
@@ -913,6 +1012,7 @@ export function collectMarketSalePriceSnapshots(
     asOfDate,
     energyShadowPrice,
     energyHistoryDate,
+    energyShadowEvidence,
     snapshots,
   };
 }

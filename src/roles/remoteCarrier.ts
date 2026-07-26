@@ -1,5 +1,10 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { hasTerminalActionClaim } from "@/runtime/marketActionArbiter";
+import {
+  claimTerminalAmountOutsideMarketSaleExposure,
+  getTerminalAmountOutsideMarketSaleExposure,
+} from "@/runtime/marketSaleExposure";
 import type { RoleFactory } from "@/types/system";
 
 type RemoteHaulTarget = AnyStoreStructure | Ruin;
@@ -26,8 +31,32 @@ function getFirstCarriedResource(creep: Creep): ResourceConstant | null {
   return getStoredResources(creep.store)[0] || null;
 }
 
-function getBestResource(store: StoreDefinition): ResourceConstant | null {
-  const resources = getStoredResources(store);
+function isTerminalTarget(target: RemoteHaulTarget): target is StructureTerminal {
+  return (
+    "structureType" in target &&
+    target.structureType === STRUCTURE_TERMINAL
+  );
+}
+
+function getAvailableResourceAmount(
+  target: RemoteHaulTarget,
+  resource: ResourceConstant,
+): number {
+  const stored = target.store.getUsedCapacity(resource);
+  if (!isTerminalTarget(target)) return stored;
+  return Math.min(
+    stored,
+    getTerminalAmountOutsideMarketSaleExposure(
+      target,
+      resource,
+      target.room?.name,
+    ),
+  );
+}
+
+function getBestResource(target: RemoteHaulTarget): ResourceConstant | null {
+  const resources = getStoredResources(target.store)
+    .filter(resource => getAvailableResourceAmount(target, resource) > 0);
   if (resources.length === 0) {
     return null;
   }
@@ -39,7 +68,10 @@ function getBestResource(store: StoreDefinition): ResourceConstant | null {
       return rightTier - leftTier;
     }
 
-    return store.getUsedCapacity(right) - store.getUsedCapacity(left);
+    return (
+      getAvailableResourceAmount(target, right) -
+      getAvailableResourceAmount(target, left)
+    );
   })[0];
 }
 
@@ -75,7 +107,7 @@ function selectPickupTarget(creep: Creep): { target: RemoteHaulTarget; resource:
     const candidates = getRemoteHaulTargets(creep.room)
       .map((target) => ({
         target,
-        resource: getBestResource(target.store),
+        resource: getBestResource(target),
       }))
       .filter((entry): entry is { target: RemoteHaulTarget; resource: ResourceConstant } => !!entry.resource)
       .sort((left, right) => {
@@ -85,8 +117,8 @@ function selectPickupTarget(creep: Creep): { target: RemoteHaulTarget; resource:
           return rightTier - leftTier;
         }
 
-        const leftAmount = left.target.store.getUsedCapacity(left.resource);
-        const rightAmount = right.target.store.getUsedCapacity(right.resource);
+        const leftAmount = getAvailableResourceAmount(left.target, left.resource);
+        const rightAmount = getAvailableResourceAmount(right.target, right.resource);
         if (leftAmount !== rightAmount) {
           return rightAmount - leftAmount;
         }
@@ -207,10 +239,50 @@ export const remoteCarrierRole: RoleFactory = (targetRoom: string, targetX?: str
       return false;
     }
 
-    const code = measureCreepIntent(() => creep.withdraw(assignment.target, assignment.resource));
+    let exposureClaim:
+      | ReturnType<typeof claimTerminalAmountOutsideMarketSaleExposure>
+      | undefined;
+    let code: ScreepsReturnCode;
+    try {
+      code = measureCreepIntent(() => {
+        if (!isTerminalTarget(assignment.target)) {
+          return creep.withdraw(assignment.target, assignment.resource);
+        }
+
+        const roomName = assignment.target.room?.name || creep.room.name;
+        if (hasTerminalActionClaim(roomName)) return ERR_BUSY;
+        const requestedAmount = Math.min(
+          creep.store.getFreeCapacity(assignment.resource) ?? 0,
+          getAvailableResourceAmount(
+            assignment.target,
+            assignment.resource,
+          ),
+        );
+        if (requestedAmount <= 0) return ERR_NOT_ENOUGH_RESOURCES;
+        exposureClaim = claimTerminalAmountOutsideMarketSaleExposure(
+          assignment.target,
+          assignment.resource,
+          requestedAmount,
+          roomName,
+        ) || undefined;
+        if (!exposureClaim) return ERR_NOT_ENOUGH_RESOURCES;
+        return creep.withdraw(
+          assignment.target,
+          assignment.resource,
+          exposureClaim.amount,
+        );
+      });
+    } catch (error) {
+      exposureClaim?.release();
+      throw error;
+    }
     if (code === ERR_NOT_IN_RANGE) {
+      exposureClaim?.release();
       moveToTarget(creep, assignment.target);
       return false;
+    }
+    if (code !== OK) {
+      exposureClaim?.release();
     }
 
     return isCarryStoreFull(creep);

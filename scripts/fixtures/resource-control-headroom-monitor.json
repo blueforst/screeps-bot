@@ -111,6 +111,8 @@
       },
       "pendingCreateCount": 0,
       "pendingMutationCount": 0,
+      "stagingAmount": 0,
+      "reservationAmount": 0,
       "exposureAmount": 0,
       "rollingFeeMilli": 0,
       "creditReserve": 1000000,

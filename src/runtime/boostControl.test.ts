@@ -7,7 +7,7 @@ import {
 } from "@/runtime/marketActionArbiter";
 
 function createRoom(): Room {
-  return {
+  const room = {
     name: "W1N1",
     storage: {
       store: createMockStore({}),
@@ -20,6 +20,9 @@ function createRoom(): Room {
       }, 300000),
     } as StructureTerminal,
   } as Room;
+  room.terminal!.room = room;
+  Game.rooms[room.name] = room;
+  return room;
 }
 
 function createBoostOrder(): Order {
@@ -54,6 +57,21 @@ describe("boost control market gateway", () => {
 
   it("通过 arbiter 购买并记录 terminal claim", () => {
     const room = createRoom();
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-boost-gap",
+            status: "reconcile_gap",
+            canaryRoomName: room.name,
+            resource: DEFENSE_BOOST_COMPOUND,
+            dealAmount: 1_000,
+            transactionEnergy: 24_900,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
 
     buyBoostIfNeeded(room);
 

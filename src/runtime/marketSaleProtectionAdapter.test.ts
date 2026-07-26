@@ -1099,4 +1099,92 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
       ),
     ).toHaveLength(1);
   });
+
+  it("把 active Direct pending 计入生产保护 exposure", () => {
+    Game.rooms[ROOM] = createRoom(
+      ROOM,
+      { [RESOURCE_KEANIUM]: 2_000 },
+      { [RESOURCE_KEANIUM]: 1_000 },
+    );
+    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
+    Memory.data!.marketSaleAutomation = {
+      managedOrders: {},
+      pendingMutations: {},
+      feeEvents: [],
+      carriedFeeDebtMilli: {},
+      trustedFloors: {},
+      processedTransactionKeys: [],
+      operatorAudit: [],
+    };
+    (
+      Memory.data!.marketSaleAutomation as typeof Memory.data.marketSaleAutomation & {
+        pendingDirectDeals: Record<string, unknown>;
+      }
+    ).pendingDirectDeals = {
+      direct: {
+        status: "submitted",
+        canaryRoomName: ROOM,
+        resource: RESOURCE_KEANIUM,
+        dealAmount: 600,
+      },
+    };
+
+    const ledger = collectLiveMarketSaleProtectionLedger(
+      config({ [RESOURCE_KEANIUM]: 100 }),
+      undefined,
+      {
+        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
+      },
+    );
+    const entry =
+      ledger.entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
+
+    expect(entry.blocked).toBe(false);
+    expect(entry.managedExposure).toBe(600);
+    expect(entry.sellableAmount).toBe(400);
+  });
+
+  it("Direct quarantine 无法安全归属时全局阻断卖出候选", () => {
+    Game.rooms[ROOM] = createRoom(
+      ROOM,
+      { [RESOURCE_KEANIUM]: 2_000 },
+      { [RESOURCE_KEANIUM]: 1_000 },
+    );
+    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
+    Memory.data!.marketSaleAutomation = {
+      managedOrders: {},
+      pendingMutations: {},
+      feeEvents: [],
+      carriedFeeDebtMilli: {},
+      trustedFloors: {},
+      processedTransactionKeys: [],
+      operatorAudit: [],
+      directAutomation: {
+        quarantinedPendingDirectDeals: {
+          "direct-bad": null,
+        },
+      },
+    } as unknown as NonNullable<
+      NonNullable<Memory["data"]>["marketSaleAutomation"]
+    >;
+
+    const entry = collectLiveMarketSaleProtectionLedger(
+      config({ [RESOURCE_KEANIUM]: 100 }),
+      undefined,
+      {
+        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
+      },
+    ).entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
+
+    expect(entry.blocked).toBe(true);
+    expect(entry.sellableAmount).toBe(0);
+    expect(entry.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "protection_stale",
+          sourceKind: "managedExposure",
+        }),
+      ]),
+    );
+  });
 });

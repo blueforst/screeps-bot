@@ -4,6 +4,7 @@ import {
   runLiveMarketSaleAutomation,
   type MarketSaleRuntimeCompositionContext,
 } from "@/runtime/marketSaleRuntime";
+import { collectMarketSaleDomainActivity } from "@/runtime/marketSaleAutomation";
 import { clearMarketActionArbiterForTest } from "@/runtime/marketActionArbiter";
 import type { MarketSaleAutomationConfig } from "@/runtime/marketSaleConfig";
 import type {
@@ -440,6 +441,50 @@ describe("market sale live composition", () => {
     expect(candidate.additionalRejectionReasons).toEqual([]);
   });
 
+  it("Direct 结构证据忽略 Maker SELL 深度，但保留历史与能源门禁", () => {
+    const makerBlocked = pricing();
+    makerBlocked.energyShadowPrice = 30;
+    makerBlocked.energyShadowEvidence = {
+      trusted: true,
+      observedAt: 100,
+      hardFloor: 20,
+      explicit: 1,
+      historyFloor: 30,
+      ratchetFloor: 30,
+      effective: 30,
+    };
+    makerBlocked.snapshots[RESOURCE_KEANIUM] = {
+      ...makerBlocked.snapshots[RESOURCE_KEANIUM]!,
+      trusted: false,
+      makerPrice: undefined,
+      rejections: [
+        { reason: "reference_order_book_untrusted" },
+        { reason: "maker_price_unavailable" },
+      ],
+      referenceSellBook: {
+        trusted: false,
+        eligibleOrders: [],
+        rejectedOrders: [],
+        eligibleAmount: 2_000,
+        trustedDepth: 2_000,
+        distinctOrderCount: 2,
+        distinctRoomCount: 2,
+      },
+    };
+    const [candidate] = composeMarketSalePlanCandidates(
+      { ...config(), shadowStrategy: "direct" },
+      protection(),
+      makerBlocked,
+      context(),
+    );
+
+    expect(candidate.trustedPrice).toBe(false);
+    expect(candidate.trustedDepth).toBe(false);
+    expect(candidate.directHistoryTrusted).toBe(true);
+    expect(candidate.effectiveEnergyShadowPrice).toBe(30);
+    expect(candidate.directAdditionalRejectionReasons).toEqual([]);
+  });
+
   it("keeps stale ResourceControl and missing price evidence fail-closed", () => {
     const missingPricing: MarketSalePriceSnapshotCollection = {
       observedAt: 100,
@@ -664,10 +709,183 @@ describe("market sale live composition", () => {
       expect(Game.market.getAllOrders).not.toHaveBeenCalled();
       expect(Game.market.getHistory).not.toHaveBeenCalled();
       expect(runAutomation).toHaveBeenCalledTimes(1);
-      expect(runAutomation).toHaveBeenCalledWith();
+      expect(runAutomation).toHaveBeenCalledWith({
+        stagingAmount: 0,
+        reservationAmount: 0,
+      });
       expect(result).toEqual(automationResult());
     },
   );
+
+  it("从 canonical domain stores 实时采集 staging/reservation，异常结构阻断归零证明", () => {
+    expect(
+      collectMarketSaleDomainActivity({
+        marketStaging: {
+          "stage:x": { amount: 321 },
+        },
+        marketReservations: {
+          "reservation:x": { amount: 45 },
+        },
+      }),
+    ).toEqual({
+      stagingAmount: 321,
+      reservationAmount: 45,
+      valid: true,
+    });
+    expect(
+      collectMarketSaleDomainActivity({
+        marketStaging: [],
+        marketReservations: {},
+      }),
+    ).toEqual({
+      stagingAmount: 1,
+      reservationAmount: 0,
+      valid: false,
+    });
+    expect(
+      collectMarketSaleDomainActivity({
+        marketStaging: {
+          ghost: { amount: 0 },
+        },
+        marketReservations: {},
+      }),
+    ).toEqual({
+      stagingAmount: 1,
+      reservationAmount: 0,
+      valid: false,
+    });
+
+    installLiveRuntimeFixture(100);
+    Memory.cfg!.marketSaleAutomation!.mode = "off";
+    Memory.data!.marketSaleAutomation!.marketStaging = {
+      "stage:x": { amount: 321 },
+    };
+    Memory.data!.marketSaleAutomation!.marketReservations = {
+      "reservation:x": { amount: 45 },
+    };
+    const runAutomation = jest.fn(() => automationResult());
+    runLiveMarketSaleAutomation({
+      runAutomation: runAutomation as never,
+    });
+    expect(runAutomation).toHaveBeenCalledWith({
+      stagingAmount: 321,
+      reservationAmount: 45,
+    });
+  });
+
+  it.each([
+    ["entry-null", { bad: null }],
+    ["container-null", null],
+    ["container-array", []],
+  ] as const)(
+    "live entrypoint 对 malformed Direct alias %s 不抛错、不写市场并保留 blocker",
+    (_label, pendingAlias) => {
+      installLiveRuntimeFixture(100);
+      const market = Game.market as Partial<Market> & {
+        deal: jest.Mock;
+        createOrder: jest.Mock;
+        cancelOrder: jest.Mock;
+      };
+      market.deal = jest.fn(() => OK);
+      market.createOrder = jest.fn(() => OK);
+      market.cancelOrder = jest.fn(() => OK);
+      const data =
+        Memory.data!.marketSaleAutomation as unknown as {
+          managedOrders: unknown;
+          pendingDirectDeals: unknown;
+          directAutomation?: unknown;
+        };
+      data.managedOrders = { malformed: null };
+      data.pendingDirectDeals = pendingAlias;
+      delete data.directAutomation;
+
+      let result:
+        | ReturnType<typeof runLiveMarketSaleAutomation>
+        | undefined;
+      expect(() => {
+        result = runLiveMarketSaleAutomation();
+      }).not.toThrow();
+
+      expect(result!.writes).toBe(0);
+      expect(market.deal).not.toHaveBeenCalled();
+      expect(market.createOrder).not.toHaveBeenCalled();
+      expect(market.cancelOrder).not.toHaveBeenCalled();
+      const direct =
+        Memory.data!.marketSaleAutomation!.directAutomation!;
+      expect(direct.migrationBlockedReason).toBe(
+        "legacy_pending_direct_deals_require_operator",
+      );
+      expect(
+        Object.keys(direct.quarantinedPendingDirectDeals),
+      ).not.toHaveLength(0);
+      expect(
+        direct.quarantinedPendingDirectDeals,
+      ).toHaveProperty("__managed_order__:malformed", null);
+      expect(
+        Memory.runtime!.marketSaleAutomation!.direct?.exposure,
+      ).toMatchObject({
+        pendingCount: 2,
+        quarantinedCount: 2,
+      });
+
+      Game.time += 1;
+      expect(() => {
+        result = runLiveMarketSaleAutomation();
+      }).not.toThrow();
+      expect(result!.writes).toBe(0);
+      expect(
+        Memory.data!.marketSaleAutomation!.directAutomation!
+          .migrationBlockedReason,
+      ).toBe("legacy_pending_direct_deals_require_operator");
+      expect(market.deal).not.toHaveBeenCalled();
+      expect(market.createOrder).not.toHaveBeenCalled();
+      expect(market.cancelOrder).not.toHaveBeenCalled();
+    },
+  );
+
+  it("live entrypoint 对 malformed canonical Direct container 不抛错且 fail-closed", () => {
+    installLiveRuntimeFixture(100);
+    const market = Game.market as Partial<Market> & {
+      deal: jest.Mock;
+    };
+    market.deal = jest.fn(() => OK);
+    (
+      Memory.data!.marketSaleAutomation as unknown as {
+        directAutomation: unknown;
+      }
+    ).directAutomation = null;
+
+    let result:
+      | ReturnType<typeof runLiveMarketSaleAutomation>
+      | undefined;
+    expect(() => {
+      result = runLiveMarketSaleAutomation();
+    }).not.toThrow();
+
+    expect(result!.writes).toBe(0);
+    expect(market.deal).not.toHaveBeenCalled();
+    expect(
+      Memory.data!.marketSaleAutomation!.directAutomation!
+        .migrationBlockedReason,
+    ).toBe("direct_automation_container_invalid");
+    expect(
+      Memory.runtime!.marketSaleAutomation!.direct?.exposure,
+    ).toMatchObject({
+      pendingCount: 1,
+      quarantinedCount: 1,
+    });
+
+    Game.time += 1;
+    expect(() => {
+      result = runLiveMarketSaleAutomation();
+    }).not.toThrow();
+    expect(result!.writes).toBe(0);
+    expect(
+      Memory.data!.marketSaleAutomation!.directAutomation!
+        .migrationBlockedReason,
+    ).toBe("direct_automation_container_invalid");
+    expect(market.deal).not.toHaveBeenCalled();
+  });
 
   it("marks an expired cached price fail-closed when refresh throws", () => {
     installLiveRuntimeFixture(100);

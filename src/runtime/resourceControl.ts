@@ -40,6 +40,7 @@ import {
 import { getReservedProductionAmount } from "@/runtime/resourceReservation";
 import { HUB_TARGET_COMPOUNDS } from "@/config/hub";
 import {
+  declareMarketActionIntent,
   executeMarketDeal,
   executeTerminalSend,
   getTerminalActionClaims,
@@ -3734,6 +3735,11 @@ function applyMarketOps(
           amount,
           room.roomName,
           "resourceControl:legacy-sell",
+          {
+            orderType: ORDER_BUY,
+            resourceType: resource,
+            orderRoomName: order.roomName,
+          },
         );
         if (code !== OK) {
           actions.push(`market-sell-failed:${room.roomName}:${resource}:code=${code}`);
@@ -3777,6 +3783,11 @@ function applyMarketOps(
             amount,
             hubSnapshot.roomName,
             "resourceControl:legacy-hub-sell",
+            {
+              orderType: ORDER_BUY,
+              resourceType: resource,
+              orderRoomName: order.roomName,
+            },
           );
           if (code !== OK) {
             actions.push(`hub-surplus-sell-failed:${hubSnapshot.roomName}:${resource}:code=${code}`);
@@ -3827,6 +3838,11 @@ function applyMarketOps(
     }
 
     const maxBuyPrice = marketCfg.maxBuyPrice[RESOURCE_ENERGY];
+    declareMarketActionIntent(
+      "resourceControl:legacy-energy-buy",
+      "market_deal",
+      room.roomName,
+    );
     const order = findBestBuyOrder(
       ORDER_SELL,
       RESOURCE_ENERGY,
@@ -3850,6 +3866,11 @@ function applyMarketOps(
       amount,
       room.roomName,
       "resourceControl:legacy-energy-buy",
+      {
+        orderType: ORDER_SELL,
+        resourceType: RESOURCE_ENERGY,
+        orderRoomName: order.roomName,
+      },
     );
     if (code !== OK) {
       actions.push(`market-buy-failed:${room.roomName}:energy:code=${code}`);
@@ -3914,6 +3935,11 @@ function applyMarketOps(
         continue;
       }
 
+      declareMarketActionIntent(
+        "resourceControl:legacy-mineral-buy",
+        "market_deal",
+        room.roomName,
+      );
       const order = findBestBuyOrder(
         ORDER_SELL,
         resource,
@@ -3937,6 +3963,11 @@ function applyMarketOps(
         amount,
         room.roomName,
         "resourceControl:legacy-mineral-buy",
+        {
+          orderType: ORDER_SELL,
+          resourceType: resource,
+          orderRoomName: order.roomName,
+        },
       );
       if (code !== OK) {
         actions.push(`market-buy-failed:${room.roomName}:${resource}:code=${code}`);

@@ -1,5 +1,7 @@
 import { remoteCarrierRole } from "@/roles/remoteCarrier";
 import { moveToTargetRoom } from "@/roles/shared";
+import { clearMarketActionArbiterForTest } from "@/runtime/marketActionArbiter";
+import { clearMarketSaleExposureReservationsForTest } from "@/runtime/marketSaleExposure";
 
 jest.mock("@/roles/shared", () => ({
   moveToTarget: jest.fn(),
@@ -8,7 +10,11 @@ jest.mock("@/roles/shared", () => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  Game.time += 1;
   Game.rooms = {};
+  Memory.data = undefined;
+  clearMarketActionArbiterForTest();
+  clearMarketSaleExposureReservationsForTest();
   (Game as Game & { map: GameMap }).map = {
     getRoomLinearDistance: jest.fn(() => 1),
     findRoute: jest.fn(() => [{ room: "W4N5", exit: FIND_EXIT_LEFT }] as ReturnType<GameMap["findRoute"]>),
@@ -237,5 +243,67 @@ describe("remoteCarrierRole", () => {
     expect(creep.suicide).not.toHaveBeenCalled();
     expect(moveToTargetRoom).toHaveBeenCalledWith(creep, "W1N1", undefined, { travelRange: 3, reusePath: 10 });
     expect(delivered).toBe(false);
+  });
+
+  it("从远端 Terminal 搬任意资源时只领取 Direct reservation 外余量", () => {
+    const roomName = "W5N9";
+    const room = { name: roomName } as Room;
+    const terminal = {
+      id: "remote-terminal",
+      structureType: STRUCTURE_TERMINAL,
+      room,
+      pos: { getRangeTo: () => 1 } as unknown as RoomPosition,
+      store: createStore({ [RESOURCE_CATALYZED_UTRIUM_ACID]: 1_800 }, 10_000),
+    } as unknown as StructureTerminal;
+    room.find = jest.fn((type: FindConstant) =>
+      type === FIND_STRUCTURES ? [terminal] : [],
+    ) as Room["find"];
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-remote-terminal",
+            status: "reconcile_gap",
+            canaryRoomName: roomName,
+            resource: RESOURCE_CATALYZED_UTRIUM_ACID,
+            dealAmount: 1_000,
+            transactionEnergy: 0,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+
+    let carried = 0;
+    const creep = {
+      name: "remote-carrier-reservation",
+      room,
+      memory: {},
+      pos: { getRangeTo: () => 1 } as unknown as RoomPosition,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_CATALYZED_UTRIUM_ACID
+            ? carried
+            : 0,
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn((
+        _target: StructureTerminal,
+        _resource: ResourceConstant,
+        amount?: number,
+      ) => {
+        carried = amount || 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+
+    const shouldReturnHome = remoteCarrierRole(roomName).source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+      800,
+    );
+    expect(shouldReturnHome).toBe(true);
   });
 });

@@ -18,7 +18,10 @@ import { getPlannedStoragePos, getPlannedControllerLinkPos, getProtoStorageConta
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 import { hasTerminalActionClaim } from "@/runtime/marketActionArbiter";
-import { claimTerminalAmountOutsideMarketSaleExposure } from "@/runtime/marketSaleExposure";
+import {
+  claimTerminalAmountOutsideMarketSaleExposure,
+  getTerminalAmountOutsideMarketSaleExposure,
+} from "@/runtime/marketSaleExposure";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | StructureTerminal | Tombstone | Ruin;
 type DeadStorePickupTarget = Tombstone | Ruin;
@@ -41,8 +44,25 @@ function isTerminalPickupEnabledForRoom(roomName: string): boolean {
   return true;
 }
 
-function getCarrierPickupAmount(target: CarrierPickupTarget): number {
-  return getPickupTargetEnergyAmount(target);
+function getCarrierPickupAmount(
+  target: CarrierPickupTarget,
+  fallbackRoomName?: string,
+): number {
+  const amount = getPickupTargetEnergyAmount(target);
+  if (
+    "structureType" in target &&
+    target.structureType === STRUCTURE_TERMINAL
+  ) {
+    return Math.min(
+      amount,
+      getTerminalAmountOutsideMarketSaleExposure(
+        target,
+        RESOURCE_ENERGY,
+        target.room?.name || fallbackRoomName,
+      ),
+    );
+  }
+  return amount;
 }
 
 function getStoredResources(store: StoreDefinition): ResourceConstant[] {
@@ -134,7 +154,8 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPicku
         ? [creep.room.storage]
         : [];
     const terminal =
-      options?.includeTerminal && creep.room.terminal && getCarrierPickupAmount(creep.room.terminal) > 0
+      options?.includeTerminal && creep.room.terminal &&
+        getCarrierPickupAmount(creep.room.terminal, creep.room.name) > 0
         ? [creep.room.terminal]
         : [];
 
@@ -153,7 +174,7 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPicku
 
     return filteredCandidates
       .map((candidate) => {
-        const amount = getCarrierPickupAmount(candidate);
+        const amount = getCarrierPickupAmount(candidate, creep.room.name);
         const distance = Math.max(1, creep.pos.getRangeTo(candidate.pos));
         return {
           candidate,
@@ -220,7 +241,13 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
   }
 
   const reservedAmount = sourceTarget
-    ? Math.min(desiredAmount, getCarrierPickupAmount(sourceTarget as CarrierPickupTarget))
+    ? Math.min(
+        desiredAmount,
+        getCarrierPickupAmount(
+          sourceTarget as CarrierPickupTarget,
+          creep.room.name,
+        ),
+      )
     : 0;
   if (sourceTarget && (reservedAmount <= 0 || !reservePickupTarget(creep, sourceTarget, reservedAmount))) {
     releasePickupReservation(creep, sourceTarget.id);
@@ -230,7 +257,10 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
   if (!sourceTarget) {
     const candidates = getWeightedCarrierPickupCandidates(creep, options);
     for (const candidate of candidates) {
-      const candidateAmount = Math.min(desiredAmount, getCarrierPickupAmount(candidate));
+      const candidateAmount = Math.min(
+        desiredAmount,
+        getCarrierPickupAmount(candidate, creep.room.name),
+      );
       if (candidateAmount > 0 && reservePickupTarget(creep, candidate, candidateAmount)) {
         sourceTarget = candidate;
         break;
@@ -272,23 +302,53 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
     return { picked: withdrawCode === OK, outOfRange: false };
   }
 
-  const withdrawCode = measureCreepIntent(() => {
-    if ("structureType" in sourceTarget && sourceTarget.structureType === STRUCTURE_TERMINAL) {
-      const amount = Math.min(
-        creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0,
-        getCarrierPickupAmount(sourceTarget),
-      );
-      if (amount <= 0) return ERR_NOT_ENOUGH_RESOURCES;
-      return creep.withdraw(sourceTarget, RESOURCE_ENERGY, amount);
-    }
-    return creep.withdraw(sourceTarget, RESOURCE_ENERGY);
-  });
+  let exposureClaim:
+    | ReturnType<typeof claimTerminalAmountOutsideMarketSaleExposure>
+    | undefined;
+  let withdrawCode: ScreepsReturnCode;
+  try {
+    withdrawCode = measureCreepIntent(() => {
+      if ("structureType" in sourceTarget && sourceTarget.structureType === STRUCTURE_TERMINAL) {
+        const roomName = sourceTarget.room?.name || creep.room.name;
+        if (hasTerminalActionClaim(roomName)) return ERR_BUSY;
+        const amount = Math.min(
+          creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0,
+          getCarrierPickupAmount(sourceTarget, roomName),
+        );
+        if (amount <= 0) return ERR_NOT_ENOUGH_RESOURCES;
+        exposureClaim = claimTerminalAmountOutsideMarketSaleExposure(
+          sourceTarget,
+          RESOURCE_ENERGY,
+          amount,
+          roomName,
+        ) || undefined;
+        if (!exposureClaim) return ERR_NOT_ENOUGH_RESOURCES;
+        return creep.withdraw(
+          sourceTarget,
+          RESOURCE_ENERGY,
+          exposureClaim.amount,
+        );
+      }
+      return creep.withdraw(sourceTarget, RESOURCE_ENERGY);
+    });
+  } catch (error) {
+    exposureClaim?.release();
+    throw error;
+  }
   if (withdrawCode === ERR_NOT_IN_RANGE) {
+    exposureClaim?.release();
     moveToTarget(creep, sourceTarget);
     return { picked: false, outOfRange: true };
   }
 
-  if (withdrawCode === ERR_NOT_ENOUGH_RESOURCES || withdrawCode === ERR_INVALID_TARGET) {
+  if (withdrawCode !== OK) {
+    exposureClaim?.release();
+  }
+  if (
+    withdrawCode === ERR_NOT_ENOUGH_RESOURCES ||
+    withdrawCode === ERR_INVALID_TARGET ||
+    withdrawCode === ERR_BUSY
+  ) {
     releasePickupReservation(creep, sourceTarget.id);
     return { picked: false, outOfRange: false };
   }
@@ -430,13 +490,32 @@ function resolveTaskStructure(id: string): AnyStoreStructure | null {
   return resolved;
 }
 
-function isCarrierTaskStepRunnable(step: CarrierTaskStep): boolean {
+function getCarrierTaskStepSourceAmount(
+  step: CarrierTaskStep,
+  fallbackRoomName?: string,
+): number {
+  const from = resolveTaskStructure(step.fromId);
+  if (!from) return 0;
+  if (from.structureType === STRUCTURE_TERMINAL) {
+    return getTerminalAmountOutsideMarketSaleExposure(
+      from,
+      step.resource,
+      from.room?.name || from.pos?.roomName || fallbackRoomName,
+    );
+  }
+  return from.store.getUsedCapacity(step.resource);
+}
+
+function isCarrierTaskStepRunnable(
+  step: CarrierTaskStep,
+  fallbackRoomName?: string,
+): boolean {
   const from = resolveTaskStructure(step.fromId);
   const to = resolveTaskStructure(step.toId);
   if (!from || !to) {
     return false;
   }
-  if (from.store.getUsedCapacity(step.resource) <= 0) {
+  if (getCarrierTaskStepSourceAmount(step, fallbackRoomName) <= 0) {
     return false;
   }
   if (to.store.getFreeCapacity(step.resource) <= 0) {
@@ -446,8 +525,11 @@ function isCarrierTaskStepRunnable(step: CarrierTaskStep): boolean {
 }
 
 function selectPickupStep(task: CarrierTask, creep: Creep): CarrierTaskStep | null {
+  const assignedRoomName = getAssignedCarrierRoomName(creep);
   const candidates = task.steps
-    .filter((step) => isCarrierTaskStepRunnable(step))
+    .filter((step) =>
+      isCarrierTaskStepRunnable(step, assignedRoomName),
+    )
     .sort((left, right) => {
       const leftFrom = resolveTaskStructure(left.fromId);
       const rightFrom = resolveTaskStructure(right.fromId);
@@ -475,8 +557,13 @@ function selectDeliveryStep(task: CarrierTask, creep: Creep): CarrierTaskStep | 
   return candidates.length > 0 ? candidates[0] : null;
 }
 
-function isCarrierTaskRunnable(task: CarrierTask): boolean {
-  return task.steps.some((step) => isCarrierTaskStepRunnable(step));
+function isCarrierTaskRunnable(
+  task: CarrierTask,
+  roomName?: string,
+): boolean {
+  return task.steps.some((step) =>
+    isCarrierTaskStepRunnable(step, roomName),
+  );
 }
 
 function isPowerBankBoostCarrierTask(task: CarrierTask): boolean {
@@ -484,7 +571,11 @@ function isPowerBankBoostCarrierTask(task: CarrierTask): boolean {
 }
 
 function hasRunnablePowerBankBoostCarrierTask(roomName: string): boolean {
-  return getSynthesisCarrierTasks(roomName).some((task) => isPowerBankBoostCarrierTask(task) && isCarrierTaskRunnable(task));
+  return getSynthesisCarrierTasks(roomName).some(
+    (task) =>
+      isPowerBankBoostCarrierTask(task) &&
+      isCarrierTaskRunnable(task, roomName),
+  );
 }
 
 function isUrgentLabCleanupCarrierTask(task: CarrierTask): boolean {
@@ -492,7 +583,11 @@ function isUrgentLabCleanupCarrierTask(task: CarrierTask): boolean {
 }
 
 function hasRunnableUrgentLabCleanupCarrierTask(roomName: string): boolean {
-  return getSynthesisCarrierTasks(roomName).some((task) => isUrgentLabCleanupCarrierTask(task) && isCarrierTaskRunnable(task));
+  return getSynthesisCarrierTasks(roomName).some(
+    (task) =>
+      isUrgentLabCleanupCarrierTask(task) &&
+      isCarrierTaskRunnable(task, roomName),
+  );
 }
 
 function assignSynthesisCarrierTask(
@@ -501,6 +596,7 @@ function assignSynthesisCarrierTask(
   clearWhenNoCandidate = true,
 ): { task: CarrierTask; step: CarrierTaskStep } | null {
   return measureCreepDecision(() => {
+    const assignedRoomName = getAssignedCarrierRoomName(creep);
     const assigned = getAssignedSynthesisCarrierTask(creep);
     if (assigned && (!taskFilter || taskFilter(assigned))) {
       const assignedStep = selectPickupStep(assigned, creep);
@@ -509,9 +605,11 @@ function assignSynthesisCarrierTask(
       }
     }
 
-    const candidates = getSynthesisCarrierTasks(getAssignedCarrierRoomName(creep))
+    const candidates = getSynthesisCarrierTasks(assignedRoomName)
       .filter((task) => !taskFilter || taskFilter(task))
-      .filter((task) => isCarrierTaskRunnable(task))
+      .filter((task) =>
+        isCarrierTaskRunnable(task, assignedRoomName),
+      )
       .map((task) => ({
         task,
         step: selectPickupStep(task, creep),

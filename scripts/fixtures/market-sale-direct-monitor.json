@@ -1,0 +1,119 @@
+{
+  "rooms": {},
+  "analytics": {
+    "production": {
+      "rooms": {}
+    }
+  },
+  "runtime": {
+    "marketSaleAutomation": {
+      "updatedAt": 2103,
+      "requestedMode": "shadow",
+      "phase": "shadow",
+      "configRevision": "x-direct-v1",
+      "shadowConfigRevision": "maker-shadow-v1",
+      "shadowConsecutiveCycles": 0,
+      "managedOrderCount": 0,
+      "pendingCreateCount": 0,
+      "pendingMutationCount": 0,
+      "stagingAmount": 0,
+      "reservationAmount": 0,
+      "exposureAmount": 1000,
+      "rollingFeeMilli": 0,
+      "terminalClaims": [
+        "E6N59"
+      ],
+      "rejectedByReason": {
+        "manual_sell_order_present": 1
+      },
+      "candidates": {},
+      "recentActions": [],
+      "safetyViolationCount": 0,
+      "direct": {
+        "strategyActive": true,
+        "shadowConsecutiveCycles": 42,
+        "activationAuthorized": false,
+        "canary": {
+          "roomName": "E6N59",
+          "resourceType": "X",
+          "lockedAt": 2000,
+          "configRevision": "x-direct-v1",
+          "safetyFingerprint": "direct-fingerprint-v1"
+        },
+        "pendingCount": 1,
+        "pendingByStatus": {
+          "submitted": 1
+        },
+        "confirmedDealCount": 0,
+        "pausedForReview": false,
+        "exposure": {
+          "pendingCount": 1,
+          "resourceAmount": 1000,
+          "transactionEnergy": 900,
+          "reconcileGapCount": 0
+        },
+        "snapshot": {
+          "observedAt": 2100,
+          "age": 3,
+          "maxAgeTicks": 10,
+          "fresh": true,
+          "result": "safe_opportunity",
+          "configRevision": "x-direct-v1",
+          "safetyFingerprint": "direct-fingerprint-v1",
+          "canary": {
+            "roomName": "E6N59",
+            "resourceType": "X",
+            "lockedAt": 2000,
+            "configRevision": "x-direct-v1",
+            "safetyFingerprint": "direct-fingerprint-v1"
+          },
+          "structuralCandidateCount": 6,
+          "eligibleStructuralCandidateCount": 1,
+          "buyBook": {
+            "rawOrderCount": 14,
+            "rawOrderLimit": 1000,
+            "eligibleOrderCount": 2,
+            "eligibleOrderLimit": 200,
+            "eligibleDepth": 6000,
+            "eligibleDistinctRoomCount": 2,
+            "pricedOrderCount": 2,
+            "safeCandidateCount": 1,
+            "rejectedOrderCount": 12,
+            "highestGrossPrice": 665.8,
+            "selectedOrderId": "buy-x-top",
+            "orderRejectionCounts": {
+              "dust_amount": 4,
+              "gross_below_floor": 8
+            }
+          },
+          "opportunity": {
+            "orderId": "buy-x-top",
+            "orderRoomName": "E51S9",
+            "price": 665.8,
+            "orderAmount": 1000,
+            "dealAmount": 1000,
+            "transactionEnergy": 900,
+            "netCreditsMilli": 641680000,
+            "worstCaseNetCreditsMilli": 639000,
+            "effectiveNetFloorMilli": 600000
+          },
+          "manualBuyOrderCount": 0,
+          "manualSellOrderCount": 1,
+          "zeroRemainingOwnOrderCount": 2,
+          "effectiveNetFloor": 600,
+          "effectiveEnergyShadowPrice": 26.8,
+          "energyShadowObservedAt": 2100,
+          "energyShadowComponents": {
+            "hardFloor": 20,
+            "explicit": 25,
+            "historyFloor": 26.8,
+            "ratchetFloor": 26.2
+          },
+          "rejectedByReason": {
+            "manual_sell_order_present": 1
+          }
+        }
+      }
+    }
+  }
+}

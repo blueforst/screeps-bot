@@ -123,6 +123,8 @@ export interface MarketOrderSnapshot {
   resourceType: string;
   price: number;
   amount: number;
+  remainingAmount?: number;
+  totalAmount?: number;
   roomName?: string;
   created?: number;
 }

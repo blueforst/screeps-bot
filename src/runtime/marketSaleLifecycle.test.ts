@@ -282,4 +282,21 @@ describe("marketSaleLifecycle", () => {
     expect(state.phase).toBe("draining");
     expect(state.zeroConfirmations).toBe(0);
   });
+
+  it("Direct active 使用独立 phase，不得误归类为 Maker", () => {
+    const state = updateDrainState({
+      state: { phase: "shadow", zeroConfirmations: 0 },
+      desiredMode: "direct",
+      gameTime: 100,
+      knownManagedIdsPresent: 0,
+      pendingCreateCount: 0,
+      pendingMutationCount: 0,
+      stagingAmount: 0,
+      reservationAmount: 0,
+      exposureAmount: 0,
+      reconcileGapCount: 0,
+    });
+
+    expect(state).toEqual({ phase: "direct", zeroConfirmations: 0 });
+  });
 });

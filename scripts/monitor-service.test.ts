@@ -160,6 +160,8 @@ describe("monitor-service market sale automation projection", () => {
         },
         pendingCreateCount: 0,
         pendingMutationCount: 0,
+        stagingAmount: 0,
+        reservationAmount: 0,
         exposureAmount: 0,
         creditSummary: {
           credits: 2500000,
@@ -227,7 +229,109 @@ describe("monitor-service market sale automation projection", () => {
         orderSlots: null,
         backoffSummary: null,
         creditSummary: null,
+        direct: null,
       }),
     );
   });
+
+  test("投影 Direct Shadow、pending、BUY 机会与能量影子证据", () => {
+    const payload = readFixtureProjection("market-sale-direct-monitor.json");
+    const direct = payload.memory.marketSaleAutomation.direct;
+
+    expect(direct).toEqual({
+      available: true,
+      strategyActive: true,
+      shadowConsecutiveCycles: 42,
+      qualifiedAt: null,
+      activationAuthorized: false,
+      canary: {
+        roomName: "E6N59",
+        resourceType: "X",
+        lockedAt: 2000,
+        configRevision: "x-direct-v1",
+        safetyFingerprint: "direct-fingerprint-v1",
+      },
+      pendingCount: 1,
+      pendingByStatus: {
+        submitted: 1,
+      },
+      confirmedDealCount: 0,
+      pausedForReview: false,
+      migrationBlockedReason: null,
+      exposure: {
+        pendingCount: 1,
+        quarantinedCount: null,
+        resourceAmount: 1000,
+        transactionEnergy: 900,
+        reconcileGapCount: 0,
+      },
+      snapshot: {
+        observedAt: 2100,
+        age: 3,
+        maxAgeTicks: 10,
+        fresh: true,
+        result: "safe_opportunity",
+        configRevision: "x-direct-v1",
+        safetyFingerprint: "direct-fingerprint-v1",
+        canary: {
+          roomName: "E6N59",
+          resourceType: "X",
+          lockedAt: 2000,
+          configRevision: "x-direct-v1",
+          safetyFingerprint: "direct-fingerprint-v1",
+        },
+        structuralCandidateCount: 6,
+        eligibleStructuralCandidateCount: 1,
+        buyBook: {
+          rawOrderCount: 14,
+          rawOrderLimit: 1000,
+          eligibleOrderCount: 2,
+          eligibleOrderLimit: 200,
+          eligibleDepth: 6000,
+          eligibleDistinctRoomCount: 2,
+          pricedOrderCount: 2,
+          safeCandidateCount: 1,
+          rejectedOrderCount: 12,
+          highestGrossPrice: 665.8,
+          selectedOrderId: "buy-x-top",
+          cycleRejection: null,
+          orderRejectionCounts: {
+            dust_amount: 4,
+            gross_below_floor: 8,
+          },
+        },
+        opportunity: {
+          orderId: "buy-x-top",
+          orderRoomName: "E51S9",
+          price: 665.8,
+          orderAmount: 1000,
+          dealAmount: 1000,
+          transactionEnergy: 900,
+          netCreditsMilli: 641680000,
+          worstCaseNetCreditsMilli: 639000,
+          effectiveNetFloorMilli: 600000,
+        },
+        manualBuyOrderCount: 0,
+        manualSellOrderCount: 1,
+        zeroRemainingOwnOrderCount: 2,
+        manualOrderBlocked: true,
+        manualOrderBlockers: [
+          "manual_sell_order_present",
+        ],
+        effectiveNetFloor: 600,
+        effectiveEnergyShadowPrice: 26.8,
+        energyShadowObservedAt: 2100,
+        energyShadowComponents: {
+          hardFloor: 20,
+          explicit: 25,
+          historyFloor: 26.8,
+          ratchetFloor: 26.2,
+        },
+        rejectedByReason: {
+          manual_sell_order_present: 1,
+        },
+      },
+    });
+  });
+
 });

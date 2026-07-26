@@ -1244,6 +1244,63 @@ function collectManagedExposure(
     complete = false;
   }
 
+  const marketDataRecord = asRecord(marketData);
+  const rawDirectAutomation =
+    marketDataRecord?.directAutomation;
+  const directAutomation = asRecord(rawDirectAutomation);
+  const directMigrationBlocker =
+    directAutomation?.migrationBlockedReason;
+  const rawQuarantine =
+    directAutomation?.quarantinedPendingDirectDeals;
+  const quarantine = asRecord(rawQuarantine);
+  if (
+    (rawDirectAutomation !== undefined && !directAutomation) ||
+    (directMigrationBlocker !== undefined &&
+      directMigrationBlocker !==
+        "direct_qualification_state_invalid") ||
+    (rawQuarantine !== undefined &&
+      (!quarantine || Object.keys(quarantine).length > 0))
+  ) {
+    // Quarantine 中的损坏 WAL 不能安全归属 room/resource。把完整
+    // managedExposure 源标为 stale，使所有候选 sellableAmount=0。
+    complete = false;
+  }
+  const rawPendingDirectDeals = marketDataRecord?.pendingDirectDeals;
+  const pendingDirectDeals = asRecord(rawPendingDirectDeals);
+  if (rawPendingDirectDeals !== undefined && !pendingDirectDeals) {
+    complete = false;
+  } else {
+    for (const [requestId, rawPending] of Object.entries(
+      pendingDirectDeals || {},
+    )) {
+      const pending = asRecord(rawPending);
+      const roomName = pending?.canaryRoomName ?? pending?.roomName;
+      const resource = pending?.resource ?? pending?.resourceType;
+      const amount = pending?.dealAmount ?? pending?.amount;
+      if (
+        !pending ||
+        !validRoomName(roomName) ||
+        !validResource(resource) ||
+        !finiteNonNegative(amount) ||
+        amount <= 0 ||
+        typeof pending.status !== "string" ||
+        !["prepared", "submitted", "reconcile_gap"].includes(
+          pending.status,
+        )
+      ) {
+        complete = false;
+        continue;
+      }
+      facts.push({
+        roomName,
+        resource,
+        amount,
+        stableKey: `pending-direct:${requestId}`,
+        status: "pending",
+      });
+    }
+  }
+
   const pendingMutations = asRecord(marketData?.pendingMutations);
   if (marketData && !pendingMutations) {
     complete = false;

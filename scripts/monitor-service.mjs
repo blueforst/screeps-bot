@@ -960,6 +960,217 @@ function summarizeResourceControl(runtimeResourceControl, transferTaskStore) {
   };
 }
 
+function summarizeDirectCanary(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    roomName: typeof value.roomName === "string" ? value.roomName : null,
+    resourceType:
+      typeof value.resourceType === "string" ? value.resourceType : null,
+    lockedAt: finiteNumberOrNull(value.lockedAt),
+    configRevision:
+      typeof value.configRevision === "string" ? value.configRevision : null,
+    safetyFingerprint:
+      typeof value.safetyFingerprint === "string"
+        ? value.safetyFingerprint
+        : null,
+  };
+}
+
+function summarizeDirectBuyBook(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    rawOrderCount: finiteNumberOrNull(value.rawOrderCount),
+    rawOrderLimit: finiteNumberOrNull(value.rawOrderLimit),
+    eligibleOrderCount: finiteNumberOrNull(value.eligibleOrderCount),
+    eligibleOrderLimit: finiteNumberOrNull(value.eligibleOrderLimit),
+    eligibleDepth: finiteNumberOrNull(value.eligibleDepth),
+    eligibleDistinctRoomCount: finiteNumberOrNull(
+      value.eligibleDistinctRoomCount,
+    ),
+    pricedOrderCount: finiteNumberOrNull(value.pricedOrderCount),
+    safeCandidateCount: finiteNumberOrNull(value.safeCandidateCount),
+    rejectedOrderCount: finiteNumberOrNull(value.rejectedOrderCount),
+    highestGrossPrice: finiteNumberOrNull(value.highestGrossPrice),
+    selectedOrderId:
+      typeof value.selectedOrderId === "string"
+        ? value.selectedOrderId
+        : null,
+    cycleRejection:
+      typeof value.cycleRejection === "string"
+        ? value.cycleRejection
+        : null,
+    orderRejectionCounts: summarizeCountMapOrNull(
+      value.orderRejectionCounts,
+    ),
+  };
+}
+
+function summarizeDirectOpportunity(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    orderId: typeof value.orderId === "string" ? value.orderId : null,
+    orderRoomName:
+      typeof value.orderRoomName === "string"
+        ? value.orderRoomName
+        : null,
+    price: finiteNumberOrNull(value.price),
+    orderAmount: finiteNumberOrNull(value.orderAmount),
+    dealAmount: finiteNumberOrNull(value.dealAmount),
+    transactionEnergy: finiteNumberOrNull(value.transactionEnergy),
+    netCreditsMilli: finiteNumberOrNull(value.netCreditsMilli),
+    worstCaseNetCreditsMilli: finiteNumberOrNull(
+      value.worstCaseNetCreditsMilli,
+    ),
+    effectiveNetFloorMilli: finiteNumberOrNull(
+      value.effectiveNetFloorMilli,
+    ),
+  };
+}
+
+function summarizeDirectEnergyShadowComponents(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    hardFloor: finiteNumberOrNull(value.hardFloor),
+    explicit: finiteNumberOrNull(value.explicit),
+    historyFloor: finiteNumberOrNull(value.historyFloor),
+    ratchetFloor: finiteNumberOrNull(value.ratchetFloor),
+  };
+}
+
+function summarizeDirectPlanningSnapshot(value, referenceTick) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const observedAt = finiteNumberOrNull(value.observedAt);
+  const maxAgeTicks = finiteNumberOrNull(value.maxAgeTicks);
+  const projectedAge = finiteNumberOrNull(value.age);
+  const age = projectedAge ?? tickAge(referenceTick, observedAt);
+  const projectedFresh = booleanOrNull(value.fresh);
+  const fresh =
+    projectedFresh ??
+    (age !== null && maxAgeTicks !== null ? age <= maxAgeTicks : null);
+  const manualBuyOrderCount = finiteNumberOrNull(
+    value.manualBuyOrderCount,
+  );
+  const manualSellOrderCount = finiteNumberOrNull(
+    value.manualSellOrderCount,
+  );
+  const manualOrderBlockers = [];
+  if (manualBuyOrderCount !== null && manualBuyOrderCount > 0) {
+    manualOrderBlockers.push("manual_buy_order_present");
+  }
+  if (manualSellOrderCount !== null && manualSellOrderCount > 0) {
+    manualOrderBlockers.push("manual_sell_order_present");
+  }
+
+  return {
+    observedAt,
+    age,
+    maxAgeTicks,
+    fresh,
+    result: typeof value.result === "string" ? value.result : null,
+    configRevision:
+      typeof value.configRevision === "string"
+        ? value.configRevision
+        : null,
+    safetyFingerprint:
+      typeof value.safetyFingerprint === "string"
+        ? value.safetyFingerprint
+        : null,
+    canary: summarizeDirectCanary(value.canary),
+    structuralCandidateCount: finiteNumberOrNull(
+      value.structuralCandidateCount,
+    ),
+    eligibleStructuralCandidateCount: finiteNumberOrNull(
+      value.eligibleStructuralCandidateCount,
+    ),
+    buyBook: summarizeDirectBuyBook(value.buyBook),
+    opportunity: summarizeDirectOpportunity(value.opportunity),
+    manualBuyOrderCount,
+    manualSellOrderCount,
+    zeroRemainingOwnOrderCount: finiteNumberOrNull(
+      value.zeroRemainingOwnOrderCount,
+    ),
+    manualOrderBlocked:
+      manualBuyOrderCount === null && manualSellOrderCount === null
+        ? null
+        : manualOrderBlockers.length > 0,
+    manualOrderBlockers:
+      manualBuyOrderCount === null && manualSellOrderCount === null
+        ? null
+        : manualOrderBlockers,
+    effectiveNetFloor: finiteNumberOrNull(value.effectiveNetFloor),
+    effectiveEnergyShadowPrice: finiteNumberOrNull(
+      value.effectiveEnergyShadowPrice,
+    ),
+    energyShadowObservedAt: finiteNumberOrNull(
+      value.energyShadowObservedAt,
+    ),
+    energyShadowComponents: summarizeDirectEnergyShadowComponents(
+      value.energyShadowComponents,
+    ),
+    rejectedByReason: summarizeCountMapOrNull(value.rejectedByReason),
+  };
+}
+
+function summarizeDirectMarketSale(value, referenceTick) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    available: true,
+    strategyActive: booleanOrNull(value.strategyActive),
+    shadowConsecutiveCycles: finiteNumberOrNull(
+      value.shadowConsecutiveCycles,
+    ),
+    qualifiedAt: finiteNumberOrNull(value.qualifiedAt),
+    activationAuthorized: booleanOrNull(value.activationAuthorized),
+    canary: summarizeDirectCanary(value.canary),
+    pendingCount: finiteNumberOrNull(value.pendingCount),
+    pendingByStatus: summarizeCountMapOrNull(value.pendingByStatus),
+    confirmedDealCount: finiteNumberOrNull(value.confirmedDealCount),
+    pausedForReview: booleanOrNull(value.pausedForReview),
+    migrationBlockedReason:
+      typeof value.migrationBlockedReason === "string"
+        ? value.migrationBlockedReason
+        : null,
+    exposure:
+      value.exposure &&
+      typeof value.exposure === "object" &&
+      !Array.isArray(value.exposure)
+        ? {
+            pendingCount: finiteNumberOrNull(
+              value.exposure.pendingCount,
+            ),
+            quarantinedCount: finiteNumberOrNull(
+              value.exposure.quarantinedCount,
+            ),
+            resourceAmount: finiteNumberOrNull(
+              value.exposure.resourceAmount,
+            ),
+            transactionEnergy: finiteNumberOrNull(
+              value.exposure.transactionEnergy,
+            ),
+            reconcileGapCount: finiteNumberOrNull(
+              value.exposure.reconcileGapCount,
+            ),
+          }
+        : null,
+    snapshot: summarizeDirectPlanningSnapshot(
+      value.snapshot,
+      referenceTick,
+    ),
+  };
+}
+
 function summarizeMarketSaleAutomation(value) {
   const runtime =
     value && typeof value === "object" && !Array.isArray(value)
@@ -981,6 +1192,8 @@ function summarizeMarketSaleAutomation(value) {
       backoffSummary: null,
       pendingCreateCount: null,
       pendingMutationCount: null,
+      stagingAmount: null,
+      reservationAmount: null,
       exposureAmount: null,
       rollingFeeMilli: null,
       creditReserve: null,
@@ -991,6 +1204,7 @@ function summarizeMarketSaleAutomation(value) {
       canaryLock: null,
       recentActions: null,
       safetyViolationCount: null,
+      direct: null,
     };
   }
 
@@ -1157,6 +1371,8 @@ function summarizeMarketSaleAutomation(value) {
     backoffSummary,
     pendingCreateCount: finiteNumberOrNull(runtime.pendingCreateCount),
     pendingMutationCount: finiteNumberOrNull(runtime.pendingMutationCount),
+    stagingAmount: finiteNumberOrNull(runtime.stagingAmount),
+    reservationAmount: finiteNumberOrNull(runtime.reservationAmount),
     exposureAmount: finiteNumberOrNull(runtime.exposureAmount),
     rollingFeeMilli: finiteNumberOrNull(runtime.rollingFeeMilli),
     creditReserve: finiteNumberOrNull(runtime.creditReserve),
@@ -1171,6 +1387,10 @@ function summarizeMarketSaleAutomation(value) {
       ? runtime.recentActions.filter((action) => typeof action === "string").slice(-20)
       : null,
     safetyViolationCount: finiteNumberOrNull(runtime.safetyViolationCount),
+    direct: summarizeDirectMarketSale(
+      runtime.direct,
+      finiteNumberOrNull(runtime.updatedAt),
+    ),
   };
 }
 
@@ -1665,9 +1885,38 @@ function resourceControlStr(resourceControl) {
   return ` transferTasks=${resourceControl.pendingTaskCount}`;
 }
 
+function directMarketSaleStr(direct) {
+  if (!direct || !direct.available) return "";
+  const snapshot = direct.snapshot;
+  const book = snapshot?.buyBook;
+  const opportunity = snapshot?.opportunity;
+  const freshness =
+    snapshot?.fresh === true
+      ? "fresh"
+      : snapshot?.fresh === false
+        ? "stale"
+        : "unknown";
+  const components = snapshot?.energyShadowComponents;
+  const energyShadow = snapshot
+    ? `${snapshot.effectiveEnergyShadowPrice ?? "n/a"}(hard=${components?.hardFloor ?? "n/a"},explicit=${components?.explicit ?? "n/a"},history=${components?.historyFloor ?? "n/a"},ratchet=${components?.ratchetFloor ?? "n/a"})`
+    : "n/a";
+  return [
+    ` directShadow=${direct.shadowConsecutiveCycles ?? "n/a"}`,
+    ` directPending=${direct.pendingCount ?? "n/a"}`,
+    ` directConfirmed=${direct.confirmedDealCount ?? "n/a"}`,
+    ` directPaused=${direct.pausedForReview ?? "n/a"}`,
+    ` directSnapshot=${snapshot ? `${freshness}:${snapshot.age ?? "n/a"}/${snapshot.maxAgeTicks ?? "n/a"}` : "n/a"}`,
+    ` directBuy=${book ? `${book.rawOrderCount ?? "n/a"}/${book.rawOrderLimit ?? "n/a"}:${book.eligibleOrderCount ?? "n/a"}/${book.eligibleOrderLimit ?? "n/a"}:${book.safeCandidateCount ?? "n/a"}:depth=${book.eligibleDepth ?? "n/a"}:rooms=${book.eligibleDistinctRoomCount ?? "n/a"}` : "n/a"}`,
+    ` directSelected=${opportunity ? `${opportunity.orderId ?? "n/a"}:${opportunity.price ?? "n/a"}x${opportunity.dealAmount ?? "n/a"}` : "none"}`,
+    ` directManual=${snapshot ? `${snapshot.manualBuyOrderCount ?? "n/a"}/${snapshot.manualSellOrderCount ?? "n/a"}` : "n/a"}`,
+    ` directEnergyShadow=${energyShadow}`,
+    ` directExposure=${direct.exposure ? `${direct.exposure.resourceAmount ?? "n/a"}/${direct.exposure.transactionEnergy ?? "n/a"}` : "n/a"}`,
+  ].join("");
+}
+
 function marketSaleStr(marketSaleAutomation) {
   if (!marketSaleAutomation || !marketSaleAutomation.available) return "";
-  return ` marketSale=${marketSaleAutomation.phase ?? "n/a"} shadow=${marketSaleAutomation.shadowConsecutiveCycles ?? "n/a"} orders=${marketSaleAutomation.managedOrderCount ?? "n/a"}`;
+  return ` marketSale=${marketSaleAutomation.phase ?? "n/a"} shadow=${marketSaleAutomation.shadowConsecutiveCycles ?? "n/a"} orders=${marketSaleAutomation.managedOrderCount ?? "n/a"}${directMarketSaleStr(marketSaleAutomation.direct)}`;
 }
 
 function logSegmentSnapshot(snapshot) {

@@ -777,6 +777,21 @@ describe("runResourceControl terminal feed tasks", () => {
       }
       return [];
     });
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-resource-buy-gap",
+            status: "reconcile_gap",
+            canaryRoomName: room.name,
+            resource: RESOURCE_HYDROGEN,
+            dealAmount: 5_000,
+            transactionEnergy: 24_800,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
 
     runResourceControl();
 
@@ -3901,7 +3916,7 @@ describe("hub internalOnly market buy", () => {
     Memory.cfg!.resourceControl!.market!.emergencyBuyEnabled = true;
     Memory.cfg!.resourceControl!.market!.maxBuyPrice![RESOURCE_ENERGY] = 1;
     const room = createRoom({
-      name: "W1N4_SAFE_LATCH",
+      name: "W1N6",
       storageResources: { [RESOURCE_ENERGY]: 50_000 },
       terminalResources: { [RESOURCE_ENERGY]: 25_000 },
     });
@@ -3929,6 +3944,17 @@ describe("hub internalOnly market buy", () => {
 
     runMarketSalePreflight();
     expect(Memory.cfg?.resourceControl?.market?.enabled).toBe(false);
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    Memory.data!.marketSaleAutomation!.pendingDirectDeals = {
+      direct: {
+        requestId: "direct-emergency-buy-gap",
+        status: "reconcile_gap",
+        canaryRoomName: room.name,
+        resource: RESOURCE_KEANIUM,
+        dealAmount: 1_000,
+        transactionEnergy: 24_800,
+      },
+    };
     runResourceControl();
 
     expect(Game.market.deal).toHaveBeenCalledWith(

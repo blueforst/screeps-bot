@@ -1,9 +1,16 @@
-export type MarketSaleMode = "off" | "shadow" | "maker" | "hybrid" | "emergencyStop";
+export type MarketSaleMode =
+  | "off"
+  | "shadow"
+  | "maker"
+  | "direct"
+  | "hybrid"
+  | "emergencyStop";
 
 export type MarketSalePhase =
   | "off"
   | "shadow"
   | "maker"
+  | "direct"
   | "hybrid"
   | "requested"
   | "draining"
@@ -474,7 +481,12 @@ export function updateDrainState(input: {
 
   if (!wantsPassiveMode) {
     return {
-      phase: input.desiredMode === "hybrid" ? "hybrid" : "maker",
+      phase:
+        input.desiredMode === "hybrid"
+          ? "hybrid"
+          : input.desiredMode === "direct"
+            ? "direct"
+            : "maker",
       zeroConfirmations: 0,
     };
   }

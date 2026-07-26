@@ -18,7 +18,10 @@ import {
   createSingleStepDraft,
   terminalStorageKind,
 } from "@/runtime/carrierTaskHelpers";
-import { executeMarketDeal } from "@/runtime/marketActionArbiter";
+import {
+  declareMarketActionIntent,
+  executeMarketDeal,
+} from "@/runtime/marketActionArbiter";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1163,6 +1166,11 @@ function attemptRegionalRawPurchase(
     const terminalFreeCapacity = room.terminal!.store.getFreeCapacity();
     if (terminalFreeCapacity <= 0) break;
 
+    declareMarketActionIntent(
+      "factoryControl:purchase",
+      "market_deal",
+      roomName,
+    );
     const selection = findSafeSellOrder(
       res,
       amount,
@@ -1226,6 +1234,11 @@ function attemptRegionalRawPurchase(
       selection.dealAmount,
       roomName,
       "factoryControl:purchase",
+      {
+        orderType: ORDER_SELL,
+        resourceType: res,
+        orderRoomName: selection.order.roomName,
+      },
     );
     if (code !== OK) {
       state.lastError = `purchase_deal_${code}`;

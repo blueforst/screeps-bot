@@ -254,7 +254,9 @@ PendingDirectDeal {
 }
 ```
 
-`attemptAt` 在调用前固定为当前 `Game.time`；同时保存提交前 `outgoingTransactions` 的有界 key 基线与窗口边界。同 tick 只有创建该 `requestId` 的 executor 可以把新建的 `prepared` 记录提交一次。`deal` 明确返回非 OK 时先把 `failed` outcome 写入有界审计历史，再从 active pending 删除并释放 exposure；同 tick 不尝试第二张订单。返回 OK 时标记 `submitted`，其数量和能量作为保守 exposure 继续进入保护账本，直到下一 tick 的最早 preflight 读取 `Game.market.outgoingTransactions`。
+同一 Direct store 还保存 `quarantinedPendingDirectDeals`。它接收无法通过完整 schema 校验或 statement-boundary 恢复的原始 pending/容器证据，也承接首次兼容迁移时损坏的顶层 market-sale container、canonical Direct container、legacy pending alias，以及损坏的 Maker `managedOrders`/`pendingMutations` 容器或单条记录和 `pendingCreate`。完整校验不仅检查容器/字段类型，还检查生成态交叉不变量：Maker managed remaining/exposure、mutation pre/requested/conservative exposure、按动作/价格/数量精确重算的 prospective fee 和同 orderId managed sibling，以及 pending-create baseline hash/keys、时间窗、精确 create fee 和 `exposure === tuple.totalAmount`；近似合法但欠保护或低报 fee debt 的对象与 orphan pending mutation同样必须隔离。合法 CPU cut 若留下 orphan 也宁可要求 operator 收敛，不能把未知 SELL mutation 当作零 exposure。损坏记录绝不能流入定价、投影或生命周期算术：实现先在局部完成完整 schema 校验和新状态构造，再以一次 canonical market-sale container assignment 同时提交 quarantine/blocker 与 typed 清理。CPU 若在 commit marker 前中断，原记录仍在；若在其后中断，原始 sentinel 已与清理一同持久化。quarantine 非空或 intent/market-data 相关 migration blocker 存在时，Direct 与 Maker 均零写；这个 latch 必须在 Maker reconcile、prepared retry、drain cancel 和规划之前成立，只允许只读投影保守 exposure/drain，不能借 emergencyStop 自动撤单。由于损坏记录无法可靠归属 room/resource，生产保护和所有 Terminal 消费全局 fail-closed，直到 operator 用权威证据修复。只有 canonical Direct 与 legacy alias 同时缺失或 alias 为显式空对象时才能初始化空状态；present-but-malformed 绝不能当成空迁移。仅 Shadow qualification 计数损坏不阻断生产，也不得掩盖后来发现的结构损坏：当前 tick 清空资格并阻止新 deal，但完整 Direct pending 仍继续自动或 exact-operator 对账；归一化后的下一 tick 清除 qualification-only blocker，允许从零重新跑 Shadow。
+
+`attemptAt` 在调用前固定为当前 `Game.time`；同时保存提交前 `outgoingTransactions` 的有界 key 基线与窗口边界。同 tick 只有创建该 `requestId` 的 executor 可以把新建的 `prepared` 记录提交一次。`deal` 明确返回非 OK 时先把 `failed` outcome 写入有界审计历史，再从 active pending 删除并释放 exposure；同 tick 不尝试第二张订单。返回 OK 时依次写 `resultCode`、`submittedAt`，最后才把 `status=submitted` 作为 commit marker，其数量和能量作为保守 exposure 继续进入保护账本，直到下一 tick 的最早 preflight 读取 `Game.market.outgoingTransactions`。
 
 交易只能由同时满足下列条件的唯一新记录确认：
 
@@ -267,11 +269,11 @@ PendingDirectDeal {
 
 市场处理器可能因更近玩家先成交、买方剩余容量或信用变化，把实际成交量缩小到任意正数。唯一匹配后，用实际数量重新计算取整交易能量，并按 pending 冻结的 `effectiveEnergyShadowPrice`、components/observedAt 与底价做保守 milli-credit 总额核对。通过后把 `confirmed` outcome 写入有界审计、confirmed count 只增加一次、释放整个一次性 intent 的资源与能量 exposure，不把未成交余量视为仍在服务器排队；例如提交 1,000 实际成交 1 时释放其余 999，但仍只算一笔确认。实际净价低于底价、数量超限、历史同 tuple 记录、同 tick 多条匹配或其他字段不一致一律进入安全违规与 `reconcile_gap`。
 
-任何跨 tick 仍为 `prepared` 的记录都视为“可能已经调用 deal、但在写回 submitted 前 CPU 中断”的不确定 intent，与 `submitted` 同等冻结新写并进入对账；系统绝不能重新提交它。首次成功缺失观测必须发生在 `attemptAt + 1`，持久保存 observedAt、transaction window 是否完整、terminal resource/energy/cooldown/credits 与前态的逐项比较结论。只有 outgoing 窗口明确覆盖 attempt tick，且两个不同 tick 的成功读取都没有唯一匹配交易，第一 tick 四项前态完全未发生该 intent 的预期变化，才能写入 `not_filled` outcome、删除 active pending 并释放 exposure。两次成功 tick 必须逐个持久记录；重启、跳过首个 tick、重复读取同一 tick、窗口已截断或任一状态差异无法唯一解释时不得用墙钟时间猜测，必须进入 `reconcile_gap`。
+任何跨 tick 仍为 `prepared` 的记录都视为“可能已经调用 deal、但在写回 submitted 前 CPU 中断”的不确定 intent，与 `submitted` 同等冻结新写并进入对账；系统绝不能重新提交它。normalizer 只恢复实现明确产生的 statement-boundary 半状态：`submitted` 但缺 `submittedAt` 恢复为 `prepared`；prepared/submitted 已保存 changed 首观测时恢复为 `reconcile_gap`。其他未知半状态一律进入 quarantine。首次成功缺失观测必须发生在 `attemptAt + 1`，持久保存 observedAt、transaction window 是否完整、terminal resource/energy/cooldown/credits 与前态的逐项比较结论；若 CPU 在首个 unchanged observation 后、missing tick 写入前中断，该 observation 的 observedAt 必须恢复为第一个成功 tick，不能用后续 tick 替换。只有 outgoing 窗口明确覆盖 attempt tick，且两个不同 tick 的成功读取都没有唯一匹配交易，第一 tick 四项前态完全未发生该 intent 的预期变化，才能写入 `not_filled` outcome、删除 active pending 并释放 exposure。两次成功 tick 必须逐个持久记录；重启、跳过首个 tick、重复读取同一 tick、窗口已截断或任一状态差异无法唯一解释时不得用墙钟时间猜测，必须进入 `reconcile_gap`。
 
 `pendingDirectDeals` 只保存 active 的 `prepared/submitted/reconcile_gap`，三者都计入待售资源和交易能量 exposure。`confirmed/failed/not_filled` 以及 operator resolution 结果移入最多 50 条的 `directDealOutcomes` 审计环；先持久化 outcome 再删除 active pending，保证 drain 可以达到真实零且结果可追溯。
 
-提供 Direct 专用、默认拒绝的 `marketSaleApi.resolveDirectPending`。它必须指定 exact request/order，且只能接受两类可核验证据：当前或 operator 捕获的权威 outgoing transaction 快照中的 exact transactionId/完整 engine tuple；或覆盖 `attemptAt` 的权威无成交窗口加保存的 terminal/credits 前后快照。API 必须重新做数量、价格、实际能量净价和幂等核对，持久记录 evidence source/key、operator、resolvedAt 与结果；证据只能证明 `confirmed` 或 `not_filled`，不能直接“清除”。operator-confirmed 必须复用自动确认的同一个原子 finalize：幂等 key、confirmed count 只增加一次，并在达到 1 时同时进入不可配置解除的 `paused_for_review`；重复 resolution 不得再次计数。证据缺失、相互矛盾或无法覆盖时间窗时保持 `reconcile_gap` 和完整 exposure。resolution 成功后仍需连续两 tick 证明 active pending/exposure 为零，才可完成 emergency stop 或旧 bundle 回滚。
+提供 Direct 专用、默认拒绝的 `marketSaleApi.resolveDirectPending`。它必须指定 exact request/order，且只能接受两类可核验证据：当前或 operator 捕获的权威 outgoing transaction 快照中的 exact transactionId/完整 engine tuple；或覆盖 `attemptAt` 的权威无成交窗口加保存的 terminal/credits 前后快照。API 必须重新做数量、价格、实际能量净价和幂等核对，持久记录 evidence source/key、operator、resolvedAt 与结果；operator no-fill 还必须持久化完整窗口内容、边界和物理快照的稳定 `operatorEvidenceFingerprint`。只有 operator、evidence key 和该指纹均完全相同才是幂等重复；同 observedAt/交易条数但交易内容或物理快照变化必须视为证据冲突并不可逆暂停。证据只能证明 `confirmed` 或 `not_filled`，不能直接“清除”。operator-confirmed 必须复用自动确认的同一个原子 finalize：幂等 key、confirmed count 只增加一次，并在达到 1 时同时进入不可配置解除的 `paused_for_review`；重复 resolution 不得再次计数。证据缺失、相互矛盾或无法覆盖时间窗时保持 `reconcile_gap` 和完整 exposure。resolution 成功后仍需连续两 tick 证明 active pending/exposure 为零，才可完成 emergency stop 或旧 bundle 回滚。
 
 Screeps 官方引擎在同一市场处理周期内若 BUY order owner 请求改价，会先把该订单标记为 `_skip`，随后忽略针对它的 deal intent；成交记录使用处理周期中的订单价格。因此同 tick 改价应表现为零成交，而不是低价滑点。实现仍必须以实际 outgoing transaction 价格做最终安全核对，不能只依赖这一引擎细节。
 
@@ -323,7 +325,7 @@ Direct active 至少需要 100 个连续完整周期。资格状态还要记录�
 
 normalizer 和 active gate 必须把上述首发 policy 当作代码级安全合同，而不是部署建议；资源扩展、数量/次数超限、floor/buffer/terminal energy reserve 下调、`maxDirectDealAmount < max(minDealAmount,minDirectOrderAmount)`、扫描预算越界或 expansion grant 打开均使配置无效、资格清零且零 deal。后续扩围另开 change。
 
-第一笔交易确认后状态进入 `paused_for_review`，它在本 change 内是不可由配置解除的持久终态。系统继续对账和投影，但即使出现新的高价买单、只修改 config revision 或打开 `expansionGrant` 也不得执行第二笔；只有未来独立 OpenSpec/capability delta 和重新实现审查才能扩围。
+第一笔交易确认后状态进入 `paused_for_review`，它在本 change 内是不可由配置解除的持久终态。系统继续对账和投影，但 Direct Shadow 不再累计资格且 `activationAuthorized` 始终为 false；即使出现新的高价买单、只修改 config revision、重跑 100 个 Shadow 周期或打开 `expansionGrant` 也不得执行第二笔。只有未来独立 OpenSpec/capability delta 和重新实现审查才能扩围。
 
 ### 9. 保留最后完整规划快照
 
@@ -350,7 +352,9 @@ runtime 分离：
 7. 独立审查 live Shadow 证据后，在 revision、`directSafetyFingerprint` 和 canary 均不变化的前提下显式切换 `mode=direct`；该允许的激活边不得清零资格，首次最多成交 1,000 X。
 8. 等待并确认唯一 outgoing transaction；按 confirmed actualAmount、transaction price、实际取整 energy 与 pending 冻结的 `effectiveEnergyShadowPrice` 重算保守 `actualNet`，要求不低于 pending 的 `effectiveNetFloor`，同时核对 worst-case 预检、保护量和 terminal 状态；系统自动暂停。
 
-紧急停止把 Direct mode 切换为 `emergencyStop`：禁止新 deal，继续对账全部 active `prepared/submitted/reconcile_gap` pending。只有 active pending、Direct 资源/能量 exposure、Maker pending/managed exposure、staging/reservation 全为零，并连续两次确认后才能回滚旧 bundle。旧出售安全闩在整个过程中保持 false。
+紧急停止把 Direct mode 切换为 `emergencyStop`：禁止新 deal，继续对账全部 active `prepared/submitted/reconcile_gap` pending。market-sale 域只允许 `Memory.data.marketSaleAutomation.marketStaging` 与 `marketReservations` 两个 canonical 持久表表达 staging/reservation；本版本没有写入生产者，旧 bundle 也从未有这两个状态的生产者，因此字段缺失等价于已证明的空迁移状态。live adapter 每 tick 仍必须读取并汇总这两个表，任一非空或损坏记录均按非零处理并阻断 `stopped`，不得再用调用点常量伪造零值。生产侧 reservation 属于 protection ledger，不得在这里重复计数。
+
+只有 active pending、Direct 资源/能量 exposure、Maker pending/managed exposure、上述 live staging/reservation 全为零，并连续两次确认后才能回滚旧 bundle。旧出售安全闩在整个过程中保持 false。
 
 ## Risks / Trade-offs
 

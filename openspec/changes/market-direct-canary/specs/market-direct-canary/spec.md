@@ -203,7 +203,7 @@
 - **THEN** 只有统一 arbiter 可以包含真实市场写调用
 
 ### Requirement: Direct 必须使用持久写前日志和保守 exposure
-系统 MUST 在调用 `deal` 前持久化唯一 active pending Direct 记录，包含 config revision、安全指纹、canary、order tuple、数量、能量、计划/最坏 milli-credit 净额、底价、冻结的 `effectiveEnergyShadowPrice` 及其 components/observedAt、保护 revision、terminal/credits 前态、`attemptAt`、outgoing transaction key 基线/窗口、首个 post-attempt 物理观测与两个成功缺失观测 tick。active 状态只能为 `prepared/submitted/reconcile_gap`，三者的资源与能量 exposure MUST 保留到交易唯一确认、严格证明未成交或经审计 operator resolution。
+系统 MUST 在调用 `deal` 前持久化唯一 active pending Direct 记录，包含 config revision、安全指纹、canary、order tuple、数量、能量、计划/最坏 milli-credit 净额、底价、冻结的 `effectiveEnergyShadowPrice` 及其 components/observedAt、保护 revision、terminal/credits 前态、`attemptAt`、outgoing transaction key 基线/窗口、首个 post-attempt 物理观测与两个成功缺失观测 tick。active 状态只能为 `prepared/submitted/reconcile_gap`，三者的资源与能量 exposure MUST 保留到交易唯一确认、严格证明未成交或经审计 operator resolution。无法校验或恢复的 pending/容器原始证据 MUST 进入持久 quarantine，不得静默丢弃或进入 typed 算术。
 
 #### Scenario: Deal 返回非 OK
 - **WHEN** arbiter 返回非 OK
@@ -211,11 +211,31 @@
 
 #### Scenario: Deal 返回 OK
 - **WHEN** arbiter 返回 OK
-- **THEN** pending 状态变为 submitted，计划数量继续作为保守 exposure 进入生产保护，直到 outgoing transaction 唯一确认
+- **THEN** 系统依次持久化 resultCode、submittedAt，最后以 status=submitted 作为 commit marker；计划数量继续作为保守 exposure 进入生产保护，直到 outgoing transaction 唯一确认
 
 #### Scenario: Deal 调用后的 CPU 中断
 - **WHEN** 下一 tick 发现仍为 `prepared` 的跨 tick 记录，无法证明上一 tick 是在调用 deal 前还是调用后中断
 - **THEN** 系统必须把它当作不确定已提交 intent，冻结新写、保留完整 exposure 并执行与 submitted 相同的交易对账；绝不得重新提交
+
+#### Scenario: 已知 statement-boundary 半状态
+- **WHEN** CPU 截断留下 submitted 但缺 submittedAt，或 prepared/submitted 已保存 changed 首物理观测
+- **THEN** normalizer 只能分别恢复为 prepared 或 reconcile_gap；首个 unchanged observation 已落盘但 missing tick 未落盘时必须恢复其原 observedAt，其他未知半状态进入 quarantine
+
+#### Scenario: Pending 容器损坏或缺失
+- **WHEN** schema-v1 pending 容器缺失或为 null/primitive/array、quarantine 容器已存在但为非法形状，或单条 pending 无法完整校验；新增 quarantine 字段单纯缺失按空迁移
+- **THEN** 系统必须保留 quarantine sentinel/原始证据、Direct 零写并将 pending/exposure/drain 按非零处理；由于无法可靠归属 room/resource，所有卖出候选和生产 Terminal 消费全局 fail-closed，直到 operator 修复
+
+#### Scenario: 兼容容器或 Maker 持久记录损坏
+- **WHEN** 顶层 market-sale container、present canonical Direct container、首次 legacy pending alias，或 Maker `managedOrders`/`pendingMutations` 容器/单条记录或 `pendingCreate` 不能通过完整 schema 与生成态交叉不变量校验；交叉不变量至少包含 pending-create `exposure === tuple.totalAmount`、按 tuple 精确重算的 create fee，且每条 pending mutation 必须有同 orderId 的完整 managed sibling并按 mutation kind 精确重算 prospective fee
+- **THEN** 系统必须先完整构造对应原始 sentinel、非 qualification migration blocker 和清理后的 typed 状态，再以单次 canonical container assignment 同时提交；commit 前 CPU cut 保留原记录，commit 后 CPU cut 保留 quarantine；全局 market-sale write latch 必须在 Maker reconcile、prepared retry、drain cancel 和规划前成立，当前及后续 tick 只允许只读投影，不得抛错或调用 deal/create/extend/reprice/cancel；pending/exposure/drain 按非零处理且所有生产 Terminal 消费全局 fail-closed
+
+#### Scenario: 安全空迁移与 blocker 优先级
+- **WHEN** canonical Direct 状态缺失，且 legacy alias 同时缺失或是显式空对象
+- **THEN** 系统可以初始化空 Direct 状态；但任何 present-but-malformed 值都不得按空处理，已有 qualification-only blocker 也不得掩盖后来发现的 pending/quarantine/market-data 结构损坏
+
+#### Scenario: Qualification-only 损坏与完整 WAL 并存
+- **WHEN** Shadow qualification 损坏但 Direct pending/WAL 本身完整
+- **THEN** 系统必须清空未来成交资格并在当前 tick 禁止新 deal，但仍允许自动 outgoing 对账和 exact operator resolution 收敛 pending/exposure；归一化后的下一 tick 清除 qualification-only blocker，不能永久卡住回滚
 
 #### Scenario: 同时已有 unresolved pending
 - **WHEN** 存在跨 tick prepared、submitted 或 reconcile-gap Direct pending
@@ -257,7 +277,7 @@
 - **THEN** 系统不得重复增加确认次数或重复释放 exposure
 
 ### Requirement: Direct gap resolution 必须有权威证据和审计
-系统 MUST 提供默认拒绝的 Direct 专用 operator resolution API。resolution MUST 绑定 exact request/order，且只能用权威 outgoing transaction 完整 tuple 确认成交，或用覆盖 attemptAt 的权威无成交窗口加 terminal/credits 前后快照证明 not-filled；任意字段不符时 MUST 保留 reconcile gap 和完整 exposure。
+系统 MUST 提供默认拒绝的 Direct 专用 operator resolution API。resolution MUST 绑定 exact request/order，且只能用权威 outgoing transaction 完整 tuple 确认成交，或用覆盖 attemptAt 的权威无成交窗口加 terminal/credits 前后快照证明 not-filled；operator no-fill outcome MUST 保存完整窗口内容/边界与物理快照的稳定证据指纹。任意字段不符时 MUST 保留 reconcile gap 和完整 exposure。
 
 #### Scenario: Exact transaction resolution
 - **WHEN** operator 为 gap 提供可核验的 exact transactionId、engine tuple 和 evidence source，且实际保守净价不低于 pending floor
@@ -266,6 +286,10 @@
 #### Scenario: 重复 Operator resolution
 - **WHEN** operator 对同一 request/transaction key 重复提交 resolution
 - **THEN** 系统不得重复增加 confirmed count、重复释放 exposure或离开 paused 状态
+
+#### Scenario: 同时间同条数但证据内容变化
+- **WHEN** 已有 operator not-filled outcome 后再次提交相同 observedAt 和交易条数，但窗口交易内容、边界或物理快照任一变化
+- **THEN** 系统不得视为幂等重复；必须报告证据冲突并把 Direct 不可逆暂停
 
 #### Scenario: 无法证明的强制清除
 - **WHEN** operator 只要求清除、证据窗口不覆盖 attemptAt、tuple 冲突或净价无法证明
@@ -287,7 +311,7 @@
 
 #### Scenario: 第一笔已确认
 - **WHEN** canary confirmed count 达到 1
-- **THEN** 状态进入 `paused_for_review`，即使出现新的安全买单也不得执行第二笔
+- **THEN** 状态进入 `paused_for_review`，Direct Shadow 不再累计资格且 `activationAuthorized=false`；即使出现新的安全买单也不得执行第二笔
 
 #### Scenario: 只改 revision 或打开 expansion
 - **WHEN** 第一笔已确认后 operator 只修改 config revision、重跑 Shadow 或打开 `expansionGrant`
@@ -302,7 +326,7 @@
 - **THEN** 配置必须 invalid、Direct 资格清零且零 deal；不得把永久无机会或越界配置计作合格 Shadow
 
 ### Requirement: Emergency Stop 必须覆盖 Direct pending
-`emergencyStop` MUST 立即禁止新 Direct 成交，并继续收敛所有 active prepared/submitted/reconcile-gap pending。旧 bundle 回滚门槛 MUST 同时要求 Direct pending、资源/能量 exposure、Maker pending/managed exposure、staging 和 reservation 全部为零。
+`emergencyStop` MUST 立即禁止新 Direct 成交，并继续收敛所有 active prepared/submitted/reconcile-gap pending。market-sale 域 MUST 只以持久 `marketStaging` 与 `marketReservations` 两个 canonical 表表达 staging/reservation；live adapter MUST 每 tick汇总它们，任一非空或损坏状态都按非零处理。由于旧 bundle 与本版本均无这两个表的写入生产者，迁移时字段缺失等价于空表；生产 protection reservation 不得重复计入该域。旧 bundle 回滚门槛 MUST 同时要求 Direct pending、资源/能量 exposure、Maker pending/managed exposure、live staging 和 reservation 全部为零。
 
 #### Scenario: Stop 时有 unresolved Direct
 - **WHEN** operator 请求 emergency stop 且仍有跨 tick prepared、submitted 或 reconcile-gap Direct
@@ -311,6 +335,10 @@
 #### Scenario: 安全回滚
 - **WHEN** 所有 Direct/Maker pending 与 exposure 均归零且连续两次 live 读取确认
 - **THEN** 系统才可进入 stopped；旧 ResourceControl/Factory 出售闩必须继续为 false
+
+#### Scenario: staging/reservation 状态损坏
+- **WHEN** canonical market staging 或 reservation 表不是合法记录映射，或汇总发生 safe-integer 越界
+- **THEN** 系统必须将对应活动量按非零处理、阻断连续零确认并投影 `market_domain_activity_invalid`
 
 ### Requirement: Direct 依赖的引擎语义必须固定审计
 系统 MUST 以 Screeps engine commit `80977824199a596d174d392fd0cf8c458c21fcbd` 的交易费取整、actual underfill、transaction tuple/time、cooldown、改价 `_skip` 及 inactive order 可按实时状态重新 active 的语义作为显式 fixture。实现、mock 或上游相关语义变化时 Direct MUST fail-closed，更新 revision 并重新完成 Shadow。

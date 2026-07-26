@@ -134,6 +134,61 @@ describe("marketSaleExposure", () => {
     ).toEqual({ reservedAmount: 0, blocked: true });
   });
 
+  it("隔离的 Direct WAL 无法定位时阻断所有 Terminal 消费", () => {
+    const data = {
+      managedOrders: {},
+      directAutomation: {
+        quarantinedPendingDirectDeals: {
+          "direct-bad": null,
+        },
+      },
+    };
+
+    expect(
+      summarizeMarketSaleTerminalExposure(
+        data,
+        "W1N1",
+        RESOURCE_KEANIUM,
+      ),
+    ).toEqual({ reservedAmount: 0, blocked: true });
+    expect(
+      summarizeMarketSaleTerminalExposure(
+        data,
+        "W9N9",
+        RESOURCE_ENERGY,
+      ),
+    ).toEqual({ reservedAmount: 0, blocked: true });
+  });
+
+  it("Direct schema/pending migration blocker 阻断生产，纯 qualification blocker 不阻断", () => {
+    expect(
+      summarizeMarketSaleTerminalExposure(
+        {
+          managedOrders: {},
+          directAutomation: {
+            migrationBlockedReason:
+              "direct_pending_store_state_invalid",
+          },
+        },
+        "W1N1",
+        RESOURCE_KEANIUM,
+      ),
+    ).toEqual({ reservedAmount: 0, blocked: true });
+    expect(
+      summarizeMarketSaleTerminalExposure(
+        {
+          managedOrders: {},
+          directAutomation: {
+            migrationBlockedReason:
+              "direct_qualification_state_invalid",
+          },
+        },
+        "W1N1",
+        RESOURCE_KEANIUM,
+      ),
+    ).toEqual({ reservedAmount: 0, blocked: false });
+  });
+
   it("删除已确认 managed 记录后自动释放，手工订单不影响", () => {
     const roomName = "W3N3";
     const resourceType = RESOURCE_ZYNTHIUM;
@@ -458,5 +513,104 @@ describe("marketSaleExposure", () => {
         RESOURCE_ENERGY,
       ),
     ).toBe(100);
+  });
+
+  it("Direct pending 同时预留待售资源与 transaction energy", () => {
+    const source = terminal("W8N8", {
+      [RESOURCE_KEANIUM]: 1_800,
+      [RESOURCE_ENERGY]: 1_000,
+    });
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-1",
+            status: "submitted",
+            canaryRoomName: "W8N8",
+            resource: RESOURCE_KEANIUM,
+            dealAmount: 1_000,
+            transactionEnergy: 700,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+
+    expect(
+      getTerminalAmountOutsideMarketSaleExposure(
+        source,
+        RESOURCE_KEANIUM,
+      ),
+    ).toBe(800);
+    expect(
+      getTerminalAmountOutsideMarketSaleExposure(
+        source,
+        RESOURCE_ENERGY,
+      ),
+    ).toBe(300);
+  });
+
+  it("Direct 出售 energy 时合并货物与 transaction energy reservation", () => {
+    const source = terminal("W8N9", {
+      [RESOURCE_ENERGY]: 2_000,
+    });
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-energy",
+            status: "prepared",
+            canaryRoomName: "W8N9",
+            resource: RESOURCE_ENERGY,
+            dealAmount: 1_000,
+            transactionEnergy: 100,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+
+    expect(
+      getTerminalAmountOutsideMarketSaleExposure(
+        source,
+        RESOURCE_ENERGY,
+      ),
+    ).toBe(900);
+  });
+
+  it("reconcile gap 保留 exposure，但 reservation 外余量仍可被生产使用", () => {
+    const source = terminal("W8N7", {
+      [RESOURCE_KEANIUM]: 1_500,
+      [RESOURCE_ENERGY]: 1_000,
+    });
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-gap",
+            status: "reconcile_gap",
+            roomName: "W8N7",
+            resourceType: RESOURCE_KEANIUM,
+            amount: 1_000,
+            transactionEnergy: 600,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+
+    const resourceClaim = claimTerminalAmountOutsideMarketSaleExposure(
+      source,
+      RESOURCE_KEANIUM,
+      800,
+    );
+    const energyClaim = claimTerminalAmountOutsideMarketSaleExposure(
+      source,
+      RESOURCE_ENERGY,
+      800,
+    );
+
+    expect(resourceClaim?.amount).toBe(500);
+    expect(energyClaim?.amount).toBe(400);
   });
 });

@@ -2,8 +2,9 @@
  * 市场自动卖单的 Terminal 实物暴露量。
  *
  * 这里刻意只读取 Memory.data.marketSaleAutomation，不创建跨模块的长期
- * resourceReservation。卖单撤销/成交由市场生命周期先确认；确认前对应
- * 房间、对应资源必须继续留在 Terminal，确认并删除 data 记录后自动释放。
+ * resourceReservation。Maker 卖单或 Direct deal 的撤销/成交由市场生命周期
+ * 先确认；确认前对应房间、对应资源及 Direct 交易能量必须继续留在 Terminal，
+ * 确认并删除 data 记录后自动释放。
  */
 
 export interface MarketSaleTerminalExposure {
@@ -85,8 +86,105 @@ function addExposure(
   };
 }
 
+function readAliasedField(
+  record: UnknownRecord,
+  primary: string,
+  legacy: string,
+): unknown {
+  return record[primary] !== undefined
+    ? record[primary]
+    : record[legacy];
+}
+
+function addDirectExposure(
+  current: MarketSaleTerminalExposure,
+  pendingDirectDeals: unknown,
+  roomName: string,
+  resourceType: ResourceConstant,
+): MarketSaleTerminalExposure {
+  if (pendingDirectDeals === undefined) return current;
+  if (!isRecord(pendingDirectDeals)) {
+    return {
+      reservedAmount: current.reservedAmount,
+      blocked: true,
+    };
+  }
+
+  let result = current;
+  for (const pending of Object.values(pendingDirectDeals)) {
+    if (!isRecord(pending)) {
+      return {
+        reservedAmount: result.reservedAmount,
+        blocked: true,
+      };
+    }
+
+    const pendingRoomName = readAliasedField(
+      pending,
+      "canaryRoomName",
+      "roomName",
+    );
+    const pendingResource = readAliasedField(
+      pending,
+      "resource",
+      "resourceType",
+    );
+    if (
+      !isValidRoomName(pendingRoomName) ||
+      !isValidResourceType(pendingResource)
+    ) {
+      return {
+        reservedAmount: result.reservedAmount,
+        blocked: true,
+      };
+    }
+    if (
+      pending.status !== "prepared" &&
+      pending.status !== "submitted" &&
+      pending.status !== "reconcile_gap"
+    ) {
+      return {
+        reservedAmount: result.reservedAmount,
+        blocked: true,
+      };
+    }
+    if (pendingRoomName !== roomName) continue;
+
+    if (pendingResource === resourceType) {
+      result = addExposure(
+        result,
+        readAliasedField(pending, "dealAmount", "amount"),
+      );
+    }
+    if (resourceType === RESOURCE_ENERGY) {
+      result = addExposure(result, pending.transactionEnergy);
+    }
+  }
+
+  return result;
+}
+
+function hasBlockingDirectQuarantine(
+  automationData: UnknownRecord,
+): boolean {
+  const directAutomation = automationData.directAutomation;
+  if (directAutomation === undefined) return false;
+  if (!isRecord(directAutomation)) return true;
+  const blocker = directAutomation.migrationBlockedReason;
+  if (
+    blocker !== undefined &&
+    blocker !== "direct_qualification_state_invalid"
+  ) {
+    return true;
+  }
+  const quarantine =
+    directAutomation.quarantinedPendingDirectDeals;
+  if (quarantine === undefined) return false;
+  return !isRecord(quarantine) || Object.keys(quarantine).length > 0;
+}
+
 /**
- * 汇总一个精确 room/resource 对的已确认托管订单与创建中订单暴露量。
+ * 汇总一个精确 room/resource 对的 Maker 与 Direct 实物暴露量。
  *
  * 其它房间、其它资源以及没有进入自动化 data 的手工订单不会被计入。
  * 只有能够精确归属到目标 room/resource 的损坏记录才会触发 fail-closed。
@@ -102,6 +200,11 @@ export function summarizeMarketSaleTerminalExposure(
   };
   if (automationData === undefined) return result;
   if (!isRecord(automationData)) {
+    return { reservedAmount: 0, blocked: true };
+  }
+  // 隔离记录无法可靠归属 room/resource。任何 Terminal 消费都必须全局
+  // fail-closed，直到 operator 以权威证据修复或清除该 WAL。
+  if (hasBlockingDirectQuarantine(automationData)) {
     return { reservedAmount: 0, blocked: true };
   }
 
@@ -161,7 +264,12 @@ export function summarizeMarketSaleTerminalExposure(
     }
   }
 
-  return result;
+  return addDirectExposure(
+    result,
+    automationData.pendingDirectDeals,
+    roomName,
+    resourceType,
+  );
 }
 
 export function getMarketSaleTerminalExposure(

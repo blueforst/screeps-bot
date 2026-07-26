@@ -1252,6 +1252,21 @@ describe("regional raw purchase", () => {
       return null;
     });
     (Game.market as any).credits = 100000;
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {},
+        pendingDirectDeals: {
+          direct: {
+            requestId: "direct-factory-gap",
+            status: "reconcile_gap",
+            canaryRoomName: room.name,
+            resource: "silicon",
+            dealAmount: 5_000,
+            transactionEnergy: 24_900,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
 
     setConfig({
       enabled: true,
