@@ -53,8 +53,8 @@
 ## 6. 独立审查与 Live Canary
 
 - [x] 6.1 由独立 subagent 审查方案与实现，关闭所有 P0/P1/P2 后才允许合并。
-- [ ] 6.2 合并 main 并部署新 bundle，保持旧 ResourceControl/Factory 出售、Pixel、Maker/其他出售写关闭；Factory/Boost/emergency buy 继续经 arbiter。写入固定 `[X]`/1000量/600000名义额/1deal/1confirm/1000raw/200eligible/1000交易能量/25000 terminal reserve/energyHardFloor20/floor600/buffer100000 的新 revision Direct Shadow。
-- [ ] 6.3 实时验证唯一动态 canary、生产可售量、BUY 净价、持续诊断投影以及市场写/claim/pending/exposure 全为零。
-- [ ] 6.4 在冻结配置下累计 100 个完整 Direct Shadow 周期；任一安全违规、配置变化或输入缺失必须清零重跑。
-- [ ] 6.5 再次独立审查 live Shadow 证据，通过后显式切换 `mode=direct`，首次最多提交 1,000 X。
-- [ ] 6.6 唯一确认第一笔 outgoing transaction，用 actualAmount、transaction price、实际取整 energy 与 pending 冻结的 effective energy shadow 重算保守 milli `actualNet>=effectiveNetFloor`，同时核对 worst-case、保护量、terminal 和自动 `paused_for_review`。
+- [x] 6.2 合并 main 并部署新 bundle，保持旧 ResourceControl/Factory 出售、Pixel、Maker/其他出售写关闭；Factory/Boost/emergency buy 继续经 arbiter。写入固定 `[X]`/1000量/600000名义额/1deal/1confirm/1000raw/200eligible/1000交易能量/25000 terminal reserve/energyHardFloor20/floor600/buffer100000 的新 revision Direct Shadow。
+- [x] 6.3 实时验证唯一动态 canary、生产可售量、BUY 净价、持续诊断投影以及市场写/claim/pending/exposure 全为零。
+- [x] 6.4 在冻结配置下累计 100 个完整 Direct Shadow 周期；任一安全违规、配置变化或输入缺失必须清零重跑。
+- [x] 6.5 再次独立审查 live Shadow 证据，通过后显式切换 `mode=direct`，首次最多提交 1,000 X。
+- [x] 6.6 唯一确认第一笔 outgoing transaction，用 actualAmount、transaction price、实际取整 energy 与 pending 冻结的 effective energy shadow 重算保守 milli `actualNet>=effectiveNetFloor`，同时核对 worst-case、保护量、terminal 和自动 `paused_for_review`。
