@@ -57,8 +57,9 @@
 - [x] 7.1 运行相关 Jest、生产保护/购买/arbiter 回归、TypeScript、build、diff check 与 OpenSpec strict
 - [x] 7.2 运行完整 Jest，记录套件/测试数和冻结 diff
 - [x] 7.3 由独立 subagent 审查生产保护、全局排序、permit/WAL/coverage、旧 bundle 与所有故障注入，修复全部 P0/P1
-- [ ] 7.4 合并 main 并部署零写，核对 shard1 deploy tag、v2 migration、X digest、proposed permit 与零 pending/gap
+- [x] 7.4 合并 main 并部署零写，核对 shard1 deploy tag、v2 migration、X digest、proposed permit 与零 pending/gap
 - [ ] 7.5 签收 epoch 1：X continuous、H/Z Shadow；验证 X 首笔持续成交及其后 global/resource cooldown
 - [ ] 7.6 等待 H/Z 各自 100 个完整 Shadow 周期；核对逐 entry count/fingerprint/低价拒绝
 - [ ] 7.7 用 successor permit 推进 H canary，独立复核实际净价/库存/生产/ledger 后再推进 H continuous
 - [ ] 7.8 Z 只在出现高于 43/45 的安全盘口时推进 canary；否则保持安全等待，不阻塞 X/H continuous
+- [x] 7.9 修复 live 暴露的 Continuous cache/Shadow 规划周期、entry-local 隔离、生产等待掩盖与稳定无机会二读边界，并由三路独立 subagent 复审

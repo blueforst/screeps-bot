@@ -203,6 +203,24 @@ function acceptedAllWritableState():
   return accepted.state;
 }
 
+function seedShadowCycle(
+  state: MarketDirectContinuousAutomationState,
+  entryId: string,
+  tick: number,
+): void {
+  const lifecycle = state.lifecycleByEntry[entryId];
+  const policy = MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.find(
+    (entry) => entry.entryId === entryId,
+  )!;
+  state.lifecycleByEntry[entryId] =
+    observeMarketDirectShadowCycle(lifecycle, {
+      tick,
+      result: "safe_no_opportunity",
+      resourceFingerprint: policy.resourceFingerprint,
+      sharedFingerprint: lifecycle.sharedFingerprint,
+    });
+}
+
 function runtimeCandidate(
   entryId: string,
   tick: number,
@@ -348,7 +366,8 @@ type SecondReadMutation =
   | "order"
   | "credits"
   | "protection"
-  | "terminal";
+  | "terminal"
+  | "shadow_order";
 
 interface RuntimeHarness {
   tick: number;
@@ -360,6 +379,8 @@ interface RuntimeHarness {
   accountIdentity?: string;
   productionIntent?: boolean;
   protectionGlobalBlocked?: boolean;
+  scopedProtectionBlockedResource?: ResourceConstant;
+  missingTerminalResource?: ResourceConstant;
   secondReadMutation?: SecondReadMutation;
   claimResult?: boolean;
   executeResult?: ScreepsReturnCode;
@@ -396,8 +417,12 @@ function dependenciesFor(
         harness.ordersByResource[resource] || [],
       );
       if (
-        harness.secondReadMutation === "order" &&
-        resource === RESOURCE_CATALYST &&
+        (harness.secondReadMutation === "order" ||
+          harness.secondReadMutation === "shadow_order") &&
+        resource ===
+          (harness.secondReadMutation === "shadow_order"
+            ? RESOURCE_HYDROGEN
+            : RESOURCE_CATALYST) &&
         orderReads[key] === 2 &&
         orders[0]
       ) {
@@ -410,6 +435,9 @@ function dependenciesFor(
     readTerminal: jest.fn((_roomName, resource) => {
       const key = String(resource);
       terminalReads[key] = (terminalReads[key] || 0) + 1;
+      if (harness.missingTerminalResource === resource) {
+        return undefined;
+      }
       const snapshot = terminal(resource);
       if (
         harness.secondReadMutation === "terminal" &&
@@ -431,6 +459,27 @@ function dependenciesFor(
             detail: "fixture global source incomplete",
           },
         ];
+      }
+      if (harness.scopedProtectionBlockedResource) {
+        const resource = harness.scopedProtectionBlockedResource;
+        const entry = MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.find(
+          (candidate) => candidate.resourceType === resource,
+        )!;
+        const key = getMarketProtectionEntryKey(
+          entry.allowedRoomNames[0],
+          resource,
+        );
+        ledger.entries[key].blocked = true;
+        ledger.entries[key].blockedReasons = [
+          "protection_donor_unbound",
+        ];
+        ledger.entries[key].issues = [
+          {
+            code: "protection_donor_unbound",
+            detail: "fixture scoped protection blocker",
+          },
+        ];
+        ledger.blockedEntryCount = 1;
       }
       if (
         harness.secondReadMutation === "protection" &&
@@ -1329,6 +1378,357 @@ describe("Continuous Direct automation state and permits", () => {
       expect(dependencies.executePrepared).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    [
+      "pricing/history",
+      (
+        input: MarketDirectContinuousAutomationInput,
+        _harness: RuntimeHarness,
+      ) => {
+        const candidate = input.candidates.find(
+          (entry) =>
+            entry.resourceType === RESOURCE_HYDROGEN,
+        )!;
+        candidate.historyTrusted = false;
+        candidate.rejectionReasons = [
+          "pricing_cache_stale:fixture",
+        ];
+      },
+    ],
+    [
+      "terminal",
+      (
+        _input: MarketDirectContinuousAutomationInput,
+        harness: RuntimeHarness,
+      ) => {
+        harness.missingTerminalResource = RESOURCE_HYDROGEN;
+      },
+    ],
+    [
+      "book",
+      (
+        _input: MarketDirectContinuousAutomationInput,
+        harness: RuntimeHarness,
+      ) => {
+        harness.ordersByResource[RESOURCE_HYDROGEN] = [
+          order(
+            "h-duplicate",
+            RESOURCE_HYDROGEN,
+            500,
+            1_000,
+            "E21S21",
+          ),
+          order(
+            "h-duplicate",
+            RESOURCE_HYDROGEN,
+            501,
+            1_000,
+            "E22S22",
+          ),
+        ];
+      },
+    ],
+    [
+      "scoped protection",
+      (
+        _input: MarketDirectContinuousAutomationInput,
+        harness: RuntimeHarness,
+      ) => {
+        harness.scopedProtectionBlockedResource =
+          RESOURCE_HYDROGEN;
+      },
+    ],
+  ] as Array<
+    [
+      string,
+      (
+        input: MarketDirectContinuousAutomationInput,
+        harness: RuntimeHarness,
+      ) => void,
+    ]
+  >)(
+    "suspended H 的 entry-local %s 不阻断 X，且只重置 H shadow",
+    (_label, configure) => {
+      Game.time = RUN_TICK;
+      const state = acceptedXState();
+      seedShadowCycle(
+        state,
+        "base-h-e3n59-v1",
+        RUN_TICK - 1,
+      );
+      const harness: RuntimeHarness = {
+        tick: RUN_TICK,
+        ordersByResource: {
+          [RESOURCE_CATALYST]: [
+            order(
+              "x-survives-shadow-gap",
+              RESOURCE_CATALYST,
+              700,
+              1_000,
+              "E20S20",
+            ),
+          ],
+          [RESOURCE_HYDROGEN]: [],
+          [RESOURCE_ZYNTHIUM]: [],
+        },
+      };
+      const input = automationInput(RUN_TICK);
+      configure(input, harness);
+      const dependencies = dependenciesFor(harness);
+
+      const result = runMarketDirectContinuousPlanning(
+        state,
+        input,
+        dependencies,
+      );
+
+      expect(result.writes).toBe(1);
+      expect(result.planComplete).toBe(false);
+      expect(dependencies.executePrepared).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderId: "x-survives-shadow-gap",
+          roomName: "E6N59",
+        }),
+      );
+      expect(
+        state.lifecycleByEntry["base-h-e3n59-v1"],
+      ).toMatchObject({
+        stage: "shadow",
+        consecutiveCompleteCycles: 0,
+        lastCycleTick: RUN_TICK,
+        lastShadowResult: "incomplete",
+      });
+    },
+  );
+
+  it("H grant enabled 后，其 entry-local 输入不完整仍保持全局零写", () => {
+    Game.time = RUN_TICK;
+    const state = acceptedAllWritableState();
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-must-not-write",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+        [RESOURCE_HYDROGEN]: [],
+        [RESOURCE_ZYNTHIUM]: [],
+      },
+    };
+    const input = automationInput(RUN_TICK);
+    input.candidates.find(
+      (entry) => entry.resourceType === RESOURCE_HYDROGEN,
+    )!.historyTrusted = false;
+    const dependencies = dependenciesFor(harness);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      input,
+      dependencies,
+    );
+
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toMatchObject({
+      "continuous_pricing_incomplete:base-h-e3n59-v1": 1,
+    });
+    expect(state.ledger.pending).toBeUndefined();
+    expect(dependencies.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("suspended H 的共享 energy 证据不一致仍保持全局零写", () => {
+    Game.time = RUN_TICK;
+    const state = acceptedXState();
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-energy-global-block",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+        [RESOURCE_HYDROGEN]: [],
+        [RESOURCE_ZYNTHIUM]: [],
+      },
+    };
+    const input = automationInput(RUN_TICK);
+    input.candidates.find(
+      (entry) => entry.resourceType === RESOURCE_HYDROGEN,
+    )!.effectiveEnergyShadowPrice = 21;
+    const dependencies = dependenciesFor(harness);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      input,
+      dependencies,
+    );
+
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toMatchObject({
+      continuous_energy_shadow_inconsistent: 1,
+    });
+    expect(state.ledger.pending).toBeUndefined();
+    expect(dependencies.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("X 触发二读时，H/Z 稳定 safe-no-op 仍各推进一个 Shadow 周期", () => {
+    Game.time = RUN_TICK;
+    const state = acceptedXState();
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-stable-with-shadow-no-op",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+        [RESOURCE_HYDROGEN]: [],
+        [RESOURCE_ZYNTHIUM]: [],
+      },
+    };
+    const dependencies = dependenciesFor(harness);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(1);
+    expect(dependencies.executePrepared).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderId: "x-stable-with-shadow-no-op",
+        roomName: "E6N59",
+      }),
+    );
+    for (const entryId of [
+      "base-h-e3n59-v1",
+      "base-z-e7n57-v1",
+    ]) {
+      expect(state.lifecycleByEntry[entryId]).toMatchObject({
+        stage: "shadow",
+        consecutiveCompleteCycles: 1,
+        lastCycleTick: RUN_TICK,
+        lastShadowResult: "safe_no_opportunity",
+      });
+    }
+  });
+
+  it("H shadow 两读间变化不阻断 X，但本周期不计数", () => {
+    Game.time = RUN_TICK;
+    const state = acceptedXState();
+    seedShadowCycle(
+      state,
+      "base-h-e3n59-v1",
+      RUN_TICK - 1,
+    );
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-stable-scope",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+        [RESOURCE_HYDROGEN]: [
+          order(
+            "h-mutates-outside-x-scope",
+            RESOURCE_HYDROGEN,
+            500,
+            1_000,
+            "E21S21",
+          ),
+        ],
+        [RESOURCE_ZYNTHIUM]: [],
+      },
+      secondReadMutation: "shadow_order",
+    };
+    const dependencies = dependenciesFor(harness);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(1);
+    expect(result.planComplete).toBe(false);
+    expect(dependencies.executePrepared).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderId: "x-stable-scope",
+        roomName: "E6N59",
+      }),
+    );
+    expect(
+      state.lifecycleByEntry["base-h-e3n59-v1"],
+    ).toMatchObject({
+      consecutiveCompleteCycles: 0,
+      lastCycleTick: RUN_TICK,
+      lastShadowResult: "incomplete",
+    });
+  });
+
+  it("生产优先等待不能掩盖 H 的 scoped protection incomplete", () => {
+    Game.time = RUN_TICK;
+    const state = acceptedXState();
+    seedShadowCycle(
+      state,
+      "base-h-e3n59-v1",
+      RUN_TICK - 1,
+    );
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-production-wait",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+        [RESOURCE_HYDROGEN]: [],
+        [RESOURCE_ZYNTHIUM]: [],
+      },
+      productionIntent: true,
+      scopedProtectionBlockedResource: RESOURCE_HYDROGEN,
+    };
+    const dependencies = dependenciesFor(harness);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(0);
+    expect(
+      state.lifecycleByEntry["base-h-e3n59-v1"],
+    ).toMatchObject({
+      consecutiveCompleteCycles: 0,
+      lastCycleTick: RUN_TICK,
+      lastShadowResult: "incomplete",
+    });
+    expect(dependencies.executePrepared).not.toHaveBeenCalled();
+  });
 
   it("先持久化 prepared 再 deal；OK 后保留 pending，次 tick 精确成交令 WAL 收敛", () => {
     Game.time = RUN_TICK;

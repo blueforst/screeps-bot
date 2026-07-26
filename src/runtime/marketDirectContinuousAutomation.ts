@@ -1438,6 +1438,7 @@ export const defaultMarketDirectContinuousDependencies:
 
 interface ContinuousReadEntry {
   entryId: string;
+  evidence: string;
   runtimeCandidate: MarketDirectContinuousRuntimeCandidate;
   terminal: MarketDirectContinuousTerminalSnapshot;
   protection: MarketProtectionEntry;
@@ -1451,6 +1452,7 @@ interface ContinuousFullRead {
   scopeEvidence: string;
   plannerInput?: PlanMarketDirectContinuousInput;
   entries: Record<string, ContinuousReadEntry>;
+  entryBlockers: Record<string, string>;
   ownOrders: MarketOrderSnapshot[];
   outgoingWindow?: MarketDirectContinuousOutgoingWindow;
   accountIdentity?: string;
@@ -1545,8 +1547,6 @@ function currentPermitMatchesState(
 function completePricingCandidate(
   candidate: MarketDirectContinuousRuntimeCandidate,
   entry: (typeof MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE)[number],
-  tick: number,
-  maxAgeTicks: number,
 ): boolean {
   const expectedFloor = Math.max(
     entry.hardFloor,
@@ -1571,18 +1571,32 @@ function completePricingCandidate(
     Number.isFinite(candidate.effectiveNetFloor) &&
     Math.abs(candidate.effectiveNetFloor - expectedFloor) <
       1e-9 &&
+    !staleInput &&
+    candidate.capacityState !== undefined &&
+    candidate.isHubRoom !== undefined
+  );
+}
+
+function completeEnergyShadowEvidence(
+  candidate: MarketDirectContinuousRuntimeCandidate,
+  tick: number,
+  maxAgeTicks: number,
+): boolean {
+  const components = candidate.energyShadowComponents;
+  return (
     Number.isFinite(candidate.effectiveEnergyShadowPrice) &&
     candidate.effectiveEnergyShadowPrice! >= 0 &&
     Number.isSafeInteger(candidate.energyShadowObservedAt) &&
     candidate.energyShadowObservedAt! <= tick &&
     tick - candidate.energyShadowObservedAt! <= maxAgeTicks &&
-    candidate.energyShadowComponents !== undefined &&
-    Number.isFinite(
-      candidate.energyShadowComponents.hardFloor,
-    ) &&
-    !staleInput &&
-    candidate.capacityState !== undefined &&
-    candidate.isHubRoom !== undefined
+    components !== undefined &&
+    Number.isFinite(components.hardFloor) &&
+    (components.explicit === undefined ||
+      Number.isFinite(components.explicit)) &&
+    (components.historyFloor === undefined ||
+      Number.isFinite(components.historyFloor)) &&
+    (components.ratchetFloor === undefined ||
+      Number.isFinite(components.ratchetFloor))
   );
 }
 
@@ -1643,6 +1657,7 @@ function buildContinuousFullRead(
     complete: false,
     scopeEvidence: "",
     entries: {},
+    entryBlockers: {},
     ownOrders: [],
     arbiterBlocked: true,
   };
@@ -1702,7 +1717,8 @@ function buildContinuousFullRead(
           entry.allowedRoomNames[0],
           entry.resourceType,
         ),
-      ).sort();
+      );
+    const expectedKeySet = new Set(expectedKeys);
     const candidateByKey = new Map<
       string,
       MarketDirectContinuousRuntimeCandidate
@@ -1718,17 +1734,58 @@ function buildContinuousFullRead(
           blocker: "continuous_candidate_duplicate",
         };
       }
+      if (!expectedKeySet.has(key)) {
+        return {
+          ...empty,
+          blocker: "continuous_candidate_scope_unknown",
+        };
+      }
       candidateByKey.set(key, candidate);
     }
+    const energyCandidates = [...candidateByKey.values()];
     if (
-      [...candidateByKey.keys()].sort().join("|") !==
-      expectedKeys.join("|")
+      energyCandidates.length === 0 ||
+      energyCandidates.some(
+        (candidate) =>
+          !completeEnergyShadowEvidence(
+            candidate,
+            input.tick,
+            input.config.planningSnapshotMaxAgeTicks,
+          ),
+      )
     ) {
       return {
         ...empty,
-        blocker: "continuous_candidate_scope_incomplete",
+        blocker: "continuous_energy_shadow_incomplete",
       };
     }
+    const energyEvidence = energyCandidates
+      .map((candidate) => ({
+        price: candidate.effectiveEnergyShadowPrice,
+        observedAt: candidate.energyShadowObservedAt,
+        components: candidate.energyShadowComponents,
+      }))
+      .sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right)),
+      );
+    const energyHashes = energyEvidence.map((entry) =>
+      sanitizedHash(
+        "market-direct-continuous:energy-shadow-one-v1",
+        entry,
+      ),
+    );
+    if (new Set(energyHashes).size !== 1) {
+      return {
+        ...empty,
+        blocker: "continuous_energy_shadow_inconsistent",
+      };
+    }
+    const energySignature = sanitizedHash(
+      "market-direct-continuous:energy-shadow-set-v1",
+      energyEvidence,
+    );
+    const energyPrice =
+      energyCandidates[0].effectiveEnergyShadowPrice!;
 
     const protection = dependencies.readProtection(
       input.config,
@@ -1736,6 +1793,7 @@ function buildContinuousFullRead(
     if (
       !protection ||
       protection.globalBlocked === true ||
+      (protection.globalIssues?.length ?? 0) > 0 ||
       !protection.fresh ||
       protection.currentTick !== input.tick ||
       protection.observedAt !== input.tick ||
@@ -1779,80 +1837,39 @@ function buildContinuousFullRead(
       dependencies.readArbiterSnapshot(roomNames);
     const productionIntent =
       dependencies.hasProductionMarketIntent();
+    const canonicalEntryIds = new Set(
+      MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+        (entry) => entry.entryId,
+      ),
+    );
+    const entryIds = new Set(plannerEntryIds);
+    if (
+      entryIds.size !== plannerEntryIds.length ||
+      [...entryIds].some(
+        (entryId) => !canonicalEntryIds.has(entryId),
+      )
+    ) {
+      return {
+        ...empty,
+        blocker: "continuous_planner_scope_unknown",
+      };
+    }
     const entries: Record<string, ContinuousReadEntry> = {};
-    const quotaRevisionParts: unknown[] = [];
+    const entryBlockers: Record<string, string> = {};
+    const quotasByEntry: Record<
+      string,
+      NonNullable<ReturnType<typeof computeContinuousQuota>>
+    > = {};
+    const quotaRevisionParts: Array<{
+      entryId: string;
+      quota: NonNullable<
+        ReturnType<typeof computeContinuousQuota>
+      >;
+    }> = [];
     let globalConfirmedAmount: number | undefined;
     let globalUnmatchedPlannedAmount: number | undefined;
 
     for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
-      const roomName = entry.allowedRoomNames[0];
-      const candidate = candidateByKey.get(
-        runtimeCandidateKey(roomName, entry.resourceType),
-      )!;
-      if (
-        !completePricingCandidate(
-          candidate,
-          entry,
-          input.tick,
-          input.config.planningSnapshotMaxAgeTicks,
-        )
-      ) {
-        return {
-          ...empty,
-          ownOrders,
-          outgoingWindow,
-          credits,
-          blocker: `continuous_pricing_incomplete:${entry.entryId}`,
-        };
-      }
-      const terminal = dependencies.readTerminal(
-        roomName,
-        entry.resourceType,
-      );
-      const protectionEntry =
-        protection.entries[
-          getMarketProtectionEntryKey(
-            roomName,
-            entry.resourceType,
-          )
-        ];
-      if (
-        !terminal ||
-        terminal.roomName !== roomName ||
-        !terminal.owned ||
-        !protectionEntry ||
-        protectionEntry.roomName !== roomName ||
-        protectionEntry.resource !== entry.resourceType ||
-        protectionEntry.revision !== input.tick ||
-        protectionEntry.observedAt !== input.tick ||
-        protectionEntry.expiresAt !== input.tick
-      ) {
-        return {
-          ...empty,
-          ownOrders,
-          outgoingWindow,
-          credits,
-          blocker: `continuous_lane_incomplete:${entry.entryId}`,
-        };
-      }
-      const orders = sortedOrderSnapshots(
-        dependencies.readCurrentBuyOrders(
-          entry.resourceType,
-        ),
-      );
-      if (
-        orders.length > entry.maxRawOrdersScanned ||
-        new Set(orders.map((order) => order.id)).size !==
-          orders.length
-      ) {
-        return {
-          ...empty,
-          ownOrders,
-          outgoingWindow,
-          credits,
-          blocker: `continuous_book_invalid:${entry.entryId}`,
-        };
-      }
       const quota = computeContinuousQuota(
         state.ledger,
         input.tick,
@@ -1883,8 +1900,120 @@ function buildContinuousFullRead(
           blocker: "continuous_global_quota_inconsistent",
         };
       }
-      quotaRevisionParts.push(quota);
+      quotasByEntry[entry.entryId] = quota;
+      quotaRevisionParts.push({
+        entryId: entry.entryId,
+        quota,
+      });
+    }
+
+    const quotaRevision = sanitizedHash(
+      "market-direct-continuous:quota-set-v1",
+      quotaRevisionParts,
+    );
+    const pendingState = continuousPendingState(state);
+    const cooldownBlocked = quotaRevisionParts.some(
+      ({ quota }) =>
+        input.tick < quota.confirmedCooldownNotBefore ||
+        input.tick < quota.retryNotBefore,
+    );
+    const arbiterBlocked =
+      arbiter.blocked ||
+      productionIntent ||
+      input.makerExposurePresent ||
+      input.emergencyStop ||
+      ownOrders.length > 0 ||
+      cooldownBlocked;
+
+    for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
+      const roomName = entry.allowedRoomNames[0];
+      const candidate = candidateByKey.get(
+        runtimeCandidateKey(roomName, entry.resourceType),
+      );
+      if (!candidate || !completePricingCandidate(candidate, entry)) {
+        entryBlockers[
+          entry.entryId
+        ] = `continuous_pricing_incomplete:${entry.entryId}`;
+        continue;
+      }
+      let terminal:
+        | MarketDirectContinuousTerminalSnapshot
+        | undefined;
+      try {
+        terminal = dependencies.readTerminal(
+          roomName,
+          entry.resourceType,
+        );
+      } catch {
+        terminal = undefined;
+      }
+      if (
+        !terminal ||
+        terminal.roomName !== roomName ||
+        !terminal.owned
+      ) {
+        entryBlockers[
+          entry.entryId
+        ] = `continuous_lane_incomplete:${entry.entryId}`;
+        continue;
+      }
+      const protectionEntry =
+        protection.entries[
+          getMarketProtectionEntryKey(
+            roomName,
+            entry.resourceType,
+          )
+        ];
+      if (
+        !protectionEntry ||
+        protectionEntry.roomName !== roomName ||
+        protectionEntry.resource !== entry.resourceType ||
+        protectionEntry.revision !== input.tick ||
+        protectionEntry.observedAt !== input.tick ||
+        protectionEntry.expiresAt !== input.tick
+      ) {
+        entryBlockers[
+          entry.entryId
+        ] = `continuous_lane_incomplete:${entry.entryId}`;
+        continue;
+      }
+      if (protectionEntry.blocked || !protectionEntry.fresh) {
+        entryBlockers[
+          entry.entryId
+        ] = `continuous_protection_incomplete:${entry.entryId}`;
+        continue;
+      }
+      let orders: MarketOrderSnapshot[];
+      try {
+        orders = sortedOrderSnapshots(
+          dependencies.readCurrentBuyOrders(
+            entry.resourceType,
+          ),
+        );
+      } catch {
+        entryBlockers[
+          entry.entryId
+        ] = `continuous_book_incomplete:${entry.entryId}`;
+        continue;
+      }
+      if (
+        orders.length > entry.maxRawOrdersScanned ||
+        new Set(orders.map((order) => order.id)).size !==
+          orders.length
+      ) {
+        entryBlockers[
+          entry.entryId
+        ] = `continuous_book_invalid:${entry.entryId}`;
+        continue;
+      }
+      const quota = quotasByEntry[entry.entryId];
       const lifecycle = state.lifecycleByEntry[entry.entryId];
+      if (!lifecycle) {
+        entryBlockers[
+          entry.entryId
+        ] = `continuous_lifecycle_incomplete:${entry.entryId}`;
+        continue;
+      }
       const terminalRevision = sanitizedHash(
         "market-direct-continuous:terminal-read-v1",
         terminal,
@@ -1981,8 +2110,20 @@ function buildContinuousFullRead(
           },
         ],
       };
+      const evidence = sanitizedHash(
+        "market-direct-continuous:entry-read-v1",
+        {
+          candidate,
+          entryId: entry.entryId,
+          orders,
+          plannerEntry,
+          protection: protectionEntry,
+          terminal,
+        },
+      );
       entries[entry.entryId] = {
         entryId: entry.entryId,
+        evidence,
         runtimeCandidate: candidate,
         terminal,
         protection: protectionEntry,
@@ -1991,7 +2132,27 @@ function buildContinuousFullRead(
       };
     }
 
-    const entryIds = new Set(plannerEntryIds);
+    const writableBlocker =
+      MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+        (entry) => entry.entryId,
+      )
+        .filter((entryId) => entryIds.has(entryId))
+        .map((entryId) => entryBlockers[entryId])
+        .find((blocker) => blocker !== undefined);
+    if (writableBlocker) {
+      return {
+        ...empty,
+        blocker: writableBlocker,
+        entries,
+        entryBlockers,
+        ownOrders,
+        outgoingWindow,
+        accountIdentity,
+        executorShard,
+        credits,
+        arbiterBlocked,
+      };
+    }
     const selectedEntries =
       MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.filter(
         (entry) => entryIds.has(entry.entryId),
@@ -1999,61 +2160,15 @@ function buildContinuousFullRead(
     if (selectedEntries.length !== entryIds.size) {
       return {
         ...empty,
+        entries,
+        entryBlockers,
         blocker: "continuous_planner_scope_unknown",
       };
     }
-    const energyEvidence = input.candidates
-      .map((candidate) => ({
-        price: candidate.effectiveEnergyShadowPrice,
-        observedAt: candidate.energyShadowObservedAt,
-        components: candidate.energyShadowComponents,
-      }))
-      .sort((left, right) =>
-        JSON.stringify(left).localeCompare(JSON.stringify(right)),
-      );
-    const energySignature = sanitizedHash(
-      "market-direct-continuous:energy-shadow-set-v1",
-      energyEvidence,
-    );
-    if (
-      new Set(
-        energyEvidence.map((entry) =>
-          sanitizedHash(
-            "market-direct-continuous:energy-shadow-one-v1",
-            entry,
-          ),
-        ),
-      ).size !== 1
-    ) {
-      return {
-        ...empty,
-        blocker: "continuous_energy_shadow_inconsistent",
-      };
-    }
-    const quotaRevision = sanitizedHash(
-      "market-direct-continuous:quota-set-v1",
-      quotaRevisionParts,
-    );
-    const pendingState = continuousPendingState(state);
-    const cooldownBlocked = quotaRevisionParts.some(
-      (raw) => {
-        const quota = raw as ReturnType<
-          typeof computeContinuousQuota
-        >;
-        return Boolean(
-          quota &&
-            (input.tick < quota.confirmedCooldownNotBefore ||
-              input.tick < quota.retryNotBefore),
-        );
-      },
-    );
-    const arbiterBlocked =
-      arbiter.blocked ||
-      productionIntent ||
-      input.makerExposurePresent ||
-      input.emergencyStop ||
-      ownOrders.length > 0 ||
-      cooldownBlocked;
+    const selectedReadEntries =
+      MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.filter(
+        (entry) => entryIds.has(entry.entryId),
+      ).map((entry) => entries[entry.entryId]);
     const scopeEvidence = sanitizedHash(
       "market-direct-continuous:full-read-v1",
       {
@@ -2064,12 +2179,10 @@ function buildContinuousFullRead(
         credits,
         emergencyStop: input.emergencyStop,
         energySignature,
-        entries: Object.values(entries)
-          .sort((left, right) =>
-            left.entryId.localeCompare(right.entryId),
-          )
+        entries: selectedReadEntries
           .map((entry) => ({
             candidate: entry.runtimeCandidate,
+            evidence: entry.evidence,
             entryId: entry.entryId,
             orders: entry.orders,
             plannerEntry: entry.plannerEntry,
@@ -2084,13 +2197,20 @@ function buildContinuousFullRead(
         pendingState,
         permit: state.currentPermit,
         permitChainHead: state.permitChain.permitChainHead,
+        protectionGlobal: {
+          currentTick: protection.currentTick,
+          expiresAt: protection.expiresAt,
+          fresh: protection.fresh,
+          globalBlocked: protection.globalBlocked,
+          globalIssues: protection.globalIssues,
+          observedAt: protection.observedAt,
+          revision: protection.revision,
+        },
         productionIntent,
         quotaRevision,
         tick: input.tick,
       },
     );
-    const energyPrice =
-      input.candidates[0].effectiveEnergyShadowPrice!;
     const plannerInput: PlanMarketDirectContinuousInput = {
       entries: selectedEntries,
       energyShadow: {
@@ -2126,6 +2246,7 @@ function buildContinuousFullRead(
       scopeEvidence,
       plannerInput,
       entries,
+      entryBlockers,
       ownOrders,
       outgoingWindow,
       accountIdentity,
@@ -2788,10 +2909,25 @@ function projectPlanningSnapshot(
   };
 }
 
+function isExactMarketDirectShadowSecondRead(
+  first: MarketDirectContinuousPlanningResult,
+  second: MarketDirectContinuousPlanningResult,
+): boolean {
+  return (
+    first.complete &&
+    second.complete &&
+    first.blocker === undefined &&
+    second.blocker === undefined &&
+    first.planningFingerprint === second.planningFingerprint &&
+    first.planningEvidence === second.planningEvidence
+  );
+}
+
 function observeShadowEntries(
   state: MarketDirectContinuousAutomationState,
   tick: number,
-  read: ContinuousFullRead,
+  firstRead: ContinuousFullRead,
+  secondRead: ContinuousFullRead | undefined,
   rejectedByReason: Record<string, number>,
 ): boolean {
   let complete = true;
@@ -2808,34 +2944,86 @@ function observeShadowEntries(
       | "safe_no_opportunity"
       | "production_priority_wait"
       | "incomplete" = "incomplete";
+    const firstEntry = firstRead.entries[entry.entryId];
+    const secondEntry =
+      secondRead?.entries[entry.entryId];
+    const localObservation = (
+      read: ContinuousFullRead,
+      readEntry: ContinuousReadEntry | undefined,
+    ): MarketDirectContinuousPlanningResult | undefined => {
+      if (
+        !read.complete ||
+        !read.plannerInput ||
+        !readEntry ||
+        read.entryBlockers[entry.entryId]
+      ) {
+        return undefined;
+      }
+      try {
+        return planMarketDirectContinuous({
+          ...read.plannerInput,
+          entries: [readEntry.plannerEntry],
+          writeContext: {
+            ...read.plannerInput.writeContext,
+            arbiterState: "available",
+          },
+        });
+      } catch {
+        return undefined;
+      }
+    };
+    const firstObservation = localObservation(
+      firstRead,
+      firstEntry,
+    );
+    const secondObservation = secondRead
+      ? localObservation(secondRead, secondEntry)
+      : undefined;
+    const stableAcrossReads =
+      !secondRead ||
+      Boolean(
+        firstRead.scopeEvidence === secondRead.scopeEvidence &&
+          firstEntry &&
+          secondEntry &&
+          firstEntry.evidence === secondEntry.evidence &&
+          firstObservation &&
+          secondObservation &&
+          isExactMarketDirectShadowSecondRead(
+            firstObservation,
+            secondObservation,
+          ),
+      );
+    const observation =
+      secondObservation || firstObservation;
     if (
-      read.complete &&
-      read.plannerInput &&
-      read.entries[entry.entryId]
+      observation?.complete &&
+      stableAcrossReads
     ) {
-      const observation = planMarketDirectContinuous({
-        ...read.plannerInput,
-        entries: [
-          read.entries[entry.entryId].plannerEntry,
-        ],
-      });
-      if (observation.complete) {
+      if (
+        firstRead.arbiterBlocked ||
+        secondRead?.arbiterBlocked
+      ) {
+        result = "production_priority_wait";
+      } else {
         result =
           observation.safeCandidates.length > 0
             ? "safe_opportunity"
             : "safe_no_opportunity";
-      } else if (
-        observation.blocker?.reason ===
-        "write_context_blocked"
-      ) {
-        result = "production_priority_wait";
-      } else {
+      }
+    } else {
+      const blocker =
+        secondRead?.entryBlockers[entry.entryId] ||
+        firstRead.entryBlockers[entry.entryId] ||
+        secondRead?.blocker ||
+        firstRead.blocker ||
+        observation?.blocker?.reason ||
+        (stableAcrossReads
+          ? "incomplete"
+          : "second_read_changed");
+      if (blocker) {
         incrementReason(
           rejectedByReason,
-          `continuous_shadow:${
-            observation.blocker?.reason ||
-            "incomplete"
-          }:${entry.entryId}`,
+          `continuous_shadow:${blocker}:${entry.entryId}`,
         );
       }
     }
@@ -3059,16 +3247,17 @@ export function runMarketDirectContinuousPlanning(
     dependencies,
     writableEntryIds,
   );
-  const shadowComplete = observeShadowEntries(
-    state,
-    input.tick,
-    firstRead,
-    rejectedByReason,
-  );
   if (
     !firstRead.complete ||
     !firstRead.plannerInput
   ) {
+    observeShadowEntries(
+      state,
+      input.tick,
+      firstRead,
+      undefined,
+      rejectedByReason,
+    );
     const blocker =
       firstRead.blocker || "continuous_first_read_incomplete";
     incrementReason(rejectedByReason, blocker);
@@ -3089,6 +3278,13 @@ export function runMarketDirectContinuousPlanning(
     };
   }
   if (writableEntryIds.length === 0) {
+    const shadowComplete = observeShadowEntries(
+      state,
+      input.tick,
+      firstRead,
+      undefined,
+      rejectedByReason,
+    );
     projectPlanningSnapshot(
       state,
       input.tick,
@@ -3118,6 +3314,13 @@ export function runMarketDirectContinuousPlanning(
     rejectedByReason,
   );
   if (!planned.complete || !planned.selected) {
+    const shadowComplete = observeShadowEntries(
+      state,
+      input.tick,
+      firstRead,
+      undefined,
+      rejectedByReason,
+    );
     projectContinuousCompatibility(state);
     return {
       actions,
@@ -3131,6 +3334,13 @@ export function runMarketDirectContinuousPlanning(
     input.config.mode !== "direct" ||
     input.emergencyStop
   ) {
+    const shadowComplete = observeShadowEntries(
+      state,
+      input.tick,
+      firstRead,
+      undefined,
+      rejectedByReason,
+    );
     incrementReason(
       rejectedByReason,
       "continuous_write_mode_blocked",
@@ -3150,6 +3360,13 @@ export function runMarketDirectContinuousPlanning(
     input,
     dependencies,
     writableEntryIds,
+  );
+  const shadowComplete = observeShadowEntries(
+    state,
+    input.tick,
+    firstRead,
+    secondRead,
+    rejectedByReason,
   );
   if (
     !secondRead.complete ||
@@ -3333,7 +3550,7 @@ export function runMarketDirectContinuousPlanning(
       actions,
       rejectedByReason,
       writes,
-      planComplete: true,
+      planComplete: shadowComplete,
       state,
     };
   }
@@ -3357,7 +3574,7 @@ export function runMarketDirectContinuousPlanning(
     actions,
     rejectedByReason,
     writes,
-    planComplete: true,
+    planComplete: shadowComplete,
     state,
   };
 }

@@ -299,6 +299,59 @@ function installLiveRuntimeFixture(tick: number, bucket = 9_000): void {
   } as unknown as Memory["runtime"];
 }
 
+function installContinuousPricingCacheFixture(tick: number): void {
+  installLiveRuntimeFixture(tick);
+  Memory.cfg!.marketSaleAutomation = {
+    mode: "direct",
+    directCapability: "continuous-v2",
+    configRevision: "market-direct-continuous-v2-r1",
+    sellResources: [
+      RESOURCE_CATALYST,
+      RESOURCE_HYDROGEN,
+      RESOURCE_ZYNTHIUM,
+    ],
+    hardFloor: {
+      [RESOURCE_CATALYST]: 600,
+      [RESOURCE_HYDROGEN]: 428,
+      [RESOURCE_ZYNTHIUM]: 43,
+    },
+    economicFloor: {
+      [RESOURCE_CATALYST]: 600,
+      [RESOURCE_HYDROGEN]: 451,
+      [RESOURCE_ZYNTHIUM]: 45,
+    },
+    forecastBuffer: {
+      [RESOURCE_CATALYST]: 100_000,
+      [RESOURCE_HYDROGEN]: 100_000,
+      [RESOURCE_ZYNTHIUM]: 100_000,
+    },
+    minDealAmount: 1_000,
+    makerBatchAmount: 5_000,
+    creditReserve: 0,
+    terminalEnergyReserve: 25_000,
+    maxDirectDealAmount: 1_000,
+    maxDirectDealsPerCycle: 1,
+    minDirectOrderAmount: 1_000,
+    minDirectOrderNotional: 600_000,
+    maxDirectRawOrdersScannedPerCycle: 1_000,
+    maxDirectEligibleOrdersPricedPerCycle: 200,
+    maxDirectTransactionEnergy: 1_000,
+    directCanaryMaxConfirmedDeals: 1,
+    energyShadowHardFloor: 20,
+    planningSnapshotMaxAgeTicks: 10,
+    minHistoryDays: 7,
+    minHistoryTransactions: 100,
+    minHistoryVolume: 100_000,
+    historyFloorRatio: 0.95,
+    historyMaxAgeDays: 2,
+    canary: {
+      enabled: true,
+      allowExpansion: false,
+    },
+  };
+  Memory.runtime!.marketSaleAutomation!.phase = "direct";
+}
+
 function installNonResourceControlManagedFixture(tick: number): {
   market: Partial<Market> & { orders: Record<string, Order> };
 } {
@@ -565,6 +618,64 @@ describe("market sale live composition", () => {
     expect(collectPricing).toHaveBeenCalledTimes(3);
     expect(Game.market.getAllOrders).toHaveBeenCalledTimes(3);
     expect(Game.market.getHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it("Continuous pricing result never outlives the 10-tick execution evidence window", () => {
+    installContinuousPricingCacheFixture(100);
+    const collectPricing = jest.fn(() => pricingAt(Game.time));
+    const dependencies = {
+      collectPricing: collectPricing as never,
+      collectProtection: jest.fn(() => protectionAt(Game.time)) as never,
+      runAutomation: jest.fn(() => automationResult()) as never,
+    };
+
+    runLiveMarketSaleAutomation(dependencies);
+    Game.time = 110;
+    (Memory.runtime!.resourceControl as { updatedAt: number }).updatedAt =
+      Game.time;
+    runLiveMarketSaleAutomation(dependencies);
+    Game.time = 111;
+    (Memory.runtime!.resourceControl as { updatedAt: number }).updatedAt =
+      Game.time;
+    runLiveMarketSaleAutomation(dependencies);
+    Game.time = 121;
+    (Memory.runtime!.resourceControl as { updatedAt: number }).updatedAt =
+      Game.time;
+    runLiveMarketSaleAutomation(dependencies);
+    Game.time = 122;
+    (Memory.runtime!.resourceControl as { updatedAt: number }).updatedAt =
+      Game.time;
+    runLiveMarketSaleAutomation(dependencies);
+
+    expect(collectPricing).toHaveBeenCalledTimes(3);
+    expect(collectPricing.mock.results.map((result) => result.value.observedAt))
+      .toEqual([100, 111, 122]);
+  });
+
+  it("Maker keeps its 100-tick pricing cache even when an inactive Continuous capability remains configured", () => {
+    installContinuousPricingCacheFixture(100);
+    Memory.cfg!.marketSaleAutomation!.mode = "maker";
+    Memory.runtime!.marketSaleAutomation!.phase = "maker";
+    const collectPricing = jest.fn(() => pricingAt(Game.time));
+    const dependencies = {
+      collectPricing: collectPricing as never,
+      collectProtection: jest.fn(() => protectionAt(Game.time)) as never,
+      runAutomation: jest.fn(() => automationResult()) as never,
+    };
+
+    runLiveMarketSaleAutomation(dependencies);
+    Game.time = 199;
+    (Memory.runtime!.resourceControl as { updatedAt: number }).updatedAt =
+      Game.time;
+    runLiveMarketSaleAutomation(dependencies);
+    Game.time = 200;
+    (Memory.runtime!.resourceControl as { updatedAt: number }).updatedAt =
+      Game.time;
+    runLiveMarketSaleAutomation(dependencies);
+
+    expect(collectPricing).toHaveBeenCalledTimes(2);
+    expect(collectPricing.mock.results.map((result) => result.value.observedAt))
+      .toEqual([100, 200]);
   });
 
   it("invalidates pricing and raw caches on revision, signature, and resource-set changes", () => {

@@ -616,6 +616,19 @@ export function observeMarketDirectShadowCycle(
       qualifiedAt: undefined,
     };
   }
+  if (
+    reconciled.lastCycleTick !== undefined &&
+    input.tick < reconciled.lastCycleTick
+  ) {
+    return {
+      ...reconciled,
+      stage: "shadow",
+      consecutiveCompleteCycles: 1,
+      lastCycleTick: input.tick,
+      lastShadowResult: input.result,
+      qualifiedAt: undefined,
+    };
+  }
   if (reconciled.stage === "qualified") {
     return {
       ...reconciled,
@@ -624,11 +637,12 @@ export function observeMarketDirectShadowCycle(
     };
   }
 
+  // “连续”指连续完成的 Shadow 观测周期，而不是相邻 Game tick。
+  // ResourceControl/市场规划按采样周期运行；中间没有观测的 tick 不能
+  // 把完整周期清零。真正的 incomplete 会在上方显式清零；tick 回拨
+  // 仍只允许从 1 重新开始。
   const consecutiveCompleteCycles =
-    reconciled.lastCycleTick !== undefined &&
-    input.tick !== reconciled.lastCycleTick + 1
-      ? 1
-      : reconciled.consecutiveCompleteCycles + 1;
+    reconciled.consecutiveCompleteCycles + 1;
   const qualified =
     consecutiveCompleteCycles >=
     MARKET_DIRECT_CONTINUOUS_REQUIRED_SHADOW_CYCLES;

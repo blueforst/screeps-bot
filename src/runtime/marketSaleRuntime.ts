@@ -31,6 +31,26 @@ const ORDER_BOOK_REFRESH_TICKS = 100;
 const HISTORY_REFRESH_TICKS = 5_000;
 const MAX_CACHED_RESOURCES = 8;
 
+function pricingResultCacheTtl(
+  config: MarketSaleAutomationConfig,
+): number {
+  const usesContinuousDirect =
+    config.directCapability === "continuous-v2" &&
+    (config.mode === "direct" ||
+      (config.mode === "shadow" &&
+        config.shadowStrategy === "direct"));
+  if (!usesContinuousDirect) {
+    return ORDER_BOOK_REFRESH_TICKS;
+  }
+  // Continuous 的执行证据最多允许旧 planningSnapshotMaxAgeTicks。
+  // cacheStillFresh 使用严格小于，因此 +1 可让边界 tick 仍复用，
+  // 下一次完整规划周期则会强制刷新。
+  return Math.min(
+    ORDER_BOOK_REFRESH_TICKS,
+    (config.planningSnapshotMaxAgeTicks ?? 0) + 1,
+  );
+}
+
 interface TimedCacheEntry<T> {
   refreshedAt: number;
   value: T;
@@ -404,13 +424,14 @@ function collectCachedPricing(
 ): MarketSalePriceSnapshotCollection {
   ensurePricingCacheSignature(cacheSignature(config));
   const signature = pricingResultSignature(config, pricingStore);
+  const resultCacheTtl = pricingResultCacheTtl(config);
   if (
     pricingResultCache &&
     pricingResultCache.signature === signature &&
     cacheStillFresh(
       pricingResultCache.refreshedAt,
       Game.time,
-      ORDER_BOOK_REFRESH_TICKS,
+      resultCacheTtl,
     )
   ) {
     return pricingResultCache.value;
@@ -724,6 +745,7 @@ export function runLiveMarketSaleAutomation(
     const pricingStore =
       data as unknown as MarketSalePricingDataStore;
     ensurePricingCacheSignature(cacheSignature(config));
+    const resultCacheTtl = pricingResultCacheTtl(config);
     const bucket = Game.cpu?.bucket;
     const pricingAllowed =
       resourceControlCurrent &&
@@ -735,7 +757,7 @@ export function runLiveMarketSaleAutomation(
       cacheStillFresh(
         pricingResultCache.refreshedAt,
         Game.time,
-        ORDER_BOOK_REFRESH_TICKS,
+        resultCacheTtl,
       );
     let pricing = cachedPricingFresh
       ? pricingResultCache!.value
@@ -754,7 +776,7 @@ export function runLiveMarketSaleAutomation(
           cacheStillFresh(
             pricingResultCache.refreshedAt,
             Game.time,
-            ORDER_BOOK_REFRESH_TICKS,
+            resultCacheTtl,
           );
       } catch (error) {
         pricingRejectionReason = "pricing_refresh_failed";

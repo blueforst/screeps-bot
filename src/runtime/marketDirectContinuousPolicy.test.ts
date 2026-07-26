@@ -324,12 +324,13 @@ describe("marketDirectContinuous per-entry lifecycle", () => {
     initial: MarketDirectEntryLifecycle,
     startTick: number,
     count: number,
+    tickStep = 1,
   ): MarketDirectEntryLifecycle {
     const entry = marketDirectContinuousEntry(initial.entryId)!;
     let state = initial;
     for (let offset = 0; offset < count; offset += 1) {
       state = observeMarketDirectShadowCycle(state, {
-        tick: startTick + offset,
+        tick: startTick + offset * tickStep,
         result: offset % 2 ? "safe_no_opportunity" : "safe_opportunity",
         resourceFingerprint: entry.resourceFingerprint,
         sharedFingerprint: SHARED,
@@ -343,12 +344,12 @@ describe("marketDirectContinuous per-entry lifecycle", () => {
       "base-h-e3n59-v1",
       SHARED,
     );
-    const after99 = completeCycles(h, 1_000, 99);
+    const after99 = completeCycles(h, 1_000, 99, 10);
     expect(after99.stage).toBe("shadow");
     expect(after99.consecutiveCompleteCycles).toBe(99);
-    const after100 = completeCycles(after99, 1_099, 1);
+    const after100 = completeCycles(after99, 1_990, 1, 10);
     expect(after100.stage).toBe("qualified");
-    expect(after100.qualifiedAt).toBe(1_099);
+    expect(after100.qualifiedAt).toBe(1_990);
     expect(
       after100.evidenceHistory.some(
         (entry) => entry.kind === "shadow_qualification",
@@ -364,7 +365,7 @@ describe("marketDirectContinuous per-entry lifecycle", () => {
     expect(h.canaryConfirmedCount).toBe(0);
   });
 
-  it("tick 缺口和 incomplete 都打断连续周期，低价安全等待仍计完整", () => {
+  it("按完整规划观测累计周期；无观测 tick 不打断，incomplete 才清零", () => {
     const h = createMarketDirectEntryLifecycle(
       "base-h-e3n59-v1",
       SHARED,
@@ -382,7 +383,14 @@ describe("marketDirectContinuous per-entry lifecycle", () => {
       resourceFingerprint: entry.resourceFingerprint,
       sharedFingerprint: SHARED,
     });
-    expect(state.consecutiveCompleteCycles).toBe(1);
+    expect(state.consecutiveCompleteCycles).toBe(2);
+    const duplicate = observeMarketDirectShadowCycle(state, {
+      tick: 12,
+      result: "safe_opportunity",
+      resourceFingerprint: entry.resourceFingerprint,
+      sharedFingerprint: SHARED,
+    });
+    expect(duplicate).toEqual(state);
     state = observeMarketDirectShadowCycle(state, {
       tick: 13,
       result: "incomplete",
@@ -390,6 +398,43 @@ describe("marketDirectContinuous per-entry lifecycle", () => {
       sharedFingerprint: SHARED,
     });
     expect(state.consecutiveCompleteCycles).toBe(0);
+  });
+
+  it("qualified 后 tick 回拨必须退回 Shadow 并从一个完整周期重新开始", () => {
+    const qualified = completeCycles(
+      createMarketDirectEntryLifecycle(
+        "base-h-e3n59-v1",
+        SHARED,
+      ),
+      1_000,
+      100,
+      10,
+    );
+    const entry = marketDirectContinuousEntry(
+      qualified.entryId,
+    )!;
+    const evidenceCount = qualified.evidenceHistory.length;
+
+    const rolledBack = observeMarketDirectShadowCycle(
+      qualified,
+      {
+        tick: qualified.lastCycleTick! - 1,
+        result: "safe_no_opportunity",
+        resourceFingerprint: entry.resourceFingerprint,
+        sharedFingerprint: SHARED,
+      },
+    );
+
+    expect(rolledBack).toMatchObject({
+      stage: "shadow",
+      consecutiveCompleteCycles: 1,
+      lastCycleTick: qualified.lastCycleTick! - 1,
+      lastShadowResult: "safe_no_opportunity",
+      qualifiedAt: undefined,
+    });
+    expect(rolledBack.evidenceHistory).toHaveLength(
+      evidenceCount,
+    );
   });
 
   it("entry-local reset 不影响其他 entry；shared reset 清空全部当前资格但保留历史", () => {

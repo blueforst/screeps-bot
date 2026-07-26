@@ -75,9 +75,11 @@ U/L/K 虽有大量库存，但当前 BUY 净价低于历史经济底线；O/G �
 | `base-z-e7n57-v1` | Z / `[E7N57]` / native required | 43 / 45 | 100,000 | 45,000 | 1,000 | 1,000 | 5,000 | 1,000 | 1,000 | 25,000 |
 
 全局 `rollingWindowTicks=30,000`、`rollingMaxAmount=12,000`、`minConfirmedIntervalTicks=1,000`、每周期最多一笔、全账户最多一个 active Direct pending。
-三个 entry 的 `maxRawOrdersScanned=1,000`、`maxEligibleOrdersPriced=200`；预算按每个 resource book 独立执行，任一 book 越界仍使本 tick 全局零写。
+三个 entry 的 `maxRawOrdersScanned=1,000`、`maxEligibleOrdersPriced=200`；预算按每个 resource book 独立执行。任一有写 grant 的 entry book 越界使本 tick 全局零写；suspended Shadow entry 越界只重置本 entry Shadow，不得污染其他 entry 的可写 scope。
 
-每 entry 独立保存 Shadow revision/fingerprint、consecutive cycles、qualifiedAt、canary evidence 与 stage。X 只能用上面的精确既有 outcome digest 从 `review_paused` 进入 continuous；H/Z 必须各自完成 100 个完整 Shadow 周期，再最多一笔 canary，确认后只暂停该 entry 等待审查。新增或暂停某 entry 不得清除其他 entry 的历史或额度。
+每 entry 独立保存 Shadow revision/fingerprint、consecutive cycles、qualifiedAt、canary evidence 与 stage。X 只能用上面的精确既有 outcome digest 从 `review_paused` 进入 continuous；H/Z 必须各自完成 100 个完整 Shadow 周期，再最多一笔 canary，确认后只暂停该 entry 等待审查。新增或暂停某 entry 不得清除其他 entry 的历史或额度。suspended Shadow 的 pricing/history、terminal、book 与已知 scoped protection 是 entry-local evidence：不完整时只重置本 entry；shared energy、permit、ledger、account、arbiter 与未知作用域 protection 仍是全局证据，任一不完整时全局零写且 Shadow 不推进。一旦 entry 获得 canary/continuous 写 grant，其 entry-local 输入不完整也恢复为全局零写。
+
+Shadow 的“连续周期”按连续完成的规划观测计数，而不是要求相邻 `Game.time`。ResourceControl/市场规划可按 `t,t+10,...` 采样；同 tick 重入必须幂等，没有发生观测的中间 tick 不清零，只有显式 `incomplete`、fingerprint 变化或 tick 回拨才重新开始。Continuous 的 pricing result cache TTL 必须为 `min(100, planningSnapshotMaxAgeTicks+1)`；在当前 10 tick 证据窗口下，age 10 可复用，age 11 必须刷新。Maker 仍保留原 100 tick cache，不受该收紧影响。
 
 所有 lane 每 tick 还必须证明房间自有、非 Hub、capacity state 非 emergency、terminal 正常；`requireNativeMineral=true` 时房间 mineralType 必须与 entry resource 完全一致。X/E6N59 是唯一首版非原生例外，只能由精确 reviewed X evidence 授权。
 
@@ -128,7 +130,7 @@ U/L/K 虽有大量库存，但当前 BUY 净价低于历史经济底线；O/G �
 3. gross price 降序；
 4. `resourceType / sellerRoom / orderId` 升序。
 
-capacity pressure、sellable、terminal stock 和订单剩余量只决定 eligibility，不进入价格之前。resource/global quota 与下述 safe-opportunity reserve 也只决定 tuple 是否进入可写集合；在可写集合内部仍严格执行上面的单位净价顺序。规划读取和写前读取都必须对全部参与比较的 entry/lane 完整成功；任何 book 超预算或读取不完整时全局零写。第二次完整读取必须重取所有参与 BUY books、order tuple/remaining、terminal cooldown/stock/energy、current-tick protection revision/sellable、credits、transaction energy、动作后单位净价、amount=1 最坏净价、resource/global quota/opportunity reserve、permit/head 与 pending/arbiter 状态。任一字段变化、任一门禁失效或最佳 tuple 与规划 tuple 不完全一致时本 tick零写，不在同 tick 临时换单，避免缺少第三次完整重验。
+capacity pressure、sellable、terminal stock 和订单剩余量只决定 eligibility，不进入价格之前。resource/global quota 与下述 safe-opportunity reserve 也只决定 tuple 是否进入可写集合；在可写集合内部仍严格执行上面的单位净价顺序。规划读取和写前读取都必须对全部可写 entry/lane 完整成功；任何可写 book 超预算或读取不完整时全局零写。第二次完整读取必须重取所有可写 BUY books、order tuple/remaining、terminal cooldown/stock/energy、current-tick protection revision/sellable、credits、transaction energy、动作后单位净价、amount=1 最坏净价、resource/global quota/opportunity reserve、permit/head 与 pending/arbiter 状态。任一 writable/shared/global 字段变化、任一门禁失效或最佳 tuple 与规划 tuple 不完全一致时本 tick零写，不在同 tick 临时换单，避免缺少第三次完整重验。suspended Shadow 仍随该周期做 entry-local 二读观察：两读 evidence 不完全相同则只把该 Shadow 周期记为 `incomplete`，不进入 writable scope hash，也不阻断其他稳定可写 entry；生产/仲裁等待只能在该 Shadow entry 自身完整后记为 `production_priority_wait`。
 
 ### 4. 生产保护公式按“库存目标”和“消耗承诺”分层
 
@@ -228,7 +230,7 @@ ledger 保存单调 receipt seq、prev/head hash、`coverageStartTick`、prune c
 
 ## Risks / Trade-offs
 
-- [多资源读取增加 CPU] → 仅三个 explicit lanes；每 entry raw/eligible order scan 有界，任一超预算全局零写，观测 CPU。
+- [多资源读取增加 CPU] → 仅三个 explicit lanes；每 entry raw/eligible order scan 有界，可写 entry 超预算全局零写，suspended Shadow 超预算只重置本 entry，观测 CPU。
 - [绝对 credits/unit 会让高价值资源长期优先] → 可写集合内部保持价格优先；每个当前确有安全机会的资源以 1,000 safe-opportunity reserve 防止永久饥饿，订单量和库存仍不能插队。
 - [H/Z 新资源尚无真实 canary] → 各自 100 Shadow + one-shot + review，不继承 X。
 - [生产需求尚未形成 transfer] → 直接从配置、target gap 和 donor 候选生成 consumptive commitment；无法唯一解释时禁售。

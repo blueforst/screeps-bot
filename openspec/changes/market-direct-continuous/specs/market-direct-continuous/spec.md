@@ -21,7 +21,7 @@
 
 #### Scenario: 原生矿不匹配或房间进入 Emergency
 - **WHEN** H/Z lane 的 room mineralType 不再匹配，或任一 lane 成为 Hub、非自有、capacity emergency、terminal 不正常
-- **THEN** 该 lane 不得生成 tuple；输入事实不完整时全局零写
+- **THEN** 该 lane 不得生成 tuple；若该 entry 已获 canary/continuous 写 grant，则本 tick 全局零写；若它仍为 suspended Shadow，则只把本 entry 周期记为不完整并清零连续计数
 
 #### Scenario: 配置增加资源或房间
 - **WHEN** config 增加未在 current permit 中的资源、房间或放宽任一阈值
@@ -50,9 +50,33 @@
 - **WHEN** 保护、历史、能量和完整 BUY book 均可信，但该 entry 没有高于净底价的 BUY tuple
 - **THEN** 该周期计为完整 Shadow，并记录 `safe_no_opportunity`；不得降低底价
 
+#### Scenario: Shadow 按完整规划周期连续计数
+- **WHEN** 同一 fingerprint 下的完整 Shadow 观测发生在 `t,t+10,...` 等不同递增 tick，且中间没有显式 `incomplete`
+- **THEN** 每次不同 tick 的完整观测必须各累计一个连续周期；同 tick 重入必须幂等，未观测的中间 Game tick 不得清零，一次 `incomplete` 必须把连续计数清零
+
 #### Scenario: Shadow 输入不完整
-- **WHEN** entry 的 book、history、permit proposal、ledger coverage 或无法界定作用域的 protection collector 输入不完整
-- **THEN** 该 entry 连续计数清零且本 tick 全局零写；若保护事实完整且能精确界定为某 resource 的 donor 候选 lanes，则只阻塞该 resource 的全部候选 lanes，其他 entry 可在自身与全局证据完整时继续
+- **WHEN** suspended Shadow entry 的 pricing/history、terminal、BUY book 或已知 scoped protection 输入不完整
+- **THEN** 只把该 entry 连续计数清零；该 entry 不得进入可写 tuple 集或其他可写 entry 的双读 scope，其他有写 grant 的 entry 可在自身与全局证据完整时继续
+
+#### Scenario: 已启用 Entry 输入不完整
+- **WHEN** 已获 canary/continuous 写 grant 的 entry 的 pricing/history、terminal、BUY book 或 scoped protection 输入不完整
+- **THEN** 本 tick 必须全局零写，不得降级只在剩余可写 entry 中选单
+
+#### Scenario: Shared 或未知作用域输入不完整
+- **WHEN** shared energy、permit/permit proposal、ledger coverage、account/credits/outgoing window、arbiter，或无法界定作用域的 protection collector 输入不完整或不一致
+- **THEN** 本 tick 必须全局零写，所有 Shadow entry 本周期均不得推进；若保护事实完整且能精确界定为某 resource 的 donor 候选 lanes，则只按 entry-local protection 规则阻塞对应 entry
+
+#### Scenario: Continuous 定价证据缓存不得超龄
+- **WHEN** Continuous 的 `planningSnapshotMaxAgeTicks=10`
+- **THEN** pricing result cache 在 age 10 MAY 复用，age 11 MUST 强制刷新；不得用 100 tick 的 Maker cache TTL 伪装成 current Continuous energy/history evidence，Maker 的原缓存策略不得因此改变
+
+#### Scenario: Shadow 双读发生局部变化
+- **WHEN** 某 writable entry 已选出 tuple 并触发写前第二次完整读取，而 suspended Shadow entry 的 book、pricing、terminal 或 scoped protection evidence 在两读间变化
+- **THEN** 该 Shadow entry 本周期必须记为 `incomplete` 且不得推进连续计数；只要 writable scope 与全部 shared/global evidence 精确不变，该 Shadow 变化不得阻止 writable entry 执行
+
+#### Scenario: 生产优先不能掩盖 Shadow 不完整
+- **WHEN** production intent、terminal/account arbiter 或其他共享写上下文要求本 tick 等待，同时 suspended Shadow entry 的 entry-local 输入也不完整
+- **THEN** 系统必须先把该 Shadow entry 记为 `incomplete` 并清零连续计数；只有本 entry 输入完整时才可把该周期记为 `production_priority_wait`
 
 #### Scenario: Canary 确认
 - **WHEN** H 或 Z canary 唯一确认一笔正实际量
@@ -127,6 +151,10 @@
 #### Scenario: 写前最佳 Tuple 变化
 - **WHEN** 第二次完整重读中任一参与 book、order tuple/remaining、terminal cooldown/stock/energy、protection revision/sellable、credits、transaction energy、单位净价、amount=1 最坏净价、resource/global quota/opportunity reserve、permit/head、pending/arbiter 状态发生变化，或最佳 tuple 与规划 tuple 不完全一致
 - **THEN** 本 tick 必须零写；不得临时换单、沿用旧数值或跳过第三次完整重验
+
+#### Scenario: 双读 Scope 只包含可写 Entry 与全局证据
+- **WHEN** current permit 仅允许 X 写入，而 H/Z 仍为 suspended Shadow
+- **THEN** X 的两次完整读取与最佳 tuple 重验 MUST 包含 X 的全部 entry-local evidence 以及 shared/global energy、permit、ledger、account、protection coverage 与 arbiter evidence；H/Z 的 entry-local evidence MUST 独立观察，不得进入 X 的 writable scope hash
 
 #### Scenario: Z 可执行名义额边界
 - **WHEN** Z BUY price 为 50 且 remaining amount 为 3,000 或 1,000
