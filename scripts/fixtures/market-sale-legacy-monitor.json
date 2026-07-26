@@ -1,0 +1,26 @@
+{
+  "rooms": {},
+  "analytics": {
+    "production": {
+      "rooms": {}
+    }
+  },
+  "runtime": {
+    "marketSaleAutomation": {
+      "updatedAt": 1500,
+      "requestedMode": "shadow",
+      "phase": "shadow",
+      "shadowConsecutiveCycles": 5,
+      "managedOrderCount": 0,
+      "pendingCreateCount": 0,
+      "pendingMutationCount": 0,
+      "exposureAmount": 0,
+      "rollingFeeMilli": 0,
+      "terminalClaims": [],
+      "rejectedByReason": {},
+      "candidates": {},
+      "recentActions": [],
+      "safetyViolationCount": 0
+    }
+  }
+}

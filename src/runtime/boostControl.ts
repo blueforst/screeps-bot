@@ -1,5 +1,6 @@
 import { replaceCarrierTasksForProducerRoom, type CarrierTaskDraft } from "@/runtime/carrierTaskBoard";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
+import { executeMarketDeal } from "@/runtime/marketActionArbiter";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { calcEffectiveDamage } from "@/runtime/towerControl";
 
@@ -125,7 +126,7 @@ export function buyBoostIfNeeded(room: Room): void {
   const transferCost = Game.market.calcTransactionCost(amount, room.name, order.roomName);
   if (transferCost > room.terminal.store.getUsedCapacity(RESOURCE_ENERGY)) return;
 
-  const code = Game.market.deal(order.id, amount, room.name);
+  const code = executeMarketDeal(order.id, amount, room.name, BOOST_CONTROL_PRODUCER);
   if (code === OK) {
     recordFixedCpuAction("boostControl");
     console.log(

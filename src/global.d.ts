@@ -13,6 +13,7 @@ import type { CpuMonitorMemoryV2, CpuMonitorHeapSnapshot } from "@/runtime/cpuMo
 import type { AddFactoryTaskResult, CancelFactoryTaskResult, FactoryTask } from "@/runtime/factoryControl";
 import type { StartWarOptions, StartWarPatrolOptions, StartWarPatrolResult, StartWarResult, StopWarOptions, StopWarResult, WarStatusSnapshot, WarStatusTaskSnapshot } from "@/runtime/warControl";
 import type { RemoteDefenseStatusSnapshot } from "@/runtime/console/remoteDefenseCommands";
+import type { MarketSaleFeeLedgerState } from "@/runtime/marketSaleFeeLedger";
 
 declare const _: LoDashStatic;
 
@@ -66,6 +67,28 @@ declare global {
   var savePlanToMemory: (roomName: string) => boolean;
   var reportProduction: (roomName?: string) => void;
   var reportProductionGlobal: () => void;
+  var resolveMarketSaleExternalOrderMutation:
+    | ((
+        orderId: string,
+        verifiedRemainingFeeDebtMilli: number,
+      ) => {
+        ok: boolean;
+        error?: string;
+        carriedFeeDebtMilli?: number;
+      })
+    | undefined;
+  var resolveMarketSaleOrderDisappearance:
+    | ((
+        orderId: string,
+        classification: "policy_cancelled" | "server_expired",
+        verifiedRefundMilli?: number,
+      ) => {
+        ok: boolean;
+        error?: string;
+        refundedFeeDebtMilli?: number;
+        carriedFeeDebtMilli?: number;
+      })
+    | undefined;
   var spawnMaxCarrier: (roomName: string) =>
     | {
         ok: true;
@@ -522,6 +545,52 @@ declare global {
           >;
         };
       };
+      marketSaleAutomation?: {
+        mode?: "off" | "shadow" | "maker" | "hybrid" | "emergencyStop";
+        configRevision?: string;
+        sellResources?: ResourceConstant[];
+        hardFloor?: Partial<Record<ResourceConstant, number>>;
+        economicFloor?: Partial<Record<ResourceConstant, number>>;
+        forecastBuffer?: Partial<Record<ResourceConstant, number>>;
+        minDealAmount?: number;
+        maxDealAmount?: number;
+        makerBatchAmount?: number;
+        maxManagedOrders?: number;
+        minFreeOrderSlots?: number;
+        creditReserve?: number;
+        rollingFeeBudget?: number;
+        feeWindowTicks?: number;
+        terminalEnergyReserve?: number;
+        energyShadowPrice?: number;
+        directDiscountRatio?: number;
+        minHistoryDays?: number;
+        minHistoryTransactions?: number;
+        minHistoryVolume?: number;
+        historyFloorRatio?: number;
+        historyMaxAgeDays?: number;
+        minReferenceOrderAmount?: number;
+        minReferenceOrderNotional?: number;
+        minReferenceOrderCount?: number;
+        minReferenceDistinctRooms?: number;
+        referenceDepthMultiplier?: number;
+        maxHistoryAskDeviationRatio?: number;
+        makerAskFloorRatio?: number;
+        makerHistoryVolumeRatio?: number;
+        orderPolicyTtl?: number;
+        mutationBackoffTicks?: number;
+        canary?: {
+          enabled?: boolean;
+          allowExpansion?: boolean;
+        };
+        orderMutationLease?: {
+          epoch: string;
+          grantedAt: number;
+          expiresAt: number;
+          baselineHash: string;
+          revokedAt?: number;
+          revokeReason?: string;
+        };
+      };
       hub?: {
         enabled?: boolean;
         hubRoomName?: string;
@@ -823,6 +892,92 @@ declare global {
           }
         >;
       };
+      marketSaleAutomation?: {
+        updatedAt: number;
+        requestedMode: "off" | "shadow" | "maker" | "hybrid" | "emergencyStop";
+        phase: "off" | "shadow" | "maker" | "hybrid" | "requested" | "draining" | "stopped";
+        configRevision?: string;
+        shadowConfigRevision?: string;
+        shadowConfigSignature?: string;
+        shadowConsecutiveCycles: number;
+        zeroConfirmations: number;
+        lastZeroConfirmationTick?: number;
+        managedOrderCount: number;
+        managedOrders?: Array<{
+          orderId: string;
+          roomName: string;
+          resourceType: ResourceConstant;
+          remainingExposure: number;
+          liveRemainingAmount?: number;
+          policyCancelAtTick: number;
+          backoffUntil?: number;
+          pendingMutationKind?: "cancel" | "extend" | "reprice";
+        }>;
+        managedOrderSummaryTruncated?: boolean;
+        orderSlots?: {
+          total: number;
+          current: number;
+          free: number;
+          /** Pending create serialization slots, not manual-order details. */
+          reserved: number;
+          minFree: number;
+        };
+        backoffSummary?: {
+          activeCount: number;
+          nextUntil?: number;
+        };
+        pendingCreateCount: number;
+        pendingMutationCount: number;
+        exposureAmount: number;
+        rollingFeeMilli: number;
+        creditReserve?: number;
+        creditSummary?: {
+          credits?: number;
+          reserve?: number;
+          reservedFeesThisTick?: number;
+          availableAfterReserve?: number;
+        };
+        terminalClaims: string[];
+        rejectedByReason: Record<string, number>;
+        candidates: Record<
+          string,
+          {
+            roomName: string;
+            resource: ResourceConstant;
+            revision: number;
+            observedAt: number;
+            expiresAt: number;
+            stock: number;
+            terminalStock: number;
+            protectedAmount: number;
+            forecastBuffer: number;
+            outgoingProtected: number;
+            carrierOrInFlight: number;
+            managedExposure: number;
+            sellableAmount: number;
+            hardFloor?: number;
+            economicFloor?: number;
+            historyTrusted?: boolean;
+            historyCompleteDayCount?: number;
+            historyAcceptedDayCount?: number;
+            historyFloor?: number;
+            ratchetFloor?: number;
+            effectiveNetFloor?: number;
+            makerPrice?: number;
+            makerNetPrice?: number;
+            bestDirectNetPrice?: number;
+            rejectedReason?: string;
+          }
+        >;
+        canaryLock?: {
+          roomName: string;
+          resourceType: ResourceConstant;
+          lockedAt: number;
+          configRevision: string;
+        };
+        recentActions: string[];
+        safetyViolationCount: number;
+      };
       factoryControl?: {
         updatedAt?: number;
         rooms: Record<
@@ -959,6 +1114,133 @@ declare global {
           updatedAt: number;
         }
       >;
+      marketSaleAutomation?: {
+        managedOrders: Record<
+          string,
+          {
+            orderId: string;
+            roomName: string;
+            resourceType: ResourceConstant;
+            price: number;
+            originalAmount: number;
+            lastRemainingAmount: number;
+            remainingExposure: number;
+            feeDebtMilli: number;
+            createdAt: number;
+            lastSeenAt: number;
+            lastFillAt?: number;
+            policyCancelAtTick: number;
+            /** Public Game.market Order.created value (game tick). */
+            serverCreatedTick: number;
+            backoffUntil?: number;
+            externalMutationGap?: {
+              detectedAt: number;
+              expectedPrice: number;
+              observedPrice: number;
+              expectedTotalAmount: number;
+              observedTotalAmount?: number;
+              conservativeExposure: number;
+            };
+            disappearanceGap?: {
+              detectedAt: number;
+              reason:
+                | "unknown_disappearance"
+                | "server_expiry_refund_mismatch";
+            };
+          }
+        >;
+        pendingCreate?: {
+          requestId: string;
+          requestedAt: number;
+          baselineOrderIds: string[];
+          baselineHash: string;
+          leaseEpoch: string;
+          tuple: {
+            type: ORDER_BUY | ORDER_SELL;
+            resourceType: ResourceConstant;
+            roomName?: string;
+            price: number;
+            totalAmount: number;
+            createdNotBefore: number;
+            createdNotAfter: number;
+          };
+          feeMilli: number;
+          exposure: number;
+          zeroDeltaConfirmations: number;
+          lastZeroDeltaTick?: number;
+          status: "prepared" | "submitted" | "ambiguous";
+          creditsBefore?: number;
+          terminalStockBefore?: number;
+          outgoingKeysBefore?: string[];
+          baselineOrderFingerprints?: Record<string, string>;
+          operatorResolutionCandidateIds?: string[];
+          audit: Array<{
+            tick: number;
+            action: string;
+            candidateIds: string[];
+          }>;
+        };
+        pendingMutations: Record<
+          string,
+          {
+            kind: "cancel" | "extend" | "reprice";
+            orderId: string;
+            requestedAt: number;
+            pre: {
+              price: number;
+              totalAmount: number;
+              remainingAmount: number;
+              active?: boolean;
+            };
+            requested: {
+              price?: number;
+              addAmount?: number;
+            };
+            prospectiveFeeMilli: number;
+            conservativeExposure: number;
+            status: "prepared" | "submitted" | "reconcile_gap";
+          }
+        >;
+        feeEvents: Array<{
+          id: string;
+          tick: number;
+          resource: ResourceConstant;
+          amountMilli: number;
+          kind: "create" | "extend" | "reprice" | "refund" | "carry";
+        }>;
+        feeLedger?: MarketSaleFeeLedgerState;
+        carriedFeeDebtMilli: Partial<Record<ResourceConstant, number>>;
+        trustedFloors: Partial<
+          Record<
+            ResourceConstant,
+            {
+              value: number;
+              marketDate: string;
+              updatedAt: number;
+            }
+          >
+        >;
+        processedTransactionKeys: string[];
+        canaryLock?: {
+          roomName: string;
+          resourceType: ResourceConstant;
+          lockedAt: number;
+          configRevision: string;
+        };
+        drain?: {
+          phase: "off" | "shadow" | "maker" | "hybrid" | "requested" | "draining" | "stopped";
+          targetMode?: "off" | "shadow";
+          zeroConfirmations: number;
+          lastZeroConfirmationTick?: number;
+        };
+        operatorAudit: Array<{
+          tick: number;
+          action: string;
+          orderId?: string;
+          requestId?: string;
+          candidateIds?: string[];
+        }>;
+      };
       resourceControl?: {
         taskSchemaVersion?: number;
         tasks?: Record<

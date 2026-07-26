@@ -129,3 +129,105 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
     );
   });
 });
+
+describe("monitor-service market sale automation projection", () => {
+  test("投影模式、Shadow 进度、保护拒绝与 canary 锁", () => {
+    const payload = readFixtureProjection("resource-control-headroom-monitor.json");
+    const marketSale = payload.memory.marketSaleAutomation;
+
+    expect(marketSale).toEqual(
+      expect.objectContaining({
+        available: true,
+        updatedAt: 2000,
+        requestedMode: "shadow",
+        phase: "shadow",
+        configRevision: "shadow-v1",
+        shadowConfigRevision: "shadow-v1",
+        shadowConsecutiveCycles: 37,
+        managedOrderCount: 0,
+        managedOrders: [],
+        managedOrderSummaryTruncated: false,
+        orderSlots: {
+          total: 300,
+          current: 11,
+          free: 289,
+          reserved: 0,
+          minFree: 5,
+        },
+        backoffSummary: {
+          activeCount: 0,
+          nextUntil: null,
+        },
+        pendingCreateCount: 0,
+        pendingMutationCount: 0,
+        exposureAmount: 0,
+        creditSummary: {
+          credits: 2500000,
+          reserve: 1000000,
+          reservedFeesThisTick: 0,
+          availableAfterReserve: 1500000,
+        },
+        terminalClaims: ["W1N1"],
+        rejectedByReason: {
+          price_history_stale: 2,
+          production_protected: 1,
+        },
+        safetyViolationCount: 0,
+      }),
+    );
+    expect(marketSale.candidates).toEqual([
+      expect.objectContaining({
+        key: "W2N1:K",
+        roomName: "W2N1",
+        resource: "K",
+        sellableAmount: 5000,
+        historyTrusted: true,
+        historyCompleteDayCount: 7,
+        historyAcceptedDayCount: 6,
+        historyFloor: 81,
+        ratchetFloor: 81.5,
+        effectiveNetFloor: 82,
+        makerPrice: 90,
+        makerNetPrice: 85.5,
+      }),
+    ]);
+    expect(marketSale.canaryLock).toEqual({
+      roomName: "W2N1",
+      resourceType: "K",
+      lockedAt: 1990,
+      configRevision: "shadow-v1",
+    });
+  });
+
+  test("旧 runtime 缺字段时显式返回 unavailable 与 null", () => {
+    const payload = readFixtureProjection("resource-control-monitor.json");
+
+    expect(payload.memory.marketSaleAutomation).toEqual(
+      expect.objectContaining({
+        available: false,
+        updatedAt: null,
+        requestedMode: null,
+        phase: null,
+        shadowConsecutiveCycles: null,
+        candidates: null,
+        rejectedByReason: null,
+      }),
+    );
+  });
+
+  test("旧 market runtime 缺少新增摘要时逐字段返回 null", () => {
+    const payload = readFixtureProjection("market-sale-legacy-monitor.json");
+
+    expect(payload.memory.marketSaleAutomation).toEqual(
+      expect.objectContaining({
+        available: true,
+        updatedAt: 1500,
+        managedOrders: null,
+        managedOrderSummaryTruncated: null,
+        orderSlots: null,
+        backoffSummary: null,
+        creditSummary: null,
+      }),
+    );
+  });
+});

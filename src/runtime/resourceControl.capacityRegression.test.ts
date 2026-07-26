@@ -69,7 +69,7 @@ function createMutableRoom(
     }),
   } as unknown as StructureTerminal;
 
-  return {
+  const room = {
     name,
     controller: { my: true, level: 8 } as StructureController,
     storage: {
@@ -83,6 +83,8 @@ function createMutableRoom(
       return [];
     },
   } as unknown as Room;
+  (terminal as StructureTerminal & { room: Room }).room = room;
+  return room;
 }
 
 function executeTerminalOffloadTasks(room: Room): number {

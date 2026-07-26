@@ -17,6 +17,8 @@ import { hasSharedStorageControllerLinkCluster, isStorageReceiverLink } from "@/
 import { getPlannedStoragePos, getPlannedControllerLinkPos, getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
+import { hasTerminalActionClaim } from "@/runtime/marketActionArbiter";
+import { claimTerminalAmountOutsideMarketSaleExposure } from "@/runtime/marketSaleExposure";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | StructureTerminal | Tombstone | Ruin;
 type DeadStorePickupTarget = Tombstone | Ruin;
@@ -559,18 +561,49 @@ function pickupSynthesisCarrierResource(
   }
 
   const freeCapacity = creep.store.getFreeCapacity(assignment.step.resource);
-  const sourceAvailable = from.store.getUsedCapacity(assignment.step.resource);
-  const withdrawAmount = Math.min(assignment.step.amount, freeCapacity, sourceAvailable);
+  const requestedAmount = Math.min(assignment.step.amount, freeCapacity);
+  let exposureClaim:
+    | ReturnType<typeof claimTerminalAmountOutsideMarketSaleExposure>
+    | undefined;
+  let withdrawAmount: number;
+  if (from.structureType === STRUCTURE_TERMINAL) {
+    const roomName = from.room?.name || creep.room.name;
+    if (hasTerminalActionClaim(roomName)) {
+      return { picked: false, outOfRange: false };
+    }
+    exposureClaim = claimTerminalAmountOutsideMarketSaleExposure(
+      from,
+      assignment.step.resource,
+      requestedAmount,
+      roomName,
+    );
+    withdrawAmount = exposureClaim?.amount || 0;
+  } else {
+    withdrawAmount = Math.min(
+      requestedAmount,
+      from.store.getUsedCapacity(assignment.step.resource),
+    );
+  }
   if (withdrawAmount <= 0) {
     return { picked: false, outOfRange: false };
   }
 
-  const code = measureCreepIntent(() => creep.withdraw(from, assignment.step.resource, withdrawAmount));
+  let code: ScreepsReturnCode;
+  try {
+    code = measureCreepIntent(() =>
+      creep.withdraw(from, assignment.step.resource, withdrawAmount),
+    );
+  } catch (error) {
+    exposureClaim?.release();
+    throw error;
+  }
   if (code === ERR_NOT_IN_RANGE) {
+    exposureClaim?.release();
     moveToTarget(creep, from);
     return { picked: false, outOfRange: true };
   }
   if (code !== OK) {
+    exposureClaim?.release();
     clearSynthesisCarrierTaskPlan(creep);
     return { picked: false, outOfRange: false };
   }

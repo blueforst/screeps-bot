@@ -1,0 +1,77 @@
+import { createMockStore } from "@mock/powerBank";
+import { buyBoostIfNeeded, DEFENSE_BOOST_COMPOUND } from "@/runtime/boostControl";
+import {
+  clearMarketActionArbiterForTest,
+  executeTerminalAction,
+  getTerminalActionClaim,
+} from "@/runtime/marketActionArbiter";
+
+function createRoom(): Room {
+  return {
+    name: "W1N1",
+    storage: {
+      store: createMockStore({}),
+    } as StructureStorage,
+    terminal: {
+      cooldown: 0,
+      store: createMockStore({
+        [RESOURCE_ENERGY]: 25000,
+        [DEFENSE_BOOST_COMPOUND]: 0,
+      }, 300000),
+    } as StructureTerminal,
+  } as Room;
+}
+
+function createBoostOrder(): Order {
+  return {
+    id: "boost-sell-order",
+    type: ORDER_SELL,
+    resourceType: DEFENSE_BOOST_COMPOUND,
+    price: 5,
+    amount: 1000,
+    remainingAmount: 1000,
+    roomName: "W2N2",
+    created: 1,
+  };
+}
+
+describe("boost control market gateway", () => {
+  beforeEach(() => {
+    Game.time = 100;
+    clearMarketActionArbiterForTest();
+    (Memory as any).cfg = {};
+    (Memory.cfg as any).homeDefense = {
+      boostTarget: 1000,
+      maxBoostBuyPrice: 10,
+      maxBoostDealEnergyCostRatio: 1,
+    };
+    (Game as any).market = {
+      getAllOrders: jest.fn(() => [createBoostOrder()]),
+      calcTransactionCost: jest.fn(() => 100),
+      deal: jest.fn(() => OK),
+    };
+  });
+
+  it("通过 arbiter 购买并记录 terminal claim", () => {
+    const room = createRoom();
+
+    buyBoostIfNeeded(room);
+
+    expect(Game.market.deal).toHaveBeenCalledWith("boost-sell-order", 1000, "W1N1");
+    expect(getTerminalActionClaim("W1N1")).toMatchObject({
+      actor: "boostControl",
+      kind: "market_deal",
+      tick: 100,
+    });
+  });
+
+  it("已有内部发送 claim 时不执行市场购买", () => {
+    const room = createRoom();
+    expect(executeTerminalAction("W1N1", "resourceControl", "terminal_send", () => OK)).toBe(OK);
+
+    buyBoostIfNeeded(room);
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getTerminalActionClaim("W1N1")?.actor).toBe("resourceControl");
+  });
+});

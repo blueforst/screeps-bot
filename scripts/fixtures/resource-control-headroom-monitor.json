@@ -87,6 +87,76 @@
           }
         }
       }
+    },
+    "marketSaleAutomation": {
+      "updatedAt": 2000,
+      "requestedMode": "shadow",
+      "phase": "shadow",
+      "configRevision": "shadow-v1",
+      "shadowConfigRevision": "shadow-v1",
+      "shadowConsecutiveCycles": 37,
+      "zeroConfirmations": 2,
+      "managedOrderCount": 0,
+      "managedOrders": [],
+      "managedOrderSummaryTruncated": false,
+      "orderSlots": {
+        "total": 300,
+        "current": 11,
+        "free": 289,
+        "reserved": 0,
+        "minFree": 5
+      },
+      "backoffSummary": {
+        "activeCount": 0
+      },
+      "pendingCreateCount": 0,
+      "pendingMutationCount": 0,
+      "exposureAmount": 0,
+      "rollingFeeMilli": 0,
+      "creditReserve": 1000000,
+      "creditSummary": {
+        "credits": 2500000,
+        "reserve": 1000000,
+        "reservedFeesThisTick": 0,
+        "availableAfterReserve": 1500000
+      },
+      "terminalClaims": [
+        "W1N1"
+      ],
+      "rejectedByReason": {
+        "production_protected": 1,
+        "price_history_stale": 2
+      },
+      "candidates": {
+        "W2N1:K": {
+          "roomName": "W2N1",
+          "resource": "K",
+          "revision": 2000,
+          "observedAt": 2000,
+          "expiresAt": 2000,
+          "protectedAmount": 10000,
+          "sellableAmount": 5000,
+          "hardFloor": 80,
+          "historyTrusted": true,
+          "historyCompleteDayCount": 7,
+          "historyAcceptedDayCount": 6,
+          "historyFloor": 81,
+          "ratchetFloor": 81.5,
+          "effectiveNetFloor": 82,
+          "makerPrice": 90,
+          "makerNetPrice": 85.5
+        }
+      },
+      "canaryLock": {
+        "roomName": "W2N1",
+        "resourceType": "K",
+        "lockedAt": 1990,
+        "configRevision": "shadow-v1"
+      },
+      "recentActions": [
+        "shadow-plan:W2N1:K"
+      ],
+      "safetyViolationCount": 0
     }
   },
   "data": {

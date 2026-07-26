@@ -1,12 +1,11 @@
 /**
  * Factory target queue planning, carrier logistics, production state machine,
- * and guarded market sale of factory products.
+ * and guarded purchase of missing regional raw resources.
  *
  * Normalizes config, enumerates eligible rooms, resolves the target queue with
  * recursive COMMODITIES decomposition, drives the production lifecycle
- * (carrier supply/unload tasks, factory.produce(), stage transitions), and
- * sells surplus terminal products to conservative buy orders when market is
- * enabled.
+ * (carrier supply/unload tasks, factory.produce(), stage transitions). Factory
+ * product selling is owned by the market-sale automation domain.
  */
 
 import { normalizeBoolean, normalizeNumber } from "@/runtime/configNormalize";
@@ -19,6 +18,7 @@ import {
   createSingleStepDraft,
   terminalStorageKind,
 } from "@/runtime/carrierTaskHelpers";
+import { executeMarketDeal } from "@/runtime/marketActionArbiter";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,7 +100,7 @@ interface FactoryControlRuntime {
     orderId: string;
     roomName: string;
     tick: number;
-    purpose: "sell" | "buy";
+    purpose: "buy";
     credits?: number;
   }>;
 }
@@ -1032,83 +1032,12 @@ function claimOrder(
   orderId: string,
   roomName: string,
   currentTick: number,
-  purpose: "sell" | "buy" = "sell",
   credits?: number,
 ): void {
   if (!runtime.claimedOrders) {
     runtime.claimedOrders = [];
   }
-  runtime.claimedOrders.push({ orderId, roomName, tick: currentTick, purpose, credits });
-}
-
-function findSafeBuyOrder(
-  resource: ResourceConstant,
-  terminalStock: number,
-  terminalEnergy: number,
-  energyReserve: number,
-  roomName: string,
-  marketCfg: MarketConfig,
-  runtime: FactoryControlRuntime,
-  currentTick: number,
-): SafeOrderSelection | null {
-  const allowlistHasEntries = marketCfg.orderAllowlist.size > 0;
-  const roomAllowlistHasEntries = marketCfg.roomAllowlist.size > 0;
-  const minSellPrice = marketCfg.minSellPrice[resource] ?? 0;
-
-  const orders = Game.market.getAllOrders({ type: ORDER_BUY, resourceType: resource });
-  let best: SafeOrderSelection | null = null;
-
-  for (const order of orders) {
-    if (!order.roomName) continue;
-    if (marketCfg.orderBlacklist.has(order.id)) continue;
-    if (allowlistHasEntries && !marketCfg.orderAllowlist.has(order.id)) continue;
-    if (roomAllowlistHasEntries && !marketCfg.roomAllowlist.has(order.roomName)) continue;
-    if (order.amount < marketCfg.minOrderAmount) continue;
-    if (isOrderClaimed(runtime, order.id, currentTick)) continue;
-
-    if (marketCfg.minPriceRatio > 0 && minSellPrice > 0) {
-      if (order.price / minSellPrice < marketCfg.minPriceRatio) continue;
-    } else if (order.price < minSellPrice) {
-      continue;
-    }
-
-    let dealAmount = Math.min(terminalStock, order.amount);
-    if (marketCfg.maxBatch > 0) {
-      dealAmount = Math.min(dealAmount, marketCfg.maxBatch);
-    }
-    if (dealAmount <= 0) continue;
-
-    let energyCost = Game.market.calcTransactionCost(dealAmount, roomName, order.roomName);
-    const affordableEnergy = Math.max(0, terminalEnergy - energyReserve);
-    if (energyCost > affordableEnergy && affordableEnergy >= 0 && dealAmount > 1) {
-      let lo = 1;
-      let hi = dealAmount;
-      while (lo < hi) {
-        const mid = Math.ceil((lo + hi) / 2);
-        const midCost = Game.market.calcTransactionCost(mid, roomName, order.roomName);
-        if (midCost <= affordableEnergy) {
-          lo = mid;
-        } else {
-          hi = mid - 1;
-        }
-      }
-      dealAmount = lo;
-      energyCost = Game.market.calcTransactionCost(dealAmount, roomName, order.roomName);
-    }
-    if (dealAmount <= 0 || energyCost > affordableEnergy) continue;
-    if (dealAmount < marketCfg.minOrderAmount) continue;
-    const energyCostRatio = dealAmount > 0 ? energyCost / dealAmount : Infinity;
-    if (energyCostRatio > marketCfg.maxEnergyCostRatio) continue;
-
-    const netCredits = order.price * dealAmount;
-    if (marketCfg.minNetCredits > 0 && netCredits < marketCfg.minNetCredits) continue;
-
-    if (!best || order.price > best.order.price) {
-      best = { order, dealAmount, energyCost, netCredits };
-    }
-  }
-
-  return best;
+  runtime.claimedOrders.push({ orderId, roomName, tick: currentTick, purpose: "buy", credits });
 }
 
 function findSafeSellOrder(
@@ -1206,97 +1135,6 @@ function findSafeSellOrder(
   return best;
 }
 
-function attemptProductSale(
-  room: Room,
-  state: RoomRuntimeState,
-  config: FactoryControlConfig,
-  runtime: FactoryControlRuntime,
-  roomName: string,
-): void {
-  const marketCfg = config.market;
-  if (!marketCfg.enabled) return;
-
-  const product = state.activeTarget;
-  if (!product) return;
-
-  if (marketCfg.sellResources.length > 0 && !marketCfg.sellResources.includes(product)) return;
-
-  if (!room.terminal) return;
-  if (room.terminal.cooldown !== 0) return;
-
-  const terminalStock = room.terminal.store.getUsedCapacity(product) ?? 0;
-  if (terminalStock < marketCfg.minOrderAmount) return;
-
-  const terminalEnergy = room.terminal.store.getUsedCapacity(RESOURCE_ENERGY) ?? 0;
-
-  const selection = findSafeBuyOrder(
-    product,
-    terminalStock,
-    terminalEnergy,
-    config.terminalEnergyReserve,
-    roomName,
-    marketCfg,
-    runtime,
-    Game.time,
-  );
-
-  if (!selection) {
-    if (!state.sleepReason) {
-      state.sleepReason = "market_no_safe_order";
-      state.lastError = "no_safe_buy_order";
-    }
-    return;
-  }
-
-  if (typeof Game.market.getOrderById === "function") {
-    const freshOrder = Game.market.getOrderById(selection.order.id);
-    if (!freshOrder) {
-      state.lastError = "order_gone_before_deal";
-      return;
-    }
-    if (
-      freshOrder.type !== ORDER_BUY ||
-      freshOrder.resourceType !== product ||
-      freshOrder.roomName !== selection.order.roomName ||
-      freshOrder.price !== selection.order.price ||
-      freshOrder.amount < selection.dealAmount
-    ) {
-      state.lastError = "order_changed_before_deal";
-      return;
-    }
-  } else if (typeof Game.market.getAllOrders === "function") {
-    const freshOrders = Game.market.getAllOrders({ type: ORDER_BUY, resourceType: product });
-    const match = freshOrders.find(o => o.id === selection.order.id);
-    if (!match) {
-      state.lastError = "order_gone_before_deal";
-      return;
-    }
-    if (
-      match.type !== ORDER_BUY ||
-      match.resourceType !== product ||
-      match.roomName !== selection.order.roomName ||
-      match.price !== selection.order.price ||
-      match.amount < selection.dealAmount
-    ) {
-      state.lastError = "order_changed_before_deal";
-      return;
-    }
-  } else {
-    state.lastError = "no_revalidation_method";
-    return;
-  }
-
-  const code = Game.market.deal(selection.order.id, selection.dealAmount, roomName);
-  if (code !== OK) {
-    state.lastError = `market_deal_${code}`;
-    return;
-  }
-
-  claimOrder(runtime, selection.order.id, roomName, Game.time);
-  state.sleepReason = undefined;
-  state.lastError = undefined;
-}
-
 function attemptRegionalRawPurchase(
   room: Room,
   state: RoomRuntimeState,
@@ -1383,13 +1221,18 @@ function attemptRegionalRawPurchase(
       continue;
     }
 
-    const code = Game.market.deal(selection.order.id, selection.dealAmount, roomName);
+    const code = executeMarketDeal(
+      selection.order.id,
+      selection.dealAmount,
+      roomName,
+      "factoryControl:purchase",
+    );
     if (code !== OK) {
       state.lastError = `purchase_deal_${code}`;
       continue;
     }
 
-    claimOrder(runtime, selection.order.id, roomName, Game.time, "buy", selection.netCredits);
+    claimOrder(runtime, selection.order.id, roomName, Game.time, selection.netCredits);
     break;
   }
 }
@@ -1554,7 +1397,6 @@ export function runFactoryControl(): void {
 
     executeProductionCycle(room, factory, state, config, roomName);
 
-    attemptProductSale(room, state, config, runtime, roomName);
   }
 }
 
@@ -1572,9 +1414,7 @@ export {
   resolveTargetQueue,
   getRequiredFactoryLevel,
   isProducible,
-  findSafeBuyOrder,
   findSafeSellOrder,
-  attemptProductSale,
   attemptRegionalRawPurchase,
   type TargetEntry,
   type RoomPlanConfig,

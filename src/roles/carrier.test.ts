@@ -3,6 +3,12 @@ import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom, replaceCarrierTask
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { runSynthesisControl } from "@/runtime/synthesisControl";
+import {
+  clearMarketActionArbiterForTest,
+  executeMarketDeal,
+  executeTerminalSend,
+} from "@/runtime/marketActionArbiter";
+import { clearMarketSaleExposureReservationsForTest } from "@/runtime/marketSaleExposure";
 
 jest.mock("@/roles/energyTargets", () => ({
   getEnergyStoreTarget: jest.fn(),
@@ -119,6 +125,77 @@ function createRoom(name = "W1N1", options: { level?: number; storage?: Structur
   return room;
 }
 
+function installTerminalKeaniumPickupScenario(
+  roomName: string,
+  storedAmount: number,
+  taskAmount = 800,
+): {
+  room: Room;
+  terminal: StructureTerminal;
+  target: StructureLab;
+} {
+  const room = createRoom(roomName);
+  const terminal = room.terminal as StructureTerminal;
+  Object.assign(terminal, {
+    room,
+    pos: { x: 10, y: 10, roomName },
+    store: {
+      getUsedCapacity: (resource?: ResourceConstant) =>
+        resource === RESOURCE_KEANIUM
+          ? storedAmount
+          : resource === RESOURCE_ENERGY
+            ? 10_000
+            : 0,
+      getFreeCapacity: () => 10_000,
+    },
+  });
+  const target = {
+    id: `${roomName}-market-exposure-target`,
+    structureType: STRUCTURE_LAB,
+    pos: { x: 11, y: 10, roomName },
+    store: {
+      getUsedCapacity: () => 0,
+      getFreeCapacity: () => 3_000,
+    },
+  } as unknown as StructureLab;
+  (
+    Game as Game & { getObjectById: Game["getObjectById"] }
+  ).getObjectById = jest.fn((id: string) => {
+    if (id === terminal.id) return terminal;
+    if (id === target.id) return target;
+    return null;
+  }) as Game["getObjectById"];
+  replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [{
+    id: `${roomName}-market-exposure-haul`,
+    type: "lab_supply",
+    priority: 100,
+    steps: [{
+      id: `${roomName}-K:term->lab`,
+      resource: RESOURCE_KEANIUM,
+      fromKind: "terminal",
+      toKind: "lab",
+      fromId: terminal.id,
+      toId: target.id,
+      amount: taskAmount,
+    }],
+  }]);
+  return { room, terminal, target };
+}
+
+function protectTerminalKeanium(roomName: string, amount: number): void {
+  Memory.data = {
+    marketSaleAutomation: {
+      managedOrders: {
+        managed: {
+          roomName,
+          resourceType: RESOURCE_KEANIUM,
+          remainingExposure: amount,
+        },
+      },
+    },
+  } as unknown as Memory["data"];
+}
+
 describe("carrierRole mineral hauling", () => {
   beforeEach(() => {
     clearCarrierTaskBoardForTest();
@@ -126,6 +203,7 @@ describe("carrierRole mineral hauling", () => {
     resetRuntimeServices();
     Game.time += 1;
     Memory.rooms = {};
+    Memory.data = undefined;
     getEnergyStoreTarget.mockReset();
     isDroppedResourceTarget.mockReset();
     isDroppedResourceTarget.mockReturnValue(false);
@@ -2123,6 +2201,7 @@ describe("carrierRole lab logistics", () => {
     resetRuntimeServices();
     Game.time += 1;
     Memory.rooms = {};
+    Memory.data = undefined;
     getEnergyStoreTarget.mockReset();
     isDroppedResourceTarget.mockReset();
     isDroppedResourceTarget.mockReturnValue(false);
@@ -2208,6 +2287,236 @@ describe("carrierRole lab logistics", () => {
 
     expect(creep.transfer).toHaveBeenCalledWith(lab, RESOURCE_UTRIUM);
     expect(done).toBe(true);
+  });
+
+  it("托管卖单撤销确认前不搬走 Terminal exposure，确认删除后恢复", () => {
+    const room = createRoom("W71N1");
+    const terminal = room.terminal as StructureTerminal;
+    (terminal as { store: StoreDefinition }).store = {
+      getUsedCapacity: (resource?: ResourceConstant) =>
+        resource === RESOURCE_KEANIUM ? 800 : 0,
+      getFreeCapacity: () => 10_000,
+    } as StoreDefinition;
+    const lab = {
+      id: "market-exposure-target",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 3_000,
+      },
+    } as unknown as StructureLab;
+    const creep = {
+      ...createCreep(room),
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (
+      Game as Game & { getObjectById: Game["getObjectById"] }
+    ).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === lab.id) return lab;
+      return null;
+    }) as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("synthesisControl", room.name, [{
+      id: "market-exposure-haul",
+      type: "lab_supply",
+      priority: 100,
+      steps: [{
+        id: "K:term->lab",
+        resource: RESOURCE_KEANIUM,
+        fromKind: "terminal",
+        toKind: "lab",
+        fromId: terminal.id,
+        toId: lab.id,
+        amount: 500,
+      }],
+    }]);
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {
+          managed: {
+            roomName: room.name,
+            resourceType: RESOURCE_KEANIUM,
+            remainingExposure: 800,
+          },
+        },
+        pendingMutations: {
+          managed: {
+            kind: "cancel",
+            orderId: "managed",
+            requestedAt: Game.time,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalled();
+
+    delete Memory.data!.marketSaleAutomation!.managedOrders.managed;
+    delete Memory.data!.marketSaleAutomation!.pendingMutations.managed;
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      500,
+    );
+  });
+
+  it("两个 carrier 同 tick 原子领取 Terminal 非 exposure 数量并缩量第二次取货", () => {
+    clearMarketSaleExposureReservationsForTest();
+    const { room, terminal } = installTerminalKeaniumPickupScenario(
+      "W72N1",
+      1_800,
+    );
+    protectTerminalKeanium(room.name, 800);
+    const first = {
+      ...createCreep(room),
+      name: "carrier-exposure-first",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    const second = {
+      ...createCreep(room),
+      name: "carrier-exposure-second",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    carrierRole().source?.(first);
+    carrierRole().source?.(second);
+
+    expect(first.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      800,
+    );
+    expect(second.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      200,
+    );
+  });
+
+  it("carrier withdraw 非 OK 与异常都会释放 Terminal exposure claim", () => {
+    clearMarketSaleExposureReservationsForTest();
+    const { room, terminal } = installTerminalKeaniumPickupScenario(
+      "W73N1",
+      1_800,
+    );
+    protectTerminalKeanium(room.name, 800);
+    const failed = {
+      ...createCreep(room),
+      name: "carrier-exposure-failed",
+      withdraw: jest.fn(() => ERR_NOT_IN_RANGE),
+    } as unknown as Creep;
+    const threw = {
+      ...createCreep(room),
+      name: "carrier-exposure-threw",
+      withdraw: jest.fn(() => {
+        throw new Error("withdraw failed");
+      }),
+    } as unknown as Creep;
+    const succeeded = {
+      ...createCreep(room),
+      name: "carrier-exposure-succeeded",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    carrierRole().source?.(failed);
+    expect(failed.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      800,
+    );
+    expect(() => carrierRole().source?.(threw)).toThrow("withdraw failed");
+    expect(threw.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      800,
+    );
+    carrierRole().source?.(succeeded);
+    expect(succeeded.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      800,
+    );
+  });
+
+  it("成功 send 后同 tick carrier 不读取旧 store，下一 tick 才重新计算", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const { room, terminal } = installTerminalKeaniumPickupScenario(
+      "W74N1",
+      1_000,
+    );
+    protectTerminalKeanium(room.name, 800);
+    (terminal as unknown as { send: jest.Mock }).send = jest.fn(() => OK);
+    const carrier = {
+      ...createCreep(room),
+      name: "carrier-after-send",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    expect(executeTerminalSend({
+      terminal,
+      resourceType: RESOURCE_KEANIUM,
+      amount: 200,
+      transactionCost: 100,
+      destinationRoomName: "W75N1",
+      actor: "resourceControl:test",
+    })).toBe(OK);
+    carrierRole().source?.(carrier);
+    expect(carrier.withdraw).not.toHaveBeenCalled();
+
+    Game.time += 1;
+    carrierRole().source?.(carrier);
+    expect(carrier.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_KEANIUM,
+      200,
+    );
+  });
+
+  it("成功 market deal 后同 tick carrier 等待，购买动作本身仍正常执行", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const { room } = installTerminalKeaniumPickupScenario(
+      "W76N1",
+      1_800,
+    );
+    protectTerminalKeanium(room.name, 800);
+    const market = {
+      deal: jest.fn(() => OK),
+    };
+    (Game as unknown as { market: typeof market }).market = market;
+    const carrier = {
+      ...createCreep(room),
+      name: "carrier-after-market-deal",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+
+    expect(
+      executeMarketDeal(
+        "buy-order",
+        500,
+        room.name,
+        "boostControl:buy",
+      ),
+    ).toBe(OK);
+    carrierRole().source?.(carrier);
+
+    expect(market.deal).toHaveBeenCalledWith(
+      "buy-order",
+      500,
+      room.name,
+    );
+    expect(carrier.withdraw).not.toHaveBeenCalled();
   });
 
   it("supplies reagent lab from storage when terminal is empty (lab_supply fallback)", () => {

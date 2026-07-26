@@ -13,6 +13,7 @@ import {
   normalizeCapacityConfig,
   runResourceControl,
 } from "@/runtime/resourceControl";
+import { runMarketSalePreflight } from "@/runtime/marketSaleAutomation";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -49,7 +50,7 @@ function createRoom(options: {
         structureType: STRUCTURE_EXTRACTOR,
       } as StructureExtractor)
     : null;
-  return {
+  const room = {
     name: options.name,
     controller: { my: true, level: 8 } as StructureController,
     storage: {
@@ -98,6 +99,8 @@ function createRoom(options: {
       return [];
     },
   } as Room;
+  (room.terminal as StructureTerminal).room = room;
+  return room;
 }
 
 describe("runResourceControl terminal feed tasks", () => {
@@ -432,6 +435,111 @@ describe("runResourceControl terminal feed tasks", () => {
     expect(donor.terminal!.send).toHaveBeenCalledWith(RESOURCE_ENERGY, 100, receiver.name, "resourceControl:auto-balance");
   });
 
+  it("auto-balance 在托管 energy 卖单撤销确认前保留 exposure，确认后恢复", () => {
+    const donor = createRoom({
+      name: "W81N1",
+      storageResources: { [RESOURCE_ENERGY]: 300_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 30_000 },
+    });
+    const receiver = createRoom({
+      name: "W81N2",
+      storageResources: { [RESOURCE_ENERGY]: 50_000 },
+    });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {
+          managedEnergy: {
+            roomName: donor.name,
+            resourceType: RESOURCE_ENERGY,
+            remainingExposure: 30_000,
+          },
+        },
+        pendingMutations: {
+          managedEnergy: {
+            kind: "cancel",
+            orderId: "managedEnergy",
+            requestedAt: Game.time,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+
+    delete Memory.data!.marketSaleAutomation!.managedOrders.managedEnergy;
+    delete Memory.data!.marketSaleAutomation!.pendingMutations.managedEnergy;
+    Game.time = 20;
+    resetRuntimeServices();
+    runResourceControl();
+
+    expect(donor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_ENERGY,
+      expect.any(Number),
+      receiver.name,
+      "resourceControl:auto-balance",
+    );
+  });
+
+  it("transfer task 在托管矿物卖单撤销确认前保留 exposure，确认后恢复", () => {
+    const donor = createRoom({
+      name: "W82N1",
+      terminalResources: {
+        [RESOURCE_ENERGY]: 30_000,
+        [RESOURCE_KEANIUM]: 5_000,
+      },
+    });
+    const receiver = createRoom({ name: "W82N2" });
+    Game.rooms[donor.name] = donor;
+    Game.rooms[receiver.name] = receiver;
+    createResourceTransferTask(
+      donor.name,
+      receiver.name,
+      RESOURCE_KEANIUM,
+      3_000,
+      "test:market-exposure",
+    );
+    Memory.data = {
+      ...(Memory.data || {}),
+      marketSaleAutomation: {
+        managedOrders: {
+          managedK: {
+            roomName: donor.name,
+            resourceType: RESOURCE_KEANIUM,
+            remainingExposure: 5_000,
+          },
+        },
+        pendingMutations: {
+          managedK: {
+            kind: "cancel",
+            orderId: "managedK",
+            requestedAt: Game.time,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+
+    runResourceControl();
+
+    expect(donor.terminal!.send).not.toHaveBeenCalled();
+
+    delete Memory.data!.marketSaleAutomation!.managedOrders.managedK;
+    delete Memory.data!.marketSaleAutomation!.pendingMutations.managedK;
+    Game.time = 20;
+    resetRuntimeServices();
+    runResourceControl();
+
+    expect(donor.terminal!.send).toHaveBeenCalledWith(
+      RESOURCE_KEANIUM,
+      3_000,
+      receiver.name,
+      expect.stringContaining("resourceControl:task:"),
+    );
+  });
+
   it("does not execute pending transfer tasks into rooms without receive buffers", () => {
     const donor = createRoom({
       name: "W8N9",
@@ -537,6 +645,43 @@ describe("runResourceControl terminal feed tasks", () => {
     expect(Memory.runtime?.resourceControl?.lastMarketActions).toContain(
       `market-sell:${room.name}:${RESOURCE_KEANIUM}=1500:price=0.800:cost=200`,
     );
+  });
+
+  it("keeps the legacy market disabled when no explicit market config exists", () => {
+    Memory.cfg = {
+      resourceControl: {
+        sampleInterval: 10,
+      },
+    };
+    const room = createRoom({
+      name: "W9N2D",
+      storageResources: {
+        [RESOURCE_ENERGY]: 200000,
+        [RESOURCE_KEANIUM]: 10000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 25000,
+        [RESOURCE_KEANIUM]: 1500,
+      },
+      nativeMineralType: RESOURCE_KEANIUM,
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.calcTransactionCost = jest.fn(() => 200);
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(() => [
+      {
+        id: "unsafe-default-buy-order",
+        type: ORDER_BUY,
+        resourceType: RESOURCE_KEANIUM,
+        price: 0.001,
+        amount: 1500,
+        roomName: "W8N8",
+      } as Order,
+    ]);
+
+    runResourceControl();
+
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(Memory.runtime?.resourceControl?.lastMarketActions).toEqual([]);
   });
 
   it("does not auto-sell energy even if sellResources includes energy", () => {
@@ -3750,6 +3895,52 @@ describe("hub internalOnly market buy", () => {
     expect(Game.market.deal).toHaveBeenCalledWith("sell-energy-hub", expect.any(Number), room.name);
     const actions = Memory.runtime?.resourceControl?.lastMarketActions || [];
     expect(actions.some((a: string) => a.includes("market-buy") && a.includes("energy"))).toBe(true);
+  });
+
+  it("keeps emergency energy buy reachable after the market-sale preflight disables legacy selling", () => {
+    Memory.cfg!.resourceControl!.market!.emergencyBuyEnabled = true;
+    Memory.cfg!.resourceControl!.market!.maxBuyPrice![RESOURCE_ENERGY] = 1;
+    const room = createRoom({
+      name: "W1N4_SAFE_LATCH",
+      storageResources: { [RESOURCE_ENERGY]: 50_000 },
+      terminalResources: { [RESOURCE_ENERGY]: 25_000 },
+    });
+    Game.rooms[room.name] = room;
+    (Game as GameWithPartialMarket).market.getAllOrders = jest.fn(
+      (filter: OrderFilter) => {
+        if (
+          filter.type === ORDER_SELL &&
+          filter.resourceType === RESOURCE_ENERGY
+        ) {
+          return [
+            {
+              id: "sell-energy-after-latch",
+              type: ORDER_SELL,
+              resourceType: RESOURCE_ENERGY,
+              price: 0.1,
+              amount: 10_000,
+              roomName: "W0N0",
+            } as Order,
+          ];
+        }
+        return [];
+      },
+    );
+
+    runMarketSalePreflight();
+    expect(Memory.cfg?.resourceControl?.market?.enabled).toBe(false);
+    runResourceControl();
+
+    expect(Game.market.deal).toHaveBeenCalledWith(
+      "sell-energy-after-latch",
+      expect.any(Number),
+      room.name,
+    );
+    expect(
+      Memory.runtime?.resourceControl?.lastMarketActions.some((action) =>
+        action.includes(`market-buy:${room.name}:energy=`),
+      ),
+    ).toBe(true);
   });
 
   it("hub room with explicit internalOnly: true does not buy minerals", () => {

@@ -960,6 +960,220 @@ function summarizeResourceControl(runtimeResourceControl, transferTaskStore) {
   };
 }
 
+function summarizeMarketSaleAutomation(value) {
+  const runtime =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : null;
+  if (!runtime) {
+    return {
+      available: false,
+      updatedAt: null,
+      requestedMode: null,
+      phase: null,
+      configRevision: null,
+      shadowConfigRevision: null,
+      shadowConsecutiveCycles: null,
+      managedOrderCount: null,
+      managedOrders: null,
+      managedOrderSummaryTruncated: null,
+      orderSlots: null,
+      backoffSummary: null,
+      pendingCreateCount: null,
+      pendingMutationCount: null,
+      exposureAmount: null,
+      rollingFeeMilli: null,
+      creditReserve: null,
+      creditSummary: null,
+      terminalClaims: null,
+      rejectedByReason: null,
+      candidates: null,
+      canaryLock: null,
+      recentActions: null,
+      safetyViolationCount: null,
+    };
+  }
+
+  const candidates =
+    runtime.candidates && typeof runtime.candidates === "object" && !Array.isArray(runtime.candidates)
+      ? Object.entries(runtime.candidates)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, candidate]) => {
+            const row =
+              candidate && typeof candidate === "object" && !Array.isArray(candidate)
+                ? candidate
+                : {};
+            return {
+              key,
+              roomName: typeof row.roomName === "string" ? row.roomName : null,
+              resource: typeof row.resource === "string" ? row.resource : null,
+              revision: finiteNumberOrNull(row.revision),
+              observedAt: finiteNumberOrNull(row.observedAt),
+              expiresAt: finiteNumberOrNull(row.expiresAt),
+              sellableAmount: finiteNumberOrNull(row.sellableAmount),
+              protectedAmount: finiteNumberOrNull(row.protectedAmount),
+              hardFloor: finiteNumberOrNull(row.hardFloor),
+              historyTrusted:
+                typeof row.historyTrusted === "boolean"
+                  ? row.historyTrusted
+                  : null,
+              historyCompleteDayCount: finiteNumberOrNull(
+                row.historyCompleteDayCount,
+              ),
+              historyAcceptedDayCount: finiteNumberOrNull(
+                row.historyAcceptedDayCount,
+              ),
+              historyFloor: finiteNumberOrNull(row.historyFloor),
+              ratchetFloor: finiteNumberOrNull(row.ratchetFloor),
+              effectiveNetFloor: finiteNumberOrNull(row.effectiveNetFloor),
+              makerPrice: finiteNumberOrNull(row.makerPrice),
+              makerNetPrice: finiteNumberOrNull(row.makerNetPrice),
+              bestDirectNetPrice: finiteNumberOrNull(row.bestDirectNetPrice),
+              rejectedReason:
+                typeof row.rejectedReason === "string" ? row.rejectedReason : null,
+            };
+          })
+      : null;
+  const managedOrders = Array.isArray(runtime.managedOrders)
+    ? runtime.managedOrders
+        .filter(
+          (managed) =>
+            managed &&
+            typeof managed === "object" &&
+            !Array.isArray(managed),
+        )
+        .sort((left, right) => {
+          const leftId =
+            typeof left.orderId === "string" ? left.orderId : "";
+          const rightId =
+            typeof right.orderId === "string" ? right.orderId : "";
+          return leftId.localeCompare(rightId);
+        })
+        .slice(0, 20)
+        .map((managed) => ({
+          orderId:
+            typeof managed.orderId === "string" ? managed.orderId : null,
+          roomName:
+            typeof managed.roomName === "string" ? managed.roomName : null,
+          resourceType:
+            typeof managed.resourceType === "string"
+              ? managed.resourceType
+              : null,
+          remainingExposure: finiteNumberOrNull(
+            managed.remainingExposure,
+          ),
+          liveRemainingAmount: finiteNumberOrNull(
+            managed.liveRemainingAmount,
+          ),
+          policyCancelAtTick: finiteNumberOrNull(
+            managed.policyCancelAtTick,
+          ),
+          backoffUntil: finiteNumberOrNull(managed.backoffUntil),
+          pendingMutationKind:
+            typeof managed.pendingMutationKind === "string"
+              ? managed.pendingMutationKind
+              : null,
+        }))
+    : null;
+  const orderSlots =
+    runtime.orderSlots &&
+    typeof runtime.orderSlots === "object" &&
+    !Array.isArray(runtime.orderSlots)
+      ? {
+          total: finiteNumberOrNull(runtime.orderSlots.total),
+          current: finiteNumberOrNull(runtime.orderSlots.current),
+          free: finiteNumberOrNull(runtime.orderSlots.free),
+          reserved: finiteNumberOrNull(runtime.orderSlots.reserved),
+          minFree: finiteNumberOrNull(runtime.orderSlots.minFree),
+        }
+      : null;
+  const backoffSummary =
+    runtime.backoffSummary &&
+    typeof runtime.backoffSummary === "object" &&
+    !Array.isArray(runtime.backoffSummary)
+      ? {
+          activeCount: finiteNumberOrNull(
+            runtime.backoffSummary.activeCount,
+          ),
+          nextUntil: finiteNumberOrNull(runtime.backoffSummary.nextUntil),
+        }
+      : null;
+  const creditSummary =
+    runtime.creditSummary &&
+    typeof runtime.creditSummary === "object" &&
+    !Array.isArray(runtime.creditSummary)
+      ? {
+          credits: finiteNumberOrNull(runtime.creditSummary.credits),
+          reserve: finiteNumberOrNull(runtime.creditSummary.reserve),
+          reservedFeesThisTick: finiteNumberOrNull(
+            runtime.creditSummary.reservedFeesThisTick,
+          ),
+          availableAfterReserve: finiteNumberOrNull(
+            runtime.creditSummary.availableAfterReserve,
+          ),
+        }
+      : null;
+  const lock =
+    runtime.canaryLock &&
+    typeof runtime.canaryLock === "object" &&
+    !Array.isArray(runtime.canaryLock)
+      ? {
+          roomName:
+            typeof runtime.canaryLock.roomName === "string"
+              ? runtime.canaryLock.roomName
+              : null,
+          resourceType:
+            typeof runtime.canaryLock.resourceType === "string"
+              ? runtime.canaryLock.resourceType
+              : null,
+          lockedAt: finiteNumberOrNull(runtime.canaryLock.lockedAt),
+          configRevision:
+            typeof runtime.canaryLock.configRevision === "string"
+              ? runtime.canaryLock.configRevision
+              : null,
+        }
+      : null;
+
+  return {
+    available: true,
+    updatedAt: finiteNumberOrNull(runtime.updatedAt),
+    requestedMode:
+      typeof runtime.requestedMode === "string" ? runtime.requestedMode : null,
+    phase: typeof runtime.phase === "string" ? runtime.phase : null,
+    configRevision:
+      typeof runtime.configRevision === "string" ? runtime.configRevision : null,
+    shadowConfigRevision:
+      typeof runtime.shadowConfigRevision === "string"
+        ? runtime.shadowConfigRevision
+        : null,
+    shadowConsecutiveCycles: finiteNumberOrNull(runtime.shadowConsecutiveCycles),
+    managedOrderCount: finiteNumberOrNull(runtime.managedOrderCount),
+    managedOrders,
+    managedOrderSummaryTruncated:
+      typeof runtime.managedOrderSummaryTruncated === "boolean"
+        ? runtime.managedOrderSummaryTruncated
+        : null,
+    orderSlots,
+    backoffSummary,
+    pendingCreateCount: finiteNumberOrNull(runtime.pendingCreateCount),
+    pendingMutationCount: finiteNumberOrNull(runtime.pendingMutationCount),
+    exposureAmount: finiteNumberOrNull(runtime.exposureAmount),
+    rollingFeeMilli: finiteNumberOrNull(runtime.rollingFeeMilli),
+    creditReserve: finiteNumberOrNull(runtime.creditReserve),
+    creditSummary,
+    terminalClaims: Array.isArray(runtime.terminalClaims)
+      ? runtime.terminalClaims.filter((claim) => typeof claim === "string")
+      : null,
+    rejectedByReason: summarizeCountMapOrNull(runtime.rejectedByReason),
+    candidates,
+    canaryLock: lock,
+    recentActions: Array.isArray(runtime.recentActions)
+      ? runtime.recentActions.filter((action) => typeof action === "string").slice(-20)
+      : null,
+    safetyViolationCount: finiteNumberOrNull(runtime.safetyViolationCount),
+  };
+}
+
 function parseSegmentSnapshot(segmentId, payload) {
   if (!payload || typeof payload !== "object") {
     return {
@@ -1032,7 +1246,11 @@ function extractAnalyticsData(parsed) {
 
 function extractFixtureResourceControlData(parsed) {
   if (!parsed || typeof parsed !== "object") {
-    return { runtimeResourceControl: null, transferTaskStore: null };
+    return {
+      runtimeResourceControl: null,
+      transferTaskStore: null,
+      runtimeMarketSaleAutomation: null,
+    };
   }
 
   const runtime = parsed.runtime && typeof parsed.runtime === "object" ? parsed.runtime : null;
@@ -1049,6 +1267,12 @@ function extractFixtureResourceControlData(parsed) {
       dataResourceControl && dataResourceControl.tasks && typeof dataResourceControl.tasks === "object"
         ? dataResourceControl.tasks
         : null,
+    runtimeMarketSaleAutomation:
+      runtime &&
+      runtime.marketSaleAutomation &&
+      typeof runtime.marketSaleAutomation === "object"
+        ? runtime.marketSaleAutomation
+        : null,
   };
 }
 
@@ -1062,11 +1286,17 @@ async function fetchOptionalMemoryPath(config, shard, path) {
 }
 
 async function fetchResourceControlData(config, shard) {
-  const [runtimeResourceControl, transferTaskStore] = await Promise.all([
+  const [runtimeResourceControl, transferTaskStore, runtimeMarketSaleAutomation] =
+    await Promise.all([
     fetchOptionalMemoryPath(config, shard, "runtime.resourceControl"),
     fetchOptionalMemoryPath(config, shard, "data.resourceControl.tasks"),
+    fetchOptionalMemoryPath(config, shard, "runtime.marketSaleAutomation"),
   ]);
-  return { runtimeResourceControl, transferTaskStore };
+  return {
+    runtimeResourceControl,
+    transferTaskStore,
+    runtimeMarketSaleAutomation,
+  };
 }
 
 async function fetchMemorySnapshot(config, options = {}) {
@@ -1077,7 +1307,11 @@ async function fetchMemorySnapshot(config, options = {}) {
     const parsed = JSON.parse(raw);
     const rateLimit = { limit: "?", remaining: "?", reset: "?" };
     const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(parsed);
-    const { runtimeResourceControl, transferTaskStore } = extractFixtureResourceControlData(parsed);
+    const {
+      runtimeResourceControl,
+      transferTaskStore,
+      runtimeMarketSaleAutomation,
+    } = extractFixtureResourceControlData(parsed);
 
     return {
       source: "memory",
@@ -1088,6 +1322,7 @@ async function fetchMemorySnapshot(config, options = {}) {
       moduleCpu: summarizeModuleCpu(moduleCpu),
       hub: summarizeHub(hub),
       resourceControl: summarizeResourceControl(runtimeResourceControl, transferTaskStore),
+      marketSaleAutomation: summarizeMarketSaleAutomation(runtimeMarketSaleAutomation),
     };
   }
 
@@ -1098,8 +1333,16 @@ async function fetchMemorySnapshot(config, options = {}) {
   const memoryOrProduction = parseMemoryBody(payload);
   const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(memoryOrProduction);
   const summary = summarizeProduction(production);
-  const { runtimeResourceControl, transferTaskStore } = options.includeResourceControl === false
-    ? { runtimeResourceControl: null, transferTaskStore: null }
+  const {
+    runtimeResourceControl,
+    transferTaskStore,
+    runtimeMarketSaleAutomation,
+  } = options.includeResourceControl === false
+    ? {
+        runtimeResourceControl: null,
+        transferTaskStore: null,
+        runtimeMarketSaleAutomation: null,
+      }
     : await fetchResourceControlData(config, config.shard);
 
   return {
@@ -1111,6 +1354,7 @@ async function fetchMemorySnapshot(config, options = {}) {
     moduleCpu: summarizeModuleCpu(moduleCpu),
     hub: summarizeHub(hub),
     resourceControl: summarizeResourceControl(runtimeResourceControl, transferTaskStore),
+    marketSaleAutomation: summarizeMarketSaleAutomation(runtimeMarketSaleAutomation),
   };
 }
 
@@ -1241,6 +1485,7 @@ function summarizeState(state) {
     totals: memory ? memory.summary.totals : null,
     hub: memory?.hub ?? null,
     resourceControl: memory?.resourceControl ?? null,
+    marketSaleAutomation: memory?.marketSaleAutomation ?? null,
     cpuMonitorAvailable: latestCpu ? latestCpu.available : false,
     cpuMonitorVersion: latestCpu ? latestCpu.version : null,
     cpuMonitorSource: latestCpu ? latestCpu.source : null,
@@ -1344,10 +1589,28 @@ function createHttpServer(state) {
       writeJson(res, 200, { ok: true, resourceControl, selectedShard: state.selectedShard ?? null });
       return;
     }
+    if (url.pathname === "/market-sale") {
+      const marketSaleAutomation = state.latest.memory?.marketSaleAutomation ?? null;
+      writeJson(res, 200, {
+        ok: true,
+        marketSaleAutomation,
+        selectedShard: state.selectedShard ?? null,
+      });
+      return;
+    }
 
     writeJson(res, 200, {
       summary: summarizeState(state),
-      endpoints: ["/health", "/state", "/rooms", "/history", "/cpu", "/hub", "/resource-control"],
+      endpoints: [
+        "/health",
+        "/state",
+        "/rooms",
+        "/history",
+        "/cpu",
+        "/hub",
+        "/resource-control",
+        "/market-sale",
+      ],
     });
   });
 }
@@ -1382,13 +1645,13 @@ function logMemorySnapshot(snapshot) {
       ? `${legacy.topPhases[0].phase}:${legacy.topPhases[0].used.toFixed(2)}`
       : "n/a";
     console.log(
-      `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [legacy] moduleCpuTick=${legacy.tick ?? "n/a"} moduleCpuUsed=${legacy.totalUsed ?? "n/a"} topPhase=${legacyTop}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+      `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [legacy] moduleCpuTick=${legacy.tick ?? "n/a"} moduleCpuUsed=${legacy.totalUsed ?? "n/a"} topPhase=${legacyTop}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)}${marketSaleStr(snapshot.marketSaleAutomation)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
     );
     return;
   }
 
   console.log(
-    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [cpu-v${cpuVersion}|${cpuSource}] cpuTick=${cpuTick} cpuUsed=${cpuUsed}${emaStr}${fixedStr}${heapStr} topPhase=${topPhase}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [cpu-v${cpuVersion}|${cpuSource}] cpuTick=${cpuTick} cpuUsed=${cpuUsed}${emaStr}${fixedStr}${heapStr} topPhase=${topPhase}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)}${marketSaleStr(snapshot.marketSaleAutomation)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
   );
 }
 
@@ -1400,6 +1663,11 @@ function hubStr(hub) {
 function resourceControlStr(resourceControl) {
   if (!resourceControl || !resourceControl.available) return "";
   return ` transferTasks=${resourceControl.pendingTaskCount}`;
+}
+
+function marketSaleStr(marketSaleAutomation) {
+  if (!marketSaleAutomation || !marketSaleAutomation.available) return "";
+  return ` marketSale=${marketSaleAutomation.phase ?? "n/a"} shadow=${marketSaleAutomation.shadowConsecutiveCycles ?? "n/a"} orders=${marketSaleAutomation.managedOrderCount ?? "n/a"}`;
 }
 
 function logSegmentSnapshot(snapshot) {
@@ -1467,8 +1735,15 @@ async function fetchWithShardFallback(config) {
   }
 
   if (bestResult) {
-    const { runtimeResourceControl, transferTaskStore } = await fetchResourceControlData(config, bestShardValue);
+    const {
+      runtimeResourceControl,
+      transferTaskStore,
+      runtimeMarketSaleAutomation,
+    } = await fetchResourceControlData(config, bestShardValue);
     bestResult.resourceControl = summarizeResourceControl(runtimeResourceControl, transferTaskStore);
+    bestResult.marketSaleAutomation = summarizeMarketSaleAutomation(
+      runtimeMarketSaleAutomation,
+    );
     bestResult.selectedShard = bestShard;
     bestResult.shardCandidates = shardResults;
   }

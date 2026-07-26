@@ -42,6 +42,23 @@ describe("main loop phase ordering", () => {
     expect(factoryIdx).toBeLessThan(resourceIdx);
   });
 
+  it("runs the market safety preflight before production and final planning after ResourceControl", () => {
+    const order = extractMeasureOrder(mainSrc);
+    const announceIdx = order.indexOf("announceDeploy");
+    const preflightIdx = order.indexOf("marketSalePreflight");
+    const hubIdx = order.indexOf("hubPlanner");
+    const synthesisIdx = order.indexOf("synthesisControl");
+    const factoryIdx = order.indexOf("factoryControl");
+    const resourceIdx = order.indexOf("resourceControl");
+    const marketIdx = order.indexOf("marketSaleAutomation");
+
+    expect(preflightIdx).toBeGreaterThan(announceIdx);
+    expect(preflightIdx).toBeLessThan(hubIdx);
+    expect(preflightIdx).toBeLessThan(synthesisIdx);
+    expect(preflightIdx).toBeLessThan(factoryIdx);
+    expect(marketIdx).toBeGreaterThan(resourceIdx);
+  });
+
   it("preserves hubPlanner before synthesisControl ordering", () => {
     const order = extractMeasureOrder(mainSrc);
     const hubIdx = order.indexOf("hubPlanner");

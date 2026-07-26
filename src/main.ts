@@ -33,6 +33,8 @@ import { createTickCpuProfiler, setActiveTickCpuProfiler } from "@/runtime/cpuPh
 import { getMemoryService } from "@/runtime/runtimeServices";
 import { runHubProgressAnalytics, renderHubProgressOverlays } from "@/runtime/hubProgress";
 import { runRemoteMining } from "@/runtime/remoteMining";
+import { runMarketSalePreflight } from "@/runtime/marketSaleAutomation";
+import { runLiveMarketSaleAutomation } from "@/runtime/marketSaleRuntime";
 
 mountAll();
 registerGlobalApi();
@@ -58,6 +60,7 @@ function gameLoop(): void {
   setActiveTickCpuProfiler(cpuProfiler);
 
   cpuProfiler.measure("announceDeploy", announceDeploy);
+  cpuProfiler.measure("marketSalePreflight", runMarketSalePreflight);
   cpuProfiler.measure("pixelGenerator", runPixelGenerator);
   cpuProfiler.measure("productionMonitor", runProductionMonitor);
   cpuProfiler.measure("hubPlanner", runHubPlanner);
@@ -66,6 +69,7 @@ function gameLoop(): void {
   cpuProfiler.measure("factoryControl", runFactoryControl);
   cpuProfiler.measure("mineralExtraction", runMineralExtraction);
   cpuProfiler.measure("resourceControl", runResourceControl);
+  cpuProfiler.measure("marketSaleAutomation", runLiveMarketSaleAutomation);
   cpuProfiler.measure("hubProgressAnalytics", runHubProgressAnalytics);
   cpuProfiler.measure("hubProgressOverlay", renderHubProgressOverlays);
   cpuProfiler.measure("externalTelemetryExport", runExternalTelemetryExport);
