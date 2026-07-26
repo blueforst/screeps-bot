@@ -10,6 +10,9 @@ import {
   type MarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
 import {
+  MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
+} from "@/runtime/marketDirectContinuousPolicy";
+import {
   collectMarketSalePriceSnapshots,
   type CollectMarketSalePriceSnapshotsOptions,
   type MarketSalePriceSnapshotCollection,
@@ -560,6 +563,29 @@ function exposureProtectionCandidates(
   });
 }
 
+function continuousProtectionOptions(
+  config: MarketSaleAutomationConfig,
+): {
+  candidates: MarketProtectionCandidate[];
+  laneReserveByEntry: Record<string, number>;
+} | undefined {
+  if (config.directCapability !== "continuous-v2") return undefined;
+  const candidates: MarketProtectionCandidate[] = [];
+  const laneReserveByEntry: Record<string, number> = {};
+  for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
+    for (const roomName of entry.allowedRoomNames) {
+      candidates.push({
+        roomName,
+        resource: entry.resourceType,
+      });
+      laneReserveByEntry[
+        `${roomName}:${entry.resourceType}`
+      ] = entry.laneReserve;
+    }
+  }
+  return { candidates, laneReserveByEntry };
+}
+
 /**
  * Production entrypoint called after ResourceControl. Expensive market reads
  * occur only on a fresh ResourceControl cycle. Existing managed/pending
@@ -602,6 +628,47 @@ export function runLiveMarketSaleAutomation(
   )
     ? dataRecord?.directAutomation
     : undefined;
+  const directLedger = isPlainRecord(
+    directAutomation?.ledger,
+  )
+    ? directAutomation?.ledger
+    : undefined;
+  const directLedgerBlocker = isPlainRecord(
+    directLedger?.blocker,
+  )
+    ? directLedger?.blocker
+    : undefined;
+  const directPending = isPlainRecord(
+    directAutomation?.pendingDirectDeals,
+  )
+    ? directAutomation?.pendingDirectDeals
+    : undefined;
+  const directQuarantine = isPlainRecord(
+    directAutomation?.quarantinedPendingDirectDeals,
+  )
+    ? directAutomation?.quarantinedPendingDirectDeals
+    : undefined;
+  const directStrategyActive =
+    config.mode === "direct" ||
+    (config.mode === "shadow" &&
+      config.shadowStrategy === "direct");
+  const inactiveMissingDirectState =
+    !directStrategyActive &&
+    directAutomation?.capability ===
+      "market-direct-continuous" &&
+    directAutomation?.migrationStatus === "blocked" &&
+    directAutomation?.migrationBlockedReason ===
+      "direct_state_missing" &&
+    directLedgerBlocker?.code === "direct_state_missing" &&
+    directLedger?.pending === undefined &&
+    directPending !== undefined &&
+    Object.keys(directPending).length === 0 &&
+    directQuarantine !== undefined &&
+    Object.keys(directQuarantine).length === 1 &&
+    Object.prototype.hasOwnProperty.call(
+      directQuarantine,
+      "__continuous_blocked__:direct_state_missing",
+    );
   const hasExposureState = Boolean(
     rawData !== undefined &&
       (!dataRecord ||
@@ -616,6 +683,7 @@ export function runLiveMarketSaleAutomation(
           dataRecord.pendingDirectDeals,
         ) ||
         (dataRecord.directAutomation !== undefined &&
+          !inactiveMissingDirectState &&
           (!directAutomation ||
             containerHasEntriesOrIsInvalid(
               directAutomation.pendingDirectDeals,
@@ -642,13 +710,15 @@ export function runLiveMarketSaleAutomation(
   try {
     // Production commitments stay current even while pricing is CPU-throttled.
     // This lets stale-price candidates fail closed and cancel existing exposure.
+    const canonicalContinuousProtection =
+      continuousProtectionOptions(config);
     const protection = collectProtection(
       config,
       isPlainRecord(data.managedOrders)
         ? data.managedOrders
         : undefined,
       resourceControlCurrent
-        ? undefined
+        ? canonicalContinuousProtection
         : { candidates: exposureCandidates },
     );
     const pricingStore =

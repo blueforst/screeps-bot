@@ -2,6 +2,9 @@ import {
   directSafetyFingerprint,
   enforceLegacyMarketSafetyLatch,
   MARKET_DIRECT_CANARY_POLICY,
+  MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION,
+  MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
+  marketDirectContinuousConfigMismatchReasons,
   resolveMarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
 
@@ -79,6 +82,54 @@ describe("marketSaleConfig", () => {
     };
   }
 
+  function validContinuousRaw(): Record<string, unknown> {
+    return {
+      mode: "direct",
+      directCapability: "continuous-v2",
+      configRevision: MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION,
+      sellResources: [
+        RESOURCE_CATALYST,
+        RESOURCE_HYDROGEN,
+        RESOURCE_ZYNTHIUM,
+      ],
+      hardFloor: {
+        [RESOURCE_CATALYST]: 600,
+        [RESOURCE_HYDROGEN]: 428,
+        [RESOURCE_ZYNTHIUM]: 43,
+      },
+      economicFloor: {
+        [RESOURCE_CATALYST]: 600,
+        [RESOURCE_HYDROGEN]: 451,
+        [RESOURCE_ZYNTHIUM]: 45,
+      },
+      forecastBuffer: {
+        [RESOURCE_CATALYST]: 100_000,
+        [RESOURCE_HYDROGEN]: 100_000,
+        [RESOURCE_ZYNTHIUM]: 100_000,
+      },
+      minDealAmount: 1_000,
+      makerBatchAmount: 5_000,
+      creditReserve: 0,
+      terminalEnergyReserve: 25_000,
+      maxDirectDealAmount: 1_000,
+      maxDirectDealsPerCycle: 1,
+      minDirectOrderAmount: 1_000,
+      minDirectOrderNotional: 600_000,
+      maxDirectRawOrdersScannedPerCycle: 1_000,
+      maxDirectEligibleOrdersPricedPerCycle: 200,
+      maxDirectTransactionEnergy: 1_000,
+      directCanaryMaxConfirmedDeals: 1,
+      energyShadowHardFloor: 20,
+      planningSnapshotMaxAgeTicks: 10,
+      minHistoryDays: 7,
+      minHistoryTransactions: 100,
+      minHistoryVolume: 100_000,
+      historyFloorRatio: 0.95,
+      historyMaxAgeDays: 2,
+      canary: { enabled: true, allowExpansion: false },
+    };
+  }
+
   it("Direct Shadow 与 active Direct 接受同一首发安全合同", () => {
     const shadow = resolveMarketSaleAutomationConfig(validDirectRaw());
     const active = resolveMarketSaleAutomationConfig(validDirectRaw("direct"));
@@ -91,6 +142,62 @@ describe("marketSaleConfig", () => {
     expect(active.validForPlanning).toBe(true);
     expect(active.invalidReasons).toEqual([]);
   });
+
+  it("Continuous v2 只接受完整 X/H/Z canonical 配置", () => {
+    const config = resolveMarketSaleAutomationConfig(
+      validContinuousRaw(),
+    );
+
+    expect(config.directCapability).toBe("continuous-v2");
+    expect(config.validForPlanning).toBe(true);
+    expect(config.invalidReasons).toEqual([]);
+    expect(marketDirectContinuousConfigMismatchReasons(config)).toEqual(
+      [],
+    );
+    expect(directSafetyFingerprint(config)).toContain(
+      MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
+    );
+  });
+
+  it.each([
+    [
+      "lower H floor",
+      {
+        hardFloor: {
+          [RESOURCE_CATALYST]: 600,
+          [RESOURCE_HYDROGEN]: 427,
+          [RESOURCE_ZYNTHIUM]: 43,
+        },
+      },
+      `continuous_direct_hard_floor_mismatch:${RESOURCE_HYDROGEN}`,
+    ],
+    [
+      "lower Z reserve",
+      {
+        forecastBuffer: {
+          [RESOURCE_CATALYST]: 100_000,
+          [RESOURCE_HYDROGEN]: 100_000,
+          [RESOURCE_ZYNTHIUM]: 99_999,
+        },
+      },
+      `continuous_direct_lane_reserve_mismatch:${RESOURCE_ZYNTHIUM}`,
+    ],
+    [
+      "fixed energy price",
+      { energyShadowPrice: 0.001 },
+      "continuous_direct_fixed_energy_shadow_forbidden",
+    ],
+  ])(
+    "Continuous v2 对 %s fail-closed",
+    (_label, override, expectedReason) => {
+      const config = resolveMarketSaleAutomationConfig({
+        ...validContinuousRaw(),
+        ...override,
+      });
+      expect(config.validForPlanning).toBe(false);
+      expect(config.invalidReasons).toContain(expectedReason);
+    },
+  );
 
   it("Direct 允许把资源、能量底线和生产缓冲调得更保守", () => {
     const config = resolveMarketSaleAutomationConfig({
@@ -543,13 +650,15 @@ describe("marketSaleConfig", () => {
     expect(decimals.minReferenceOrderNotional).toBe(12.5);
   });
 
-  it("持久关闭 ResourceControl 与 Factory 旧市场入口", () => {
+  it("持久关闭 ResourceControl、Factory 旧市场入口与 Pixel 生成", () => {
     Memory.cfg = {
       resourceControl: { market: { enabled: true } },
       factoryControl: { market: { enabled: true } },
+      pixelGenerator: { enabled: true },
     };
     enforceLegacyMarketSafetyLatch();
     expect(Memory.cfg.resourceControl?.market?.enabled).toBe(false);
     expect(Memory.cfg.factoryControl?.market?.enabled).toBe(false);
+    expect(Memory.cfg.pixelGenerator?.enabled).toBe(false);
   });
 });

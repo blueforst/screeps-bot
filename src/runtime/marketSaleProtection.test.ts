@@ -137,9 +137,9 @@ describe("marketSaleProtection", () => {
     expect(entry.protectedOutgoing).toBe(70);
     expect(entry.carrierOrInFlight).toBe(20);
     expect(entry.protectedAmount).toBe(380);
-    expect(entry.grossSurplus).toBe(620);
+    expect(entry.grossSurplus).toBe(670);
     expect(entry.managedExposure).toBe(50);
-    expect(entry.newExposureCapacity).toBe(570);
+    expect(entry.newExposureCapacity).toBe(620);
     expect(entry.sellableAmount).toBe(550);
   });
 
@@ -229,8 +229,46 @@ describe("marketSaleProtection", () => {
     });
 
     expect(entry.productionDemand).toBe(500);
-    expect(entry.protectedAmount).toBe(550);
-    expect(entry.sellableAmount).toBe(450);
+    expect(entry.protectedAmount).toBe(600);
+    expect(entry.sellableAmount).toBe(400);
+  });
+
+  it("layers local reserve, absolute target and consumptive demand without double-counting forecast", () => {
+    const entry = entryFrom({
+      floor: snapshot([
+        fact(80, { stableKey: "floor:mineral-export" }),
+        fact(90, { stableKey: "floor:factory" }),
+      ]),
+      forecast: snapshot([
+        fact(100, { stableKey: "lane-reserve" }),
+        fact(100, { stableKey: "lane-reserve" }),
+      ]),
+      factoryTargets: snapshot([
+        fact(150, {
+          stableKey: "factory:target:K",
+          bucket: "absoluteTarget",
+        }),
+      ]),
+      factoryComponents: snapshot([
+        fact(40, {
+          stableKey: "factory:component:other:K",
+          bucket: "consumptiveDemand",
+        }),
+      ]),
+      managedExposure: snapshot([
+        fact(10, {
+          stableKey: "managed:pending",
+          managedOrderId: "pending",
+        }),
+      ]),
+    });
+
+    expect(entry.localReserve).toBe(100);
+    expect(entry.absoluteTarget).toBe(150);
+    expect(entry.consumptiveDemand).toBe(40);
+    expect(entry.forecastBuffer).toBe(100);
+    expect(entry.protectedAmount).toBe(200);
+    expect(entry.sellableAmount).toBe(590);
   });
 
   it("fails closed when a required source is missing or observed incompletely", () => {
@@ -323,7 +361,7 @@ describe("marketSaleProtection", () => {
       ]),
     });
 
-    expect(entry.grossSurplus).toBe(850);
+    expect(entry.grossSurplus).toBe(900);
     expect(entry.sellableAmount).toBe(350);
     expect(getMarketProtectionSellableAmount(entry, TICK, {
       excludeManagedOrderId: "a",

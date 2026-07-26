@@ -1,0 +1,3461 @@
+import {
+  claimPreparedDirectMarketClaims,
+  executePreparedDirectMarketDeal,
+  getMarketAccountClaim,
+  getMarketActionJournal,
+  getTerminalActionClaim,
+  hasMarketActionIntentThisTick,
+  isExplicitMarketNonOkReturnCode,
+  releasePreparedDirectMarketClaims,
+} from "@/runtime/marketActionArbiter";
+import {
+  MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION,
+  MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
+  marketDirectContinuousConfigMismatchReasons,
+  type ResolvedMarketSaleAutomationConfig,
+} from "@/runtime/marketSaleConfig";
+import {
+  CONTINUOUS_PERMIT_GENESIS,
+  CONTINUOUS_PLANNED_AMOUNT,
+  CONTINUOUS_RECEIPT_GENESIS,
+  CONTINUOUS_CONFIRMED_CANARY_CHECKPOINT_GENESIS,
+  LEGACY_X_PROCESSED_EVIDENCE_KEY,
+  advanceContinuousWal,
+  canonicalStableHashV1,
+  computeContinuousQuota,
+  failClosedContinuousLedger,
+  migrateLegacyXSeedLedger,
+  prepareContinuousAttempt,
+  recordContinuousOutcome,
+  validateContinuousLedger,
+  type ContinuousOutcome,
+  type ContinuousExecutionEvidence,
+  type ContinuousPendingAttempt,
+  type LegacyV1SafeStateFixture,
+  type LegacyXReviewedOutcomeFixture,
+  type MarketDirectContinuousLedger,
+} from "@/runtime/marketDirectContinuousLedger";
+import {
+  MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT,
+  isExactMarketDirectContinuousSecondRead,
+  planMarketDirectContinuous,
+  type MarketDirectContinuousCandidate,
+  type MarketDirectContinuousEntryInput,
+  type MarketDirectContinuousLaneInput,
+  type MarketDirectContinuousPlanningResult,
+  type PlanMarketDirectContinuousInput,
+} from "@/runtime/marketDirectContinuousPlanner";
+import {
+  LEGACY_REVIEWED_X_CANARY_OUTCOME_IDENTITY,
+  MARKET_DIRECT_CONTINUOUS_CAPABILITY,
+  MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
+  MARKET_DIRECT_CONTINUOUS_EXECUTOR_SHARD,
+  MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY,
+  MARKET_DIRECT_CONTINUOUS_PERMIT_GENESIS,
+  MARKET_DIRECT_CONTINUOUS_SCHEMA,
+  appendMarketDirectContinuousPermit,
+  buildMarketDirectContinuousPermit,
+  createLegacyReviewedXEntryLifecycle,
+  createMarketDirectEntryLifecycle,
+  createMarketDirectPermitChainState,
+  marketDirectContinuousEvidenceFingerprint,
+  marketDirectLifecycleEvidenceDigest,
+  marketDirectContinuousLegacyXOutcomeFingerprint,
+  marketDirectContinuousSharedFingerprint,
+  marketDirectPermitAllowsNewDeal,
+  observeMarketDirectShadowCycle,
+  promoteMarketDirectEntryToCanary,
+  promoteMarketDirectEntryToContinuous,
+  recordMarketDirectCanaryConfirmation,
+  validateMarketDirectContinuousPermitChain,
+  type MarketDirectContinuousPermit,
+  type MarketDirectEntryLifecycle,
+  type MarketDirectEntryLifecycleStage,
+  type MarketDirectNewDealGrant,
+  type MarketDirectPermitChainState,
+  type MarketDirectPermitEntryGrant,
+  type MarketDirectPermitEvidenceBinding,
+} from "@/runtime/marketDirectContinuousPolicy";
+import type {
+  DirectAutomationState,
+  DirectRuntimeCandidate,
+} from "@/runtime/marketSaleDirectAutomation";
+import type {
+  DirectDealOutcome,
+  DirectOutgoingTransaction,
+} from "@/runtime/marketSaleDirectPending";
+import type { MarketOrderSnapshot } from "@/runtime/marketSalePricing";
+import {
+  priceToMilliDown,
+} from "@/runtime/marketSalePricing";
+import {
+  getMarketProtectionEntryKey,
+  getMarketProtectionSellableAmount,
+  type MarketProtectionEntry,
+  type MarketSaleProtectionLedger,
+} from "@/runtime/marketSaleProtection";
+import { collectLiveMarketSaleProtectionLedger } from "@/runtime/marketSaleProtectionAdapter";
+
+const CONTINUOUS_ACTOR =
+  "marketSaleAutomation:continuous-direct";
+const MAX_OUTGOING_TRANSACTIONS = 100;
+const MAX_COMPATIBILITY_OUTCOMES = 50;
+
+/**
+ * 这是 2026-07-26 shard1 唯一 legacy X canary 的完整冻结 outcome。
+ * 任一字段不同都不得自动 bootstrap v2。
+ */
+export const LEGACY_X_DIRECT_SAFETY_FINGERPRINT = JSON.stringify({
+  strategy: "direct",
+  engineAssumptionCommit:
+    "80977824199a596d174d392fd0cf8c458c21fcbd",
+  configRevision: "x-direct-2026-07-26-r1",
+  sellResources: ["X"],
+  hardFloor: [["X", 600]],
+  economicFloor: [["X", 600]],
+  forecastBuffer: [["X", 100_000]],
+  minDealAmount: 1_000,
+  terminalEnergyReserve: 25_000,
+  energyShadowHardFloor: 20,
+  minHistoryDays: 7,
+  minHistoryTransactions: 100,
+  minHistoryVolume: 100_000,
+  historyFloorRatio: 0.95,
+  historyMaxAgeDays: 2,
+  maxDirectDealAmount: 1_000,
+  maxDirectDealsPerCycle: 1,
+  minDirectOrderAmount: 1_000,
+  minDirectOrderNotional: 600_000,
+  maxDirectRawOrdersScannedPerCycle: 1_000,
+  maxDirectEligibleOrdersPricedPerCycle: 200,
+  maxDirectTransactionEnergy: 1_000,
+  directCanaryMaxConfirmedDeals: 1,
+  planningSnapshotMaxAgeTicks: 10,
+  canaryEnabled: true,
+  canaryAllowExpansion: false,
+});
+
+export const LEGACY_X_V1_OUTCOME_GOLDEN: DirectDealOutcome = {
+  requestId: "direct:72585530:E6N59:X",
+  orderId: "6a65e025656d080013ccad03",
+  configRevision: "x-direct-2026-07-26-r1",
+  directSafetyFingerprint: LEGACY_X_DIRECT_SAFETY_FINGERPRINT,
+  canaryRoomName: "E6N59",
+  resource: "X" as ResourceConstant,
+  orderRoomName: "E21S49",
+  observedOrderPrice: 694.963,
+  observedOrderPriceMilli: 694_963,
+  observedOrderAmount: 28_920,
+  submittedDealAmount: 1_000,
+  plannedTransactionEnergy: 394,
+  effectiveEnergyShadowPrice: 32.06,
+  effectiveEnergyShadowPriceMilli: 32_060,
+  energyShadowComponents: {
+    hardFloor: 20,
+    historyFloor: 31.276,
+    ratchetFloor: 32.06,
+  },
+  energyShadowObservedAt: 72_585_530,
+  plannedNetCreditsMilli: 682_331_360,
+  worstCaseActualAmount: 1,
+  worstCaseNetCreditsMilli: 662_903,
+  effectiveNetFloor: 600,
+  effectiveNetFloorMilli: 600_000,
+  protectionRevision: 72_585_530,
+  attemptAt: 72_585_530,
+  pendingRecoveryFingerprint: "v1:bbb1de5ce52cb2d0",
+  status: "confirmed",
+  resolvedAt: 72_585_531,
+  transactionId: "6a65f8e1656d080013d32210",
+  transactionTime: 72_585_530,
+  actualOrderType: "buy",
+  actualOrderPrice: 694.963,
+  actualResource: "X",
+  actualFrom: "E6N59",
+  actualTo: "E21S49",
+  actualAmount: 1_000,
+  actualTransactionEnergy: 394,
+  actualNetCreditsMilli: 682_331_360,
+  evidenceSource: "automatic",
+  evidenceKey: LEGACY_X_PROCESSED_EVIDENCE_KEY,
+};
+
+export const LEGACY_X_V1_OUTCOME_DIGEST =
+  canonicalStableHashV1(LEGACY_X_V1_OUTCOME_GOLDEN);
+
+export const LEGACY_X_V1_REVIEW_EVIDENCE_DIGEST =
+  marketDirectContinuousLegacyXOutcomeFingerprint(
+    LEGACY_X_V1_OUTCOME_GOLDEN,
+  );
+
+const LEGACY_V1_SAFE_FIXTURE: LegacyV1SafeStateFixture = {
+  schema: 1,
+  directConfirmedDealCount: 1,
+  directPausedForReview: true,
+  pendingCount: 0,
+  quarantinedCount: 0,
+  reconcileGapCount: 0,
+};
+
+export const LEGACY_V1_SAFE_FIXTURE_DIGEST =
+  canonicalStableHashV1(LEGACY_V1_SAFE_FIXTURE);
+
+const CONTINUOUS_SHARED_POLICY_FINGERPRINT =
+  marketDirectContinuousSharedFingerprint({
+    directRuntimeFingerprint:
+      MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
+  });
+
+export interface ContinuousPendingProjection {
+  requestId: string;
+  status: "prepared" | "submitted" | "reconcile_gap";
+  roomName: string;
+  canaryRoomName: string;
+  resource: ResourceConstant;
+  resourceType: ResourceConstant;
+  amount: number;
+  dealAmount: number;
+  orderId: string;
+  attemptAt: number;
+}
+
+export interface MarketDirectContinuousPlanningSnapshot {
+  observedAt: number;
+  complete: boolean;
+  planningFingerprint: string;
+  selected?: {
+    entryId: string;
+    resource: ResourceConstant;
+    roomName: string;
+    orderId: string;
+    grossPrice: number;
+    unitNetPrice: number;
+    transactionEnergy: number;
+  };
+  blocker?: string;
+  safeResourceTypes: ResourceConstant[];
+  admittedResourceTypes: ResourceConstant[];
+  rejectedByReason: Record<string, number>;
+}
+
+export interface MarketDirectContinuousPermitProposal {
+  permit: MarketDirectContinuousPermit;
+  lifecycleByEntry: Record<string, MarketDirectEntryLifecycle>;
+  proposedAt: number;
+}
+
+export interface MarketDirectContinuousAutomationState {
+  schemaVersion: typeof MARKET_DIRECT_CONTINUOUS_SCHEMA;
+  capability: typeof MARKET_DIRECT_CONTINUOUS_CAPABILITY;
+  migrationStatus: "readyForPermit" | "active" | "blocked";
+  migrationBlockedReason?: string;
+  rollbackEvidenceMarker: string;
+  legacyStateDigest: string;
+  reviewedLegacyOutcomeDigest: string;
+  lifecycleByEntry: Record<string, MarketDirectEntryLifecycle>;
+  permitChain: MarketDirectPermitChainState;
+  currentPermit?: MarketDirectContinuousPermit;
+  proposedPermit?: MarketDirectContinuousPermitProposal;
+  ledger: MarketDirectContinuousLedger;
+  lastPlanningSnapshot?: MarketDirectContinuousPlanningSnapshot;
+  lastLifecycleAppliedAttemptSeq: number;
+  pendingDirectDeals: Record<string, ContinuousPendingProjection>;
+  quarantinedPendingDirectDeals: Record<string, unknown>;
+  /** Rollback compatibility evidence retained for the 669bce3 normalizer. */
+  directDealOutcomes: DirectDealOutcome[];
+  processedDirectTransactionKeys: string[];
+  directConfirmedDealCount: number;
+  directPausedForReview: boolean;
+}
+
+export interface MarketDirectContinuousResult {
+  actions: string[];
+  rejectedByReason: Record<string, number>;
+  writes: number;
+  planComplete: boolean;
+  state: MarketDirectContinuousAutomationState;
+}
+
+export interface MarketDirectContinuousPermitRequest {
+  operatorAuthorizationFingerprint: string;
+  entryStages?: Partial<
+    Record<string, MarketDirectEntryLifecycleStage>
+  >;
+  newDealGrants?: Partial<
+    Record<string, MarketDirectNewDealGrant>
+  >;
+  reviewedEvidenceDigests?: Partial<Record<string, string>>;
+}
+
+function emptyCounters() {
+  return {
+    global: { count: 0, amount: 0 },
+    resources: {},
+  };
+}
+
+function safeJsonEvidence(value: unknown): unknown {
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized === undefined
+      ? null
+      : JSON.parse(serialized);
+  } catch {
+    return {
+      unserializable: true,
+      valueType:
+        value === null ? "null" : typeof value,
+    };
+  }
+}
+
+function createBlockedLedger(
+  tick: number,
+  reason: string,
+  evidence: unknown,
+): MarketDirectContinuousLedger {
+  const safeEvidence = safeJsonEvidence(evidence);
+  return {
+    schema: MARKET_DIRECT_CONTINUOUS_SCHEMA,
+    coverageStartTick: Math.max(0, tick - 29_999),
+    receiptHeadHash: CONTINUOUS_RECEIPT_GENESIS,
+    finalizedAttemptSeq: 0,
+    nextAttemptSeq: 1,
+    receipts: [],
+    outcomes: [],
+    processedEvidenceKeys: [],
+    checkpoint: {
+      prunedThroughSeq: 0,
+      prunedHeadHash: CONTINUOUS_RECEIPT_GENESIS,
+      confirmed: emptyCounters(),
+      confirmedCanaries: {},
+      confirmedCanaryCommitment:
+        CONTINUOUS_CONFIRMED_CANARY_CHECKPOINT_GENESIS,
+    },
+    lifetimeConfirmed: emptyCounters(),
+    confirmedCanaries: {},
+    retryNotBefore: 0,
+    permitEpochHighWater: 0,
+    permitChainHeadHighWater: CONTINUOUS_PERMIT_GENESIS,
+    blocker: {
+      code: reason,
+      detectedAt: tick,
+      detailHash: canonicalStableHashV1({
+        domain: "market-direct-continuous:blocked-state-v1",
+        evidence: safeEvidence,
+      }),
+    },
+  };
+}
+
+function blockedContinuousState(
+  tick: number,
+  reason: string,
+  evidence: unknown,
+): MarketDirectContinuousAutomationState {
+  const safeEvidence = safeJsonEvidence(evidence);
+  return {
+    schemaVersion: MARKET_DIRECT_CONTINUOUS_SCHEMA,
+    capability: MARKET_DIRECT_CONTINUOUS_CAPABILITY,
+    migrationStatus: "blocked",
+    migrationBlockedReason: reason,
+    rollbackEvidenceMarker:
+      `market-direct-continuous:v2:blocked:${reason}`,
+    legacyStateDigest: "",
+    reviewedLegacyOutcomeDigest: "",
+    lifecycleByEntry: {},
+    permitChain: createMarketDirectPermitChainState(),
+    ledger: createBlockedLedger(tick, reason, evidence),
+    lastLifecycleAppliedAttemptSeq: 0,
+    pendingDirectDeals: {},
+    quarantinedPendingDirectDeals: {
+      [`__continuous_blocked__:${reason}`]: safeEvidence,
+    },
+    directDealOutcomes: [],
+    processedDirectTransactionKeys: [],
+    directConfirmedDealCount: 0,
+    directPausedForReview: true,
+  };
+}
+
+function exactLegacyOutcome(
+  raw: unknown,
+): raw is DirectDealOutcome {
+  try {
+    return (
+      canonicalStableHashV1(raw) ===
+        LEGACY_X_V1_OUTCOME_DIGEST &&
+      marketDirectContinuousLegacyXOutcomeFingerprint(raw) ===
+        LEGACY_X_V1_REVIEW_EVIDENCE_DIGEST
+    );
+  } catch {
+    return false;
+  }
+}
+
+function legacyFixture(
+  state: DirectAutomationState,
+): LegacyV1SafeStateFixture | undefined {
+  const pendingCount = Object.keys(
+    state.pendingDirectDeals || {},
+  ).length;
+  const quarantinedCount = Object.keys(
+    state.quarantinedPendingDirectDeals || {},
+  ).length;
+  const reconcileGapCount = Object.values(
+    state.pendingDirectDeals || {},
+  ).filter((pending) => pending.status === "reconcile_gap").length;
+  if (
+    state.schemaVersion !== 1 ||
+    state.directConfirmedDealCount !== 1 ||
+    state.directPausedForReview !== true ||
+    pendingCount !== 0 ||
+    quarantinedCount !== 0 ||
+    reconcileGapCount !== 0
+  ) {
+    return undefined;
+  }
+  return {
+    schema: 1,
+    directConfirmedDealCount: 1,
+    directPausedForReview: true,
+    pendingCount: 0,
+    quarantinedCount: 0,
+    reconcileGapCount: 0,
+  };
+}
+
+function toLegacyReviewedFixture(
+  outcome: DirectDealOutcome,
+): LegacyXReviewedOutcomeFixture {
+  return {
+    requestId: "direct:72585530:E6N59:X",
+    transactionId: "6a65f8e1656d080013d32210",
+    orderId: "6a65e025656d080013ccad03",
+    evidenceKey: LEGACY_X_PROCESSED_EVIDENCE_KEY,
+    status: "confirmed",
+    resolvedAt: 72_585_531,
+    attemptAt: 72_585_530,
+    transactionTime: 72_585_530,
+    sellerRoom: "E6N59",
+    orderRoom: "E21S49",
+    resource: "X",
+    observedOrderAmount: 28_920,
+    actualAmount: 1_000,
+    plannedTransactionEnergy: 394,
+    actualTransactionEnergy: 394,
+    observedOrderPriceMilli: 694_963,
+    plannedNetCreditsMilli: 682_331_360,
+    actualNetCreditsMilli: 682_331_360,
+    worstCaseNetCreditsMilli: 662_903,
+    effectiveEnergyShadowPriceMilli: 32_060,
+    energyShadowComponents: {
+      hardFloor: 20,
+      historyFloor: 31.276,
+      ratchetFloor: 32.06,
+    },
+    protectionRevision: 72_585_530,
+    pendingRecoveryFingerprint: "v1:bbb1de5ce52cb2d0",
+    directSafetyFingerprint: LEGACY_X_DIRECT_SAFETY_FINGERPRINT,
+    canonicalOutcome: outcome,
+  };
+}
+
+export function migrateLegacyDirectToContinuous(
+  raw: DirectAutomationState,
+  tick: number,
+): MarketDirectContinuousAutomationState {
+  if (
+    raw.migrationBlockedReason ===
+      "unsupported_direct_state_schema" ||
+    raw.directConfirmedDealCount > 1
+  ) {
+    return blockedContinuousState(
+      tick,
+      "rollback_evidence_lost",
+      raw,
+    );
+  }
+  const fixture = legacyFixture(raw);
+  const [outcome] = raw.directDealOutcomes || [];
+  if (
+    !fixture ||
+    canonicalStableHashV1(fixture) !==
+      LEGACY_V1_SAFE_FIXTURE_DIGEST ||
+    raw.directDealOutcomes.length !== 1 ||
+    !exactLegacyOutcome(outcome) ||
+    raw.processedDirectTransactionKeys.length !== 1 ||
+    raw.processedDirectTransactionKeys[0] !==
+      LEGACY_X_PROCESSED_EVIDENCE_KEY
+  ) {
+    return blockedContinuousState(
+      tick,
+      "direct_migration_evidence_mismatch",
+      raw,
+    );
+  }
+  const migrated = migrateLegacyXSeedLedger({
+    migrationTick: tick,
+    legacyState: fixture!,
+    reviewedOutcome: toLegacyReviewedFixture(outcome),
+    expectedLegacyStateDigest:
+      LEGACY_V1_SAFE_FIXTURE_DIGEST,
+    expectedReviewedOutcomeDigest:
+      LEGACY_X_V1_OUTCOME_DIGEST,
+  });
+  if (!migrated.ok) {
+    return blockedContinuousState(
+      tick,
+      migrated.blockerCode ||
+        "direct_migration_evidence_mismatch",
+      raw,
+    );
+  }
+  const lifecycleByEntry: Record<
+    string,
+    MarketDirectEntryLifecycle
+  > = {};
+  for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
+    lifecycleByEntry[entry.entryId] =
+      entry.resourceType === "X"
+        ? createLegacyReviewedXEntryLifecycle(
+            CONTINUOUS_SHARED_POLICY_FINGERPRINT,
+            outcome,
+          )
+        : createMarketDirectEntryLifecycle(
+            entry.entryId,
+            CONTINUOUS_SHARED_POLICY_FINGERPRINT,
+          );
+  }
+  return {
+    schemaVersion: MARKET_DIRECT_CONTINUOUS_SCHEMA,
+    capability: MARKET_DIRECT_CONTINUOUS_CAPABILITY,
+    migrationStatus: "readyForPermit",
+    rollbackEvidenceMarker:
+      "market-direct-continuous:v2:migrated-from-669bce3",
+    legacyStateDigest: LEGACY_V1_SAFE_FIXTURE_DIGEST,
+    reviewedLegacyOutcomeDigest:
+      LEGACY_X_V1_OUTCOME_DIGEST,
+    lifecycleByEntry,
+    permitChain: createMarketDirectPermitChainState(),
+    ledger: migrated.state,
+    lastLifecycleAppliedAttemptSeq: 1,
+    pendingDirectDeals: {},
+    quarantinedPendingDirectDeals: {},
+    directDealOutcomes: [outcome],
+    processedDirectTransactionKeys: [
+      LEGACY_X_PROCESSED_EVIDENCE_KEY,
+    ],
+    directConfirmedDealCount: 1,
+    directPausedForReview: true,
+  };
+}
+
+function isRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value),
+  );
+}
+
+export function normalizeContinuousDirectState(
+  raw: unknown,
+  tick: number,
+): MarketDirectContinuousAutomationState {
+  if (
+    !isRecord(raw) ||
+    raw.schemaVersion !== MARKET_DIRECT_CONTINUOUS_SCHEMA ||
+    raw.capability !== MARKET_DIRECT_CONTINUOUS_CAPABILITY
+  ) {
+    return blockedContinuousState(
+      tick,
+      "direct_state_missing",
+      raw,
+    );
+  }
+  const state = raw as unknown as MarketDirectContinuousAutomationState;
+  if (
+    state.migrationStatus === "blocked" &&
+    typeof state.migrationBlockedReason === "string" &&
+    state.migrationBlockedReason.length > 0 &&
+    state.ledger?.blocker?.code ===
+      state.migrationBlockedReason &&
+    state.rollbackEvidenceMarker ===
+      `market-direct-continuous:v2:blocked:${state.migrationBlockedReason}` &&
+    isRecord(state.pendingDirectDeals) &&
+    Object.keys(state.pendingDirectDeals).length === 0 &&
+    isRecord(state.quarantinedPendingDirectDeals) &&
+    Object.keys(state.quarantinedPendingDirectDeals).length ===
+      1 &&
+    Object.prototype.hasOwnProperty.call(
+      state.quarantinedPendingDirectDeals,
+      `__continuous_blocked__:${state.migrationBlockedReason}`,
+    ) &&
+    state.ledger.blocker.detailHash ===
+      canonicalStableHashV1({
+        domain: "market-direct-continuous:blocked-state-v1",
+        evidence:
+          state.quarantinedPendingDirectDeals[
+            `__continuous_blocked__:${state.migrationBlockedReason}`
+          ],
+      }) &&
+    isRecord(state.lifecycleByEntry) &&
+    Object.keys(state.lifecycleByEntry).length === 0 &&
+    state.currentPermit === undefined &&
+    state.proposedPermit === undefined &&
+    state.lastPlanningSnapshot === undefined &&
+    state.lastLifecycleAppliedAttemptSeq === 0 &&
+    Array.isArray(state.directDealOutcomes) &&
+    state.directDealOutcomes.length === 0 &&
+    Array.isArray(state.processedDirectTransactionKeys) &&
+    state.processedDirectTransactionKeys.length === 0 &&
+    state.directConfirmedDealCount === 0 &&
+    state.directPausedForReview === true &&
+    Array.isArray(state.ledger.receipts) &&
+    state.ledger.receipts.length === 0 &&
+    Array.isArray(state.ledger.outcomes) &&
+    state.ledger.outcomes.length === 0 &&
+    Array.isArray(state.ledger.processedEvidenceKeys) &&
+    state.ledger.processedEvidenceKeys.length === 0 &&
+    state.ledger.finalizedAttemptSeq === 0 &&
+    state.ledger.nextAttemptSeq === 1 &&
+    Array.isArray(state.permitChain?.permits) &&
+    state.permitChain.permits.length === 0 &&
+    state.permitChain.currentPermitEpoch === 0 &&
+    state.permitChain.currentPermitId === "" &&
+    state.permitChain.permitChainHead ===
+      MARKET_DIRECT_CONTINUOUS_PERMIT_GENESIS &&
+    state.permitChain.blocker === undefined
+  ) {
+    return state;
+  }
+  if (
+    !isRecord(state.ledger) ||
+    !isRecord(state.permitChain) ||
+    !isRecord(state.lifecycleByEntry)
+  ) {
+    return blockedContinuousState(
+      tick,
+      "direct_v2_state_invalid",
+      raw,
+    );
+  }
+  const ledgerValidation = validateContinuousLedger(
+    state.ledger,
+    tick,
+  );
+  const entryIds =
+    MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+      (entry) => entry.entryId,
+    );
+  const lifecycleStages = new Set<
+    MarketDirectEntryLifecycleStage
+  >([
+    "shadow",
+    "qualified",
+    "canary",
+    "review_paused",
+    "continuous",
+  ]);
+  const lifecycleValid =
+    isRecord(state.lifecycleByEntry) &&
+    Object.keys(state.lifecycleByEntry).sort().join("|") ===
+      [...entryIds].sort().join("|") &&
+    MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.every(
+      (entry) => {
+      const lifecycle =
+        state.lifecycleByEntry[entry.entryId];
+      return (
+        lifecycle?.entryId === entry.entryId &&
+        lifecycle.resourceFingerprint ===
+          entry.resourceFingerprint &&
+        lifecycle.sharedFingerprint ===
+          CONTINUOUS_SHARED_POLICY_FINGERPRINT &&
+        lifecycleStages.has(lifecycle.stage) &&
+        Number.isSafeInteger(
+          lifecycle.consecutiveCompleteCycles,
+        ) &&
+        lifecycle.consecutiveCompleteCycles >= 0 &&
+        Number.isSafeInteger(
+          lifecycle.canaryConfirmedCount,
+        ) &&
+        lifecycle.canaryConfirmedCount >= 0 &&
+        lifecycle.canaryConfirmedCount <= 1 &&
+        Array.isArray(lifecycle.evidenceHistory) &&
+        lifecycle.evidenceHistory.every(
+          (evidence) =>
+            typeof evidence?.kind === "string" &&
+            typeof evidence.digest === "string" &&
+            evidence.digest.length > 0 &&
+            Number.isSafeInteger(evidence.recordedAt) &&
+            evidence.recordedAt >= 0,
+        ) &&
+        (lifecycle.stage === "canary"
+          ? lifecycle.canaryConfirmedCount === 0
+          : lifecycle.stage === "review_paused" ||
+              lifecycle.stage === "continuous"
+            ? lifecycle.canaryConfirmedCount === 1
+            : true)
+      );
+    });
+  const chainValidation =
+    validateMarketDirectContinuousPermitChain(
+      state.permitChain,
+      {
+        permitEpochHighWater:
+          state.ledger?.permitEpochHighWater,
+        permitChainHeadHighWater:
+          state.ledger?.permitChainHeadHighWater,
+      },
+    );
+  const permitValid =
+    chainValidation.ok &&
+    (state.migrationStatus === "readyForPermit"
+      ? state.permitChain.currentPermitEpoch === 0 &&
+        state.currentPermit === undefined
+      : state.migrationStatus === "active"
+        ? state.currentPermit !== undefined &&
+          state.currentPermit.permitId ===
+            state.permitChain.currentPermitId &&
+          state.currentPermit.permitHead ===
+            state.permitChain.permitChainHead &&
+          state.currentPermit.epoch ===
+            state.permitChain.currentPermitEpoch &&
+          sanitizedHash(
+            "market-direct-continuous:current-permit-v1",
+            state.currentPermit,
+          ) ===
+            sanitizedHash(
+              "market-direct-continuous:current-permit-v1",
+              state.permitChain.permits[
+                state.permitChain.permits.length - 1
+              ],
+            )
+        : false);
+  const compatibilityValid =
+    isRecord(state.pendingDirectDeals) &&
+    isRecord(state.quarantinedPendingDirectDeals) &&
+    Array.isArray(state.directDealOutcomes) &&
+    Array.isArray(state.processedDirectTransactionKeys) &&
+    Number.isSafeInteger(state.directConfirmedDealCount) &&
+    typeof state.directPausedForReview === "boolean" &&
+    Number.isSafeInteger(
+      state.lastLifecycleAppliedAttemptSeq,
+    ) &&
+    state.lastLifecycleAppliedAttemptSeq >= 1 &&
+    state.lastLifecycleAppliedAttemptSeq <=
+      state.ledger.finalizedAttemptSeq &&
+    typeof state.rollbackEvidenceMarker === "string" &&
+    state.rollbackEvidenceMarker.startsWith(
+      "market-direct-continuous:v2:",
+    );
+  const lifecycleProjectionValid =
+    ledgerValidation.ok &&
+    lifecycleValid &&
+    compatibilityValid &&
+    Object.keys(state.ledger.confirmedCanaries).every(
+      (entryId) => entryIds.includes(entryId),
+    ) &&
+    MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.every(
+      (entry) => {
+        const lifecycle =
+          state.lifecycleByEntry[entry.entryId];
+        const confirmation =
+          state.ledger.confirmedCanaries[entry.entryId];
+        if (!confirmation) {
+          return (
+            lifecycle.canaryConfirmedCount === 0 &&
+            lifecycle.stage !== "review_paused" &&
+            lifecycle.stage !== "continuous" &&
+            !lifecycle.evidenceHistory.some(
+              (evidence) =>
+                evidence.kind ===
+                  "legacy_reviewed_canary" ||
+                evidence.kind ===
+                  "canary_confirmation" ||
+                evidence.kind === "continuous_review",
+            )
+          );
+        }
+        const confirmationNotYetProjected =
+          confirmation.attemptSeq >
+          state.lastLifecycleAppliedAttemptSeq;
+        if (
+          lifecycle.stage === "canary" &&
+          lifecycle.canaryConfirmedCount === 0
+        ) {
+          return confirmationNotYetProjected;
+        }
+        if (
+          lifecycle.canaryConfirmedCount !== 1 ||
+          (lifecycle.stage !== "review_paused" &&
+            lifecycle.stage !== "continuous")
+        ) {
+          return false;
+        }
+        const canaryEvidenceDigest =
+          confirmation.executionPolicy ===
+          "legacy_canary_seed"
+            ? LEGACY_X_V1_REVIEW_EVIDENCE_DIGEST
+            : confirmation.reviewedEvidenceDigest;
+        const canaryEvidenceKind =
+          confirmation.executionPolicy ===
+          "legacy_canary_seed"
+            ? "legacy_reviewed_canary"
+            : "canary_confirmation";
+        if (
+          !lifecycle.evidenceHistory.some(
+            (evidence) =>
+              evidence.kind === canaryEvidenceKind &&
+              evidence.digest === canaryEvidenceDigest,
+          )
+        ) {
+          return false;
+        }
+        return (
+          lifecycle.stage !== "continuous" ||
+          lifecycle.evidenceHistory.some(
+            (evidence) =>
+              evidence.kind === "continuous_review" &&
+              evidence.digest ===
+                confirmation.reviewedEvidenceDigest,
+          )
+        );
+      },
+    );
+  if (
+    !ledgerValidation.ok ||
+    !lifecycleValid ||
+    !chainValidation.ok ||
+    !permitValid ||
+    !compatibilityValid ||
+    !lifecycleProjectionValid
+  ) {
+    return blockedContinuousState(
+      tick,
+      ledgerValidation.blockerCode ||
+        chainValidation.reason ||
+        "direct_v2_state_invalid",
+      raw,
+    );
+  }
+  return state;
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function qualificationDigest(
+  lifecycle: MarketDirectEntryLifecycle,
+): string | undefined {
+  return [...lifecycle.evidenceHistory]
+    .reverse()
+    .find((entry) => entry.kind === "shadow_qualification")
+    ?.digest;
+}
+
+function transitionLifecycleForPermit(
+  lifecycle: MarketDirectEntryLifecycle,
+  target: MarketDirectEntryLifecycleStage,
+  tick: number,
+  reviewedEvidenceDigest?: string,
+  expectedReviewedEvidenceDigest?: string,
+): MarketDirectEntryLifecycle {
+  if (target === lifecycle.stage) return lifecycle;
+  if (
+    lifecycle.stage === "qualified" &&
+    target === "canary"
+  ) {
+    const digest = qualificationDigest(lifecycle);
+    if (!digest) {
+      throw new Error(
+        `qualification evidence missing for ${lifecycle.entryId}`,
+      );
+    }
+    return promoteMarketDirectEntryToCanary(lifecycle, {
+      tick,
+      qualificationDigest: digest,
+    });
+  }
+  if (
+    lifecycle.stage === "review_paused" &&
+    target === "continuous"
+  ) {
+    if (!expectedReviewedEvidenceDigest) {
+      throw new Error(
+        `confirmed canary binding missing for ${lifecycle.entryId}`,
+      );
+    }
+    const digest =
+      reviewedEvidenceDigest ||
+      (lifecycle.entryId === "base-x-e6n59-v1"
+        ? expectedReviewedEvidenceDigest
+        : undefined);
+    if (!digest) {
+      throw new Error(
+        `review evidence missing for ${lifecycle.entryId}`,
+      );
+    }
+    return promoteMarketDirectEntryToContinuous(lifecycle, {
+      tick,
+      reviewedEvidenceDigest: digest,
+      expectedReviewedEvidenceDigest,
+    });
+  }
+  throw new Error(
+    `illegal lifecycle transition ${lifecycle.entryId}:${lifecycle.stage}->${target}`,
+  );
+}
+
+function reviewedEvidenceBindings(
+  lifecycleByEntry: Record<string, MarketDirectEntryLifecycle>,
+): MarketDirectPermitEvidenceBinding[] {
+  const result: MarketDirectPermitEvidenceBinding[] = [];
+  for (const lifecycle of Object.values(lifecycleByEntry)) {
+    for (const evidence of lifecycle.evidenceHistory) {
+      const evidenceKey =
+        lifecycle.entryId === "base-x-e6n59-v1" &&
+        evidence.kind === "legacy_reviewed_canary"
+          ? LEGACY_X_PROCESSED_EVIDENCE_KEY
+          : `${lifecycle.entryId}:${evidence.kind}:${evidence.digest}`;
+      result.push({
+        entryId: lifecycle.entryId,
+        evidenceKey,
+        kind: evidence.kind,
+        digest: evidence.digest,
+      });
+    }
+  }
+  return result;
+}
+
+export function proposeMarketDirectContinuousPermit(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  accountIdentity: string,
+  request: MarketDirectContinuousPermitRequest,
+): {
+  ok: boolean;
+  state: MarketDirectContinuousAutomationState;
+  permit?: MarketDirectContinuousPermit;
+  error?: string;
+} {
+  const validation = validateContinuousLedger(state.ledger, tick);
+  if (
+    state.migrationStatus === "blocked" ||
+    state.migrationBlockedReason ||
+    state.permitChain.blocker ||
+    !validation.ok ||
+    !accountIdentity ||
+    !request?.operatorAuthorizationFingerprint
+  ) {
+    return {
+      ok: false,
+      state,
+      error:
+        state.migrationBlockedReason ||
+        state.permitChain.blockerReason ||
+        validation.blockerCode ||
+        "continuous_permit_prerequisite_failed",
+    };
+  }
+  if (
+    state.ledger.pending ||
+    Object.keys(state.quarantinedPendingDirectDeals).length > 0
+  ) {
+    return {
+      ok: false,
+      state,
+      error: "continuous_permit_wal_not_quiescent",
+    };
+  }
+
+  try {
+    const lifecycleByEntry = clone(state.lifecycleByEntry);
+    const firstPermit =
+      state.permitChain.currentPermitEpoch === 0;
+    for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
+      const current = lifecycleByEntry[entry.entryId];
+      if (!current) {
+        throw new Error(`lifecycle missing: ${entry.entryId}`);
+      }
+      const defaultTarget =
+        firstPermit && entry.resourceType === "X"
+          ? "continuous"
+          : current.stage;
+      lifecycleByEntry[entry.entryId] =
+        transitionLifecycleForPermit(
+          current,
+          request.entryStages?.[entry.entryId] ??
+            defaultTarget,
+          tick,
+          request.reviewedEvidenceDigests?.[entry.entryId],
+          state.ledger.confirmedCanaries[entry.entryId]
+            ?.reviewedEvidenceDigest,
+        );
+    }
+    const grants: MarketDirectPermitEntryGrant[] =
+      MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map((entry) => {
+        const lifecycle = lifecycleByEntry[entry.entryId];
+        const writable =
+          lifecycle.stage === "canary" ||
+          lifecycle.stage === "continuous";
+        const requestedGrant =
+          request.newDealGrants?.[entry.entryId];
+        const newDealGrant =
+          requestedGrant ??
+          (writable ? "enabled" : "suspended");
+        if (!writable && newDealGrant === "enabled") {
+          throw new Error(
+            `non-writing lifecycle grant enabled: ${entry.entryId}`,
+          );
+        }
+        return {
+          entryId: entry.entryId,
+          stage: lifecycle.stage,
+          newDealGrant,
+          resourceFingerprint: entry.resourceFingerprint,
+          lifecycleEvidenceDigest:
+            marketDirectLifecycleEvidenceDigest(lifecycle),
+        };
+      });
+    const permit = buildMarketDirectContinuousPermit({
+      epoch: state.permitChain.permitEpochHighWater + 1,
+      accountIdentity,
+      sharedDirectFingerprint:
+        MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
+      entryGrants: grants,
+      reviewedEvidence:
+        reviewedEvidenceBindings(lifecycleByEntry),
+      previousPermitId: state.permitChain.currentPermitId,
+      previousPermitHead: state.permitChain.permitChainHead,
+      previousLedgerHead: state.ledger.receiptHeadHash,
+      createdAt: tick,
+      operatorAuthorizationFingerprint:
+        request.operatorAuthorizationFingerprint,
+    });
+    const next = clone(state);
+    next.proposedPermit = {
+      permit,
+      lifecycleByEntry,
+      proposedAt: tick,
+    };
+    return { ok: true, state: next, permit };
+  } catch (error) {
+    return {
+      ok: false,
+      state,
+      error:
+        error instanceof Error
+          ? error.message
+          : "continuous_permit_proposal_failed",
+    };
+  }
+}
+
+export function acceptMarketDirectContinuousPermit(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  permitId: string,
+  currentShard: string,
+): {
+  ok: boolean;
+  idempotent?: boolean;
+  state: MarketDirectContinuousAutomationState;
+  error?: string;
+} {
+  const existing = state.permitChain.permits.find(
+    (permit) => permit.permitId === permitId,
+  );
+  const proposal = state.proposedPermit;
+  const permit =
+    existing ??
+    (proposal?.permit.permitId === permitId
+      ? proposal.permit
+      : undefined);
+  if (!permit) {
+    return {
+      ok: false,
+      state,
+      error: "continuous_permit_proposal_not_found",
+    };
+  }
+  const appended = appendMarketDirectContinuousPermit(
+    state.permitChain,
+    permit,
+    {
+      currentShard,
+      currentLedgerHead: state.ledger.receiptHeadHash,
+      hasPending: state.ledger.pending !== undefined,
+      hasQuarantine:
+        Object.keys(state.quarantinedPendingDirectDeals).length > 0,
+      hasGap: Boolean(
+        state.ledger.blocker || state.migrationBlockedReason,
+      ),
+      hasUnmatchedReservation:
+        state.ledger.pending !== undefined,
+      checkpoint: {
+        permitEpochHighWater:
+          state.ledger.permitEpochHighWater,
+        permitChainHeadHighWater:
+          state.ledger.permitChainHeadHighWater,
+      },
+    },
+  );
+  if (
+    appended.status === "rejected" ||
+    appended.status === "conflict"
+  ) {
+    const next = clone(state);
+    next.permitChain = appended.state;
+    return {
+      ok: false,
+      state: next,
+      error: appended.reason,
+    };
+  }
+  if (appended.status === "idempotent") {
+    return {
+      ok: true,
+      idempotent: true,
+      state,
+    };
+  }
+  if (!proposal || proposal.permit.permitId !== permitId) {
+    return {
+      ok: false,
+      state,
+      error: "continuous_permit_proposal_not_found",
+    };
+  }
+  const next = clone(state);
+  next.permitChain = appended.state;
+  next.lifecycleByEntry = proposal.lifecycleByEntry;
+  next.currentPermit = proposal.permit;
+  next.migrationStatus = "active";
+  next.ledger.permitEpochHighWater =
+    appended.state.permitEpochHighWater;
+  next.ledger.permitChainHeadHighWater =
+    appended.state.permitChainHeadHighWater;
+  delete next.proposedPermit;
+  return {
+    ok: true,
+    idempotent: false,
+    state: next,
+  };
+}
+
+export interface MarketDirectContinuousRuntimeCandidate {
+  roomName: string;
+  resourceType: ResourceConstant;
+  historyTrusted: boolean;
+  historyFloor?: number;
+  ratchetFloor?: number;
+  effectiveNetFloor: number;
+  effectiveEnergyShadowPrice?: number;
+  energyShadowObservedAt?: number;
+  energyShadowComponents?: {
+    hardFloor: number;
+    explicit?: number;
+    historyFloor?: number;
+    ratchetFloor?: number;
+  };
+  capacityState?: "normal" | "pressure" | "emergency";
+  isHubRoom?: boolean;
+  rejectionReasons: readonly string[];
+}
+
+export interface MarketDirectContinuousTerminalSnapshot {
+  roomName: string;
+  owned: boolean;
+  resourceAmount: number;
+  energy: number;
+  cooldown: number;
+  nativeMineralType?: ResourceConstant;
+}
+
+export interface MarketDirectContinuousOutgoingWindow {
+  observedAt: number;
+  coversAttemptAt: boolean;
+  transactions: DirectOutgoingTransaction[];
+  oldestTime?: number;
+  newestTime?: number;
+}
+
+export interface MarketDirectContinuousDependencies {
+  readCurrentBuyOrders: (
+    resource: ResourceConstant,
+  ) => MarketOrderSnapshot[];
+  readOwnOrders: () => MarketOrderSnapshot[];
+  readTerminal: (
+    roomName: string,
+    resource: ResourceConstant,
+  ) => MarketDirectContinuousTerminalSnapshot | undefined;
+  readProtection: (
+    config: ResolvedMarketSaleAutomationConfig,
+  ) => MarketSaleProtectionLedger;
+  readCredits: () => number | undefined;
+  readOutgoingWindow: (
+    attemptAt: number,
+  ) => MarketDirectContinuousOutgoingWindow | undefined;
+  calculateTransactionEnergy: (
+    amount: number,
+    fromRoomName: string,
+    toRoomName: string,
+  ) => number;
+  readAccountIdentity: () => string | undefined;
+  readExecutorShard: () => string | undefined;
+  hasProductionMarketIntent: () => boolean;
+  readArbiterSnapshot: (
+    roomNames: readonly string[],
+  ) => {
+    blocked: boolean;
+    revision: string;
+  };
+  claimPrepared: typeof claimPreparedDirectMarketClaims;
+  executePrepared: typeof executePreparedDirectMarketDeal;
+  releasePrepared: (requestId: string) => boolean | void;
+}
+
+export interface MarketDirectContinuousAutomationInput {
+  tick: number;
+  fullPlanningTick: boolean;
+  config: ResolvedMarketSaleAutomationConfig;
+  candidates: readonly MarketDirectContinuousRuntimeCandidate[];
+  makerExposurePresent: boolean;
+  emergencyStop: boolean;
+}
+
+function convertOrder(order: Order): MarketOrderSnapshot {
+  return {
+    id: order.id,
+    type: order.type === ORDER_BUY ? "buy" : "sell",
+    resourceType: order.resourceType,
+    roomName: order.roomName,
+    price: order.price,
+    amount: order.amount,
+    remainingAmount: order.remainingAmount,
+    totalAmount: order.totalAmount,
+    created: order.created,
+  };
+}
+
+function convertOutgoingTransaction(
+  transaction: Transaction,
+): DirectOutgoingTransaction {
+  return {
+    transactionId: transaction.transactionId,
+    time: transaction.time,
+    amount: transaction.amount,
+    resourceType: transaction.resourceType,
+    from: transaction.from,
+    to: transaction.to,
+    order: transaction.order
+      ? {
+          id: transaction.order.id,
+          type: transaction.order.type,
+          price: transaction.order.price,
+        }
+      : undefined,
+  };
+}
+
+function defaultOutgoingWindow(
+  attemptAt: number,
+): MarketDirectContinuousOutgoingWindow | undefined {
+  const raw = Game.market?.outgoingTransactions;
+  if (!Array.isArray(raw)) return undefined;
+  const transactions = raw.map(convertOutgoingTransaction);
+  const times = transactions.map((entry) => entry.time);
+  const oldestTime =
+    times.length > 0 ? Math.min(...times) : undefined;
+  const newestTime =
+    times.length > 0 ? Math.max(...times) : undefined;
+  return {
+    observedAt: Game.time,
+    transactions,
+    oldestTime,
+    newestTime,
+    coversAttemptAt:
+      transactions.length < MAX_OUTGOING_TRANSACTIONS ||
+      (oldestTime !== undefined && oldestTime < attemptAt),
+  };
+}
+
+function defaultAccountIdentity(): string | undefined {
+  const identities = new Set<string>();
+  for (const room of Object.values(Game.rooms || {})) {
+    if (!room.controller?.my) continue;
+    const username =
+      room.controller.owner?.username ||
+      room.terminal?.owner?.username ||
+      room.storage?.owner?.username;
+    if (username) identities.add(username);
+  }
+  return identities.size === 1
+    ? [...identities][0]
+    : undefined;
+}
+
+function canonicalProtectionOptions(): {
+  candidates: Array<{
+    roomName: string;
+    resource: ResourceConstant;
+  }>;
+  laneReserveByEntry: Record<string, number>;
+} {
+  const candidates: Array<{
+    roomName: string;
+    resource: ResourceConstant;
+  }> = [];
+  const laneReserveByEntry: Record<string, number> = {};
+  for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
+    for (const roomName of entry.allowedRoomNames) {
+      candidates.push({
+        roomName,
+        resource: entry.resourceType,
+      });
+      laneReserveByEntry[
+        getMarketProtectionEntryKey(
+          roomName,
+          entry.resourceType,
+        )
+      ] = entry.laneReserve;
+    }
+  }
+  return { candidates, laneReserveByEntry };
+}
+
+export const defaultMarketDirectContinuousDependencies:
+  MarketDirectContinuousDependencies = {
+    readCurrentBuyOrders: (resource) => {
+      const orders = Game.market.getAllOrders({
+        type: ORDER_BUY,
+        resourceType: resource,
+      });
+      if (!Array.isArray(orders)) {
+        throw new TypeError("continuous BUY book unavailable");
+      }
+      return orders.map(convertOrder);
+    },
+    readOwnOrders: () => {
+      const orders = Game.market?.orders;
+      if (!orders || typeof orders !== "object") {
+        throw new TypeError("continuous own orders unavailable");
+      }
+      return Object.values(orders).map(convertOrder);
+    },
+    readTerminal: (roomName, resource) => {
+      const room = Game.rooms?.[roomName];
+      const terminal = room?.terminal;
+      if (!room || !terminal) return undefined;
+      const resourceAmount =
+        terminal.store.getUsedCapacity(resource);
+      const energy =
+        terminal.store.getUsedCapacity(RESOURCE_ENERGY);
+      const mineral = room.find(FIND_MINERALS)[0];
+      if (
+        !Number.isSafeInteger(resourceAmount) ||
+        !Number.isSafeInteger(energy) ||
+        !Number.isSafeInteger(terminal.cooldown)
+      ) {
+        return undefined;
+      }
+      return {
+        roomName,
+        owned: room.controller?.my === true,
+        resourceAmount,
+        energy,
+        cooldown: terminal.cooldown,
+        nativeMineralType: mineral?.mineralType,
+      };
+    },
+    readProtection: (config) =>
+      collectLiveMarketSaleProtectionLedger(
+        config,
+        undefined,
+        canonicalProtectionOptions(),
+      ),
+    readCredits: () => {
+      const credits = Game.market?.credits;
+      return typeof credits === "number" &&
+        Number.isFinite(credits) &&
+        credits >= 0
+        ? credits
+        : undefined;
+    },
+    readOutgoingWindow: defaultOutgoingWindow,
+    calculateTransactionEnergy: (
+      amount,
+      fromRoomName,
+      toRoomName,
+    ) =>
+      Game.market.calcTransactionCost(
+        amount,
+        fromRoomName,
+        toRoomName,
+      ),
+    readAccountIdentity: defaultAccountIdentity,
+    readExecutorShard: () => Game.shard?.name,
+    hasProductionMarketIntent: hasMarketActionIntentThisTick,
+    readArbiterSnapshot: (roomNames) => {
+      const accountClaim = getMarketAccountClaim();
+      const terminalClaims = [...roomNames]
+        .sort()
+        .map((roomName) => getTerminalActionClaim(roomName))
+        .filter(
+          (claim): claim is NonNullable<typeof claim> =>
+            claim !== undefined,
+        );
+      const journal = getMarketActionJournal().filter(
+        (entry) => entry.tick === Game.time,
+      );
+      const productionIntent = hasMarketActionIntentThisTick();
+      return {
+        blocked:
+          productionIntent ||
+          accountClaim !== undefined ||
+          terminalClaims.length > 0,
+        revision: canonicalStableHashV1({
+          domain:
+            "market-direct-continuous:arbiter-snapshot-v1",
+          accountClaim: accountClaim || null,
+          terminalClaims,
+          journal,
+          productionIntent,
+          tick: Game.time,
+        }),
+      };
+    },
+    claimPrepared: claimPreparedDirectMarketClaims,
+    executePrepared: executePreparedDirectMarketDeal,
+    releasePrepared: releasePreparedDirectMarketClaims,
+  };
+
+interface ContinuousReadEntry {
+  entryId: string;
+  runtimeCandidate: MarketDirectContinuousRuntimeCandidate;
+  terminal: MarketDirectContinuousTerminalSnapshot;
+  protection: MarketProtectionEntry;
+  orders: MarketOrderSnapshot[];
+  plannerEntry: MarketDirectContinuousEntryInput;
+}
+
+interface ContinuousFullRead {
+  complete: boolean;
+  blocker?: string;
+  scopeEvidence: string;
+  plannerInput?: PlanMarketDirectContinuousInput;
+  entries: Record<string, ContinuousReadEntry>;
+  ownOrders: MarketOrderSnapshot[];
+  outgoingWindow?: MarketDirectContinuousOutgoingWindow;
+  accountIdentity?: string;
+  executorShard?: string;
+  credits?: number;
+  arbiterBlocked: boolean;
+}
+
+function sanitizedHash(
+  domain: string,
+  evidence: unknown,
+): string {
+  return canonicalStableHashV1({
+    domain,
+    evidence: safeJsonEvidence(evidence),
+  });
+}
+
+function runtimeCandidateKey(
+  roomName: string,
+  resource: string,
+): string {
+  return `${roomName}:${resource}`;
+}
+
+function sortedOrderSnapshots(
+  orders: readonly MarketOrderSnapshot[],
+): MarketOrderSnapshot[] {
+  return [...orders]
+    .map((order) => ({ ...order }))
+    .sort(
+      (left, right) =>
+        left.id.localeCompare(right.id) ||
+        left.price - right.price ||
+        left.amount - right.amount,
+    );
+}
+
+function currentPermitMatchesState(
+  state: MarketDirectContinuousAutomationState,
+  accountIdentity: string,
+  executorShard: string,
+): boolean {
+  const permit = state.currentPermit;
+  const tip =
+    state.permitChain.permits[
+      state.permitChain.permits.length - 1
+    ];
+  const chainValidation =
+    validateMarketDirectContinuousPermitChain(
+      state.permitChain,
+      {
+        permitEpochHighWater:
+          state.ledger.permitEpochHighWater,
+        permitChainHeadHighWater:
+          state.ledger.permitChainHeadHighWater,
+      },
+    );
+  return Boolean(
+    chainValidation.ok &&
+    permit &&
+      tip &&
+      state.migrationStatus === "active" &&
+      !state.migrationBlockedReason &&
+      !state.permitChain.blocker &&
+      permit.permitId === tip.permitId &&
+      permit.permitHead === tip.permitHead &&
+      permit.epoch === state.permitChain.currentPermitEpoch &&
+      permit.permitId === state.permitChain.currentPermitId &&
+      permit.permitHead === state.permitChain.permitChainHead &&
+      permit.accountIdentity === accountIdentity &&
+      permit.executorShard === executorShard &&
+      permit.executorShard ===
+        MARKET_DIRECT_CONTINUOUS_EXECUTOR_SHARD &&
+      permit.sharedDirectFingerprint ===
+        MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT &&
+      state.ledger.permitEpochHighWater ===
+        state.permitChain.permitEpochHighWater &&
+      state.ledger.permitChainHeadHighWater ===
+        state.permitChain.permitChainHeadHighWater &&
+      sanitizedHash(
+        "market-direct-continuous:permit-table-compare-v1",
+        permit.canonicalExecutionTable,
+      ) ===
+        sanitizedHash(
+          "market-direct-continuous:permit-table-compare-v1",
+          MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
+        ),
+  );
+}
+
+function completePricingCandidate(
+  candidate: MarketDirectContinuousRuntimeCandidate,
+  entry: (typeof MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE)[number],
+  tick: number,
+  maxAgeTicks: number,
+): boolean {
+  const expectedFloor = Math.max(
+    entry.hardFloor,
+    entry.economicFloor,
+    candidate.historyFloor ?? 0,
+    candidate.ratchetFloor ?? 0,
+  );
+  const staleInput = candidate.rejectionReasons.some(
+    (reason) =>
+      reason.includes("resource_control_cycle_stale") ||
+      reason.includes("pricing_cache_stale") ||
+      reason.includes("pricing_refresh_failed") ||
+      reason.includes("cpu_bucket_low") ||
+      reason.includes("live_adapter_failed"),
+  );
+  return (
+    candidate.roomName === entry.allowedRoomNames[0] &&
+    candidate.resourceType === entry.resourceType &&
+    candidate.historyTrusted === true &&
+    Number.isFinite(candidate.historyFloor) &&
+    Number.isFinite(candidate.ratchetFloor) &&
+    Number.isFinite(candidate.effectiveNetFloor) &&
+    Math.abs(candidate.effectiveNetFloor - expectedFloor) <
+      1e-9 &&
+    Number.isFinite(candidate.effectiveEnergyShadowPrice) &&
+    candidate.effectiveEnergyShadowPrice! >= 0 &&
+    Number.isSafeInteger(candidate.energyShadowObservedAt) &&
+    candidate.energyShadowObservedAt! <= tick &&
+    tick - candidate.energyShadowObservedAt! <= maxAgeTicks &&
+    candidate.energyShadowComponents !== undefined &&
+    Number.isFinite(
+      candidate.energyShadowComponents.hardFloor,
+    ) &&
+    !staleInput &&
+    candidate.capacityState !== undefined &&
+    candidate.isHubRoom !== undefined
+  );
+}
+
+function plannerPolicyFor(
+  entry: (typeof MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE)[number],
+  lifecycle: MarketDirectEntryLifecycle,
+  candidate: MarketDirectContinuousRuntimeCandidate,
+): MarketDirectContinuousEntryInput["policy"] {
+  return {
+    entryId: entry.entryId,
+    revision: entry.resourcePolicyRevision,
+    resourceType: entry.resourceType,
+    allowedRooms: entry.allowedRoomNames,
+    requireNativeMineral: entry.requireNativeMineral,
+    grant:
+      lifecycle.stage === "canary"
+        ? "canary"
+        : "continuous",
+    hardNetFloor: entry.hardFloor,
+    economicNetFloor: entry.economicFloor,
+    historyNetFloor: candidate.historyFloor,
+    ratchetNetFloor: candidate.ratchetFloor,
+    minExecutableNotional: entry.minOrderNotional,
+    maxRawOrders: entry.maxRawOrdersScanned,
+    maxEligibleOrders: entry.maxEligibleOrdersPriced,
+    maxTransactionEnergy: entry.maxTransactionEnergy,
+    terminalEnergyReserve: entry.terminalEnergyReserve,
+    resourceRollingCap: entry.rollingMaxAmount,
+    opportunityReserve:
+      entry.rollingOpportunityReserveAmount,
+  };
+}
+
+function continuousPendingState(
+  state: MarketDirectContinuousAutomationState,
+): PlanMarketDirectContinuousInput["writeContext"]["pendingState"] {
+  if (
+    state.ledger.blocker ||
+    state.migrationBlockedReason
+  ) {
+    return "gap";
+  }
+  if (
+    Object.keys(state.quarantinedPendingDirectDeals).length > 0
+  ) {
+    return "quarantine";
+  }
+  return state.ledger.pending ? "active" : "none";
+}
+
+function buildContinuousFullRead(
+  state: MarketDirectContinuousAutomationState,
+  input: MarketDirectContinuousAutomationInput,
+  dependencies: MarketDirectContinuousDependencies,
+  plannerEntryIds: readonly string[],
+): ContinuousFullRead {
+  const empty: ContinuousFullRead = {
+    complete: false,
+    scopeEvidence: "",
+    entries: {},
+    ownOrders: [],
+    arbiterBlocked: true,
+  };
+  try {
+    const mismatchReasons =
+      marketDirectContinuousConfigMismatchReasons(input.config);
+    if (
+      input.config.directCapability !== "continuous-v2" ||
+      input.config.configRevision !==
+        MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION ||
+      !input.config.validForPlanning ||
+      mismatchReasons.length > 0
+    ) {
+      return {
+        ...empty,
+        blocker:
+          mismatchReasons[0] ||
+          "continuous_config_not_authorized",
+      };
+    }
+    const ledgerValidation = validateContinuousLedger(
+      state.ledger,
+      input.tick,
+    );
+    if (!ledgerValidation.ok || state.ledger.blocker) {
+      return {
+        ...empty,
+        blocker:
+          state.ledger.blocker?.code ||
+          ledgerValidation.blockerCode ||
+          "continuous_ledger_invalid",
+      };
+    }
+    const accountIdentity =
+      dependencies.readAccountIdentity();
+    const executorShard = dependencies.readExecutorShard();
+    if (
+      !accountIdentity ||
+      !executorShard ||
+      !currentPermitMatchesState(
+        state,
+        accountIdentity,
+        executorShard,
+      )
+    ) {
+      return {
+        ...empty,
+        accountIdentity,
+        executorShard,
+        blocker: "continuous_permit_mismatch",
+      };
+    }
+
+    const expectedKeys =
+      MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map((entry) =>
+        runtimeCandidateKey(
+          entry.allowedRoomNames[0],
+          entry.resourceType,
+        ),
+      ).sort();
+    const candidateByKey = new Map<
+      string,
+      MarketDirectContinuousRuntimeCandidate
+    >();
+    for (const candidate of input.candidates) {
+      const key = runtimeCandidateKey(
+        candidate.roomName,
+        candidate.resourceType,
+      );
+      if (candidateByKey.has(key)) {
+        return {
+          ...empty,
+          blocker: "continuous_candidate_duplicate",
+        };
+      }
+      candidateByKey.set(key, candidate);
+    }
+    if (
+      [...candidateByKey.keys()].sort().join("|") !==
+      expectedKeys.join("|")
+    ) {
+      return {
+        ...empty,
+        blocker: "continuous_candidate_scope_incomplete",
+      };
+    }
+
+    const protection = dependencies.readProtection(
+      input.config,
+    );
+    if (
+      !protection ||
+      protection.globalBlocked === true ||
+      !protection.fresh ||
+      protection.currentTick !== input.tick ||
+      protection.observedAt !== input.tick ||
+      protection.expiresAt !== input.tick
+    ) {
+      return {
+        ...empty,
+        blocker:
+          protection?.globalIssues?.[0]?.code ||
+          "continuous_protection_global_incomplete",
+      };
+    }
+    const ownOrders = sortedOrderSnapshots(
+      dependencies.readOwnOrders(),
+    );
+    const outgoingWindow =
+      dependencies.readOutgoingWindow(input.tick);
+    const credits = dependencies.readCredits();
+    if (
+      !outgoingWindow ||
+      outgoingWindow.observedAt !== input.tick ||
+      !outgoingWindow.coversAttemptAt ||
+      typeof credits !== "number" ||
+      !Number.isFinite(credits) ||
+      credits < 0
+    ) {
+      return {
+        ...empty,
+        ownOrders,
+        outgoingWindow,
+        credits,
+        blocker: "continuous_account_snapshot_incomplete",
+      };
+    }
+
+    const roomNames =
+      MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.flatMap(
+        (entry) => [...entry.allowedRoomNames],
+      );
+    const arbiter =
+      dependencies.readArbiterSnapshot(roomNames);
+    const productionIntent =
+      dependencies.hasProductionMarketIntent();
+    const entries: Record<string, ContinuousReadEntry> = {};
+    const quotaRevisionParts: unknown[] = [];
+    let globalConfirmedAmount: number | undefined;
+    let globalUnmatchedPlannedAmount: number | undefined;
+
+    for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
+      const roomName = entry.allowedRoomNames[0];
+      const candidate = candidateByKey.get(
+        runtimeCandidateKey(roomName, entry.resourceType),
+      )!;
+      if (
+        !completePricingCandidate(
+          candidate,
+          entry,
+          input.tick,
+          input.config.planningSnapshotMaxAgeTicks,
+        )
+      ) {
+        return {
+          ...empty,
+          ownOrders,
+          outgoingWindow,
+          credits,
+          blocker: `continuous_pricing_incomplete:${entry.entryId}`,
+        };
+      }
+      const terminal = dependencies.readTerminal(
+        roomName,
+        entry.resourceType,
+      );
+      const protectionEntry =
+        protection.entries[
+          getMarketProtectionEntryKey(
+            roomName,
+            entry.resourceType,
+          )
+        ];
+      if (
+        !terminal ||
+        terminal.roomName !== roomName ||
+        !terminal.owned ||
+        !protectionEntry ||
+        protectionEntry.roomName !== roomName ||
+        protectionEntry.resource !== entry.resourceType ||
+        protectionEntry.revision !== input.tick ||
+        protectionEntry.observedAt !== input.tick ||
+        protectionEntry.expiresAt !== input.tick
+      ) {
+        return {
+          ...empty,
+          ownOrders,
+          outgoingWindow,
+          credits,
+          blocker: `continuous_lane_incomplete:${entry.entryId}`,
+        };
+      }
+      const orders = sortedOrderSnapshots(
+        dependencies.readCurrentBuyOrders(
+          entry.resourceType,
+        ),
+      );
+      if (
+        orders.length > entry.maxRawOrdersScanned ||
+        new Set(orders.map((order) => order.id)).size !==
+          orders.length
+      ) {
+        return {
+          ...empty,
+          ownOrders,
+          outgoingWindow,
+          credits,
+          blocker: `continuous_book_invalid:${entry.entryId}`,
+        };
+      }
+      const quota = computeContinuousQuota(
+        state.ledger,
+        input.tick,
+        entry.resourceType,
+        entry.rollingMaxAmount,
+        MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.rollingMaxAmount,
+      );
+      if (!quota) {
+        return {
+          ...empty,
+          ownOrders,
+          outgoingWindow,
+          credits,
+          blocker: `continuous_quota_incomplete:${entry.entryId}`,
+        };
+      }
+      globalConfirmedAmount ??= quota.globalConfirmedActual;
+      globalUnmatchedPlannedAmount ??=
+        quota.globalUnmatchedPlanned;
+      if (
+        globalConfirmedAmount !==
+          quota.globalConfirmedActual ||
+        globalUnmatchedPlannedAmount !==
+          quota.globalUnmatchedPlanned
+      ) {
+        return {
+          ...empty,
+          blocker: "continuous_global_quota_inconsistent",
+        };
+      }
+      quotaRevisionParts.push(quota);
+      const lifecycle = state.lifecycleByEntry[entry.entryId];
+      const terminalRevision = sanitizedHash(
+        "market-direct-continuous:terminal-read-v1",
+        terminal,
+      );
+      const bookRevision = sanitizedHash(
+        "market-direct-continuous:book-read-v1",
+        {
+          orders,
+          ownOrderIds: ownOrders.map((order) => order.id),
+        },
+      );
+      const protectionRevision = sanitizedHash(
+        "market-direct-continuous:protection-read-v1",
+        protectionEntry,
+      );
+      const plannerEntry: MarketDirectContinuousEntryInput = {
+        policy: plannerPolicyFor(
+          entry,
+          lifecycle,
+          candidate,
+        ),
+        quota: {
+          complete: true,
+          revision: sanitizedHash(
+            "market-direct-continuous:resource-quota-v1",
+            quota,
+          ),
+          resourceType: entry.resourceType,
+          rollingCap: entry.rollingMaxAmount,
+          confirmedAmount: quota.resourceConfirmedActual,
+          unmatchedPlannedAmount:
+            quota.resourceUnmatchedPlanned,
+          opportunityReserveSatisfied:
+            quota.resourceConfirmedActual +
+              quota.resourceUnmatchedPlanned >=
+            entry.rollingOpportunityReserveAmount,
+        },
+        lanes: [
+          {
+            lane: {
+              roomName,
+              resourceType: entry.resourceType,
+              owned: terminal.owned,
+              hub: candidate.isHubRoom === true,
+              capacityEmergency:
+                candidate.capacityState === "emergency",
+              nativeMineralType:
+                terminal.nativeMineralType,
+            },
+            protection: {
+              complete:
+                !protectionEntry.blocked &&
+                protectionEntry.fresh,
+              revision: protectionRevision,
+              sellableAmount:
+                getMarketProtectionSellableAmount(
+                  protectionEntry,
+                  input.tick,
+                ),
+            },
+            terminal: {
+              revision: terminalRevision,
+              normal:
+                terminal.cooldown === 0 &&
+                candidate.capacityState !== undefined &&
+                candidate.isHubRoom !== undefined,
+              claimed: arbiter.blocked,
+              cooldown: terminal.cooldown,
+              resourceAmount: terminal.resourceAmount,
+              energy: terminal.energy,
+            },
+            book: {
+              complete: true,
+              revision: bookRevision,
+              orders,
+              ownOrderIds: ownOrders.map((order) => order.id),
+            },
+            calculateTransactionEnergy: (
+              amount,
+              order,
+              sellerRoomName,
+            ) => {
+              if (!order.roomName) {
+                throw new Error(
+                  "continuous order room missing",
+                );
+              }
+              return dependencies.calculateTransactionEnergy(
+                amount,
+                sellerRoomName,
+                order.roomName,
+              );
+            },
+          },
+        ],
+      };
+      entries[entry.entryId] = {
+        entryId: entry.entryId,
+        runtimeCandidate: candidate,
+        terminal,
+        protection: protectionEntry,
+        orders,
+        plannerEntry,
+      };
+    }
+
+    const entryIds = new Set(plannerEntryIds);
+    const selectedEntries =
+      MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.filter(
+        (entry) => entryIds.has(entry.entryId),
+      ).map((entry) => entries[entry.entryId].plannerEntry);
+    if (selectedEntries.length !== entryIds.size) {
+      return {
+        ...empty,
+        blocker: "continuous_planner_scope_unknown",
+      };
+    }
+    const energyEvidence = input.candidates
+      .map((candidate) => ({
+        price: candidate.effectiveEnergyShadowPrice,
+        observedAt: candidate.energyShadowObservedAt,
+        components: candidate.energyShadowComponents,
+      }))
+      .sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right)),
+      );
+    const energySignature = sanitizedHash(
+      "market-direct-continuous:energy-shadow-set-v1",
+      energyEvidence,
+    );
+    if (
+      new Set(
+        energyEvidence.map((entry) =>
+          sanitizedHash(
+            "market-direct-continuous:energy-shadow-one-v1",
+            entry,
+          ),
+        ),
+      ).size !== 1
+    ) {
+      return {
+        ...empty,
+        blocker: "continuous_energy_shadow_inconsistent",
+      };
+    }
+    const quotaRevision = sanitizedHash(
+      "market-direct-continuous:quota-set-v1",
+      quotaRevisionParts,
+    );
+    const pendingState = continuousPendingState(state);
+    const cooldownBlocked = quotaRevisionParts.some(
+      (raw) => {
+        const quota = raw as ReturnType<
+          typeof computeContinuousQuota
+        >;
+        return Boolean(
+          quota &&
+            (input.tick < quota.confirmedCooldownNotBefore ||
+              input.tick < quota.retryNotBefore),
+        );
+      },
+    );
+    const arbiterBlocked =
+      arbiter.blocked ||
+      productionIntent ||
+      input.makerExposurePresent ||
+      input.emergencyStop ||
+      ownOrders.length > 0 ||
+      cooldownBlocked;
+    const scopeEvidence = sanitizedHash(
+      "market-direct-continuous:full-read-v1",
+      {
+        accountIdentity,
+        arbiter,
+        configFingerprint:
+          MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
+        credits,
+        emergencyStop: input.emergencyStop,
+        energySignature,
+        entries: Object.values(entries)
+          .sort((left, right) =>
+            left.entryId.localeCompare(right.entryId),
+          )
+          .map((entry) => ({
+            candidate: entry.runtimeCandidate,
+            entryId: entry.entryId,
+            orders: entry.orders,
+            plannerEntry: entry.plannerEntry,
+            protection: entry.protection,
+            terminal: entry.terminal,
+          })),
+        executorShard,
+        ledgerHead: state.ledger.receiptHeadHash,
+        makerExposurePresent: input.makerExposurePresent,
+        outgoingWindow,
+        ownOrders,
+        pendingState,
+        permit: state.currentPermit,
+        permitChainHead: state.permitChain.permitChainHead,
+        productionIntent,
+        quotaRevision,
+        tick: input.tick,
+      },
+    );
+    const energyPrice =
+      input.candidates[0].effectiveEnergyShadowPrice!;
+    const plannerInput: PlanMarketDirectContinuousInput = {
+      entries: selectedEntries,
+      energyShadow: {
+        complete: true,
+        revision: energySignature,
+        price: energyPrice,
+      },
+      globalQuota: {
+        complete: true,
+        revision: quotaRevision,
+        rollingCap:
+          MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.rollingMaxAmount,
+        confirmedAmount: globalConfirmedAmount!,
+        unmatchedPlannedAmount:
+          globalUnmatchedPlannedAmount!,
+      },
+      writeContext: {
+        complete: true,
+        revision: scopeEvidence,
+        credits,
+        executorShard,
+        permitEpoch: state.currentPermit!.epoch,
+        permitId: state.currentPermit!.permitId,
+        permitHead: state.currentPermit!.permitHead,
+        pendingState,
+        arbiterState: arbiterBlocked
+          ? "blocked"
+          : "available",
+      },
+    };
+    return {
+      complete: true,
+      scopeEvidence,
+      plannerInput,
+      entries,
+      ownOrders,
+      outgoingWindow,
+      accountIdentity,
+      executorShard,
+      credits,
+      arbiterBlocked,
+    };
+  } catch (error) {
+    return {
+      ...empty,
+      blocker:
+        error instanceof Error
+          ? `continuous_read_failed:${error.message}`
+          : "continuous_read_failed",
+    };
+  }
+}
+
+function overwriteContinuousState(
+  target: MarketDirectContinuousAutomationState,
+  source: MarketDirectContinuousAutomationState,
+): MarketDirectContinuousAutomationState {
+  if (target === source) return target;
+  for (const key of Object.keys(target) as Array<
+    keyof MarketDirectContinuousAutomationState
+  >) {
+    delete (target as unknown as Record<string, unknown>)[key];
+  }
+  Object.assign(target, clone(source));
+  return target;
+}
+
+function requestIdForPending(
+  pending: ContinuousPendingAttempt,
+): string {
+  return pending.evidenceKeyHint;
+}
+
+function projectContinuousCompatibility(
+  state: MarketDirectContinuousAutomationState,
+): void {
+  const pending = state.ledger.pending;
+  state.pendingDirectDeals = pending
+    ? {
+        [requestIdForPending(pending)]: {
+          requestId: requestIdForPending(pending),
+          status: state.ledger.blocker
+            ? "reconcile_gap"
+            : getMarketActionJournal().some(
+                  (entry) =>
+                    entry.requestId ===
+                      requestIdForPending(pending) &&
+                    entry.kind === "direct_market_deal",
+                )
+              ? "submitted"
+              : "prepared",
+          roomName: pending.sellerRoom,
+          canaryRoomName: pending.sellerRoom,
+          resource: pending.resource as ResourceConstant,
+          resourceType:
+            pending.resource as ResourceConstant,
+          amount: pending.plannedAmount,
+          dealAmount: pending.plannedAmount,
+          orderId: pending.orderId,
+          attemptAt: pending.attemptAt,
+        },
+      }
+    : {};
+  state.processedDirectTransactionKeys =
+    state.ledger.processedEvidenceKeys.map((entry) => entry.key);
+  state.directConfirmedDealCount =
+    state.ledger.lifetimeConfirmed.global.count;
+  state.directPausedForReview = Object.values(
+    state.lifecycleByEntry,
+  ).some((entry) => entry.stage === "review_paused");
+}
+
+function applyFinalizedLifecycleReceipts(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+): string | undefined {
+  const pendingReceipts = state.ledger.receipts
+    .filter(
+      (receipt) =>
+        receipt.attemptSeq >
+        state.lastLifecycleAppliedAttemptSeq,
+    )
+    .sort(
+      (left, right) =>
+        left.attemptSeq - right.attemptSeq,
+    );
+  for (const receipt of pendingReceipts) {
+    const lifecycle =
+      state.lifecycleByEntry[receipt.entryId];
+    if (!lifecycle) {
+      state.ledger = failClosedContinuousLedger(
+        state.ledger,
+        tick,
+        "direct_lifecycle_receipt_entry_missing",
+        receipt,
+      );
+      return "direct_lifecycle_receipt_entry_missing";
+    }
+    if (
+      receipt.status === "confirmed" &&
+      lifecycle.stage === "canary"
+    ) {
+      try {
+        const confirmation =
+          state.ledger.confirmedCanaries[receipt.entryId];
+        if (
+          !confirmation ||
+          confirmation.attemptSeq !== receipt.attemptSeq ||
+          confirmation.receiptEventHash !==
+            receipt.eventHash
+        ) {
+          throw new Error(
+            "confirmed canary ledger binding missing",
+          );
+        }
+        state.lifecycleByEntry[receipt.entryId] =
+          recordMarketDirectCanaryConfirmation(lifecycle, {
+            tick: receipt.transactionTime ?? tick,
+            actualAmount: receipt.actualAmount,
+            evidenceDigest:
+              confirmation.reviewedEvidenceDigest,
+          });
+      } catch (error) {
+        state.ledger = failClosedContinuousLedger(
+          state.ledger,
+          tick,
+          "direct_canary_lifecycle_conflict",
+          {
+            receipt,
+            error:
+              error instanceof Error
+                ? error.message
+                : String(error),
+          },
+        );
+        return "direct_canary_lifecycle_conflict";
+      }
+    }
+    state.lastLifecycleAppliedAttemptSeq =
+      receipt.attemptSeq;
+  }
+  projectContinuousCompatibility(state);
+  return undefined;
+}
+
+function advanceWalUntilWaiting(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  actions: string[],
+  dependencies: MarketDirectContinuousDependencies,
+): void {
+  const requestId = state.ledger.pending
+    ? requestIdForPending(state.ledger.pending)
+    : undefined;
+  for (let index = 0; index < 4; index += 1) {
+    const advanced = advanceContinuousWal(
+      state.ledger,
+      tick,
+    );
+    if (!advanced.ok || advanced.action === "blocked") {
+      state.ledger = advanced.state;
+      actions.push(
+        `continuous-wal-blocked:${
+          advanced.blockerCode || "unknown"
+        }`,
+      );
+      break;
+    }
+    if (
+      advanced.action === "idle" ||
+      advanced.action === "waiting_for_outcome"
+    ) {
+      break;
+    }
+    // 每个 assignment 都是独立合法 WAL 前缀，不能折叠。
+    state.ledger = advanced.state;
+    actions.push(`continuous-wal:${advanced.action}`);
+    const lifecycleError =
+      applyFinalizedLifecycleReceipts(state, tick);
+    projectContinuousCompatibility(state);
+    if (lifecycleError) break;
+    if (
+      advanced.action === "pending_deleted" &&
+      requestId
+    ) {
+      try {
+        dependencies.releasePrepared(requestId);
+      } catch {
+        // claim 最晚会按 arbiter TTL 自然失效；账本终态不得回滚。
+      }
+      break;
+    }
+  }
+}
+
+function continuousOutcomeFromPending(
+  pending: ContinuousPendingAttempt,
+  input: {
+    status: ContinuousOutcome["status"];
+    resolvedAt: number;
+    evidenceKey: string;
+    reason?: string;
+    transactionId?: string;
+    transactionTime?: number;
+    actualAmount: number;
+    actualTransactionEnergy?: number;
+    actualNetCreditsMilli?: number;
+  },
+): ContinuousOutcome {
+  return {
+    attemptSeq: pending.attemptSeq,
+    status: input.status,
+    permitId: pending.permitId,
+    permitEpoch: pending.permitEpoch,
+    entryId: pending.entryId,
+    resourcePolicyFingerprint:
+      pending.resourcePolicyFingerprint,
+    sellerRoom: pending.sellerRoom,
+    resource: pending.resource,
+    orderId: pending.orderId,
+    orderRoom: pending.orderRoom,
+    attemptAt: pending.attemptAt,
+    plannedAmount: pending.plannedAmount,
+    resolvedAt: input.resolvedAt,
+    evidenceKey: input.evidenceKey,
+    reason: input.reason,
+    transactionId: input.transactionId,
+    transactionTime: input.transactionTime,
+    actualAmount: input.actualAmount,
+    actualTransactionEnergy:
+      input.actualTransactionEnergy,
+    actualNetCreditsMilli: input.actualNetCreditsMilli,
+    pendingEvidenceHash: pending.frozenEvidenceHash,
+  };
+}
+
+function recordOutcomeAndAdvance(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  outcome: ContinuousOutcome,
+  actions: string[],
+  dependencies: MarketDirectContinuousDependencies,
+): boolean {
+  const recorded = recordContinuousOutcome(
+    state.ledger,
+    tick,
+    outcome,
+  );
+  state.ledger = recorded.state;
+  projectContinuousCompatibility(state);
+  if (!recorded.ok) {
+    actions.push(
+      `continuous-outcome-blocked:${
+        recorded.blockerCode || "unknown"
+      }`,
+    );
+    return false;
+  }
+  actions.push(`continuous-outcome:${outcome.status}`);
+  const requestId = state.ledger.pending
+    ? requestIdForPending(state.ledger.pending)
+    : undefined;
+  for (let index = 0; index < 4; index += 1) {
+    const advanced = advanceContinuousWal(
+      state.ledger,
+      tick,
+    );
+    state.ledger = advanced.state;
+    projectContinuousCompatibility(state);
+    if (!advanced.ok || advanced.action === "blocked") {
+      actions.push(
+        `continuous-wal-blocked:${
+          advanced.blockerCode || "unknown"
+        }`,
+      );
+      return false;
+    }
+    if (
+      advanced.action === "idle" ||
+      advanced.action === "waiting_for_outcome"
+    ) {
+      break;
+    }
+    actions.push(`continuous-wal:${advanced.action}`);
+    if (applyFinalizedLifecycleReceipts(state, tick)) {
+      return false;
+    }
+    if (
+      advanced.action === "pending_deleted" &&
+      requestId
+    ) {
+      try {
+        dependencies.releasePrepared(requestId);
+      } catch {
+        // 持久 claim 有 TTL；不允许因清理异常反向破坏已提交 receipt。
+      }
+      break;
+    }
+  }
+  return true;
+}
+
+function transactionKey(
+  transaction: DirectOutgoingTransaction,
+): string | undefined {
+  return transaction.order?.id
+    ? `${transaction.transactionId}:${transaction.order.id}`
+    : undefined;
+}
+
+function reconcileContinuousPending(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  dependencies: MarketDirectContinuousDependencies,
+  actions: string[],
+): void {
+  const pending = state.ledger.pending;
+  if (!pending) return;
+  if (
+    state.ledger.outcomes.some(
+      (outcome) =>
+        outcome.attemptSeq === pending.attemptSeq,
+    )
+  ) {
+    advanceWalUntilWaiting(
+      state,
+      tick,
+      actions,
+      dependencies,
+    );
+    return;
+  }
+  if (tick < pending.attemptAt) {
+    state.ledger = failClosedContinuousLedger(
+      state.ledger,
+      tick,
+      "direct_pending_from_future",
+      pending,
+    );
+    projectContinuousCompatibility(state);
+    return;
+  }
+  if (tick === pending.attemptAt) return;
+
+  if (tick <= pending.attemptAt + 1) {
+    try {
+      dependencies.claimPrepared({
+        requestId: requestIdForPending(pending),
+        roomName: pending.sellerRoom,
+        actor: CONTINUOUS_ACTOR,
+        attemptAt: pending.attemptAt,
+      });
+    } catch {
+      // 对账仍以 transaction window 为权威。
+    }
+  }
+
+  let window:
+    | MarketDirectContinuousOutgoingWindow
+    | undefined;
+  try {
+    window = dependencies.readOutgoingWindow(
+      pending.attemptAt,
+    );
+  } catch {
+    window = undefined;
+  }
+  if (
+    !window ||
+    window.observedAt !== tick ||
+    !window.coversAttemptAt
+  ) {
+    state.ledger = failClosedContinuousLedger(
+      state.ledger,
+      tick,
+      "direct_outgoing_window_incomplete",
+      window,
+    );
+    projectContinuousCompatibility(state);
+    return;
+  }
+  const baseline = new Set(
+    pending.executionEvidence
+      .outgoingTransactionKeysBefore,
+  );
+  const newTransactions = window.transactions.filter(
+    (transaction) => {
+      const key = transactionKey(transaction);
+      return (
+        key !== undefined &&
+        !baseline.has(key) &&
+        transaction.time >= pending.attemptAt
+      );
+    },
+  );
+  const matching = newTransactions.filter(
+    (transaction) => {
+      let priceMilli: number | undefined;
+      try {
+        priceMilli = transaction.order
+          ? priceToMilliDown(transaction.order.price)
+          : undefined;
+      } catch {
+        priceMilli = undefined;
+      }
+      return (
+        transaction.order?.id === pending.orderId &&
+        transaction.order.type === ORDER_BUY &&
+        priceMilli ===
+          pending.executionEvidence.observedOrderPriceMilli &&
+        transaction.resourceType === pending.resource &&
+        transaction.from === pending.sellerRoom &&
+        transaction.to === pending.orderRoom &&
+        Number.isSafeInteger(transaction.amount) &&
+        transaction.amount > 0 &&
+        transaction.amount <= pending.plannedAmount
+      );
+    },
+  );
+  const sameOrderButInvalid = newTransactions.some(
+    (transaction) =>
+      transaction.order?.id === pending.orderId &&
+      !matching.includes(transaction),
+  );
+  if (matching.length > 1 || sameOrderButInvalid) {
+    state.ledger = failClosedContinuousLedger(
+      state.ledger,
+      tick,
+      "direct_transaction_evidence_conflict",
+      newTransactions,
+    );
+    projectContinuousCompatibility(state);
+    return;
+  }
+  if (matching.length === 1) {
+    const transaction = matching[0];
+    let actualEnergy: number;
+    try {
+      actualEnergy =
+        dependencies.calculateTransactionEnergy(
+          transaction.amount,
+          pending.sellerRoom,
+          pending.orderRoom,
+        );
+    } catch {
+      actualEnergy = Number.NaN;
+    }
+    const grossMilli =
+      pending.executionEvidence.observedOrderPriceMilli *
+      transaction.amount;
+    const energyCostMilli =
+      pending.executionEvidence
+        .effectiveEnergyShadowPriceMilli * actualEnergy;
+    const actualNetCreditsMilli =
+      grossMilli - energyCostMilli;
+    const key = transactionKey(transaction)!;
+    if (
+      !Number.isSafeInteger(actualEnergy) ||
+      actualEnergy < 0 ||
+      !Number.isSafeInteger(actualNetCreditsMilli)
+    ) {
+      state.ledger = failClosedContinuousLedger(
+        state.ledger,
+        tick,
+        "direct_actual_net_invalid",
+        transaction,
+      );
+      projectContinuousCompatibility(state);
+      return;
+    }
+    recordOutcomeAndAdvance(
+      state,
+      tick,
+      continuousOutcomeFromPending(pending, {
+        status: "confirmed",
+        resolvedAt: tick,
+        evidenceKey: key,
+        transactionId: transaction.transactionId,
+        transactionTime: transaction.time,
+        actualAmount: transaction.amount,
+        actualTransactionEnergy: actualEnergy,
+        actualNetCreditsMilli,
+      }),
+      actions,
+      dependencies,
+    );
+    return;
+  }
+
+  const terminal = dependencies.readTerminal(
+    pending.sellerRoom,
+    pending.resource as ResourceConstant,
+  );
+  const credits = dependencies.readCredits();
+  const unchanged =
+    terminal !== undefined &&
+    terminal.resourceAmount ===
+      pending.executionEvidence.terminalResourceBefore &&
+    terminal.energy ===
+      pending.executionEvidence.terminalEnergyBefore &&
+    terminal.cooldown ===
+      pending.executionEvidence.terminalCooldownBefore &&
+    credits === pending.executionEvidence.creditsBefore;
+  if (!unchanged) {
+    state.ledger = failClosedContinuousLedger(
+      state.ledger,
+      tick,
+      "direct_reconcile_gap",
+      {
+        credits,
+        pending: pending.executionEvidence,
+        terminal,
+        window,
+      },
+    );
+    projectContinuousCompatibility(state);
+    return;
+  }
+  recordOutcomeAndAdvance(
+    state,
+    tick,
+    continuousOutcomeFromPending(pending, {
+      status: "not_filled",
+      resolvedAt: tick,
+      evidenceKey: `not-filled:${requestIdForPending(
+        pending,
+      )}`,
+      reason: "complete_window_and_physical_state_unchanged",
+      actualAmount: 0,
+    }),
+    actions,
+    dependencies,
+  );
+}
+
+export function runMarketDirectContinuousPreflight(
+  state: MarketDirectContinuousAutomationState,
+  input: Pick<
+    MarketDirectContinuousAutomationInput,
+    "tick" | "config"
+  >,
+  dependencies: MarketDirectContinuousDependencies =
+    defaultMarketDirectContinuousDependencies,
+): MarketDirectContinuousResult {
+  const actions: string[] = [];
+  const rejectedByReason: Record<string, number> = {};
+  const normalized = normalizeContinuousDirectState(
+    state,
+    input.tick,
+  );
+  overwriteContinuousState(state, normalized);
+  if (
+    state.migrationBlockedReason ||
+    state.ledger.blocker
+  ) {
+    const blocker =
+      state.migrationBlockedReason ||
+      state.ledger.blocker?.code ||
+      "continuous_preflight_blocked";
+    rejectedByReason[blocker] = 1;
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes: 0,
+      planComplete: false,
+      state,
+    };
+  }
+  reconcileContinuousPending(
+    state,
+    input.tick,
+    dependencies,
+    actions,
+  );
+  advanceWalUntilWaiting(
+    state,
+    input.tick,
+    actions,
+    dependencies,
+  );
+  applyFinalizedLifecycleReceipts(state, input.tick);
+  projectContinuousCompatibility(state);
+  if (state.ledger.blocker) {
+    rejectedByReason[state.ledger.blocker.code] = 1;
+  }
+  return {
+    actions,
+    rejectedByReason,
+    writes: 0,
+    planComplete: !state.ledger.blocker,
+    state,
+  };
+}
+
+function incrementReason(
+  target: Record<string, number>,
+  reason: string,
+  count = 1,
+): void {
+  target[reason] = (target[reason] || 0) + count;
+}
+
+function projectPlanningSnapshot(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  result: MarketDirectContinuousPlanningResult | undefined,
+  blocker: string | undefined,
+  rejectedByReason: Record<string, number>,
+): void {
+  const selected = result?.selected;
+  state.lastPlanningSnapshot = {
+    observedAt: tick,
+    complete: result?.complete === true && !blocker,
+    planningFingerprint:
+      result?.planningFingerprint ||
+      sanitizedHash(
+        "market-direct-continuous:blocked-plan-v1",
+        { blocker, tick },
+      ),
+    selected: selected
+      ? {
+          entryId: selected.entryId,
+          resource:
+            selected.resourceType as ResourceConstant,
+          roomName: selected.roomName,
+          orderId: selected.order.id,
+          grossPrice: selected.grossPriceMilli / 1_000,
+          unitNetPrice:
+            selected.netCreditsMilli /
+            selected.plannedAmount /
+            1_000,
+          transactionEnergy:
+            selected.transactionEnergy,
+        }
+      : undefined,
+    blocker,
+    safeResourceTypes: [
+      ...new Set(
+        (result?.safeCandidates || []).map(
+          (candidate) =>
+            candidate.resourceType as ResourceConstant,
+        ),
+      ),
+    ].sort(),
+    admittedResourceTypes: [
+      ...new Set(
+        (result?.admittedCandidates || []).map(
+          (candidate) =>
+            candidate.resourceType as ResourceConstant,
+        ),
+      ),
+    ].sort(),
+    rejectedByReason: { ...rejectedByReason },
+  };
+}
+
+function observeShadowEntries(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  read: ContinuousFullRead,
+  rejectedByReason: Record<string, number>,
+): boolean {
+  let complete = true;
+  for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
+    const lifecycle = state.lifecycleByEntry[entry.entryId];
+    if (
+      lifecycle.stage !== "shadow" &&
+      lifecycle.stage !== "qualified"
+    ) {
+      continue;
+    }
+    let result:
+      | "safe_opportunity"
+      | "safe_no_opportunity"
+      | "production_priority_wait"
+      | "incomplete" = "incomplete";
+    if (
+      read.complete &&
+      read.plannerInput &&
+      read.entries[entry.entryId]
+    ) {
+      const observation = planMarketDirectContinuous({
+        ...read.plannerInput,
+        entries: [
+          read.entries[entry.entryId].plannerEntry,
+        ],
+      });
+      if (observation.complete) {
+        result =
+          observation.safeCandidates.length > 0
+            ? "safe_opportunity"
+            : "safe_no_opportunity";
+      } else if (
+        observation.blocker?.reason ===
+        "write_context_blocked"
+      ) {
+        result = "production_priority_wait";
+      } else {
+        incrementReason(
+          rejectedByReason,
+          `continuous_shadow:${
+            observation.blocker?.reason ||
+            "incomplete"
+          }:${entry.entryId}`,
+        );
+      }
+    }
+    if (result === "incomplete") complete = false;
+    state.lifecycleByEntry[entry.entryId] =
+      observeMarketDirectShadowCycle(lifecycle, {
+        tick,
+        result,
+        resourceFingerprint: entry.resourceFingerprint,
+        sharedFingerprint:
+          CONTINUOUS_SHARED_POLICY_FINGERPRINT,
+      });
+  }
+  return complete;
+}
+
+function writableContinuousEntryIds(
+  state: MarketDirectContinuousAutomationState,
+  shard: string,
+): string[] {
+  return MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.filter(
+    (entry) => {
+      const lifecycle =
+        state.lifecycleByEntry[entry.entryId];
+      return (
+        lifecycle !== undefined &&
+        !(
+          lifecycle.stage === "canary" &&
+          state.ledger.confirmedCanaries[entry.entryId]
+        ) &&
+        marketDirectPermitAllowsNewDeal(
+          state.permitChain,
+          {
+            shard,
+            entryId: entry.entryId,
+            lifecycle,
+          },
+        )
+      );
+    },
+  ).map((entry) => entry.entryId);
+}
+
+function rejectionSummary(
+  result: MarketDirectContinuousPlanningResult,
+  target: Record<string, number>,
+): void {
+  if (result.blocker) {
+    incrementReason(
+      target,
+      `continuous_plan:${result.blocker.reason}`,
+    );
+  }
+  for (const rejection of result.rejections) {
+    incrementReason(
+      target,
+      `continuous_tuple:${rejection.reason}`,
+    );
+  }
+}
+
+function uniqueSafeOpportunities(
+  result: MarketDirectContinuousPlanningResult,
+): Array<{
+  resource: string;
+  resourceLimit: number;
+  reserveAmount: number;
+}> {
+  const resultByResource = new Map<
+    string,
+    {
+      resource: string;
+      resourceLimit: number;
+      reserveAmount: number;
+    }
+  >();
+  for (const candidate of result.safeCandidates) {
+    const entry =
+      MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.find(
+        (item) => item.entryId === candidate.entryId,
+      );
+    if (
+      !entry ||
+      candidate.resourceQuotaBefore +
+        CONTINUOUS_PLANNED_AMOUNT >
+        entry.rollingMaxAmount
+    ) {
+      continue;
+    }
+    resultByResource.set(candidate.resourceType, {
+      resource: candidate.resourceType,
+      resourceLimit: entry.rollingMaxAmount,
+      reserveAmount:
+        entry.rollingOpportunityReserveAmount,
+    });
+  }
+  return [...resultByResource.values()].sort(
+    (left, right) =>
+      left.resource.localeCompare(right.resource),
+  );
+}
+
+function outgoingEvidenceKeys(
+  window: MarketDirectContinuousOutgoingWindow,
+): string[] {
+  return window.transactions
+    .map(transactionKey)
+    .filter((key): key is string => key !== undefined)
+    .sort();
+}
+
+function executionEvidenceFor(
+  tick: number,
+  selected: MarketDirectContinuousCandidate,
+  planning: MarketDirectContinuousPlanningResult,
+  read: ContinuousFullRead,
+): ContinuousExecutionEvidence | undefined {
+  const readEntry = read.entries[selected.entryId];
+  const outgoing = read.outgoingWindow;
+  if (!readEntry || !outgoing || read.credits === undefined) {
+    return undefined;
+  }
+  return {
+    observedOrderPriceMilli: selected.grossPriceMilli,
+    observedOrderAmount:
+      selected.order.remainingAmount ??
+      selected.order.amount,
+    effectiveEnergyShadowPriceMilli:
+      selected.energyShadowPriceMilli,
+    effectiveNetFloorMilli:
+      selected.effectiveNetFloorMilli,
+    worstCaseNetCreditsMilli:
+      selected.worstCaseNetCreditsMilli,
+    protectionRevision: tick,
+    planningFingerprint:
+      planning.planningFingerprint,
+    planningEvidence: planning.planningEvidence,
+    terminalResourceBefore:
+      readEntry.terminal.resourceAmount,
+    terminalEnergyBefore: readEntry.terminal.energy,
+    terminalCooldownBefore:
+      readEntry.terminal.cooldown,
+    creditsBefore: read.credits,
+    outgoingTransactionKeysBefore:
+      outgoingEvidenceKeys(outgoing),
+    outgoingWindowObservedAt: outgoing.observedAt,
+    outgoingWindowOldestTime: outgoing.oldestTime,
+    outgoingWindowNewestTime: outgoing.newestTime,
+    outgoingWindowCoversAttemptAt:
+      outgoing.coversAttemptAt,
+  };
+}
+
+function failedOutcomeAfterPrepared(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  reason: string,
+  actions: string[],
+  dependencies: MarketDirectContinuousDependencies,
+): void {
+  const pending = state.ledger.pending;
+  if (!pending) return;
+  recordOutcomeAndAdvance(
+    state,
+    tick,
+    continuousOutcomeFromPending(pending, {
+      status: "failed",
+      resolvedAt: tick,
+      evidenceKey: `failed:${requestIdForPending(
+        pending,
+      )}:${reason}`,
+      reason,
+      actualAmount: 0,
+    }),
+    actions,
+    dependencies,
+  );
+}
+
+export function runMarketDirectContinuousPlanning(
+  state: MarketDirectContinuousAutomationState,
+  input: MarketDirectContinuousAutomationInput,
+  dependencies: MarketDirectContinuousDependencies =
+    defaultMarketDirectContinuousDependencies,
+): MarketDirectContinuousResult {
+  const actions: string[] = [];
+  const rejectedByReason: Record<string, number> = {};
+  let writes = 0;
+  if (
+    !input.fullPlanningTick ||
+    state.migrationStatus !== "active" ||
+    state.migrationBlockedReason ||
+    state.ledger.blocker ||
+    state.ledger.pending
+  ) {
+    const reason = !input.fullPlanningTick
+      ? "continuous_not_full_planning_tick"
+      : state.migrationBlockedReason ||
+        state.ledger.blocker?.code ||
+        (state.ledger.pending
+          ? "continuous_pending_active"
+          : "continuous_not_active");
+    incrementReason(rejectedByReason, reason);
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: false,
+      state,
+    };
+  }
+
+  const shard =
+    dependencies.readExecutorShard() || "";
+  const writableEntryIds =
+    writableContinuousEntryIds(state, shard);
+  const firstRead = buildContinuousFullRead(
+    state,
+    input,
+    dependencies,
+    writableEntryIds,
+  );
+  const shadowComplete = observeShadowEntries(
+    state,
+    input.tick,
+    firstRead,
+    rejectedByReason,
+  );
+  if (
+    !firstRead.complete ||
+    !firstRead.plannerInput
+  ) {
+    const blocker =
+      firstRead.blocker || "continuous_first_read_incomplete";
+    incrementReason(rejectedByReason, blocker);
+    projectPlanningSnapshot(
+      state,
+      input.tick,
+      undefined,
+      blocker,
+      rejectedByReason,
+    );
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: false,
+      state,
+    };
+  }
+  if (writableEntryIds.length === 0) {
+    projectPlanningSnapshot(
+      state,
+      input.tick,
+      undefined,
+      "continuous_no_writable_entry",
+      rejectedByReason,
+    );
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: shadowComplete,
+      state,
+    };
+  }
+
+  const planned = planMarketDirectContinuous(
+    firstRead.plannerInput,
+  );
+  rejectionSummary(planned, rejectedByReason);
+  projectPlanningSnapshot(
+    state,
+    input.tick,
+    planned,
+    planned.blocker?.reason,
+    rejectedByReason,
+  );
+  if (!planned.complete || !planned.selected) {
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: planned.complete && shadowComplete,
+      state,
+    };
+  }
+  if (
+    input.config.mode !== "direct" ||
+    input.emergencyStop
+  ) {
+    incrementReason(
+      rejectedByReason,
+      "continuous_write_mode_blocked",
+    );
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: shadowComplete,
+      state,
+    };
+  }
+
+  const secondRead = buildContinuousFullRead(
+    state,
+    input,
+    dependencies,
+    writableEntryIds,
+  );
+  if (
+    !secondRead.complete ||
+    !secondRead.plannerInput ||
+    secondRead.scopeEvidence !== firstRead.scopeEvidence
+  ) {
+    const blocker =
+      secondRead.blocker ||
+      "continuous_second_read_changed";
+    incrementReason(rejectedByReason, blocker);
+    projectPlanningSnapshot(
+      state,
+      input.tick,
+      planned,
+      blocker,
+      rejectedByReason,
+    );
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: false,
+      state,
+    };
+  }
+  const revalidated = planMarketDirectContinuous(
+    secondRead.plannerInput,
+  );
+  if (
+    !isExactMarketDirectContinuousSecondRead(
+      planned,
+      revalidated,
+    )
+  ) {
+    incrementReason(
+      rejectedByReason,
+      "continuous_second_read_changed",
+    );
+    projectPlanningSnapshot(
+      state,
+      input.tick,
+      revalidated,
+      "continuous_second_read_changed",
+      rejectedByReason,
+    );
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: false,
+      state,
+    };
+  }
+
+  const selected = revalidated.selected!;
+  const entry =
+    MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.find(
+      (item) => item.entryId === selected.entryId,
+    );
+  const lifecycle =
+    state.lifecycleByEntry[selected.entryId];
+  const executionEvidence = executionEvidenceFor(
+    input.tick,
+    selected,
+    revalidated,
+    secondRead,
+  );
+  if (!entry || !lifecycle || !executionEvidence) {
+    incrementReason(
+      rejectedByReason,
+      "continuous_execution_evidence_incomplete",
+    );
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: false,
+      state,
+    };
+  }
+  const attemptSeq = state.ledger.nextAttemptSeq;
+  const requestId = `continuous:${attemptSeq}:${input.tick}:${selected.entryId}`;
+  const prepared = prepareContinuousAttempt(
+    state.ledger,
+    {
+      tick: input.tick,
+      executionPolicy:
+        lifecycle.stage === "canary"
+          ? "canary"
+          : "continuous",
+      permitId: state.currentPermit!.permitId,
+      permitEpoch: state.currentPermit!.epoch,
+      entryId: selected.entryId,
+      resourcePolicyFingerprint:
+        entry.resourceFingerprint,
+      sellerRoom: selected.roomName,
+      resource: selected.resourceType,
+      orderId: selected.order.id,
+      orderRoom: selected.order.roomName!,
+      plannedAmount:
+        MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT,
+      plannedTransactionEnergy:
+        selected.transactionEnergy,
+      plannedNetCreditsMilli:
+        selected.netCreditsMilli,
+      evidenceKeyHint: requestId,
+      executionEvidence,
+      resourceLimit: entry.rollingMaxAmount,
+      globalLimit:
+        MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.rollingMaxAmount,
+      safeOpportunityResources:
+        uniqueSafeOpportunities(revalidated),
+    },
+  );
+  state.ledger = prepared.state;
+  projectContinuousCompatibility(state);
+  if (!prepared.ok || !state.ledger.pending) {
+    const blocker =
+      prepared.blockerCode ||
+      "continuous_prepare_failed";
+    incrementReason(rejectedByReason, blocker);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: false,
+      state,
+    };
+  }
+  actions.push(`continuous-prepared:${requestId}`);
+
+  let claimed = false;
+  try {
+    claimed = dependencies.claimPrepared({
+      requestId,
+      roomName: selected.roomName,
+      actor: CONTINUOUS_ACTOR,
+      attemptAt: input.tick,
+    });
+  } catch {
+    claimed = false;
+  }
+  if (!claimed) {
+    failedOutcomeAfterPrepared(
+      state,
+      input.tick,
+      "claim_failed",
+      actions,
+      dependencies,
+    );
+    incrementReason(
+      rejectedByReason,
+      "continuous_claim_failed",
+    );
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: false,
+      state,
+    };
+  }
+
+  let result: unknown;
+  try {
+    writes += 1;
+    result = dependencies.executePrepared({
+      requestId,
+      roomName: selected.roomName,
+      actor: CONTINUOUS_ACTOR,
+      attemptAt: input.tick,
+      orderId: selected.order.id,
+      amount: selected.plannedAmount,
+    });
+  } catch {
+    actions.push(`continuous-deal-unknown:${requestId}`);
+    projectContinuousCompatibility(state);
+    return {
+      actions,
+      rejectedByReason,
+      writes,
+      planComplete: true,
+      state,
+    };
+  }
+  if (isExplicitMarketNonOkReturnCode(result)) {
+    failedOutcomeAfterPrepared(
+      state,
+      input.tick,
+      `market_non_ok:${result}`,
+      actions,
+      dependencies,
+    );
+    incrementReason(
+      rejectedByReason,
+      `continuous_deal_error:${result}`,
+    );
+  } else {
+    actions.push(`continuous-deal-submitted:${requestId}`);
+  }
+  projectContinuousCompatibility(state);
+  return {
+    actions,
+    rejectedByReason,
+    writes,
+    planComplete: true,
+    state,
+  };
+}
+
+export function marketDirectContinuousExposure(
+  state: MarketDirectContinuousAutomationState,
+): {
+  resourceAmount: number;
+  energyAmount: number;
+  pendingCount: number;
+  quarantinedCount: number;
+} {
+  return {
+    resourceAmount:
+      state.ledger.pending?.plannedAmount ?? 0,
+    energyAmount:
+      state.ledger.pending?.plannedTransactionEnergy ?? 0,
+    pendingCount: state.ledger.pending ? 1 : 0,
+    quarantinedCount:
+      Object.keys(state.quarantinedPendingDirectDeals).length +
+      (state.ledger.blocker ? 1 : 0),
+  };
+}
+
+export function marketDirectContinuousStatus(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+): unknown {
+  const quotas = MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+    (entry) => ({
+      entryId: entry.entryId,
+      lifecycle:
+        state.lifecycleByEntry[entry.entryId],
+      quota: computeContinuousQuota(
+        state.ledger,
+        tick,
+        entry.resourceType,
+        entry.rollingMaxAmount,
+        MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.rollingMaxAmount,
+      ),
+    }),
+  );
+  const entries = MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+    (entry, index) => ({
+      entryId: entry.entryId,
+      resourceType: entry.resourceType,
+      allowedRoomNames: entry.allowedRoomNames,
+      requireNativeMineral:
+        entry.requireNativeMineral,
+      hardFloor: entry.hardFloor,
+      economicFloor: entry.economicFloor,
+      laneReserve: entry.laneReserve,
+      rollingWindowTicks: entry.rollingWindowTicks,
+      rollingMaxAmount: entry.rollingMaxAmount,
+      opportunityReserveAmount:
+        entry.rollingOpportunityReserveAmount,
+      lifecycle:
+        state.lifecycleByEntry[entry.entryId],
+      quota: quotas[index].quota,
+    }),
+  );
+  return {
+    schemaVersion: state.schemaVersion,
+    capability: state.capability,
+    migrationStatus: state.migrationStatus,
+    migrationBlockedReason:
+      state.migrationBlockedReason,
+    permit: state.currentPermit
+      ? {
+          epoch: state.currentPermit.epoch,
+          permitId: state.currentPermit.permitId,
+          permitHead: state.currentPermit.permitHead,
+          grants: state.currentPermit.entryGrants,
+        }
+      : undefined,
+    proposedPermit: state.proposedPermit?.permit,
+    lifecycleByEntry: state.lifecycleByEntry,
+    entries,
+    ledger: {
+      receiptHeadHash: state.ledger.receiptHeadHash,
+      finalizedAttemptSeq:
+        state.ledger.finalizedAttemptSeq,
+      nextAttemptSeq: state.ledger.nextAttemptSeq,
+      coverageStartTick:
+        state.ledger.coverageStartTick,
+      permitEpochHighWater:
+        state.ledger.permitEpochHighWater,
+      permitChainHeadHighWater:
+        state.ledger.permitChainHeadHighWater,
+      lifetimeConfirmed:
+        state.ledger.lifetimeConfirmed,
+      confirmedCanaries:
+        state.ledger.confirmedCanaries,
+      pending: state.ledger.pending,
+      blocker: state.ledger.blocker,
+      quotas,
+    },
+    lastPlanningSnapshot:
+      state.lastPlanningSnapshot,
+  };
+}

@@ -334,4 +334,165 @@ describe("monitor-service market sale automation projection", () => {
     });
   });
 
+  test("兼容投影 Continuous v2 permit、逐 entry 生命周期、双层 quota 与账本高水位", () => {
+    const payload = readFixtureProjection(
+      "market-sale-continuous-monitor.json",
+    );
+    const direct = payload.memory.marketSaleAutomation.direct;
+
+    expect(direct).toEqual(
+      expect.objectContaining({
+        available: true,
+        strategyActive: true,
+        capability: "market-direct-continuous",
+        schemaVersion: 2,
+        migrationStatus: "active",
+        permit: {
+          epoch: 3,
+          permitId: "permit-epoch-3",
+          permitHead: "permit-head-3",
+          grants: [
+            {
+              entryId: "base-h-e3n59-v1",
+              stage: "continuous",
+              newDealGrant: "continuous",
+            },
+            {
+              entryId: "base-x-e6n59-v1",
+              stage: "continuous",
+              newDealGrant: "continuous",
+            },
+            {
+              entryId: "base-z-e7n57-v1",
+              stage: "canary",
+              newDealGrant: "canary",
+            },
+          ],
+        },
+        proposedPermitId: "permit-epoch-4",
+        globalQuota: expect.objectContaining({
+          limit: 12000,
+          confirmed: 11000,
+          reserved: 0,
+          used: 11000,
+          remaining: 1000,
+          consistent: true,
+        }),
+        bestTuple: {
+          entryId: "base-z-e7n57-v1",
+          resourceType: "Z",
+          sellerRoom: "E7N57",
+          orderId: "buy-z-safe",
+          grossPrice: 52,
+          unitNetPrice: 49.75,
+          transactionEnergy: 450,
+        },
+        coverage: {
+          startTick: 20004,
+          receiptHead: "receipt-head-12",
+        },
+        highWater: {
+          finalizedAttemptSeq: 12,
+          nextAttemptSeq: 13,
+          permitEpoch: 3,
+          permitChainHead: "permit-head-3",
+        },
+        blocker: {
+          source: "ledger",
+          code: "receipt_chain_gap",
+          detectedAt: 50001,
+          detailHash: "receipt-gap-detail",
+        },
+      }),
+    );
+    expect(direct.opportunityAdmission).toEqual({
+      safeResourceTypes: ["H", "X", "Z"],
+      requiredResourceTypes: ["H", "Z"],
+      admittedResourceTypes: ["Z"],
+      unmetByResource: {
+        H: 0,
+        Z: 1000,
+      },
+      totalUnmetAmount: 1000,
+    });
+
+    const h = direct.entries.find(
+      (entry: Record<string, any>) => entry.resourceType === "H",
+    );
+    const x = direct.entries.find(
+      (entry: Record<string, any>) => entry.resourceType === "X",
+    );
+    const z = direct.entries.find(
+      (entry: Record<string, any>) => entry.resourceType === "Z",
+    );
+    expect(h).toEqual(
+      expect.objectContaining({
+        lane: {
+          allowedRoomNames: ["E3N59"],
+          requireNativeMineral: null,
+          reserve: 100000,
+        },
+        floor: {
+          hard: 428,
+          economic: 451,
+        },
+        lifecycle: expect.objectContaining({
+          stage: "continuous",
+          shadowConsecutiveCycles: 100,
+          canaryConfirmedCount: 1,
+        }),
+        quota: expect.objectContaining({
+          resource: expect.objectContaining({
+            limit: 8000,
+            confirmed: 3000,
+            reserved: 0,
+            remaining: 5000,
+          }),
+          global: expect.objectContaining({
+            limit: 12000,
+            used: 11000,
+            remaining: 1000,
+          }),
+        }),
+        opportunity: {
+          reserveAmount: 1000,
+          safe: true,
+          required: true,
+          unmetAmount: 0,
+          satisfied: true,
+          admitted: false,
+          admission:
+            "global_quota_or_opportunity_reserve_blocked",
+        },
+      }),
+    );
+    expect(x.opportunity).toEqual(
+      expect.objectContaining({
+        required: false,
+        unmetAmount: 0,
+        admitted: false,
+        admission: "resource_quota_blocked",
+      }),
+    );
+    expect(z.opportunity).toEqual(
+      expect.objectContaining({
+        required: true,
+        unmetAmount: 1000,
+        admitted: true,
+        admission: "admitted",
+      }),
+    );
+    expect(direct.ledger).toEqual(
+      expect.objectContaining({
+        pending: null,
+        quarantinedCount: 1,
+        blocker: {
+          code: "receipt_chain_gap",
+          detectedAt: 50001,
+          detailHash: "receipt-gap-detail",
+        },
+      }),
+    );
+  });
+
 });

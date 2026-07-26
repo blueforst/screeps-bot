@@ -10,6 +10,7 @@ import {
 } from "@/runtime/factoryControl";
 import {
   buildMarketSaleProtectionLedger,
+  getMarketProtectionEntryKey,
   type MarketProtectionCandidate,
   type MarketProtectionFact,
   type MarketProtectionSourceKind,
@@ -37,6 +38,14 @@ export type LiveManagedOrderCollection =
 
 export interface CollectLiveMarketSaleProtectionOptions {
   candidates?: readonly MarketProtectionCandidate[];
+  /**
+   * Exact current-permit reserves keyed by `roomName:resource`.
+   *
+   * Continuous orchestration should pass this after validating the permit.
+   * The adapter also understands the persisted v2 permit shape so a missing
+   * call-site projection cannot accidentally fall back to a lower reserve.
+   */
+  laneReserveByEntry?: Readonly<Record<string, number>>;
 }
 
 type MutableSourceMap = Record<
@@ -192,42 +201,166 @@ function collectRoomFloors(
   const byRoom = new Map(
     snapshots.map((snapshot) => [snapshot.roomName, snapshot] as const),
   );
+  let factoryConfig: ReturnType<typeof parseFactoryConfig> | undefined;
+  try {
+    factoryConfig = parseFactoryConfig();
+  } catch {
+    return { complete: false, facts: [] };
+  }
+  let complete = true;
   const facts: MarketProtectionFact[] = [];
   for (const candidate of candidates) {
-    const floor = byRoom.get(candidate.roomName)?.mineralFloor[
-      candidate.resource
-    ];
-    if (!finiteNonNegative(floor)) continue;
+    const roomSnapshot = byRoom.get(candidate.roomName);
+    const floor = roomSnapshot?.mineralFloor[candidate.resource];
+    const exportStart =
+      roomSnapshot?.mineralExportStart?.[candidate.resource];
+    if (BASE_REACTION_MINERALS.has(candidate.resource)) {
+      if (!finiteNonNegative(floor) || !finiteNonNegative(exportStart)) {
+        complete = false;
+        continue;
+      }
+    }
+    if (finiteNonNegative(floor)) {
+      facts.push({
+        roomName: candidate.roomName,
+        resource: candidate.resource,
+        amount: floor,
+        stableKey: `floor:mineral:${candidate.roomName}:${candidate.resource}`,
+        bucket: "hardReserve",
+      });
+    }
+    if (finiteNonNegative(exportStart)) {
+      facts.push({
+        roomName: candidate.roomName,
+        resource: candidate.resource,
+        amount: exportStart,
+        stableKey: `floor:mineral-export:${candidate.roomName}:${candidate.resource}`,
+        bucket: "hardReserve",
+      });
+    }
+    const roomFactoryConfig = factoryConfig.rooms[candidate.roomName];
+    const factoryFloor =
+      roomFactoryConfig?.resourceFloors[candidate.resource] ??
+      factoryConfig.resourceFloors[candidate.resource];
+    if (factoryFloor !== undefined && !finiteNonNegative(factoryFloor)) {
+      complete = false;
+      continue;
+    }
+    if (!finiteNonNegative(factoryFloor)) continue;
     facts.push({
       roomName: candidate.roomName,
       resource: candidate.resource,
-      amount: floor,
-      stableKey: `floor:${candidate.roomName}:${candidate.resource}`,
+      amount: factoryFloor,
+      stableKey: `floor:factory:${candidate.roomName}:${candidate.resource}`,
+      bucket: "hardReserve",
     });
   }
-  return { complete: true, facts };
+  return { complete, facts };
+}
+
+interface PermitLaneReserveView {
+  complete: boolean;
+  found: boolean;
+  values: Map<string, number>;
+}
+
+function permitExecutionEntries(value: unknown): readonly unknown[] | undefined {
+  if (Array.isArray(value)) return value;
+  const record = asRecord(value);
+  if (!record) return undefined;
+  if (Array.isArray(record.entries)) return record.entries;
+  return Object.values(record);
+}
+
+function collectPersistedPermitLaneReserves(): PermitLaneReserveView {
+  const marketData = asRecord(Memory.data?.marketSaleAutomation);
+  const directAutomation = asRecord(marketData?.directAutomation);
+  const directContinuous = asRecord(marketData?.directContinuous);
+  const permit =
+    asRecord(directAutomation?.currentPermit) ??
+    asRecord(directContinuous?.currentPermit);
+  if (!permit) {
+    return { complete: true, found: false, values: new Map() };
+  }
+  const entries = permitExecutionEntries(
+    permit.executionTable ?? permit.canonicalExecutionTable,
+  );
+  if (!entries) {
+    return { complete: false, found: true, values: new Map() };
+  }
+
+  let complete = true;
+  const values = new Map<string, number>();
+  for (const rawEntry of entries) {
+    const entry = asRecord(rawEntry);
+    const resource = entry?.resourceType ?? entry?.resource;
+    const roomNames = entry?.allowedRoomNames ?? entry?.allowedRooms;
+    const laneReserve = entry?.laneReserve;
+    if (
+      !entry ||
+      !validResource(resource) ||
+      !Array.isArray(roomNames) ||
+      roomNames.length === 0 ||
+      !finiteNonNegative(laneReserve) ||
+      laneReserve < 1_000
+    ) {
+      complete = false;
+      continue;
+    }
+    for (const roomName of roomNames) {
+      if (!validRoomName(roomName)) {
+        complete = false;
+        continue;
+      }
+      const key = getMarketProtectionEntryKey(roomName, resource);
+      const existing = values.get(key);
+      if (existing !== undefined && existing !== laneReserve) {
+        complete = false;
+        continue;
+      }
+      values.set(key, laneReserve);
+    }
+  }
+  if (values.size === 0) complete = false;
+  return { complete, found: true, values };
 }
 
 function collectForecast(
   config: MarketSaleAutomationConfig,
   candidates: readonly MarketProtectionCandidate[],
+  options: CollectLiveMarketSaleProtectionOptions,
 ): SourceCollection {
   const minimumForecastBuffer = Math.max(
     config.minDealAmount,
     config.makerBatchAmount,
   );
+  const explicit = options.laneReserveByEntry;
+  const persisted = collectPersistedPermitLaneReserves();
+  const permitBacked = explicit !== undefined || persisted.found;
   let complete =
     config.validForPlanning &&
     Number.isFinite(minimumForecastBuffer) &&
-    minimumForecastBuffer > 0;
+    minimumForecastBuffer > 0 &&
+    persisted.complete;
   const facts: MarketProtectionFact[] = [];
   for (const candidate of candidates) {
-    const amount = config.forecastBuffer[candidate.resource];
+    const key = getMarketProtectionEntryKey(
+      candidate.roomName,
+      candidate.resource,
+    );
+    const amount = explicit
+      ? explicit[key]
+      : persisted.found
+        ? persisted.values.get(key)
+        : config.forecastBuffer[candidate.resource];
+    const requiredMinimum = permitBacked
+      ? Math.max(1_000, minimumForecastBuffer)
+      : minimumForecastBuffer;
     if (
       typeof amount !== "number" ||
       !Number.isFinite(amount) ||
       amount <= 0 ||
-      amount < minimumForecastBuffer
+      amount < requiredMinimum
     ) {
       complete = false;
       continue;
@@ -236,7 +369,8 @@ function collectForecast(
       roomName: candidate.roomName,
       resource: candidate.resource,
       amount,
-      stableKey: `forecast:${candidate.roomName}:${candidate.resource}`,
+      stableKey: `lane-reserve:${candidate.roomName}:${candidate.resource}`,
+      bucket: "forecastBuffer",
     });
   }
   return {
@@ -473,6 +607,7 @@ function appendFactoryComponents(
       amount: required,
       stableKey: `factory:component:${roomName}:${rootTarget}:${componentPath}`,
       status: "active",
+      bucket: "consumptiveDemand",
     });
     if (getCommodityRecipe(component)) {
       complete =
@@ -557,19 +692,27 @@ function collectFactory(candidates: readonly MarketProtectionCandidate[]): {
             amount: targetAmount,
             stableKey: `factory:target:${roomName}:${target.resource}`,
             status: "active",
+            bucket: "absoluteTarget",
           });
           if (!recipe) {
             componentsComplete = false;
             continue;
           }
-          componentsComplete =
-            appendFactoryComponents(
-              componentFacts,
-              roomName,
-              target.resource,
-              target.resource,
-              targetAmount,
-            ) && componentsComplete;
+          const productStock = getTransferableStock(room, target.resource);
+          const targetGap = Math.max(
+            0,
+            targetAmount - (productStock?.totalStock ?? 0),
+          );
+          if (targetGap > 0) {
+            componentsComplete =
+              appendFactoryComponents(
+                componentFacts,
+                roomName,
+                target.resource,
+                target.resource,
+                targetGap,
+              ) && componentsComplete;
+          }
         }
 
         const activeTarget = runtime.rooms?.[roomName]?.activeTarget;
@@ -587,6 +730,7 @@ function collectFactory(candidates: readonly MarketProtectionCandidate[]): {
               amount: activeRecipe.amount,
               stableKey: `factory:runtime-target:${roomName}:${activeTarget}`,
               status: "active",
+              bucket: "absoluteTarget",
             });
             componentsComplete =
               appendFactoryComponents(
@@ -624,6 +768,7 @@ function collectFactory(candidates: readonly MarketProtectionCandidate[]): {
         resource: RESOURCE_BATTERY,
         amount: task.remainingBatteryAmount,
         stableKey: `factory:task:${task.id || taskKey}`,
+        bucket: "consumptiveDemand",
         status:
           task.status === "failed"
             ? "failed"
@@ -655,25 +800,153 @@ function appendSynthesisPlanFacts(
   product: ResourceConstant,
   targetAmount: number,
   status: "active" | "paused",
-): boolean {
-  if (!finiteNonNegative(targetAmount) || targetAmount <= 0) return false;
+): {
+  complete: boolean;
+  reagentDeficits: ReadonlyMap<ResourceConstant, number>;
+} {
+  if (!finiteNonNegative(targetAmount) || targetAmount <= 0) {
+    return { complete: false, reagentDeficits: new Map() };
+  }
   const reagents = getProductReagents(product);
-  if (!reagents) return false;
+  if (!reagents) {
+    return { complete: false, reagentDeficits: new Map() };
+  }
+  const room = Game.rooms[roomName];
+  const productStock = room
+    ? getTransferableStock(room, product)?.totalStock
+    : undefined;
+  if (!finiteNonNegative(productStock)) {
+    return { complete: false, reagentDeficits: new Map() };
+  }
+  const targetGap = Math.max(0, targetAmount - productStock);
+  const reagentDeficits = new Map<ResourceConstant, number>();
   facts.push({
     roomName,
     resource: product,
     amount: targetAmount,
     stableKey: `${planStableKey}:product`,
     status,
+    bucket: "absoluteTarget",
   });
-  for (const reagent of reagents) {
-    facts.push({
-      roomName,
-      resource: reagent,
-      amount: targetAmount,
-      stableKey: `${planStableKey}:reagent:${reagent}`,
-      status,
-    });
+  if (targetGap > 0) {
+    for (const reagent of reagents) {
+      const localReagentStock = getTransferableStock(room!, reagent)?.totalStock;
+      if (!finiteNonNegative(localReagentStock)) {
+        return { complete: false, reagentDeficits: new Map() };
+      }
+      facts.push({
+        roomName,
+        resource: reagent,
+        amount: targetGap,
+        stableKey: `${planStableKey}:reagent:${reagent}`,
+        status,
+        bucket: "consumptiveDemand",
+      });
+      reagentDeficits.set(
+        reagent,
+        Math.max(0, targetGap - localReagentStock),
+      );
+    }
+  }
+  return { complete: true, reagentDeficits };
+}
+
+function synthesisDonorCandidates(
+  targetRoomName: string,
+  rawDonorRoomNames: unknown,
+): { complete: boolean; roomNames: string[] } {
+  if (!Array.isArray(rawDonorRoomNames)) {
+    return { complete: false, roomNames: [] };
+  }
+  const explicit = rawDonorRoomNames.filter(validRoomName);
+  if (explicit.length !== rawDonorRoomNames.length) {
+    return { complete: false, roomNames: [] };
+  }
+  const roomNames =
+    explicit.length > 0
+      ? [...new Set(explicit)]
+      : Object.values(Game.rooms)
+          .filter(
+            (room) =>
+              room.name !== targetRoomName &&
+              room.controller?.my &&
+              !!room.terminal,
+          )
+          .map((room) => room.name);
+  for (const roomName of roomNames) {
+    const room = Game.rooms[roomName];
+    if (!room || !room.controller?.my || !room.terminal) {
+      return { complete: false, roomNames: [] };
+    }
+  }
+  return { complete: true, roomNames: roomNames.sort() };
+}
+
+function appendSynthesisDonorFacts(
+  facts: MarketProtectionFact[],
+  candidateKeys: ReadonlySet<string>,
+  runtime: NonNullable<typeof Memory.runtime>["synthesisControl"] | undefined,
+  targetRoomName: string,
+  planStableKey: string,
+  reagentDeficits: ReadonlyMap<ResourceConstant, number>,
+  rawDonorRoomNames: unknown,
+  status: "active" | "paused",
+): boolean {
+  if (
+    [...reagentDeficits.values()].every((deficit) => deficit <= 0)
+  ) {
+    return true;
+  }
+  const candidates = synthesisDonorCandidates(
+    targetRoomName,
+    rawDonorRoomNames,
+  );
+  if (!candidates.complete) return false;
+
+  for (const [reagent, deficit] of reagentDeficits) {
+    if (deficit <= 0) continue;
+    const binding = asRecord(
+      asRecord(runtime?.bindings)?.[`${targetRoomName}:${reagent}`],
+    );
+    const boundRoom =
+      binding &&
+      validRoomName(binding.fromRoomName) &&
+      finiteNonNegative(binding.expiresAt) &&
+      binding.expiresAt >= Game.time &&
+      candidates.roomNames.includes(binding.fromRoomName)
+        ? binding.fromRoomName
+        : undefined;
+    if (boundRoom) {
+      facts.push({
+        roomName: boundRoom,
+        resource: reagent,
+        amount: deficit,
+        stableKey: `${planStableKey}:donor:${reagent}`,
+        status,
+        bucket: "consumptiveDemand",
+      });
+      continue;
+    }
+
+    for (const donorRoomName of candidates.roomNames) {
+      if (
+        !candidateKeys.has(
+          getMarketProtectionEntryKey(donorRoomName, reagent),
+        )
+      ) {
+        continue;
+      }
+      facts.push({
+        roomName: donorRoomName,
+        resource: reagent,
+        amount: 0,
+        stableKey: `${planStableKey}:unbound-donor:${reagent}:${donorRoomName}`,
+        status,
+        bucket: "consumptiveDemand",
+        blocksSale: true,
+        blockedReason: `synthesis donor unresolved for ${targetRoomName}/${reagent}`,
+      });
+    }
   }
   return true;
 }
@@ -695,14 +968,66 @@ function collectSynthesis(candidates: readonly MarketProtectionCandidate[]): {
   const runtime = Memory.runtime?.synthesisControl;
   let activeComplete = runtime?.updatedAt === Game.time;
   let pausedComplete = runtime?.updatedAt === Game.time;
-  const candidateRooms = new Set(
-    candidates.map((candidate) => candidate.roomName),
+  const candidateKeys = new Set(
+    candidates.map((candidate) =>
+      getMarketProtectionEntryKey(candidate.roomName, candidate.resource),
+    ),
   );
   const configuredRooms = asRecord(rawConfig.rooms) || {};
 
-  for (const roomName of candidateRooms) {
-    const roomConfig = asRecord(configuredRooms[roomName]);
+  for (const [roomName, rawRoomConfig] of Object.entries(configuredRooms)) {
+    if (!validRoomName(roomName)) {
+      activeComplete = false;
+      continue;
+    }
+    const roomConfig = asRecord(rawRoomConfig);
     if (!roomConfig || roomConfig.enabled === false) continue;
+    const roomDonors = roomConfig.donorRoomNames ?? [];
+    const rawReactions = roomConfig.reactions;
+    if (rawReactions !== undefined && !Array.isArray(rawReactions)) {
+      activeComplete = false;
+      continue;
+    }
+    const reactions = Array.isArray(rawReactions) ? rawReactions : [];
+    for (const rawReaction of reactions) {
+      const reaction = asRecord(rawReaction);
+      if (
+        !reaction ||
+        !validResource(reaction.product) ||
+        !finiteNonNegative(reaction.targetAmount) ||
+        reaction.targetAmount <= 0
+      ) {
+        activeComplete = false;
+        continue;
+      }
+      try {
+        const planKey = synthesisPlanStableKey(roomName, reaction.product);
+        const appended = appendSynthesisPlanFacts(
+          activeFacts,
+          roomName,
+          planKey,
+          reaction.product,
+          reaction.targetAmount,
+          "active",
+        );
+        activeComplete =
+          appended.complete &&
+          appendSynthesisDonorFacts(
+            activeFacts,
+            candidateKeys,
+            runtime,
+            roomName,
+            planKey,
+            appended.reagentDeficits,
+            reaction.donorRoomNames ?? roomDonors,
+            "active",
+          ) &&
+          activeComplete;
+      } catch {
+        activeComplete = false;
+      }
+    }
+
     const state = runtime?.rooms?.[roomName];
     if (!state) {
       activeComplete = false;
@@ -711,15 +1036,28 @@ function collectSynthesis(candidates: readonly MarketProtectionCandidate[]): {
     }
     if (state.activeProduct) {
       try {
-        activeComplete =
-          appendSynthesisPlanFacts(
+        const planKey = synthesisPlanStableKey(roomName, state.activeProduct);
+        const appended = appendSynthesisPlanFacts(
             activeFacts,
             roomName,
-            synthesisPlanStableKey(roomName, state.activeProduct),
+            planKey,
             state.activeProduct,
             state.targetAmount ?? 0,
             "active",
-          ) && activeComplete;
+          );
+        activeComplete =
+          appended.complete &&
+          appendSynthesisDonorFacts(
+            activeFacts,
+            candidateKeys,
+            runtime,
+            roomName,
+            planKey,
+            appended.reagentDeficits,
+            roomDonors,
+            "active",
+          ) &&
+          activeComplete;
       } catch {
         activeComplete = false;
       }
@@ -727,15 +1065,31 @@ function collectSynthesis(candidates: readonly MarketProtectionCandidate[]): {
     const pausedPlan = state.boostPause?.pausedPlan;
     if (pausedPlan) {
       try {
-        pausedComplete =
-          appendSynthesisPlanFacts(
+        const planKey = synthesisPlanStableKey(
+          roomName,
+          pausedPlan.product,
+        );
+        const appended = appendSynthesisPlanFacts(
             pausedFacts,
             roomName,
-            synthesisPlanStableKey(roomName, pausedPlan.product),
+            planKey,
             pausedPlan.product,
             pausedPlan.targetAmount,
             "paused",
-          ) && pausedComplete;
+          );
+        pausedComplete =
+          appended.complete &&
+          appendSynthesisDonorFacts(
+            pausedFacts,
+            candidateKeys,
+            runtime,
+            roomName,
+            planKey,
+            appended.reagentDeficits,
+            pausedPlan.donorRoomNames ?? roomDonors,
+            "paused",
+          ) &&
+          pausedComplete;
       } catch {
         pausedComplete = false;
       }
@@ -784,6 +1138,7 @@ function collectHub(
       amount: reserve,
       stableKey: `hub:target:${cfg.hubRoomName}:${resource}`,
       status: "active",
+      bucket: "absoluteTarget",
     });
   }
 
@@ -806,15 +1161,15 @@ function collectHub(
       continue;
     }
     try {
-      complete =
-        appendSynthesisPlanFacts(
+      const appended = appendSynthesisPlanFacts(
           facts,
           assignment.roomName,
           synthesisPlanStableKey(assignment.roomName, assignment.product),
           assignment.product,
           assignment.targetAmount,
           "active",
-        ) && complete;
+        );
+      complete = appended.complete && complete;
     } catch {
       complete = false;
     }
@@ -840,6 +1195,7 @@ function collectHub(
       amount: route.amount,
       stableKey: `hub:route:${index}:${route.fromRoom}->${route.toRoom}:${route.resource}`,
       status: "pending",
+      bucket: "hubCommitments",
     });
   }
 
@@ -861,6 +1217,7 @@ function collectHub(
       amount: Math.max(0, stock.totalStock - sellable),
       stableKey: `hub:surplus-limit:${candidate.roomName}:${candidate.resource}`,
       status: "active",
+      bucket: "absoluteTarget",
     });
   }
 
@@ -954,6 +1311,7 @@ function appendBoostWarReactionDemand(
     amount: expanded.amount,
     stableKey: stablePrefix,
     status: "active",
+    bucket: "boostWar",
   });
   for (const [baseResource, baseAmount] of [
     ...expanded.baseAmounts.entries(),
@@ -964,6 +1322,7 @@ function appendBoostWarReactionDemand(
       amount: baseAmount,
       stableKey: `${stablePrefix}:base:${baseResource}`,
       status: "active",
+      bucket: "boostWar",
     });
   }
   return true;
@@ -1174,6 +1533,7 @@ function normalizeManagedOrders(
 
 function collectManagedExposure(
   managedOrders: LiveManagedOrderCollection | undefined,
+  directStrategyActive: boolean,
 ): SourceCollection {
   const marketData = Memory.data?.marketSaleAutomation;
   const explicit = normalizeManagedOrders(managedOrders);
@@ -1253,13 +1613,40 @@ function collectManagedExposure(
   const rawQuarantine =
     directAutomation?.quarantinedPendingDirectDeals;
   const quarantine = asRecord(rawQuarantine);
+  const ledger = asRecord(directAutomation?.ledger);
+  const ledgerBlocker = asRecord(ledger?.blocker);
+  const pendingDirectRecord = asRecord(
+    directAutomation?.pendingDirectDeals,
+  );
+  const quarantineKeys = Object.keys(quarantine || {});
+  const inactiveMissingDirectState =
+    !directStrategyActive &&
+    directAutomation?.capability === "market-direct-continuous" &&
+    directAutomation?.migrationStatus === "blocked" &&
+    directMigrationBlocker === "direct_state_missing" &&
+    ledgerBlocker?.code === "direct_state_missing" &&
+    ledger?.pending === undefined &&
+    pendingDirectRecord !== undefined &&
+    Object.keys(pendingDirectRecord).length === 0 &&
+    quarantineKeys.length === 1 &&
+    quarantineKeys[0] ===
+      "__continuous_blocked__:direct_state_missing" &&
+    Array.isArray(directAutomation?.directDealOutcomes) &&
+    directAutomation.directDealOutcomes.length === 0 &&
+    Array.isArray(
+      directAutomation?.processedDirectTransactionKeys,
+    ) &&
+    directAutomation.processedDirectTransactionKeys.length === 0 &&
+    directAutomation?.directConfirmedDealCount === 0 &&
+    directAutomation?.directPausedForReview === true;
   if (
     (rawDirectAutomation !== undefined && !directAutomation) ||
-    (directMigrationBlocker !== undefined &&
-      directMigrationBlocker !==
-        "direct_qualification_state_invalid") ||
-    (rawQuarantine !== undefined &&
-      (!quarantine || Object.keys(quarantine).length > 0))
+    (!inactiveMissingDirectState &&
+      ((directMigrationBlocker !== undefined &&
+        directMigrationBlocker !==
+          "direct_qualification_state_invalid") ||
+        (rawQuarantine !== undefined &&
+          (!quarantine || quarantineKeys.length > 0))))
   ) {
     // Quarantine 中的损坏 WAL 不能安全归属 room/resource。把完整
     // managedExposure 源标为 stale，使所有候选 sellableAmount=0。
@@ -1336,10 +1723,11 @@ function toSources(
   config: MarketSaleAutomationConfig,
   candidates: readonly MarketProtectionCandidate[],
   managedOrders: LiveManagedOrderCollection | undefined,
+  options: CollectLiveMarketSaleProtectionOptions,
 ): MutableSourceMap {
   const stock = collectStock(candidates);
   const floor = collectRoomFloors(candidates);
-  const forecast = collectForecast(config, candidates);
+  const forecast = collectForecast(config, candidates, options);
   const reservations = collectResourceReservations();
   const outgoing = collectOutgoingTransfers();
   const carrier = collectCarrierCommitments(candidates);
@@ -1348,7 +1736,14 @@ function toSources(
   const hub = collectHub(candidates);
   const boost = collectBoost();
   const war = collectWar();
-  const exposure = collectManagedExposure(managedOrders);
+  const directStrategyActive =
+    config.mode === "direct" ||
+    (config.mode === "shadow" &&
+      config.shadowStrategy === "direct");
+  const exposure = collectManagedExposure(
+    managedOrders,
+    directStrategyActive,
+  );
 
   return {
     stock: currentSnapshot(stock.complete, stock.facts),
@@ -1396,6 +1791,6 @@ export function collectLiveMarketSaleProtectionLedger(
     observedAt: Game.time,
     expiresAt: Game.time,
     candidates,
-    sources: toSources(config, candidates, managedOrders),
+    sources: toSources(config, candidates, managedOrders, options),
   });
 }

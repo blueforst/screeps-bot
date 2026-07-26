@@ -31,9 +31,13 @@ export type MarketProtectionSourceKind = (typeof MARKET_PROTECTION_SOURCE_KINDS)
 export type MarketProtectionBucket =
   | "hardReserve"
   | "forecastBuffer"
+  | "absoluteTarget"
+  | "consumptiveDemand"
   | "productionDemand"
   | "protectedOutgoing"
   | "carrierOrInFlight"
+  | "boostWar"
+  | "hubCommitments"
   | "managedExposure";
 
 export type MarketProtectionFactStatus =
@@ -79,6 +83,16 @@ export interface MarketProtectionFact {
    */
   disposable?: boolean;
   contractExpired?: boolean;
+  /**
+   * Overrides the source's legacy default bucket. Producer adapters use this
+   * to keep absolute inventory targets separate from consumptive commitments.
+   */
+  bucket?: MarketProtectionBucket;
+  /**
+   * A fully scoped uncertainty (for example an unbound synthesis donor) blocks
+   * only the matching room/resource lane without making unrelated lanes stale.
+   */
+  blocksSale?: boolean;
 }
 
 export interface MarketProtectionSourceSnapshot extends MarketProtectionObservation {
@@ -109,7 +123,8 @@ export type MarketProtectionIssueCode =
   | "stock_ambiguous"
   | "terminal_stock_missing"
   | "floor_missing"
-  | "forecast_missing";
+  | "forecast_missing"
+  | "protection_donor_unbound";
 
 export interface MarketProtectionIssue {
   code: MarketProtectionIssueCode;
@@ -136,6 +151,16 @@ export interface MarketProtectionEntry extends MarketProtectionObservation {
   totalStock: number;
   terminalStock: number;
   hardReserve: number;
+  /** max(hardReserve, forecastBuffer); populated by the current collector. */
+  localReserve?: number;
+  /** Absolute target for this resource itself; combined with localReserve by max. */
+  absoluteTarget?: number;
+  /** Additional demand that consumes this resource to make another resource. */
+  consumptiveDemand?: number;
+  /** Dedicated Boost/War commitment total. */
+  boostWar?: number;
+  /** Dedicated Hub route/dispatch commitment total. */
+  hubCommitments?: number;
   productionDemand: number;
   forecastBuffer: number;
   protectedOutgoing: number;
@@ -159,6 +184,10 @@ export interface MarketSaleProtectionLedger extends MarketProtectionObservation 
   fresh: boolean;
   entries: Record<string, MarketProtectionEntry>;
   blockedEntryCount: number;
+  /** True when source coverage is not complete enough to scope the failure. */
+  globalBlocked?: boolean;
+  /** Global coverage failures for the account-wide Direct gate. */
+  globalIssues?: MarketProtectionIssue[];
 }
 
 const SOURCE_BUCKETS: Record<
@@ -170,14 +199,14 @@ const SOURCE_BUCKETS: Record<
   resourceReservations: "protectedOutgoing",
   blockedOutgoing: "protectedOutgoing",
   carrierInFlight: "carrierOrInFlight",
-  factoryTargets: "productionDemand",
-  factoryComponents: "productionDemand",
-  factoryTasks: "productionDemand",
-  synthesisActive: "productionDemand",
-  synthesisPaused: "productionDemand",
-  hub: "productionDemand",
-  boost: "productionDemand",
-  war: "productionDemand",
+  factoryTargets: "absoluteTarget",
+  factoryComponents: "consumptiveDemand",
+  factoryTasks: "consumptiveDemand",
+  synthesisActive: "consumptiveDemand",
+  synthesisPaused: "consumptiveDemand",
+  hub: "hubCommitments",
+  boost: "boostWar",
+  war: "boostWar",
   managedExposure: "managedExposure",
 };
 
@@ -393,7 +422,7 @@ function collectContributions(
     if (sourceKind === "stock") continue;
     const snapshot = input.sources[sourceKind];
     if (!snapshot || !Array.isArray(snapshot.facts)) continue;
-    const bucket = SOURCE_BUCKETS[sourceKind];
+    const defaultBucket = SOURCE_BUCKETS[sourceKind];
 
     for (const fact of snapshot.facts) {
       if (!factMatches(fact, candidate) || shouldReleaseFact(sourceKind, fact)) {
@@ -401,6 +430,14 @@ function collectContributions(
       }
 
       const stableKey = stableKeyOf(fact);
+      if (fact.blocksSale === true) {
+        addIssue(issues, {
+          code: "protection_donor_unbound",
+          sourceKind,
+          stableKey,
+          detail: fact.blockedReason,
+        });
+      }
       if (
         !factObservationIsFresh(fact, snapshot, input.currentTick) ||
         !finiteNonNegative(fact.amount)
@@ -414,6 +451,7 @@ function collectContributions(
       }
 
       const amount = normalizeProtectionAmount(fact.amount);
+      const bucket = fact.bucket ?? defaultBucket;
       const anonymous = !stableKey;
       const dedupeKey = stableKey
         ? `stable:${stableKey}`
@@ -609,17 +647,34 @@ function buildEntry(
   }
 
   const hardReserve = maxBucket(contributions, "hardReserve");
-  const productionDemand = sumBucket(contributions, "productionDemand");
-  const forecastBuffer = sumBucket(contributions, "forecastBuffer");
+  const forecastBuffer = maxBucket(contributions, "forecastBuffer");
+  const localReserve = Math.max(hardReserve, forecastBuffer);
+  const absoluteTarget = maxBucket(contributions, "absoluteTarget");
+  const consumptiveDemand =
+    sumBucket(contributions, "consumptiveDemand") +
+    sumBucket(contributions, "productionDemand");
+  const boostWar = sumBucket(contributions, "boostWar");
+  const hubCommitments = sumBucket(contributions, "hubCommitments");
+  // Keep the historical aggregate for telemetry/call-site compatibility while
+  // using the layered fields below for the actual protection formula.
+  const productionDemand =
+    absoluteTarget + consumptiveDemand + boostWar + hubCommitments;
   const protectedOutgoing = sumBucket(contributions, "protectedOutgoing");
   const carrierOrInFlight = sumBucket(contributions, "carrierOrInFlight");
   const managedExposure = sumBucket(contributions, "managedExposure");
-  const protectedAmount =
-    Math.max(hardReserve, productionDemand) +
-    forecastBuffer +
+  const protectionBeforeMarketExposure =
+    Math.max(localReserve, absoluteTarget) +
+    consumptiveDemand +
     protectedOutgoing +
-    carrierOrInFlight;
-  const grossSurplus = Math.max(0, stock.totalStock - protectedAmount);
+    carrierOrInFlight +
+    boostWar +
+    hubCommitments;
+  const protectedAmount =
+    protectionBeforeMarketExposure + managedExposure;
+  const grossSurplus = Math.max(
+    0,
+    stock.totalStock - protectionBeforeMarketExposure,
+  );
   const newExposureCapacity = Math.max(0, grossSurplus - managedExposure);
   const { observedAt, expiresAt } = sourceObservationBounds(input, candidate);
   const blocked = issues.length > 0;
@@ -638,6 +693,11 @@ function buildEntry(
     totalStock: stock.totalStock,
     terminalStock: stock.terminalStock,
     hardReserve,
+    localReserve,
+    absoluteTarget,
+    consumptiveDemand,
+    boostWar,
+    hubCommitments,
     productionDemand,
     forecastBuffer,
     protectedOutgoing,
@@ -686,6 +746,24 @@ export function buildMarketSaleProtectionLedger(
     input.expiresAt,
   );
   const blockedEntryCount = bounds.filter((entry) => entry.blocked).length;
+  const globalIssues: MarketProtectionIssue[] = [];
+  if (!observationIsFresh(input, input.currentTick)) {
+    addStaleIssue(globalIssues, "ledger envelope is not current");
+  }
+  for (const sourceKind of MARKET_PROTECTION_SOURCE_KINDS) {
+    const snapshot = input.sources[sourceKind];
+    if (!snapshot) {
+      addStaleIssue(globalIssues, "source missing", sourceKind);
+    } else if (
+      snapshot.complete !== true ||
+      !Array.isArray(snapshot.facts)
+    ) {
+      addStaleIssue(globalIssues, "source incomplete", sourceKind);
+    } else if (!observationIsFresh(snapshot, input.currentTick)) {
+      addStaleIssue(globalIssues, "source observation stale", sourceKind);
+    }
+  }
+  const globalBlocked = globalIssues.length > 0;
 
   return {
     currentTick: input.currentTick,
@@ -693,13 +771,15 @@ export function buildMarketSaleProtectionLedger(
     observedAt,
     expiresAt,
     fresh:
-      blockedEntryCount === 0 &&
+      !globalBlocked &&
       observationIsFresh(
         { revision: input.revision, observedAt, expiresAt },
         input.currentTick,
       ),
     entries,
     blockedEntryCount,
+    globalBlocked,
+    globalIssues,
   };
 }
 

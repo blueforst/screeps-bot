@@ -166,21 +166,60 @@ function addDirectExposure(
 
 function hasBlockingDirectQuarantine(
   automationData: UnknownRecord,
+  directStrategyActive: boolean,
 ): boolean {
   const directAutomation = automationData.directAutomation;
   if (directAutomation === undefined) return false;
   if (!isRecord(directAutomation)) return true;
   const blocker = directAutomation.migrationBlockedReason;
+  const ledger = isRecord(directAutomation.ledger)
+    ? directAutomation.ledger
+    : undefined;
+  const ledgerBlocker = isRecord(ledger?.blocker)
+    ? ledger.blocker
+    : undefined;
+  const pending = isRecord(
+    directAutomation.pendingDirectDeals,
+  )
+    ? directAutomation.pendingDirectDeals
+    : undefined;
+  const quarantine = isRecord(
+    directAutomation.quarantinedPendingDirectDeals,
+  )
+    ? directAutomation.quarantinedPendingDirectDeals
+    : undefined;
+  const quarantineKeys = Object.keys(quarantine || {});
+  const inactiveMissingDirectState =
+    !directStrategyActive &&
+    directAutomation.capability === "market-direct-continuous" &&
+    directAutomation.migrationStatus === "blocked" &&
+    blocker === "direct_state_missing" &&
+    ledgerBlocker?.code === "direct_state_missing" &&
+    ledger?.pending === undefined &&
+    pending !== undefined &&
+    Object.keys(pending).length === 0 &&
+    quarantineKeys.length === 1 &&
+    quarantineKeys[0] ===
+      "__continuous_blocked__:direct_state_missing" &&
+    Array.isArray(directAutomation.directDealOutcomes) &&
+    directAutomation.directDealOutcomes.length === 0 &&
+    Array.isArray(
+      directAutomation.processedDirectTransactionKeys,
+    ) &&
+    directAutomation.processedDirectTransactionKeys.length === 0 &&
+    directAutomation.directConfirmedDealCount === 0 &&
+    directAutomation.directPausedForReview === true;
+  if (inactiveMissingDirectState) return false;
   if (
     blocker !== undefined &&
     blocker !== "direct_qualification_state_invalid"
   ) {
     return true;
   }
-  const quarantine =
+  const rawQuarantine =
     directAutomation.quarantinedPendingDirectDeals;
-  if (quarantine === undefined) return false;
-  return !isRecord(quarantine) || Object.keys(quarantine).length > 0;
+  if (rawQuarantine === undefined) return false;
+  return !quarantine || quarantineKeys.length > 0;
 }
 
 /**
@@ -193,6 +232,7 @@ export function summarizeMarketSaleTerminalExposure(
   automationData: unknown,
   roomName: string,
   resourceType: ResourceConstant,
+  directStrategyActive = true,
 ): MarketSaleTerminalExposure {
   let result: MarketSaleTerminalExposure = {
     reservedAmount: 0,
@@ -204,7 +244,12 @@ export function summarizeMarketSaleTerminalExposure(
   }
   // 隔离记录无法可靠归属 room/resource。任何 Terminal 消费都必须全局
   // fail-closed，直到 operator 以权威证据修复或清除该 WAL。
-  if (hasBlockingDirectQuarantine(automationData)) {
+  if (
+    hasBlockingDirectQuarantine(
+      automationData,
+      directStrategyActive,
+    )
+  ) {
     return { reservedAmount: 0, blocked: true };
   }
 
@@ -276,10 +321,16 @@ export function getMarketSaleTerminalExposure(
   roomName: string,
   resourceType: ResourceConstant,
 ): MarketSaleTerminalExposure {
+  const config = Memory.cfg?.marketSaleAutomation;
+  const directStrategyActive =
+    config?.mode === "direct" ||
+    (config?.mode === "shadow" &&
+      config?.shadowStrategy === "direct");
   return summarizeMarketSaleTerminalExposure(
     Memory.data?.marketSaleAutomation,
     roomName,
     resourceType,
+    directStrategyActive,
   );
 }
 

@@ -105,7 +105,7 @@ U/L/K 虽有大量库存，但当前 BUY 净价低于历史经济底线；O/G �
 
 状态保存 `currentPermitEpoch/currentPermitId/permitChainHead` 以及不可回退的 `permitEpochHighWater/permitChainHeadHighWater`；ledger checkpoint 镜像这两个 high-water。迁移完成但尚无 permit 时 current/high-water epoch 为 0、current ID 为空、chain head 为 permit genesis sentinel。首个 permit epoch 必须为 1，previous permit ID 为空且 previous permit head 必须为 permit genesis sentinel；successor epoch 必须恰为 high-water+1，并同时引用 current permit ID、permit chain head 与当前 ledger head。current pointer 必须始终指向最高连续 epoch 的 chain tip；删除最后一个 successor、回拨 pointer/high-water 或恢复旧 permit 都进入持久 `permit_conflict`。
 
-相同 permitId 重复签收时只逐字段验证已存 canonical permit 后 no-op；由于 ledger 可能已前进，不再拿该旧 permit 的 `previousLedgerHead` 与当前 ledger head 比较。只有全新 successor 才检查签收当下的 current ledger head，且签收前必须为零 pending/quarantine/gap/unmatched reservation。epoch 空洞、同 epoch 不同 digest、同 evidence 指向不同内容、previous head 不匹配、在其他 shard 复用 permit 或覆盖既有 permit 均进入持久 `permit_conflict`。permit 必须先完整落盘并自校验，之后才可准备 pending。
+相同 permitId 重复签收时也必须先验证 executor shard、完整 chain/checkpoint 和已存 canonical permit 内容，再 no-op；由于 ledger 可能已前进，不再拿该旧 permit 的 `previousLedgerHead` 与当前 ledger head 比较。只有全新 successor 才检查签收当下的 current ledger head，且签收前必须为零 pending/quarantine/gap/unmatched reservation。每个写 grant 的 `lifecycleEvidenceDigest` 必须与 current lifecycle 完整 canonical digest 精确一致；同 stage 下删改 evidence 也立即失去写权。H/Z 从 `review_paused` 进入 continuous 时，operator 提交的 reviewed digest 必须精确等于 ledger 中本 entry 唯一 confirmed-canary receipt binding，独立 review 身份另由 permit 的 operator authorization fingerprint 冻结。epoch 空洞、同 epoch 不同 digest、同 evidence 指向不同内容、previous head 不匹配、在其他 shard 复用 permit 或覆盖既有 permit 均进入持久 `permit_conflict`。permit 必须先完整落盘并自校验，之后才可准备 pending。
 
 配置新增 entry、推进 entry stage 或收窄写授权时，operator 创建 successor permit。Successor 必须引用前一 permit 与当前 ledger head，完整继承 rolling receipts、lifetime counters、attempt/permit high-water 和旧 entry lifecycle/evidence；配置 revision 不能重置额度。Successor MAY 把某 entry 的 new-deal grant 收窄为 suspended，或在本资源证据齐全时推进 stage，但不得删除 entry 历史、降低已冻结安全阈值或把 suspension 当成 quota reset。恢复被收窄 grant 也必须签收新 successor 并继承全部历史。未签收的新配置不影响旧 permit 的历史，但为避免配置/permit 两套解释，任何市场写只使用当前 permit 冻结表，配置与 permit 不一致时全局零写。
 
@@ -176,12 +176,12 @@ sequence 必须满足无空洞不变量：
 
 每个 attempt 的终态提交顺序固定为：
 
-1. 写 bounded audit outcome；
+1. 写带 `outcomeEventHash` 的 bounded audit outcome；该 hash 覆盖全部终态字段与 pending frozen evidence hash；
 2. 写 finalized attempt receipt，推进 receipt hash-chain/head、attempt high-water、lifetime checkpoint，并原子更新 confirmed rolling receipt；
 3. 写 processed transaction/evidence key；
 4. 删除 pending 并释放 claim/reservation。
 
-receipt 公共字段至少包含 permitId/epoch、attemptSeq、status、entry/resource/room、order/evidence key、`resolvedAt`、`retentionTick`、`prevHash/eventHash/headHash`。Confirmed 另外必须有 transaction key、权威 `transactionTime`、actualAmount/energy/net，且 `retentionTick=transactionTime`；failed/not_filled 不得伪造 transactionTime，`retentionTick=首次 resolvedAt`、actualAmount=0。rolling amount 与 confirmed cooldown 只读取 confirmed 的 transactionTime/actualAmount；所有终态 receipt 的链保留和裁剪统一读取 retentionTick。Confirmed 以实际量替换同 request 的 resource/global planned reservation，不双计；failed/not_filled 只有终态 receipt 完整落盘后才释放 reservation。
+receipt 公共字段至少包含 permitId/epoch、attemptSeq、status、entry/resource/room、order/evidence key、`resolvedAt`、`retentionTick`、`outcomeEventHash`、`prevHash/eventHash/headHash`，且必须与自认证 outcome 全字段绑定。Confirmed 另外必须有 transaction key、权威 `transactionTime`、actualAmount/energy/net，且 `retentionTick=transactionTime`；failed/not_filled 不得伪造 transactionTime，`retentionTick=首次 resolvedAt`、actualAmount=0。rolling amount 与 confirmed cooldown 只读取 confirmed 的 transactionTime/actualAmount；所有终态 receipt 的链保留和裁剪统一读取 retentionTick。Confirmed 以实际量替换同 request 的 resource/global planned reservation，不双计；failed/not_filled 只有终态 receipt 完整落盘后才释放 reservation。
 
 preflight 必须在任何市场规划前运行，并收敛任意合法提交前缀。pending 后的 config/permit proposal/stage 变化只阻止新规划；已有 pending 始终按冻结证据继续对账，只有冻结证据无法自校验时才进入 safety blocker。bounded outcome 已按规则裁剪但完整 receipt/head/checkpoint 仍可验证时是合法终态；仅当 receipt 不能由现存 outcome、pending 或连续 checkpoint 唯一证明、同 seq 不同 hash、processed key 缺失且无法从最新 receipt 幂等补齐、head 分叉或无法唯一补记时，才进入不可由普通配置清除的 safety blocker。
 
@@ -204,7 +204,7 @@ rolling 窗口精确定义为 `[tick-29,999, tick]`。每个 confirmed receipt �
 
 候选自己的 unmet reserve 由本次 1,000 消耗，不重复相加。没有安全 tuple、resource quota 不足、shadow/review_paused/suspended 的资源不占 opportunity reserve；一旦它后来出现安全机会，其他资源不得继续补满为它保留的下一个 global slot。首版三个 reserve 合计 3,000，小于 global cap；任何 successor 若使同时可写资源的固定 reserve 总和超过 12,000 必须 invalid。该机制只改变 quota admission，绝不能按订单量、库存或等待时间重排已准入 tuple。
 
-ledger 保存单调 receipt seq、prev/head hash、`coverageStartTick`、prune checkpoint、lifetime count/amount（global + per resource）和至少 512 条 finalized receipts。只有 receipt 的 `retentionTick < tick-29,999` 且 checkpoint 已连续吸收其 seq/hash/lifetime 汇总时才可裁剪；quota 仍只按 confirmed `transactionTime` 判断窗口。30,000 tick 内在 1,000 confirmed cooldown 下最多 30 个 confirmed；failed/not_filled 另有全局 `retryNotBefore=attemptAt+100`，512 条足以覆盖理论窗口。任何断链、逆序、重复冲突、窗口 coverage 不足或超理论界限均全局零写。
+ledger 保存单调 receipt seq、prev/head hash、`coverageStartTick`、prune checkpoint、lifetime count/amount（global + per resource）和至少 512 条 finalized receipts。每个 entry 首次 confirmed canary 还形成 `{entryId,attemptSeq,evidenceKey,receiptEventHash,reviewedEvidenceDigest}` 单调高水位；receipt 被裁剪时该高水位吸收到 checkpoint，并由绑定 `prunedThroughSeq/prunedHeadHash/confirmedCanaries` 的 `confirmedCanaryCommitment` 自校验。删除 top-level/checkpoint 两份高水位或回拨 lifecycle 都必须持久闭锁，不能产生第二笔 canary。只有 receipt 的 `retentionTick < tick-29,999` 且 checkpoint 已连续吸收其 seq/hash/lifetime/上述 canary commitment 时才可由满 512 ring 的追加路径裁剪；不存在可由调用方降低保留数的旁路。quota 仍只按 confirmed `transactionTime` 判断窗口。30,000 tick 内在 1,000 confirmed cooldown 下最多 30 个 confirmed；failed/not_filled 另有全局 `retryNotBefore=attemptAt+100`，512 条足以覆盖理论窗口。任何断链、逆序、重复冲突、窗口 coverage 不足或超理论界限均全局零写。
 
 ### 7. 状态缺失与旧 bundle 回滚永久 fail-closed
 

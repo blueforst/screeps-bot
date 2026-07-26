@@ -60,7 +60,7 @@
 
 #### Scenario: 新资源完成审查
 - **WHEN** operator 提供该 entry canary 的完整 canonical digest 并签收引用当前 permit/ledger head 的 successor permit
-- **THEN** successor 可以把该 entry 推进 continuous，同时继承全部旧 receipt 与额度
+- **THEN** 该 digest 必须精确匹配 ledger 中本 entry 的 confirmed-canary receipt binding；successor 才可以把该 entry 推进 continuous，同时继承全部旧 receipt 与额度，任意非空字符串或错误 receipt hash 必须拒绝
 
 ### Requirement: 市场写必须由不可变 Permit Chain 授权
 系统 MUST 只允许 permit 冻结的 `executorShard=shard1` 执行 account market 写，并保存该 shard-scoped append-only permit chain。permit MUST 包含 epoch/permitId、account identity、executorShard、capability/schema、engine/Direct fingerprint、canonical execution table、entry grants、完整 reviewed evidence digest、global limits、previous permit ID、previous permit head、previous ledger head 和 operator authorization fingerprint。state 与 checkpoint MUST 保存 current epoch/ID/head 以及不可回退的 `permitEpochHighWater/permitChainHeadHighWater`；current 必须是最高连续 epoch 的 chain tip。首个 epoch 为 1，successor epoch 必须恰为 high-water+1。permit 必须先落盘自校验，之后才能准备 pending。
@@ -203,7 +203,7 @@ rolling 窗口 MUST 精确定义为 `[tick-29,999,tick]`。每条 confirmed rece
 - **THEN** 只有终态 receipt 完整提交后才能释放两个 reservation，并设置全局 `retryNotBefore=attemptAt+100`
 
 ### Requirement: WAL 必须冻结多资源策略并使用固定提交顺序
-每个 pending MUST 在 `deal` 前冻结 attemptSeq、executionPolicy、permit/epoch、entry/resource fingerprint、seller room/resource、order tuple、planned amount/energy/net、resource/global quota snapshot 以及既有物理与 transaction-window 证据。旧 v1 pending MUST 永远按 legacy X canary 对账。sequence MUST 无空洞：无 pending 时 `next=finalized+1` 且 latest finalized receipt 必须已有匹配 processed key；未写 receipt 的 active pending 必须为 `pending.seq=finalized+1,next=pending.seq+1`；receipt 已写待删 pending 的唯一合法前缀为 `pending.seq=finalized,next=finalized+1` 且 outcome/receipt/hash 精确匹配。
+每个 pending MUST 在 `deal` 前冻结 attemptSeq、executionPolicy、permit/epoch、entry/resource fingerprint、seller room/resource、order tuple、planned amount/energy/net、resource/global quota snapshot 以及既有物理与 transaction-window 证据。旧 v1 pending MUST 永远按 legacy X canary 对账。sequence MUST 无空洞：无 pending 时 `next=finalized+1` 且 latest finalized receipt 必须已有匹配 processed key；未写 receipt 的 active pending 必须为 `pending.seq=finalized+1,next=pending.seq+1`；receipt 已写待删 pending 的唯一合法前缀为 `pending.seq=finalized,next=finalized+1` 且 outcome/receipt/hash 精确匹配。outcome 必须带覆盖全部终态字段和 pending frozen hash 的 canonical `outcomeEventHash`，receipt 必须冻结同一 hash。
 
 #### Scenario: 配置在 Pending 后变化
 - **WHEN** pending 持久化后 config、permit proposal 或 entry stage 变化
@@ -216,6 +216,10 @@ rolling 窗口 MUST 精确定义为 `[tick-29,999,tick]`。每条 confirmed rece
 #### Scenario: Outcome 后 CPU 中断
 - **WHEN** outcome 已写但 receipt 尚未写即发生中断
 - **THEN** 下一 tick preflight 必须从 outcome 和 pending 唯一幂等补齐 receipt，完成前全局零写
+
+#### Scenario: Outcome 终态字段被回拨
+- **WHEN** `outcome_written` 前缀中的 actual amount、transaction/time、energy 或 net 任一字段在 receipt 前变化
+- **THEN** `outcomeEventHash` 校验必须失败并进入持久 blocker，不得把被改写终态吸收到 receipt 或 quota
 
 #### Scenario: Receipt 后 CPU 中断
 - **WHEN** receipt/head 已写但 processed key 或 pending delete 尚未完成
@@ -234,7 +238,7 @@ rolling 窗口 MUST 精确定义为 `[tick-29,999,tick]`。每条 confirmed rece
 - **THEN** 系统必须设置持久 sequence blocker，不得分配或执行新的 attemptSeq
 
 ### Requirement: Receipt Chain 必须证明窗口 Coverage
-系统 MUST 为所有终态 attempt 保存单调 sequence 与 `prevHash/eventHash/headHash`，并保存 coverageStartTick、prune checkpoint、finalized high-water、global/per-resource lifetime count/amount。所有 receipt MUST 有 `resolvedAt/retentionTick`；confirmed 还必须有 transactionTime/actualAmount 且 retentionTick=transactionTime，failed/not_filled 不得伪造 transactionTime且 retentionTick=首次 resolvedAt。rolling amount/cooldown 只读取 confirmed transactionTime/actualAmount；至少 512 条 receipt ring 的裁剪统一读取 retentionTick，且只有 retentionTick 严格小于 `tick-29,999` 并已被 checkpoint 连续吸收 seq/hash/lifetime 后才可裁剪。
+系统 MUST 为所有终态 attempt 保存单调 sequence 与 `prevHash/eventHash/headHash`，并保存 coverageStartTick、prune checkpoint、finalized high-water、global/per-resource lifetime count/amount。所有 receipt MUST 有 `resolvedAt/retentionTick`；confirmed 还必须有 transactionTime/actualAmount 且 retentionTick=transactionTime，failed/not_filled 不得伪造 transactionTime且 retentionTick=首次 resolvedAt。每个 entry 的 confirmed canary MUST 形成单调高水位；裁剪后 checkpoint 必须以绑定 pruned seq/head 与完整逐 entry canary map 的 canonical commitment 继续证明它。rolling amount/cooldown 只读取 confirmed transactionTime/actualAmount；至少 512 条 receipt ring 的裁剪统一读取 retentionTick，且只有 retentionTick 严格小于 `tick-29,999` 并已被 checkpoint 连续吸收 seq/hash/lifetime/canary commitment 后才可裁剪。
 
 #### Scenario: 窗口左边界
 - **WHEN** transactionTime 等于 `tick-29,999`
@@ -251,6 +255,10 @@ rolling 窗口 MUST 精确定义为 `[tick-29,999,tick]`。每条 confirmed rece
 #### Scenario: 第 51/65/201 笔
 - **WHEN** audit outcome 或 receipt ring 发生多次有界裁剪
 - **THEN** lifetime、rolling、high-water 和 hash head 必须保持准确，不得退回保留数组长度
+
+#### Scenario: Canary Receipt 裁剪后删除高水位
+- **WHEN** 某 entry 的 confirmed canary receipt 已进入 checkpoint，随后 top-level 与 checkpoint 的 canary entry 同时丢失并回拨 lifecycle
+- **THEN** confirmed-canary checkpoint commitment 必须失配并持久闭锁；不得恢复 fresh canary 或执行第二笔
 
 #### Scenario: 断链或分叉
 - **WHEN** seq 缺口、prevHash 不匹配、同 seq 不同 eventHash、时间逆序或 coverageStart 不足

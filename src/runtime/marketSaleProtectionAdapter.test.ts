@@ -111,6 +111,7 @@ function mockFloors(
     Object.entries(floorsByRoom).map(([roomName, mineralFloor]) => ({
       roomName,
       mineralFloor,
+      mineralExportStart: { ...mineralFloor },
     })) as ReturnType<typeof collectResourceControlSnapshots>,
   );
 }
@@ -307,6 +308,92 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
     },
   );
 
+  it("uses X/H/Z permit lane reserves once and takes the maximum local floor", () => {
+    const lanes = [
+      {
+        roomName: "E6N59",
+        resource: RESOURCE_CATALYST,
+        laneReserve: 100_000,
+      },
+      {
+        roomName: "E3N59",
+        resource: RESOURCE_HYDROGEN,
+        laneReserve: 110_000,
+      },
+      {
+        roomName: "E7N57",
+        resource: RESOURCE_ZYNTHIUM,
+        laneReserve: 120_000,
+      },
+    ] as const;
+    for (const lane of lanes) {
+      Game.rooms[lane.roomName] = createRoom(
+        lane.roomName,
+        { [lane.resource]: 150_000 },
+        { [lane.resource]: 50_000 },
+      );
+    }
+    mockedCollectResourceControlSnapshots.mockReturnValue(
+      lanes.map((lane) => ({
+        roomName: lane.roomName,
+        mineralFloor: { [lane.resource]: 20_000 },
+        mineralExportStart: { [lane.resource]: 80_000 },
+      })) as ReturnType<typeof collectResourceControlSnapshots>,
+    );
+    Memory.cfg!.factoryControl = {
+      enabled: false,
+      resourceFloors: {
+        [RESOURCE_CATALYST]: 90_000,
+        [RESOURCE_HYDROGEN]: 95_000,
+        [RESOURCE_ZYNTHIUM]: 99_000,
+      },
+    };
+    Memory.data!.marketSaleAutomation = {
+      managedOrders: {},
+      pendingMutations: {},
+      directAutomation: {
+        schemaVersion: 2,
+        currentPermit: {
+          executionTable: lanes.map((lane, index) => ({
+            entryId: `lane-${index}`,
+            resourceType: lane.resource,
+            allowedRoomNames: [lane.roomName],
+            laneReserve: lane.laneReserve,
+          })),
+        },
+      },
+    } as never;
+    const cfg = config({});
+    cfg.sellResources = lanes.map((lane) => lane.resource);
+    cfg.validForPlanning = true;
+
+    const ledger = collectLiveMarketSaleProtectionLedger(cfg, undefined, {
+      candidates: lanes.map(({ roomName, resource }) => ({
+        roomName,
+        resource,
+      })),
+    });
+
+    for (const lane of lanes) {
+      const entry =
+        ledger.entries[
+          getMarketProtectionEntryKey(lane.roomName, lane.resource)
+        ];
+      expect(entry.blocked).toBe(false);
+      expect(entry.hardReserve).toBe(
+        lane.resource === RESOURCE_CATALYST
+          ? 90_000
+          : lane.resource === RESOURCE_HYDROGEN
+            ? 95_000
+            : 99_000,
+      );
+      expect(entry.forecastBuffer).toBe(lane.laneReserve);
+      expect(entry.localReserve).toBe(lane.laneReserve);
+      expect(entry.protectedAmount).toBe(lane.laneReserve);
+      expect(entry.sellableAmount).toBe(50_000);
+    }
+  });
+
   it("collects Factory components plus active and paused synthesis plans", () => {
     Game.rooms[ROOM] = createRoom(
       ROOM,
@@ -429,13 +516,14 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
     const battery =
       ledger.entries[getMarketProtectionEntryKey(ROOM, RESOURCE_BATTERY)];
 
-    expect(energy.sourceContributions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sourceKinds: ["factoryComponents"],
-        }),
-      ]),
-    );
+    // Factory components are derived from the remaining target gap. Battery is
+    // already above its absolute target in this fixture, so no extra energy is
+    // reserved for a redundant production batch.
+    expect(
+      energy.sourceContributions.some((contribution) =>
+        contribution.sourceKinds.includes("factoryComponents"),
+      ),
+    ).toBe(false);
     expect(hydrogen.productionDemand).toBe(300);
     expect(hydrogen.sourceContributions).toEqual(
       expect.arrayContaining([
@@ -454,6 +542,92 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
         }),
         expect.objectContaining({
           sourceKinds: ["factoryTasks"],
+        }),
+      ]),
+    );
+  });
+
+  it("blocks a fully scoped unbound synthesis donor lane before transfer creation", () => {
+    const targetRoomName = "W9N9";
+    const donorRoomName = "E6N59";
+    Game.rooms[targetRoomName] = createRoom(targetRoomName, {}, {});
+    Game.rooms[donorRoomName] = createRoom(
+      donorRoomName,
+      { [RESOURCE_CATALYST]: 150_000 },
+      { [RESOURCE_CATALYST]: 50_000 },
+    );
+    mockFloors({
+      [donorRoomName]: { [RESOURCE_CATALYST]: 20_000 },
+    });
+    Memory.cfg!.synthesisControl = {
+      enabled: true,
+      rooms: {
+        [targetRoomName]: {
+          reactions: [
+            {
+              product: RESOURCE_CATALYZED_KEANIUM_ALKALIDE,
+              targetAmount: 1_000,
+              donorRoomNames: [donorRoomName],
+            },
+          ],
+        },
+      },
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: TICK,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        [targetRoomName]: {
+          stage: "idle",
+          reagentLabIds: [],
+          productLabIds: [],
+          successfulRuns: 0,
+          pendingTasks: 0,
+          lastTransitionAt: TICK,
+        },
+      },
+    };
+    const cfg = config({ [RESOURCE_CATALYST]: 100 });
+    cfg.sellResources = [RESOURCE_CATALYST];
+
+    const ledger = collectLiveMarketSaleProtectionLedger(cfg, undefined, {
+      candidates: [
+        { roomName: donorRoomName, resource: RESOURCE_CATALYST },
+      ],
+    });
+    const entry =
+      ledger.entries[
+        getMarketProtectionEntryKey(donorRoomName, RESOURCE_CATALYST)
+      ];
+
+    expect(ledger.globalBlocked).toBe(false);
+    expect(entry.blockedReasons).toContain("protection_donor_unbound");
+    expect(entry.sellableAmount).toBe(0);
+
+    (
+      Memory.cfg!.synthesisControl!.rooms![targetRoomName]!.reactions![0] as {
+        donorRoomNames: string[];
+      }
+    ).donorRoomNames = ["W99N99"];
+    const incomplete = collectLiveMarketSaleProtectionLedger(
+      cfg,
+      undefined,
+      {
+        candidates: [
+          { roomName: donorRoomName, resource: RESOURCE_CATALYST },
+        ],
+      },
+    );
+    expect(incomplete.globalBlocked).toBe(true);
+    expect(incomplete.globalIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "protection_stale",
+          sourceKind: "synthesisActive",
         }),
       ]),
     );
@@ -648,7 +822,7 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
     const keanium =
       ledger.entries[getMarketProtectionEntryKey(secondRoom, RESOURCE_KEANIUM)];
     const productionContributions = keanium.sourceContributions.filter(
-      (contribution) => contribution.bucket === "productionDemand",
+      (contribution) => contribution.bucket === "consumptiveDemand",
     );
 
     expect(keanium.blocked).toBe(false);
@@ -967,7 +1141,7 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
       },
     ).entries[getMarketProtectionEntryKey(roomName, RESOURCE_KEANIUM)];
     const productionContributions = entry.sourceContributions.filter(
-      ({ bucket }) => bucket === "productionDemand",
+      ({ bucket }) => bucket === "boostWar",
     );
 
     expect(entry.fresh).toBe(true);
@@ -1168,14 +1342,17 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
       NonNullable<Memory["data"]>["marketSaleAutomation"]
     >;
 
-    const entry = collectLiveMarketSaleProtectionLedger(
+    const ledger = collectLiveMarketSaleProtectionLedger(
       config({ [RESOURCE_KEANIUM]: 100 }),
       undefined,
       {
         candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
       },
-    ).entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
+    );
+    const entry =
+      ledger.entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
 
+    expect(ledger.globalBlocked).toBe(true);
     expect(entry.blocked).toBe(true);
     expect(entry.sellableAmount).toBe(0);
     expect(entry.issues).toEqual(

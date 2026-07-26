@@ -1,10 +1,12 @@
 import {
+  acceptMarketDirectContinuousPermit,
   attestMarketSalePendingCreate,
   emergencyStopMarketSaleAutomation,
   grantMarketSaleMutationLease,
+  marketDirectContinuousStatus,
+  proposeMarketDirectContinuousPermit,
   resolveMarketSaleExternalOrderMutation,
   resolveMarketSaleOrderDisappearance,
-  resolveMarketSaleDirectPending,
   resolveMarketSalePendingCreateAbsence,
   runMarketSaleAutomation,
   runMarketSalePreflight,
@@ -14,20 +16,8 @@ import {
   clearMarketActionArbiterForTest,
   executeTerminalSend,
 } from "@/runtime/marketActionArbiter";
-import {
-  createDirectAutomationState,
-  type DirectAutomationState,
-} from "@/runtime/marketSaleDirectAutomation";
-import {
-  markDirectSubmissionResult,
-  prepareDirectPending,
-  reconcileDirectPendingDeals,
-  type DirectOutgoingTransaction,
-  type DirectPendingReconcileDependencies,
-  type DirectPhysicalSnapshot,
-  type PendingDirectDeal,
-} from "@/runtime/marketSaleDirectPending";
-import { hashOrderIds } from "@/runtime/marketSaleLifecycle";
+import { createDirectAutomationState } from "@/runtime/marketSaleDirectAutomation";
+import { LEGACY_X_V1_OUTCOME_GOLDEN } from "@/runtime/marketDirectContinuousAutomation";
 import type {
   MarketProtectionContribution,
   MarketProtectionEntry,
@@ -254,137 +244,76 @@ function qualifyMaker(revision = "rev-1"): void {
   Memory.cfg!.marketSaleAutomation!.mode = "maker";
 }
 
-function installDirectOutcomeCpuCut(
-  status: "confirmed" | "failed" | "not_filled",
-  canonicalAlreadyRecovered = false,
-): DirectAutomationState {
-  const state = createDirectAutomationState();
-  const physical: DirectPhysicalSnapshot = {
-    terminalResource: 72_047,
-    terminalEnergy: 50_000,
-    terminalCooldown: 0,
-    credits: 2_000_000,
-  };
-  const pending = prepareDirectPending(state, {
-    requestId: "direct-100",
-    configRevision: "x-direct-v1",
-    directSafetyFingerprint: "fingerprint",
-    canaryRoomName: "E6N59",
-    resource: RESOURCE_CATALYST,
-    orderId: "buy-x",
-    orderRoomName: "E51S9",
-    observedOrderPrice: 665.8,
-    observedOrderAmount: 1_000,
-    dealAmount: 1_000,
-    transactionEnergy: 900,
-    effectiveEnergyShadowPrice: 30,
-    energyShadowComponents: {
-      hardFloor: 20,
-      historyFloor: 30,
-      ratchetFloor: 30,
-    },
-    energyShadowObservedAt: 100,
-    netCreditsMilli: 638_800_000,
-    worstCaseNetCreditsMilli: 635_800,
-    effectiveNetFloor: 600,
-    protectionRevision: 100,
-    physicalBefore: physical,
-    preparedAt: 100,
-    attemptAt: 100,
-    outgoingWindowBefore: {
-      transactions: [],
-      coversAttemptAt: true,
-      observedAt: 100,
-      oldestTime: 0,
-      newestTime: 100,
-    },
-  })!;
-  const dependencies: DirectPendingReconcileDependencies = {
-    calculateTransactionEnergy: (amount) =>
-      amount === 1 ? 1 : 900,
-    readPhysicalSnapshot: () => physical,
-    releasePreparedClaims: jest.fn(),
-  };
-  const transaction: DirectOutgoingTransaction = {
-    transactionId: "tx-100",
-    time: 100,
-    amount: 1,
-    resourceType: RESOURCE_CATALYST,
-    from: "E6N59",
-    to: "E51S9",
-    order: {
-      id: "buy-x",
-      type: ORDER_BUY,
-      price: 665.8,
+function installContinuousDirectConfig(): void {
+  Memory.cfg = {
+    resourceControl: { market: { enabled: true } },
+    factoryControl: { market: { enabled: true } },
+    marketSaleAutomation: {
+      mode: "direct",
+      directCapability: "continuous-v2",
+      configRevision: "market-direct-continuous-v2-r1",
+      sellResources: [
+        RESOURCE_CATALYST,
+        RESOURCE_HYDROGEN,
+        RESOURCE_ZYNTHIUM,
+      ],
+      hardFloor: {
+        [RESOURCE_CATALYST]: 600,
+        [RESOURCE_HYDROGEN]: 428,
+        [RESOURCE_ZYNTHIUM]: 43,
+      },
+      economicFloor: {
+        [RESOURCE_CATALYST]: 600,
+        [RESOURCE_HYDROGEN]: 451,
+        [RESOURCE_ZYNTHIUM]: 45,
+      },
+      forecastBuffer: {
+        [RESOURCE_CATALYST]: 100_000,
+        [RESOURCE_HYDROGEN]: 100_000,
+        [RESOURCE_ZYNTHIUM]: 100_000,
+      },
+      minDealAmount: 1_000,
+      makerBatchAmount: 5_000,
+      creditReserve: 0,
+      terminalEnergyReserve: 25_000,
+      maxDirectDealAmount: 1_000,
+      maxDirectDealsPerCycle: 1,
+      minDirectOrderAmount: 1_000,
+      minDirectOrderNotional: 600_000,
+      maxDirectRawOrdersScannedPerCycle: 1_000,
+      maxDirectEligibleOrdersPricedPerCycle: 200,
+      maxDirectTransactionEnergy: 1_000,
+      directCanaryMaxConfirmedDeals: 1,
+      energyShadowHardFloor: 20,
+      planningSnapshotMaxAgeTicks: 10,
+      minHistoryDays: 7,
+      minHistoryTransactions: 100,
+      minHistoryVolume: 100_000,
+      historyFloorRatio: 0.95,
+      historyMaxAgeDays: 2,
+      canary: { enabled: true, allowExpansion: false },
     },
   };
+}
 
-  if (status === "failed") {
-    markDirectSubmissionResult(state, pending.requestId, {
-      kind: "non_ok",
-      tick: 100,
-      resultCode: ERR_INVALID_ARGS,
-    });
-  } else {
-    markDirectSubmissionResult(state, pending.requestId, {
-      kind: "ok",
-      tick: 100,
-      resultCode: OK,
-    });
-    reconcileDirectPendingDeals(
-      state,
-      {
-        tick: 101,
-        outgoingWindow: {
-          transactions: status === "confirmed" ? [transaction] : [],
-          coversAttemptAt: true,
-          observedAt: 101,
-          oldestTime: status === "confirmed" ? 100 : 0,
-          newestTime: status === "confirmed" ? 100 : 101,
-        },
-      },
-      dependencies,
-    );
-    if (status === "not_filled") {
-      reconcileDirectPendingDeals(
-        state,
-        {
-          tick: 102,
-          outgoingWindow: {
-            transactions: [],
-            coversAttemptAt: true,
-            observedAt: 102,
-            oldestTime: 0,
-            newestTime: 102,
-          },
-        },
-        dependencies,
-      );
-    }
-  }
-  expect(state.directDealOutcomes).toHaveLength(1);
-  const pendingAtCut = JSON.parse(
-    JSON.stringify(pending),
-  ) as PendingDirectDeal;
-  state.pendingDirectDeals = canonicalAlreadyRecovered
-    ? {}
-    : { [pendingAtCut.requestId]: pendingAtCut };
-  if (status === "confirmed") {
-    state.directConfirmedDealCount = 0;
-    state.directPausedForReview = false;
-    state.processedDirectTransactionKeys = [];
-  }
-  Memory.data = JSON.parse(
-    JSON.stringify({
-      marketSaleAutomation: {
-        directAutomation: state,
-        pendingDirectDeals: {
-          [pendingAtCut.requestId]: pendingAtCut,
-        },
-      },
-    }),
-  );
-  return state;
+function installExactReviewedLegacyDirectState(): void {
+  const direct = createDirectAutomationState();
+  direct.directDealOutcomes = [
+    JSON.parse(
+      JSON.stringify(LEGACY_X_V1_OUTCOME_GOLDEN),
+    ),
+  ];
+  direct.processedDirectTransactionKeys = [
+    LEGACY_X_V1_OUTCOME_GOLDEN.evidenceKey!,
+  ];
+  direct.directConfirmedDealCount = 1;
+  direct.directPausedForReview = true;
+  Memory.data = {
+    marketSaleAutomation: {
+      directAutomation: direct,
+      pendingDirectDeals: direct.pendingDirectDeals,
+    },
+  } as Memory["data"];
 }
 
 describe("marketSaleAutomation 编排", () => {
@@ -1598,740 +1527,155 @@ describe("marketSaleAutomation 编排", () => {
     expect(runMarketSalePreflight().phase).toBe("stopped");
   });
 
-  it.each(["confirmed", "failed", "not_filled"] as const)(
-    "Direct %s outcome-first CPU cut 经 JSON round-trip 后会清除 alias pending",
-    (status) => {
-      validConfig("emergencyStop");
-      installDirectOutcomeCpuCut(status);
-      Game.time = 103;
+  it("精确 reviewed v1 证据通过编排层确定性迁移为 readyForPermit，且部署本身零写", () => {
+    installContinuousDirectConfig();
+    installExactReviewedLegacyDirectState();
 
-      expect(() => runMarketSalePreflight()).not.toThrow();
-      const direct =
-        Memory.data!.marketSaleAutomation!.directAutomation!;
-      expect(direct.pendingDirectDeals).toEqual({});
-      expect(
-        Memory.data!.marketSaleAutomation!.pendingDirectDeals,
-      ).toBe(direct.pendingDirectDeals);
-      expect(direct.migrationBlockedReason).toBeUndefined();
-      if (status === "confirmed") {
-        expect(direct.directConfirmedDealCount).toBe(1);
-        expect(direct.directPausedForReview).toBe(true);
-        expect(direct.processedDirectTransactionKeys).toContain(
-          "tx-100:buy-x",
-        );
-      }
-    },
-  );
+    const result = runMarketSalePreflight();
+    const direct = Memory.data!.marketSaleAutomation!
+      .directAutomation as unknown as Record<string, unknown>;
 
-  it("qualification-only blocker 允许 operator 用 exact transaction 收敛 Direct pending", () => {
-    validConfig("emergencyStop");
-    const state = createDirectAutomationState();
-    const physical: DirectPhysicalSnapshot = {
-      terminalResource: 72_047,
-      terminalEnergy: 50_000,
-      terminalCooldown: 0,
-      credits: 2_000_000,
-    };
-    const pending = prepareDirectPending(state, {
-      requestId: "direct-qualification-operator",
-      configRevision: "x-direct-v1",
-      directSafetyFingerprint: "fingerprint",
-      canaryRoomName: "E6N59",
-      resource: RESOURCE_CATALYST,
-      orderId: "buy-x",
-      orderRoomName: "E51S9",
-      observedOrderPrice: 665.8,
-      observedOrderAmount: 1_000,
-      dealAmount: 1_000,
-      transactionEnergy: 900,
-      effectiveEnergyShadowPrice: 30,
-      energyShadowComponents: {
-        hardFloor: 20,
-        historyFloor: 30,
-        ratchetFloor: 30,
-      },
-      energyShadowObservedAt: 100,
-      netCreditsMilli: 638_800_000,
-      worstCaseNetCreditsMilli: 635_800,
-      effectiveNetFloor: 600,
-      protectionRevision: 100,
-      physicalBefore: physical,
-      preparedAt: 100,
-      attemptAt: 100,
-      outgoingWindowBefore: {
-        transactions: [],
-        coversAttemptAt: true,
-        observedAt: 100,
-        oldestTime: 0,
-        newestTime: 100,
-      },
-    })!;
-    markDirectSubmissionResult(state, pending.requestId, {
-      kind: "ok",
-      tick: 100,
-      resultCode: OK,
+    expect(result.writes).toBe(0);
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(direct).toMatchObject({
+      schemaVersion: 2,
+      capability: "market-direct-continuous",
+      migrationStatus: "readyForPermit",
     });
-    state.shadowQualification = {
-      consecutiveCycles: 100,
-      qualifiedAt: 100,
-      activationAuthorized: true,
-    };
-    Memory.data = JSON.parse(
-      JSON.stringify({
-        marketSaleAutomation: {
-          managedOrders: {},
-          pendingMutations: {},
-          feeEvents: [],
-          carriedFeeDebtMilli: {},
-          trustedFloors: {},
-          processedTransactionKeys: [],
-          operatorAudit: [],
-          directAutomation: state,
-          pendingDirectDeals: state.pendingDirectDeals,
-        },
-      }),
-    );
-    Game.time = 101;
-
-    expect(
-      resolveMarketSaleDirectPending({
-        kind: "transaction",
-        requestId: pending.requestId,
-        orderId: pending.orderId,
-        operator: "codex-test",
-        transaction: {
-          transactionId: "tx-qualification-operator",
-          time: pending.attemptAt,
-          amount: 1,
-          resourceType: pending.resource,
-          from: pending.canaryRoomName,
-          to: pending.orderRoomName,
-          order: {
-            id: pending.orderId,
-            type: ORDER_BUY,
-            price: pending.observedOrderPrice,
-          },
-        },
-      }),
-    ).toEqual({ ok: true });
-    const direct =
-      Memory.data!.marketSaleAutomation!.directAutomation!;
-    expect(direct.pendingDirectDeals).toEqual({});
-    expect(direct.directDealOutcomes).toEqual([
-      expect.objectContaining({
-        status: "confirmed",
-        evidenceSource: "operator",
-      }),
-    ]);
-    expect(direct.directPausedForReview).toBe(true);
-
-    Game.time += 1;
-    runMarketSalePreflight();
-    expect(
-      Memory.data!.marketSaleAutomation!.directAutomation!
-        .migrationBlockedReason,
-    ).toBeUndefined();
-  });
-
-  it("canonical 已恢复但 alias 尚未同步的 CPU cut 仍由完整 outcome 自愈", () => {
-    validConfig("emergencyStop");
-    installDirectOutcomeCpuCut("confirmed", true);
-    Game.time = 103;
-
-    expect(() => runMarketSalePreflight()).not.toThrow();
-    const direct =
-      Memory.data!.marketSaleAutomation!.directAutomation!;
-    expect(direct.pendingDirectDeals).toEqual({});
-    expect(
-      Memory.data!.marketSaleAutomation!.pendingDirectDeals,
-    ).toBe(direct.pendingDirectDeals);
     expect(direct.migrationBlockedReason).toBeUndefined();
-    expect(direct.directConfirmedDealCount).toBe(1);
-    expect(direct.directPausedForReview).toBe(true);
-  });
-
-  it.each([null, 7, "bad", []])(
-    "损坏 Direct outcome %p 在最早 preflight 稳定 fail-closed 而不抛错",
-    (invalidOutcome) => {
-      validConfig("emergencyStop");
-      runMarketSalePreflight();
-      (
-        Memory.data!.marketSaleAutomation!.directAutomation as unknown as {
-          directDealOutcomes: unknown[];
-        }
-      ).directDealOutcomes = [invalidOutcome];
-      Game.time += 1;
-
-      let result:
-        | ReturnType<typeof runMarketSalePreflight>
-        | undefined;
-      expect(() => {
-        result = runMarketSalePreflight();
-      }).not.toThrow();
-      expect(result!.rejectedByReason).toHaveProperty(
-        "direct_pending_store_state_invalid",
-      );
-      expect(
-        Memory.data!.marketSaleAutomation!.directAutomation!
-          .migrationBlockedReason,
-      ).toBe("direct_pending_store_state_invalid");
-      expect(Game.market.deal).not.toHaveBeenCalled();
-    },
-  );
-
-  it("null Direct pending 在最早 preflight 被隔离并永久 fail-closed，不进入投影算术", () => {
-    validConfig("emergencyStop");
-    runMarketSalePreflight();
-    const data = Memory.data!.marketSaleAutomation!;
-    const malformed = { "direct-bad": null };
-    (
-      data.directAutomation as unknown as {
-        pendingDirectDeals: unknown;
-      }
-    ).pendingDirectDeals = malformed;
-    (
-      data as unknown as {
-        pendingDirectDeals: unknown;
-      }
-    ).pendingDirectDeals = malformed;
-    Game.time += 1;
-
-    let result:
-      | ReturnType<typeof runMarketSalePreflight>
-      | undefined;
-    expect(() => {
-      result = runMarketSalePreflight();
-    }).not.toThrow();
-    expect(result!.rejectedByReason).toHaveProperty(
-      "direct_pending_store_state_invalid",
-    );
-    expect(data.directAutomation!.migrationBlockedReason).toBe(
-      "direct_pending_store_state_invalid",
-    );
-    expect(data.directAutomation!.pendingDirectDeals).toEqual({});
-    expect(data.pendingDirectDeals).toBe(
-      data.directAutomation!.pendingDirectDeals,
-    );
-    expect(
-      Memory.runtime!.marketSaleAutomation!.direct?.exposure,
-    ).toMatchObject({
-      pendingCount: 1,
-      quarantinedCount: 1,
-      resourceAmount: 1,
-      transactionEnergy: 1,
-    });
-    expect(
-      data.directAutomation!.quarantinedPendingDirectDeals,
-    ).toEqual({ "direct-bad": null });
-    expect(Game.market.deal).not.toHaveBeenCalled();
-
-    Game.time += 1;
-    expect(runMarketSalePreflight().rejectedByReason).toHaveProperty(
-      "direct_pending_store_state_invalid",
-    );
-  });
-
-  it.each([null, [], 0, "bad"] as const)(
-    "首次迁移遇到 malformed legacy alias %p 时不得当作空状态覆盖",
-    (legacyAlias) => {
-      validConfig("emergencyStop");
-      Memory.data = {
-        marketSaleAutomation: {
-          managedOrders: {},
-          pendingMutations: {},
-          feeEvents: [],
-          carriedFeeDebtMilli: {},
-          trustedFloors: {},
-          processedTransactionKeys: [],
-          operatorAudit: [],
-          pendingDirectDeals: legacyAlias,
+    expect(marketDirectContinuousStatus()).toMatchObject({
+      migrationStatus: "readyForPermit",
+      lifecycleByEntry: {
+        "base-x-e6n59-v1": {
+          stage: "review_paused",
+          canaryConfirmedCount: 1,
         },
-      } as unknown as Memory["data"];
-
-      const result = runMarketSalePreflight();
-      const direct =
-        Memory.data!.marketSaleAutomation!.directAutomation!;
-
-      expect(direct.migrationBlockedReason).toBe(
-        "legacy_pending_direct_deals_require_operator",
-      );
-      expect(
-        direct.quarantinedPendingDirectDeals,
-      ).toHaveProperty(
-        "__pending_direct_deals_container__",
-        legacyAlias,
-      );
-      expect(
-        Memory.runtime!.marketSaleAutomation!.direct?.exposure,
-      ).toMatchObject({
-        pendingCount: 1,
-        quarantinedCount: 1,
-      });
-      expect(result.phase).not.toBe("stopped");
-      expect(Game.market.deal).not.toHaveBeenCalled();
-
-      Game.time += 1;
-      const second = runMarketSalePreflight();
-      expect(
-        Memory.data!.marketSaleAutomation!.directAutomation!
-          .migrationBlockedReason,
-      ).toBe("legacy_pending_direct_deals_require_operator");
-      expect(
-        Memory.data!.marketSaleAutomation!.directAutomation!
-          .quarantinedPendingDirectDeals,
-      ).toHaveProperty(
-        "__pending_direct_deals_container__",
-        legacyAlias,
-      );
-      expect(second.phase).not.toBe("stopped");
-      expect(Game.market.deal).not.toHaveBeenCalled();
-    },
-  );
-
-  it("clean Direct 遇到独立 malformed managed container 时原样隔离并跨 JSON tick 阻断", () => {
-    validConfig("emergencyStop");
-    runMarketSalePreflight();
-    (
-      Memory.data!.marketSaleAutomation as unknown as {
-        managedOrders: unknown;
-      }
-    ).managedOrders = null;
-    Game.time += 1;
-
-    let result:
-      | ReturnType<typeof runMarketSalePreflight>
-      | undefined;
-    expect(() => {
-      result = runMarketSalePreflight();
-    }).not.toThrow();
-    let direct =
-      Memory.data!.marketSaleAutomation!.directAutomation!;
-    expect(direct.migrationBlockedReason).toBe(
-      "market_sale_data_state_invalid",
-    );
-    expect(
-      direct.quarantinedPendingDirectDeals,
-    ).toHaveProperty("__managed_orders_container__", null);
-    expect(
-      Memory.data!.marketSaleAutomation!.managedOrders,
-    ).toEqual({});
-    expect(result!.writes).toBe(0);
-    expect(result!.phase).not.toBe("stopped");
-    expect(Game.market.deal).not.toHaveBeenCalled();
-    expect(Game.market.createOrder).not.toHaveBeenCalled();
-    expect(Game.market.cancelOrder).not.toHaveBeenCalled();
-    expect(Game.market.extendOrder).not.toHaveBeenCalled();
-    expect(Game.market.changeOrderPrice).not.toHaveBeenCalled();
-
-    Memory.data = JSON.parse(JSON.stringify(Memory.data));
-    Game.time += 1;
-    expect(() => {
-      result = runMarketSaleAutomation({ candidates: [] });
-    }).not.toThrow();
-    direct =
-      Memory.data!.marketSaleAutomation!.directAutomation!;
-    expect(direct.migrationBlockedReason).toBe(
-      "market_sale_data_state_invalid",
-    );
-    expect(
-      direct.quarantinedPendingDirectDeals,
-    ).toHaveProperty("__managed_orders_container__", null);
-    expect(result!.writes).toBe(0);
-    expect(result!.phase).not.toBe("stopped");
-    expect(Game.market.deal).not.toHaveBeenCalled();
-    expect(Game.market.createOrder).not.toHaveBeenCalled();
-    expect(Game.market.cancelOrder).not.toHaveBeenCalled();
-    expect(Game.market.extendOrder).not.toHaveBeenCalled();
-    expect(Game.market.changeOrderPrice).not.toHaveBeenCalled();
+        "base-h-e3n59-v1": { stage: "shadow" },
+        "base-z-e7n57-v1": { stage: "shadow" },
+      },
+    });
   });
 
-  it("clean Direct 只保留完整 Maker typed sibling，三类对象型损坏先隔离再原子清理", () => {
-    validConfig("maker");
+  it("Direct capability 缺失 canonical 状态时全程零写并进入 emergencyStop", () => {
+    installContinuousDirectConfig();
+    Memory.data = {};
+
+    const result = runMarketSalePreflight();
+
+    expect(result.writes).toBe(0);
+    expect(result.effectiveMode).toBe("emergencyStop");
+    expect(result.rejectedByReason).toHaveProperty(
+      "direct_state_missing",
+    );
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(Game.market.createOrder).not.toHaveBeenCalled();
+    expect(Game.market.cancelOrder).not.toHaveBeenCalled();
+  });
+
+  it("编排层 permit 入口只在精确迁移后签发 epoch1，并保持 H/Z 为 Shadow", () => {
+    installContinuousDirectConfig();
+    installExactReviewedLegacyDirectState();
+    const terminal = installRoom(
+      "E6N59",
+      RESOURCE_CATALYST,
+    );
+    (
+      Game.rooms.E6N59.controller as StructureController & {
+        owner?: Owner;
+      }
+    ).owner = { username: "forst" };
+    (
+      terminal as StructureTerminal & { owner?: Owner }
+    ).owner = { username: "forst" };
+    (
+      Game as unknown as {
+        shard: { name: string; type: string; ptr: boolean };
+      }
+    ).shard = {
+      name: "shard1",
+      type: "normal",
+      ptr: false,
+    };
     runMarketSalePreflight();
-    (Game.market as MutableMarket).orders.good = order("good");
-    const data =
-      Memory.data!.marketSaleAutomation as unknown as {
-        managedOrders: Record<string, unknown>;
-        pendingMutations: Record<string, unknown>;
-        pendingCreate?: unknown;
+
+    const proposal = proposeMarketDirectContinuousPermit({
+      operatorAuthorizationFingerprint:
+        "operator:codex:test-reviewed-epoch1",
+    }) as {
+      ok: boolean;
+      permit?: {
+        permitId: string;
+        entryGrants: Array<{
+          entryId: string;
+          stage: string;
+          newDealGrant: string;
+        }>;
       };
-    data.managedOrders = {
-      good: {
-        orderId: "good",
-        roomName: "W1N1",
-        resourceType: RESOURCE_KEANIUM,
-        price: 2,
-        originalAmount: 1_000,
-        lastRemainingAmount: 1_000,
-        remainingExposure: 1_000,
-        feeDebtMilli: 100_000,
-        createdAt: Game.time - 10,
-        lastSeenAt: Game.time - 1,
-        policyCancelAtTick: Game.time + 1_000,
-        serverCreatedTick: Game.time - 10,
-      },
-      bad: { externalMutationGap: true },
+      error?: string;
     };
-    data.pendingMutations = {
-      badMutation: {},
-    };
-    data.pendingCreate = {};
-    Game.time += 1;
 
-    let result:
-      | ReturnType<typeof runMarketSalePreflight>
-      | undefined;
-    expect(() => {
-      result = runMarketSalePreflight();
-    }).not.toThrow();
-    let persisted =
-      Memory.data!.marketSaleAutomation!;
-    let direct = persisted.directAutomation!;
-    expect(direct.migrationBlockedReason).toBe(
-      "market_sale_data_state_invalid",
+    expect(proposal.ok).toBe(true);
+    expect(proposal.permit?.entryGrants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entryId: "base-x-e6n59-v1",
+          stage: "continuous",
+          newDealGrant: "enabled",
+        }),
+        expect.objectContaining({
+          entryId: "base-h-e3n59-v1",
+          stage: "shadow",
+          newDealGrant: "suspended",
+        }),
+        expect.objectContaining({
+          entryId: "base-z-e7n57-v1",
+          stage: "shadow",
+          newDealGrant: "suspended",
+        }),
+      ]),
     );
-    expect(
-      direct.quarantinedPendingDirectDeals,
-    ).toMatchObject({
-      "__managed_order__:bad": {
-        externalMutationGap: true,
-      },
-      "__pending_mutation__:badMutation": {},
-      __pending_create__: {},
-    });
-    expect(Object.keys(persisted.managedOrders)).toEqual(["good"]);
-    expect(persisted.pendingMutations).toEqual({});
-    expect(persisted.pendingCreate).toBeUndefined();
-    expect(result!.writes).toBe(0);
-    expect(result!.effectiveMode).toBe("emergencyStop");
-    expect(result!.phase).not.toBe("stopped");
-    expect(Game.market.deal).not.toHaveBeenCalled();
-    expect(Game.market.createOrder).not.toHaveBeenCalled();
-    expect(Game.market.cancelOrder).not.toHaveBeenCalled();
-    expect(Game.market.extendOrder).not.toHaveBeenCalled();
-    expect(Game.market.changeOrderPrice).not.toHaveBeenCalled();
 
-    Memory.data = JSON.parse(JSON.stringify(Memory.data));
-    Game.time += 1;
-    expect(() => {
-      result = runMarketSaleAutomation({ candidates: [] });
-    }).not.toThrow();
-    persisted = Memory.data!.marketSaleAutomation!;
-    direct = persisted.directAutomation!;
-    expect(direct.migrationBlockedReason).toBe(
-      "market_sale_data_state_invalid",
+    const accepted = acceptMarketDirectContinuousPermit(
+      proposal.permit!.permitId,
     );
-    expect(
-      direct.quarantinedPendingDirectDeals,
-    ).toMatchObject({
-      "__managed_order__:bad": {
-        externalMutationGap: true,
-      },
-      "__pending_mutation__:badMutation": {},
-      __pending_create__: {},
+    expect(accepted).toMatchObject({
+      ok: true,
+      permitId: proposal.permit!.permitId,
     });
-    expect(Object.keys(persisted.managedOrders)).toEqual(["good"]);
-    expect(result!.writes).toBe(0);
-    expect(result!.effectiveMode).toBe("emergencyStop");
-    expect(result!.phase).not.toBe("stopped");
-    expect(Game.market.deal).not.toHaveBeenCalled();
-    expect(Game.market.createOrder).not.toHaveBeenCalled();
-    expect(Game.market.cancelOrder).not.toHaveBeenCalled();
-    expect(Game.market.extendOrder).not.toHaveBeenCalled();
-    expect(Game.market.changeOrderPrice).not.toHaveBeenCalled();
+    expect(marketDirectContinuousStatus()).toMatchObject({
+      migrationStatus: "active",
+      permit: { epoch: 1 },
+      lifecycleByEntry: {
+        "base-x-e6n59-v1": { stage: "continuous" },
+        "base-h-e3n59-v1": { stage: "shadow" },
+        "base-z-e7n57-v1": { stage: "shadow" },
+      },
+    });
   });
 
-  it("结构合法但没有 managed sibling 的 pending mutation 必须隔离并全局冻结生产 Terminal", () => {
-    validConfig("maker");
-    runMarketSalePreflight();
-    const market = Game.market as MutableMarket;
-    market.orders.orphan = order("orphan");
-    (
-      Memory.data!.marketSaleAutomation as unknown as {
-        pendingMutations: Record<string, unknown>;
-      }
-    ).pendingMutations = {
-      orphan: {
-        kind: "cancel",
-        orderId: "orphan",
-        requestedAt: Game.time,
-        pre: {
-          price: 2,
-          totalAmount: 1_000,
-          remainingAmount: 1_000,
-          active: true,
-        },
-        requested: {},
-        prospectiveFeeMilli: 0,
-        conservativeExposure: 1_000,
-        status: "submitted",
-      },
-    };
-    Game.time += 1;
-
-    const result = runMarketSalePreflight();
-    const persisted = Memory.data!.marketSaleAutomation!;
-    expect(persisted.pendingMutations).toEqual({});
-    expect(
-      persisted.directAutomation!
-        .quarantinedPendingDirectDeals,
-    ).toHaveProperty(
-      "__orphan_pending_mutation__:orphan",
-    );
-    expect(
-      persisted.directAutomation!.migrationBlockedReason,
-    ).toBe("market_sale_data_state_invalid");
-    expect(result.writes).toBe(0);
-    expect(result.effectiveMode).toBe("emergencyStop");
-    expect(market.cancelOrder).not.toHaveBeenCalled();
-    expect(
-      executeTerminalSend({
-        terminal: Game.rooms.W1N1.terminal!,
-        resourceType: RESOURCE_KEANIUM,
-        amount: 100,
-        transactionCost: 0,
-        destinationRoomName: "W2N2",
-        actor: "test:orphan-pending",
-      }),
-    ).toBe(ERR_NOT_ENOUGH_RESOURCES);
-    expect(
-      Game.rooms.W1N1.terminal!.send,
-    ).not.toHaveBeenCalled();
-
-    Memory.data = JSON.parse(JSON.stringify(Memory.data));
-    Game.time += 1;
-    expect(runMarketSalePreflight().writes).toBe(0);
-    expect(
-      Memory.data!.marketSaleAutomation!.directAutomation!
-        .quarantinedPendingDirectDeals,
-    ).toHaveProperty(
-      "__orphan_pending_mutation__:orphan",
-    );
-    expect(market.cancelOrder).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["exposure 欠保护", 0, 100_000],
-    ["fee debt 低报", 1_000, 50_000],
-  ] as const)(
-    "近似合法 pendingCreate 的%s时必须隔离",
-    (_label, exposure, feeMilli) => {
-    validConfig("maker");
-    runMarketSalePreflight();
-    const requestedAt = Game.time;
-    const malformedPendingCreate = {
-      requestId: "near-valid-create",
-      requestedAt,
-      baselineOrderIds: [],
-      baselineHash: hashOrderIds([]),
-      leaseEpoch: "lease-1",
-      tuple: {
-        type: ORDER_SELL,
-        resourceType: RESOURCE_KEANIUM,
-        roomName: "W1N1",
-        price: 2,
-        totalAmount: 1_000,
-        createdNotBefore: requestedAt,
-        createdNotAfter: requestedAt + 2,
-      },
-      feeMilli,
-      exposure,
-      zeroDeltaConfirmations: 0,
-      status: "prepared",
-      audit: [],
-      creditsBefore: 1_000_000,
-      terminalStockBefore: 20_000,
-      outgoingKeysBefore: [],
-      baselineOrderFingerprints: {},
-    };
-    (
-      Memory.data!.marketSaleAutomation as unknown as {
-        pendingCreate: unknown;
-      }
-    ).pendingCreate = malformedPendingCreate;
-    Game.time += 1;
-
-    const result = runMarketSalePreflight();
-    const persisted = Memory.data!.marketSaleAutomation!;
-    const direct = persisted.directAutomation!;
-    expect(persisted.pendingCreate).toBeUndefined();
-    expect(direct.migrationBlockedReason).toBe(
-      "market_sale_data_state_invalid",
-    );
-    expect(
-      direct.quarantinedPendingDirectDeals,
-    ).toHaveProperty(
-      "__pending_create__",
-      malformedPendingCreate,
-    );
-    expect(
-      Memory.runtime!.marketSaleAutomation!.direct?.exposure,
-    ).toMatchObject({
-      pendingCount: 1,
-      quarantinedCount: 1,
-      resourceAmount: 1,
-    });
-    expect(result.writes).toBe(0);
-    expect(result.effectiveMode).toBe("emergencyStop");
-    expect(Game.market.deal).not.toHaveBeenCalled();
-    expect(Game.market.createOrder).not.toHaveBeenCalled();
-    expect(Game.market.cancelOrder).not.toHaveBeenCalled();
-    expect(Game.market.extendOrder).not.toHaveBeenCalled();
-    expect(Game.market.changeOrderPrice).not.toHaveBeenCalled();
-    },
-  );
-
-  it("present 但损坏的 canonical Direct container 必须隔离，不能按缺失重建", () => {
-    validConfig("emergencyStop");
-    Memory.data = {
-      marketSaleAutomation: {
-        managedOrders: {},
-        pendingMutations: {},
-        feeEvents: [],
-        carriedFeeDebtMilli: {},
-        trustedFloors: {},
-        processedTransactionKeys: [],
-        operatorAudit: [],
-        directAutomation: null,
-      },
-    } as unknown as Memory["data"];
-
-    const result = runMarketSalePreflight();
-    const direct =
-      Memory.data!.marketSaleAutomation!.directAutomation!;
-
-    expect(direct.migrationBlockedReason).toBe(
-      "direct_automation_container_invalid",
-    );
-    expect(
-      direct.quarantinedPendingDirectDeals,
-    ).toEqual({
-      __direct_automation_container__: null,
-    });
-    expect(
-      Memory.runtime!.marketSaleAutomation!.direct?.exposure,
-    ).toMatchObject({
-      pendingCount: 1,
-      quarantinedCount: 1,
-    });
-    expect(result.phase).not.toBe("stopped");
-    expect(Game.market.deal).not.toHaveBeenCalled();
-
-    Game.time += 1;
-    const second = runMarketSalePreflight();
-    expect(
-      Memory.data!.marketSaleAutomation!.directAutomation!
-        .migrationBlockedReason,
-    ).toBe("direct_automation_container_invalid");
-    expect(
-      Memory.data!.marketSaleAutomation!.directAutomation!
-        .quarantinedPendingDirectDeals,
-    ).toEqual({
-      __direct_automation_container__: null,
-    });
-    expect(second.phase).not.toBe("stopped");
-    expect(Game.market.deal).not.toHaveBeenCalled();
-  });
-
-  it("损坏的整个 market-sale container 必须转为阻断证据而非空状态", () => {
-    validConfig("emergencyStop");
+  it("损坏的 market-sale 容器在 Continuous Direct 下保留证据并全局零写", () => {
+    installContinuousDirectConfig();
     Memory.data = {
       marketSaleAutomation: null,
     } as unknown as Memory["data"];
 
     const result = runMarketSalePreflight();
-    const direct =
-      Memory.data!.marketSaleAutomation!.directAutomation!;
+    const direct = Memory.data!.marketSaleAutomation!
+      .directAutomation as unknown as {
+        migrationBlockedReason?: string;
+        quarantinedPendingDirectDeals: Record<string, unknown>;
+      };
 
-    expect(direct.migrationBlockedReason).toBe(
-      "market_sale_automation_container_invalid",
-    );
+    expect(result.writes).toBe(0);
+    expect(result.effectiveMode).toBe("emergencyStop");
+    expect(direct.migrationBlockedReason).toBeDefined();
     expect(
-      direct.quarantinedPendingDirectDeals,
-    ).toEqual({
-      __market_sale_automation_container__: null,
-    });
-    expect(result.phase).not.toBe("stopped");
+      Object.keys(direct.quarantinedPendingDirectDeals).length,
+    ).toBeGreaterThan(0);
     expect(Game.market.deal).not.toHaveBeenCalled();
-
-    Game.time += 1;
-    const second = runMarketSalePreflight();
-    expect(
-      Memory.data!.marketSaleAutomation!.directAutomation!
-        .migrationBlockedReason,
-    ).toBe("market_sale_automation_container_invalid");
-    expect(
-      Memory.data!.marketSaleAutomation!.directAutomation!
-        .quarantinedPendingDirectDeals,
-    ).toEqual({
-      __market_sale_automation_container__: null,
-    });
-    expect(second.phase).not.toBe("stopped");
-    expect(Game.market.deal).not.toHaveBeenCalled();
-  });
-
-  it("canonical 已空但 alias 含 null pending 时必须隔离并保留非零 exposure", () => {
-    validConfig("emergencyStop");
-    runMarketSalePreflight();
-    const data = Memory.data!.marketSaleAutomation!;
-    data.directAutomation!.pendingDirectDeals = {};
-    (
-      data as unknown as {
-        pendingDirectDeals: unknown;
-      }
-    ).pendingDirectDeals = { "alias-bad": null };
-    Game.time += 1;
-
-    expect(() => runMarketSalePreflight()).not.toThrow();
-    expect(data.directAutomation!.migrationBlockedReason).toBe(
-      "direct_pending_alias_mismatch",
-    );
-    expect(
-      data.directAutomation!.quarantinedPendingDirectDeals,
-    ).toEqual({ "alias-bad": null });
-    expect(
-      Memory.runtime!.marketSaleAutomation!.direct?.exposure,
-    ).toMatchObject({
-      pendingCount: 1,
-      quarantinedCount: 1,
-      resourceAmount: 1,
-      transactionEnergy: 1,
-    });
-    expect(Game.market.deal).not.toHaveBeenCalled();
-  });
-
-  it("schema-v1 Direct WAL 容器缺失时 preflight 不得宣称 stopped", () => {
-    validConfig("emergencyStop");
-    runMarketSalePreflight();
-    const direct = Memory.data!.marketSaleAutomation!.directAutomation!;
-    delete (
-      direct as unknown as {
-        pendingDirectDeals?: unknown;
-      }
-    ).pendingDirectDeals;
-    Game.time += 1;
-
-    const result = runMarketSalePreflight();
-    expect(result.phase).toMatch(/requested|draining/);
-    expect(result.rejectedByReason).toHaveProperty(
-      "direct_pending_store_state_invalid",
-    );
-    expect(
-      Memory.data!.marketSaleAutomation!.directAutomation!
-        .migrationBlockedReason,
-    ).toBe("direct_pending_store_state_invalid");
-    expect(
-      Memory.data!.marketSaleAutomation!.directAutomation!
-        .quarantinedPendingDirectDeals,
-    ).toEqual({
-      __pending_direct_deals_container__:
-        "missing_pending_direct_deals_container",
-    });
-    expect(
-      Memory.runtime!.marketSaleAutomation!.direct?.exposure,
-    ).toMatchObject({
-      pendingCount: 1,
-      quarantinedCount: 1,
-    });
+    expect(Game.market.createOrder).not.toHaveBeenCalled();
+    expect(Game.market.cancelOrder).not.toHaveBeenCalled();
+    expect(Game.market.extendOrder).not.toHaveBeenCalled();
+    expect(Game.market.changeOrderPrice).not.toHaveBeenCalled();
   });
 });

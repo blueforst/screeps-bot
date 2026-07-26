@@ -16,6 +16,11 @@ import type { RemoteDefenseStatusSnapshot } from "@/runtime/console/remoteDefens
 import type { MarketSaleFeeLedgerState } from "@/runtime/marketSaleFeeLedger";
 import type { DirectAutomationState } from "@/runtime/marketSaleDirectAutomation";
 import type {
+  ContinuousPendingProjection,
+  MarketDirectContinuousAutomationState,
+  MarketDirectContinuousPermitRequest,
+} from "@/runtime/marketDirectContinuousAutomation";
+import type {
   OperatorDirectPendingEvidence,
   PendingDirectDeal,
 } from "@/runtime/marketSaleDirectPending";
@@ -106,6 +111,29 @@ declare global {
         error?: string;
         duplicate?: boolean;
       })
+    | undefined;
+  var proposeMarketDirectContinuousPermit:
+    | ((
+        request: MarketDirectContinuousPermitRequest,
+      ) => {
+        ok: boolean;
+        error?: string;
+        permit?: unknown;
+        accountIdentity?: string;
+      })
+    | undefined;
+  var acceptMarketDirectContinuousPermit:
+    | ((
+        permitId: string,
+      ) => {
+        ok: boolean;
+        error?: string;
+        permitId?: string;
+        idempotent?: boolean;
+      })
+    | undefined;
+  var marketDirectContinuousStatus:
+    | (() => unknown)
     | undefined;
   var spawnMaxCarrier: (roomName: string) =>
     | {
@@ -565,6 +593,7 @@ declare global {
       };
       marketSaleAutomation?: {
         mode?: "off" | "shadow" | "maker" | "direct" | "hybrid" | "emergencyStop";
+        directCapability?: "legacy-canary" | "continuous-v2";
         shadowStrategy?: "maker" | "direct";
         configRevision?: string;
         sellResources?: ResourceConstant[];
@@ -1357,8 +1386,13 @@ declare global {
           requestId?: string;
           candidateIds?: string[];
         }>;
-        directAutomation?: DirectAutomationState;
-        pendingDirectDeals?: Record<string, Partial<PendingDirectDeal>>;
+        directAutomation?:
+          | DirectAutomationState
+          | MarketDirectContinuousAutomationState;
+        pendingDirectDeals?: Record<
+          string,
+          Partial<PendingDirectDeal> | ContinuousPendingProjection
+        >;
         marketStaging?: Record<string, { amount: number }>;
         marketReservations?: Record<string, { amount: number }>;
         directMarketClaim?: MarketAccountClaim;

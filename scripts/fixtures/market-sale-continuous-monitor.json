@@ -1,0 +1,274 @@
+{
+  "rooms": {},
+  "analytics": {
+    "production": {
+      "rooms": {}
+    }
+  },
+  "runtime": {
+    "marketSaleAutomation": {
+      "updatedAt": 50003,
+      "requestedMode": "direct",
+      "phase": "direct",
+      "configRevision": "market-direct-continuous-v2-r1",
+      "shadowConfigRevision": "market-direct-continuous-v2-r1",
+      "shadowConsecutiveCycles": 100,
+      "managedOrderCount": 0,
+      "managedOrders": [],
+      "managedOrderSummaryTruncated": false,
+      "pendingCreateCount": 0,
+      "pendingMutationCount": 0,
+      "stagingAmount": 0,
+      "reservationAmount": 0,
+      "exposureAmount": 0,
+      "rollingFeeMilli": 0,
+      "terminalClaims": [],
+      "rejectedByReason": {
+        "receipt_chain_gap": 1
+      },
+      "candidates": {},
+      "recentActions": [],
+      "safetyViolationCount": 1,
+      "direct": {
+        "strategyActive": true,
+        "schemaVersion": 2,
+        "capability": "market-direct-continuous",
+        "migrationStatus": "active",
+        "permit": {
+          "epoch": 3,
+          "permitId": "permit-epoch-3",
+          "permitHead": "permit-head-3",
+          "grants": [
+            {
+              "entryId": "base-z-e7n57-v1",
+              "stage": "canary",
+              "newDealGrant": "canary"
+            },
+            {
+              "entryId": "base-x-e6n59-v1",
+              "stage": "continuous",
+              "newDealGrant": "continuous"
+            },
+            {
+              "entryId": "base-h-e3n59-v1",
+              "stage": "continuous",
+              "newDealGrant": "continuous"
+            }
+          ]
+        },
+        "proposedPermitId": "permit-epoch-4",
+        "lifecycleByEntry": {
+          "base-x-e6n59-v1": {
+            "stage": "continuous",
+            "consecutiveCompleteCycles": 100,
+            "lastCycleTick": 49900,
+            "lastShadowResult": "safe_opportunity",
+            "qualifiedAt": 48000,
+            "canaryConfirmedAt": 48100,
+            "canaryConfirmedCount": 1,
+            "sharedReviewRequired": false
+          },
+          "base-h-e3n59-v1": {
+            "stage": "continuous",
+            "consecutiveCompleteCycles": 100,
+            "lastCycleTick": 49950,
+            "lastShadowResult": "safe_opportunity",
+            "qualifiedAt": 48200,
+            "canaryConfirmedAt": 48300,
+            "canaryConfirmedCount": 1,
+            "sharedReviewRequired": false
+          },
+          "base-z-e7n57-v1": {
+            "stage": "canary",
+            "consecutiveCompleteCycles": 100,
+            "lastCycleTick": 49990,
+            "lastShadowResult": "safe_opportunity",
+            "qualifiedAt": 48400,
+            "canaryConfirmedCount": 0,
+            "sharedReviewRequired": false
+          }
+        },
+        "entries": [
+          {
+            "entryId": "base-z-e7n57-v1",
+            "resourceType": "Z",
+            "allowedRoomNames": [
+              "E7N57"
+            ],
+            "hardFloor": 43,
+            "economicFloor": 45,
+            "laneReserve": 100000,
+            "rollingWindowTicks": 30000,
+            "rollingMaxAmount": 5000,
+            "opportunityReserveAmount": 1000,
+            "lifecycle": {
+              "stage": "canary",
+              "consecutiveCompleteCycles": 100,
+              "lastCycleTick": 49990,
+              "lastShadowResult": "safe_opportunity",
+              "qualifiedAt": 48400,
+              "canaryConfirmedCount": 0,
+              "sharedReviewRequired": false
+            },
+            "quota": {
+              "tick": 50003,
+              "windowStartTick": 20004,
+              "resource": "Z",
+              "resourceLimit": 5000,
+              "globalLimit": 12000,
+              "resourceConfirmedActual": 0,
+              "resourceUnmatchedPlanned": 0,
+              "resourceRemaining": 5000,
+              "globalConfirmedActual": 11000,
+              "globalUnmatchedPlanned": 0,
+              "globalRemaining": 1000,
+              "lastGlobalConfirmedAt": 49000,
+              "confirmedCooldownNotBefore": 50000,
+              "retryNotBefore": 0
+            }
+          },
+          {
+            "entryId": "base-x-e6n59-v1",
+            "resourceType": "X",
+            "allowedRoomNames": [
+              "E6N59"
+            ],
+            "hardFloor": 600,
+            "economicFloor": 600,
+            "laneReserve": 100000,
+            "rollingWindowTicks": 30000,
+            "rollingMaxAmount": 8000,
+            "opportunityReserveAmount": 1000,
+            "lifecycle": {
+              "stage": "continuous",
+              "consecutiveCompleteCycles": 100,
+              "lastCycleTick": 49900,
+              "lastShadowResult": "safe_opportunity",
+              "qualifiedAt": 48000,
+              "canaryConfirmedAt": 48100,
+              "canaryConfirmedCount": 1,
+              "sharedReviewRequired": false
+            },
+            "quota": {
+              "tick": 50003,
+              "windowStartTick": 20004,
+              "resource": "X",
+              "resourceLimit": 8000,
+              "globalLimit": 12000,
+              "resourceConfirmedActual": 8000,
+              "resourceUnmatchedPlanned": 0,
+              "resourceRemaining": 0,
+              "globalConfirmedActual": 11000,
+              "globalUnmatchedPlanned": 0,
+              "globalRemaining": 1000,
+              "lastResourceConfirmedAt": 49000,
+              "lastGlobalConfirmedAt": 49000,
+              "confirmedCooldownNotBefore": 50000,
+              "retryNotBefore": 0
+            }
+          },
+          {
+            "entryId": "base-h-e3n59-v1",
+            "resourceType": "H",
+            "allowedRoomNames": [
+              "E3N59"
+            ],
+            "hardFloor": 428,
+            "economicFloor": 451,
+            "laneReserve": 100000,
+            "rollingWindowTicks": 30000,
+            "rollingMaxAmount": 8000,
+            "opportunityReserveAmount": 1000,
+            "lifecycle": {
+              "stage": "continuous",
+              "consecutiveCompleteCycles": 100,
+              "lastCycleTick": 49950,
+              "lastShadowResult": "safe_opportunity",
+              "qualifiedAt": 48200,
+              "canaryConfirmedAt": 48300,
+              "canaryConfirmedCount": 1,
+              "sharedReviewRequired": false
+            },
+            "quota": {
+              "tick": 50003,
+              "windowStartTick": 20004,
+              "resource": "H",
+              "resourceLimit": 8000,
+              "globalLimit": 12000,
+              "resourceConfirmedActual": 3000,
+              "resourceUnmatchedPlanned": 0,
+              "resourceRemaining": 5000,
+              "globalConfirmedActual": 11000,
+              "globalUnmatchedPlanned": 0,
+              "globalRemaining": 1000,
+              "lastResourceConfirmedAt": 48500,
+              "lastGlobalConfirmedAt": 49000,
+              "confirmedCooldownNotBefore": 50000,
+              "retryNotBefore": 0
+            }
+          }
+        ],
+        "ledger": {
+          "receiptHeadHash": "receipt-head-12",
+          "finalizedAttemptSeq": 12,
+          "nextAttemptSeq": 13,
+          "coverageStartTick": 20004,
+          "permitEpochHighWater": 3,
+          "permitChainHeadHighWater": "permit-head-3",
+          "lifetimeConfirmed": {
+            "global": {
+              "count": 12,
+              "amount": 11000
+            },
+            "resources": {
+              "X": {
+                "count": 8,
+                "amount": 8000
+              },
+              "H": {
+                "count": 3,
+                "amount": 3000
+              },
+              "Z": {
+                "count": 0,
+                "amount": 0
+              }
+            }
+          },
+          "blocker": {
+            "code": "receipt_chain_gap",
+            "detectedAt": 50001,
+            "detailHash": "receipt-gap-detail"
+          },
+          "quarantinedCount": 1
+        },
+        "lastPlanningSnapshot": {
+          "observedAt": 50000,
+          "complete": true,
+          "planningFingerprint": "plan-fingerprint-50000",
+          "selected": {
+            "entryId": "base-z-e7n57-v1",
+            "resource": "Z",
+            "roomName": "E7N57",
+            "orderId": "buy-z-safe",
+            "grossPrice": 52,
+            "unitNetPrice": 49.75,
+            "transactionEnergy": 450
+          },
+          "safeResourceTypes": [
+            "Z",
+            "X",
+            "H"
+          ],
+          "admittedResourceTypes": [
+            "Z"
+          ],
+          "rejectedByReason": {
+            "global_quota_or_opportunity_reserve": 1,
+            "resource_quota_exhausted": 1
+          }
+        }
+      }
+    }
+  }
+}

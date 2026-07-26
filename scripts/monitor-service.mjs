@@ -13,6 +13,7 @@ const DEFAULT_HISTORY_LIMIT = 200;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_OUTPUT_PATH = "monitor-data/snapshots.jsonl";
 const RESOURCE_CONTROL_ROUTE_LIMIT = 20;
+const CONTINUOUS_DIRECT_ENTRY_LIMIT = 20;
 
 function printHelp() {
   console.log(`Screeps monitor service
@@ -1121,9 +1122,646 @@ function summarizeDirectPlanningSnapshot(value, referenceTick) {
   };
 }
 
+function summarizeContinuousDirectLifecycle(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    stage: typeof value.stage === "string" ? value.stage : null,
+    resourceFingerprint:
+      typeof value.resourceFingerprint === "string"
+        ? value.resourceFingerprint
+        : null,
+    sharedFingerprint:
+      typeof value.sharedFingerprint === "string"
+        ? value.sharedFingerprint
+        : null,
+    shadowConsecutiveCycles: finiteNumberOrNull(
+      value.consecutiveCompleteCycles,
+    ),
+    lastCycleTick: finiteNumberOrNull(value.lastCycleTick),
+    lastShadowResult:
+      typeof value.lastShadowResult === "string"
+        ? value.lastShadowResult
+        : null,
+    qualifiedAt: finiteNumberOrNull(value.qualifiedAt),
+    canaryConfirmedAt: finiteNumberOrNull(value.canaryConfirmedAt),
+    canaryConfirmedCount: finiteNumberOrNull(
+      value.canaryConfirmedCount,
+    ),
+    sharedReviewRequired: booleanOrNull(
+      value.sharedReviewRequired,
+    ),
+  };
+}
+
+function summarizeContinuousDirectQuota(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const resourceConfirmed = finiteNumberOrNull(
+    value.resourceConfirmedActual,
+  );
+  const resourceReserved = finiteNumberOrNull(
+    value.resourceUnmatchedPlanned,
+  );
+  const globalConfirmed = finiteNumberOrNull(
+    value.globalConfirmedActual,
+  );
+  const globalReserved = finiteNumberOrNull(
+    value.globalUnmatchedPlanned,
+  );
+  const confirmedCooldownNotBefore = finiteNumberOrNull(
+    value.confirmedCooldownNotBefore,
+  );
+  const retryNotBefore = finiteNumberOrNull(value.retryNotBefore);
+  const nextEligibleTicks = [
+    confirmedCooldownNotBefore,
+    retryNotBefore,
+  ].filter((tick) => tick !== null);
+
+  return {
+    tick: finiteNumberOrNull(value.tick),
+    windowStartTick: finiteNumberOrNull(value.windowStartTick),
+    resource: {
+      resourceType:
+        typeof value.resource === "string" ? value.resource : null,
+      limit: finiteNumberOrNull(value.resourceLimit),
+      confirmed: resourceConfirmed,
+      reserved: resourceReserved,
+      used:
+        resourceConfirmed !== null && resourceReserved !== null
+          ? resourceConfirmed + resourceReserved
+          : null,
+      remaining: finiteNumberOrNull(value.resourceRemaining),
+      lastConfirmedAt: finiteNumberOrNull(
+        value.lastResourceConfirmedAt,
+      ),
+    },
+    global: {
+      limit: finiteNumberOrNull(value.globalLimit),
+      confirmed: globalConfirmed,
+      reserved: globalReserved,
+      used:
+        globalConfirmed !== null && globalReserved !== null
+          ? globalConfirmed + globalReserved
+          : null,
+      remaining: finiteNumberOrNull(value.globalRemaining),
+      lastConfirmedAt: finiteNumberOrNull(
+        value.lastGlobalConfirmedAt,
+      ),
+    },
+    confirmedCooldownNotBefore,
+    retryNotBefore,
+    nextEligibleTick:
+      nextEligibleTicks.length > 0
+        ? Math.max(...nextEligibleTicks)
+        : null,
+  };
+}
+
+function summarizeContinuousDirectBestTuple(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    entryId:
+      typeof value.entryId === "string" ? value.entryId : null,
+    resourceType:
+      typeof value.resource === "string" ? value.resource : null,
+    sellerRoom:
+      typeof value.roomName === "string" ? value.roomName : null,
+    orderId:
+      typeof value.orderId === "string" ? value.orderId : null,
+    grossPrice: finiteNumberOrNull(value.grossPrice),
+    unitNetPrice: finiteNumberOrNull(value.unitNetPrice),
+    transactionEnergy: finiteNumberOrNull(
+      value.transactionEnergy,
+    ),
+  };
+}
+
+function summarizeContinuousDirectPlanning(value, referenceTick) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const observedAt = finiteNumberOrNull(value.observedAt);
+  const normalizeResources = (resources) =>
+    Array.isArray(resources)
+      ? [
+          ...new Set(
+            resources.filter(
+              (resource) => typeof resource === "string",
+            ),
+          ),
+        ].sort()
+      : null;
+  return {
+    observedAt,
+    age: tickAge(referenceTick, observedAt),
+    complete: booleanOrNull(value.complete),
+    planningFingerprint:
+      typeof value.planningFingerprint === "string"
+        ? value.planningFingerprint
+        : null,
+    blocker:
+      typeof value.blocker === "string" ? value.blocker : null,
+    safeResourceTypes: normalizeResources(
+      value.safeResourceTypes,
+    ),
+    admittedResourceTypes: normalizeResources(
+      value.admittedResourceTypes,
+    ),
+    rejectedByReason: summarizeCountMapOrNull(
+      value.rejectedByReason,
+    ),
+    bestTuple: summarizeContinuousDirectBestTuple(
+      value.selected,
+    ),
+  };
+}
+
+function summarizeContinuousDirectPermit(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const grants = Array.isArray(value.grants)
+    ? value.grants
+        .filter(
+          (grant) =>
+            grant &&
+            typeof grant === "object" &&
+            !Array.isArray(grant),
+        )
+        .sort((left, right) => {
+          const leftId =
+            typeof left.entryId === "string" ? left.entryId : "";
+          const rightId =
+            typeof right.entryId === "string" ? right.entryId : "";
+          return leftId.localeCompare(rightId);
+        })
+        .slice(0, CONTINUOUS_DIRECT_ENTRY_LIMIT)
+        .map((grant) => ({
+          entryId:
+            typeof grant.entryId === "string"
+              ? grant.entryId
+              : null,
+          stage:
+            typeof grant.stage === "string"
+              ? grant.stage
+              : null,
+          newDealGrant:
+            typeof grant.newDealGrant === "string"
+              ? grant.newDealGrant
+              : null,
+        }))
+    : null;
+  return {
+    epoch: finiteNumberOrNull(value.epoch),
+    permitId:
+      typeof value.permitId === "string" ? value.permitId : null,
+    permitHead:
+      typeof value.permitHead === "string"
+        ? value.permitHead
+        : null,
+    grants,
+  };
+}
+
+function summarizeContinuousDirectBlocker(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    code: typeof value.code === "string" ? value.code : null,
+    detectedAt: finiteNumberOrNull(value.detectedAt),
+    detailHash:
+      typeof value.detailHash === "string"
+        ? value.detailHash
+        : null,
+  };
+}
+
+function summarizeContinuousDirectPending(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    attemptSeq: finiteNumberOrNull(value.attemptSeq),
+    requestId:
+      typeof value.requestId === "string" ? value.requestId : null,
+    entryId:
+      typeof value.entryId === "string" ? value.entryId : null,
+    sellerRoom:
+      typeof value.sellerRoom === "string"
+        ? value.sellerRoom
+        : null,
+    resourceType:
+      typeof value.resource === "string" ? value.resource : null,
+    orderId:
+      typeof value.orderId === "string" ? value.orderId : null,
+    attemptAt: finiteNumberOrNull(value.attemptAt),
+    plannedAmount: finiteNumberOrNull(value.plannedAmount),
+    plannedTransactionEnergy: finiteNumberOrNull(
+      value.plannedTransactionEnergy,
+    ),
+  };
+}
+
+function summarizeContinuousDirectLifetime(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const summarizeCounter = (counter) =>
+    counter && typeof counter === "object" && !Array.isArray(counter)
+      ? {
+          count: finiteNumberOrNull(counter.count),
+          amount: finiteNumberOrNull(counter.amount),
+        }
+      : null;
+  const resources =
+    value.resources &&
+    typeof value.resources === "object" &&
+    !Array.isArray(value.resources)
+      ? Object.fromEntries(
+          Object.entries(value.resources)
+            .filter(
+              ([resource]) => typeof resource === "string",
+            )
+            .sort(([left], [right]) =>
+              left.localeCompare(right),
+            )
+            .slice(0, CONTINUOUS_DIRECT_ENTRY_LIMIT)
+            .map(([resource, counter]) => [
+              resource,
+              summarizeCounter(counter),
+            ]),
+        )
+      : null;
+  return {
+    global: summarizeCounter(value.global),
+    resources,
+  };
+}
+
+function summarizeContinuousDirectOpportunity(
+  entry,
+  planning,
+  quota,
+) {
+  const reserveAmount = finiteNumberOrNull(
+    entry.opportunityReserveAmount,
+  );
+  const resourceType =
+    typeof entry.resourceType === "string"
+      ? entry.resourceType
+      : null;
+  const safe =
+    resourceType !== null &&
+    Array.isArray(planning?.safeResourceTypes)
+      ? planning.safeResourceTypes.includes(resourceType)
+      : null;
+  const admitted =
+    resourceType !== null &&
+    Array.isArray(planning?.admittedResourceTypes)
+      ? planning.admittedResourceTypes.includes(resourceType)
+      : null;
+  const resourceRemaining = quota?.resource?.remaining ?? null;
+  const resourceUsed = quota?.resource?.used ?? null;
+  const resourceEligible =
+    reserveAmount !== null && resourceRemaining !== null
+      ? resourceRemaining >= reserveAmount
+      : null;
+  const required =
+    safe === false
+      ? false
+      : safe === true && resourceEligible !== null
+        ? resourceEligible
+        : null;
+  const unmetAmount =
+    required === false
+      ? 0
+      : required === true &&
+          reserveAmount !== null &&
+          resourceUsed !== null
+        ? Math.max(0, reserveAmount - resourceUsed)
+        : null;
+  let admission = null;
+  if (safe === false) {
+    admission = "not_safe";
+  } else if (safe === true && resourceEligible === false) {
+    admission = "resource_quota_blocked";
+  } else if (safe === true && admitted === true) {
+    admission = "admitted";
+  } else if (safe === true && admitted === false) {
+    admission = "global_quota_or_opportunity_reserve_blocked";
+  }
+  return {
+    reserveAmount,
+    safe,
+    required,
+    unmetAmount,
+    satisfied:
+      required === true && unmetAmount !== null
+        ? unmetAmount === 0
+        : null,
+    admitted,
+    admission,
+  };
+}
+
+function summarizeContinuousDirectEntry(
+  value,
+  lifecycleByEntry,
+  planning,
+) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const entryId =
+    typeof value.entryId === "string" ? value.entryId : null;
+  const lifecycle =
+    summarizeContinuousDirectLifecycle(value.lifecycle) ||
+    summarizeContinuousDirectLifecycle(
+      entryId === null ? null : lifecycleByEntry?.[entryId],
+    );
+  const quota = summarizeContinuousDirectQuota(value.quota);
+  return {
+    entryId,
+    resourceType:
+      typeof value.resourceType === "string"
+        ? value.resourceType
+        : null,
+    lane: {
+      allowedRoomNames: Array.isArray(value.allowedRoomNames)
+        ? [
+            ...new Set(
+              value.allowedRoomNames.filter(
+                (roomName) => typeof roomName === "string",
+              ),
+            ),
+          ].sort()
+        : null,
+      requireNativeMineral: booleanOrNull(
+        value.requireNativeMineral,
+      ),
+      reserve: finiteNumberOrNull(value.laneReserve),
+    },
+    floor: {
+      hard: finiteNumberOrNull(value.hardFloor),
+      economic: finiteNumberOrNull(value.economicFloor),
+    },
+    rollingWindowTicks: finiteNumberOrNull(
+      value.rollingWindowTicks,
+    ),
+    rollingMaxAmount: finiteNumberOrNull(
+      value.rollingMaxAmount,
+    ),
+    lifecycle,
+    quota,
+    opportunity: summarizeContinuousDirectOpportunity(
+      value,
+      planning,
+      quota,
+    ),
+  };
+}
+
+function summarizeContinuousDirectGlobalQuota(entries) {
+  const quotas = entries
+    .map((entry) => entry?.quota)
+    .filter((quota) => quota !== null && quota !== undefined);
+  if (quotas.length === 0) return null;
+  const first = quotas[0];
+  const signature = (quota) =>
+    JSON.stringify({
+      tick: quota.tick,
+      windowStartTick: quota.windowStartTick,
+      global: quota.global,
+      confirmedCooldownNotBefore:
+        quota.confirmedCooldownNotBefore,
+      retryNotBefore: quota.retryNotBefore,
+      nextEligibleTick: quota.nextEligibleTick,
+    });
+  return {
+    tick: first.tick,
+    windowStartTick: first.windowStartTick,
+    ...first.global,
+    confirmedCooldownNotBefore:
+      first.confirmedCooldownNotBefore,
+    retryNotBefore: first.retryNotBefore,
+    nextEligibleTick: first.nextEligibleTick,
+    consistent: quotas.every(
+      (quota) => signature(quota) === signature(first),
+    ),
+  };
+}
+
+function summarizeContinuousDirectMarketSale(
+  value,
+  referenceTick,
+) {
+  const planning = summarizeContinuousDirectPlanning(
+    value.lastPlanningSnapshot,
+    referenceTick,
+  );
+  const lifecycleByEntry =
+    value.lifecycleByEntry &&
+    typeof value.lifecycleByEntry === "object" &&
+    !Array.isArray(value.lifecycleByEntry)
+      ? value.lifecycleByEntry
+      : null;
+  const entries = Array.isArray(value.entries)
+    ? value.entries
+        .filter(
+          (entry) =>
+            entry &&
+            typeof entry === "object" &&
+            !Array.isArray(entry),
+        )
+        .sort((left, right) => {
+          const leftId =
+            typeof left.entryId === "string" ? left.entryId : "";
+          const rightId =
+            typeof right.entryId === "string" ? right.entryId : "";
+          return leftId.localeCompare(rightId);
+        })
+        .slice(0, CONTINUOUS_DIRECT_ENTRY_LIMIT)
+        .map((entry) =>
+          summarizeContinuousDirectEntry(
+            entry,
+            lifecycleByEntry,
+            planning,
+          ),
+        )
+        .filter((entry) => entry !== null)
+    : [];
+  const ledger =
+    value.ledger &&
+    typeof value.ledger === "object" &&
+    !Array.isArray(value.ledger)
+      ? value.ledger
+      : null;
+  const ledgerBlocker = summarizeContinuousDirectBlocker(
+    ledger?.blocker,
+  );
+  const migrationBlockedReason =
+    typeof value.migrationBlockedReason === "string"
+      ? value.migrationBlockedReason
+      : null;
+  const effectiveBlocker =
+    migrationBlockedReason !== null
+      ? {
+          source: "migration",
+          code: migrationBlockedReason,
+          detectedAt: null,
+          detailHash: null,
+        }
+      : ledgerBlocker?.code
+        ? { source: "ledger", ...ledgerBlocker }
+        : planning?.blocker
+          ? {
+              source: "planning",
+              code: planning.blocker,
+              detectedAt: planning.observedAt,
+              detailHash: planning.planningFingerprint,
+            }
+          : null;
+  const requiredEntries = entries.filter(
+    (entry) => entry.opportunity.required === true,
+  );
+  const opportunityAdmission =
+    planning === null
+      ? null
+      : {
+          safeResourceTypes: planning.safeResourceTypes,
+          requiredResourceTypes: requiredEntries
+            .map((entry) => entry.resourceType)
+            .filter((resource) => resource !== null)
+            .sort(),
+          admittedResourceTypes:
+            planning.admittedResourceTypes,
+          unmetByResource: Object.fromEntries(
+            requiredEntries
+              .filter(
+                (entry) =>
+                  entry.resourceType !== null &&
+                  entry.opportunity.unmetAmount !== null,
+              )
+              .sort((left, right) =>
+                left.resourceType.localeCompare(
+                  right.resourceType,
+                ),
+              )
+              .map((entry) => [
+                entry.resourceType,
+                entry.opportunity.unmetAmount,
+              ]),
+          ),
+          totalUnmetAmount: requiredEntries.every(
+            (entry) =>
+              entry.opportunity.unmetAmount !== null,
+          )
+            ? requiredEntries.reduce(
+                (sum, entry) =>
+                  sum + entry.opportunity.unmetAmount,
+                0,
+              )
+            : null,
+        };
+
+  return {
+    available: true,
+    strategyActive: booleanOrNull(value.strategyActive),
+    capability:
+      typeof value.capability === "string"
+        ? value.capability
+        : null,
+    schemaVersion: finiteNumberOrNull(value.schemaVersion),
+    migrationStatus:
+      typeof value.migrationStatus === "string"
+        ? value.migrationStatus
+        : null,
+    migrationBlockedReason,
+    permit: summarizeContinuousDirectPermit(value.permit),
+    proposedPermitId:
+      typeof value.proposedPermitId === "string"
+        ? value.proposedPermitId
+        : null,
+    entries,
+    globalQuota: summarizeContinuousDirectGlobalQuota(entries),
+    opportunityAdmission,
+    bestTuple: planning?.bestTuple ?? null,
+    planning:
+      planning === null
+        ? null
+        : {
+            observedAt: planning.observedAt,
+            age: planning.age,
+            complete: planning.complete,
+            planningFingerprint:
+              planning.planningFingerprint,
+            blocker: planning.blocker,
+            safeResourceTypes:
+              planning.safeResourceTypes,
+            admittedResourceTypes:
+              planning.admittedResourceTypes,
+            rejectedByReason:
+              planning.rejectedByReason,
+          },
+    coverage: {
+      startTick: finiteNumberOrNull(
+        ledger?.coverageStartTick,
+      ),
+      receiptHead:
+        typeof ledger?.receiptHeadHash === "string"
+          ? ledger.receiptHeadHash
+          : null,
+    },
+    highWater: {
+      finalizedAttemptSeq: finiteNumberOrNull(
+        ledger?.finalizedAttemptSeq,
+      ),
+      nextAttemptSeq: finiteNumberOrNull(
+        ledger?.nextAttemptSeq,
+      ),
+      permitEpoch: finiteNumberOrNull(
+        ledger?.permitEpochHighWater,
+      ),
+      permitChainHead:
+        typeof ledger?.permitChainHeadHighWater === "string"
+          ? ledger.permitChainHeadHighWater
+          : null,
+    },
+    ledger: {
+      pending: summarizeContinuousDirectPending(
+        ledger?.pending,
+      ),
+      quarantinedCount: finiteNumberOrNull(
+        ledger?.quarantinedCount,
+      ),
+      lifetimeConfirmed:
+        summarizeContinuousDirectLifetime(
+          ledger?.lifetimeConfirmed,
+        ),
+      blocker: ledgerBlocker,
+    },
+    blocker: effectiveBlocker,
+  };
+}
+
 function summarizeDirectMarketSale(value, referenceTick) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
+  }
+  if (
+    value.capability === "market-direct-continuous" ||
+    value.schemaVersion === 2
+  ) {
+    return summarizeContinuousDirectMarketSale(
+      value,
+      referenceTick,
+    );
   }
   return {
     available: true,
@@ -1887,6 +2525,37 @@ function resourceControlStr(resourceControl) {
 
 function directMarketSaleStr(direct) {
   if (!direct || !direct.available) return "";
+  if (direct.capability === "market-direct-continuous") {
+    const permit = direct.permit;
+    const tuple = direct.bestTuple;
+    const globalQuota = direct.globalQuota;
+    const entries = Array.isArray(direct.entries)
+      ? direct.entries
+          .map((entry) => {
+            const resource =
+              entry.resourceType ?? entry.entryId ?? "n/a";
+            const stage = entry.lifecycle?.stage ?? "n/a";
+            const shadow =
+              entry.lifecycle?.shadowConsecutiveCycles ?? "n/a";
+            const quota = entry.quota?.resource;
+            const opportunity =
+              entry.opportunity?.admission ?? "n/a";
+            return `${resource}:${stage}:s${shadow}:q${quota?.used ?? "n/a"}/${quota?.limit ?? "n/a"}:o=${opportunity}`;
+          })
+          .join(",")
+      : "n/a";
+    return [
+      ` directV2=${direct.schemaVersion ?? "n/a"}`,
+      ` directPermit=${permit ? `${permit.epoch ?? "n/a"}:${permit.permitId ?? "n/a"}:${permit.permitHead ?? "n/a"}` : "none"}`,
+      ` directEntries=${entries}`,
+      ` directSelected=${tuple ? `${tuple.resourceType ?? "n/a"}@${tuple.sellerRoom ?? "n/a"}:${tuple.orderId ?? "n/a"}:net=${tuple.unitNetPrice ?? "n/a"}` : "none"}`,
+      ` directGlobal=${globalQuota ? `${globalQuota.used ?? "n/a"}/${globalQuota.limit ?? "n/a"}:reserved=${globalQuota.reserved ?? "n/a"}` : "n/a"}`,
+      ` directPending=${direct.ledger?.pending ? 1 : 0}`,
+      ` directCoverage=${direct.coverage?.startTick ?? "n/a"}`,
+      ` directHighWater=${direct.highWater ? `${direct.highWater.finalizedAttemptSeq ?? "n/a"}/${direct.highWater.nextAttemptSeq ?? "n/a"}:p${direct.highWater.permitEpoch ?? "n/a"}` : "n/a"}`,
+      ` directBlocker=${direct.blocker?.code ?? "none"}`,
+    ].join("");
+  }
   const snapshot = direct.snapshot;
   const book = snapshot?.buyBook;
   const opportunity = snapshot?.opportunity;
