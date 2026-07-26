@@ -641,10 +641,17 @@ function collectFactory(candidates: readonly MarketProtectionCandidate[]): {
   };
 }
 
+function synthesisPlanStableKey(
+  roomName: string,
+  product: ResourceConstant,
+): string {
+  return `synthesis:plan:${roomName}:${product}`;
+}
+
 function appendSynthesisPlanFacts(
   facts: MarketProtectionFact[],
   roomName: string,
-  sourcePrefix: string,
+  planStableKey: string,
   product: ResourceConstant,
   targetAmount: number,
   status: "active" | "paused",
@@ -656,7 +663,7 @@ function appendSynthesisPlanFacts(
     roomName,
     resource: product,
     amount: targetAmount,
-    stableKey: `${sourcePrefix}:product:${product}`,
+    stableKey: `${planStableKey}:product`,
     status,
   });
   for (const reagent of reagents) {
@@ -664,7 +671,7 @@ function appendSynthesisPlanFacts(
       roomName,
       resource: reagent,
       amount: targetAmount,
-      stableKey: `${sourcePrefix}:reagent:${reagent}`,
+      stableKey: `${planStableKey}:reagent:${reagent}`,
       status,
     });
   }
@@ -708,7 +715,7 @@ function collectSynthesis(candidates: readonly MarketProtectionCandidate[]): {
           appendSynthesisPlanFacts(
             activeFacts,
             roomName,
-            `synthesis:active:${roomName}`,
+            synthesisPlanStableKey(roomName, state.activeProduct),
             state.activeProduct,
             state.targetAmount ?? 0,
             "active",
@@ -724,7 +731,7 @@ function collectSynthesis(candidates: readonly MarketProtectionCandidate[]): {
           appendSynthesisPlanFacts(
             pausedFacts,
             roomName,
-            `synthesis:paused:${roomName}:${state.boostPause?.taskId || "unknown"}`,
+            synthesisPlanStableKey(roomName, pausedPlan.product),
             pausedPlan.product,
             pausedPlan.targetAmount,
             "paused",
@@ -781,33 +788,13 @@ function collectHub(
   }
 
   const distributed = runtime?.distributedSynthesis;
-  for (const [ledgerKey, rawLedger] of Object.entries(
-    distributed?.allocationLedger || {},
-  )) {
-    const ledger = asRecord(rawLedger);
-    const commitments = asRecord(ledger?.roomCommitments);
-    if (!ledger || !validResource(ledger.resource) || !commitments) {
-      complete = false;
-      continue;
-    }
-    for (const [roomName, amount] of Object.entries(commitments)) {
-      if (!validRoomName(roomName) || !finiteNonNegative(amount)) {
-        complete = false;
-        continue;
-      }
-      facts.push({
-        roomName,
-        resource: ledger.resource,
-        amount,
-        stableKey: `hub:allocation:${ledgerKey}:${roomName}`,
-        status: "active",
-      });
-    }
-  }
+  // `planDistributedSynthesis` seeds allocationLedger from effective room
+  // inventories, then decrements it as assignments and routes consume stock.
+  // Persisted roomCommitments are therefore residual available supply, not
+  // production demand. Only the concrete assignments and routes below are
+  // protection commitments.
 
-  for (const [index, rawAssignment] of (
-    distributed?.dispatchAssignments || []
-  ).entries()) {
+  for (const rawAssignment of distributed?.dispatchAssignments || []) {
     const assignment = asRecord(rawAssignment);
     if (
       !assignment ||
@@ -823,7 +810,7 @@ function collectHub(
         appendSynthesisPlanFacts(
           facts,
           assignment.roomName,
-          `hub:dispatch:${index}:${assignment.roomName}`,
+          synthesisPlanStableKey(assignment.roomName, assignment.product),
           assignment.product,
           assignment.targetAmount,
           "active",

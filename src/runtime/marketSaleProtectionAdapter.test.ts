@@ -459,7 +459,7 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
     );
   });
 
-  it("collects Hub allocation plus Boost and War commitments", () => {
+  it("does not treat Hub residual allocation as demand while collecting Boost and War commitments", () => {
     const secondRoom = "W2N2";
     Game.rooms[ROOM] = createRoom(ROOM, {}, {});
     Game.rooms[secondRoom] = createRoom(
@@ -539,18 +539,185 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
         getMarketProtectionEntryKey(secondRoom, RESOURCE_CATALYZED_UTRIUM_ACID)
       ];
 
-    expect(keanium.productionDemand).toBe(3_250);
+    expect(keanium.productionDemand).toBe(3_000);
     expect(keanium.sourceContributions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ sourceKinds: ["hub"] }),
         expect.objectContaining({ sourceKinds: ["war"] }),
       ]),
     );
+    expect(
+      keanium.sourceContributions.some((contribution) =>
+        contribution.sourceKinds.includes("hub"),
+      ),
+    ).toBe(false);
     expect(boost.productionDemand).toBe(4_000);
     expect(boost.sourceContributions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ sourceKinds: ["boost"] }),
         expect.objectContaining({ sourceKinds: ["war"] }),
+      ]),
+    );
+  });
+
+  it("deduplicates matching Synthesis and Hub dispatch plans while keeping different products separate", () => {
+    const secondRoom = "W2N2";
+    Game.rooms[ROOM] = createRoom(ROOM, {}, {});
+    Game.rooms[secondRoom] = createRoom(
+      secondRoom,
+      { [RESOURCE_KEANIUM]: 5_000 },
+      { [RESOURCE_KEANIUM]: 5_000 },
+    );
+    mockFloors({
+      [ROOM]: {},
+      [secondRoom]: { [RESOURCE_KEANIUM]: 0 },
+    });
+    Memory.cfg!.synthesisControl = {
+      enabled: true,
+      rooms: {
+        [secondRoom]: {
+          enabled: true,
+        },
+      },
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: TICK,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        [secondRoom]: {
+          stage: "synthesizing",
+          activeProduct: RESOURCE_KEANIUM_HYDRIDE,
+          reagentA: RESOURCE_KEANIUM,
+          reagentB: RESOURCE_HYDROGEN,
+          targetAmount: 400,
+          batchSize: 400,
+          reagentLabIds: [],
+          productLabIds: [],
+          successfulRuns: 0,
+          pendingTasks: 0,
+          lastTransitionAt: TICK,
+        },
+      },
+    };
+    Memory.cfg!.hub = {
+      enabled: true,
+      hubRoomName: ROOM,
+      planInterval: 200,
+      targetCompounds: [],
+    };
+    Memory.runtime!.hub = {
+      updatedAt: TICK,
+      needsPlan: false,
+      distributedSynthesis: {
+        allocationLedger: {
+          K: {
+            resource: RESOURCE_KEANIUM,
+            totalAmount: 5_000,
+            roomCommitments: { [secondRoom]: 5_000 },
+          },
+        },
+        dispatchAssignments: [
+          {
+            roomName: secondRoom,
+            product: RESOURCE_KEANIUM_HYDRIDE,
+            targetAmount: 400,
+            isHubRoom: false,
+          },
+          {
+            roomName: secondRoom,
+            product: RESOURCE_KEANIUM_OXIDE,
+            targetAmount: 300,
+            isHubRoom: false,
+          },
+        ],
+      },
+    };
+
+    const ledger = collectLiveMarketSaleProtectionLedger(
+      config({ [RESOURCE_KEANIUM]: 100 }),
+      undefined,
+      {
+        candidates: [
+          { roomName: secondRoom, resource: RESOURCE_KEANIUM },
+        ],
+      },
+    );
+    const keanium =
+      ledger.entries[getMarketProtectionEntryKey(secondRoom, RESOURCE_KEANIUM)];
+    const productionContributions = keanium.sourceContributions.filter(
+      (contribution) => contribution.bucket === "productionDemand",
+    );
+
+    expect(keanium.blocked).toBe(false);
+    expect(keanium.productionDemand).toBe(700);
+    expect(productionContributions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stableKey: `synthesis:plan:${secondRoom}:${RESOURCE_KEANIUM_HYDRIDE}:reagent:${RESOURCE_KEANIUM}`,
+          amount: 400,
+          sourceKinds: ["synthesisActive", "hub"],
+        }),
+        expect.objectContaining({
+          stableKey: `synthesis:plan:${secondRoom}:${RESOURCE_KEANIUM_OXIDE}:reagent:${RESOURCE_KEANIUM}`,
+          amount: 300,
+          sourceKinds: ["hub"],
+        }),
+      ]),
+    );
+    expect(productionContributions).toHaveLength(2);
+  });
+
+  it("keeps Hub room stock fully protected without an explicit market surplus", () => {
+    Game.rooms[ROOM] = createRoom(
+      ROOM,
+      { [RESOURCE_KEANIUM]: 5_000 },
+      { [RESOURCE_KEANIUM]: 5_000 },
+    );
+    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
+    Memory.cfg!.hub = {
+      enabled: true,
+      hubRoomName: ROOM,
+      planInterval: 200,
+      targetCompounds: [],
+    };
+    Memory.runtime!.hub = {
+      updatedAt: TICK,
+      needsPlan: false,
+      distributedSynthesis: {
+        allocationLedger: {
+          K: {
+            resource: RESOURCE_KEANIUM,
+            totalAmount: 5_000,
+            roomCommitments: { [ROOM]: 5_000 },
+          },
+        },
+      },
+      marketSellSurplus: {},
+    };
+
+    const ledger = collectLiveMarketSaleProtectionLedger(
+      config({ [RESOURCE_KEANIUM]: 100 }),
+      undefined,
+      {
+        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
+      },
+    );
+    const keanium =
+      ledger.entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
+
+    expect(keanium.blocked).toBe(false);
+    expect(keanium.productionDemand).toBe(10_000);
+    expect(keanium.sellableAmount).toBe(0);
+    expect(keanium.sourceContributions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stableKey: `hub:surplus-limit:${ROOM}:${RESOURCE_KEANIUM}`,
+          amount: 10_000,
+          sourceKinds: ["hub"],
+        }),
       ]),
     );
   });

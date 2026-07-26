@@ -13,6 +13,7 @@
 - [x] 2.3 收集所有关键 blocked outgoing、carrier/in-flight、resource reservations，并按合同去重
 - [x] 2.4 收集托管订单 exposure、forecast buffer 和 terminal 实存，计算 protected/sellable
 - [x] 2.5 对缺失、过期或不可解释的保护来源按资源 fail-closed，并投影拒绝原因
+- [x] 2.6 修正 Hub distributed synthesis 余量语义，并按同房同产品稳定键去重 Synthesis/Hub 重复计划
 
 ## 3. 价格保护与候选选择
 
@@ -44,6 +45,6 @@
 - [x] 6.4 添加多周期 terminal claim、Factory/Boost 回归、Shadow 零写、动态 canary 和 monitor 兼容测试
 - [x] 6.5 运行聚焦测试、全量测试、`tsc --noEmit`、构建和 OpenSpec strict 验证
 - [x] 6.6 完成独立 subagent 代码审查并关闭全部阻断发现
-- [ ] 6.7 合并至 `main`，部署旧 market disabled + 新模式 off 的安全版本并实时复核
+- [x] 6.7 合并至 `main`，部署旧 market disabled + 新模式 off 的安全版本并实时复核
 - [ ] 6.8 冻结与 canary 相同的配置 revision，在该 revision 连续 Shadow 100 个 ResourceControl 周期（配置变化重置），验证零写和完整拒绝解释
 - [ ] 6.9 按 live 前置条件选择一个非 Hub 基础矿物执行小批 maker canary，并验证成交/过期清理与生产无回归

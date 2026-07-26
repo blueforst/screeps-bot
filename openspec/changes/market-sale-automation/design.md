@@ -86,13 +86,13 @@ collector 不依赖后置模块“本 tick 已发布”这一假设，而是主�
 
 - Factory 当前 target、组件展开、显式任务和生产配置；
 - Synthesis 活动计划、reaction target、`boostPause.pausedPlan`、reagent/product 库存目标；
-- Hub chain/T3 目标、distributed synthesis allocation/route 和 `marketSellSurplus`；
+- Hub chain/T3 目标、distributed synthesis 的实际 dispatch/route 和 `marketSellSurplus`；规划完成后的 `allocationLedger.roomCommitments` 是尚未分配的剩余可用库存，不作为生产需求；
 - Boost/War 配置、活动任务、`resourceReservations` 和带 TTL 的 runtime 承诺；
 - 所有 pending 的关键手工/生产/boost/战争出站任务，包括暂时 blocked 的任务；
 - carrier board 的剩余步骤、in-flight 承诺；
 - 活跃托管订单暴露。
 
-每个贡献使用稳定去重键：reservation 使用 holder/key，transfer 使用 task ID，carrier 使用 task/step ID，managed exposure 使用 order ID。相同合同的重复视图只计一次；没有稳定 ID 的旧记录按独立承诺保守计入，绝不因无法去重而少保护。
+每个贡献使用稳定去重键：reservation 使用 holder/key，transfer 使用 task ID，carrier 使用 task/step ID，managed exposure 使用 order ID；同房同产品的 Synthesis active/paused 与 Hub dispatch 使用共同的逻辑计划键。相同合同的重复视图按最大金额只计一次；同房不同产品仍视为不同生产承诺。没有稳定 ID 的旧记录按独立承诺保守计入，绝不因无法去重而少保护。
 
 任一必要来源缺失、`observedAt/expiresAt` 过期、revision 不等于当前 tick，或 collector 无法解释候选资源时，该 `room/resource` 完全禁止出售并记录 `protection_stale`。每个 allowlist 资源都必须显式配置有限正数的 `forecastBuffer`，且不得小于 `makerBatchAmount`；它带相同 revision/TTL。缺失、为零、非有限值或小于一批时配置直接 fail-closed。
 

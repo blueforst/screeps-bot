@@ -52,6 +52,14 @@
 - **WHEN** 旧任务没有稳定合同 ID
 - **THEN** 系统把它作为独立承诺保守计入，不得因无法去重而少保护
 
+#### Scenario: Hub 分配余量不是生产需求
+- **WHEN** distributed synthesis 完成分配后，`allocationLedger.roomCommitments` 表示已扣除本地 reserve、待收发和实际分配的剩余可用库存
+- **THEN** collector 不得把该余量计入生产需求；只保护实际 dispatch、route、Hub 目标和显式 surplus 限制
+
+#### Scenario: 同一合成计划的重复视图去重
+- **WHEN** 同房同产品的生产计划同时出现在 Synthesis active/paused runtime 与 Hub dispatch
+- **THEN** collector 使用同一稳定计划键并按最大金额只计一次；同房不同产品的计划仍分别保护
+
 ### Requirement: 可售量不得侵占生产与关键调拨
 系统 SHALL 以总库存扣除资源底仓、生产目标与组件、forecast buffer、Boost/War、Hub 链路、所有关键出站、carrier/in-flight 和托管订单暴露后计算可售量。关键任务即使暂时 blocked，在取消或过期前仍 MUST 受保护。
 
