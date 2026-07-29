@@ -141,7 +141,7 @@ function countRemainingWorkParts(configName: string, body: readonly BodyPartCons
   ).length, 0);
 }
 
-function getLocalUpgraderBoostAmount(room: Room): number {
+function getLocalUpgraderBoostInventory(room: Room): { amount: number; labCount: number } {
   let total = room.storage?.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID) || 0;
   total += room.terminal?.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID) || 0;
 
@@ -151,7 +151,10 @@ function getLocalUpgraderBoostAmount(room: Room): number {
   for (const lab of labs) {
     total += lab.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID);
   }
-  return total;
+  return {
+    amount: total,
+    labCount: labs.length,
+  };
 }
 
 function isOwnedUpgraderRoom(roomName: string): boolean {
@@ -250,7 +253,10 @@ export function runHubUpgradeControl(): void {
     const body = getUpgraderBody(room);
     const remainingWorkParts = countRemainingWorkParts(configName, body);
     const requiredBoostAmount = remainingWorkParts * LAB_BOOST_MINERAL;
-    const canBoostLocally = requiredBoostAmount > 0 && getLocalUpgraderBoostAmount(room) >= requiredBoostAmount;
+    const boostInventory = getLocalUpgraderBoostInventory(room);
+    const canBoostLocally = requiredBoostAmount > 0 &&
+      boostInventory.labCount > 0 &&
+      boostInventory.amount >= requiredBoostAmount;
 
     configs[configName] = {
       role: "upgrader",

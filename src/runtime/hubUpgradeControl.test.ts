@@ -37,7 +37,7 @@ function createUpgraderRoom(
   level = 7,
   my = true,
   name = "E4N58",
-  localXgh2o: LocalXgh2o = { storage: 450 },
+  localXgh2o: LocalXgh2o = { storage: 450, labs: [0] },
   energyCapacityAvailable = 5600,
 ): Room {
   const storage = localXgh2o.storage === undefined
@@ -147,6 +147,16 @@ describe("runHubUpgradeControl", () => {
     Game.rooms.E4N58 = createUpgraderRoom(7, true, "E4N58", { storage: 449 });
 
     startUpgrader("E4N58");
+
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.args).toEqual(["E4N58"]);
+    expect(mockedPrepareBoosts).not.toHaveBeenCalled();
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("upgrader:E4N58", "E4N58");
+  });
+
+  it("runs unboosted when the room has enough XGH2O but no lab", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(5, true, "E4N58", { storage: 1000 }, 1800);
+
+    runHubUpgradeControl();
 
     expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.args).toEqual(["E4N58"]);
     expect(mockedPrepareBoosts).not.toHaveBeenCalled();
