@@ -146,7 +146,8 @@ function getLocalUpgraderBoostInventory(room: Room): { amount: number; labCount:
   total += room.terminal?.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID) || 0;
 
   const labs = room.find(FIND_MY_STRUCTURES, {
-    filter: (structure): structure is StructureLab => structure.structureType === STRUCTURE_LAB,
+    filter: (structure): structure is StructureLab =>
+      structure.structureType === STRUCTURE_LAB && structure.isActive(),
   });
   for (const lab of labs) {
     total += lab.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID);

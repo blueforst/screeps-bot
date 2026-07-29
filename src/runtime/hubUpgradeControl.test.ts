@@ -27,6 +27,7 @@ function createResourceStructure(
 ): StructureStorage | StructureTerminal | StructureLab {
   return {
     structureType,
+    isActive: () => true,
     store: {
       getUsedCapacity: (resource?: ResourceConstant) => resource === RESOURCE_CATALYZED_GHODIUM_ACID ? xgh2o : 0,
     },
@@ -161,6 +162,23 @@ describe("runHubUpgradeControl", () => {
     expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.args).toEqual(["E4N58"]);
     expect(mockedPrepareBoosts).not.toHaveBeenCalled();
     expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("upgrader:E4N58", "E4N58");
+  });
+
+  it("runs unboosted when only an inactive lab remains after an RCL downgrade", () => {
+    const room = createUpgraderRoom(5, true, "E4N58", { storage: 1000 }, 1800);
+    const inactiveLab = createResourceStructure(STRUCTURE_LAB, 1000) as StructureLab;
+    inactiveLab.isActive = jest.fn(() => false);
+    room.find = jest.fn((type: FindConstant, options?: { filter?: (structure: AnyStructure) => boolean }) => {
+      if (type !== FIND_MY_STRUCTURES) return [];
+      const filter = options?.filter;
+      return !filter || filter(inactiveLab) ? [inactiveLab] : [];
+    }) as Room["find"];
+    Game.rooms.E4N58 = room;
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.args).toEqual(["E4N58"]);
+    expect(mockedPrepareBoosts).not.toHaveBeenCalled();
   });
 
   it("uses local storage, terminal, and labs to cover the full boost requirement", () => {
