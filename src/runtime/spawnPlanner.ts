@@ -9,6 +9,7 @@ import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
 import type { CreepConfig } from "@/types/system";
 
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
+const UPGRADER_PRESPAWN_BUFFER_TICKS = 30;
 const SOURCE_WORKER_COMMUTE_CACHE_TTL = 1000;
 
 interface SpawnPlanningContext {
@@ -304,6 +305,20 @@ function shouldPreSpawnCarrier(spawn: StructureSpawn, configName: string, contex
   return soonestDying.ticksToLive <= threshold;
 }
 
+function shouldPreSpawnUpgrader(spawn: StructureSpawn, configName: string, context?: SpawnPlanningContext): boolean {
+  const creeps = getConfigCreeps(configName, context);
+  if (creeps.length === 0) {
+    return true;
+  }
+
+  if (creeps.length >= 2) {
+    return false;
+  }
+
+  const threshold = getSpawnTime(spawn, configName, context) + UPGRADER_PRESPAWN_BUFFER_TICKS;
+  return creeps[0].ticksToLive <= threshold;
+}
+
 function shouldPreSpawnSourceWorker(
   spawn: StructureSpawn,
   configName: string,
@@ -392,6 +407,10 @@ function shouldQueueConfig(
 
   if (config.role === "carrier") {
     return shouldPreSpawnCarrier(estimateSpawn, configName, context);
+  }
+
+  if (config.role === "upgrader" || config.role === "hubUpgrader") {
+    return shouldPreSpawnUpgrader(estimateSpawn, configName, context);
   }
 
   if (config.role === "remoteMiningReserver") {

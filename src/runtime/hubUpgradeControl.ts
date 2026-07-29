@@ -108,9 +108,31 @@ function cleanupManagedUpgraders(keptConfigNames: ReadonlySet<string>): void {
   }
 }
 
-function countRemainingWorkParts(configName: string): number {
+function getUpgraderBody(room: Room): BodyPartConstant[] {
+  const fixedBodyCost = HUB_UPGRADER_BODY.reduce((sum, part) => sum + BODYPART_COST[part], 0);
+  if (room.energyCapacityAvailable >= fixedBodyCost) {
+    return [...HUB_UPGRADER_BODY];
+  }
+
+  const body: BodyPartConstant[] = [];
+  let remainingCapacity = room.energyCapacityAvailable;
+  const workPairCost = BODYPART_COST[WORK] * 2 + BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
+  while (remainingCapacity >= workPairCost && body.length + 4 <= MAX_CREEP_SIZE) {
+    body.push(WORK, WORK, CARRY, MOVE);
+    remainingCapacity -= workPairCost;
+  }
+
+  const fallbackCost = BODYPART_COST[WORK] + BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
+  if (remainingCapacity >= fallbackCost && body.length + 3 <= MAX_CREEP_SIZE) {
+    body.push(WORK, CARRY, MOVE);
+  }
+
+  return body.length > 0 ? body : [WORK, CARRY, MOVE];
+}
+
+function countRemainingWorkParts(configName: string, body: readonly BodyPartConstant[]): number {
   const creeps = Object.values(Game.creeps).filter((creep) => creep.memory.configName === configName);
-  if (creeps.length === 0) return HUB_UPGRADER_BODY.filter((part) => part === WORK).length;
+  if (creeps.length === 0) return body.filter((part) => part === WORK).length;
 
   return creeps.reduce((sum, creep) => sum + creep.body.filter((part) =>
     part.type === WORK &&
@@ -132,14 +154,40 @@ function getLocalUpgraderBoostAmount(room: Room): number {
   return total;
 }
 
-function isActiveManualUpgraderRoom(roomName: string): boolean {
+function isOwnedUpgraderRoom(roomName: string): boolean {
   const controller = Game.rooms[roomName]?.controller;
-  return controller?.my === true && controller.level >= 6 && controller.level < 8;
+  return controller?.my === true;
+}
+
+function ensureOwnedRoomUpgraderTasks(): string[] {
+  const tasks = getManualUpgraderStore();
+  const ownedRoomNames = Object.values(Game.rooms)
+    .filter((room) => room.controller?.my)
+    .map((room) => room.name);
+  const ownedRoomSet = new Set(ownedRoomNames);
+
+  for (const roomName of ownedRoomNames) {
+    const existing = tasks[roomName];
+    if (!existing) {
+      tasks[roomName] = {
+        createdAt: Game.time,
+        updatedAt: Game.time,
+      };
+    }
+  }
+
+  for (const roomName of Object.keys(tasks)) {
+    if (!ownedRoomSet.has(roomName)) {
+      delete tasks[roomName];
+    }
+  }
+
+  return ownedRoomNames;
 }
 
 export function startUpgrader(roomName: string): ManualUpgraderResult | string {
-  if (!isActiveManualUpgraderRoom(roomName)) {
-    return `ERR_UPGRADER_REQUIRES_OWNED_RCL6_OR_RCL7_ROOM:${roomName}`;
+  if (!isOwnedUpgraderRoom(roomName)) {
+    return `ERR_UPGRADER_REQUIRES_OWNED_ROOM:${roomName}`;
   }
 
   const tasks = getManualUpgraderStore();
@@ -157,22 +205,13 @@ export function stopUpgrader(roomName: string): ManualUpgraderResult | string {
   if (!tasks[roomName]) {
     return `ERR_NO_UPGRADER_TASK:${roomName}`;
   }
+  if (isOwnedUpgraderRoom(roomName)) {
+    return `ERR_UPGRADER_REQUIRED_FOR_OWNED_ROOM:${roomName}`;
+  }
 
   delete tasks[roomName];
-  const keptConfigNames = new Set(
-    Object.keys(tasks)
-      .filter(isActiveManualUpgraderRoom)
-      .map((activeRoomName) => getConfigName(activeRoomName)),
-  );
-  cleanupManagedUpgraders(keptConfigNames);
-  return {
-    ok: true,
-    roomName,
-    active: false,
-    configName: getConfigName(roomName),
-    creepNames: [],
-    boosted: false,
-  };
+  runHubUpgradeControl();
+  return `ERR_NO_UPGRADER_TASK:${roomName}`;
 }
 
 export function getUpgraderStatus(roomName?: string): ManualUpgraderResult[] | ManualUpgraderResult | string {
@@ -184,7 +223,7 @@ export function getUpgraderStatus(roomName?: string): ManualUpgraderResult[] | M
     return {
       ok: true,
       roomName: name,
-      active: isActiveManualUpgraderRoom(name),
+      active: isOwnedUpgraderRoom(name),
       configName,
       creepNames: Object.values(Game.creeps)
         .filter((creep) => creep.memory.configName === configName)
@@ -199,14 +238,7 @@ export function getUpgraderStatus(roomName?: string): ManualUpgraderResult[] | M
 }
 
 export function runHubUpgradeControl(): void {
-  const tasks = getManualUpgraderStore();
-  const activeRoomNames = Object.keys(tasks).filter((roomName) => {
-    const active = isActiveManualUpgraderRoom(roomName);
-    if (!active) {
-      delete tasks[roomName];
-    }
-    return active;
-  });
+  const activeRoomNames = ensureOwnedRoomUpgraderTasks();
   const keptConfigNames = new Set(activeRoomNames.map((roomName) => getConfigName(roomName)));
   cleanupManagedUpgraders(keptConfigNames);
 
@@ -215,7 +247,8 @@ export function runHubUpgradeControl(): void {
     const room = Game.rooms[roomName]!;
     const configName = getConfigName(roomName);
     const boostTaskId = getBoostTaskId(roomName);
-    const remainingWorkParts = countRemainingWorkParts(configName);
+    const body = getUpgraderBody(room);
+    const remainingWorkParts = countRemainingWorkParts(configName, body);
     const requiredBoostAmount = remainingWorkParts * LAB_BOOST_MINERAL;
     const canBoostLocally = requiredBoostAmount > 0 && getLocalUpgraderBoostAmount(room) >= requiredBoostAmount;
 
@@ -223,7 +256,7 @@ export function runHubUpgradeControl(): void {
       role: "upgrader",
       args: canBoostLocally ? [roomName, boostTaskId] : [roomName],
       roomName,
-      body: [...HUB_UPGRADER_BODY],
+      body,
     };
 
     if (!canBoostLocally) {

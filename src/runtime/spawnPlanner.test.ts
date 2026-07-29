@@ -702,6 +702,40 @@ describe("spawnPlanner strategic priority", () => {
       worker,
     ]);
   });
+
+  it("pre-spawns the maintained upgrader before the current one expires", () => {
+    const room = createRoom("E4N58");
+    room.energyCapacityAvailable = 2300;
+    const spawn = createSpawn(room);
+    const carrierConfig = "E4N58:carrier:0";
+    const upgraderConfig = "E4N58:upgrader:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps = {
+      carrier: {
+        name: "carrier",
+        room,
+        ticksToLive: 1400,
+        memory: { role: "carrier", configName: carrierConfig },
+      } as Creep,
+      upgrader: {
+        name: "upgrader",
+        room,
+        ticksToLive: 100,
+        memory: { role: "upgrader", configName: upgraderConfig },
+      } as Creep,
+    };
+    Memory.data = {
+      creepConfigs: {
+        [carrierConfig]: { role: "carrier", args: [], roomName: room.name, body: [CARRY, MOVE] },
+        [upgraderConfig]: { role: "upgrader", args: [room.name], roomName: room.name, body: [...Array(15).fill(WORK), ...Array(5).fill(CARRY), ...Array(10).fill(MOVE)] },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(upgraderConfig);
+  });
 });
 
 describe("spawnPlanner one-shot configs", () => {

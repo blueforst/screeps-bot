@@ -38,6 +38,7 @@ function createUpgraderRoom(
   my = true,
   name = "E4N58",
   localXgh2o: LocalXgh2o = { storage: 450 },
+  energyCapacityAvailable = 5600,
 ): Room {
   const storage = localXgh2o.storage === undefined
     ? undefined
@@ -51,6 +52,7 @@ function createUpgraderRoom(
   return {
     name,
     controller: { level, my } as StructureController,
+    energyCapacityAvailable,
     storage,
     terminal,
     find: jest.fn((type: FindConstant) => type === FIND_MY_STRUCTURES ? labs : []),
@@ -85,11 +87,14 @@ describe("runHubUpgradeControl", () => {
     mockedPrepareBoosts.mockReturnValue({ status: "preparing", labs: [] });
   });
 
-  it("does not create an upgrader from hub configuration alone", () => {
+  it("automatically maintains one upgrader in every owned room", () => {
+    Game.rooms.W1N57 = createUpgraderRoom(6, true, "W1N57", {}, 2300);
+
     runHubUpgradeControl();
 
-    expect(Memory.data?.creepConfigs).toEqual({});
-    expect(Memory.data?.manualUpgraders).toEqual({});
+    expect(Object.keys(Memory.data?.manualUpgraders || {})).toEqual(["E4N58", "W1N57"]);
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.role).toBe("upgrader");
+    expect(Memory.data?.creepConfigs?.["W1N57:upgrader:0"]?.role).toBe("upgrader");
   });
 
   it("starts one fixed-body manual upgrader for an owned RCL7 room", () => {
@@ -104,17 +109,37 @@ describe("runHubUpgradeControl", () => {
     });
   });
 
-  it("starts one fixed-body manual upgrader for an owned RCL6 room", () => {
-    Game.rooms.E4N58 = createUpgraderRoom(6);
+  it("keeps the fixed body in an owned RCL6 room", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(6, true, "E4N58", { storage: 450 }, 2300);
 
-    expect(startUpgrader("E4N58")).toMatchObject({ ok: true, active: true, roomName: "E4N58" });
+    runHubUpgradeControl();
     expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.body).toEqual(HUB_UPGRADER_BODY);
   });
 
-  it("rejects a room that is not an owned RCL6 or RCL7 room", () => {
+  it("scales the body down for an owned RCL5 room", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(5, true, "E4N58", {}, 1800);
+
+    runHubUpgradeControl();
+
+    const body = Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.body || [];
+    expect(body).toHaveLength(24);
+    expect(body.filter((part) => part === WORK)).toHaveLength(12);
+    expect(body.reduce((sum, part) => sum + BODYPART_COST[part], 0)).toBe(1800);
+  });
+
+  it("keeps an upgrader at RCL8", () => {
     Game.rooms.E4N58 = createUpgraderRoom(8);
 
-    expect(startUpgrader("E4N58")).toBe("ERR_UPGRADER_REQUIRES_OWNED_RCL6_OR_RCL7_ROOM:E4N58");
+    runHubUpgradeControl();
+
+    expect(Memory.data?.manualUpgraders?.E4N58).toBeDefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toBeDefined();
+  });
+
+  it("rejects a room that is not owned", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(7, false);
+
+    expect(startUpgrader("E4N58")).toBe("ERR_UPGRADER_REQUIRES_OWNED_ROOM:E4N58");
     expect(Memory.data?.manualUpgraders).toBeUndefined();
   });
 
@@ -146,7 +171,7 @@ describe("runHubUpgradeControl", () => {
     );
   });
 
-  it("automatically cleans the task, queue, spawn, creep, and boost at RCL8", () => {
+  it("automatically cleans the task, queue, spawn, creep, and boost after ownership is lost", () => {
     startUpgrader("E4N58");
     const configName = "E4N58:upgrader:0";
     const creep = createUpgrader("upgrader0", configName);
@@ -157,7 +182,7 @@ describe("runHubUpgradeControl", () => {
       spawning: { name: "upgrader-spawning", cancel } as unknown as Spawning,
     } as StructureSpawn;
     Memory.creeps = { "upgrader-spawning": { configName } as CreepMemory };
-    Game.rooms.E4N58 = createUpgraderRoom(8);
+    Game.rooms.E4N58 = createUpgraderRoom(7, false);
 
     runHubUpgradeControl();
 
@@ -169,12 +194,12 @@ describe("runHubUpgradeControl", () => {
     expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("upgrader:E4N58", "E4N58");
   });
 
-  it("stops a manual task immediately", () => {
+  it("does not stop the required upgrader in an owned room", () => {
     startUpgrader("E4N58");
 
-    expect(stopUpgrader("E4N58")).toMatchObject({ ok: true, active: false });
-    expect(Memory.data?.manualUpgraders?.E4N58).toBeUndefined();
-    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toBeUndefined();
+    expect(stopUpgrader("E4N58")).toBe("ERR_UPGRADER_REQUIRED_FOR_OWNED_ROOM:E4N58");
+    expect(Memory.data?.manualUpgraders?.E4N58).toBeDefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toBeDefined();
   });
 
   it("cleans legacy hubUpgrader configs during migration", () => {

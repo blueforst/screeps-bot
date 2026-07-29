@@ -1,6 +1,8 @@
 import { prepareCombatBoost } from "@/roles/combatBoosts";
+import { pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 import { moveToTarget } from "@/roles/shared";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { releasePickupReservation } from "@/runtime/energyPickupReservation";
 import type { RoleFactory } from "@/types/system";
 
 type ControllerLocalEnergySource = StructureLink | StructureContainer;
@@ -20,7 +22,7 @@ function getActiveController(roomName: string | undefined, creep: Creep): Struct
     return null;
   }
   const controller = Game.rooms[roomName]?.controller;
-  if (!controller?.my || controller.level < 6 || controller.level >= 8) return null;
+  if (!controller?.my) return null;
   return controller;
 }
 
@@ -59,8 +61,14 @@ export const upgraderRole: RoleFactory = (
 
     const source = findControllerEnergySource(creep, controller);
     if (!source) {
-      moveToTarget(creep, controller, 3);
-      return false;
+      const result = pickupEnergyFromPreferredTarget(creep, { swampCost: 8 });
+      const shouldSwitchToTarget = result.picked || creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0;
+      if (shouldSwitchToTarget) {
+        releasePickupReservation(creep);
+      } else if (!result.outOfRange) {
+        moveToTarget(creep, controller, 3);
+      }
+      return shouldSwitchToTarget;
     }
 
     const code = measureCreepIntent(() => creep.withdraw(source, RESOURCE_ENERGY));

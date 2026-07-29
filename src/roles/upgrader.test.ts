@@ -1,12 +1,17 @@
 jest.mock("@/roles/combatBoosts", () => ({ prepareCombatBoost: jest.fn(() => false) }));
+jest.mock("@/roles/energyTargets", () => ({
+  pickupEnergyFromPreferredTarget: jest.fn(() => ({ picked: false, outOfRange: false })),
+}));
 jest.mock("@/roles/shared", () => ({ moveToTarget: jest.fn() }));
 
 import { prepareCombatBoost } from "@/roles/combatBoosts";
+import { pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 import { moveToTarget } from "@/roles/shared";
 import { upgraderRole } from "@/roles/upgrader";
 import { createMockStore } from "@mock/powerBank";
 
 const mockedPrepareBoost = prepareCombatBoost as jest.MockedFunction<typeof prepareCombatBoost>;
+const mockedPickupEnergy = pickupEnergyFromPreferredTarget as jest.MockedFunction<typeof pickupEnergyFromPreferredTarget>;
 const mockedMoveToTarget = moveToTarget as jest.MockedFunction<typeof moveToTarget>;
 
 function createPos(): RoomPosition {
@@ -100,15 +105,25 @@ describe("upgraderRole", () => {
     expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
   });
 
-  it("does not work after the manual task is removed or the room reaches RCL8", () => {
+  it("uses the shared room energy fallback when a low-level room has no controller source or storage", () => {
+    const room = createRoom([], 5);
+    Game.rooms.E4N58 = room;
+    const creep = createCreep(room);
+    mockedPickupEnergy.mockReturnValue({ picked: false, outOfRange: true });
+
+    upgraderRole("E4N58").source?.(creep);
+
+    expect(mockedPickupEnergy).toHaveBeenCalledWith(creep, { swampCost: 8 });
+  });
+
+  it("works at RCL8 but stops after the managed task is removed", () => {
     const room = createRoom([], 8);
     Game.rooms.E4N58 = room;
     const creep = createCreep(room, 100);
 
     expect(upgraderRole("E4N58", "upgrader:E4N58").target(creep)).toBe(false);
-    expect(creep.upgradeController).not.toHaveBeenCalled();
+    expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
 
-    room.controller!.level = 7;
     delete Memory.data!.manualUpgraders!.E4N58;
     expect(upgraderRole("E4N58", "upgrader:E4N58").source?.(creep)).toBe(false);
     expect(mockedMoveToTarget).not.toHaveBeenCalled();
