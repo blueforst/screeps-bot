@@ -1,5 +1,8 @@
 import {
   isExactMarketDirectContinuousSecondRead,
+  MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS,
+  MARKET_DIRECT_CONTINUOUS_MAX_SELLER_ROOMS,
+  MARKET_DIRECT_CONTINUOUS_MAX_TRANSACTION_ENERGY_EVALUATIONS,
   MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT,
   planMarketDirectContinuous,
   type MarketDirectContinuousEntryInput,
@@ -112,6 +115,7 @@ function entry(
       terminal: {
         revision: `${resourceType}-terminal-v1`,
         normal: true,
+        ready: true,
         claimed: false,
         cooldown: 0,
         resourceAmount: 50_000,
@@ -162,6 +166,89 @@ function planningInput(
   };
 }
 
+function v3Entry(
+  resourceType: keyof typeof ENTRY_DEFAULTS,
+  roomNames: readonly string[],
+  orders: readonly MarketOrderSnapshot[],
+  calculateTransactionEnergy:
+    NonNullable<MarketDirectContinuousEntryInput["calculateTransactionEnergy"]> =
+      (amount) => amount === 1 ? 1 : 100,
+): MarketDirectContinuousEntryInput {
+  const defaults = ENTRY_DEFAULTS[resourceType];
+  return {
+    policy: {
+      entryId: `v3-${resourceType.toLowerCase()}`,
+      revision: `${resourceType}-policy-v3`,
+      resourceType,
+      allowedRooms: roomNames,
+      requireNativeMineral: true,
+      grant: "continuous",
+      hardNetFloor: defaults.hardNetFloor,
+      economicNetFloor: defaults.economicNetFloor,
+      minExecutableNotional: defaults.minExecutableNotional,
+      maxRawOrders: 1_000,
+      maxEligibleOrders: 200,
+      maxTransactionEnergy: 1_000,
+      terminalEnergyReserve: 25_000,
+      resourceRollingCap: defaults.cap,
+      opportunityReserve: 1_000,
+      evaluatorVersion: 3,
+    },
+    quota: {
+      complete: true,
+      revision: `${resourceType}-quota-v3`,
+      resourceType,
+      rollingCap: defaults.cap,
+      confirmedAmount: 0,
+      unmatchedPlannedAmount: 0,
+      opportunityReserveSatisfied: false,
+    },
+    book: {
+      complete: true,
+      revision: `${resourceType}-shared-book-v3`,
+      orders,
+      ownOrderIds: [],
+    },
+    calculateTransactionEnergy,
+    lanes: roomNames.map((roomName) => ({
+      lane: {
+        roomName,
+        resourceType,
+        owned: true,
+        hub: false,
+        capacityEmergency: false,
+        nativeMineralType: "O",
+        authorization: "writable",
+      },
+      protection: {
+        complete: true,
+        revision: `${resourceType}-${roomName}-protection-v3`,
+        sellableAmount: 100_000,
+      },
+      terminal: {
+        revision: `${resourceType}-${roomName}-terminal-v3`,
+        normal: true,
+        ready: true,
+        claimed: false,
+        cooldown: 0,
+        resourceAmount: 50_000,
+        energy: 50_000,
+        effectivePostDealEnergyReserve: 25_000,
+      },
+      quota: {
+        complete: true,
+        revision: `${resourceType}-${roomName}-quota-v3`,
+        roomRollingCap: 5_000,
+        roomConfirmedAmount: 0,
+        roomUnmatchedPlannedAmount: 0,
+        laneRollingCap: 3_000,
+        laneConfirmedAmount: 0,
+        laneUnmatchedPlannedAmount: 0,
+      },
+    })),
+  };
+}
+
 describe("multi-resource full-book tuple planner", () => {
   it("固定计划 1,000，优先高价小单而不是低价大单", () => {
     const input = planningInput([
@@ -181,6 +268,48 @@ describe("multi-resource full-book tuple planner", () => {
     });
     expect(result.admittedCandidates.map((candidate) => candidate.order.id))
       .toEqual(["higher-small", "lower-large"]);
+  });
+
+  it("千万级单价排序不做溢出的交叉乘法，仍稳定选择更高净价", () => {
+    const input = planningInput([
+      entry(
+        "X",
+        [
+          order(
+            "high-10m",
+            "X",
+            10_000_001,
+          ),
+          order(
+            "lower-10m",
+            "X",
+            10_000_000,
+          ),
+        ],
+        {
+          energy: () => 0,
+        },
+      ),
+    ]);
+
+    expect(() =>
+      planMarketDirectContinuous(input),
+    ).not.toThrow();
+    const result =
+      planMarketDirectContinuous(input);
+    expect(result.complete).toBe(true);
+    expect(result.selected?.order.id).toBe(
+      "high-10m",
+    );
+    expect(
+      result.admittedCandidates.map(
+        (candidate) =>
+          candidate.order.id,
+      ),
+    ).toEqual([
+      "high-10m",
+      "lower-10m",
+    ]);
   });
 
   it("跨资源和跨房按单位净价全局排序，不受输入顺序或 sellable 影响", () => {
@@ -346,19 +475,368 @@ describe("multi-resource full-book tuple planner", () => {
     }));
   });
 
-  it("second-read 只有所有相关字段与最佳 tuple 完全一致才为 true", () => {
-    const baseInput = planningInput([
-      entry("X", [order("x", "X", 700, 2_000)]),
-    ]);
-    const planned = planMarketDirectContinuous(baseInput);
-    const exact = planMarketDirectContinuous(baseInput);
-    expect(isExactMarketDirectContinuousSecondRead(planned, exact)).toBe(true);
+  it("同资源多房共享一份 BUY book，并选择交易能耗更低的 seller lane", () => {
+    const calculator = jest.fn((
+      amount: number,
+      _candidate: MarketOrderSnapshot,
+      sellerRoomName: string,
+    ) => sellerRoomName === "E1N1"
+      ? (amount === 1 ? 1 : 900)
+      : (amount === 1 ? 1 : 10));
+    const shared = v3Entry(
+      "X",
+      ["E1N1", "E2N2"],
+      [order("shared", "X", 700, 1_000, "E3N3")],
+      calculator,
+    );
 
+    const result = planMarketDirectContinuous(planningInput([shared]));
+
+    expect(result.complete).toBe(true);
+    expect(result.selected).toMatchObject({
+      roomName: "E2N2",
+      order: { id: "shared" },
+    });
+    expect(result.safeCandidates).toHaveLength(2);
+    expect(calculator).toHaveBeenCalledTimes(4);
+    expect(result.budget).toEqual({
+      sellerRooms: 2,
+      distinctOrderRooms: 1,
+      transactionEnergyEvaluations: 4,
+    });
+  });
+
+  it("同 ID 同 canonical 内容只计一次；同 ID 冲突与跨资源复用均 fail closed", () => {
+    const same = order("same", "X", 700, 1_000, "E3N3");
+    const deduped = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["E1N1"], [same, { ...same }], () => 0),
+    ]));
+    expect(deduped.complete).toBe(true);
+    expect(deduped.safeCandidates).toHaveLength(1);
+
+    const conflict = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["E1N1"], [
+        same,
+        { ...same, price: 701 },
+      ], () => 0),
+    ]));
+    expect(conflict).toMatchObject({
+      complete: false,
+      blocker: {
+        reason: "duplicate_order_id",
+        orderId: "same",
+        detail: "same_resource_order_id_conflict",
+      },
+      safeCandidates: [],
+    });
+
+    const crossResource = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["E1N1"], [
+        order("cross", "X", 700, 1_000, "E3N3"),
+      ], () => 0),
+      v3Entry("H", ["E2N2"], [
+        order("cross", "H", 700, 1_000, "E4N4"),
+      ], () => 0),
+    ]));
+    expect(crossResource).toMatchObject({
+      complete: false,
+      blocker: {
+        reason: "duplicate_order_id",
+        orderId: "cross",
+      },
+      safeCandidates: [],
+    });
+  });
+
+  it("自有 BUY order 在 tuple 前排除，外部高价单仍可成交", () => {
+    const shared = v3Entry("X", ["E1N1"], [
+      order("self", "X", 800),
+      order("external", "X", 700),
+    ], () => 0);
+    shared.book!.ownOrderIds = ["self"];
+
+    const result = planMarketDirectContinuous(planningInput([shared]));
+
+    expect(result.selected?.order.id).toBe("external");
+    expect(result.rejections).toContainEqual(expect.objectContaining({
+      orderId: "self",
+      reason: "self_order",
+    }));
+  });
+
+  it("v3 允许 protection 完整的 Hub/emergency/non-native lane，v2 仍冻结旧拒绝", () => {
+    const modern = v3Entry("H", ["E4N58"], [
+      order("hub-buy", "H", 700),
+    ], () => 0);
+    modern.lanes[0].lane.hub = true;
+    modern.lanes[0].lane.capacityEmergency = true;
+    modern.lanes[0].lane.nativeMineralType = "Z";
+
+    const modernResult = planMarketDirectContinuous(planningInput([modern]));
+    expect(modernResult.selected).toMatchObject({
+      resourceType: "H",
+      roomName: "E4N58",
+      order: { id: "hub-buy" },
+    });
+
+    const legacy = entry("H", [order("legacy-buy", "H", 700)]);
+    legacy.lanes[0].lane.hub = true;
+    legacy.lanes[0].lane.capacityEmergency = true;
+    legacy.lanes[0].lane.nativeMineralType = "Z";
+    const legacyResult = planMarketDirectContinuous(planningInput([legacy]));
+    expect(legacyResult.blocker?.reason).toBe("lane_scope_invalid");
+  });
+
+  it("v3 cooldown lane 是完整但暂无机会，不阻断其它 writable lane", () => {
+    const modern = v3Entry(
+      "X",
+      ["E1N1", "E2N2"],
+      [order("x", "X", 700)],
+      () => 0,
+    );
+    modern.lanes[0].terminal.cooldown = 1;
+
+    const modernResult = planMarketDirectContinuous(planningInput([modern]));
+
+    expect(modernResult.complete).toBe(true);
+    expect(modernResult.selected).toMatchObject({
+      roomName: "E2N2",
+      order: { id: "x" },
+    });
+    expect(modernResult.safeCandidates).toHaveLength(1);
+
+    const legacy = entry("X", [order("legacy-x", "X", 700)]);
+    legacy.lanes[0].terminal.cooldown = 1;
+    expect(
+      planMarketDirectContinuous(planningInput([legacy])).blocker?.reason,
+    ).toBe("lane_scope_invalid");
+  });
+
+  it("suspended Shadow 的局部保护缺失被隔离，writable lane 缺失则全局零写", () => {
+    const isolated = v3Entry(
+      "X",
+      ["E1N1", "E2N2"],
+      [order("x", "X", 700)],
+      () => 0,
+    );
+    isolated.lanes[1].lane.authorization = "suspended_shadow";
+    isolated.lanes[1].protection.complete = false;
+
+    const isolatedResult = planMarketDirectContinuous(planningInput([isolated]));
+    expect(isolatedResult.complete).toBe(true);
+    expect(isolatedResult.selected?.roomName).toBe("E1N1");
+    expect(isolatedResult.isolatedShadowLanes).toEqual([{
+      entryId: "v3-x",
+      roomName: "E2N2",
+      reason: "protection_incomplete",
+    }]);
+
+    const writableBroken = v3Entry(
+      "X",
+      ["E1N1", "E2N2"],
+      [order("x", "X", 700)],
+      () => 0,
+    );
+    writableBroken.lanes[1].protection.complete = false;
+    const blocked = planMarketDirectContinuous(planningInput([writableBroken]));
+    expect(blocked).toMatchObject({
+      complete: false,
+      blocker: {
+        reason: "protection_incomplete",
+        roomName: "E2N2",
+      },
+      safeCandidates: [],
+    });
+  });
+
+  it("129 个目的房在任何 transaction-cost evaluation 前整轮零写", () => {
+    const calculator = jest.fn(() => 0);
+    const orders = Array.from(
+      { length: MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS + 1 },
+      (_, index) =>
+        order(`order-${index}`, "X", 700, 1_000, `E${index}N1`),
+    );
+
+    const result = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["E1N1"], orders, calculator),
+    ]));
+
+    expect(result).toMatchObject({
+      complete: false,
+      blocker: {
+        reason: "distinct_order_room_limit_exceeded",
+      },
+      safeCandidates: [],
+      budget: {
+        sellerRooms: 1,
+        distinctOrderRooms:
+          MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS + 1,
+        transactionEnergyEvaluations: 0,
+      },
+    });
+    expect(calculator).not.toHaveBeenCalled();
+  });
+
+  it("16 seller × 128 orderRoom × planned/worst 恰好闭合为 4,096 次 memo evaluation", () => {
+    const calculator = jest.fn(() => 0);
+    const sellerRooms = Array.from(
+      { length: MARKET_DIRECT_CONTINUOUS_MAX_SELLER_ROOMS },
+      (_, index) => `E${index + 1}N1`,
+    );
+    const orders = Array.from(
+      { length: MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS },
+      (_, index) =>
+        order(`order-${index}`, "X", 700, 1_000, `W${index + 1}N1`),
+    );
+
+    const result = planMarketDirectContinuous(planningInput([
+      v3Entry("X", sellerRooms, orders, calculator),
+    ]));
+
+    expect(result.complete).toBe(true);
+    expect(result.budget).toEqual({
+      sellerRooms: MARKET_DIRECT_CONTINUOUS_MAX_SELLER_ROOMS,
+      distinctOrderRooms:
+        MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS,
+      transactionEnergyEvaluations:
+        MARKET_DIRECT_CONTINUOUS_MAX_TRANSACTION_ENERGY_EVALUATIONS,
+    });
+    expect(calculator).toHaveBeenCalledTimes(
+      MARKET_DIRECT_CONTINUOUS_MAX_TRANSACTION_ENERGY_EVALUATIONS,
+    );
+  });
+
+  it("第 17 个 seller room 在 transaction-cost evaluation 前全局停写", () => {
+    const calculator = jest.fn(() => 0);
+    const sellerRooms = Array.from(
+      { length: MARKET_DIRECT_CONTINUOUS_MAX_SELLER_ROOMS + 1 },
+      (_, index) => `E${index + 1}N1`,
+    );
+
+    const result = planMarketDirectContinuous(planningInput([
+      v3Entry("X", sellerRooms, [order("x", "X", 700)], calculator),
+    ]));
+
+    expect(result.blocker?.reason).toBe("seller_room_limit_exceeded");
+    expect(result.safeCandidates).toEqual([]);
+    expect(calculator).not.toHaveBeenCalled();
+  });
+
+  it("v3 room/lane quota 任一不足均拒绝，且 effective reserve 不可降穿", () => {
+    const laneExhausted = v3Entry(
+      "X",
+      ["E1N1"],
+      [order("x", "X", 700)],
+      () => 0,
+    );
+    laneExhausted.lanes[0].quota!.laneConfirmedAmount = 3_000;
+    const laneResult = planMarketDirectContinuous(planningInput([
+      laneExhausted,
+    ]));
+    expect(laneResult.selected).toBeUndefined();
+    expect(laneResult.rejections).toContainEqual(expect.objectContaining({
+      reason: "lane_quota_exhausted",
+      roomName: "E1N1",
+    }));
+
+    const roomExhausted = v3Entry(
+      "X",
+      ["E1N1"],
+      [order("x", "X", 700)],
+      () => 0,
+    );
+    roomExhausted.lanes[0].quota!.roomConfirmedAmount = 5_000;
+    const roomResult = planMarketDirectContinuous(planningInput([
+      roomExhausted,
+    ]));
+    expect(roomResult.rejections).toContainEqual(expect.objectContaining({
+      reason: "room_quota_exhausted",
+      roomName: "E1N1",
+    }));
+
+    const reserve = v3Entry(
+      "X",
+      ["E1N1"],
+      [order("x", "X", 700)],
+      (amount) => amount === 1 ? 1 : 1_000,
+    );
+    reserve.lanes[0].terminal.energy = 26_000;
+    reserve.lanes[0].terminal.effectivePostDealEnergyReserve = 26_000;
+    const reserveResult = planMarketDirectContinuous(planningInput([reserve]));
+    expect(reserveResult.selected).toBeUndefined();
+    expect(reserveResult.rejections).toContainEqual(expect.objectContaining({
+      reason: "terminal_energy_reserve",
+      roomName: "E1N1",
+    }));
+  });
+
+  it("v3 缺少资源级 book 或与 lane adapter 漂移时均 fail closed", () => {
+    const missing = v3Entry(
+      "X",
+      ["E1N1"],
+      [order("x", "X", 700)],
+      () => 0,
+    );
+    const laneOnlyBook = missing.book!;
+    delete missing.book;
+    missing.lanes[0].book = laneOnlyBook;
+
+    expect(planMarketDirectContinuous(planningInput([missing]))).toMatchObject({
+      complete: false,
+      blocker: {
+        reason: "book_incomplete",
+        detail: "resource_book_not_shared",
+      },
+      safeCandidates: [],
+    });
+
+    const shared = v3Entry(
+      "X",
+      ["E1N1"],
+      [order("x", "X", 700)],
+      () => 0,
+    );
+    shared.lanes[0].book = {
+      complete: true,
+      revision: "stale-lane-book",
+      orders: [order("x", "X", 699)],
+      ownOrderIds: [],
+    };
+
+    const result = planMarketDirectContinuous(planningInput([shared]));
+
+    expect(result).toMatchObject({
+      complete: false,
+      blocker: {
+        reason: "book_incomplete",
+        detail: "resource_book_not_shared",
+      },
+      safeCandidates: [],
+    });
+  });
+
+  it("second-read 只有所有相关字段与最佳 tuple 完全一致才为 true", () => {
     const variants: PlanMarketDirectContinuousInput[] = [];
     const make = (): PlanMarketDirectContinuousInput => {
       const nextEntry = entry("X", [order("x", "X", 700, 2_000)]);
       return planningInput([nextEntry]);
     };
+    const firstInput = make();
+    const planned = planMarketDirectContinuous(firstInput);
+    const exact = planMarketDirectContinuous(make());
+    expect(isExactMarketDirectContinuousSecondRead(planned, exact)).toBe(true);
+    const reusedBook = planMarketDirectContinuous(firstInput);
+    expect(isExactMarketDirectContinuousSecondRead(planned, reusedBook))
+      .toBe(false);
+    const shallowBook = make();
+    shallowBook.entries[0].lanes[0].book = {
+      ...firstInput.entries[0].lanes[0].book,
+    };
+    expect(isExactMarketDirectContinuousSecondRead(
+      planned,
+      planMarketDirectContinuous(shallowBook),
+    )).toBe(false);
+
     const orderChanged = make();
     orderChanged.entries[0].lanes[0].book.orders[0].amount = 1_999;
     variants.push(orderChanged);
@@ -391,5 +869,30 @@ describe("multi-resource full-book tuple planner", () => {
         planMarketDirectContinuous(variant),
       )).toBe(false);
     }
+
+    const multiFirst = v3Entry(
+      "X",
+      ["E1N1", "E2N2"],
+      [order("x", "X", 700, 2_000, "E3N3")],
+      (amount, _candidate, roomName) =>
+        roomName === "E1N1"
+          ? (amount === 1 ? 1 : 10)
+          : (amount === 1 ? 1 : 100),
+    );
+    const multiSecond = v3Entry(
+      "X",
+      ["E1N1", "E2N2"],
+      [order("x", "X", 700, 2_000, "E3N3")],
+      (amount, _candidate, roomName) =>
+        roomName === "E1N1"
+          ? (amount === 1 ? 1 : 10)
+          : (amount === 1 ? 1 : 0),
+    );
+    const firstPlan = planMarketDirectContinuous(planningInput([multiFirst]));
+    const changedPlan = planMarketDirectContinuous(planningInput([multiSecond]));
+    expect(firstPlan.selected?.roomName).toBe("E1N1");
+    expect(changedPlan.selected?.roomName).toBe("E2N2");
+    expect(isExactMarketDirectContinuousSecondRead(firstPlan, changedPlan))
+      .toBe(false);
   });
 });

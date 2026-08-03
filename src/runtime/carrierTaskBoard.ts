@@ -85,6 +85,18 @@ export function listCarrierTasksByRoom(roomName: string): CarrierTask[] {
   return tasks;
 }
 
+export function listCarrierTasksForProducer(producer: string): CarrierTask[] {
+  const tasks: CarrierTask[] = [];
+  for (const roomTasks of Object.values(ensureCarrierTaskBoard())) {
+    for (const task of Object.values(roomTasks)) {
+      if (task.producer === producer) {
+        tasks.push(task);
+      }
+    }
+  }
+  return tasks;
+}
+
 export function replaceCarrierTasksForProducerRoom(
   producer: string,
   roomName: string,

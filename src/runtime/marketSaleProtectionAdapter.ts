@@ -24,6 +24,9 @@ import {
   type ResourceControlSnapshot,
 } from "@/runtime/resourceControl";
 import { POWER_BANK_BOOST_REQUIREMENTS } from "@/runtime/powerBankConstants";
+import {
+  readFreshCommittedHubProtectionSnapshot,
+} from "@/runtime/hubProtectionSnapshot";
 
 export interface LiveManagedOrderExposure {
   orderId: string;
@@ -1114,20 +1117,19 @@ function collectHub(
   }
 
   const runtime = Memory.runtime?.hub;
-  const updatedAt = runtime?.updatedAt;
-  const planInterval = finiteNonNegative(cfg.planInterval)
-    ? Math.max(1, cfg.planInterval)
-    : 200;
-  let complete =
-    !!runtime &&
-    finiteNonNegative(updatedAt) &&
-    Game.time - updatedAt <= planInterval &&
-    runtime.needsPlan !== true;
+  const snapshot = readFreshCommittedHubProtectionSnapshot(
+    runtime,
+    cfg,
+    Game.time,
+  );
+  if (!snapshot) {
+    return { complete: false, facts: [] };
+  }
+
+  let complete = true;
   const facts: MarketProtectionFact[] = [];
-  const reserve = finiteNonNegative(cfg.hubReservePerCompound)
-    ? cfg.hubReservePerCompound
-    : 10_000;
-  for (const resource of cfg.targetCompounds || []) {
+  const reserve = snapshot.marker.hubReservePerCompound;
+  for (const resource of snapshot.marker.targetCompounds) {
     if (!validResource(resource)) {
       complete = false;
       continue;
@@ -1142,14 +1144,14 @@ function collectHub(
     });
   }
 
-  const distributed = runtime?.distributedSynthesis;
+  const distributed = snapshot.distributed;
   // `planDistributedSynthesis` seeds allocationLedger from effective room
   // inventories, then decrements it as assignments and routes consume stock.
   // Persisted roomCommitments are therefore residual available supply, not
   // production demand. Only the concrete assignments and routes below are
   // protection commitments.
 
-  for (const rawAssignment of distributed?.dispatchAssignments || []) {
+  for (const rawAssignment of distributed.dispatchAssignments) {
     const assignment = asRecord(rawAssignment);
     if (
       !assignment ||
@@ -1176,7 +1178,7 @@ function collectHub(
   }
 
   for (const [index, rawRoute] of (
-    distributed?.routeDecisions || []
+    distributed.routeDecisions
   ).entries()) {
     const route = asRecord(rawRoute);
     if (
@@ -1209,7 +1211,10 @@ function collectHub(
       complete = false;
       continue;
     }
-    const declaredSurplus = runtime?.marketSellSurplus?.[candidate.resource];
+    const declaredSurplus =
+      snapshot.baseMineralSurplus.byRoom[candidate.roomName]?.[
+        candidate.resource
+      ];
     const sellable = finiteNonNegative(declaredSurplus) ? declaredSurplus : 0;
     facts.push({
       roomName: candidate.roomName,

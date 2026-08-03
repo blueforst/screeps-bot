@@ -88,6 +88,10 @@ import type { MarketOrderSnapshot } from "@/runtime/marketSalePricing";
 import {
   priceToMilliDown,
 } from "@/runtime/marketSalePricing";
+import { listCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
+import { normalizeNumber } from "@/runtime/configNormalize";
+import { listProductionReservations } from "@/runtime/resourceReservation";
+import { resolveRoomEnergyPolicy } from "@/runtime/roomEnergyPolicy";
 import {
   getMarketProtectionEntryKey,
   getMarketProtectionSellableAmount,
@@ -95,6 +99,7 @@ import {
   type MarketSaleProtectionLedger,
 } from "@/runtime/marketSaleProtection";
 import { collectLiveMarketSaleProtectionLedger } from "@/runtime/marketSaleProtectionAdapter";
+import type { MarketBaseResourceV3RuntimeState } from "@/runtime/marketBaseResourceAutomation";
 
 const CONTINUOUS_ACTOR =
   "marketSaleAutomation:continuous-direct";
@@ -258,6 +263,11 @@ export interface MarketDirectContinuousAutomationState {
   proposedPermit?: MarketDirectContinuousPermitProposal;
   ledger: MarketDirectContinuousLedger;
   lastPlanningSnapshot?: MarketDirectContinuousPlanningSnapshot;
+  /**
+   * V3 基础矿运行时使用独立子状态，不能改变外层 v2 schema 或重写既有
+   * permit/WAL。这里保持 unknown，由 versioned v3 reader 独立校验。
+   */
+  baseResourceV3?: MarketBaseResourceV3RuntimeState;
   lastLifecycleAppliedAttemptSeq: number;
   pendingDirectDeals: Record<string, ContinuousPendingProjection>;
   quarantinedPendingDirectDeals: Record<string, unknown>;
@@ -1172,10 +1182,48 @@ export interface MarketDirectContinuousRuntimeCandidate {
 export interface MarketDirectContinuousTerminalSnapshot {
   roomName: string;
   owned: boolean;
+  terminalId?: string;
   resourceAmount: number;
   energy: number;
   cooldown: number;
   nativeMineralType?: ResourceConstant;
+  marketEnergyReadiness?:
+    MarketDirectContinuousTerminalEnergyReadiness;
+}
+
+export interface MarketDirectContinuousTerminalEnergyContribution {
+  id: string;
+  amount: number;
+  kind:
+    | "ordinary_terminal_target"
+    | "pending_energy_send"
+    | "pending_internal_send_fee"
+    | "terminal_production_commitment";
+}
+
+export interface MarketDirectContinuousTerminalEnergyReadiness {
+  schemaVersion: 3;
+  revision: string;
+  observedAt: number;
+  expiresAt: number;
+  authorizationRevision?: string;
+  roomInstanceId?: string;
+  terminalId: string;
+  authorized: boolean;
+  effectivePostDealEnergyReserve: number;
+  marketTerminalEnergyTarget: number;
+  ordinaryTerminalEnergyTarget: number;
+  unresolvedEnergySendAmount: number;
+  unresolvedInternalSendFees: number;
+  terminalScopedProductionEnergyCommitments: number;
+  maxTransactionEnergy: number;
+  contributionCount: number;
+  contributions:
+    MarketDirectContinuousTerminalEnergyContribution[];
+  desiredTerminalEnergy: number;
+  plannedFeedAmount: number;
+  status: "blocked" | "ready" | "feed_planned";
+  blocker?: string;
 }
 
 export interface MarketDirectContinuousOutgoingWindow {
@@ -1195,6 +1243,15 @@ export interface MarketDirectContinuousDependencies {
     roomName: string,
     resource: ResourceConstant,
   ) => MarketDirectContinuousTerminalSnapshot | undefined;
+  /**
+   * 从 ResourceControl 的 canonical 输入源独立重建当前 Energy 承诺。
+   * readiness 投影本身不能充当这份证据，否则可同时下调投影明细和总计。
+   */
+  readCanonicalTerminalEnergyContributions: (
+    roomName: string,
+  ) =>
+    | readonly MarketDirectContinuousTerminalEnergyContribution[]
+    | undefined;
   readProtection: (
     config: ResolvedMarketSaleAutomationConfig,
   ) => MarketSaleProtectionLedger;
@@ -1330,6 +1387,438 @@ function canonicalProtectionOptions(): {
   return { candidates, laneReserveByEntry };
 }
 
+const MARKET_TERMINAL_ENERGY_CONTRIBUTION_KINDS = new Set<
+  MarketDirectContinuousTerminalEnergyContribution["kind"]
+>([
+  "ordinary_terminal_target",
+  "pending_energy_send",
+  "pending_internal_send_fee",
+  "terminal_production_commitment",
+]);
+const MARKET_TERMINAL_ENERGY_MAX_CONTRIBUTIONS = 64;
+
+function isPlainRecord(
+  value: unknown,
+): value is Record<string, unknown> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      !Array.isArray(value),
+  );
+}
+
+function exactRecordKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  return (
+    Object.keys(value).sort().join("|") ===
+    [...expected].sort().join("|")
+  );
+}
+
+function parseMarketTerminalEnergyContribution(
+  raw: unknown,
+): MarketDirectContinuousTerminalEnergyContribution | undefined {
+  if (
+    !isPlainRecord(raw) ||
+    !exactRecordKeys(raw, ["amount", "id", "kind"]) ||
+    typeof raw.id !== "string" ||
+    raw.id.length === 0 ||
+    raw.id.length > 256 ||
+    typeof raw.kind !== "string" ||
+    !MARKET_TERMINAL_ENERGY_CONTRIBUTION_KINDS.has(
+      raw.kind as MarketDirectContinuousTerminalEnergyContribution["kind"],
+    ) ||
+    !Number.isSafeInteger(raw.amount) ||
+    (raw.amount as number) <= 0
+  ) {
+    return undefined;
+  }
+  return {
+    id: raw.id,
+    kind:
+      raw.kind as MarketDirectContinuousTerminalEnergyContribution["kind"],
+    amount: raw.amount as number,
+  };
+}
+
+function readCurrentMarketTerminalEnergyReadiness(
+  roomName: string,
+): MarketDirectContinuousTerminalEnergyReadiness | undefined {
+  const raw = (
+    Memory.runtime?.resourceControl?.rooms?.[roomName] as
+      | { marketEnergyReadiness?: unknown }
+      | undefined
+  )?.marketEnergyReadiness;
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    Array.isArray(raw)
+  ) {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const status = record.status;
+  const authorizationRevision =
+    record.authorizationRevision;
+  const roomInstanceId = record.roomInstanceId;
+  const blocker = record.blocker;
+  const expectedKeys = [
+    "authorized",
+    "contributionCount",
+    "contributions",
+    "desiredTerminalEnergy",
+    "effectivePostDealEnergyReserve",
+    "expiresAt",
+    "marketTerminalEnergyTarget",
+    "maxTransactionEnergy",
+    "observedAt",
+    "ordinaryTerminalEnergyTarget",
+    "plannedFeedAmount",
+    "revision",
+    "schemaVersion",
+    "status",
+    "terminalId",
+    "terminalScopedProductionEnergyCommitments",
+    "unresolvedEnergySendAmount",
+    "unresolvedInternalSendFees",
+    ...(authorizationRevision === undefined
+      ? []
+      : ["authorizationRevision"]),
+    ...(roomInstanceId === undefined
+      ? []
+      : ["roomInstanceId"]),
+    ...(blocker === undefined ? [] : ["blocker"]),
+  ];
+  const rawContributions = record.contributions;
+  if (
+    !exactRecordKeys(record, expectedKeys) ||
+    !Array.isArray(rawContributions) ||
+    rawContributions.length >
+      MARKET_TERMINAL_ENERGY_MAX_CONTRIBUTIONS
+  ) {
+    return undefined;
+  }
+  const contributions =
+    rawContributions.map(
+      parseMarketTerminalEnergyContribution,
+    );
+  if (
+    contributions.some(
+      (
+        contribution,
+      ): contribution is undefined =>
+        contribution === undefined,
+    ) ||
+    new Set(
+      contributions.map((contribution) => contribution!.id),
+    ).size !== contributions.length
+  ) {
+    return undefined;
+  }
+  if (
+    record.schemaVersion !== 3 ||
+    typeof record.revision !== "string" ||
+    record.revision.length === 0 ||
+    !Number.isSafeInteger(record.observedAt) ||
+    !Number.isSafeInteger(record.expiresAt) ||
+    (authorizationRevision !== undefined &&
+      (typeof authorizationRevision !== "string" ||
+        authorizationRevision.length === 0)) ||
+    (roomInstanceId !== undefined &&
+      (typeof roomInstanceId !== "string" ||
+        roomInstanceId.length === 0)) ||
+    typeof record.terminalId !== "string" ||
+    record.terminalId.length === 0 ||
+    typeof record.authorized !== "boolean" ||
+    !Number.isSafeInteger(
+      record.effectivePostDealEnergyReserve,
+    ) ||
+    (record.effectivePostDealEnergyReserve as number) < 0 ||
+    !Number.isSafeInteger(record.marketTerminalEnergyTarget) ||
+    (record.marketTerminalEnergyTarget as number) < 0 ||
+    !Number.isSafeInteger(record.ordinaryTerminalEnergyTarget) ||
+    (record.ordinaryTerminalEnergyTarget as number) < 0 ||
+    !Number.isSafeInteger(record.unresolvedEnergySendAmount) ||
+    (record.unresolvedEnergySendAmount as number) < 0 ||
+    !Number.isSafeInteger(record.unresolvedInternalSendFees) ||
+    (record.unresolvedInternalSendFees as number) < 0 ||
+    !Number.isSafeInteger(
+      record.terminalScopedProductionEnergyCommitments,
+    ) ||
+    (record.terminalScopedProductionEnergyCommitments as number) <
+      0 ||
+    !Number.isSafeInteger(record.maxTransactionEnergy) ||
+    (record.maxTransactionEnergy as number) < 0 ||
+    !Number.isSafeInteger(record.contributionCount) ||
+    (record.contributionCount as number) < 0 ||
+    !Number.isSafeInteger(record.desiredTerminalEnergy) ||
+    (record.desiredTerminalEnergy as number) < 0 ||
+    !Number.isSafeInteger(record.plannedFeedAmount) ||
+    (record.plannedFeedAmount as number) < 0 ||
+    (status !== "blocked" &&
+      status !== "ready" &&
+      status !== "feed_planned") ||
+    (blocker !== undefined &&
+      (typeof blocker !== "string" || blocker.length === 0))
+  ) {
+    return undefined;
+  }
+  return {
+    schemaVersion: 3,
+    revision: record.revision,
+    observedAt: record.observedAt as number,
+    expiresAt: record.expiresAt as number,
+    ...(authorizationRevision === undefined
+      ? {}
+      : {
+          authorizationRevision:
+            authorizationRevision as string,
+        }),
+    ...(roomInstanceId === undefined
+      ? {}
+      : { roomInstanceId: roomInstanceId as string }),
+    terminalId: record.terminalId,
+    authorized: record.authorized,
+    effectivePostDealEnergyReserve:
+      record.effectivePostDealEnergyReserve as number,
+    marketTerminalEnergyTarget:
+      record.marketTerminalEnergyTarget as number,
+    ordinaryTerminalEnergyTarget:
+      record.ordinaryTerminalEnergyTarget as number,
+    unresolvedEnergySendAmount:
+      record.unresolvedEnergySendAmount as number,
+    unresolvedInternalSendFees:
+      record.unresolvedInternalSendFees as number,
+    terminalScopedProductionEnergyCommitments:
+      record.terminalScopedProductionEnergyCommitments as number,
+    maxTransactionEnergy:
+      record.maxTransactionEnergy as number,
+    contributionCount: record.contributionCount as number,
+    contributions:
+      contributions as MarketDirectContinuousTerminalEnergyContribution[],
+    desiredTerminalEnergy:
+      record.desiredTerminalEnergy as number,
+    plannedFeedAmount: record.plannedFeedAmount as number,
+    status,
+    ...(blocker === undefined
+      ? {}
+      : { blocker: blocker as string }),
+  };
+}
+
+function collectCanonicalLegacyV2EnergyContributions(
+  roomName: string,
+):
+  | MarketDirectContinuousTerminalEnergyContribution[]
+  | undefined {
+  const byId = new Map<
+    string,
+    MarketDirectContinuousTerminalEnergyContribution
+  >();
+  const add = (
+    contribution: MarketDirectContinuousTerminalEnergyContribution,
+  ): boolean => {
+    if (
+      contribution.id.length === 0 ||
+      contribution.id.length > 256 ||
+      !MARKET_TERMINAL_ENERGY_CONTRIBUTION_KINDS.has(
+        contribution.kind,
+      ) ||
+      !Number.isSafeInteger(contribution.amount) ||
+      contribution.amount <= 0
+    ) {
+      return false;
+    }
+    const previous = byId.get(contribution.id);
+    if (previous && previous.kind !== contribution.kind) {
+      return false;
+    }
+    byId.set(contribution.id, {
+      ...contribution,
+      amount: Math.max(
+        previous?.amount ?? 0,
+        contribution.amount,
+      ),
+    });
+    return true;
+  };
+
+  const roomConfig =
+    Memory.cfg?.resourceControl?.rooms?.[roomName];
+  const ordinaryTerminalEnergyTarget =
+    resolveRoomEnergyPolicy(roomConfig)
+      .terminalEnergyReserve;
+  if (
+    ordinaryTerminalEnergyTarget > 0 &&
+    !add({
+      id: `ordinary-terminal-target:${roomName}`,
+      amount: ordinaryTerminalEnergyTarget,
+      kind: "ordinary_terminal_target",
+    })
+  ) {
+    return undefined;
+  }
+
+  const transferBatchSize = normalizeNumber(
+    roomConfig?.transferBatchSize,
+    10_000,
+    100,
+    50_000,
+  );
+  const taskStore = (
+    Memory.data?.resourceControl as
+      | { tasks?: unknown }
+      | undefined
+  )?.tasks;
+  if (
+    taskStore !== undefined &&
+    !isPlainRecord(taskStore)
+  ) {
+    return undefined;
+  }
+  const tasks = isPlainRecord(taskStore)
+    ? Object.values(taskStore)
+    : [];
+  if (tasks.length > 1_024) {
+    return undefined;
+  }
+  for (const rawTask of tasks) {
+    if (!isPlainRecord(rawTask)) return undefined;
+    if (
+      rawTask.status !== "pending" ||
+      rawTask.fromRoomName !== roomName
+    ) {
+      continue;
+    }
+    if (
+      typeof rawTask.id !== "string" ||
+      rawTask.id.length === 0 ||
+      rawTask.id.length > 256 ||
+      typeof rawTask.toRoomName !== "string" ||
+      rawTask.toRoomName.length === 0 ||
+      typeof rawTask.resource !== "string" ||
+      !Number.isSafeInteger(rawTask.remainingAmount) ||
+      (rawTask.remainingAmount as number) <= 0
+    ) {
+      return undefined;
+    }
+    const remainingAmount =
+      rawTask.remainingAmount as number;
+    if (
+      rawTask.resource === RESOURCE_ENERGY &&
+      !add({
+        id: `resource-transfer:${rawTask.id}:energy`,
+        amount: remainingAmount,
+        kind: "pending_energy_send",
+      })
+    ) {
+      return undefined;
+    }
+    let fee: number;
+    try {
+      fee = Game.market.calcTransactionCost(
+        Math.min(transferBatchSize, remainingAmount),
+        roomName,
+        rawTask.toRoomName,
+      );
+    } catch {
+      return undefined;
+    }
+    if (
+      !Number.isSafeInteger(fee) ||
+      fee < 0 ||
+      (fee > 0 &&
+        !add({
+          id: `resource-transfer:${rawTask.id}:fee`,
+          amount: fee,
+          kind: "pending_internal_send_fee",
+        }))
+    ) {
+      return undefined;
+    }
+  }
+
+  const reservations = listProductionReservations();
+  if (reservations.length > 1_024) {
+    return undefined;
+  }
+  for (const reservation of reservations) {
+    if (
+      reservation.roomName !== roomName ||
+      reservation.resource !== RESOURCE_ENERGY ||
+      reservation.expiresAt < Game.time
+    ) {
+      continue;
+    }
+    const amount = Math.floor(reservation.amount);
+    if (
+      typeof reservation.holderId !== "string" ||
+      reservation.holderId.length === 0 ||
+      !Number.isSafeInteger(amount) ||
+      amount <= 0 ||
+      !add({
+        id: `production-reservation:${reservation.holderId}`,
+        amount,
+        kind: "terminal_production_commitment",
+      })
+    ) {
+      return undefined;
+    }
+  }
+
+  const carrierTasks = listCarrierTasksByRoom(roomName);
+  if (carrierTasks.length > 1_024) {
+    return undefined;
+  }
+  for (const task of carrierTasks) {
+    if (
+      task.type !== "lab_supply" &&
+      task.type !== "factory_supply"
+    ) {
+      continue;
+    }
+    if (
+      typeof task.id !== "string" ||
+      task.id.length === 0 ||
+      !Array.isArray(task.steps)
+    ) {
+      return undefined;
+    }
+    for (const step of task.steps) {
+      if (
+        step.resource !== RESOURCE_ENERGY ||
+        step.fromKind !== "terminal"
+      ) {
+        continue;
+      }
+      const amount = Math.floor(step.amount);
+      if (
+        typeof step.id !== "string" ||
+        step.id.length === 0 ||
+        !Number.isSafeInteger(amount) ||
+        amount <= 0 ||
+        !add({
+          id: `production-carrier:${task.id}:${step.id}`,
+          amount,
+          kind: "terminal_production_commitment",
+        })
+      ) {
+        return undefined;
+      }
+    }
+  }
+
+  const contributions = [...byId.values()].sort(
+    (left, right) => left.id.localeCompare(right.id),
+  );
+  return contributions.length <=
+    MARKET_TERMINAL_ENERGY_MAX_CONTRIBUTIONS
+    ? contributions
+    : undefined;
+}
+
 export const defaultMarketDirectContinuousDependencies:
   MarketDirectContinuousDependencies = {
     readCurrentBuyOrders: (resource) => {
@@ -1367,13 +1856,22 @@ export const defaultMarketDirectContinuousDependencies:
       }
       return {
         roomName,
-        owned: room.controller?.my === true,
+        owned:
+          room.controller?.my === true &&
+          terminal.my === true,
+        terminalId: terminal.id,
         resourceAmount,
         energy,
         cooldown: terminal.cooldown,
         nativeMineralType: mineral?.mineralType,
+        marketEnergyReadiness:
+          readCurrentMarketTerminalEnergyReadiness(
+            roomName,
+          ),
       };
     },
+    readCanonicalTerminalEnergyContributions:
+      collectCanonicalLegacyV2EnergyContributions,
     readProtection: (config) =>
       collectLiveMarketSaleProtectionLedger(
         config,
@@ -1435,6 +1933,183 @@ export const defaultMarketDirectContinuousDependencies:
     executePrepared: executePreparedDirectMarketDeal,
     releasePrepared: releasePreparedDirectMarketClaims,
   };
+
+interface MarketBaseResourceReadinessAuthorization {
+  schemaVersion: 3;
+  validated: true;
+  status: "authorized";
+  revision: string;
+  updatedAt: number;
+  expiresAt: number;
+  maxTransactionEnergy: 1_000;
+  sourcePermitVersion: 2 | 3;
+  rooms: ReadonlyArray<{
+    readonly roomName: string;
+    readonly roomInstanceId: string;
+    readonly terminalId: string;
+    readonly status: "authorized";
+  }>;
+}
+
+interface MarketBaseResourceV3Container {
+  permitChain?: {
+    legacyV2GrantSuspended?: unknown;
+  };
+  readinessAuthorization?: MarketBaseResourceReadinessAuthorization;
+  [key: string]: unknown;
+}
+
+function marketBaseResourceV3Container(
+  state: MarketDirectContinuousAutomationState,
+  create: boolean,
+): MarketBaseResourceV3Container | undefined {
+  const raw = state.baseResourceV3;
+  if (
+    raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw)
+  ) {
+    return raw as unknown as MarketBaseResourceV3Container;
+  }
+  if (!create) return undefined;
+  const created: MarketBaseResourceV3Container = {};
+  state.baseResourceV3 =
+    created as unknown as MarketBaseResourceV3RuntimeState;
+  return created;
+}
+
+/**
+ * 首个 v3 successor 前只给 frozen v2 X/E6N59 提供 Energy readiness。
+ * 该 bridge 不参与成交授权；v3 successor 一旦 suspend legacy grant，旧授权
+ * 必须在同 tick 消失，不能让 ResourceControl 继续沿用。
+ */
+function projectLegacyV2ReadinessAuthorization(
+  state: MarketDirectContinuousAutomationState,
+  input: Pick<
+    MarketDirectContinuousAutomationInput,
+    "tick" | "config"
+  >,
+  dependencies: MarketDirectContinuousDependencies,
+): void {
+  const container = marketBaseResourceV3Container(state, true)!;
+  if (
+    container.permitChain?.legacyV2GrantSuspended === true
+  ) {
+    // V3 preflight 已负责在同 tick 原子发布或删除 v3 authorization；
+    // legacy bridge 不能覆盖它。
+    if (
+      container.readinessAuthorization
+        ?.sourcePermitVersion === 2
+    ) {
+      delete container.readinessAuthorization;
+    }
+    return;
+  }
+  delete container.readinessAuthorization;
+  if (
+    input.config.directCapability !== "continuous-v2" ||
+    input.config.mode !== "direct" ||
+    state.migrationStatus !== "active" ||
+    state.migrationBlockedReason ||
+    state.ledger.blocker ||
+    state.ledger.pending
+  ) {
+    return;
+  }
+  const accountIdentity = dependencies.readAccountIdentity();
+  const executorShard = dependencies.readExecutorShard();
+  if (
+    !accountIdentity ||
+    !executorShard ||
+    !currentPermitMatchesState(
+      state,
+      accountIdentity,
+      executorShard,
+    )
+  ) {
+    return;
+  }
+  const legacyEntry =
+    MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.find(
+      (entry) => entry.entryId === "base-x-e6n59-v1",
+    );
+  const lifecycle = legacyEntry
+    ? state.lifecycleByEntry[legacyEntry.entryId]
+    : undefined;
+  if (
+    !legacyEntry ||
+    legacyEntry.resourceType !== RESOURCE_CATALYST ||
+    legacyEntry.allowedRoomNames.length !== 1 ||
+    legacyEntry.allowedRoomNames[0] !== "E6N59" ||
+    !lifecycle ||
+    !marketDirectPermitAllowsNewDeal(
+      state.permitChain,
+      {
+        shard: executorShard,
+        entryId: legacyEntry.entryId,
+        lifecycle,
+      },
+    )
+  ) {
+    return;
+  }
+  let terminal:
+    | MarketDirectContinuousTerminalSnapshot
+    | undefined;
+  try {
+    terminal = dependencies.readTerminal(
+      "E6N59",
+      RESOURCE_CATALYST,
+    );
+  } catch {
+    terminal = undefined;
+  }
+  if (
+    !terminal ||
+    terminal.roomName !== "E6N59" ||
+    !terminal.owned ||
+    typeof terminal.terminalId !== "string" ||
+    terminal.terminalId.length === 0
+  ) {
+    return;
+  }
+  const roomInstanceId = sanitizedHash(
+    "market-base-resource:legacy-v2-readiness-room-v1",
+    {
+      accountIdentity,
+      roomName: terminal.roomName,
+      terminalId: terminal.terminalId,
+    },
+  );
+  const rooms = [
+    {
+      roomName: terminal.roomName,
+      roomInstanceId,
+      terminalId: terminal.terminalId,
+      status: "authorized" as const,
+    },
+  ];
+  container.readinessAuthorization = {
+    schemaVersion: 3,
+    validated: true,
+    status: "authorized",
+    revision: sanitizedHash(
+      "market-base-resource:readiness-authorization-v1",
+      {
+        permitHead: state.currentPermit!.permitHead,
+        permitId: state.currentPermit!.permitId,
+        rooms,
+        sourcePermitVersion: 2,
+        tick: input.tick,
+      },
+    ),
+    updatedAt: input.tick,
+    expiresAt: input.tick,
+    maxTransactionEnergy: 1_000,
+    sourcePermitVersion: 2,
+    rooms,
+  };
+}
 
 interface ContinuousReadEntry {
   entryId: string;
@@ -1575,6 +2250,233 @@ function completePricingCandidate(
     candidate.capacityState !== undefined &&
     candidate.isHubRoom !== undefined
   );
+}
+
+function readLegacyV2DynamicTerminalEnergyReserve(
+  state: MarketDirectContinuousAutomationState,
+  entry: (typeof MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE)[number],
+  terminal: MarketDirectContinuousTerminalSnapshot,
+  tick: number,
+  accountIdentity: string,
+  executorShard: string,
+  dependencies: MarketDirectContinuousDependencies,
+):
+  | { ok: true; effectivePostDealEnergyReserve: number }
+  | { ok: false; blocker: string } {
+  const readiness = terminal.marketEnergyReadiness;
+  if (!readiness) {
+    return {
+      ok: false,
+      blocker:
+        `continuous_energy_readiness_missing:${entry.entryId}`,
+    };
+  }
+  if (readiness.status === "feed_planned") {
+    return {
+      ok: false,
+      blocker:
+        `continuous_energy_readiness_feed_planned:${entry.entryId}`,
+    };
+  }
+  if (readiness.status === "blocked") {
+    return {
+      ok: false,
+      blocker:
+        `continuous_energy_readiness_blocked:${entry.entryId}`,
+    };
+  }
+  const expectedReadinessKeys = [
+    "authorizationRevision",
+    "authorized",
+    "contributionCount",
+    "contributions",
+    "desiredTerminalEnergy",
+    "effectivePostDealEnergyReserve",
+    "expiresAt",
+    "marketTerminalEnergyTarget",
+    "maxTransactionEnergy",
+    "observedAt",
+    "ordinaryTerminalEnergyTarget",
+    "plannedFeedAmount",
+    "revision",
+    "roomInstanceId",
+    "schemaVersion",
+    "status",
+    "terminalId",
+    "terminalScopedProductionEnergyCommitments",
+    "unresolvedEnergySendAmount",
+    "unresolvedInternalSendFees",
+  ];
+  const expectedRoomInstanceId = sanitizedHash(
+    "market-base-resource:legacy-v2-readiness-room-v1",
+    {
+      accountIdentity,
+      roomName: terminal.roomName,
+      terminalId: terminal.terminalId,
+    },
+  );
+  const authorizationRooms = [
+    {
+      roomName: terminal.roomName,
+      roomInstanceId: expectedRoomInstanceId,
+      terminalId: terminal.terminalId,
+      status: "authorized" as const,
+    },
+  ];
+  const expectedAuthorizationRevision = state.currentPermit
+    ? sanitizedHash(
+        "market-base-resource:readiness-authorization-v1",
+        {
+          permitHead: state.currentPermit.permitHead,
+          permitId: state.currentPermit.permitId,
+          rooms: authorizationRooms,
+          sourcePermitVersion: 2,
+          tick,
+        },
+      )
+    : undefined;
+  let canonicalContributions:
+    | readonly MarketDirectContinuousTerminalEnergyContribution[]
+    | undefined;
+  try {
+    canonicalContributions =
+      dependencies.readCanonicalTerminalEnergyContributions(
+        terminal.roomName,
+      );
+  } catch {
+    canonicalContributions = undefined;
+  }
+  const contributions = readiness.contributions;
+  const contributionIds = new Set<string>();
+  const contributionTotals = {
+    ordinary_terminal_target: 0,
+    pending_energy_send: 0,
+    pending_internal_send_fee: 0,
+    terminal_production_commitment: 0,
+  };
+  let contributionsValid =
+    Array.isArray(contributions) &&
+    contributions.length <=
+      MARKET_TERMINAL_ENERGY_MAX_CONTRIBUTIONS &&
+    canonicalContributions !== undefined &&
+    canonicalContributions.length <=
+      MARKET_TERMINAL_ENERGY_MAX_CONTRIBUTIONS;
+  if (contributionsValid) {
+    for (const contribution of contributions) {
+      if (
+        !isPlainRecord(contribution) ||
+        !exactRecordKeys(contribution, [
+          "amount",
+          "id",
+          "kind",
+        ]) ||
+        typeof contribution.id !== "string" ||
+        contribution.id.length === 0 ||
+        contribution.id.length > 256 ||
+        contributionIds.has(contribution.id) ||
+        !MARKET_TERMINAL_ENERGY_CONTRIBUTION_KINDS.has(
+          contribution.kind,
+        ) ||
+        !Number.isSafeInteger(contribution.amount) ||
+        contribution.amount <= 0
+      ) {
+        contributionsValid = false;
+        break;
+      }
+      contributionIds.add(contribution.id);
+      const nextTotal =
+        contributionTotals[contribution.kind] +
+        contribution.amount;
+      if (!Number.isSafeInteger(nextTotal)) {
+        contributionsValid = false;
+        break;
+      }
+      contributionTotals[contribution.kind] = nextTotal;
+    }
+  }
+  if (
+    contributionsValid &&
+    canonicalStableHashV1(contributions) !==
+      canonicalStableHashV1(canonicalContributions)
+  ) {
+    contributionsValid = false;
+  }
+  const contributionReserve =
+    contributionTotals.ordinary_terminal_target +
+    contributionTotals.pending_energy_send +
+    contributionTotals.pending_internal_send_fee +
+    contributionTotals.terminal_production_commitment;
+  const expectedReserve = Math.max(
+    entry.terminalEnergyReserve,
+    contributionReserve,
+  );
+  const expectedTarget =
+    expectedReserve + entry.maxTransactionEnergy;
+  const expectedDesired = Math.max(
+    terminal.energy,
+    expectedTarget,
+  );
+  if (
+    !exactRecordKeys(
+      readiness as unknown as Record<string, unknown>,
+      expectedReadinessKeys,
+    ) ||
+    readiness.schemaVersion !== 3 ||
+    readiness.status !== "ready" ||
+    readiness.authorized !== true ||
+    readiness.revision !==
+      `market-terminal-energy-v3:${tick}` ||
+    !expectedAuthorizationRevision ||
+    readiness.authorizationRevision !==
+      expectedAuthorizationRevision ||
+    readiness.roomInstanceId !==
+      expectedRoomInstanceId ||
+    state.currentPermit?.accountIdentity !== accountIdentity ||
+    state.currentPermit?.executorShard !== executorShard ||
+    typeof terminal.terminalId !== "string" ||
+    terminal.terminalId.length === 0 ||
+    readiness.terminalId !== terminal.terminalId ||
+    readiness.observedAt !== tick ||
+    readiness.expiresAt !== tick + 1 ||
+    terminal.owned !== true ||
+    !Number.isSafeInteger(terminal.energy) ||
+    terminal.energy < expectedTarget ||
+    !Number.isSafeInteger(terminal.cooldown) ||
+    terminal.cooldown !== 0 ||
+    !contributionsValid ||
+    readiness.contributionCount !==
+      contributions.length ||
+    readiness.ordinaryTerminalEnergyTarget !==
+      contributionTotals.ordinary_terminal_target ||
+    readiness.unresolvedEnergySendAmount !==
+      contributionTotals.pending_energy_send ||
+    readiness.unresolvedInternalSendFees !==
+      contributionTotals.pending_internal_send_fee ||
+    readiness.terminalScopedProductionEnergyCommitments !==
+      contributionTotals.terminal_production_commitment ||
+    !Number.isSafeInteger(
+      readiness.effectivePostDealEnergyReserve,
+    ) ||
+    readiness.effectivePostDealEnergyReserve !==
+      expectedReserve ||
+    !Number.isSafeInteger(expectedTarget) ||
+    readiness.marketTerminalEnergyTarget !== expectedTarget ||
+    readiness.maxTransactionEnergy !==
+      entry.maxTransactionEnergy ||
+    readiness.desiredTerminalEnergy !== expectedDesired ||
+    readiness.plannedFeedAmount !== 0 ||
+    readiness.blocker !== undefined
+  ) {
+    return {
+      ok: false,
+      blocker:
+        `continuous_energy_readiness_invalid:${entry.entryId}`,
+    };
+  }
+  return {
+    ok: true,
+    effectivePostDealEnergyReserve: expectedReserve,
+  };
 }
 
 function completeEnergyShadowEvidence(
@@ -1957,6 +2859,30 @@ function buildContinuousFullRead(
         ] = `continuous_lane_incomplete:${entry.entryId}`;
         continue;
       }
+      let effectivePostDealEnergyReserve: number | undefined;
+      if (
+        entry.entryId === "base-x-e6n59-v1" &&
+        entry.resourceType === RESOURCE_CATALYST &&
+        roomName === "E6N59"
+      ) {
+        const readiness =
+          readLegacyV2DynamicTerminalEnergyReserve(
+            state,
+            entry,
+            terminal,
+            input.tick,
+            accountIdentity,
+            executorShard,
+            dependencies,
+          );
+        if ("blocker" in readiness) {
+          entryBlockers[entry.entryId] =
+            readiness.blocker;
+          continue;
+        }
+        effectivePostDealEnergyReserve =
+          readiness.effectivePostDealEnergyReserve;
+      }
       const protectionEntry =
         protection.entries[
           getMarketProtectionEntryKey(
@@ -2084,6 +3010,9 @@ function buildContinuousFullRead(
               cooldown: terminal.cooldown,
               resourceAmount: terminal.resourceAmount,
               energy: terminal.energy,
+              ...(effectivePostDealEnergyReserve === undefined
+                ? {}
+                : { effectivePostDealEnergyReserve }),
             },
             book: {
               complete: true,
@@ -2803,6 +3732,13 @@ export function runMarketDirectContinuousPreflight(
     input.tick,
   );
   overwriteContinuousState(state, normalized);
+  // 每 tick 先删除旧投影再重建；任何 permit/terminal/WAL/config 缺口都
+  // 会留下空授权，ResourceControl 因而不能消费过期 readiness。
+  projectLegacyV2ReadinessAuthorization(
+    state,
+    input,
+    dependencies,
+  );
   if (
     state.migrationBlockedReason ||
     state.ledger.blocker
@@ -3674,5 +4610,7 @@ export function marketDirectContinuousStatus(
     },
     lastPlanningSnapshot:
       state.lastPlanningSnapshot,
+    baseResourceV3:
+      state.baseResourceV3,
   };
 }

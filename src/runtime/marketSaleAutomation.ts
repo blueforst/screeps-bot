@@ -6,6 +6,9 @@ import {
 } from "@/runtime/marketActionArbiter";
 import {
   enforceLegacyMarketSafetyLatch,
+  MARKET_DIRECT_CANARY_POLICY,
+  MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION,
+  marketBaseResourceV3ConfigMismatchReasons,
   resolveMarketSaleAutomationConfig,
   type MarketSaleAutomationConfig,
   type ResolvedMarketSaleAutomationConfig,
@@ -41,8 +44,86 @@ import {
   MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
   MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY,
   MARKET_DIRECT_CONTINUOUS_SCHEMA,
+  canonicalStableHashV1,
+  validateMarketDirectContinuousPermitChain,
 } from "@/runtime/marketDirectContinuousPolicy";
-import { computeContinuousQuota } from "@/runtime/marketDirectContinuousLedger";
+import {
+  advanceMarketBaseResourceReadinessRuntimeCapability,
+  advanceMarketBaseResourceReadinessRuntimeCapabilityFromRoot,
+  buildMarketBaseResourcePricingRatchetState,
+  collectLiveMarketBaseRoomObservations,
+  createMarketBaseResourceReadinessRuntimeCapability,
+  defaultMarketBaseResourceRuntimeDependencies,
+  deriveMarketBaseResourceCanonicalReadinessAuthorization,
+  marketBaseResourceActivationAnchorSelfHash,
+  marketBaseResourceOperatorAuthorizationFingerprint,
+  marketBaseResourceOuterScopeCommitment,
+  readLiveMarketBaseAccountIdentity,
+  registerMarketBaseResourceCanonicalReadinessRuntimeCapability,
+  reconcileLiveMarketBaseResourceScope,
+  reconcileLiveMarketBaseResourceScopeWithRuntimeCapability,
+  reconcileMarketBaseResourcePreflight,
+  readLiveMarketBaseTerminal,
+  resignMarketBaseResourceReadinessAuthorizationWithRuntimeCapability,
+  runMarketBaseResourceAutomation,
+  runMarketBaseResourcePreflight,
+  validateMarketBaseResourceReadinessRuntimeCapability,
+  validateMarketBaseResourcePricingRatchetState,
+  type MarketBaseResourceAutomationResult,
+  type MarketBaseResourcePermitProposal,
+  type MarketBaseResourcePricingRatchetState,
+  type MarketBaseResourceReadinessRuntimeCapability,
+  type MarketBaseResourceScopeState,
+  type MarketBaseResourceRuntimeCandidate,
+  type MarketBaseResourceV3RuntimeState,
+} from "@/runtime/marketBaseResourceAutomation";
+import {
+  MARKET_BASE_RESOURCE_CATALOG,
+  MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
+  MARKET_BASE_RESOURCE_POLICIES,
+  createMarketBaseSharedPolicy,
+  isMarketBaseResource,
+  marketBaseDerivedLaneLifecycleCheckpointCommitment,
+  validateMarketBaseDerivedLaneLifecycle,
+  type MarketBaseDerivedLaneLifecycle,
+  type MarketBaseResource,
+} from "@/runtime/marketBaseResourcePolicy";
+import {
+  appendMarketBaseResourcePermit,
+  buildMarketBaseResourceBootstrapRatchetHighWater,
+  buildMarketBaseResourceLegacyV2GrantSuspension,
+  buildMarketBaseResourcePermit,
+  buildMarketBaseResourceSignedLaneGrant,
+  buildMarketBaseResourceV2EventCutoverCheckpoint,
+  createMarketBaseResourcePermitChainState,
+  hasAcceptedMarketBaseResourceV3Successor,
+  validateMarketBaseResourcePermitChain,
+  wrapAuthenticatedLegacyV2PermitRecord,
+  type MarketBaseResourcePermit,
+  type MarketBaseResourceReviewedEvidence,
+  type MarketBaseResourceSignedLaneGrant,
+} from "@/runtime/marketBaseResourcePermit";
+import {
+  buildMarketBaseResourceLedgerRuntimeAnchor,
+  buildMarketBaseResourceAuthenticatedV2LedgerMigrationBasis,
+  buildMarketBaseResourceConfirmedCanaryProof,
+  createMarketBaseResourceLedger,
+  marketBaseResourceCanaryReviewFactsFor,
+  marketBaseResourceQuotaProjection,
+  marketBaseResourceRetainedReceiptPermitReferences,
+  rebindMarketBaseResourceLedgerPermitAnchor,
+  validateMarketBaseResourceLedger,
+  validateMarketBaseResourceLedgerRuntimeGate,
+  validateMarketBaseResourcePermitChainDominatesAnchor,
+  type MarketBaseResourceLedger,
+  type MarketBaseResourceLedgerRuntimeAnchor,
+  type MarketBaseResourceLedgerCounters,
+  type MarketBaseResourceQuotaReceipt,
+} from "@/runtime/marketBaseResourceLedger";
+import {
+  computeContinuousQuota,
+  validateContinuousLedger,
+} from "@/runtime/marketDirectContinuousLedger";
 import {
   isResolvedDirectPendingCompatibilityAlias,
   recoverPendingDirectDeal,
@@ -60,8 +141,10 @@ import {
   evaluateMarketSaleCanaryPrerequisites,
   getMarketProtectionSellableAmount,
   isMarketProtectionEntryFresh,
+  getMarketProtectionEntryKey,
   type MarketProtectionEntry,
 } from "@/runtime/marketSaleProtection";
+import { collectLiveMarketSaleProtectionLedger } from "@/runtime/marketSaleProtectionAdapter";
 import {
   advanceFeeLedgerWindow,
   applyFillFeeDebt,
@@ -104,6 +187,17 @@ const MAX_FEE_EVENTS = 100;
 const MAX_TRANSACTION_KEYS = 200;
 const MAX_MANAGED_ORDER_SUMMARIES = 20;
 const REQUIRED_SHADOW_CYCLES = 100;
+const MARKET_BASE_RESOURCE_ACTIVATION_ANCHOR_REVISION =
+  "market-base-resource-activation-anchor-v3" as const;
+const MARKET_BASE_RESOURCE_ACTIVATION_BLOCKER_REVISION =
+  "market-base-resource-activation-blocker-v1" as const;
+
+/**
+ * Maker / hybrid 已退出生产合同。该闩不可由 Memory、console、测试环境或
+ * mode 切换绕过：旧 managed exposure 只能继续 reconcile 后 cancel/drain，
+ * 永远不得再创建新的 SELL order。
+ */
+export const MARKET_MAKER_HYBRID_PERMANENTLY_DISABLED = true;
 
 export interface MarketSalePlanCandidate {
   roomName: string;
@@ -142,6 +236,7 @@ export interface MarketSalePlanCandidate {
 
 export interface MarketSaleAutomationInput {
   candidates?: readonly MarketSalePlanCandidate[];
+  readMarketBaseResourceCandidates?: () => readonly MarketSalePlanCandidate[];
   stagingAmount?: number;
   reservationAmount?: number;
   marketDomainActivityValid?: boolean;
@@ -169,10 +264,102 @@ interface ExpansionGrant {
   grantedAt: number;
 }
 
-type OwnedManagedOrder = Omit<
-  ManagedMarketOrderState,
-  "resourceType"
-> & {
+interface DirectLegacyExposureDrainState {
+  schemaVersion: 1;
+  zeroConfirmations: number;
+  lastZeroConfirmationTick?: number;
+  completedAt?: number;
+}
+
+interface MarketBaseResourceRoomIncarnationHighWater {
+  roomName: string;
+  incarnationHighWater: number;
+  lastInstanceId: string;
+  admitted: boolean;
+}
+
+interface MarketBaseResourceLaneLifecycleHighWater {
+  laneId: string;
+  stableFingerprint: string;
+  stage: MarketBaseDerivedLaneLifecycle["stage"];
+  status: MarketBaseDerivedLaneLifecycle["status"];
+  completeCycles: number;
+  lastCompleteTick?: number;
+  evidenceDigest?: string;
+}
+
+interface MarketBaseResourcePricingHighWater {
+  resource: MarketBaseResource;
+  value: number;
+  marketDate: string;
+}
+
+interface MarketBaseResourceTrustedFloorHighWater extends Omit<
+  MarketBaseResourcePricingHighWater,
+  "resource"
+> {
+  resource: MarketBaseResource | typeof RESOURCE_ENERGY;
+  updatedAt: number;
+}
+
+const MARKET_BASE_RESOURCE_TRUSTED_FLOOR_RESOURCES = [
+  ...MARKET_BASE_RESOURCE_CATALOG,
+  RESOURCE_ENERGY,
+].sort((left, right) => left.localeCompare(right)) as readonly (
+  MarketBaseResource | typeof RESOURCE_ENERGY
+)[];
+
+/**
+ * V3 子树之外的不可回退激活/房间实例高水位。两个副本必须逐字一致；
+ * nested baseResourceV3 缺失、损坏或整体回拨时，外层副本仍强制 dispatcher
+ * 留在 V3 fail-closed 路径，绝不能重新解释为尚未 cutover 的 V2。
+ */
+export interface MarketBaseResourceActivationAnchor {
+  schemaVersion: 1;
+  hashRevision: typeof MARKET_BASE_RESOURCE_ACTIVATION_ANCHOR_REVISION;
+  accountIdentity: string;
+  executorShard: "shard1";
+  acceptedAt: number;
+  updatedAt: number;
+  operatorAuthorizationFingerprint: string;
+  cutoverCheckpointHash: string;
+  legacyV2QuiescenceCommitment: string;
+  firstV3PermitEpoch: number;
+  firstV3PermitId: string;
+  firstV3PermitHead: string;
+  laneTombstoneCheckpointCommitment: string;
+  laneTombstoneDischargeCheckpointCommitment: string;
+  roomRegistryCheckpointCommitment: string;
+  scopeCommitment: string;
+  roomIncarnationHighWater: readonly MarketBaseResourceRoomIncarnationHighWater[];
+  laneLifecycleCommitment: string;
+  laneLifecycleHighWater: readonly MarketBaseResourceLaneLifecycleHighWater[];
+  ledger: MarketBaseResourceLedgerRuntimeAnchor;
+  pricingRatchetInitializedAt: number;
+  pricingRatchetBootstrapFingerprint: string;
+  pricingRatchetCommitment: string;
+  pricingRatchetHighWater: readonly MarketBaseResourcePricingHighWater[];
+  trustedFloorsCommitment: string;
+  trustedFloorHighWater: readonly MarketBaseResourceTrustedFloorHighWater[];
+  hardBlocker: {
+    code: string;
+    detectedAt: number;
+    detailHash: string;
+  } | null;
+  activationBlocker: MarketBaseResourceActivationBlocker | null;
+  runtimeSafetyCommitment: string;
+  anchorHash: string;
+}
+
+interface MarketBaseResourceActivationBlocker {
+  schemaVersion: 1;
+  hashRevision: typeof MARKET_BASE_RESOURCE_ACTIVATION_BLOCKER_REVISION;
+  code: string;
+  detectedAt: number;
+  detailHash: string;
+}
+
+type OwnedManagedOrder = Omit<ManagedMarketOrderState, "resourceType"> & {
   resourceType: ResourceConstant;
   backoffUntil?: number;
 };
@@ -218,8 +405,7 @@ interface MarketSaleDataState {
     candidateIds?: string[];
   }>;
   directAutomation?:
-    | DirectAutomationState
-    | MarketDirectContinuousAutomationState;
+    DirectAutomationState | MarketDirectContinuousAutomationState;
   pendingDirectDeals?: Record<
     string,
     PendingDirectDeal | ContinuousPendingProjection
@@ -228,6 +414,2052 @@ interface MarketSaleDataState {
   marketStaging?: unknown;
   marketReservations?: unknown;
   expansionGrant?: ExpansionGrant;
+  /**
+   * Direct 与旧 Maker 的授权域相互独立。切入 Direct 前仍须先把旧卖单、
+   * mutation/create WAL、staging 与 reservation 连续两个 tick 证明归零。
+   */
+  directLegacyExposureDrain?: DirectLegacyExposureDrainState;
+  /** 双副本都位于 baseResourceV3 子树之外，任一缺失/不一致即永久闭锁。 */
+  baseResourceV3ActivationAnchor?: MarketBaseResourceActivationAnchor;
+  baseResourceV3ActivationAnchorMirror?: MarketBaseResourceActivationAnchor;
+  baseResourceV3ActivationBlocker?: MarketBaseResourceActivationBlocker;
+  baseResourceV3ProposedContinuousReview?: MarketBaseResourceProposedContinuousReview;
+  baseResourceV3ProposedTransition?: MarketBaseResourceProposedTransition;
+}
+
+type MarketBaseResourceActivationAnchorPayload = Omit<
+  MarketBaseResourceActivationAnchor,
+  "anchorHash"
+>;
+
+function marketBaseResourceActivationAnchorHash(
+  payload: MarketBaseResourceActivationAnchorPayload,
+): string {
+  return canonicalStableHashV1({
+    domain: "market-base-resource:activation-anchor-v1",
+    payload,
+  });
+}
+
+function marketBaseResourceRoomIncarnationHighWater(
+  scope: MarketBaseResourceScopeState,
+): MarketBaseResourceRoomIncarnationHighWater[] {
+  return scope.roomRegistry.knownRoomNames
+    .map((roomName) => {
+      const room = scope.roomRegistry.rooms[roomName];
+      if (!room) {
+        throw new TypeError(
+          `market_base_room_registry_record_missing:${roomName}`,
+        );
+      }
+      return {
+        roomName,
+        incarnationHighWater: room.incarnationHighWater,
+        lastInstanceId: room.lastInstanceId,
+        admitted: room.admitted,
+      };
+    })
+    .sort((left, right) => left.roomName.localeCompare(right.roomName));
+}
+
+function sameMarketBaseResourceRoomIncarnationHighWater(
+  left: readonly MarketBaseResourceRoomIncarnationHighWater[],
+  right: readonly MarketBaseResourceRoomIncarnationHighWater[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => {
+      const prior = right[index];
+      return (
+        prior?.roomName === entry.roomName &&
+        prior.incarnationHighWater === entry.incarnationHighWater &&
+        prior.lastInstanceId === entry.lastInstanceId &&
+        prior.admitted === entry.admitted
+      );
+    })
+  );
+}
+
+function marketBaseResourceLaneLifecycleHighWater(
+  scope: MarketBaseResourceScopeState,
+): MarketBaseResourceLaneLifecycleHighWater[] {
+  return scope.laneLifecycles
+    .map((lane) => ({
+      laneId: lane.laneId,
+      stableFingerprint: lane.stableFingerprint,
+      stage: lane.stage,
+      status: lane.status,
+      completeCycles: lane.shadowEvidence.completeCycles,
+      ...(lane.shadowEvidence.lastCompleteTick === undefined
+        ? {}
+        : {
+            lastCompleteTick: lane.shadowEvidence.lastCompleteTick,
+          }),
+      ...(lane.shadowEvidence.evidenceDigest === undefined
+        ? {}
+        : {
+            evidenceDigest: lane.shadowEvidence.evidenceDigest,
+          }),
+    }))
+    .sort((left, right) => left.laneId.localeCompare(right.laneId));
+}
+
+function sameMarketBaseResourceLaneLifecycleHighWater(
+  left: readonly MarketBaseResourceLaneLifecycleHighWater[],
+  right: readonly MarketBaseResourceLaneLifecycleHighWater[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => {
+      const prior = right[index];
+      return (
+        prior?.laneId === entry.laneId &&
+        prior.stableFingerprint === entry.stableFingerprint &&
+        prior.stage === entry.stage &&
+        prior.status === entry.status &&
+        prior.completeCycles === entry.completeCycles &&
+        prior.lastCompleteTick === entry.lastCompleteTick &&
+        prior.evidenceDigest === entry.evidenceDigest
+      );
+    })
+  );
+}
+
+function marketBaseResourceLaneLifecycleCommitment(
+  scope: MarketBaseResourceScopeState,
+): string {
+  return marketBaseDerivedLaneLifecycleCheckpointCommitment(
+    scope.laneLifecycles,
+  );
+}
+
+function marketBaseResourcePricingHighWater(
+  pricingRatchet: MarketBaseResourcePricingRatchetState,
+): MarketBaseResourcePricingHighWater[] {
+  if (pricingRatchet.entries.length !== MARKET_BASE_RESOURCE_CATALOG.length) {
+    throw new TypeError("market_base_pricing_ratchet_catalog_incomplete");
+  }
+  return MARKET_BASE_RESOURCE_CATALOG.map((resource) => {
+    const entry = pricingRatchet.entries.find(
+      (candidate) => candidate.resource === resource,
+    );
+    if (
+      !entry ||
+      !Number.isFinite(entry.value) ||
+      entry.value <= 0 ||
+      typeof entry.marketDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(entry.marketDate)
+    ) {
+      throw new TypeError(
+        `market_base_pricing_ratchet_entry_invalid:${resource}`,
+      );
+    }
+    return {
+      resource,
+      value: entry.value,
+      marketDate: entry.marketDate,
+    };
+  });
+}
+
+function marketBaseResourceTrustedFloorHighWater(
+  trustedFloors: MarketSaleDataState["trustedFloors"],
+): MarketBaseResourceTrustedFloorHighWater[] {
+  return MARKET_BASE_RESOURCE_TRUSTED_FLOOR_RESOURCES.map((resource) => {
+    const entry = trustedFloors[resource];
+    if (
+      !entry ||
+      !Number.isFinite(entry.value) ||
+      entry.value <= 0 ||
+      typeof entry.marketDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(entry.marketDate) ||
+      !Number.isSafeInteger(entry.updatedAt) ||
+      entry.updatedAt < 0
+    ) {
+      throw new TypeError(
+        `market_base_trusted_floor_entry_invalid:${resource}`,
+      );
+    }
+    return {
+      resource,
+      value: entry.value,
+      marketDate: entry.marketDate,
+      updatedAt: entry.updatedAt,
+    };
+  });
+}
+
+function assertMarketBaseResourcePricingConsistency(
+  pricing: readonly MarketBaseResourcePricingHighWater[],
+  trusted: readonly MarketBaseResourceTrustedFloorHighWater[],
+): void {
+  if (
+    pricing.length !== MARKET_BASE_RESOURCE_CATALOG.length ||
+    trusted.length !== MARKET_BASE_RESOURCE_TRUSTED_FLOOR_RESOURCES.length ||
+    pricing.some((entry) => {
+      const floor = trusted.find(
+        (candidate) => candidate.resource === entry.resource,
+      );
+      return (
+        !floor ||
+        entry.value > floor.value ||
+        entry.marketDate > floor.marketDate
+      );
+    })
+  ) {
+    throw new TypeError("market_base_pricing_trusted_floor_mismatch");
+  }
+}
+
+function synchronizeMarketBaseTrustedFloors(
+  current: MarketSaleDataState["trustedFloors"],
+  pricingRatchet: MarketBaseResourcePricingRatchetState,
+  tick: number,
+): MarketSaleDataState["trustedFloors"] {
+  const next = cloneMarketBaseOperatorValue(current);
+  for (const entry of marketBaseResourcePricingHighWater(pricingRatchet)) {
+    const prior = next[entry.resource];
+    const value = Math.max(prior?.value ?? 0, entry.value);
+    const marketDate =
+      prior?.marketDate && prior.marketDate > entry.marketDate
+        ? prior.marketDate
+        : entry.marketDate;
+    next[entry.resource] = {
+      value,
+      marketDate,
+      updatedAt:
+        prior && prior.value === value && prior.marketDate === marketDate
+          ? prior.updatedAt
+          : tick,
+    };
+  }
+  const currentKeys = Object.keys(current).sort();
+  const nextKeys = Object.keys(next).sort();
+  if (
+    currentKeys.length === nextKeys.length &&
+    currentKeys.every((key, index) => {
+      if (key !== nextKeys[index]) return false;
+      const previous = current[key as ResourceConstant];
+      const candidate = next[key as ResourceConstant];
+      return (
+        previous?.value === candidate?.value &&
+        previous?.marketDate === candidate?.marketDate &&
+        previous?.updatedAt === candidate?.updatedAt
+      );
+    })
+  ) {
+    return current;
+  }
+  return next;
+}
+
+function marketBaseResourceRuntimeSafetyProjection(
+  state: Pick<
+    MarketBaseResourceV3RuntimeState,
+    "hardBlocker" | "ledger" | "permitChain" | "pricingRatchet"
+  >,
+  trustedFloors: MarketSaleDataState["trustedFloors"],
+  validatedLedgerAnchor?: MarketBaseResourceLedgerRuntimeAnchor,
+): Pick<
+  MarketBaseResourceActivationAnchor,
+  | "ledger"
+  | "pricingRatchetInitializedAt"
+  | "pricingRatchetBootstrapFingerprint"
+  | "pricingRatchetCommitment"
+  | "pricingRatchetHighWater"
+  | "trustedFloorsCommitment"
+  | "trustedFloorHighWater"
+  | "hardBlocker"
+  | "runtimeSafetyCommitment"
+> {
+  if (!state.ledger || !state.permitChain || !state.pricingRatchet) {
+    throw new TypeError("market_base_runtime_safety_state_incomplete");
+  }
+  const ledger =
+    validatedLedgerAnchor ??
+    buildMarketBaseResourceLedgerRuntimeAnchor(state.ledger, state.permitChain);
+  const pricingRatchetHighWater = marketBaseResourcePricingHighWater(
+    state.pricingRatchet,
+  );
+  const trustedFloorHighWater =
+    marketBaseResourceTrustedFloorHighWater(trustedFloors);
+  assertMarketBaseResourcePricingConsistency(
+    pricingRatchetHighWater,
+    trustedFloorHighWater,
+  );
+  const pricingRatchetCommitment = canonicalStableHashV1({
+    domain: "market-base-resource:outer-pricing-ratchet-v1",
+    initializedAt: state.pricingRatchet.initializedAt,
+    bootstrapFingerprint: state.pricingRatchet.bootstrapFingerprint,
+    entries: pricingRatchetHighWater,
+  });
+  const trustedFloorsCommitment = canonicalStableHashV1({
+    domain: "market-base-resource:outer-trusted-floors-v1",
+    entries: trustedFloorHighWater,
+  });
+  const hardBlocker = state.hardBlocker
+    ? {
+        code: state.hardBlocker.code,
+        detectedAt: state.hardBlocker.detectedAt,
+        detailHash: state.hardBlocker.detailHash,
+      }
+    : null;
+  return {
+    ledger,
+    pricingRatchetInitializedAt: state.pricingRatchet.initializedAt,
+    pricingRatchetBootstrapFingerprint:
+      state.pricingRatchet.bootstrapFingerprint,
+    pricingRatchetCommitment,
+    pricingRatchetHighWater,
+    trustedFloorsCommitment,
+    trustedFloorHighWater,
+    hardBlocker,
+    runtimeSafetyCommitment: canonicalStableHashV1({
+      domain: "market-base-resource:outer-runtime-safety-v1",
+      ledger,
+      pricingRatchetCommitment,
+      trustedFloorsCommitment,
+      hardBlocker,
+    }),
+  };
+}
+
+function marketBaseResourceRuntimeSafetyDominates(
+  anchor: MarketBaseResourceActivationAnchor,
+  next: ReturnType<typeof marketBaseResourceRuntimeSafetyProjection>,
+  state: Pick<MarketBaseResourceV3RuntimeState, "ledger">,
+): boolean {
+  const ledger = state.ledger;
+  if (
+    !ledger ||
+    next.ledger.prunedThroughAttemptSeq <
+      anchor.ledger.prunedThroughAttemptSeq ||
+    next.ledger.nextAttemptSeq < anchor.ledger.nextAttemptSeq ||
+    next.ledger.finalizedAttemptSeq < anchor.ledger.finalizedAttemptSeq ||
+    next.pricingRatchetHighWater.length !==
+      anchor.pricingRatchetHighWater.length ||
+    next.trustedFloorHighWater.length !== anchor.trustedFloorHighWater.length ||
+    next.pricingRatchetInitializedAt !== anchor.pricingRatchetInitializedAt ||
+    next.pricingRatchetBootstrapFingerprint !==
+      anchor.pricingRatchetBootstrapFingerprint ||
+    (anchor.hardBlocker !== null &&
+      canonicalStableHashV1(next.hardBlocker) !==
+        canonicalStableHashV1(anchor.hardBlocker))
+  ) {
+    return false;
+  }
+  const priorLedger = anchor.ledger;
+  const currentLedger = next.ledger;
+  const prepareTransition =
+    currentLedger.nextAttemptSeq === priorLedger.nextAttemptSeq + 1 &&
+    priorLedger.pendingFrozenEvidenceHash === null &&
+    currentLedger.pendingFrozenEvidenceHash !== null &&
+    currentLedger.pendingAttemptSeq === priorLedger.nextAttemptSeq &&
+    currentLedger.finalizedAttemptSeq === priorLedger.finalizedAttemptSeq &&
+    currentLedger.receiptHeadHash === priorLedger.receiptHeadHash;
+  if (
+    currentLedger.nextAttemptSeq !== priorLedger.nextAttemptSeq &&
+    !prepareTransition
+  ) {
+    return false;
+  }
+  if (
+    priorLedger.pendingFrozenEvidenceHash !== null &&
+    currentLedger.pendingFrozenEvidenceHash !== null &&
+    (priorLedger.pendingFrozenEvidenceHash !==
+      currentLedger.pendingFrozenEvidenceHash ||
+      priorLedger.pendingAttemptSeq !== currentLedger.pendingAttemptSeq)
+  ) {
+    return false;
+  }
+  if (
+    priorLedger.pendingFrozenEvidenceHash !== null &&
+    currentLedger.pendingFrozenEvidenceHash === null &&
+    currentLedger.finalizedAttemptSeq < (priorLedger.pendingAttemptSeq ?? 0)
+  ) {
+    return false;
+  }
+  if (currentLedger.receiptHeadHash !== priorLedger.receiptHeadHash) {
+    if (currentLedger.finalizedAttemptSeq <= priorLedger.finalizedAttemptSeq) {
+      return false;
+    }
+    const appended = ledger.receipts
+      .filter((receipt) => receipt.attemptSeq > priorLedger.finalizedAttemptSeq)
+      .sort((left, right) => left.attemptSeq - right.attemptSeq);
+    let head = priorLedger.receiptHeadHash;
+    for (const receipt of appended) {
+      if (receipt.prevHash !== head) {
+        return false;
+      }
+      head = receipt.headHash;
+    }
+    if (appended.length === 0 || head !== currentLedger.receiptHeadHash) {
+      return false;
+    }
+  } else if (
+    currentLedger.finalizedAttemptSeq !== priorLedger.finalizedAttemptSeq
+  ) {
+    return false;
+  }
+  const checkpointChanged =
+    currentLedger.checkpointHash !== priorLedger.checkpointHash ||
+    currentLedger.retiredCanaryCheckpointCommitment !==
+      priorLedger.retiredCanaryCheckpointCommitment;
+  const permitAnchorChanged =
+    canonicalStableHashV1(currentLedger.permitRuntimeAnchor) !==
+    canonicalStableHashV1(priorLedger.permitRuntimeAnchor);
+  if (
+    checkpointChanged &&
+    !prepareTransition &&
+    currentLedger.finalizedAttemptSeq === priorLedger.finalizedAttemptSeq &&
+    !permitAnchorChanged
+  ) {
+    return false;
+  }
+  const pricingDominates = next.pricingRatchetHighWater.every(
+    (entry, index) => {
+      const prior = anchor.pricingRatchetHighWater[index];
+      return (
+        prior?.resource === entry.resource &&
+        entry.value >= prior.value &&
+        entry.marketDate >= prior.marketDate
+      );
+    },
+  );
+  const priorTrustedByResource = new Map(
+    anchor.trustedFloorHighWater.map((entry) => [entry.resource, entry]),
+  );
+  const trustedDominates = next.trustedFloorHighWater.every((entry) => {
+    const prior = priorTrustedByResource.get(entry.resource);
+    return Boolean(
+      prior &&
+      entry.value >= prior.value &&
+      entry.marketDate >= prior.marketDate &&
+      entry.updatedAt >= prior.updatedAt,
+    );
+  });
+  return pricingDominates && trustedDominates;
+}
+
+function buildMarketBaseResourceActivationAnchor(input: {
+  proposal: MarketBaseResourcePermitProposal;
+  scope: MarketBaseResourceScopeState;
+  direct: MarketDirectContinuousAutomationState;
+  acceptedAt: number;
+}): MarketBaseResourceActivationAnchor {
+  const firstPermit = input.proposal.targetPermitChain.retainedPermits.find(
+    (record) => record.schemaVersion === 3,
+  );
+  const cutover = input.proposal.targetPermitChain.v2EventCutoverCheckpoint;
+  if (
+    input.proposal.kind !== "v2-cutover" ||
+    !firstPermit ||
+    firstPermit.schemaVersion !== 3 ||
+    !cutover ||
+    input.proposal.targetPermitChain.legacyV2GrantSuspended !== true
+  ) {
+    throw new TypeError("market_base_activation_anchor_cutover_invalid");
+  }
+  const laneLifecycleHighWater = marketBaseResourceLaneLifecycleHighWater(
+    input.scope,
+  );
+  const runtimeSafety = marketBaseResourceRuntimeSafetyProjection(
+    {
+      ledger: input.proposal.targetLedger,
+      permitChain: input.proposal.targetPermitChain,
+      pricingRatchet: input.proposal.targetPricingRatchet,
+      hardBlocker: undefined,
+    },
+    input.proposal.targetTrustedFloors,
+  );
+  const payload: MarketBaseResourceActivationAnchorPayload = {
+    schemaVersion: 1,
+    hashRevision: MARKET_BASE_RESOURCE_ACTIVATION_ANCHOR_REVISION,
+    accountIdentity: input.proposal.accountIdentity,
+    executorShard: input.proposal.executorShard,
+    acceptedAt: input.acceptedAt,
+    updatedAt: input.acceptedAt,
+    operatorAuthorizationFingerprint:
+      input.proposal.operatorAuthorizationFingerprint,
+    cutoverCheckpointHash: cutover.checkpointHash,
+    legacyV2QuiescenceCommitment: marketBaseLegacyV2QuiescenceCommitment(
+      input.direct,
+    ),
+    firstV3PermitEpoch: firstPermit.epoch,
+    firstV3PermitId: firstPermit.permitId,
+    firstV3PermitHead: firstPermit.permitHead,
+    laneTombstoneCheckpointCommitment:
+      input.proposal.targetPermitChain.laneTombstoneCheckpoint
+        .checkpointCommitment,
+    laneTombstoneDischargeCheckpointCommitment:
+      input.scope.laneTombstoneDischargeCheckpoint.checkpointCommitment,
+    roomRegistryCheckpointCommitment:
+      input.scope.roomRegistry.checkpointCommitment,
+    scopeCommitment: marketBaseResourceOuterScopeCommitment(input.scope),
+    roomIncarnationHighWater: marketBaseResourceRoomIncarnationHighWater(
+      input.scope,
+    ),
+    laneLifecycleHighWater: laneLifecycleHighWater,
+    laneLifecycleCommitment: marketBaseResourceLaneLifecycleCommitment(
+      input.scope,
+    ),
+    ...runtimeSafety,
+    activationBlocker: null,
+  };
+  return {
+    ...payload,
+    anchorHash: marketBaseResourceActivationAnchorHash(payload),
+  };
+}
+
+export function advanceMarketBaseResourceActivationAnchor(
+  anchor: MarketBaseResourceActivationAnchor,
+  state: MarketBaseResourceV3RuntimeState,
+  trustedFloors: MarketSaleDataState["trustedFloors"],
+  tick: number,
+  validatedLedgerAnchor?: MarketBaseResourceLedgerRuntimeAnchor,
+): MarketBaseResourceActivationAnchor {
+  if (!state.scope || !state.permitChain) {
+    throw new TypeError("market_base_activation_advance_state_incomplete");
+  }
+  const scope = state.scope;
+  const permitChain = state.permitChain;
+  const projectedLaneLifecycleHighWater =
+    marketBaseResourceLaneLifecycleHighWater(scope);
+  const laneLifecycleUnchanged =
+    sameMarketBaseResourceLaneLifecycleHighWater(
+      projectedLaneLifecycleHighWater,
+      anchor.laneLifecycleHighWater,
+    );
+  const laneLifecycleHighWater = laneLifecycleUnchanged
+    ? anchor.laneLifecycleHighWater
+    : projectedLaneLifecycleHighWater;
+  const runtimeSafety = marketBaseResourceRuntimeSafetyProjection(
+    state,
+    trustedFloors,
+    validatedLedgerAnchor,
+  );
+  if (!marketBaseResourceRuntimeSafetyDominates(anchor, runtimeSafety, state)) {
+    throw new TypeError("market_base_runtime_safety_high_water_rollback");
+  }
+  const payload: MarketBaseResourceActivationAnchorPayload = {
+    ...anchor,
+    updatedAt: tick,
+    roomRegistryCheckpointCommitment: scope.roomRegistry.checkpointCommitment,
+    scopeCommitment: marketBaseResourceOuterScopeCommitment(scope),
+    laneTombstoneCheckpointCommitment:
+      permitChain.laneTombstoneCheckpoint.checkpointCommitment,
+    laneTombstoneDischargeCheckpointCommitment:
+      scope.laneTombstoneDischargeCheckpoint.checkpointCommitment,
+    roomIncarnationHighWater: marketBaseResourceRoomIncarnationHighWater(scope),
+    laneLifecycleHighWater,
+    laneLifecycleCommitment: laneLifecycleUnchanged
+      ? anchor.laneLifecycleCommitment
+      : marketBaseResourceLaneLifecycleCommitment(scope),
+    ...runtimeSafety,
+  };
+  delete (
+    payload as MarketBaseResourceActivationAnchorPayload & {
+      anchorHash?: string;
+    }
+  ).anchorHash;
+  return {
+    ...payload,
+    anchorHash: marketBaseResourceActivationAnchorHash(payload),
+  };
+}
+
+function validateMarketBaseResourceActivationAnchor(
+  value: unknown,
+): value is MarketBaseResourceActivationAnchor {
+  if (!isPlainRecord(value)) return false;
+  if (
+    !hasExactRecordKeys(value, [
+      "acceptedAt",
+      "accountIdentity",
+      "activationBlocker",
+      "anchorHash",
+      "cutoverCheckpointHash",
+      "executorShard",
+      "firstV3PermitEpoch",
+      "firstV3PermitHead",
+      "firstV3PermitId",
+      "hardBlocker",
+      "hashRevision",
+      "laneLifecycleCommitment",
+      "laneLifecycleHighWater",
+      "laneTombstoneCheckpointCommitment",
+      "laneTombstoneDischargeCheckpointCommitment",
+      "ledger",
+      "legacyV2QuiescenceCommitment",
+      "operatorAuthorizationFingerprint",
+      "pricingRatchetBootstrapFingerprint",
+      "pricingRatchetCommitment",
+      "pricingRatchetHighWater",
+      "pricingRatchetInitializedAt",
+      "roomIncarnationHighWater",
+      "roomRegistryCheckpointCommitment",
+      "runtimeSafetyCommitment",
+      "schemaVersion",
+      "scopeCommitment",
+      "trustedFloorHighWater",
+      "trustedFloorsCommitment",
+      "updatedAt",
+    ])
+  ) {
+    return false;
+  }
+  const anchor = value as unknown as MarketBaseResourceActivationAnchor;
+  if (
+    anchor.schemaVersion !== 1 ||
+    anchor.hashRevision !== MARKET_BASE_RESOURCE_ACTIVATION_ANCHOR_REVISION ||
+    typeof anchor.accountIdentity !== "string" ||
+    anchor.accountIdentity.length === 0 ||
+    anchor.accountIdentity.length > 128 ||
+    anchor.executorShard !== "shard1" ||
+    !Number.isSafeInteger(anchor.acceptedAt) ||
+    anchor.acceptedAt < 0 ||
+    !Number.isSafeInteger(anchor.updatedAt) ||
+    anchor.updatedAt < anchor.acceptedAt ||
+    typeof anchor.operatorAuthorizationFingerprint !== "string" ||
+    anchor.operatorAuthorizationFingerprint.length === 0 ||
+    anchor.operatorAuthorizationFingerprint.length > 256 ||
+    typeof anchor.cutoverCheckpointHash !== "string" ||
+    anchor.cutoverCheckpointHash.length === 0 ||
+    anchor.cutoverCheckpointHash.length > 256 ||
+    typeof anchor.legacyV2QuiescenceCommitment !== "string" ||
+    anchor.legacyV2QuiescenceCommitment.length === 0 ||
+    anchor.legacyV2QuiescenceCommitment.length > 256 ||
+    !Number.isSafeInteger(anchor.firstV3PermitEpoch) ||
+    anchor.firstV3PermitEpoch <= 0 ||
+    typeof anchor.firstV3PermitId !== "string" ||
+    anchor.firstV3PermitId.length === 0 ||
+    anchor.firstV3PermitId.length > 256 ||
+    typeof anchor.firstV3PermitHead !== "string" ||
+    anchor.firstV3PermitHead.length === 0 ||
+    anchor.firstV3PermitHead.length > 256 ||
+    typeof anchor.laneTombstoneCheckpointCommitment !== "string" ||
+    anchor.laneTombstoneCheckpointCommitment.length === 0 ||
+    anchor.laneTombstoneCheckpointCommitment.length > 256 ||
+    typeof anchor.laneTombstoneDischargeCheckpointCommitment !== "string" ||
+    anchor.laneTombstoneDischargeCheckpointCommitment.length === 0 ||
+    anchor.laneTombstoneDischargeCheckpointCommitment.length > 256 ||
+    typeof anchor.roomRegistryCheckpointCommitment !== "string" ||
+    anchor.roomRegistryCheckpointCommitment.length === 0 ||
+    anchor.roomRegistryCheckpointCommitment.length > 256 ||
+    typeof anchor.scopeCommitment !== "string" ||
+    anchor.scopeCommitment.length === 0 ||
+    anchor.scopeCommitment.length > 256 ||
+    !Array.isArray(anchor.roomIncarnationHighWater) ||
+    anchor.roomIncarnationHighWater.length > 32 ||
+    !Array.isArray(anchor.laneLifecycleHighWater) ||
+    anchor.laneLifecycleHighWater.length > 112 ||
+    typeof anchor.laneLifecycleCommitment !== "string" ||
+    anchor.laneLifecycleCommitment.length === 0 ||
+    anchor.laneLifecycleCommitment.length > 256 ||
+    !isPlainRecord(anchor.ledger) ||
+    !hasExactRecordKeys(anchor.ledger as unknown as Record<string, unknown>, [
+      "anchorCommitment",
+      "blocker",
+      "blockerCommitment",
+      "canaryAttemptHighWaterCommitment",
+      "checkpointHash",
+      "confirmedCooldownNotBefore",
+      "confirmedCanaryCommitment",
+      "coverageStartTick",
+      "finalizedAttemptSeq",
+      "hashRevision",
+      "lifetimeConfirmedCommitment",
+      "nextAttemptSeq",
+      "outcomeCommitment",
+      "pendingAttemptSeq",
+      "pendingFrozenEvidenceHash",
+      "permitAnchorHash",
+      "permitRuntimeAnchor",
+      "processedEvidenceKeysCommitment",
+      "prunedThroughAttemptSeq",
+      "quotaFactCommitment",
+      "receiptHeadHash",
+      "retiredCanaryCheckpointCommitment",
+      "retryNotBefore",
+      "schemaVersion",
+      "terminalSlotReservationCommitment",
+      "walStateCommitment",
+    ]) ||
+    anchor.ledger.schemaVersion !== 3 ||
+    anchor.ledger.hashRevision !==
+      "market-base-resource-ledger-runtime-anchor-v1" ||
+    !Number.isSafeInteger(anchor.ledger.finalizedAttemptSeq) ||
+    anchor.ledger.finalizedAttemptSeq < 0 ||
+    !Number.isSafeInteger(anchor.ledger.nextAttemptSeq) ||
+    anchor.ledger.nextAttemptSeq <= anchor.ledger.finalizedAttemptSeq ||
+    [
+      anchor.ledger.anchorCommitment,
+      anchor.ledger.blockerCommitment,
+      anchor.ledger.receiptHeadHash,
+      anchor.ledger.checkpointHash,
+      anchor.ledger.permitAnchorHash,
+      anchor.ledger.outcomeCommitment,
+      anchor.ledger.processedEvidenceKeysCommitment,
+      anchor.ledger.terminalSlotReservationCommitment,
+      anchor.ledger.quotaFactCommitment,
+      anchor.ledger.lifetimeConfirmedCommitment,
+      anchor.ledger.confirmedCanaryCommitment,
+      anchor.ledger.canaryAttemptHighWaterCommitment,
+      anchor.ledger.retiredCanaryCheckpointCommitment,
+      anchor.ledger.walStateCommitment,
+    ].some(
+      (digest) =>
+        typeof digest !== "string" ||
+        digest.length === 0 ||
+        digest.length > 256,
+    ) ||
+    (anchor.ledger.pendingFrozenEvidenceHash !== null &&
+      (typeof anchor.ledger.pendingFrozenEvidenceHash !== "string" ||
+        anchor.ledger.pendingFrozenEvidenceHash.length === 0 ||
+        anchor.ledger.pendingFrozenEvidenceHash.length > 256)) ||
+    (anchor.ledger.pendingAttemptSeq !== null &&
+      (!Number.isSafeInteger(anchor.ledger.pendingAttemptSeq) ||
+        anchor.ledger.pendingAttemptSeq <= anchor.ledger.finalizedAttemptSeq ||
+        anchor.ledger.pendingAttemptSeq >= anchor.ledger.nextAttemptSeq)) ||
+    !Number.isSafeInteger(anchor.ledger.prunedThroughAttemptSeq) ||
+    anchor.ledger.prunedThroughAttemptSeq < 0 ||
+    !Number.isSafeInteger(anchor.ledger.coverageStartTick) ||
+    anchor.ledger.coverageStartTick < 0 ||
+    !Number.isSafeInteger(anchor.ledger.retryNotBefore) ||
+    anchor.ledger.retryNotBefore < 0 ||
+    !Number.isSafeInteger(anchor.ledger.confirmedCooldownNotBefore) ||
+    anchor.ledger.confirmedCooldownNotBefore < 0 ||
+    !isPlainRecord(anchor.ledger.permitRuntimeAnchor) ||
+    !hasExactRecordKeys(
+      anchor.ledger.permitRuntimeAnchor as unknown as Record<string, unknown>,
+      [
+        "anchorCommitment",
+        "currentAuthorityCommitment",
+        "currentPermitId",
+        "currentPermitSelfHash",
+        "hashRevision",
+        "laneTombstoneCheckpointCommitment",
+        "permitChainHeadHighWater",
+        "permitEpochHighWater",
+        "prefixCommitment",
+        "ratchetHighWaterCommitment",
+        "schemaVersion",
+        "totalChainLength",
+        "v2CutoverCheckpointHash",
+      ],
+    ) ||
+    (anchor.ledger.pendingFrozenEvidenceHash === null) !==
+      (anchor.ledger.pendingAttemptSeq === null) ||
+    !Number.isSafeInteger(anchor.pricingRatchetInitializedAt) ||
+    anchor.pricingRatchetInitializedAt < 0 ||
+    typeof anchor.pricingRatchetBootstrapFingerprint !== "string" ||
+    anchor.pricingRatchetBootstrapFingerprint.length === 0 ||
+    anchor.pricingRatchetBootstrapFingerprint.length > 256 ||
+    !Array.isArray(anchor.pricingRatchetHighWater) ||
+    anchor.pricingRatchetHighWater.length !==
+      MARKET_BASE_RESOURCE_CATALOG.length ||
+    !Array.isArray(anchor.trustedFloorHighWater) ||
+    anchor.trustedFloorHighWater.length !==
+      MARKET_BASE_RESOURCE_TRUSTED_FLOOR_RESOURCES.length ||
+    [
+      anchor.pricingRatchetCommitment,
+      anchor.trustedFloorsCommitment,
+      anchor.runtimeSafetyCommitment,
+    ].some(
+      (digest) =>
+        typeof digest !== "string" ||
+        digest.length === 0 ||
+        digest.length > 256,
+    ) ||
+    (anchor.hardBlocker !== null &&
+      (!isPlainRecord(anchor.hardBlocker) ||
+        !hasExactRecordKeys(
+          anchor.hardBlocker as unknown as Record<string, unknown>,
+          ["code", "detectedAt", "detailHash"],
+        ) ||
+        typeof anchor.hardBlocker.code !== "string" ||
+        anchor.hardBlocker.code.length === 0 ||
+        anchor.hardBlocker.code.length > 160 ||
+        !Number.isSafeInteger(anchor.hardBlocker.detectedAt) ||
+        anchor.hardBlocker.detectedAt < 0 ||
+        typeof anchor.hardBlocker.detailHash !== "string" ||
+        anchor.hardBlocker.detailHash.length === 0 ||
+        anchor.hardBlocker.detailHash.length > 256)) ||
+    (anchor.activationBlocker !== null &&
+      !validateMarketBaseResourceActivationBlocker(anchor.activationBlocker)) ||
+    typeof anchor.anchorHash !== "string" ||
+    anchor.anchorHash.length === 0 ||
+    anchor.anchorHash.length > 256
+  ) {
+    return false;
+  }
+  const roomNames = new Set<string>();
+  for (
+    let index = 0;
+    index < anchor.roomIncarnationHighWater.length;
+    index += 1
+  ) {
+    const entry = anchor.roomIncarnationHighWater[index];
+    if (
+      !entry ||
+      typeof entry.roomName !== "string" ||
+      entry.roomName.length === 0 ||
+      entry.roomName.length > 64 ||
+      roomNames.has(entry.roomName) ||
+      (index > 0 &&
+        anchor.roomIncarnationHighWater[index - 1]!.roomName.localeCompare(
+          entry.roomName,
+        ) >= 0) ||
+      !Number.isSafeInteger(entry.incarnationHighWater) ||
+      entry.incarnationHighWater <= 0 ||
+      typeof entry.lastInstanceId !== "string" ||
+      entry.lastInstanceId.length === 0 ||
+      entry.lastInstanceId.length > 256 ||
+      typeof entry.admitted !== "boolean"
+    ) {
+      return false;
+    }
+    roomNames.add(entry.roomName);
+  }
+  const laneIds = new Set<string>();
+  for (
+    let index = 0;
+    index < anchor.laneLifecycleHighWater.length;
+    index += 1
+  ) {
+    const entry = anchor.laneLifecycleHighWater[index];
+    if (
+      !entry ||
+      typeof entry.laneId !== "string" ||
+      entry.laneId.length === 0 ||
+      entry.laneId.length > 256 ||
+      laneIds.has(entry.laneId) ||
+      (index > 0 &&
+        anchor.laneLifecycleHighWater[index - 1]!.laneId.localeCompare(
+          entry.laneId,
+        ) >= 0) ||
+      typeof entry.stableFingerprint !== "string" ||
+      entry.stableFingerprint.length === 0 ||
+      entry.stableFingerprint.length > 256 ||
+      ![
+        "shadow",
+        "qualified",
+        "canary",
+        "review_paused",
+        "continuous",
+      ].includes(entry.stage) ||
+      !["suspended", "writable", "tombstoned"].includes(entry.status) ||
+      !Number.isSafeInteger(entry.completeCycles) ||
+      entry.completeCycles < 0 ||
+      (entry.lastCompleteTick !== undefined &&
+        (!Number.isSafeInteger(entry.lastCompleteTick) ||
+          entry.lastCompleteTick < 0)) ||
+      (entry.evidenceDigest !== undefined &&
+        (typeof entry.evidenceDigest !== "string" ||
+          entry.evidenceDigest.length === 0 ||
+          entry.evidenceDigest.length > 256))
+    ) {
+      return false;
+    }
+    laneIds.add(entry.laneId);
+  }
+  for (
+    let index = 0;
+    index < MARKET_BASE_RESOURCE_TRUSTED_FLOOR_RESOURCES.length;
+    index += 1
+  ) {
+    const resource = MARKET_BASE_RESOURCE_TRUSTED_FLOOR_RESOURCES[index];
+    const trusted = anchor.trustedFloorHighWater[index];
+    if (
+      !trusted ||
+      trusted.resource !== resource ||
+      !Number.isFinite(trusted.value) ||
+      trusted.value <= 0 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(trusted.marketDate) ||
+      !Number.isSafeInteger(trusted.updatedAt) ||
+      trusted.updatedAt < 0
+    ) {
+      return false;
+    }
+  }
+  for (let index = 0; index < MARKET_BASE_RESOURCE_CATALOG.length; index += 1) {
+    const resource = MARKET_BASE_RESOURCE_CATALOG[index];
+    const pricing = anchor.pricingRatchetHighWater[index];
+    const trusted = anchor.trustedFloorHighWater.find(
+      (entry) => entry.resource === resource,
+    );
+    if (
+      !pricing ||
+      pricing.resource !== resource ||
+      !trusted ||
+      !Number.isFinite(pricing.value) ||
+      pricing.value <= 0 ||
+      trusted.value < pricing.value ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(pricing.marketDate) ||
+      trusted.marketDate < pricing.marketDate
+    ) {
+      return false;
+    }
+  }
+  if (
+    anchor.pricingRatchetCommitment !==
+      canonicalStableHashV1({
+        domain: "market-base-resource:outer-pricing-ratchet-v1",
+        initializedAt: anchor.pricingRatchetInitializedAt,
+        bootstrapFingerprint: anchor.pricingRatchetBootstrapFingerprint,
+        entries: anchor.pricingRatchetHighWater,
+      }) ||
+    anchor.trustedFloorsCommitment !==
+      canonicalStableHashV1({
+        domain: "market-base-resource:outer-trusted-floors-v1",
+        entries: anchor.trustedFloorHighWater,
+      }) ||
+    anchor.runtimeSafetyCommitment !==
+      canonicalStableHashV1({
+        domain: "market-base-resource:outer-runtime-safety-v1",
+        ledger: anchor.ledger,
+        pricingRatchetCommitment: anchor.pricingRatchetCommitment,
+        trustedFloorsCommitment: anchor.trustedFloorsCommitment,
+        hardBlocker: anchor.hardBlocker,
+      })
+  ) {
+    return false;
+  }
+  return (
+    anchor.anchorHash ===
+    marketBaseResourceActivationAnchorSelfHash(
+      anchor as unknown as Record<string, unknown>,
+    )
+  );
+}
+
+function validateMarketBaseResourceActivationAnchorMirror(
+  value: unknown,
+  primary: MarketBaseResourceActivationAnchor,
+): value is MarketBaseResourceActivationAnchor {
+  if (!isPlainRecord(value) || value.anchorHash !== primary.anchorHash) {
+    return false;
+  }
+  // primary 已完成全部 shape/derived-commitment 校验；mirror 只需证明其
+  // 完整 payload 的 self-hash 与 primary 相同。这样仍能检测任意额外、缺失
+  // 或 bitflip 字段，但不再对同一 112-lane anchor 重算三组派生 commitment。
+  return (
+    typeof value.anchorHash === "string" &&
+    value.anchorHash ===
+      marketBaseResourceActivationAnchorSelfHash(value)
+  );
+}
+
+function sameMarketBaseResourceActivationAnchor(
+  left: MarketBaseResourceActivationAnchor,
+  right: MarketBaseResourceActivationAnchor,
+): boolean {
+  // 两侧都必须先通过 self-hash validator；相同 anchorHash 已经承诺全部
+  // payload，没必要再把两份大 anchor 各遍历一次。
+  return left.anchorHash === right.anchorHash;
+}
+
+const marketBaseOuterDeepFrozenValues = new WeakSet<object>();
+
+function freezeMarketBaseOuterCanonicalValue<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    const object = value as object;
+    if (marketBaseOuterDeepFrozenValues.has(object)) return value;
+    marketBaseOuterDeepFrozenValues.add(object);
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      freezeMarketBaseOuterCanonicalValue(nested);
+    }
+    if (!Object.isFrozen(object)) Object.freeze(object);
+  }
+  return value;
+}
+
+function validateMarketBaseResourceActivationBlocker(
+  value: unknown,
+): value is MarketBaseResourceActivationBlocker {
+  if (!isPlainRecord(value)) return false;
+  const blocker = value as unknown as MarketBaseResourceActivationBlocker;
+  return (
+    blocker.schemaVersion === 1 &&
+    blocker.hashRevision === MARKET_BASE_RESOURCE_ACTIVATION_BLOCKER_REVISION &&
+    typeof blocker.code === "string" &&
+    blocker.code.length > 0 &&
+    blocker.code.length <= 160 &&
+    Number.isSafeInteger(blocker.detectedAt) &&
+    blocker.detectedAt >= 0 &&
+    typeof blocker.detailHash === "string" &&
+    blocker.detailHash.length > 0 &&
+    blocker.detailHash.length <= 256
+  );
+}
+
+function marketBaseNestedCutoverEvidence(
+  state: MarketBaseResourceV3RuntimeState | undefined,
+): boolean {
+  return Boolean(
+    state?.cutoverLatched === true ||
+    state?.permitChain?.legacyV2GrantSuspended === true ||
+    state?.permitChain?.v2EventCutoverCheckpoint ||
+    state?.permitChain?.retainedPermits?.some(
+      (record) => record.schemaVersion === 3,
+    ),
+  );
+}
+
+function marketBaseResourceActivationState(
+  data: MarketSaleDataState,
+  nested: MarketBaseResourceV3RuntimeState | undefined,
+):
+  | { latched: false }
+  | {
+      latched: true;
+      anchor?: MarketBaseResourceActivationAnchor;
+      blocker?: string;
+    } {
+  const persistent = data.baseResourceV3ActivationBlocker;
+  const primary = data.baseResourceV3ActivationAnchor;
+  const mirror = data.baseResourceV3ActivationAnchorMirror;
+  // Memory/JSON root 在进入验证前先递归冻结，关闭 validate→use mutation
+  // 窗口，并允许 canonical hash 对同一不可变 anchor 安全复用结果。
+  freezeMarketBaseOuterCanonicalValue(primary);
+  freezeMarketBaseOuterCanonicalValue(mirror);
+  if (!primary && !mirror) {
+    if (persistent !== undefined) {
+      return {
+        latched: true,
+        blocker: validateMarketBaseResourceActivationBlocker(persistent)
+          ? persistent.code
+          : "market_base_activation_blocker_invalid",
+      };
+    }
+    return marketBaseNestedCutoverEvidence(nested)
+      ? {
+          latched: true,
+          blocker: "market_base_activation_anchor_missing_after_cutover",
+        }
+      : { latched: false };
+  }
+  if (
+    !validateMarketBaseResourceActivationAnchor(primary) ||
+    !validateMarketBaseResourceActivationAnchorMirror(mirror, primary)
+  ) {
+    return {
+      latched: true,
+      blocker: "market_base_activation_anchor_invalid",
+    };
+  }
+  if (!sameMarketBaseResourceActivationAnchor(primary, mirror)) {
+    return {
+      latched: true,
+      blocker: "market_base_activation_anchor_copy_mismatch",
+    };
+  }
+  const anchoredBlocker = primary.activationBlocker;
+  if (anchoredBlocker !== null) {
+    if (!validateMarketBaseResourceActivationBlocker(persistent)) {
+      return {
+        latched: true,
+        blocker:
+          persistent === undefined
+            ? "market_base_activation_blocker_missing"
+            : "market_base_activation_blocker_invalid",
+      };
+    }
+    if (
+      canonicalStableHashV1(persistent) !==
+      canonicalStableHashV1(anchoredBlocker)
+    ) {
+      return {
+        latched: true,
+        blocker: "market_base_activation_blocker_copy_mismatch",
+      };
+    }
+    return {
+      latched: true,
+      blocker: anchoredBlocker.code,
+    };
+  }
+  if (persistent !== undefined) {
+    return {
+      latched: true,
+      blocker: validateMarketBaseResourceActivationBlocker(persistent)
+        ? "market_base_activation_blocker_anchor_missing"
+        : "market_base_activation_blocker_invalid",
+    };
+  }
+  return {
+    latched: true,
+    anchor: primary,
+  };
+}
+
+function persistMarketBaseResourceActivationBlocker(
+  data: MarketSaleDataState,
+  code: string,
+  evidence: unknown,
+): void {
+  const primary = data.baseResourceV3ActivationAnchor;
+  const mirror = data.baseResourceV3ActivationAnchorMirror;
+  const validPrimary = validateMarketBaseResourceActivationAnchor(primary);
+  const validMirror = validateMarketBaseResourceActivationAnchor(mirror);
+  const persistent = validateMarketBaseResourceActivationBlocker(
+    data.baseResourceV3ActivationBlocker,
+  )
+    ? data.baseResourceV3ActivationBlocker
+    : undefined;
+  const exactPersistentBlocker = (
+    anchor: MarketBaseResourceActivationAnchor | undefined,
+  ): boolean =>
+    Boolean(
+      anchor?.activationBlocker &&
+      persistent &&
+      canonicalStableHashV1(anchor.activationBlocker) ===
+        canonicalStableHashV1(persistent),
+    );
+  let anchorSource: MarketBaseResourceActivationAnchor | undefined;
+  if (
+    validPrimary &&
+    validMirror &&
+    sameMarketBaseResourceActivationAnchor(primary, mirror)
+  ) {
+    anchorSource = primary;
+  } else if (validPrimary && !validMirror) {
+    anchorSource = primary;
+  } else if (validMirror && !validPrimary) {
+    anchorSource = mirror;
+  } else if (validPrimary && validMirror) {
+    if (exactPersistentBlocker(primary) && !exactPersistentBlocker(mirror)) {
+      anchorSource = primary;
+    } else if (
+      exactPersistentBlocker(mirror) &&
+      !exactPersistentBlocker(primary)
+    ) {
+      anchorSource = mirror;
+    } else if (
+      primary.activationBlocker !== null &&
+      mirror.activationBlocker === null
+    ) {
+      anchorSource = primary;
+    } else if (
+      mirror.activationBlocker !== null &&
+      primary.activationBlocker === null
+    ) {
+      anchorSource = mirror;
+    }
+  }
+  const blocker =
+    anchorSource?.activationBlocker !== null &&
+    anchorSource?.activationBlocker !== undefined
+      ? cloneMarketBaseOperatorValue(anchorSource.activationBlocker)
+      : persistent
+        ? cloneMarketBaseOperatorValue(persistent)
+        : {
+            schemaVersion: 1 as const,
+            hashRevision: MARKET_BASE_RESOURCE_ACTIVATION_BLOCKER_REVISION,
+            code,
+            detectedAt: Game.time,
+            detailHash: canonicalStableHashV1({
+              domain: "market-base-resource:activation-blocker-v1",
+              code,
+              evidence,
+            }),
+          };
+  data.baseResourceV3ActivationBlocker = blocker;
+  if (!anchorSource) return;
+  const payload: MarketBaseResourceActivationAnchorPayload = {
+    ...anchorSource,
+    updatedAt: Math.max(anchorSource.updatedAt, Game.time),
+    activationBlocker: blocker,
+  };
+  delete (
+    payload as MarketBaseResourceActivationAnchorPayload & {
+      anchorHash?: string;
+    }
+  ).anchorHash;
+  const latchedAnchor: MarketBaseResourceActivationAnchor = {
+    ...payload,
+    anchorHash: marketBaseResourceActivationAnchorHash(payload),
+  };
+  data.baseResourceV3ActivationAnchor = latchedAnchor;
+  data.baseResourceV3ActivationAnchorMirror =
+    cloneMarketBaseOperatorValue(latchedAnchor);
+}
+
+function marketBaseStableLifecycleReason(
+  lane: MarketBaseDerivedLaneLifecycle,
+): string | undefined {
+  const reason = validateMarketBaseDerivedLaneLifecycle(lane);
+  return reason
+    ? `market_base_lifecycle_evidence_invalid:${lane.laneId}:${reason}`
+    : undefined;
+}
+
+function marketBaseStableScopeProjection(
+  scope: MarketBaseResourceScopeState | undefined,
+  lifecycleLaneIds: readonly string[] = [],
+): unknown {
+  if (!scope) return null;
+  const lifecycleLaneSet = new Set(lifecycleLaneIds);
+  return {
+    schemaVersion: scope.schemaVersion,
+    accountIdentity: scope.accountIdentity,
+    sharedPolicyFingerprint: scope.sharedPolicyFingerprint,
+    rosterFingerprint: scope.rosterFingerprint,
+    laneSetFingerprint: scope.laneSetFingerprint,
+    roomRegistry: {
+      admissionPolicyFingerprint: scope.roomRegistry.admissionPolicyFingerprint,
+      knownRoomNames: scope.roomRegistry.knownRoomNames,
+      rooms: scope.roomRegistry.knownRoomNames.map((roomName) => {
+        const room = scope.roomRegistry.rooms[roomName];
+        return room
+          ? {
+              roomName,
+              incarnationHighWater: room.incarnationHighWater,
+              lastInstanceId: room.lastInstanceId,
+              admitted: room.admitted,
+              current: room.current
+                ? {
+                    roomInstanceId: room.current.roomInstanceId,
+                    incarnation: room.current.incarnation,
+                    previousInstanceId: room.current.previousInstanceId,
+                    fingerprint: room.current.fingerprint,
+                  }
+                : null,
+            }
+          : null;
+      }),
+      recentTombstones: scope.roomRegistry.recentTombstones
+        .map((room) => ({
+          roomName: room.roomName,
+          roomInstanceId: room.roomInstanceId,
+          incarnation: room.incarnation,
+          previousInstanceId: room.previousInstanceId,
+          fingerprint: room.fingerprint,
+        }))
+        .sort((left, right) =>
+          left.roomInstanceId.localeCompare(right.roomInstanceId),
+        ),
+    },
+    lanes: scope.laneLifecycles
+      .map((lane) => ({
+        laneId: lane.laneId,
+        stableFingerprint: lane.stableFingerprint,
+        roomInstanceId: lane.roomInstanceId,
+        resource: lane.resource,
+        ...(lifecycleLaneSet.has(lane.laneId)
+          ? {
+              stage: lane.stage,
+              status: lane.status,
+              shadowEvidence: lane.shadowEvidence,
+            }
+          : {}),
+      }))
+      .sort((left, right) => left.laneId.localeCompare(right.laneId)),
+    recentLaneTombstones: scope.recentLaneTombstones
+      .map(({ retiredAt: _retiredAt, ...lane }) => lane)
+      .sort((left, right) => left.laneId.localeCompare(right.laneId)),
+  };
+}
+
+function marketBaseStableScopeIdentityUnchanged(
+  previous: MarketBaseResourceScopeState | undefined,
+  next: MarketBaseResourceScopeState,
+): boolean {
+  if (!previous) return false;
+  const sameEntries = <T>(left: readonly T[], right: readonly T[]): boolean =>
+    left.length === right.length &&
+    left.every((entry, index) => entry === right[index]);
+  if (
+    previous.accountIdentity !== next.accountIdentity ||
+    previous.sharedPolicyFingerprint !== next.sharedPolicyFingerprint ||
+    previous.rosterFingerprint !== next.rosterFingerprint ||
+    previous.laneSetFingerprint !== next.laneSetFingerprint ||
+    !sameEntries(previous.sellerRooms, next.sellerRooms) ||
+    !sameEntries(previous.laneLifecycles, next.laneLifecycles) ||
+    !sameEntries(previous.recentLaneTombstones, next.recentLaneTombstones) ||
+    !sameEntries(
+      previous.roomRegistry.knownRoomNames,
+      next.roomRegistry.knownRoomNames,
+    ) ||
+    !sameEntries(
+      previous.roomRegistry.recentTombstones,
+      next.roomRegistry.recentTombstones,
+    )
+  ) {
+    return false;
+  }
+  return previous.roomRegistry.knownRoomNames.every(
+    (roomName) =>
+      previous.roomRegistry.rooms[roomName] ===
+      next.roomRegistry.rooms[roomName],
+  );
+}
+
+function validateMarketBaseScopeLifecycleEvidence(
+  scope: MarketBaseResourceScopeState,
+): string | undefined {
+  for (const lane of scope.laneLifecycles) {
+    const reason = marketBaseStableLifecycleReason(lane);
+    if (reason) return reason;
+  }
+  return undefined;
+}
+
+function validateMarketBaseNestedActivationState(
+  state: MarketBaseResourceV3RuntimeState | undefined,
+  anchor: MarketBaseResourceActivationAnchor,
+  trustedFloors: MarketSaleDataState["trustedFloors"],
+  options: {
+    allowTrustedFloorAdvance?: boolean;
+    runtimeOnly?: boolean;
+    runtimeCapability?: MarketBaseResourceReadinessRuntimeCapability;
+  } = {},
+): string | undefined {
+  try {
+    return validateMarketBaseNestedActivationStateUnchecked(
+      state,
+      anchor,
+      trustedFloors,
+      options,
+    );
+  } catch {
+    return "market_base_nested_state_shape_invalid_after_cutover";
+  }
+}
+
+function validateMarketBaseNestedActivationStateUnchecked(
+  state: MarketBaseResourceV3RuntimeState | undefined,
+  anchor: MarketBaseResourceActivationAnchor,
+  trustedFloors: MarketSaleDataState["trustedFloors"],
+  options: {
+    allowTrustedFloorAdvance?: boolean;
+    runtimeOnly?: boolean;
+    runtimeCapability?: MarketBaseResourceReadinessRuntimeCapability;
+  } = {},
+): string | undefined {
+  if (
+    !state ||
+    state.schemaVersion !== 3 ||
+    state.cutoverLatched !== true ||
+    !state.permitChain ||
+    !state.ledger ||
+    !state.scope
+  ) {
+    return "market_base_nested_state_missing_after_cutover";
+  }
+  if (options.runtimeOnly !== true) {
+    const chainValidation = validateMarketBaseResourcePermitChain(
+      state.permitChain,
+    );
+    const ledgerValidation = validateMarketBaseResourceLedger(
+      state.ledger,
+      Game.time,
+      state.permitChain,
+    );
+    const ledgerAnchorValidation =
+      validateMarketBaseResourcePermitChainDominatesAnchor(
+        state.permitChain,
+        state.ledger.permitAnchor,
+      );
+    if (
+      !chainValidation.ok ||
+      !ledgerValidation.ok ||
+      !ledgerAnchorValidation.ok ||
+      !hasAcceptedMarketBaseResourceV3Successor(state.permitChain)
+    ) {
+      return (
+        chainValidation.reason ||
+        ledgerValidation.reason ||
+        ledgerAnchorValidation.reason ||
+        "market_base_nested_state_invalid_after_cutover"
+      );
+    }
+  }
+  let runtimeSafety:
+    ReturnType<typeof marketBaseResourceRuntimeSafetyProjection> | undefined;
+  const runtimeCapabilityValid =
+    validateMarketBaseResourceReadinessRuntimeCapability(
+      options.runtimeCapability,
+      state,
+      Game.time,
+      anchor.ledger,
+    );
+  if (!runtimeCapabilityValid) {
+    const ledgerRuntimeGate = validateMarketBaseResourceLedgerRuntimeGate(
+      state.ledger,
+      state.permitChain,
+      anchor.ledger,
+      Game.time,
+    );
+    if (!ledgerRuntimeGate.ok) {
+      return (
+        ledgerRuntimeGate.reason || "market_base_ledger_runtime_anchor_rollback"
+      );
+    }
+  }
+  try {
+    runtimeSafety = marketBaseResourceRuntimeSafetyProjection(
+      state,
+      trustedFloors,
+      anchor.ledger,
+    );
+  } catch {
+    return "market_base_runtime_safety_state_invalid";
+  }
+  if (
+    canonicalStableHashV1(runtimeSafety.ledger) !==
+    canonicalStableHashV1(anchor.ledger)
+  ) {
+    return "market_base_ledger_runtime_anchor_rollback";
+  }
+  if (
+    runtimeSafety.pricingRatchetCommitment !==
+      anchor.pricingRatchetCommitment ||
+    canonicalStableHashV1(runtimeSafety.pricingRatchetHighWater) !==
+      canonicalStableHashV1(anchor.pricingRatchetHighWater)
+  ) {
+    return "market_base_pricing_ratchet_anchor_rollback";
+  }
+  if (
+    canonicalStableHashV1(runtimeSafety.hardBlocker) !==
+    canonicalStableHashV1(anchor.hardBlocker)
+  ) {
+    return "market_base_hard_blocker_anchor_rollback";
+  }
+  const trustedExact =
+    runtimeSafety.trustedFloorsCommitment === anchor.trustedFloorsCommitment &&
+    canonicalStableHashV1(runtimeSafety.trustedFloorHighWater) ===
+      canonicalStableHashV1(anchor.trustedFloorHighWater);
+  const trustedAdvance =
+    options.allowTrustedFloorAdvance === true &&
+    runtimeSafety.trustedFloorHighWater.every((entry) => {
+      const prior = anchor.trustedFloorHighWater.find(
+        (candidate) => candidate.resource === entry.resource,
+      );
+      return (
+        prior?.resource === entry.resource &&
+        entry.value >= prior.value &&
+        entry.marketDate >= prior.marketDate &&
+        entry.updatedAt >= prior.updatedAt
+      );
+    });
+  if (
+    (!trustedExact && !trustedAdvance) ||
+    (trustedExact &&
+      runtimeSafety.runtimeSafetyCommitment !== anchor.runtimeSafetyCommitment)
+  ) {
+    return "market_base_trusted_floor_anchor_rollback";
+  }
+  const currentPermit = currentMarketBaseV3Permit(state);
+  if (
+    !currentPermit ||
+    currentPermit.accountIdentity !== anchor.accountIdentity ||
+    currentPermit.executorShard !== anchor.executorShard ||
+    state.permitChain.legacyV2GrantSuspended !== true ||
+    state.permitChain.v2EventCutoverCheckpoint?.checkpointHash !==
+      anchor.cutoverCheckpointHash ||
+    state.permitChain.laneTombstoneCheckpoint.checkpointCommitment !==
+      anchor.laneTombstoneCheckpointCommitment ||
+    state.scope.laneTombstoneDischargeCheckpoint.checkpointCommitment !==
+      anchor.laneTombstoneDischargeCheckpointCommitment ||
+    state.permitChain.permitEpochHighWater < anchor.firstV3PermitEpoch ||
+    state.scope.accountIdentity !== anchor.accountIdentity
+  ) {
+    return "market_base_nested_state_anchor_mismatch";
+  }
+  if (
+    state.scope.roomRegistry.checkpointCommitment !==
+    anchor.roomRegistryCheckpointCommitment
+  ) {
+    return "market_base_room_registry_checkpoint_rollback";
+  }
+  if (
+    marketBaseResourceOuterScopeCommitment(state.scope) !==
+      anchor.scopeCommitment
+  ) {
+    return "market_base_scope_commitment_rollback";
+  }
+  if (
+    state.permitChain.prefixCheckpoint.prunedThroughEpoch <
+    anchor.firstV3PermitEpoch
+  ) {
+    const first = state.permitChain.retainedPermits.find(
+      (record) =>
+        record.schemaVersion === 3 &&
+        record.epoch === anchor.firstV3PermitEpoch,
+    );
+    if (
+      !first ||
+      first.schemaVersion !== 3 ||
+      first.permitId !== anchor.firstV3PermitId ||
+      first.permitHead !== anchor.firstV3PermitHead
+    ) {
+      return "market_base_first_v3_permit_anchor_mismatch";
+    }
+  }
+  const expectedHighWater = marketBaseResourceRoomIncarnationHighWater(
+    state.scope,
+  );
+  if (
+    !sameMarketBaseResourceRoomIncarnationHighWater(
+      expectedHighWater,
+      anchor.roomIncarnationHighWater,
+    )
+  ) {
+    return "market_base_room_incarnation_high_water_rollback";
+  }
+  const expectedLaneHighWater = marketBaseResourceLaneLifecycleHighWater(
+    state.scope,
+  );
+  if (
+    !sameMarketBaseResourceLaneLifecycleHighWater(
+      expectedLaneHighWater,
+      anchor.laneLifecycleHighWater,
+    )
+  ) {
+    return "market_base_lane_lifecycle_high_water_rollback";
+  }
+  if (options.runtimeOnly === true && runtimeCapabilityValid) {
+    // Opaque capability 已完成当前 scope 的语义认证并逐字绑定 outer scope
+    // commitment；上面的直接比较仍保留 room/lane high-water 防回拨，热/冷
+    // 写门禁只省去重复 lifecycle commitment hash 与语义扫描。
+    return undefined;
+  }
+  if (
+    marketBaseResourceLaneLifecycleCommitment(state.scope) !==
+    anchor.laneLifecycleCommitment
+  ) {
+    return "market_base_lane_lifecycle_high_water_rollback";
+  }
+  return validateMarketBaseScopeLifecycleEvidence(state.scope);
+}
+
+function blockedMarketBaseRuntimeState(
+  existing: MarketBaseResourceV3RuntimeState | undefined,
+  context: RunContext,
+  blocker: string,
+): MarketBaseResourceV3RuntimeState {
+  const base = existing
+    ? { ...existing }
+    : reconcileMarketBaseResourcePreflight(undefined, {
+        tick: Game.time,
+        mode: context.config.mode,
+        config: context.config,
+      }).state;
+  base.cutoverLatched = true;
+  base.blocker = blocker;
+  delete base.readinessAuthorization;
+  return base;
+}
+
+function reconcileBaseResourceV3State(context: RunContext): {
+  activeV3Successor: boolean;
+  state?: MarketBaseResourceV3RuntimeState;
+  ledgerRuntimeAnchor?: MarketBaseResourceLedgerRuntimeAnchor;
+  readinessRuntimeCapability?: MarketBaseResourceReadinessRuntimeCapability;
+} {
+  const sourceDirect = context.data.directAutomation;
+  if (
+    hasRegisteredMarketBaseResourceCanonicalRootThisTick() &&
+    !isRegisteredMarketBaseResourceCanonicalRootThisTick(context.data)
+  ) {
+    const existingState = isContinuousDirectState(sourceDirect)
+      ? (sourceDirect.baseResourceV3 as
+          MarketBaseResourceV3RuntimeState | undefined)
+      : undefined;
+    const blocker = "market_base_v3_same_tick_root_replaced";
+    reject(context, blocker);
+    return {
+      activeV3Successor: true,
+      state: blockedMarketBaseRuntimeState(existingState, context, blocker),
+    };
+  }
+  if (!isContinuousDirectState(sourceDirect)) {
+    return { activeV3Successor: false };
+  }
+  const existing = sourceDirect.baseResourceV3 as
+    MarketBaseResourceV3RuntimeState | undefined;
+  const canonical = marketBaseResourceCanonicalRootProvenance.get(context.data);
+  if (
+    canonical?.tick === Game.time &&
+    context.config.mode === "direct" &&
+    context.config.directCapability === "continuous-v3" &&
+    marketBaseResourceV3ConfigMismatchReasons(context.config).length === 0 &&
+    canonical.directAutomation === sourceDirect &&
+    canonical.state === existing &&
+    context.data.baseResourceV3ActivationAnchor ===
+      canonical.activationAnchor &&
+    context.data.baseResourceV3ActivationAnchorMirror ===
+      canonical.activationAnchorMirror &&
+    context.data.trustedFloors === canonical.trustedFloors &&
+    context.data.baseResourceV3ActivationBlocker === undefined &&
+    context.data.pendingDirectDeals === sourceDirect.pendingDirectDeals &&
+    existing?.preflightAt === Game.time &&
+    existing.scope?.updatedAt === Game.time &&
+    existing.cutoverLatched === true &&
+    existing.blocker === undefined &&
+    existing.hardBlocker === undefined &&
+    Object.isFrozen(sourceDirect) &&
+    Object.isFrozen(existing) &&
+    Object.isFrozen(canonical.activationAnchor) &&
+    Object.isFrozen(canonical.activationAnchorMirror) &&
+    Object.isFrozen(canonical.trustedFloors) &&
+    (!existing.readinessAuthorization ||
+      (existing.readinessAuthorization.updatedAt === Game.time &&
+        existing.readinessAuthorization.expiresAt === Game.time + 1))
+  ) {
+    return {
+      activeV3Successor: true,
+      state: existing,
+      ledgerRuntimeAnchor: canonical.ledgerRuntimeAnchor,
+      readinessRuntimeCapability: canonical.runtimeCapability,
+    };
+  }
+  const activation = marketBaseResourceActivationState(context.data, existing);
+  const failClosed = (
+    blocker: string,
+    evidence: unknown,
+  ): {
+    activeV3Successor: true;
+    state: MarketBaseResourceV3RuntimeState;
+  } => {
+    const nextDirect = {
+      ...sourceDirect,
+    };
+    const nextData: MarketSaleDataState = {
+      ...context.data,
+      directAutomation: nextDirect,
+    };
+    persistMarketBaseResourceActivationBlocker(nextData, blocker, evidence);
+    const blocked = blockedMarketBaseRuntimeState(
+      nextDirect.baseResourceV3,
+      context,
+      nextData.baseResourceV3ActivationBlocker?.code || blocker,
+    );
+    nextDirect.baseResourceV3 = blocked;
+    nextData.pendingDirectDeals = nextDirect.pendingDirectDeals;
+    commitContextMarketSaleData(context, nextData);
+    reject(context, nextData.baseResourceV3ActivationBlocker?.code || blocker);
+    return {
+      activeV3Successor: true,
+      state: blocked,
+    };
+  };
+  if (activation.latched && activation.blocker) {
+    return failClosed(activation.blocker, {
+      primary: context.data.baseResourceV3ActivationAnchor ?? null,
+      mirror: context.data.baseResourceV3ActivationAnchorMirror ?? null,
+      nestedCutover: marketBaseNestedCutoverEvidence(existing),
+    });
+  }
+  if (activation.latched && activation.anchor) {
+    const configRollback =
+      context.config.directCapability !== "continuous-v3" ||
+      marketBaseResourceV3ConfigMismatchReasons(context.config).length > 0;
+    if (configRollback) {
+      return failClosed("market_base_v3_config_rollback_after_cutover", {
+        directCapability: context.config.directCapability,
+        configRevision: context.config.configRevision,
+        reasons: marketBaseResourceV3ConfigMismatchReasons(context.config),
+      });
+    }
+    const legacyV2Blocker = validatePostCutoverLegacyV2Quiescence(
+      context.data,
+      sourceDirect,
+      existing!,
+      activation.anchor,
+    );
+    if (legacyV2Blocker) {
+      return failClosed(legacyV2Blocker, {
+        cutoverCheckpointHash: activation.anchor.cutoverCheckpointHash,
+        legacyV2QuiescenceCommitment:
+          activation.anchor.legacyV2QuiescenceCommitment,
+      });
+    }
+    if (!existing) {
+      return failClosed("market_base_nested_state_missing_after_cutover", null);
+    }
+    let working = { ...existing };
+    let workingLedgerRuntimeAnchor = activation.anchor.ledger;
+    const capabilityFromCanonicalRoot =
+      advanceMarketBaseResourceReadinessRuntimeCapabilityFromRoot(
+        context.data,
+        working,
+        Game.time,
+      );
+    let workingReadinessRuntimeCapability =
+      capabilityFromCanonicalRoot ??
+      createMarketBaseResourceReadinessRuntimeCapability(
+        working,
+        Game.time,
+        activation.anchor.ledger,
+        activation.anchor.scopeCommitment,
+    );
+    if (!workingReadinessRuntimeCapability) {
+      const presentedRoomRegistryCheckpoint =
+        isPlainRecord(working.scope) &&
+        isPlainRecord(working.scope.roomRegistry) &&
+        typeof working.scope.roomRegistry.checkpointCommitment === "string"
+          ? working.scope.roomRegistry.checkpointCommitment
+          : undefined;
+      const capabilityBlocker =
+        presentedRoomRegistryCheckpoint !== undefined &&
+        presentedRoomRegistryCheckpoint !==
+          activation.anchor.roomRegistryCheckpointCommitment
+          ? "market_base_room_registry_checkpoint_rollback"
+          : "market_base_v3_runtime_capability_open_failed";
+      return failClosed(capabilityBlocker, {
+        state: working,
+        anchor: activation.anchor,
+      });
+    }
+    const nestedBlocker = validateMarketBaseNestedActivationState(
+      working,
+      activation.anchor,
+      context.data.trustedFloors,
+      {
+        allowTrustedFloorAdvance: true,
+        runtimeOnly: true,
+        runtimeCapability: workingReadinessRuntimeCapability,
+      },
+    );
+    if (nestedBlocker) {
+      return failClosed(nestedBlocker, working);
+    }
+    if (!capabilityFromCanonicalRoot && working.preflightAt === Game.time) {
+      // 本 tick 已完成 preflight 的 root 若失去私有 canonical provenance，
+      // 只能视为同 tick replacement/global-reset。即使持久字段自洽，也不
+      // 能在 RC 之后重新铸权并成交；下一 tick 正常 preflight 可恢复。
+      reject(context, "market_base_v3_same_tick_root_provenance_missing");
+      return {
+        activeV3Successor: true,
+        state: working,
+        ledgerRuntimeAnchor: activation.anchor.ledger,
+      };
+    }
+    // global reset/cache miss 时即使 preflightAt 已是本 tick，也必须复走
+    // frozen WAL preflight；但复用刚铸造的 opaque session，不能再扫 ring。
+    if (working.preflightAt !== Game.time) {
+      const preflightLedger = working.ledger;
+      const preflightPermitChain = working.permitChain;
+      const preflight = runMarketBaseResourcePreflight(
+        working,
+        Game.time,
+        {
+          ...defaultMarketBaseResourceRuntimeDependencies,
+          readLedgerRuntimeAnchor: (preflightState) =>
+            preflightState.ledger === preflightLedger &&
+            preflightState.permitChain === preflightPermitChain
+              ? activation.anchor!.ledger
+              : undefined,
+        },
+        workingReadinessRuntimeCapability,
+      );
+      working = preflight.state;
+      workingLedgerRuntimeAnchor =
+        preflight.ledgerRuntimeAnchor ?? workingLedgerRuntimeAnchor;
+      workingReadinessRuntimeCapability = preflight.readinessRuntimeCapability;
+      mergeDirectResult(context, preflight);
+      if (
+        preflight.state.blocker ||
+        !workingReadinessRuntimeCapability ||
+        !preflight.ledgerRuntimeAnchor
+      ) {
+        return failClosed(
+          preflight.state.blocker ||
+            "market_base_v3_runtime_capability_preflight_failed",
+          preflight.state,
+        );
+      }
+    }
+    const accountIdentity = readLiveMarketBaseAccountIdentity();
+    if (!accountIdentity) {
+      const blocked = blockedMarketBaseRuntimeState(
+        existing,
+        context,
+        "market_base_account_identity_incomplete",
+      );
+      const nextData = {
+        ...context.data,
+        directAutomation: {
+          ...sourceDirect,
+          baseResourceV3: blocked,
+        },
+      };
+      commitContextMarketSaleData(context, nextData);
+      reject(context, "market_base_account_identity_incomplete");
+      return {
+        activeV3Successor: true,
+        state: blocked,
+      };
+    }
+    if (!workingLedgerRuntimeAnchor) {
+      return failClosed("market_base_v3_runtime_anchor_missing", {
+        state: working,
+      });
+    }
+    /**
+     * frozen WAL 必须先收敛：confirmed canary 会在这里把 canary 原子推进到
+     * review_paused。随后才以该 working.scope 作为 live room reconcile 的
+     * previous，否则拿 preflight 前的 lifecycle 比较会把合法终态误判为
+     * scope rollback 并永久闭锁 activation。
+     */
+    const expectedScope =
+      reconcileLiveMarketBaseResourceScopeWithRuntimeCapability(
+        {
+          tick: Game.time,
+          accountIdentity,
+          observations: collectLiveMarketBaseRoomObservations(accountIdentity),
+          previous: working.scope,
+          permitChain: working.permitChain,
+          pinnedLaneIds: working.ledger?.pending
+            ? [working.ledger.pending.historicalLane.laneId]
+            : [],
+          expectedPreviousRoomCheckpointCommitment:
+            activation.anchor.roomRegistryCheckpointCommitment,
+          expectedPermitLaneTombstoneCheckpointCommitment:
+            activation.anchor.laneTombstoneCheckpointCommitment,
+          expectedPreviousLaneTombstoneDischargeCheckpointCommitment:
+            activation.anchor.laneTombstoneDischargeCheckpointCommitment,
+        },
+        working,
+        workingReadinessRuntimeCapability,
+      );
+    if ("blockers" in expectedScope) {
+      return failClosed(
+        expectedScope.blockers[0] || "market_base_scope_reconcile_failed",
+        {
+          anchor: activation.anchor,
+          scope: working.scope,
+        },
+      );
+    }
+    const lifecycleBlocker =
+      expectedScope.stableIdentityUnchanged === true
+        ? undefined
+        : validateMarketBaseScopeLifecycleEvidence(expectedScope.state);
+    if (lifecycleBlocker) {
+      return failClosed(lifecycleBlocker, expectedScope.state);
+    }
+    const lifecycleLaneIds =
+      working.scope?.laneLifecycles.map((lane) => lane.laneId) ?? [];
+    const stableScopeUnchanged =
+      (expectedScope.stableIdentityUnchanged === true ||
+        marketBaseStableScopeIdentityUnchanged(
+          working.scope,
+          expectedScope.state,
+        ) ||
+        canonicalStableHashV1(
+          marketBaseStableScopeProjection(working.scope, lifecycleLaneIds),
+        ) ===
+          canonicalStableHashV1(
+            marketBaseStableScopeProjection(
+              expectedScope.state,
+              lifecycleLaneIds,
+            ),
+          )) &&
+      working.scope?.roomRegistry.tombstonePrefixCheckpoint
+        .checkpointCommitment ===
+        expectedScope.state.roomRegistry.tombstonePrefixCheckpoint
+          .checkpointCommitment &&
+      working.scope?.laneTombstoneDischargeCheckpoint.checkpointCommitment ===
+        expectedScope.state.laneTombstoneDischargeCheckpoint
+          .checkpointCommitment;
+    const runtimeAuthenticatedScopeReplacement = Boolean(
+      stableScopeUnchanged || expectedScope.stableIdentityUnchanged === true,
+    );
+    let result: ReturnType<typeof reconcileMarketBaseResourcePreflight>;
+    if (runtimeAuthenticatedScopeReplacement) {
+      const stableState: MarketBaseResourceV3RuntimeState = {
+        ...working,
+        scope: expectedScope.state,
+      };
+      const readiness =
+        resignMarketBaseResourceReadinessAuthorizationWithRuntimeCapability(
+          workingReadinessRuntimeCapability,
+          stableState,
+          Game.time,
+          expectedScope.stableIdentityUnchanged === true,
+        );
+      if ("reason" in readiness) {
+        delete stableState.readinessAuthorization;
+        return failClosed(readiness.reason, expectedScope.state);
+      } else {
+        if (readiness.readinessAuthorization) {
+          stableState.readinessAuthorization = readiness.readinessAuthorization;
+        } else {
+          delete stableState.readinessAuthorization;
+        }
+        workingReadinessRuntimeCapability = readiness.capability;
+      }
+      result = {
+        state: stableState,
+        activeV3Successor: true,
+        ...(working.blocker ? { blocker: working.blocker } : {}),
+      };
+    } else {
+      result = reconcileMarketBaseResourcePreflight(working, {
+        tick: Game.time,
+        mode: context.config.mode,
+        config: context.config,
+        accountIdentity,
+      });
+      workingReadinessRuntimeCapability =
+        advanceMarketBaseResourceReadinessRuntimeCapability(
+          workingReadinessRuntimeCapability,
+          result.state,
+          Game.time,
+        ) ??
+        createMarketBaseResourceReadinessRuntimeCapability(
+          result.state,
+          Game.time,
+          workingLedgerRuntimeAnchor,
+        );
+    }
+    if (
+      !runtimeAuthenticatedScopeReplacement &&
+      (!result.state.scope ||
+        canonicalStableHashV1(result.state.scope) !==
+          canonicalStableHashV1(expectedScope.state))
+    ) {
+      return failClosed("market_base_scope_atomic_reconcile_mismatch", {
+        expected: expectedScope.state,
+        actual: result.state.scope ?? null,
+      });
+    }
+    const nextTrustedFloors = synchronizeMarketBaseTrustedFloors(
+      context.data.trustedFloors,
+      result.state.pricingRatchet!,
+      Game.time,
+    );
+    const canReuseActivationAnchor = Boolean(
+      expectedScope.stableIdentityUnchanged === true &&
+      result.state.ledger === working.ledger &&
+      result.state.permitChain === working.permitChain &&
+      result.state.pricingRatchet === working.pricingRatchet &&
+      result.state.hardBlocker === working.hardBlocker &&
+      nextTrustedFloors === context.data.trustedFloors &&
+      workingLedgerRuntimeAnchor.anchorCommitment ===
+        activation.anchor.ledger.anchorCommitment &&
+      result.state.scope?.roomRegistry.checkpointCommitment ===
+        activation.anchor.roomRegistryCheckpointCommitment &&
+      (result.state.scope === undefined ||
+        marketBaseResourceOuterScopeCommitment(result.state.scope) ===
+          activation.anchor.scopeCommitment) &&
+      result.state.scope?.laneTombstoneDischargeCheckpoint
+        .checkpointCommitment ===
+        activation.anchor.laneTombstoneDischargeCheckpointCommitment &&
+      result.state.permitChain?.laneTombstoneCheckpoint.checkpointCommitment ===
+        activation.anchor.laneTombstoneCheckpointCommitment,
+    );
+    const nextAnchor = canReuseActivationAnchor
+      ? activation.anchor
+      : advanceMarketBaseResourceActivationAnchor(
+          activation.anchor,
+          result.state,
+          nextTrustedFloors,
+          Game.time,
+          workingLedgerRuntimeAnchor,
+        );
+    const nextDirect = {
+      ...sourceDirect,
+      baseResourceV3: result.state,
+    };
+    const nextData: MarketSaleDataState = {
+      ...context.data,
+      trustedFloors: nextTrustedFloors,
+      directAutomation: nextDirect,
+      pendingDirectDeals: nextDirect.pendingDirectDeals,
+      baseResourceV3ActivationAnchor: nextAnchor,
+      baseResourceV3ActivationAnchorMirror: canReuseActivationAnchor
+        ? context.data.baseResourceV3ActivationAnchorMirror
+        : cloneMarketBaseOperatorValue(nextAnchor),
+    };
+    commitContextMarketSaleData(context, nextData);
+    const registered = registerMarketBaseResourceCanonicalRoot(
+      nextData,
+      context.config.mode,
+      workingReadinessRuntimeCapability,
+    );
+    if (
+      (!result.state.readinessAuthorization &&
+        registered.reason !== "missing") ||
+      (result.state.readinessAuthorization && !registered.ok)
+    ) {
+      reject(
+        context,
+        "market_base_readiness_runtime_capability_register_failed",
+      );
+      return {
+        activeV3Successor: true,
+        state: result.state,
+        ledgerRuntimeAnchor: nextAnchor.ledger,
+      };
+    }
+    if (result.blocker) {
+      reject(context, result.blocker);
+    }
+    return {
+      activeV3Successor: true,
+      state: result.state,
+      ledgerRuntimeAnchor: nextAnchor.ledger,
+      readinessRuntimeCapability: workingReadinessRuntimeCapability,
+    };
+  }
+
+  let working = existing ? { ...existing } : undefined;
+  if (
+    working?.schemaVersion === 3 &&
+    (working.cutoverLatched === true ||
+      (working.permitChain !== undefined &&
+        hasAcceptedMarketBaseResourceV3Successor(working.permitChain)) ||
+      working.ledger?.pending !== undefined) &&
+    working.preflightAt !== Game.time
+  ) {
+    const preflight = runMarketBaseResourcePreflight(working, Game.time);
+    working = preflight.state;
+    mergeDirectResult(context, preflight);
+    if (preflight.state.blocker) {
+      reject(context, preflight.state.blocker);
+      const nextDirect = {
+        ...sourceDirect,
+        baseResourceV3: preflight.state,
+      };
+      commitContextMarketSaleData(context, {
+        ...context.data,
+        directAutomation: nextDirect,
+        pendingDirectDeals: nextDirect.pendingDirectDeals,
+      });
+      return {
+        activeV3Successor:
+          preflight.state.cutoverLatched === true ||
+          preflight.state.permitChain !== undefined,
+        state: preflight.state,
+      };
+    }
+  }
+  const result = reconcileMarketBaseResourcePreflight(working, {
+    tick: Game.time,
+    mode: context.config.mode,
+    config: context.config,
+  });
+  const nextDirect = {
+    ...sourceDirect,
+    baseResourceV3: result.state,
+  };
+  commitContextMarketSaleData(context, {
+    ...context.data,
+    directAutomation: nextDirect,
+    pendingDirectDeals: nextDirect.pendingDirectDeals,
+  });
+  if (result.activeV3Successor && result.blocker) {
+    reject(context, result.blocker);
+  }
+  return {
+    activeV3Successor: result.activeV3Successor,
+    state: result.state,
+  };
 }
 
 type MarketSaleRuntimeState = NonNullable<
@@ -255,6 +2487,94 @@ interface RunContext {
 type OperatorResult =
   | { ok: true; [key: string]: unknown }
   | { ok: false; error: string; [key: string]: unknown };
+
+export interface MarketBaseResourcePermitRequest {
+  laneId?: string;
+  targetStage?: "canary" | "continuous" | "suspend";
+  reviewedEvidenceDigest?: string;
+  /**
+   * review_paused → continuous 必须显式回传完整事实快照；不能只从 status
+   * 复制一个 digest。propose 与 accept 都会重新读取 current facts，并
+   * 要求 stableReviewDigest 一致。
+   */
+  continuousReview?: MarketBaseResourceContinuousReviewSnapshot;
+}
+
+export interface MarketBaseResourceContinuousReviewSnapshot {
+  schemaVersion: 1;
+  hashRevision: "market-base-resource-continuous-review-v1";
+  laneId: string;
+  resource: MarketBaseResource;
+  sellerRoom: string;
+  observedAt: number;
+  sourceFreshThrough: number;
+  confirmedCanary: {
+    attemptSeq: number;
+    permitId: string;
+    receiptEventHash: string;
+    transactionTime: number;
+    actualAmount: number;
+    actualTransactionEnergy: number;
+    actualNetCreditsMilli: number;
+  };
+  permit: {
+    permitId: string;
+    permitEpoch: number;
+    permitHead: string;
+  };
+  ledger: {
+    receiptHeadHash: string;
+    checkpointHash: string;
+    permitAnchorHash: string;
+    finalizedAttemptSeq: number;
+  };
+  terminal: {
+    terminalId: string;
+    resourceAmount: number;
+    energy: number;
+    effectivePostDealEnergyReserve: number;
+    readinessRevision: string;
+  };
+  protection: {
+    revision: number;
+    observedAt: number;
+    expiresAt: number;
+    entryCommitment: string;
+    sellableAmount: number;
+    protectedAmount: number;
+    productionDemand: number;
+    protectedOutgoing: number;
+    carrierOrInFlight: number;
+  };
+  quota: {
+    commitment: string;
+    globalRemaining: number;
+    resourceRemaining: number;
+    roomRemaining: number;
+    laneRemaining: number;
+    confirmedCooldownNotBefore: number;
+    retryNotBefore: number;
+  };
+  stableReviewDigest: string;
+}
+
+interface MarketBaseResourceProposedContinuousReview {
+  proposalId: string;
+  snapshots: readonly MarketBaseResourceContinuousReviewSnapshot[];
+}
+
+interface MarketBaseResourceProposedTransition {
+  proposalId: string;
+  laneId: string;
+  targetStage: NonNullable<MarketBaseResourcePermitRequest["targetStage"]>;
+  transitionLaneIds: readonly string[];
+}
+
+interface BuiltMarketBaseV3SuccessorProposal {
+  proposal: MarketBaseResourcePermitProposal;
+  transition: Omit<MarketBaseResourceProposedTransition, "proposalId">;
+  continuousReviews: readonly MarketBaseResourceContinuousReviewSnapshot[];
+}
 
 type OperatorGlobals = typeof global & {
   grantMarketSaleMutationLease?: (
@@ -284,10 +2604,13 @@ type OperatorGlobals = typeof global & {
   proposeMarketDirectContinuousPermit?: (
     request: MarketDirectContinuousPermitRequest,
   ) => OperatorResult;
-  acceptMarketDirectContinuousPermit?: (
-    permitId: string,
-  ) => OperatorResult;
+  acceptMarketDirectContinuousPermit?: (permitId: string) => OperatorResult;
   marketDirectContinuousStatus?: () => unknown;
+  proposeMarketBaseResourcePermit?: (
+    request?: MarketBaseResourcePermitRequest,
+  ) => OperatorResult;
+  acceptMarketBaseResourcePermit?: (proposalId: string) => OperatorResult;
+  marketBaseResourceStatus?: () => unknown;
 };
 
 const operatorGlobals = global as OperatorGlobals;
@@ -309,9 +2632,7 @@ export interface MarketSaleDomainActivity {
   valid: boolean;
 }
 
-function sumDomainActivity(
-  value: unknown,
-): { amount: number; valid: boolean } {
+function sumDomainActivity(value: unknown): { amount: number; valid: boolean } {
   if (value === undefined) return { amount: 0, valid: true };
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { amount: 1, valid: false };
@@ -340,9 +2661,8 @@ function sumDomainActivity(
 }
 
 /**
- * Canonical live evidence for market-sale-owned staging/reservation. No
- * previous bundle produced these stores, so absence is an empty migration;
- * malformed state is conservatively projected as non-zero.
+ * market-sale 自有 staging/reservation 的 canonical live evidence。旧 bundle
+ * 从未产生这两个 store，因此缺失按空迁移处理；损坏结构保守投影为非零。
  */
 export function collectMarketSaleDomainActivity(
   value: unknown,
@@ -368,7 +2688,7 @@ function quarantinedDirectPendingAlias(
 ): Record<string, unknown> {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { "__compatibility_alias__": value };
+    return { __compatibility_alias__: value };
   }
   const quarantined: Record<string, unknown> = {};
   for (const [requestId, pending] of Object.entries(value)) {
@@ -379,14 +2699,20 @@ function quarantinedDirectPendingAlias(
   return quarantined;
 }
 
-function isPlainRecord(
-  value: unknown,
-): value is Record<string, unknown> {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      !Array.isArray(value),
-  );
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function hasExactRecordKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  if (keys.length !== expected.length) {
+    return false;
+  }
+  const expectedSet = new Set(expected);
+  return keys.every((key) => expectedSet.has(key));
 }
 
 function isContinuousDirectState(
@@ -394,31 +2720,26 @@ function isContinuousDirectState(
 ): value is MarketDirectContinuousAutomationState {
   return Boolean(
     isPlainRecord(value) &&
-      value.schemaVersion === MARKET_DIRECT_CONTINUOUS_SCHEMA &&
-      value.capability === MARKET_DIRECT_CONTINUOUS_CAPABILITY,
+    value.schemaVersion === MARKET_DIRECT_CONTINUOUS_SCHEMA &&
+    value.capability === MARKET_DIRECT_CONTINUOUS_CAPABILITY,
   );
 }
 
-function isLegacyDirectState(
-  value: unknown,
-): value is DirectAutomationState {
+function isLegacyDirectState(value: unknown): value is DirectAutomationState {
   return Boolean(
     isPlainRecord(value) &&
-      value.schemaVersion === 1 &&
-      value.capability === undefined,
+    value.schemaVersion === 1 &&
+    value.capability === undefined,
   );
 }
 
 function canonicalMemoryEvidence(value: unknown): unknown {
   try {
     const serialized = JSON.stringify(value);
-    return serialized === undefined
-      ? null
-      : JSON.parse(serialized);
+    return serialized === undefined ? null : JSON.parse(serialized);
   } catch {
     return {
-      invalidEvidenceType:
-        value === null ? "null" : typeof value,
+      invalidEvidenceType: value === null ? "null" : typeof value,
     };
   }
 }
@@ -430,15 +2751,15 @@ function continuousStateHasCoreContainers(
   const ledger = value.ledger as unknown;
   return Boolean(
     isPlainRecord(ledger) &&
-      Array.isArray(ledger.receipts) &&
-      Array.isArray(ledger.outcomes) &&
-      Array.isArray(ledger.processedEvidenceKeys) &&
-      isPlainRecord(ledger.checkpoint) &&
-      isPlainRecord(ledger.lifetimeConfirmed) &&
-      isPlainRecord(value.permitChain) &&
-      isPlainRecord(value.lifecycleByEntry) &&
-      isPlainRecord(value.pendingDirectDeals) &&
-      isPlainRecord(value.quarantinedPendingDirectDeals),
+    Array.isArray(ledger.receipts) &&
+    Array.isArray(ledger.outcomes) &&
+    Array.isArray(ledger.processedEvidenceKeys) &&
+    isPlainRecord(ledger.checkpoint) &&
+    isPlainRecord(ledger.lifetimeConfirmed) &&
+    isPlainRecord(value.permitChain) &&
+    isPlainRecord(value.lifecycleByEntry) &&
+    isPlainRecord(value.pendingDirectDeals) &&
+    isPlainRecord(value.quarantinedPendingDirectDeals),
   );
 }
 
@@ -489,11 +2810,7 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
 }
 
 function isPositiveFiniteNumber(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isFinite(value) &&
-    value > 0
-  );
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -501,15 +2818,10 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function isRoomName(value: unknown): value is string {
-  return (
-    isNonEmptyString(value) &&
-    /^[WE]\d+[NS]\d+$/.test(value)
-  );
+  return isNonEmptyString(value) && /^[WE]\d+[NS]\d+$/.test(value);
 }
 
-function isResourceConstant(
-  value: unknown,
-): value is ResourceConstant {
+function isResourceConstant(value: unknown): value is ResourceConstant {
   return (
     typeof value === "string" &&
     RESOURCES_ALL.includes(value as ResourceConstant)
@@ -518,8 +2830,7 @@ function isResourceConstant(
 
 function isStringArray(value: unknown): value is string[] {
   return (
-    Array.isArray(value) &&
-    value.every((entry) => isNonEmptyString(entry))
+    Array.isArray(value) && value.every((entry) => isNonEmptyString(entry))
   );
 }
 
@@ -534,55 +2845,44 @@ function isRecoverableManagedOrder(
     externalGap === undefined
       ? value.remainingExposure === value.lastRemainingAmount
       : isPlainRecord(externalGap) &&
-        value.remainingExposure ===
-          externalGap.conservativeExposure &&
+        value.remainingExposure === externalGap.conservativeExposure &&
         (value.remainingExposure as number) >=
           (value.lastRemainingAmount as number);
   return Boolean(
     value.orderId === orderId &&
-      isRoomName(value.roomName) &&
-      isResourceConstant(value.resourceType) &&
-      isPositiveFiniteNumber(value.price) &&
-      isNonNegativeSafeInteger(value.originalAmount) &&
-      value.originalAmount > 0 &&
-      isNonNegativeSafeInteger(value.lastRemainingAmount) &&
-      value.lastRemainingAmount <= value.originalAmount &&
-      isNonNegativeSafeInteger(value.remainingExposure) &&
-      isNonNegativeSafeInteger(value.feeDebtMilli) &&
-      isNonNegativeSafeInteger(value.createdAt) &&
-      isNonNegativeSafeInteger(value.lastSeenAt) &&
-      (value.lastFillAt === undefined ||
-        isNonNegativeSafeInteger(value.lastFillAt)) &&
-      isNonNegativeSafeInteger(value.policyCancelAtTick) &&
-      isNonNegativeSafeInteger(value.serverCreatedTick) &&
-      (value.backoffUntil === undefined ||
-        isNonNegativeSafeInteger(value.backoffUntil)) &&
-      exposureInvariant &&
-      !(
-        externalGap !== undefined &&
-        disappearanceGap !== undefined
-      ) &&
-      (externalGap === undefined ||
-        (isPlainRecord(externalGap) &&
-          isNonNegativeSafeInteger(externalGap.detectedAt) &&
-          isPositiveFiniteNumber(externalGap.expectedPrice) &&
-          isPositiveFiniteNumber(externalGap.observedPrice) &&
-          isNonNegativeSafeInteger(
-            externalGap.expectedTotalAmount,
-          ) &&
-          (externalGap.observedTotalAmount === undefined ||
-            isNonNegativeSafeInteger(
-              externalGap.observedTotalAmount,
-            )) &&
-          isNonNegativeSafeInteger(
-            externalGap.conservativeExposure,
-          ))) &&
-      (disappearanceGap === undefined ||
-        (isPlainRecord(disappearanceGap) &&
-          isNonNegativeSafeInteger(disappearanceGap.detectedAt) &&
-          (disappearanceGap.reason === "unknown_disappearance" ||
-            disappearanceGap.reason ===
-              "server_expiry_refund_mismatch"))),
+    isRoomName(value.roomName) &&
+    isResourceConstant(value.resourceType) &&
+    isPositiveFiniteNumber(value.price) &&
+    isNonNegativeSafeInteger(value.originalAmount) &&
+    value.originalAmount > 0 &&
+    isNonNegativeSafeInteger(value.lastRemainingAmount) &&
+    value.lastRemainingAmount <= value.originalAmount &&
+    isNonNegativeSafeInteger(value.remainingExposure) &&
+    isNonNegativeSafeInteger(value.feeDebtMilli) &&
+    isNonNegativeSafeInteger(value.createdAt) &&
+    isNonNegativeSafeInteger(value.lastSeenAt) &&
+    (value.lastFillAt === undefined ||
+      isNonNegativeSafeInteger(value.lastFillAt)) &&
+    isNonNegativeSafeInteger(value.policyCancelAtTick) &&
+    isNonNegativeSafeInteger(value.serverCreatedTick) &&
+    (value.backoffUntil === undefined ||
+      isNonNegativeSafeInteger(value.backoffUntil)) &&
+    exposureInvariant &&
+    !(externalGap !== undefined && disappearanceGap !== undefined) &&
+    (externalGap === undefined ||
+      (isPlainRecord(externalGap) &&
+        isNonNegativeSafeInteger(externalGap.detectedAt) &&
+        isPositiveFiniteNumber(externalGap.expectedPrice) &&
+        isPositiveFiniteNumber(externalGap.observedPrice) &&
+        isNonNegativeSafeInteger(externalGap.expectedTotalAmount) &&
+        (externalGap.observedTotalAmount === undefined ||
+          isNonNegativeSafeInteger(externalGap.observedTotalAmount)) &&
+        isNonNegativeSafeInteger(externalGap.conservativeExposure))) &&
+    (disappearanceGap === undefined ||
+      (isPlainRecord(disappearanceGap) &&
+        isNonNegativeSafeInteger(disappearanceGap.detectedAt) &&
+        (disappearanceGap.reason === "unknown_disappearance" ||
+          disappearanceGap.reason === "server_expiry_refund_mismatch"))),
   );
 }
 
@@ -616,13 +2916,12 @@ function isRecoverablePendingMutation(
       isNonNegativeSafeInteger(requested.addAmount) &&
       requested.addAmount > 0
     ) {
-      expectedProspectiveFeeMilli =
-        calculateProspectiveFeeMilli({
-          kind: "extend",
-          currentPrice: pre.price,
-          currentRemainingAmount: pre.remainingAmount,
-          addAmount: requested.addAmount,
-        });
+      expectedProspectiveFeeMilli = calculateProspectiveFeeMilli({
+        kind: "extend",
+        currentPrice: pre.price,
+        currentRemainingAmount: pre.remainingAmount,
+        addAmount: requested.addAmount,
+      });
     } else if (
       value.kind === "reprice" &&
       isPlainRecord(pre) &&
@@ -655,42 +2954,40 @@ function isRecoverablePendingMutation(
   }
   return Boolean(
     value.orderId === orderId &&
-      (value.kind === "cancel" ||
-        value.kind === "extend" ||
-        value.kind === "reprice") &&
-      isNonNegativeSafeInteger(value.requestedAt) &&
-      isPlainRecord(pre) &&
-      isPositiveFiniteNumber(pre.price) &&
-      isNonNegativeSafeInteger(pre.totalAmount) &&
-      isNonNegativeSafeInteger(pre.remainingAmount) &&
-      pre.remainingAmount <= pre.totalAmount &&
-      (pre.active === undefined ||
-        typeof pre.active === "boolean") &&
-      isPlainRecord(requested) &&
-      (requested.price === undefined ||
-        isPositiveFiniteNumber(requested.price)) &&
-      (requested.addAmount === undefined ||
-        (isNonNegativeSafeInteger(requested.addAmount) &&
-          requested.addAmount > 0)) &&
-      ((value.kind === "cancel" &&
+    (value.kind === "cancel" ||
+      value.kind === "extend" ||
+      value.kind === "reprice") &&
+    isNonNegativeSafeInteger(value.requestedAt) &&
+    isPlainRecord(pre) &&
+    isPositiveFiniteNumber(pre.price) &&
+    isNonNegativeSafeInteger(pre.totalAmount) &&
+    isNonNegativeSafeInteger(pre.remainingAmount) &&
+    pre.remainingAmount <= pre.totalAmount &&
+    (pre.active === undefined || typeof pre.active === "boolean") &&
+    isPlainRecord(requested) &&
+    (requested.price === undefined ||
+      isPositiveFiniteNumber(requested.price)) &&
+    (requested.addAmount === undefined ||
+      (isNonNegativeSafeInteger(requested.addAmount) &&
+        requested.addAmount > 0)) &&
+    ((value.kind === "cancel" &&
+      requested.price === undefined &&
+      requested.addAmount === undefined) ||
+      (value.kind === "extend" &&
         requested.price === undefined &&
-        requested.addAmount === undefined) ||
-        (value.kind === "extend" &&
-          requested.price === undefined &&
-          isNonNegativeSafeInteger(requested.addAmount) &&
-          requested.addAmount > 0) ||
-        (value.kind === "reprice" &&
-          isPositiveFiniteNumber(requested.price) &&
-          requested.addAmount === undefined)) &&
-      isNonNegativeSafeInteger(value.prospectiveFeeMilli) &&
-      value.prospectiveFeeMilli ===
-        expectedProspectiveFeeMilli &&
-      isNonNegativeSafeInteger(value.conservativeExposure) &&
-      isNonNegativeSafeInteger(requestedExposure) &&
-      value.conservativeExposure >= requestedExposure &&
-      (value.status === "prepared" ||
-        value.status === "submitted" ||
-        value.status === "reconcile_gap"),
+        isNonNegativeSafeInteger(requested.addAmount) &&
+        requested.addAmount > 0) ||
+      (value.kind === "reprice" &&
+        isPositiveFiniteNumber(requested.price) &&
+        requested.addAmount === undefined)) &&
+    isNonNegativeSafeInteger(value.prospectiveFeeMilli) &&
+    value.prospectiveFeeMilli === expectedProspectiveFeeMilli &&
+    isNonNegativeSafeInteger(value.conservativeExposure) &&
+    isNonNegativeSafeInteger(requestedExposure) &&
+    value.conservativeExposure >= requestedExposure &&
+    (value.status === "prepared" ||
+      value.status === "submitted" ||
+      value.status === "reconcile_gap"),
   );
 }
 
@@ -706,13 +3003,11 @@ function isRecoverablePendingCreate(
     isStringArray(baselineOrderIds) &&
     new Set(baselineOrderIds).size === baselineOrderIds.length &&
     baselineOrderIds.every(
-      (entry, index) =>
-        entry === [...baselineOrderIds].sort()[index],
+      (entry, index) => entry === [...baselineOrderIds].sort()[index],
     );
-  const baselineFingerprintKeys =
-    isPlainRecord(baselineFingerprints)
-      ? Object.keys(baselineFingerprints).sort()
-      : [];
+  const baselineFingerprintKeys = isPlainRecord(baselineFingerprints)
+    ? Object.keys(baselineFingerprints).sort()
+    : [];
   let expectedCreateFeeMilli: number | undefined;
   try {
     if (
@@ -721,73 +3016,72 @@ function isRecoverablePendingCreate(
       tuple.totalAmount > 0 &&
       isPositiveFiniteNumber(tuple.price)
     ) {
-      expectedCreateFeeMilli =
-        calculateProspectiveFeeMilli(
-          {
-            kind: "create",
-            amount: tuple.totalAmount,
-          },
-          tuple.price,
-        );
+      expectedCreateFeeMilli = calculateProspectiveFeeMilli(
+        {
+          kind: "create",
+          amount: tuple.totalAmount,
+        },
+        tuple.price,
+      );
     }
   } catch {
     expectedCreateFeeMilli = undefined;
   }
   return Boolean(
     isNonEmptyString(value.requestId) &&
-      isNonNegativeSafeInteger(value.requestedAt) &&
-      baselineOrderIdsCanonical &&
-      isNonEmptyString(value.baselineHash) &&
-      value.baselineHash === hashOrderIds(baselineOrderIds) &&
-      isNonEmptyString(value.leaseEpoch) &&
-      isPlainRecord(tuple) &&
-      tuple.type === ORDER_SELL &&
-      isResourceConstant(tuple.resourceType) &&
-      isRoomName(tuple.roomName) &&
-      isPositiveFiniteNumber(tuple.price) &&
-      isNonNegativeSafeInteger(tuple.totalAmount) &&
-      tuple.totalAmount > 0 &&
-      isNonNegativeSafeInteger(tuple.createdNotBefore) &&
-      isNonNegativeSafeInteger(tuple.createdNotAfter) &&
-      tuple.createdNotBefore === value.requestedAt &&
-      tuple.createdNotAfter === value.requestedAt + 2 &&
-      isNonNegativeSafeInteger(value.feeMilli) &&
-      value.feeMilli === expectedCreateFeeMilli &&
-      isNonNegativeSafeInteger(value.exposure) &&
-      value.exposure === tuple.totalAmount &&
-      isNonNegativeSafeInteger(value.zeroDeltaConfirmations) &&
-      (value.lastZeroDeltaTick === undefined ||
-        isNonNegativeSafeInteger(value.lastZeroDeltaTick)) &&
-      ((value.zeroDeltaConfirmations === 0 &&
-        value.lastZeroDeltaTick === undefined) ||
-        (value.zeroDeltaConfirmations > 0 &&
-          value.lastZeroDeltaTick !== undefined)) &&
-      (value.status === "prepared" ||
-        value.status === "submitted" ||
-        value.status === "ambiguous") &&
-      Array.isArray(audit) &&
-      audit.every(
-        (entry) =>
-          isPlainRecord(entry) &&
-          isNonNegativeSafeInteger(entry.tick) &&
-          isNonEmptyString(entry.action) &&
-          isStringArray(entry.candidateIds),
-      ) &&
-      typeof value.creditsBefore === "number" &&
-          Number.isFinite(value.creditsBefore) &&
-          value.creditsBefore >= 0 &&
-      isNonNegativeSafeInteger(value.terminalStockBefore) &&
-      isStringArray(value.outgoingKeysBefore) &&
-      isPlainRecord(baselineFingerprints) &&
-          Object.values(baselineFingerprints).every(
-            (entry) => typeof entry === "string",
-          ) &&
-      baselineFingerprintKeys.length === baselineOrderIds.length &&
-      baselineFingerprintKeys.every(
-        (entry, index) => entry === baselineOrderIds[index],
-      ) &&
-      (value.operatorResolutionCandidateIds === undefined ||
-        isStringArray(value.operatorResolutionCandidateIds)),
+    isNonNegativeSafeInteger(value.requestedAt) &&
+    baselineOrderIdsCanonical &&
+    isNonEmptyString(value.baselineHash) &&
+    value.baselineHash === hashOrderIds(baselineOrderIds) &&
+    isNonEmptyString(value.leaseEpoch) &&
+    isPlainRecord(tuple) &&
+    tuple.type === ORDER_SELL &&
+    isResourceConstant(tuple.resourceType) &&
+    isRoomName(tuple.roomName) &&
+    isPositiveFiniteNumber(tuple.price) &&
+    isNonNegativeSafeInteger(tuple.totalAmount) &&
+    tuple.totalAmount > 0 &&
+    isNonNegativeSafeInteger(tuple.createdNotBefore) &&
+    isNonNegativeSafeInteger(tuple.createdNotAfter) &&
+    tuple.createdNotBefore === value.requestedAt &&
+    tuple.createdNotAfter === value.requestedAt + 2 &&
+    isNonNegativeSafeInteger(value.feeMilli) &&
+    value.feeMilli === expectedCreateFeeMilli &&
+    isNonNegativeSafeInteger(value.exposure) &&
+    value.exposure === tuple.totalAmount &&
+    isNonNegativeSafeInteger(value.zeroDeltaConfirmations) &&
+    (value.lastZeroDeltaTick === undefined ||
+      isNonNegativeSafeInteger(value.lastZeroDeltaTick)) &&
+    ((value.zeroDeltaConfirmations === 0 &&
+      value.lastZeroDeltaTick === undefined) ||
+      (value.zeroDeltaConfirmations > 0 &&
+        value.lastZeroDeltaTick !== undefined)) &&
+    (value.status === "prepared" ||
+      value.status === "submitted" ||
+      value.status === "ambiguous") &&
+    Array.isArray(audit) &&
+    audit.every(
+      (entry) =>
+        isPlainRecord(entry) &&
+        isNonNegativeSafeInteger(entry.tick) &&
+        isNonEmptyString(entry.action) &&
+        isStringArray(entry.candidateIds),
+    ) &&
+    typeof value.creditsBefore === "number" &&
+    Number.isFinite(value.creditsBefore) &&
+    value.creditsBefore >= 0 &&
+    isNonNegativeSafeInteger(value.terminalStockBefore) &&
+    isStringArray(value.outgoingKeysBefore) &&
+    isPlainRecord(baselineFingerprints) &&
+    Object.values(baselineFingerprints).every(
+      (entry) => typeof entry === "string",
+    ) &&
+    baselineFingerprintKeys.length === baselineOrderIds.length &&
+    baselineFingerprintKeys.every(
+      (entry, index) => entry === baselineOrderIds[index],
+    ) &&
+    (value.operatorResolutionCandidateIds === undefined ||
+      isStringArray(value.operatorResolutionCandidateIds)),
   );
 }
 
@@ -806,8 +3100,7 @@ function recoverMarketStateRecord<T extends object>(
   const recovered: Record<string, T> = {};
   for (const [key, entry] of Object.entries(value)) {
     if (!key || !isRecoverable(entry, key)) {
-      quarantine[`${entrySentinelPrefix}:${key || "<empty>"}`] =
-        entry;
+      quarantine[`${entrySentinelPrefix}:${key || "<empty>"}`] = entry;
       continue;
     }
     recovered[key] = entry as T;
@@ -815,10 +3108,75 @@ function recoverMarketStateRecord<T extends object>(
   return recovered;
 }
 
+interface MarketBaseResourceCanonicalRootProvenance {
+  readonly tick: number;
+  readonly directAutomation: MarketDirectContinuousAutomationState;
+  readonly state: MarketBaseResourceV3RuntimeState;
+  readonly activationAnchor: MarketBaseResourceActivationAnchor;
+  readonly activationAnchorMirror: MarketBaseResourceActivationAnchor;
+  readonly trustedFloors: MarketSaleDataState["trustedFloors"];
+  readonly ledgerRuntimeAnchor: MarketBaseResourceLedgerRuntimeAnchor;
+  readonly runtimeCapability: MarketBaseResourceReadinessRuntimeCapability;
+}
+
+const marketBaseResourceCanonicalRootProvenance = new WeakMap<
+  object,
+  MarketBaseResourceCanonicalRootProvenance
+>();
+let marketBaseResourceCanonicalRootRegistryGame: Game | undefined;
+let marketBaseResourceCanonicalRootRegistryTick: number | undefined;
+let marketBaseResourceCanonicalRootRegistryCount = 0;
+let marketBaseResourceCanonicalRootsThisTick = new WeakSet<object>();
+
+function refreshMarketBaseResourceCanonicalRootRegistry(): void {
+  if (
+    marketBaseResourceCanonicalRootRegistryGame === Game &&
+    marketBaseResourceCanonicalRootRegistryTick === Game.time
+  ) {
+    return;
+  }
+  marketBaseResourceCanonicalRootRegistryGame = Game;
+  marketBaseResourceCanonicalRootRegistryTick = Game.time;
+  marketBaseResourceCanonicalRootRegistryCount = 0;
+  marketBaseResourceCanonicalRootsThisTick = new WeakSet<object>();
+}
+
+function hasRegisteredMarketBaseResourceCanonicalRootThisTick(): boolean {
+  refreshMarketBaseResourceCanonicalRootRegistry();
+  return marketBaseResourceCanonicalRootRegistryCount > 0;
+}
+
+function isRegisteredMarketBaseResourceCanonicalRootThisTick(
+  value: unknown,
+): boolean {
+  refreshMarketBaseResourceCanonicalRootRegistry();
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    marketBaseResourceCanonicalRootsThisTick.has(value)
+  );
+}
+
+function registerMarketBaseResourceCanonicalRootThisTick(value: object): void {
+  refreshMarketBaseResourceCanonicalRootRegistry();
+  if (!marketBaseResourceCanonicalRootsThisTick.has(value)) {
+    marketBaseResourceCanonicalRootsThisTick.add(value);
+    marketBaseResourceCanonicalRootRegistryCount += 1;
+  }
+}
+
 function ensureDataState(): MarketSaleDataState {
   if (!Memory.data) Memory.data = {};
-  const rawMarketSaleAutomation =
-    Memory.data.marketSaleAutomation as unknown;
+  const rawMarketSaleAutomation = Memory.data.marketSaleAutomation as unknown;
+  if (
+    isPlainRecord(rawMarketSaleAutomation) &&
+    marketBaseResourceCanonicalRootProvenance.get(rawMarketSaleAutomation)
+      ?.tick === Game.time &&
+    isPlainRecord(rawMarketSaleAutomation.directAutomation) &&
+    Object.isFrozen(rawMarketSaleAutomation.directAutomation)
+  ) {
+    return rawMarketSaleAutomation as unknown as MarketSaleDataState;
+  }
   if (rawMarketSaleAutomation === undefined) {
     Memory.data.marketSaleAutomation =
       createBaseMarketSaleDataState() as unknown as NonNullable<
@@ -829,8 +3187,7 @@ function ensureDataState(): MarketSaleDataState {
     direct.quarantinedPendingDirectDeals[
       "__market_sale_automation_container__"
     ] = rawMarketSaleAutomation;
-    direct.migrationBlockedReason =
-      "market_sale_automation_container_invalid";
+    direct.migrationBlockedReason = "market_sale_automation_container_invalid";
     Memory.data.marketSaleAutomation = {
       ...createBaseMarketSaleDataState(),
       pendingDirectDeals: direct.pendingDirectDeals,
@@ -839,10 +3196,10 @@ function ensureDataState(): MarketSaleDataState {
       NonNullable<Memory["data"]>["marketSaleAutomation"]
     >;
   }
-  const data = Memory.data.marketSaleAutomation as unknown as MarketSaleDataState;
+  const data = Memory.data
+    .marketSaleAutomation as unknown as MarketSaleDataState;
   const quarantinedMarketState: Record<string, unknown> = {};
-  const recoveredManagedOrders =
-    recoverMarketStateRecord<OwnedManagedOrder>(
+  const recoveredManagedOrders = recoverMarketStateRecord<OwnedManagedOrder>(
     data.managedOrders as unknown,
     "__managed_orders_container__",
     "__managed_order__",
@@ -862,15 +3219,10 @@ function ensureDataState(): MarketSaleDataState {
   )
     ? (data.pendingMutations as unknown as Record<string, unknown>)
     : {};
-  for (const orderId of Object.keys(
-    recoveredPendingMutations,
-  )) {
+  for (const orderId of Object.keys(recoveredPendingMutations)) {
     if (recoveredManagedOrders[orderId]) continue;
-    quarantinedMarketState[
-      `__orphan_pending_mutation__:${orderId}`
-    ] =
-      rawPendingMutationRecord[orderId] ??
-      recoveredPendingMutations[orderId];
+    quarantinedMarketState[`__orphan_pending_mutation__:${orderId}`] =
+      rawPendingMutationRecord[orderId] ?? recoveredPendingMutations[orderId];
     delete recoveredPendingMutations[orderId];
   }
   const rawPendingCreate = data.pendingCreate as unknown;
@@ -879,11 +3231,9 @@ function ensureDataState(): MarketSaleDataState {
     rawPendingCreate !== undefined &&
     !isRecoverablePendingCreate(rawPendingCreate)
   ) {
-    quarantinedMarketState["__pending_create__"] =
-      rawPendingCreate;
+    quarantinedMarketState["__pending_create__"] = rawPendingCreate;
   } else {
-    recoveredPendingCreate =
-      rawPendingCreate as OwnedPendingCreate | undefined;
+    recoveredPendingCreate = rawPendingCreate as OwnedPendingCreate | undefined;
   }
   data.feeEvents ||= [];
   data.feeLedger ||= createEmptyMarketSaleFeeLedger();
@@ -896,12 +3246,19 @@ function ensureDataState(): MarketSaleDataState {
   if (data.marketReservations === undefined) {
     data.marketReservations = {};
   }
-  const rawDirectAutomation =
-    data.directAutomation as unknown;
+  const rawDirectAutomation = data.directAutomation as unknown;
   let normalizedDirect:
-    | DirectAutomationState
-    | MarketDirectContinuousAutomationState;
-  if (isContinuousDirectState(rawDirectAutomation)) {
+    DirectAutomationState | MarketDirectContinuousAutomationState;
+  const hasPostCutoverEvidence =
+    data.baseResourceV3ActivationAnchor !== undefined ||
+    data.baseResourceV3ActivationAnchorMirror !== undefined ||
+    data.baseResourceV3ActivationBlocker !== undefined;
+  if (hasPostCutoverEvidence && isContinuousDirectState(rawDirectAutomation)) {
+    // Active V3 authority 必须由紧随其后的双 activation anchor +
+    // runtime gate 判定。这里保留 exact raw identity，既不让 normalizer
+    // “修复”损坏证据，也避免 cold tick 先 JSON clone 两个 512-ring。
+    normalizedDirect = rawDirectAutomation;
+  } else if (isContinuousDirectState(rawDirectAutomation)) {
     // v2 绝不能经过 legacy normalizer，否则 schema/capability、permit/WAL
     // 会被旧版“修复”为一个看似可写的 v1 空状态。
     normalizedDirect = normalizeContinuousForStorage(
@@ -912,11 +3269,8 @@ function ensureDataState(): MarketSaleDataState {
     // 只有 schema=1 且无 v2 capability 的 canonical 才允许先按 v1
     // 精确归一化，再由确定性 golden migration 尝试升级。任何 alias
     // 分叉先固化为 blocker，不能把兼容投影合并回 canonical WAL。
-    const legacy = normalizeDirectAutomationState(
-      rawDirectAutomation,
-    );
-    const compatibilityPending =
-      data.pendingDirectDeals as unknown;
+    const legacy = normalizeDirectAutomationState(rawDirectAutomation);
+    const compatibilityPending = data.pendingDirectDeals as unknown;
     const compatibilityMatchesCanonical =
       compatibilityPending === undefined ||
       compatibilityPending === legacy.pendingDirectDeals ||
@@ -928,19 +3282,14 @@ function ensureDataState(): MarketSaleDataState {
       );
     if (!compatibilityMatchesCanonical) {
       legacy.quarantinedPendingDirectDeals = {
-        ...quarantinedDirectPendingAlias(
-          compatibilityPending,
-        ),
+        ...quarantinedDirectPendingAlias(compatibilityPending),
         ...legacy.quarantinedPendingDirectDeals,
       };
-      legacy.migrationBlockedReason =
-        "direct_pending_alias_mismatch";
+      legacy.migrationBlockedReason = "direct_pending_alias_mismatch";
     }
     normalizedDirect = normalizeContinuousForStorage(
       migrateLegacyDirectToContinuous(
-        canonicalMemoryEvidence(
-          legacy,
-        ) as DirectAutomationState,
+        canonicalMemoryEvidence(legacy) as DirectAutomationState,
         Game.time,
       ),
       Game.time,
@@ -949,19 +3298,16 @@ function ensureDataState(): MarketSaleDataState {
     // 新 bundle 不再把 missing/unknown Direct state 初始化成可写 v1。
     // canonical 与兼容 alias 一并进入 blocked evidence；禁止覆盖掉一个
     // 可能代表 CPU-cut 中间态的旧 pending。
-    const compatibilityPending =
-      data.pendingDirectDeals as unknown;
+    const compatibilityPending = data.pendingDirectDeals as unknown;
     const safeEmptyCompatibility =
       compatibilityPending === undefined ||
       (isPlainRecord(compatibilityPending) &&
         Object.keys(compatibilityPending).length === 0);
     normalizedDirect = normalizeContinuousForStorage(
-      rawDirectAutomation === undefined &&
-        safeEmptyCompatibility
+      rawDirectAutomation === undefined && safeEmptyCompatibility
         ? undefined
         : {
-            canonicalDirectState:
-              rawDirectAutomation,
+            canonicalDirectState: rawDirectAutomation,
             compatibilityPending,
           },
       Game.time,
@@ -969,23 +3315,20 @@ function ensureDataState(): MarketSaleDataState {
   }
   // pendingDirectDeals 只是回滚/保护账本兼容投影；canonical v2 永远覆盖
   // alias，禁止把旧 alias 反向合并进 permit/WAL。
-  data.pendingDirectDeals =
-    normalizedDirect.pendingDirectDeals;
+  data.pendingDirectDeals = normalizedDirect.pendingDirectDeals;
   data.directAutomation = normalizedDirect;
   let committedDirect = data.directAutomation!;
   if (Object.keys(quarantinedMarketState).length > 0) {
-    const existingBlocker =
-      committedDirect.migrationBlockedReason;
+    const existingBlocker = committedDirect.migrationBlockedReason;
     committedDirect = {
       ...committedDirect,
       quarantinedPendingDirectDeals: {
-      ...quarantinedMarketState,
+        ...quarantinedMarketState,
         ...committedDirect.quarantinedPendingDirectDeals,
       },
       migrationBlockedReason:
         !existingBlocker ||
-        existingBlocker ===
-          "direct_qualification_state_invalid"
+        existingBlocker === "direct_qualification_state_invalid"
           ? "market_sale_data_state_invalid"
           : existingBlocker,
     };
@@ -1001,10 +3344,9 @@ function ensureDataState(): MarketSaleDataState {
   // 右值先完整构造，最后以单次 canonical container assignment 作为
   // commit marker。CPU 若在它之前中断，原始损坏记录仍在；若在它之后
   // 中断，quarantine/blocker 与 typed 清理已经不可分割地同时落盘。
-  Memory.data.marketSaleAutomation =
-    committedData as unknown as NonNullable<
-      NonNullable<Memory["data"]>["marketSaleAutomation"]
-    >;
+  Memory.data.marketSaleAutomation = committedData as unknown as NonNullable<
+    NonNullable<Memory["data"]>["marketSaleAutomation"]
+  >;
   // 保护账本和 carrier 仍读取兼容字段；正常返回时它与 Direct WAL
   // 使用同一对象，写入顺序同时覆盖 CPU 截断恢复。
   return committedData;
@@ -1013,8 +3355,7 @@ function ensureDataState(): MarketSaleDataState {
 function ensureRuntimeState(): MarketSaleRuntimeState {
   if (!Memory.runtime) Memory.runtime = {};
   const previous = Memory.runtime.marketSaleAutomation as
-    | MarketSaleRuntimeState
-    | undefined;
+    MarketSaleRuntimeState | undefined;
   if (previous) return previous;
   const runtime: MarketSaleRuntimeState = {
     updatedAt: Game.time,
@@ -1059,7 +3400,9 @@ function readLiveOrders(): MarketOrderSnapshot[] {
   const orders = Game.market?.orders;
   if (!orders || typeof orders !== "object") return [];
   return Object.values(orders)
-    .filter((order): order is Order => Boolean(order && typeof order.id === "string"))
+    .filter((order): order is Order =>
+      Boolean(order && typeof order.id === "string"),
+    )
     .map((order) => ({
       id: order.id,
       type: order.type,
@@ -1114,28 +3457,123 @@ function reject(context: RunContext, reason: string): void {
     (context.rejectedByReason[reason] || 0) + 1;
 }
 
-function usesDirectStrategy(
-  config: MarketSaleAutomationConfig,
-): boolean {
+function usesDirectStrategy(config: MarketSaleAutomationConfig): boolean {
   return (
     config.mode === "direct" ||
     (config.mode === "shadow" && config.shadowStrategy === "direct")
   );
 }
 
+/**
+ * Dispatcher 由已签收 permit 版本决定 evaluator。首个 V3 proposal 在跨 tick
+ * 等待 operator accept 时，current permit 仍是 V2；因此继续使用代码冻结的
+ * V2 config/readiness，而不是把尚未签收的 Memory V3 target config 误传给
+ * V2 evaluator。V3 target 的完整性只由 propose/accept operator 单独校验。
+ */
+function frozenV2DispatchConfig(
+  current: ResolvedMarketSaleAutomationConfig,
+): ResolvedMarketSaleAutomationConfig {
+  const hardFloor: Partial<Record<ResourceConstant, number>> = {};
+  const economicFloor: Partial<Record<ResourceConstant, number>> = {};
+  const forecastBuffer: Partial<Record<ResourceConstant, number>> = {};
+  for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
+    hardFloor[entry.resourceType] = entry.hardFloor;
+    economicFloor[entry.resourceType] = entry.economicFloor;
+    forecastBuffer[entry.resourceType] = entry.laneReserve;
+  }
+  return {
+    ...current,
+    directCapability: "continuous-v2",
+    configRevision: MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION,
+    sellResources: MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+      (entry) => entry.resourceType,
+    ),
+    hardFloor,
+    economicFloor,
+    forecastBuffer,
+    minDealAmount: MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.plannedDealAmount,
+    maxDirectDealAmount:
+      MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.plannedDealAmount,
+    maxDirectDealsPerCycle:
+      MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.maxDealsPerCycle,
+    minDirectOrderAmount:
+      MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.plannedDealAmount,
+    minDirectOrderNotional: Math.max(
+      ...MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+        (entry) => entry.minOrderNotional,
+      ),
+    ),
+    maxDirectRawOrdersScannedPerCycle: Math.max(
+      ...MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+        (entry) => entry.maxRawOrdersScanned,
+      ),
+    ),
+    maxDirectEligibleOrdersPricedPerCycle: Math.max(
+      ...MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+        (entry) => entry.maxEligibleOrdersPriced,
+      ),
+    ),
+    maxDirectTransactionEnergy: Math.min(
+      ...MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+        (entry) => entry.maxTransactionEnergy,
+      ),
+    ),
+    terminalEnergyReserve: Math.max(
+      ...MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
+        (entry) => entry.terminalEnergyReserve,
+      ),
+    ),
+    energyShadowPrice: undefined,
+    energyShadowHardFloor: MARKET_DIRECT_CANARY_POLICY.minEnergyShadowHardFloor,
+    canaryEnabled: true,
+    canaryAllowExpansion: false,
+    directCanaryMaxConfirmedDeals: 1,
+    planningSnapshotMaxAgeTicks: 10,
+    minHistoryDays: 7,
+    minHistoryTransactions: 100,
+    minHistoryVolume: 100_000,
+    historyFloorRatio: 0.95,
+    historyMaxAgeDays: 2,
+    validForPlanning:
+      current.mode === "direct" ||
+      (current.mode === "shadow" && current.shadowStrategy === "direct"),
+    invalidReasons: [],
+  };
+}
+
 function mergeDirectResult(
   context: RunContext,
   result:
     | ReturnType<typeof runDirectAutomationPlanning>
-    | MarketDirectContinuousResult,
+    | MarketDirectContinuousResult
+    | MarketBaseResourceAutomationResult,
 ): void {
   context.writes += result.writes;
   for (const action of result.actions) recordAction(context, action);
   for (const [reason, count] of Object.entries(result.rejectedByReason)) {
     context.rejectedByReason[reason] =
-      (context.rejectedByReason[reason] || 0) +
-      nonNegativeInteger(count);
+      (context.rejectedByReason[reason] || 0) + nonNegativeInteger(count);
   }
+}
+
+function marketBaseResourceCanonicalStateChanged(
+  previous: MarketBaseResourceV3RuntimeState,
+  next: MarketBaseResourceV3RuntimeState,
+): boolean {
+  const keys = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  for (const key of keys) {
+    // Planning snapshot 只是有界观测字段：不授予权限、不参与价格/保护/quota
+    // 决策，也不进入 anchor。若它是唯一变化则不替换或重签 canonical root；
+    // 当前与未来的安全字段仍由下方通用 key 比较绑定 identity。
+    if (key === "lastPlanningSnapshot") continue;
+    if (
+      (previous as unknown as Record<string, unknown>)[key] !==
+      (next as unknown as Record<string, unknown>)[key]
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function directCandidateRejectionReasons(
@@ -1145,8 +3583,7 @@ function directCandidateRejectionReasons(
   const reasons = new Set<string>();
   const entry = candidate.protectionEntry;
   const terminal = roomTerminal(candidate.roomName);
-  const terminalEnergy =
-    terminal?.store.getUsedCapacity(RESOURCE_ENERGY);
+  const terminalEnergy = terminal?.store.getUsedCapacity(RESOURCE_ENERGY);
   for (const reason of candidate.directAdditionalRejectionReasons || []) {
     const normalized =
       typeof reason === "string" ? reason.trim().slice(0, 120) : "";
@@ -1174,10 +3611,7 @@ function directCandidateRejectionReasons(
   if (!terminal) {
     reasons.add("direct_terminal_missing");
   } else {
-    if (
-      !Number.isSafeInteger(terminal.cooldown) ||
-      terminal.cooldown !== 0
-    ) {
+    if (!Number.isSafeInteger(terminal.cooldown) || terminal.cooldown !== 0) {
       reasons.add("direct_terminal_cooldown");
     }
     if (
@@ -1212,8 +3646,7 @@ function toDirectRuntimeCandidates(
 ): DirectRuntimeCandidate[] {
   return candidates.map((candidate) => {
     const terminal = roomTerminal(candidate.roomName);
-    const terminalEnergy =
-      terminal?.store.getUsedCapacity(RESOURCE_ENERGY);
+    const terminalEnergy = terminal?.store.getUsedCapacity(RESOURCE_ENERGY);
     return {
       roomName: candidate.roomName,
       resourceType: candidate.resourceType,
@@ -1227,22 +3660,16 @@ function toDirectRuntimeCandidates(
       terminalStock: candidate.protectionEntry.terminalStock,
       terminalCooldown: terminal?.cooldown,
       terminalEnergy:
-        typeof terminalEnergy === "number"
-          ? terminalEnergy
-          : undefined,
+        typeof terminalEnergy === "number" ? terminalEnergy : undefined,
       protectedAmount: candidate.protectionEntry.protectedAmount,
       effectiveNetFloor: candidate.effectiveNetFloor,
       directHistoryTrusted: candidate.directHistoryTrusted === true,
-      effectiveEnergyShadowPrice:
-        candidate.effectiveEnergyShadowPrice,
+      effectiveEnergyShadowPrice: candidate.effectiveEnergyShadowPrice,
       energyShadowObservedAt: candidate.energyShadowObservedAt,
       energyShadowComponents: candidate.energyShadowComponents,
       capacityState: candidate.capacityState,
       isHubRoom: candidate.isHubRoom,
-      rejectionReasons: directCandidateRejectionReasons(
-        context,
-        candidate,
-      ),
+      rejectionReasons: directCandidateRejectionReasons(context, candidate),
     };
   });
 }
@@ -1250,7 +3677,15 @@ function toDirectRuntimeCandidates(
 function toContinuousRuntimeCandidates(
   context: RunContext,
   candidates: readonly MarketSalePlanCandidate[],
+  dispatchConfig: ResolvedMarketSaleAutomationConfig = context.config,
 ): MarketDirectContinuousRuntimeCandidate[] {
+  const candidateContext =
+    dispatchConfig === context.config
+      ? context
+      : {
+          ...context,
+          config: dispatchConfig,
+        };
   return candidates.map((candidate) => ({
     roomName: candidate.roomName,
     resourceType: candidate.resourceType,
@@ -1258,36 +3693,149 @@ function toContinuousRuntimeCandidates(
     historyFloor: candidate.historyFloor,
     ratchetFloor: candidate.ratchetFloor,
     effectiveNetFloor: candidate.effectiveNetFloor,
-    effectiveEnergyShadowPrice:
-      candidate.effectiveEnergyShadowPrice,
+    effectiveEnergyShadowPrice: candidate.effectiveEnergyShadowPrice,
     energyShadowObservedAt: candidate.energyShadowObservedAt,
-    energyShadowComponents:
-      candidate.energyShadowComponents,
+    energyShadowComponents: candidate.energyShadowComponents,
     capacityState: candidate.capacityState,
     isHubRoom: candidate.isHubRoom,
     rejectionReasons: directCandidateRejectionReasons(
-      context,
+      candidateContext,
       candidate,
     ),
   }));
 }
 
-function makerExposurePresent(
-  context: RunContext,
-): boolean {
+function toMarketBaseResourceRuntimeCandidates(
+  candidates: readonly MarketSalePlanCandidate[],
+): MarketBaseResourceRuntimeCandidate[] {
+  return candidates
+    .filter((candidate) => isMarketBaseResource(candidate.resourceType))
+    .map((candidate) => {
+      // protection/Hub/emergency 是逐 lane 当前事实，不可复用 v2 的
+      // rejection 集合把它们升级为全局 pricing blocker。这里只保留
+      // resource-scoped pricing 与 adapter integration 失败。
+      const rejectionReasons = (
+        candidate.directAdditionalRejectionReasons || []
+      )
+        .filter(
+          (reason) =>
+            typeof reason === "string" && !reason.startsWith("protection:"),
+        )
+        .map((reason) => reason.trim().slice(0, 120))
+        .filter(Boolean);
+      return {
+        roomName: candidate.roomName,
+        resourceType: candidate.resourceType as MarketBaseResource,
+        protectionEntry: candidate.protectionEntry,
+        historyTrusted: candidate.directHistoryTrusted === true,
+        historyFloor: candidate.historyFloor ?? 0,
+        ratchetFloor: candidate.ratchetFloor ?? 0,
+        effectiveNetFloor: candidate.effectiveNetFloor,
+        effectiveEnergyShadowPrice:
+          candidate.effectiveEnergyShadowPrice ?? Number.NaN,
+        energyShadowObservedAt: candidate.energyShadowObservedAt ?? -1,
+        energyShadowComponents: candidate.energyShadowComponents || {
+          hardFloor: Number.NaN,
+        },
+        capacityState: candidate.capacityState || "normal",
+        isHubRoom: candidate.isHubRoom === true,
+        rejectionReasons: [...new Set(rejectionReasons)].sort(),
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.resourceType.localeCompare(right.resourceType) ||
+        left.roomName.localeCompare(right.roomName),
+    );
+}
+
+function makerExposurePresent(context: RunContext): boolean {
   return Boolean(
     Object.keys(context.data.managedOrders).length > 0 ||
-      context.data.pendingCreate ||
-      Object.keys(context.data.pendingMutations).length > 0 ||
-      context.data.feeLedger?.reconcileGap ||
-      Object.values(context.data.managedOrders).some(
-        (managed) =>
-          managed.externalMutationGap !== undefined ||
-          managed.disappearanceGap !== undefined,
-      ) ||
-      context.stagingAmount > 0 ||
-      context.reservationAmount > 0,
+    context.data.pendingCreate ||
+    Object.keys(context.data.pendingMutations).length > 0 ||
+    context.data.feeLedger?.reconcileGap ||
+    Object.values(context.data.managedOrders).some(
+      (managed) =>
+        managed.externalMutationGap !== undefined ||
+        managed.disappearanceGap !== undefined,
+    ) ||
+    context.stagingAmount > 0 ||
+    context.reservationAmount > 0,
   );
+}
+
+/**
+ * Direct/V3 不能借主动 mode 绕过旧 Maker 清退。这里只撤销 canonical
+ * market-sale-owned SELL；手工订单以及 BUY 路径都不在撤单集合中。
+ *
+ * 返回 true 仅表示已经在两个不同 tick 看见旧 exposure 全部为零。
+ */
+function drainLegacyMakerExposureBeforeDirect(context: RunContext): boolean {
+  const raw = context.data.directLegacyExposureDrain;
+  const previous: DirectLegacyExposureDrainState =
+    raw?.schemaVersion === 1 &&
+    Number.isSafeInteger(raw.zeroConfirmations) &&
+    raw.zeroConfirmations >= 0 &&
+    raw.zeroConfirmations <= 2
+      ? raw
+      : {
+          schemaVersion: 1,
+          zeroConfirmations: 0,
+        };
+  const outstanding = makerExposurePresent(context);
+  if (outstanding) {
+    retryPreparedCancels(context);
+    for (const orderId of Object.keys(context.data.managedOrders).sort()) {
+      const live = context.liveOrderById.get(orderId);
+      if (live?.type === ORDER_SELL) {
+        requestCancel(context, orderId);
+      } else if (live?.type === ORDER_BUY) {
+        reject(context, "direct_legacy_buy_order_not_cancelled");
+      }
+    }
+    context.data.directLegacyExposureDrain = {
+      schemaVersion: 1,
+      zeroConfirmations: 0,
+    };
+    context.data.drain = {
+      phase:
+        context.data.drain?.phase === "requested" ? "draining" : "requested",
+      targetMode: "off",
+      zeroConfirmations: 0,
+    };
+    reject(context, "direct_legacy_exposure_draining");
+    return false;
+  }
+
+  if (previous.completedAt !== undefined && previous.zeroConfirmations >= 2) {
+    return true;
+  }
+  const isNewTick = previous.lastZeroConfirmationTick !== Game.time;
+  const zeroConfirmations = Math.min(
+    2,
+    previous.zeroConfirmations + (isNewTick ? 1 : 0),
+  );
+  const next: DirectLegacyExposureDrainState = {
+    schemaVersion: 1,
+    zeroConfirmations,
+    lastZeroConfirmationTick: isNewTick
+      ? Game.time
+      : previous.lastZeroConfirmationTick,
+    ...(zeroConfirmations >= 2 ? { completedAt: Game.time } : {}),
+  };
+  context.data.directLegacyExposureDrain = next;
+  if (zeroConfirmations < 2) {
+    context.data.drain = {
+      phase: "draining",
+      targetMode: "off",
+      zeroConfirmations,
+      lastZeroConfirmationTick: next.lastZeroConfirmationTick,
+    };
+    reject(context, "direct_legacy_exposure_zero_confirmation_pending");
+    return false;
+  }
+  return true;
 }
 
 function structuralMarketSaleWriteBlocker(
@@ -1297,9 +3845,7 @@ function structuralMarketSaleWriteBlocker(
   const direct = data.directAutomation;
   if (!direct) return "direct_state_missing";
   if (isContinuousDirectState(direct)) {
-    const quarantineKeys = Object.keys(
-      direct.quarantinedPendingDirectDeals,
-    );
+    const quarantineKeys = Object.keys(direct.quarantinedPendingDirectDeals);
     const inactiveMissingState =
       !usesDirectStrategy(config) &&
       direct.migrationStatus === "blocked" &&
@@ -1308,8 +3854,7 @@ function structuralMarketSaleWriteBlocker(
       direct.ledger.pending === undefined &&
       Object.keys(direct.pendingDirectDeals).length === 0 &&
       quarantineKeys.length === 1 &&
-      quarantineKeys[0] ===
-        "__continuous_blocked__:direct_state_missing" &&
+      quarantineKeys[0] === "__continuous_blocked__:direct_state_missing" &&
       Object.keys(direct.lifecycleByEntry).length === 0 &&
       direct.currentPermit === undefined &&
       direct.proposedPermit === undefined &&
@@ -1336,26 +3881,16 @@ function structuralMarketSaleWriteBlocker(
     if (direct.ledger.blocker) {
       return direct.ledger.blocker.code;
     }
-    if (
-      marketDirectContinuousExposure(direct)
-        .quarantinedCount > 0
-    ) {
+    if (marketDirectContinuousExposure(direct).quarantinedCount > 0) {
       return "direct_quarantine_present";
     }
     return undefined;
   }
   const blocker = direct.migrationBlockedReason;
-  if (
-    blocker &&
-    blocker !== "direct_qualification_state_invalid"
-  ) {
+  if (blocker && blocker !== "direct_qualification_state_invalid") {
     return blocker;
   }
-  if (
-    Object.keys(
-      direct.quarantinedPendingDirectDeals || {},
-    ).length > 0
-  ) {
+  if (Object.keys(direct.quarantinedPendingDirectDeals || {}).length > 0) {
     return "direct_quarantine_present";
   }
   return undefined;
@@ -1374,14 +3909,11 @@ function sortedThresholdMap(
 }
 
 /**
- * The operator-facing revision is necessary for auditability, but it is not
- * sufficient to prove that the underlying policy stayed frozen. Persist the
- * complete planning signature so an accidental in-place config edit resets
- * Shadow qualification even when the revision string was not changed.
+ * operator-facing revision 是审计必需字段，但不足以证明底层 policy 始终冻结。
+ * 持久化完整 planning signature，使误发生的原位配置修改即使未改 revision，
+ * 也会重置 Shadow qualification。
  */
-function planningConfigSignature(
-  config: MarketSaleAutomationConfig,
-): string {
+function planningConfigSignature(config: MarketSaleAutomationConfig): string {
   return JSON.stringify({
     configRevision: config.configRevision,
     sellResources: [...config.sellResources].sort(),
@@ -1462,10 +3994,7 @@ function carryFeeDebt(
   }
 }
 
-type PendingCreateZeroDeltaEvidence =
-  | "absent"
-  | "filled"
-  | "insufficient";
+type PendingCreateZeroDeltaEvidence = "absent" | "filled" | "insufficient";
 
 function creditsToMilli(value: number): number | undefined {
   const milli = Math.round(value * 1_000);
@@ -1473,9 +4002,8 @@ function creditsToMilli(value: number): number | undefined {
 }
 
 /**
- * A zero order-ID delta alone cannot distinguish an absent create from an
- * order which filled before it was observed. Require the write-ahead credit,
- * terminal and outgoing-transaction baselines to close to one exact outcome.
+ * 仅凭 order-ID 零差异无法区分“未创建”与“观察前已经成交完”。必须用预写的
+ * credits、terminal 与 outgoing transaction 基线把结果收敛到唯一结论。
  */
 function classifyPendingCreateZeroDelta(
   pending: OwnedPendingCreate,
@@ -1507,10 +4035,7 @@ function classifyPendingCreateZeroDelta(
   }
   const creditsBeforeMilli = creditsToMilli(pending.creditsBefore);
   const creditsAfterMilli = creditsToMilli(credits);
-  if (
-    creditsBeforeMilli === undefined ||
-    creditsAfterMilli === undefined
-  ) {
+  if (creditsBeforeMilli === undefined || creditsAfterMilli === undefined) {
     return "insufficient";
   }
 
@@ -1564,8 +4089,7 @@ function classifyPendingCreateZeroDelta(
     newOutgoing.length > 0 &&
     matchingOrderIds.size === 1 &&
     filledAmount === pending.tuple.totalAmount &&
-    terminalStock ===
-      pending.terminalStockBefore - pending.tuple.totalAmount &&
+    terminalStock === pending.terminalStockBefore - pending.tuple.totalAmount &&
     creditDeltaMilli ===
       priceMilli * pending.tuple.totalAmount - pending.feeMilli
   ) {
@@ -1679,7 +4203,9 @@ function adoptPendingOrder(
   const order = context.liveOrderById.get(orderId);
   if (!order || !order.roomName) return false;
   const carried = nonNegativeInteger(
-    context.data.carriedFeeDebtMilli[pending.tuple.resourceType as ResourceConstant],
+    context.data.carriedFeeDebtMilli[
+      pending.tuple.resourceType as ResourceConstant
+    ],
   );
   const managed: OwnedManagedOrder = {
     orderId,
@@ -1695,7 +4221,9 @@ function adoptPendingOrder(
     policyCancelAtTick: pending.requestedAt + context.config.orderPolicyTtl,
     serverCreatedTick: order.created,
   };
-  context.data.carriedFeeDebtMilli[pending.tuple.resourceType as ResourceConstant] = 0;
+  context.data.carriedFeeDebtMilli[
+    pending.tuple.resourceType as ResourceConstant
+  ] = 0;
   context.data.managedOrders[orderId] = managed;
   context.data.pendingCreate = undefined;
   appendAudit(context.data, {
@@ -1711,16 +4239,15 @@ function reconcilePendingCreateState(context: RunContext): void {
   const pending = context.data.pendingCreate;
   if (!pending) return;
   const lease = Memory.cfg?.marketSaleAutomation?.orderMutationLease as
-    | OrderMutationLease
-    | undefined;
+    OrderMutationLease | undefined;
   const baselineChanged = Boolean(
     pending.baselineOrderFingerprints &&
-      Object.entries(pending.baselineOrderFingerprints).some(
-        ([orderId, fingerprint]) => {
-          const live = context.liveOrderById.get(orderId);
-          return !live || orderFingerprint(live) !== fingerprint;
-        },
-      ),
+    Object.entries(pending.baselineOrderFingerprints).some(
+      ([orderId, fingerprint]) => {
+        const live = context.liveOrderById.get(orderId);
+        return !live || orderFingerprint(live) !== fingerprint;
+      },
+    ),
   );
   const result = reconcilePendingCreate({
     pending,
@@ -1745,10 +4272,10 @@ function reconcilePendingCreateState(context: RunContext): void {
       terminalStockBefore: pending.terminalStockBefore,
       outgoingKeysBefore: pending.outgoingKeysBefore,
       baselineOrderFingerprints: pending.baselineOrderFingerprints,
-      operatorResolutionCandidateIds:
-        pending.operatorResolutionCandidateIds,
+      operatorResolutionCandidateIds: pending.operatorResolutionCandidateIds,
     } as unknown as OwnedPendingCreate;
-    if (result.blockedReason) reject(context, `pending_create:${result.blockedReason}`);
+    if (result.blockedReason)
+      reject(context, `pending_create:${result.blockedReason}`);
     return;
   }
   if (result.resolvedAs === "filled_or_absent") {
@@ -1761,10 +4288,7 @@ function reconcilePendingCreateState(context: RunContext): void {
       context.data.pendingCreate = {
         ...pending,
         status: "ambiguous",
-        zeroDeltaConfirmations: Math.max(
-          2,
-          pending.zeroDeltaConfirmations,
-        ),
+        zeroDeltaConfirmations: Math.max(2, pending.zeroDeltaConfirmations),
         lastZeroDeltaTick: Game.time,
         audit: [
           ...pending.audit,
@@ -1811,8 +4335,10 @@ function reconcilePendingMutationStates(context: RunContext): void {
     const live = context.liveOrderById.get(orderId);
     const result = reconcilePendingMutation({ pending, liveOrder: live });
     if (!result.confirmed) {
-      if (result.pending) context.data.pendingMutations[orderId] = result.pending;
-      if (result.reconcileGap) reject(context, "pending_mutation_reconcile_gap");
+      if (result.pending)
+        context.data.pendingMutations[orderId] = result.pending;
+      if (result.reconcileGap)
+        reject(context, "pending_mutation_reconcile_gap");
       continue;
     }
     const managed = context.data.managedOrders[orderId];
@@ -1899,9 +4425,7 @@ function reconcilePendingMutationStates(context: RunContext): void {
 }
 
 function reconcileManagedOrders(context: RunContext): void {
-  for (const [orderId, managed] of Object.entries(
-    context.data.managedOrders,
-  )) {
+  for (const [orderId, managed] of Object.entries(context.data.managedOrders)) {
     if (context.data.pendingMutations[orderId]) continue;
     const live = context.liveOrderById.get(orderId);
     if (managed.externalMutationGap) {
@@ -1909,9 +4433,7 @@ function reconcileManagedOrders(context: RunContext): void {
         managed.remainingExposure = Math.max(
           nonNegativeInteger(managed.remainingExposure),
           nonNegativeInteger(live.remainingAmount),
-          nonNegativeInteger(
-            managed.externalMutationGap.conservativeExposure,
-          ),
+          nonNegativeInteger(managed.externalMutationGap.conservativeExposure),
         );
         managed.externalMutationGap.conservativeExposure =
           managed.remainingExposure;
@@ -1941,23 +4463,21 @@ function reconcileManagedOrders(context: RunContext): void {
       } else {
         try {
           const reconciliation = reconcileDisappearedOrderFeeDebt({
-            ledger:
-              context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
+            ledger: context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
             gameTime: Game.time,
             orderId,
             resourceType: managed.resourceType,
-            remainingFeeDebtMilli: nonNegativeInteger(
-              managed.feeDebtMilli,
-            ),
+            remainingFeeDebtMilli: nonNegativeInteger(managed.feeDebtMilli),
             reason: "unknown",
           });
           context.data.feeLedger = reconciliation.ledger;
           managed.disappearanceGap = {
             detectedAt: Game.time,
-            reason: reconciliation.ledger.reconcileGap?.reason ===
+            reason:
+              reconciliation.ledger.reconcileGap?.reason ===
               "server_expiry_refund_mismatch"
-              ? "server_expiry_refund_mismatch"
-              : "unknown_disappearance",
+                ? "server_expiry_refund_mismatch"
+                : "unknown_disappearance",
           };
         } catch {
           reject(context, "fee_ledger_invalid");
@@ -1968,6 +4488,14 @@ function reconcileManagedOrders(context: RunContext): void {
         );
         reject(context, "managed_order_unknown_disappearance");
       }
+      continue;
+    }
+    if (live.type === ORDER_BUY) {
+      // market-sale 只拥有 SELL 生命周期。即使一个损坏/外部篡改的旧
+      // managed 记录误指向 BUY，也只能 fail-closed 留给 operator
+      // 处理，绝不能把购买路径当作 Maker exposure 自动撤销。
+      context.runtime.safetyViolationCount += 1;
+      reject(context, "managed_order_buy_identity_quarantined");
       continue;
     }
     let priceChanged = true;
@@ -2000,8 +4528,7 @@ function reconcileManagedOrders(context: RunContext): void {
       managed.remainingExposure = conservativeExposure;
       try {
         context.data.feeLedger = markExternalOrderMutationFeeGap({
-          ledger:
-            context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
+          ledger: context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
           gameTime: Game.time,
           orderId,
         });
@@ -2079,14 +4606,15 @@ function totalExposure(data: MarketSaleDataState): number {
       ? marketDirectContinuousExposure(direct).resourceAmount
       : directAutomationExposure(direct).resourceAmount
     : Object.values(data.pendingDirectDeals || {}).reduce(
-        (sum, deal) =>
-          sum + nonNegativeInteger(deal.dealAmount),
+        (sum, deal) => sum + nonNegativeInteger(deal.dealAmount),
         0,
       );
   return managed + pendingCreate + pendingDirect;
 }
 
-function effectiveMode(config: MarketSaleAutomationConfig): MarketSaleAutomationConfig["mode"] {
+function effectiveMode(
+  config: MarketSaleAutomationConfig,
+): MarketSaleAutomationConfig["mode"] {
   if (
     (config.mode === "shadow" ||
       config.mode === "maker" ||
@@ -2098,6 +4626,15 @@ function effectiveMode(config: MarketSaleAutomationConfig): MarketSaleAutomation
   }
   if (config.mode === "hybrid") return "off";
   return config.mode;
+}
+
+function makerModePermanentlyForbidden(
+  config: MarketSaleAutomationConfig,
+): boolean {
+  return (
+    MARKET_MAKER_HYBRID_PERMANENTLY_DISABLED &&
+    (config.mode === "maker" || config.mode === "hybrid")
+  );
 }
 
 function requestCancel(context: RunContext, orderId: string): boolean {
@@ -2156,7 +4693,7 @@ function updateDrain(
   context: RunContext,
   mode: MarketSaleAutomationConfig["mode"],
 ): void {
-  context.data.drain = updateDrainState({
+  const updated = updateDrainState({
     state: context.data.drain || { phase: "off", zeroConfirmations: 0 },
     desiredMode: mode,
     gameTime: Game.time,
@@ -2169,10 +4706,7 @@ function updateDrain(
     reservationAmount: context.reservationAmount,
     exposureAmount: totalExposure(context.data),
     reconcileGapCount:
-      structuralMarketSaleWriteBlocker(
-        context.data,
-        context.config,
-      ) ||
+      structuralMarketSaleWriteBlocker(context.data, context.config) ||
       context.data.feeLedger?.reconcileGap ||
       Object.values(context.data.managedOrders).some(
         (managed) =>
@@ -2185,6 +4719,17 @@ function updateDrain(
         ? 1
         : 0,
   });
+  const directDrain = context.data.directLegacyExposureDrain;
+  context.data.drain =
+    mode === "direct" &&
+    directDrain?.completedAt !== undefined &&
+    directDrain.zeroConfirmations >= 2
+      ? {
+          ...updated,
+          zeroConfirmations: directDrain.zeroConfirmations,
+          lastZeroConfirmationTick: directDrain.lastZeroConfirmationTick,
+        }
+      : updated;
 }
 
 function drainIfRequired(
@@ -2208,10 +4753,7 @@ function roomTerminal(roomName: string): StructureTerminal | undefined {
 }
 
 interface CandidateRejectionOptions {
-  /**
-   * Only maintenance of this exact managed order may recover its own reserved
-   * exposure. New and Shadow planning must leave this unset.
-   */
+  /** 只有维护这个 exact managed order 时才可回收其预留 exposure；新单与 Shadow 必须留空。 */
   excludeManagedOrderId?: string;
   minimumSellableAmount?: number;
 }
@@ -2237,8 +4779,7 @@ function candidateRejectionReasons(
       terminalEnergyReserve: context.config.terminalEnergyReserve,
       terminalFreeCapacity:
         typeof terminalFree === "number" ? terminalFree : undefined,
-      minimumTerminalFreeCapacity:
-        candidate.minimumTerminalFreeCapacity ?? 0,
+      minimumTerminalFreeCapacity: candidate.minimumTerminalFreeCapacity ?? 0,
       resourceAllowed: context.config.sellResources.includes(
         candidate.resourceType,
       ),
@@ -2497,11 +5038,9 @@ function currentManagedFloorFailureReason(
 }
 
 /**
- * Every passive market exposure must be backed by a complete protection
- * observation from this tick and a provable current net floor. ResourceControl
- * cadence and capacity-state remain mandatory only for a new order, but every
- * live managed order is re-priced against current config and cached pricing
- * evidence on every tick.
+ * 每份被动市场 exposure 都必须有本 tick 完整 protection observation 与可证明的
+ * current net floor。ResourceControl cadence/capacity-state 只对新单强制，但所有
+ * live managed order 每 tick 都按当前配置与缓存价格证据重新验价。
  */
 function currentProtectionFailureReason(
   context: RunContext,
@@ -2550,11 +5089,9 @@ function currentProtectionFailureReason(
     if (
       requiredExposure <= 0 ||
       ownContribution < requiredExposure ||
-      getMarketProtectionSellableAmount(
-        candidate.protectionEntry,
-        Game.time,
-        { excludeManagedOrderId: managed.orderId },
-      ) < requiredExposure
+      getMarketProtectionSellableAmount(candidate.protectionEntry, Game.time, {
+        excludeManagedOrderId: managed.orderId,
+      }) < requiredExposure
     ) {
       return "current_tick_protection_insufficient";
     }
@@ -2609,18 +5146,18 @@ function currentProtectionFailureReason(
 function hasFeeSensitiveFence(data: MarketSaleDataState): boolean {
   return Boolean(
     data.pendingCreate ||
-      data.feeLedger?.reconcileGap ||
-      Object.values(data.managedOrders).some(
-        (managed) =>
-          managed.externalMutationGap !== undefined ||
-          managed.disappearanceGap !== undefined,
-      ) ||
-      Object.values(data.pendingMutations).some(
-        (pending) =>
-          pending.kind === "extend" ||
-          pending.kind === "reprice" ||
-          pending.status === "reconcile_gap",
-      ),
+    data.feeLedger?.reconcileGap ||
+    Object.values(data.managedOrders).some(
+      (managed) =>
+        managed.externalMutationGap !== undefined ||
+        managed.disappearanceGap !== undefined,
+    ) ||
+    Object.values(data.pendingMutations).some(
+      (pending) =>
+        pending.kind === "extend" ||
+        pending.kind === "reprice" ||
+        pending.status === "reconcile_gap",
+    ),
   );
 }
 
@@ -2659,9 +5196,7 @@ function readSafeMakerTerminalSnapshot(
     return undefined;
   }
 
-  const resourceStock = terminal.store.getUsedCapacity(
-    candidate.resourceType,
-  );
+  const resourceStock = terminal.store.getUsedCapacity(candidate.resourceType);
   if (
     typeof resourceStock !== "number" ||
     !Number.isFinite(resourceStock) ||
@@ -2692,10 +5227,7 @@ function readSafeMakerTerminalSnapshot(
     reject(context, "terminal_capacity_unknown");
     return undefined;
   }
-  if (
-    terminalFree <
-    (candidate.minimumTerminalFreeCapacity ?? 0)
-  ) {
+  if (terminalFree < (candidate.minimumTerminalFreeCapacity ?? 0)) {
     reject(context, "terminal_capacity");
     return undefined;
   }
@@ -2722,6 +5254,10 @@ function createMakerOrder(
   context: RunContext,
   candidate: MarketSalePlanCandidate,
 ): boolean {
+  if (MARKET_MAKER_HYBRID_PERMANENTLY_DISABLED) {
+    reject(context, "market_maker_hybrid_permanently_disabled");
+    return false;
+  }
   if (hasFeeSensitiveFence(context.data)) {
     reject(context, "mutation_fence");
     return false;
@@ -2746,10 +5282,9 @@ function createMakerOrder(
   }
   const expansion =
     context.config.canaryAllowExpansion &&
-    context.data.expansionGrant?.configRevision === context.config.configRevision;
-  const maximumOrders = expansion
-    ? context.config.maxManagedOrders
-    : 1;
+    context.data.expansionGrant?.configRevision ===
+      context.config.configRevision;
+  const maximumOrders = expansion ? context.config.maxManagedOrders : 1;
   if (Object.keys(context.data.managedOrders).length >= maximumOrders) {
     reject(context, "managed_order_limit");
     return false;
@@ -2819,9 +5354,7 @@ function createMakerOrder(
     return false;
   }
   const creditsMilli = Math.floor(credits * 1_000);
-  const creditReserveMilli = Math.ceil(
-    context.config.creditReserve * 1_000,
-  );
+  const creditReserveMilli = Math.ceil(context.config.creditReserve * 1_000);
   const rollingFeeBudgetMilli = Math.ceil(
     context.config.rollingFeeBudget * 1_000,
   );
@@ -2843,8 +5376,7 @@ function createMakerOrder(
   const feeReservationId = `create:market-sale:${Game.time}:${candidate.roomName}:${candidate.resourceType}`;
   try {
     const reservation = reserveProspectiveFee({
-      ledger:
-        context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
+      ledger: context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
       reservationId: feeReservationId,
       gameTime: Game.time,
       action: "create",
@@ -2876,8 +5408,7 @@ function createMakerOrder(
     return false;
   }
   const lease = Memory.cfg?.marketSaleAutomation?.orderMutationLease as
-    | OrderMutationLease
-    | undefined;
+    OrderMutationLease | undefined;
   if (!lease) {
     reject(context, "mutation_lease_missing");
     return false;
@@ -2925,8 +5456,7 @@ function createMakerOrder(
   if (code !== OK) {
     try {
       context.data.feeLedger = releaseProspectiveFeeReservation({
-        ledger:
-          context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
+        ledger: context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
         reservationId: feeReservationId,
         gameTime: Game.time,
         limits: {
@@ -2947,8 +5477,7 @@ function createMakerOrder(
   }
   try {
     context.data.feeLedger = commitProspectiveFeeReservation({
-      ledger:
-        context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
+      ledger: context.data.feeLedger || createEmptyMarketSaleFeeLedger(),
       reservationId: feeReservationId,
       gameTime: Game.time,
       limits: {
@@ -2985,7 +5514,10 @@ function createMakerOrder(
     action: "pending_create_submitted",
     requestId: pending.requestId,
   });
-  recordAction(context, `create-submitted:${candidate.roomName}:${candidate.resourceType}`);
+  recordAction(
+    context,
+    `create-submitted:${candidate.roomName}:${candidate.resourceType}`,
+  );
   return true;
 }
 
@@ -3034,35 +5566,23 @@ function updateShadowCount(
     isContinuousDirectState(directState) &&
     usesDirectStrategy(context.config)
   ) {
-    const activeShadow = Object.values(
-      directState.lifecycleByEntry,
-    ).filter(
-      (entry) =>
-        entry.stage === "shadow" ||
-        entry.stage === "qualified",
+    const activeShadow = Object.values(directState.lifecycleByEntry).filter(
+      (entry) => entry.stage === "shadow" || entry.stage === "qualified",
     );
     context.runtime.shadowConsecutiveCycles =
       activeShadow.length > 0
         ? Math.min(
-            ...activeShadow.map(
-              (entry) => entry.consecutiveCompleteCycles,
-            ),
+            ...activeShadow.map((entry) => entry.consecutiveCompleteCycles),
           )
         : 0;
-    context.runtime.shadowConfigRevision =
-      context.config.configRevision;
+    context.runtime.shadowConfigRevision = context.config.configRevision;
     context.runtime.shadowConfigSignature =
       directState.currentPermit?.sharedPolicyFingerprint;
     const cycleTicks = activeShadow
       .map((entry) => entry.lastCycleTick)
-      .filter(
-        (tick): tick is number =>
-          typeof tick === "number",
-      );
+      .filter((tick): tick is number => typeof tick === "number");
     context.runtime.lastShadowCycleTick =
-      cycleTicks.length > 0
-        ? Math.max(...cycleTicks)
-        : undefined;
+      cycleTicks.length > 0 ? Math.max(...cycleTicks) : undefined;
     return;
   }
   if (
@@ -3071,14 +5591,10 @@ function updateShadowCount(
     !isContinuousDirectState(directState)
   ) {
     const qualification = directState.shadowQualification;
-    context.runtime.shadowConsecutiveCycles =
-      qualification.consecutiveCycles;
-    context.runtime.shadowConfigRevision =
-      qualification.configRevision;
-    context.runtime.shadowConfigSignature =
-      qualification.safetyFingerprint;
-    context.runtime.lastShadowCycleTick =
-      qualification.lastCycleTick;
+    context.runtime.shadowConsecutiveCycles = qualification.consecutiveCycles;
+    context.runtime.shadowConfigRevision = qualification.configRevision;
+    context.runtime.shadowConfigSignature = qualification.safetyFingerprint;
+    context.runtime.lastShadowCycleTick = qualification.lastCycleTick;
     return;
   }
   const revision = context.config.configRevision;
@@ -3136,81 +5652,64 @@ function projectContinuousDirectRuntimeStatus(
   ).sort(([left], [right]) => left.localeCompare(right))) {
     lifecycleByEntry[entryId] = {
       stage: lifecycle.stage,
-      consecutiveCompleteCycles:
-        lifecycle.consecutiveCompleteCycles,
+      consecutiveCompleteCycles: lifecycle.consecutiveCompleteCycles,
       lastCycleTick: lifecycle.lastCycleTick,
       lastShadowResult: lifecycle.lastShadowResult,
       qualifiedAt: lifecycle.qualifiedAt,
       canaryConfirmedAt: lifecycle.canaryConfirmedAt,
-      canaryConfirmedCount:
-        lifecycle.canaryConfirmedCount,
-      sharedReviewRequired:
-        lifecycle.sharedReviewRequired,
+      canaryConfirmedCount: lifecycle.canaryConfirmedCount,
+      sharedReviewRequired: lifecycle.sharedReviewRequired,
     };
   }
   const pending = state.ledger.pending;
-  const entries =
-    MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map(
-      (entry) => ({
-        entryId: entry.entryId,
-        resourceType: entry.resourceType,
-        allowedRoomNames: entry.allowedRoomNames,
-        hardFloor: entry.hardFloor,
-        economicFloor: entry.economicFloor,
-        laneReserve: entry.laneReserve,
-        rollingWindowTicks: entry.rollingWindowTicks,
-        rollingMaxAmount: entry.rollingMaxAmount,
-        opportunityReserveAmount:
-          entry.rollingOpportunityReserveAmount,
-        lifecycle:
-          lifecycleByEntry[entry.entryId],
-        quota: computeContinuousQuota(
-          state.ledger,
-          Game.time,
-          entry.resourceType,
-          entry.rollingMaxAmount,
-          MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.rollingMaxAmount,
-        ),
-      }),
-    );
+  const entries = MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map((entry) => ({
+    entryId: entry.entryId,
+    resourceType: entry.resourceType,
+    allowedRoomNames: entry.allowedRoomNames,
+    hardFloor: entry.hardFloor,
+    economicFloor: entry.economicFloor,
+    laneReserve: entry.laneReserve,
+    rollingWindowTicks: entry.rollingWindowTicks,
+    rollingMaxAmount: entry.rollingMaxAmount,
+    opportunityReserveAmount: entry.rollingOpportunityReserveAmount,
+    lifecycle: lifecycleByEntry[entry.entryId],
+    quota: computeContinuousQuota(
+      state.ledger,
+      Game.time,
+      entry.resourceType,
+      entry.rollingMaxAmount,
+      MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.rollingMaxAmount,
+    ),
+  }));
   return {
     strategyActive,
     schemaVersion: state.schemaVersion,
     capability: state.capability,
     migrationStatus: state.migrationStatus,
-    migrationBlockedReason:
-      state.migrationBlockedReason,
+    migrationBlockedReason: state.migrationBlockedReason,
     permit: state.currentPermit
       ? {
           epoch: state.currentPermit.epoch,
           permitId: state.currentPermit.permitId,
           permitHead: state.currentPermit.permitHead,
-          grants: state.currentPermit.entryGrants.map(
-            (grant) => ({
-              entryId: grant.entryId,
-              stage: grant.stage,
-              newDealGrant: grant.newDealGrant,
-            }),
-          ),
+          grants: state.currentPermit.entryGrants.map((grant) => ({
+            entryId: grant.entryId,
+            stage: grant.stage,
+            newDealGrant: grant.newDealGrant,
+          })),
         }
       : undefined,
-    proposedPermitId:
-      state.proposedPermit?.permit.permitId,
+    proposedPermitId: state.proposedPermit?.permit.permitId,
     lifecycleByEntry,
     entries,
     ledger: {
       receiptHeadHash: state.ledger.receiptHeadHash,
-      finalizedAttemptSeq:
-        state.ledger.finalizedAttemptSeq,
+      finalizedAttemptSeq: state.ledger.finalizedAttemptSeq,
       nextAttemptSeq: state.ledger.nextAttemptSeq,
-      coverageStartTick:
-        state.ledger.coverageStartTick,
-      permitEpochHighWater:
-        state.ledger.permitEpochHighWater,
-      permitChainHeadHighWater:
-        state.ledger.permitChainHeadHighWater,
-      lifetimeConfirmed:
-        state.ledger.lifetimeConfirmed,
+      coverageStartTick: state.ledger.coverageStartTick,
+      permitEpochHighWater: state.ledger.permitEpochHighWater,
+      permitChainHeadHighWater: state.ledger.permitChainHeadHighWater,
+      lifetimeConfirmed: state.ledger.lifetimeConfirmed,
       pending: pending
         ? {
             attemptSeq: pending.attemptSeq,
@@ -3221,17 +5720,13 @@ function projectContinuousDirectRuntimeStatus(
             orderId: pending.orderId,
             attemptAt: pending.attemptAt,
             plannedAmount: pending.plannedAmount,
-            plannedTransactionEnergy:
-              pending.plannedTransactionEnergy,
+            plannedTransactionEnergy: pending.plannedTransactionEnergy,
           }
         : undefined,
       blocker: state.ledger.blocker,
-      quarantinedCount: Object.keys(
-        state.quarantinedPendingDirectDeals,
-      ).length,
+      quarantinedCount: Object.keys(state.quarantinedPendingDirectDeals).length,
     },
-    lastPlanningSnapshot:
-      state.lastPlanningSnapshot,
+    lastPlanningSnapshot: state.lastPlanningSnapshot,
   };
 }
 
@@ -3257,12 +5752,11 @@ function projectRuntime(
       roomName: managed.roomName,
       resourceType: managed.resourceType,
       remainingExposure: managed.remainingExposure,
-      liveRemainingAmount:
-        context.liveOrderById.get(managed.orderId)?.remainingAmount,
+      liveRemainingAmount: context.liveOrderById.get(managed.orderId)
+        ?.remainingAmount,
       policyCancelAtTick: managed.policyCancelAtTick,
       backoffUntil: managed.backoffUntil,
-      pendingMutationKind:
-        context.data.pendingMutations[managed.orderId]?.kind,
+      pendingMutationKind: context.data.pendingMutations[managed.orderId]?.kind,
     }));
   context.runtime.managedOrderSummaryTruncated =
     context.runtime.managedOrderCount > context.runtime.managedOrders.length;
@@ -3365,8 +5859,7 @@ function projectRuntime(
     }, {});
     const directExposure = directAutomationExposure(directState);
     if (directExposure.quarantinedCount > 0) {
-      directPendingByStatus.quarantined =
-        directExposure.quarantinedCount;
+      directPendingByStatus.quarantined = directExposure.quarantinedCount;
     }
     context.runtime.direct = {
       strategyActive: usesDirectStrategy(context.config),
@@ -3393,25 +5886,20 @@ function projectRuntime(
               safetyFingerprint: directSnapshot.safetyFingerprint,
               canary: directSnapshot.canary,
               result: directSnapshot.result,
-              structuralCandidateCount:
-                directSnapshot.structuralCandidateCount,
+              structuralCandidateCount: directSnapshot.structuralCandidateCount,
               eligibleStructuralCandidateCount:
                 directSnapshot.eligibleStructuralCandidateCount,
               buyBook: directSnapshot.buyBook,
               opportunity: directSnapshot.opportunity,
-              manualBuyOrderCount:
-                directSnapshot.manualBuyOrderCount,
-              manualSellOrderCount:
-                directSnapshot.manualSellOrderCount,
+              manualBuyOrderCount: directSnapshot.manualBuyOrderCount,
+              manualSellOrderCount: directSnapshot.manualSellOrderCount,
               zeroRemainingOwnOrderCount:
                 directSnapshot.zeroRemainingOwnOrderCount,
               effectiveNetFloor: directSnapshot.effectiveNetFloor,
               effectiveEnergyShadowPrice:
                 directSnapshot.effectiveEnergyShadowPrice,
-              energyShadowObservedAt:
-                directSnapshot.energyShadowObservedAt,
-              energyShadowComponents:
-                directSnapshot.energyShadowComponents,
+              energyShadowObservedAt: directSnapshot.energyShadowObservedAt,
+              energyShadowComponents: directSnapshot.energyShadowComponents,
               rejectedByReason: {
                 ...directSnapshot.rejectedByReason,
               },
@@ -3448,8 +5936,7 @@ function finalizeResult(
 function registerOperatorControls(): void {
   operatorGlobals.grantMarketSaleMutationLease = grantMarketSaleMutationLease;
   operatorGlobals.revokeMarketSaleMutationLease = revokeMarketSaleMutationLease;
-  operatorGlobals.attestMarketSalePendingCreate =
-    attestMarketSalePendingCreate;
+  operatorGlobals.attestMarketSalePendingCreate = attestMarketSalePendingCreate;
   operatorGlobals.resolveMarketSalePendingCreateAbsence =
     resolveMarketSalePendingCreateAbsence;
   operatorGlobals.resolveMarketSaleExternalOrderMutation =
@@ -3466,8 +5953,12 @@ function registerOperatorControls(): void {
     proposeMarketDirectContinuousPermit;
   operatorGlobals.acceptMarketDirectContinuousPermit =
     acceptMarketDirectContinuousPermit;
-  operatorGlobals.marketDirectContinuousStatus =
-    marketDirectContinuousStatus;
+  operatorGlobals.marketDirectContinuousStatus = marketDirectContinuousStatus;
+  operatorGlobals.proposeMarketBaseResourcePermit =
+    proposeMarketBaseResourcePermit;
+  operatorGlobals.acceptMarketBaseResourcePermit =
+    acceptMarketBaseResourcePermit;
+  operatorGlobals.marketBaseResourceStatus = marketBaseResourceStatus;
 }
 
 export function runMarketSalePreflight(): MarketSaleAutomationResult {
@@ -3481,22 +5972,21 @@ export function runMarketSalePreflight(): MarketSaleAutomationResult {
   if (context.config.mode === "hybrid") {
     reject(context, "hybrid_not_implemented");
   }
+  const baseResourceV3 = reconcileBaseResourceV3State(context);
   const directState = context.data.directAutomation!;
+  const v2DispatchConfig = frozenV2DispatchConfig(context.config);
   const inactiveMissingDirectState =
-    structuralMarketSaleWriteBlocker(
-      context.data,
-      context.config,
-    ) === undefined &&
+    structuralMarketSaleWriteBlocker(context.data, context.config) ===
+      undefined &&
     isContinuousDirectState(directState) &&
-    directState.migrationBlockedReason ===
-      "direct_state_missing";
-  if (!inactiveMissingDirectState) {
+    directState.migrationBlockedReason === "direct_state_missing";
+  if (!inactiveMissingDirectState && !baseResourceV3.activeV3Successor) {
     mergeDirectResult(
       context,
       isContinuousDirectState(directState)
         ? runMarketDirectContinuousPreflight(directState, {
             tick: Game.time,
-            config: context.config,
+            config: v2DispatchConfig,
           })
         : runDirectAutomationPreflight(directState, {
             tick: Game.time,
@@ -3504,13 +5994,11 @@ export function runMarketSalePreflight(): MarketSaleAutomationResult {
           }),
     );
   }
-  context.data.pendingDirectDeals =
-    directState.pendingDirectDeals;
-  const structuralWriteBlocker =
-    structuralMarketSaleWriteBlocker(
-      context.data,
-      context.config,
-    );
+  context.data.pendingDirectDeals = directState.pendingDirectDeals;
+  const structuralWriteBlocker = structuralMarketSaleWriteBlocker(
+    context.data,
+    context.config,
+  );
   if (structuralWriteBlocker) {
     if (!context.rejectedByReason[structuralWriteBlocker]) {
       reject(context, structuralWriteBlocker);
@@ -3518,14 +6006,17 @@ export function runMarketSalePreflight(): MarketSaleAutomationResult {
     // 损坏的 intent/market-data 无法证明任何 Maker mutation 是否安全。
     // 仍投影保守 exposure/drain，但禁止 reconcile、retry 和 cancel 写入。
     updateDrain(context, "emergencyStop");
-    return finalizeResult(
-      context,
-      context.config.mode,
-      "emergencyStop",
-    );
+    return finalizeResult(context, context.config.mode, "emergencyStop");
   }
   reconcilePersistentState(context);
-  const mode = effectiveMode(context.config);
+  const makerForbidden = makerModePermanentlyForbidden(context.config);
+  if (makerForbidden) {
+    reject(context, "market_maker_hybrid_permanently_disabled");
+  }
+  const mode = makerForbidden ? "emergencyStop" : effectiveMode(context.config);
+  if (mode === "direct" && !drainLegacyMakerExposureBeforeDirect(context)) {
+    return finalizeResult(context, context.config.mode, mode);
+  }
   drainIfRequired(context, mode);
   return finalizeResult(context, context.config.mode, mode);
 }
@@ -3540,9 +6031,7 @@ export function runMarketSaleAutomation(
     context.stagingAmount = nonNegativeInteger(input.stagingAmount);
   }
   if (input.reservationAmount !== undefined) {
-    context.reservationAmount = nonNegativeInteger(
-      input.reservationAmount,
-    );
+    context.reservationAmount = nonNegativeInteger(input.reservationAmount);
   }
   if (input.marketDomainActivityValid === false) {
     context.marketDomainActivityValid = false;
@@ -3554,23 +6043,26 @@ export function runMarketSaleAutomation(
   if (context.config.mode === "hybrid") {
     reject(context, "hybrid_not_implemented");
   }
-  const structuralWriteBlocker =
-    structuralMarketSaleWriteBlocker(
-      context.data,
-      context.config,
-    );
+  const cpuGetUsed = Game.cpu?.getUsed;
+  const baseResourceV3CpuStartedAt =
+    typeof cpuGetUsed === "function" ? cpuGetUsed.call(Game.cpu) : Number.NaN;
+  const baseResourceV3 = reconcileBaseResourceV3State(context);
+  const structuralWriteBlocker = structuralMarketSaleWriteBlocker(
+    context.data,
+    context.config,
+  );
   if (structuralWriteBlocker) {
     reject(context, structuralWriteBlocker);
     updateDrain(context, "emergencyStop");
-    return finalizeResult(
-      context,
-      context.config.mode,
-      "emergencyStop",
-    );
+    return finalizeResult(context, context.config.mode, "emergencyStop");
   }
   reconcilePersistentState(context);
   const candidates = input.candidates || [];
   const configuredMode = effectiveMode(context.config);
+  const makerForbidden = makerModePermanentlyForbidden(context.config);
+  if (makerForbidden) {
+    reject(context, "market_maker_hybrid_permanently_disabled");
+  }
   const protectionFailure =
     configuredMode === "maker"
       ? currentProtectionFailureReason(context, candidates)
@@ -3585,7 +6077,7 @@ export function runMarketSaleAutomation(
     (context.data.drain.phase === "requested" ||
       context.data.drain.phase === "draining");
   const mode =
-    protectionFailure || continuingProtectionDrain
+    makerForbidden || protectionFailure || continuingProtectionDrain
       ? "emergencyStop"
       : configuredMode;
   const planningCycleCurrent =
@@ -3594,6 +6086,9 @@ export function runMarketSaleAutomation(
     // Preserve the more specific policy/floor rejection evidence on planning
     // ticks even when the current protection failure below also forces drain.
     revalidateManagedOrdersForPlanning(context, candidates);
+  }
+  if (mode === "direct" && !drainLegacyMakerExposureBeforeDirect(context)) {
+    return finalizeResult(context, context.config.mode, mode);
   }
   drainIfRequired(context, mode);
   const directStrategy = usesDirectStrategy(context.config);
@@ -3614,43 +6109,271 @@ export function runMarketSaleAutomation(
       (context.config.mode === "shadow" && phase === "shadow") ||
       (context.config.mode === "direct" && phase === "direct");
     const directState = context.data.directAutomation!;
-    const directResult = isContinuousDirectState(directState)
-      ? runMarketDirectContinuousPlanning(
-          directState,
+    const v2DispatchConfig = frozenV2DispatchConfig(context.config);
+    const v3PlanningState =
+      baseResourceV3.activeV3Successor && baseResourceV3.state
+        ? { ...baseResourceV3.state }
+        : undefined;
+    const v3PlanningReadinessRuntimeCapability = v3PlanningState
+      ? advanceMarketBaseResourceReadinessRuntimeCapability(
+          baseResourceV3.readinessRuntimeCapability,
+          v3PlanningState,
+          Game.time,
+        )
+      : undefined;
+    const v3CanonicalRootBeforePlanning = context.data;
+    const v3CanonicalStateBeforePlanning = baseResourceV3.state;
+    const v3CanonicalLedgerRuntimeAnchorBeforePlanning =
+      baseResourceV3.ledgerRuntimeAnchor;
+    let preparedV3RootCommitted = false;
+    let preparedV3CanonicalRoot: MarketSaleDataState | undefined;
+    let preparedV3ReadinessRuntimeCapability:
+      MarketBaseResourceReadinessRuntimeCapability | undefined;
+    const unavailableV3RuntimeResult:
+      MarketBaseResourceAutomationResult | undefined =
+      baseResourceV3.activeV3Successor &&
+      v3PlanningState &&
+      !v3PlanningReadinessRuntimeCapability
+        ? {
+            actions: [],
+            rejectedByReason: {
+              market_base_readiness_runtime_capability_unavailable: 1,
+            },
+            writes: 0,
+            planComplete: false,
+            state: v3PlanningState,
+          }
+        : undefined;
+    const directResult = baseResourceV3.activeV3Successor
+      ? (unavailableV3RuntimeResult ??
+        runMarketBaseResourceAutomation(
+          v3PlanningState!,
           {
             tick: Game.time,
-            fullPlanningTick:
-              planningCycleCurrent && lifecyclePhaseReady,
+            cpuStartedAt: baseResourceV3CpuStartedAt,
+            readinessRuntimeCapability: v3PlanningReadinessRuntimeCapability,
+            fullPlanningTick: planningCycleCurrent && lifecyclePhaseReady,
             config: context.config,
+            readCandidates: () =>
+              toMarketBaseResourceRuntimeCandidates(
+                input.readMarketBaseResourceCandidates
+                  ? input.readMarketBaseResourceCandidates()
+                  : candidates,
+              ),
+            makerExposurePresent: makerExposurePresent(context),
+            emergencyStop:
+              mode === "emergencyStop" ||
+              (context.config.mode === "direct" && phase !== "direct"),
+          },
+          {
+            ...defaultMarketBaseResourceRuntimeDependencies,
+            readLedgerRuntimeAnchor: (planningState) => {
+              if (
+                !v3CanonicalStateBeforePlanning ||
+                !v3CanonicalLedgerRuntimeAnchorBeforePlanning ||
+                Memory.data?.marketSaleAutomation !==
+                  (v3CanonicalRootBeforePlanning as unknown as NonNullable<
+                    NonNullable<Memory["data"]>["marketSaleAutomation"]
+                  >) ||
+                context.data !== v3CanonicalRootBeforePlanning
+              ) {
+                return undefined;
+              }
+              if (
+                planningState.ledger !==
+                  v3CanonicalStateBeforePlanning.ledger ||
+                planningState.permitChain !==
+                  v3CanonicalStateBeforePlanning.permitChain
+              ) {
+                return undefined;
+              }
+              // reconcile 已认证双 activation anchor；这里仅做 root CAS 与
+              // exact object identity 绑定，完整 ledger gate 由 inner session
+              // 在同一 CPU 预算内执行一次。
+              return v3CanonicalLedgerRuntimeAnchorBeforePlanning;
+            },
+            commitPreparedState: (
+              preparedState,
+              successorLedgerAnchor,
+              successorRuntimeCapability,
+            ) => {
+              if (!v3CanonicalStateBeforePlanning) {
+                return false;
+              }
+              const committed = commitPreparedMarketBaseResourceState(
+                context,
+                v3CanonicalRootBeforePlanning,
+                v3CanonicalStateBeforePlanning,
+                preparedState,
+                successorLedgerAnchor,
+                successorRuntimeCapability,
+              );
+              if (!committed) {
+                return false;
+              }
+              preparedV3RootCommitted = true;
+              preparedV3CanonicalRoot = committed.data;
+              preparedV3ReadinessRuntimeCapability =
+                committed.runtimeCapability;
+              return true;
+            },
+            validatePreparedCanonicalRoot: () =>
+              validatePreparedMarketBaseResourceCanonicalRoot(
+                context,
+                preparedV3CanonicalRoot,
+                preparedV3ReadinessRuntimeCapability,
+              ),
+          },
+        ))
+      : isContinuousDirectState(directState)
+        ? runMarketDirectContinuousPlanning(directState, {
+            tick: Game.time,
+            fullPlanningTick: planningCycleCurrent && lifecyclePhaseReady,
+            config: v2DispatchConfig,
             candidates: toContinuousRuntimeCandidates(
               context,
               candidates,
+              v2DispatchConfig,
             ),
             makerExposurePresent: makerExposurePresent(context),
             emergencyStop:
               mode === "emergencyStop" ||
-              (context.config.mode === "direct" &&
-                phase !== "direct"),
-          },
-        )
-      : runDirectAutomationPlanning(
-          directState,
-          {
+              (context.config.mode === "direct" && phase !== "direct"),
+          })
+        : runDirectAutomationPlanning(directState, {
             tick: Game.time,
-            fullPlanningTick:
-              planningCycleCurrent && lifecyclePhaseReady,
+            fullPlanningTick: planningCycleCurrent && lifecyclePhaseReady,
             config: context.config,
-            candidates: toDirectRuntimeCandidates(
-              context,
-              candidates,
-            ),
+            candidates: toDirectRuntimeCandidates(context, candidates),
             makerExposurePresent: makerExposurePresent(context),
-          },
-        );
+          });
     context.shadowPlanComplete = directResult.planComplete;
     mergeDirectResult(context, directResult);
-    context.data.pendingDirectDeals =
-      directState.pendingDirectDeals;
+    if (
+      preparedV3RootCommitted &&
+      preparedV3CanonicalRoot &&
+      "state" in directResult &&
+      directResult.state.schemaVersion === 3 &&
+      "catalog" in directResult.state
+    ) {
+      commitReturnedMarketBaseResourceState(
+        context,
+        preparedV3CanonicalRoot,
+        directResult.state,
+        "ledgerRuntimeAnchor" in directResult
+          ? directResult.ledgerRuntimeAnchor
+          : undefined,
+        "readinessRuntimeCapability" in directResult
+          ? directResult.readinessRuntimeCapability
+          : preparedV3ReadinessRuntimeCapability,
+      );
+    }
+    const v3ReturnedCanonicalConflict = Boolean(
+      baseResourceV3.activeV3Successor &&
+      !preparedV3RootCommitted &&
+      (Memory.data?.marketSaleAutomation !==
+        (v3CanonicalRootBeforePlanning as unknown as NonNullable<
+          NonNullable<Memory["data"]>["marketSaleAutomation"]
+        >) ||
+        context.data !== v3CanonicalRootBeforePlanning),
+    );
+    if (v3ReturnedCanonicalConflict) {
+      reject(context, "market_base_v3_returned_commit_conflict");
+    }
+    if (
+      baseResourceV3.activeV3Successor &&
+      !preparedV3RootCommitted &&
+      isContinuousDirectState(directState) &&
+      v3CanonicalStateBeforePlanning &&
+      "state" in directResult &&
+      directResult.state.schemaVersion === 3 &&
+      "catalog" in directResult.state &&
+      marketBaseResourceCanonicalStateChanged(
+        v3CanonicalStateBeforePlanning,
+        directResult.state,
+      )
+    ) {
+      if (!v3ReturnedCanonicalConflict) {
+        const activation = marketBaseResourceActivationState(
+          context.data,
+          baseResourceV3.state,
+        );
+        const returnedLedgerRuntimeAnchor =
+          "ledgerRuntimeAnchor" in directResult
+            ? directResult.ledgerRuntimeAnchor
+            : undefined;
+        const returnedRuntimeCapability =
+          "readinessRuntimeCapability" in directResult
+            ? directResult.readinessRuntimeCapability
+            : undefined;
+        const returnedRuntimeAuthenticated =
+          returnedLedgerRuntimeAnchor &&
+          validateMarketBaseResourceReadinessRuntimeCapability(
+            returnedRuntimeCapability,
+            directResult.state,
+            Game.time,
+            returnedLedgerRuntimeAnchor,
+          );
+        const nextTrustedFloors = synchronizeMarketBaseTrustedFloors(
+          context.data.trustedFloors,
+          directResult.state.pricingRatchet!,
+          Game.time,
+        );
+        const nextAnchor =
+          activation.latched &&
+          activation.anchor &&
+          directResult.state.scope &&
+          returnedLedgerRuntimeAnchor &&
+          returnedRuntimeAuthenticated
+            ? advanceMarketBaseResourceActivationAnchor(
+                activation.anchor,
+                directResult.state,
+                nextTrustedFloors,
+                Game.time,
+                returnedLedgerRuntimeAnchor,
+              )
+            : undefined;
+        const nextDirect = {
+          ...directState,
+          baseResourceV3: directResult.state,
+        };
+        if (!nextAnchor) {
+          reject(context, "market_base_v3_returned_anchor_missing_or_invalid");
+        } else {
+          const nextData: MarketSaleDataState = {
+            ...context.data,
+            trustedFloors: nextTrustedFloors,
+            directAutomation: nextDirect,
+            pendingDirectDeals: nextDirect.pendingDirectDeals,
+            baseResourceV3ActivationAnchor: nextAnchor,
+            baseResourceV3ActivationAnchorMirror:
+              cloneMarketBaseOperatorValue(nextAnchor),
+          };
+          const registered = registerMarketBaseResourceCanonicalRoot(
+            nextData,
+            context.config.mode,
+            returnedRuntimeCapability,
+          );
+          if (
+            (!directResult.state.readinessAuthorization &&
+              registered.reason !== "missing") ||
+            (directResult.state.readinessAuthorization && !registered.ok)
+          ) {
+            reject(
+              context,
+              "market_base_readiness_runtime_capability_register_failed",
+            );
+          } else {
+            commitContextMarketSaleData(context, nextData);
+          }
+        }
+      }
+    }
+    if (!preparedV3RootCommitted) {
+      context.data.pendingDirectDeals =
+        context.data.directAutomation?.pendingDirectDeals ??
+        directState.pendingDirectDeals;
+    }
     updateDrain(context, mode);
     return finalizeResult(context, context.config.mode, mode);
   }
@@ -3751,8 +6474,7 @@ export function resolveMarketSaleDirectPending(
     evidence,
     Game.time,
   );
-  data.pendingDirectDeals =
-    data.directAutomation!.pendingDirectDeals;
+  data.pendingDirectDeals = data.directAutomation!.pendingDirectDeals;
   if (result.ok) {
     appendAudit(data, {
       action: result.duplicate
@@ -3768,12 +6490,523 @@ function commitContinuousDirectState(
   data: MarketSaleDataState,
   state: MarketDirectContinuousAutomationState,
 ): void {
-  data.pendingDirectDeals = state.pendingDirectDeals;
-  data.directAutomation = state;
-  Memory.data!.marketSaleAutomation =
-    data as unknown as NonNullable<
-      NonNullable<Memory["data"]>["marketSaleAutomation"]
-    >;
+  commitMarketSaleDataSnapshot({
+    ...data,
+    pendingDirectDeals: state.pendingDirectDeals,
+    directAutomation: state,
+  });
+}
+
+function commitMarketSaleDataSnapshot(data: MarketSaleDataState): void {
+  Memory.data!.marketSaleAutomation = data as unknown as NonNullable<
+    NonNullable<Memory["data"]>["marketSaleAutomation"]
+  >;
+}
+
+function commitContextMarketSaleData(
+  context: RunContext,
+  data: MarketSaleDataState,
+): void {
+  commitMarketSaleDataSnapshot(data);
+  context.data = data;
+}
+
+function registerMarketBaseResourceCanonicalRoot(
+  data: MarketSaleDataState,
+  mode: unknown,
+  capability: MarketBaseResourceReadinessRuntimeCapability | undefined,
+): ReturnType<
+  typeof registerMarketBaseResourceCanonicalReadinessRuntimeCapability
+> {
+  const read = registerMarketBaseResourceCanonicalReadinessRuntimeCapability({
+    marketSaleRoot: data,
+    marketMode: mode,
+    currentTick: Game.time,
+    runtimeCapability: capability,
+  });
+  const direct = data.directAutomation;
+  const state = isContinuousDirectState(direct)
+    ? direct.baseResourceV3
+    : undefined;
+  const activationAnchor = data.baseResourceV3ActivationAnchor;
+  const activationAnchorMirror = data.baseResourceV3ActivationAnchorMirror;
+  if (
+    (read.ok || read.reason === "missing") &&
+    capability &&
+    isContinuousDirectState(direct) &&
+    state &&
+    activationAnchor &&
+    activationAnchorMirror
+  ) {
+    marketBaseResourceCanonicalRootProvenance.set(data, {
+      tick: Game.time,
+      directAutomation: direct,
+      state,
+      activationAnchor,
+      activationAnchorMirror,
+      trustedFloors: data.trustedFloors,
+      ledgerRuntimeAnchor: activationAnchor.ledger,
+      runtimeCapability: capability,
+    });
+    registerMarketBaseResourceCanonicalRootThisTick(data);
+  }
+  return read;
+}
+
+/**
+ * prepared WAL 落盘后到唯一 deal 调用前的 outer exact-root capability。
+ * 这里仅接受本模块同 tick 私有 provenance 登记过的根；serialized clone、
+ * sibling blocker 注入、双锚/可信底价/direct/state 替换或配置回拨都会失配。
+ */
+function validatePreparedMarketBaseResourceCanonicalRoot(
+  context: RunContext,
+  data: MarketSaleDataState | undefined,
+  capability: MarketBaseResourceReadinessRuntimeCapability | undefined,
+): boolean {
+  if (!data || !capability) return false;
+  if (
+    Memory.data?.marketSaleAutomation !==
+      (data as unknown as NonNullable<
+        NonNullable<Memory["data"]>["marketSaleAutomation"]
+      >) ||
+    context.data !== data ||
+    data.baseResourceV3ActivationBlocker !== undefined ||
+    !isRegisteredMarketBaseResourceCanonicalRootThisTick(data)
+  ) {
+    return false;
+  }
+  const direct = data.directAutomation;
+  const state = isContinuousDirectState(direct)
+    ? direct.baseResourceV3
+    : undefined;
+  const provenance = marketBaseResourceCanonicalRootProvenance.get(data);
+  const liveConfig = resolveMarketSaleAutomationConfig();
+  if (
+    !isContinuousDirectState(direct) ||
+    !state ||
+    liveConfig.mode !== "direct" ||
+    liveConfig.directCapability !== "continuous-v3" ||
+    marketBaseResourceV3ConfigMismatchReasons(liveConfig).length > 0 ||
+    data.pendingDirectDeals !== direct.pendingDirectDeals ||
+    !provenance ||
+    provenance.tick !== Game.time ||
+    provenance.directAutomation !== direct ||
+    provenance.state !== state ||
+    provenance.activationAnchor !== data.baseResourceV3ActivationAnchor ||
+    provenance.activationAnchorMirror !==
+      data.baseResourceV3ActivationAnchorMirror ||
+    provenance.trustedFloors !== data.trustedFloors ||
+    provenance.runtimeCapability !== capability ||
+    !Object.isFrozen(direct) ||
+    !Object.isFrozen(state) ||
+    !Object.isFrozen(provenance.activationAnchor) ||
+    !Object.isFrozen(provenance.activationAnchorMirror) ||
+    !Object.isFrozen(provenance.trustedFloors)
+  ) {
+    return false;
+  }
+  return deriveMarketBaseResourceCanonicalReadinessAuthorization(
+    data,
+    "direct",
+    Game.time,
+  ).ok;
+}
+
+/**
+ * V3 deal 的 prepare WAL 必须和外层不可回退 anchor 同一次 root replacement
+ * 落盘。preparedState 会在 callback 返回后继续被 runtime 修改，因此这里安装
+ * 一个独立深快照，绝不能把同一对象引用挂入 Memory。
+ *
+ * 返回 undefined 表示在 canonical assignment 前校验/构造失败；函数一旦完成
+ * assignment，之后只做不会抛错的本地引用更新。
+ */
+function commitPreparedMarketBaseResourceState(
+  context: RunContext,
+  expectedCanonicalRoot: MarketSaleDataState,
+  sourceState: MarketBaseResourceV3RuntimeState,
+  preparedState: MarketBaseResourceV3RuntimeState,
+  successorLedgerAnchor: MarketBaseResourceLedgerRuntimeAnchor,
+  successorRuntimeCapability:
+    MarketBaseResourceReadinessRuntimeCapability | undefined,
+):
+  | {
+      data: MarketSaleDataState;
+      runtimeCapability: MarketBaseResourceReadinessRuntimeCapability;
+    }
+  | undefined {
+  if (
+    Memory.data?.marketSaleAutomation !==
+      (expectedCanonicalRoot as unknown as NonNullable<
+        NonNullable<Memory["data"]>["marketSaleAutomation"]
+      >) ||
+    context.data !== expectedCanonicalRoot
+  ) {
+    return undefined;
+  }
+  const direct = expectedCanonicalRoot.directAutomation;
+  if (!isContinuousDirectState(direct)) {
+    return undefined;
+  }
+  const activation = marketBaseResourceActivationState(
+    expectedCanonicalRoot,
+    sourceState,
+  );
+  if (!activation.latched || activation.blocker || !activation.anchor) {
+    return undefined;
+  }
+  const sourceRuntimeCapability =
+    advanceMarketBaseResourceReadinessRuntimeCapabilityFromRoot(
+      expectedCanonicalRoot,
+      sourceState,
+      Game.time,
+    );
+  if (!sourceRuntimeCapability) {
+    return undefined;
+  }
+  const sourceBlocker = validateMarketBaseNestedActivationState(
+    sourceState,
+    activation.anchor,
+    expectedCanonicalRoot.trustedFloors,
+    {
+      runtimeOnly: true,
+      runtimeCapability: sourceRuntimeCapability,
+    },
+  );
+  const legacyV2Blocker = validatePostCutoverLegacyV2Quiescence(
+    expectedCanonicalRoot,
+    direct,
+    sourceState,
+    activation.anchor,
+  );
+  if (sourceBlocker || legacyV2Blocker) {
+    return undefined;
+  }
+
+  const snapshot: MarketBaseResourceV3RuntimeState = {
+    ...preparedState,
+  };
+  const snapshotRuntimeCapability =
+    advanceMarketBaseResourceReadinessRuntimeCapability(
+      successorRuntimeCapability,
+      snapshot,
+      Game.time,
+    );
+  if (
+    snapshot.cutoverLatched !== true ||
+    !snapshot.scope ||
+    !snapshot.permitChain ||
+    !snapshot.ledger ||
+    snapshot.permitChain.currentPermitId !==
+      sourceState.permitChain?.currentPermitId ||
+    snapshot.permitChain.permitChainHead !==
+      sourceState.permitChain?.permitChainHead ||
+    snapshot.scope.rosterFingerprint !== sourceState.scope?.rosterFingerprint ||
+    snapshot.scope.laneSetFingerprint !==
+      sourceState.scope?.laneSetFingerprint ||
+    !snapshotRuntimeCapability ||
+    !validateMarketBaseResourceReadinessRuntimeCapability(
+      snapshotRuntimeCapability,
+      snapshot,
+      Game.time,
+      successorLedgerAnchor,
+    )
+  ) {
+    return undefined;
+  }
+  const lifecycleBlocker = validateMarketBaseScopeLifecycleEvidence(
+    snapshot.scope,
+  );
+  if (
+    lifecycleBlocker ||
+    !validateMarketBaseResourcePricingRatchetState(
+      snapshot.pricingRatchet,
+      currentMarketBaseV3Permit(snapshot),
+    )
+  ) {
+    return undefined;
+  }
+
+  const nextTrustedFloors = synchronizeMarketBaseTrustedFloors(
+    expectedCanonicalRoot.trustedFloors,
+    snapshot.pricingRatchet!,
+    Game.time,
+  );
+  const nextAnchor = advanceMarketBaseResourceActivationAnchor(
+    activation.anchor,
+    snapshot,
+    nextTrustedFloors,
+    Game.time,
+    successorLedgerAnchor,
+  );
+  if (
+    validateMarketBaseNestedActivationState(
+      snapshot,
+      nextAnchor,
+      nextTrustedFloors,
+      {
+        runtimeOnly: true,
+        runtimeCapability: snapshotRuntimeCapability,
+      },
+    )
+  ) {
+    return undefined;
+  }
+  const nextDirect: MarketDirectContinuousAutomationState = {
+    ...direct,
+    baseResourceV3: snapshot,
+  };
+  const nextData: MarketSaleDataState = {
+    ...expectedCanonicalRoot,
+    trustedFloors: nextTrustedFloors,
+    directAutomation: nextDirect,
+    pendingDirectDeals: nextDirect.pendingDirectDeals,
+    baseResourceV3ActivationAnchor: nextAnchor,
+    baseResourceV3ActivationAnchorMirror:
+      cloneMarketBaseOperatorValue(nextAnchor),
+  };
+  const registered = registerMarketBaseResourceCanonicalRoot(
+    nextData,
+    "direct",
+    snapshotRuntimeCapability,
+  );
+  if (
+    !snapshotRuntimeCapability ||
+    (!snapshot.readinessAuthorization && registered.reason !== "missing") ||
+    (snapshot.readinessAuthorization && !registered.ok)
+  ) {
+    return undefined;
+  }
+  const stored = nextData as unknown as NonNullable<
+    NonNullable<Memory["data"]>["marketSaleAutomation"]
+  >;
+
+  // state + successor anchor 只能作为同一 canonical root replacement 落盘。
+  // setter 若抛错或静默拒绝替换，尽力恢复 source root；无论如何都不能
+  // 更新 context 后继续 claim/deal。
+  try {
+    Memory.data!.marketSaleAutomation = stored;
+  } catch {
+    if (
+      Memory.data?.marketSaleAutomation !==
+      (expectedCanonicalRoot as unknown as NonNullable<
+        NonNullable<Memory["data"]>["marketSaleAutomation"]
+      >)
+    ) {
+      try {
+        Memory.data!.marketSaleAutomation =
+          expectedCanonicalRoot as unknown as NonNullable<
+            NonNullable<Memory["data"]>["marketSaleAutomation"]
+          >;
+      } catch {
+        // 外部 setter 已破坏 canonical assignment 语义；保持 fail closed。
+      }
+    }
+    return undefined;
+  }
+  if (Memory.data?.marketSaleAutomation !== stored) {
+    try {
+      Memory.data!.marketSaleAutomation =
+        expectedCanonicalRoot as unknown as NonNullable<
+          NonNullable<Memory["data"]>["marketSaleAutomation"]
+        >;
+    } catch {
+      // 同上：不更新 context，不授权 claim/deal。
+    }
+    return undefined;
+  }
+  context.data = nextData;
+  return {
+    data: nextData,
+    runtimeCapability: snapshotRuntimeCapability,
+  };
+}
+
+function marketBaseReturnedLedgerDominatesPrepared(
+  prepared: MarketBaseResourceV3RuntimeState,
+  returned: MarketBaseResourceV3RuntimeState,
+): boolean {
+  if (
+    !prepared.permitChain ||
+    !prepared.ledger ||
+    !returned.permitChain ||
+    !returned.ledger ||
+    prepared.permitChain !== returned.permitChain ||
+    returned.ledger.finalizedAttemptSeq < prepared.ledger.finalizedAttemptSeq
+  ) {
+    return false;
+  }
+  const pending = prepared.ledger.pending;
+  if (!pending) return true;
+  if (
+    returned.ledger.pending &&
+    returned.ledger.pending.attemptSeq === pending.attemptSeq &&
+    returned.ledger.pending.frozenEvidenceHash === pending.frozenEvidenceHash &&
+    returned.ledger.pending.evidenceKeyHint === pending.evidenceKeyHint
+  ) {
+    return true;
+  }
+  return (
+    returned.ledger.pending === undefined &&
+    returned.ledger.finalizedAttemptSeq >= pending.attemptSeq
+  );
+}
+
+/**
+ * inner runner 正常返回时，允许把 callback 已持久化的 pending CAS 推进到
+ * 同一或更后的 ledger 终态（例如明确 non-OK 的 failed receipt）。如果
+ * runner 抛出/CPU 中断，本函数不会执行，callback 的 pending 仍是恢复依据。
+ */
+function commitReturnedMarketBaseResourceState(
+  context: RunContext,
+  preparedCanonicalRoot: MarketSaleDataState,
+  returnedState: MarketBaseResourceV3RuntimeState,
+  returnedLedgerRuntimeAnchor:
+    MarketBaseResourceLedgerRuntimeAnchor | undefined,
+  returnedRuntimeCapability:
+    MarketBaseResourceReadinessRuntimeCapability | undefined,
+): boolean {
+  if (
+    Memory.data?.marketSaleAutomation !==
+      (preparedCanonicalRoot as unknown as NonNullable<
+        NonNullable<Memory["data"]>["marketSaleAutomation"]
+      >) ||
+    context.data !== preparedCanonicalRoot
+  ) {
+    return false;
+  }
+  const preparedDirect = preparedCanonicalRoot.directAutomation;
+  const preparedState = isContinuousDirectState(preparedDirect)
+    ? preparedDirect.baseResourceV3
+    : undefined;
+  if (!isContinuousDirectState(preparedDirect) || !preparedState) {
+    return false;
+  }
+  const activation = marketBaseResourceActivationState(
+    preparedCanonicalRoot,
+    preparedState,
+  );
+  const preparedRuntimeCapability =
+    advanceMarketBaseResourceReadinessRuntimeCapabilityFromRoot(
+      preparedCanonicalRoot,
+      preparedState,
+      Game.time,
+    );
+  if (
+    !activation.latched ||
+    activation.blocker ||
+    !activation.anchor ||
+    !preparedRuntimeCapability ||
+    validatePostCutoverLegacyV2Quiescence(
+      preparedCanonicalRoot,
+      preparedDirect,
+      preparedState,
+      activation.anchor,
+    ) ||
+    validateMarketBaseNestedActivationState(
+      preparedState,
+      activation.anchor,
+      preparedCanonicalRoot.trustedFloors,
+      {
+        runtimeOnly: true,
+        runtimeCapability: preparedRuntimeCapability,
+      },
+    )
+  ) {
+    return false;
+  }
+  const snapshot: MarketBaseResourceV3RuntimeState = {
+    ...returnedState,
+  };
+  const returnedLedgerChanged =
+    preparedState.ledger !== snapshot.ledger ||
+    preparedState.permitChain !== snapshot.permitChain;
+  const effectiveLedgerRuntimeAnchor =
+    returnedLedgerRuntimeAnchor ??
+    (returnedLedgerChanged ? undefined : activation.anchor.ledger);
+  const snapshotRuntimeCapability =
+    advanceMarketBaseResourceReadinessRuntimeCapability(
+      returnedRuntimeCapability,
+      snapshot,
+      Game.time,
+    );
+  if (
+    !snapshot.scope ||
+    !snapshot.permitChain ||
+    !snapshot.ledger ||
+    !effectiveLedgerRuntimeAnchor ||
+    !snapshotRuntimeCapability ||
+    !validateMarketBaseResourceReadinessRuntimeCapability(
+      snapshotRuntimeCapability,
+      snapshot,
+      Game.time,
+      effectiveLedgerRuntimeAnchor,
+    ) ||
+    !marketBaseReturnedLedgerDominatesPrepared(preparedState, snapshot) ||
+    validateMarketBaseScopeLifecycleEvidence(snapshot.scope) ||
+    !validateMarketBaseResourcePricingRatchetState(
+      snapshot.pricingRatchet,
+      currentMarketBaseV3Permit(snapshot),
+    )
+  ) {
+    return false;
+  }
+  const nextTrustedFloors = synchronizeMarketBaseTrustedFloors(
+    preparedCanonicalRoot.trustedFloors,
+    snapshot.pricingRatchet!,
+    Game.time,
+  );
+  const nextAnchor = advanceMarketBaseResourceActivationAnchor(
+    activation.anchor,
+    snapshot,
+    nextTrustedFloors,
+    Game.time,
+    effectiveLedgerRuntimeAnchor,
+  );
+  if (
+    validateMarketBaseNestedActivationState(
+      snapshot,
+      nextAnchor,
+      nextTrustedFloors,
+      {
+        runtimeOnly: true,
+        runtimeCapability: snapshotRuntimeCapability,
+      },
+    )
+  ) {
+    return false;
+  }
+  const nextDirect: MarketDirectContinuousAutomationState = {
+    ...preparedDirect,
+    baseResourceV3: snapshot,
+  };
+  const nextData: MarketSaleDataState = {
+    ...preparedCanonicalRoot,
+    trustedFloors: nextTrustedFloors,
+    directAutomation: nextDirect,
+    pendingDirectDeals: nextDirect.pendingDirectDeals,
+    baseResourceV3ActivationAnchor: nextAnchor,
+    baseResourceV3ActivationAnchorMirror:
+      cloneMarketBaseOperatorValue(nextAnchor),
+  };
+  const registered = registerMarketBaseResourceCanonicalRoot(
+    nextData,
+    "direct",
+    snapshotRuntimeCapability,
+  );
+  if (
+    !snapshotRuntimeCapability ||
+    (!snapshot.readinessAuthorization && registered.reason !== "missing") ||
+    (snapshot.readinessAuthorization && !registered.ok)
+  ) {
+    return false;
+  }
+  const stored = nextData as unknown as NonNullable<
+    NonNullable<Memory["data"]>["marketSaleAutomation"]
+  >;
+
+  Memory.data!.marketSaleAutomation = stored;
+  context.data = nextData;
+  return true;
 }
 
 function continuousPermitConfigBlocker(
@@ -3785,14 +7018,8 @@ function continuousPermitConfigBlocker(
   if (config.directCapability !== "continuous-v2") {
     return "continuous_direct_capability_required";
   }
-  if (
-    !config.validForPlanning ||
-    config.invalidReasons.length > 0
-  ) {
-    return (
-      config.invalidReasons[0] ||
-      "continuous_direct_config_invalid"
-    );
+  if (!config.validForPlanning || config.invalidReasons.length > 0) {
+    return config.invalidReasons[0] || "continuous_direct_config_invalid";
   }
   return undefined;
 }
@@ -3815,17 +7042,13 @@ export function proposeMarketDirectContinuousPermit(
     appendAudit(data, {
       action: `continuous_permit_proposal_rejected:${configBlocker}`,
     });
-    commitContinuousDirectState(
-      data,
-      data.directAutomation,
-    );
+    commitContinuousDirectState(data, data.directAutomation);
     return { ok: false, error: configBlocker };
   }
   let accountIdentity: string | undefined;
   try {
     accountIdentity =
-      defaultMarketDirectContinuousDependencies
-        .readAccountIdentity();
+      defaultMarketDirectContinuousDependencies.readAccountIdentity();
   } catch {
     accountIdentity = undefined;
   }
@@ -3854,9 +7077,7 @@ export function proposeMarketDirectContinuousPermit(
       }
     : {
         ok: false,
-        error:
-          result.error ||
-          "continuous_permit_proposal_failed",
+        error: result.error || "continuous_permit_proposal_failed",
       };
 }
 
@@ -3877,28 +7098,18 @@ export function acceptMarketDirectContinuousPermit(
   if (configBlocker) {
     appendAudit(data, {
       action: `continuous_permit_accept_rejected:${configBlocker}`,
-      requestId:
-        typeof permitId === "string"
-          ? permitId.trim()
-          : undefined,
+      requestId: typeof permitId === "string" ? permitId.trim() : undefined,
     });
-    commitContinuousDirectState(
-      data,
-      data.directAutomation,
-    );
+    commitContinuousDirectState(data, data.directAutomation);
     return { ok: false, error: configBlocker };
   }
   const normalizedPermitId =
     typeof permitId === "string" ? permitId.trim() : "";
   if (!normalizedPermitId) {
     appendAudit(data, {
-      action:
-        "continuous_permit_accept_rejected:continuous_permit_id_required",
+      action: "continuous_permit_accept_rejected:continuous_permit_id_required",
     });
-    commitContinuousDirectState(
-      data,
-      data.directAutomation,
-    );
+    commitContinuousDirectState(data, data.directAutomation);
     return { ok: false, error: "continuous_permit_id_required" };
   }
   const result = acceptContinuousPermitState(
@@ -3928,9 +7139,7 @@ export function acceptMarketDirectContinuousPermit(
       }
     : {
         ok: false,
-        error:
-          result.error ||
-          "continuous_permit_accept_failed",
+        error: result.error || "continuous_permit_accept_failed",
       };
 }
 
@@ -3942,10 +7151,2756 @@ export function marketDirectContinuousStatus(): unknown {
       error: "continuous_direct_state_required",
     };
   }
-  return projectContinuousDirectStatus(
-    data.directAutomation,
-    Game.time,
+  return projectContinuousDirectStatus(data.directAutomation, Game.time);
+}
+
+function cloneMarketBaseOperatorValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function marketBaseResourceV3ConfigBlocker(
+  config: ResolvedMarketSaleAutomationConfig,
+): string | undefined {
+  if (!usesDirectStrategy(config)) {
+    return "market_base_v3_direct_strategy_required";
+  }
+  const reasons = marketBaseResourceV3ConfigMismatchReasons(config);
+  if (
+    config.directCapability !== "continuous-v3" ||
+    !config.validForPlanning ||
+    config.invalidReasons.length > 0 ||
+    reasons.length > 0
+  ) {
+    return (
+      config.invalidReasons[0] || reasons[0] || "market_base_v3_config_invalid"
+    );
+  }
+  return undefined;
+}
+
+function marketBaseOperatorExposureBlocker(
+  data: MarketSaleDataState,
+): string | undefined {
+  const activity = collectMarketSaleDomainActivity(data);
+  if (!activity.valid) {
+    return "market_domain_activity_invalid";
+  }
+  if (
+    Object.keys(data.managedOrders).length > 0 ||
+    data.pendingCreate ||
+    Object.keys(data.pendingMutations).length > 0 ||
+    data.feeLedger?.reconcileGap ||
+    activity.stagingAmount > 0 ||
+    activity.reservationAmount > 0
+  ) {
+    return "market_base_v3_maker_exposure_present";
+  }
+  return undefined;
+}
+
+function marketBaseV2LedgerCheckpointHash(
+  direct: MarketDirectContinuousAutomationState,
+): string {
+  return canonicalStableHashV1({
+    domain: "market-base-resource:v2-ledger-cutover-checkpoint-v1",
+    ledger: direct.ledger,
+  });
+}
+
+function marketBaseLegacyV2QuiescenceCommitment(
+  direct: MarketDirectContinuousAutomationState,
+): string {
+  return canonicalStableHashV1({
+    domain: "market-base-resource:legacy-v2-frozen-quiescence-v1",
+    authority: {
+      migrationStatus: direct.migrationStatus,
+      migrationBlockedReason: direct.migrationBlockedReason ?? null,
+      currentPermit: direct.currentPermit
+        ? {
+            epoch: direct.currentPermit.epoch,
+            permitId: direct.currentPermit.permitId,
+            permitHead: direct.currentPermit.permitHead,
+          }
+        : null,
+      proposedPermitPresent: direct.proposedPermit !== undefined,
+      permitChain: {
+        currentPermitEpoch: direct.permitChain.currentPermitEpoch,
+        currentPermitId: direct.permitChain.currentPermitId,
+        permitChainHead: direct.permitChain.permitChainHead,
+        permitEpochHighWater: direct.permitChain.permitEpochHighWater,
+        permitChainHeadHighWater: direct.permitChain.permitChainHeadHighWater,
+      },
+      ledger: {
+        receiptHeadHash: direct.ledger.receiptHeadHash,
+        finalizedAttemptSeq: direct.ledger.finalizedAttemptSeq,
+        nextAttemptSeq: direct.ledger.nextAttemptSeq,
+        permitEpochHighWater: direct.ledger.permitEpochHighWater,
+        permitChainHeadHighWater: direct.ledger.permitChainHeadHighWater,
+        prunedThroughSeq: direct.ledger.checkpoint.prunedThroughSeq,
+        prunedHeadHash: direct.ledger.checkpoint.prunedHeadHash,
+        pendingPresent: direct.ledger.pending !== undefined,
+        blockerPresent: direct.ledger.blocker !== undefined,
+      },
+      pendingProjectionCount: Object.keys(direct.pendingDirectDeals).length,
+      quarantinedProjectionCount: Object.keys(
+        direct.quarantinedPendingDirectDeals,
+      ).length,
+    },
+  });
+}
+
+function validatePostCutoverLegacyV2Quiescence(
+  data: MarketSaleDataState,
+  direct: MarketDirectContinuousAutomationState,
+  state: MarketBaseResourceV3RuntimeState | undefined,
+  anchor: MarketBaseResourceActivationAnchor,
+): string | undefined {
+  const cutover = state?.permitChain?.v2EventCutoverCheckpoint;
+  if (!cutover) return undefined;
+  const directKeys = Object.keys(direct as unknown as Record<string, unknown>);
+  const allowedDirectKeys = new Set([
+    "baseResourceV3",
+    "capability",
+    "currentPermit",
+    "directConfirmedDealCount",
+    "directDealOutcomes",
+    "directPausedForReview",
+    "lastLifecycleAppliedAttemptSeq",
+    "lastPlanningSnapshot",
+    "ledger",
+    "legacyStateDigest",
+    "lifecycleByEntry",
+    "migrationBlockedReason",
+    "migrationStatus",
+    "pendingDirectDeals",
+    "permitChain",
+    "processedDirectTransactionKeys",
+    "proposedPermit",
+    "quarantinedPendingDirectDeals",
+    "reviewedLegacyOutcomeDigest",
+    "rollbackEvidenceMarker",
+    "schemaVersion",
+  ]);
+  if (
+    cutover.checkpointHash !== anchor.cutoverCheckpointHash ||
+    directKeys.length > allowedDirectKeys.size ||
+    directKeys.some((key) => !allowedDirectKeys.has(key)) ||
+    !isPlainRecord(direct.pendingDirectDeals) ||
+    !isPlainRecord(direct.quarantinedPendingDirectDeals) ||
+    !isPlainRecord(data.pendingDirectDeals) ||
+    !isPlainRecord(direct.lifecycleByEntry) ||
+    !isPlainRecord(direct.ledger) ||
+    !isPlainRecord(direct.ledger.checkpoint) ||
+    !isPlainRecord(direct.permitChain) ||
+    Object.keys(direct.lifecycleByEntry).length > 16
+  ) {
+    return "market_base_legacy_v2_quiescence_shape_invalid";
+  }
+  if (
+    direct.migrationStatus !== "active" ||
+    direct.migrationBlockedReason !== undefined ||
+    direct.proposedPermit !== undefined ||
+    direct.ledger.pending !== undefined ||
+    direct.ledger.blocker !== undefined ||
+    direct.ledger.finalizedAttemptSeq !== cutover.lastV2AttemptSeq ||
+    direct.ledger.finalizedAttemptSeq !== cutover.lastV2OutcomeSeq ||
+    direct.ledger.nextAttemptSeq !== cutover.lastV2AttemptSeq + 1 ||
+    direct.ledger.receiptHeadHash !== cutover.v2ReceiptHeadHash ||
+    Object.keys(direct.pendingDirectDeals).length !== 0 ||
+    Object.keys(direct.quarantinedPendingDirectDeals).length !== 0 ||
+    Object.keys(data.pendingDirectDeals).length !== 0 ||
+    canonicalStableHashV1(data.pendingDirectDeals) !==
+      canonicalStableHashV1(direct.pendingDirectDeals)
+  ) {
+    return "market_base_legacy_v2_not_quiescent_after_cutover";
+  }
+  let currentCommitment: string | undefined;
+  try {
+    currentCommitment = marketBaseLegacyV2QuiescenceCommitment(direct);
+  } catch {
+    currentCommitment = undefined;
+  }
+  if (
+    currentCommitment === undefined ||
+    currentCommitment !== anchor.legacyV2QuiescenceCommitment
+  ) {
+    return "market_base_legacy_v2_frozen_state_mismatch";
+  }
+  const exposureBlocker = marketBaseOperatorExposureBlocker(data);
+  return exposureBlocker
+    ? `market_base_legacy_v2_${exposureBlocker}`
+    : undefined;
+}
+
+function marketBaseV2SourceStateFingerprint(
+  data: MarketSaleDataState,
+  direct: MarketDirectContinuousAutomationState,
+): string {
+  const {
+    baseResourceV3: _baseResourceV3,
+    lastPlanningSnapshot: _lastPlanningSnapshot,
+    ...frozenDirect
+  } = direct;
+  return canonicalStableHashV1({
+    domain: "market-base-resource:v2-cutover-source-v1",
+    direct: frozenDirect,
+    marketDomain: {
+      managedOrders: data.managedOrders,
+      marketReservations: data.marketReservations ?? null,
+      marketStaging: data.marketStaging ?? null,
+      pendingCreate: data.pendingCreate ?? null,
+      pendingMutations: data.pendingMutations,
+    },
+    trustedFloors: data.trustedFloors,
+  });
+}
+
+function marketBaseV3SourceStateFingerprint(
+  data: MarketSaleDataState,
+  direct: MarketDirectContinuousAutomationState,
+  state: MarketBaseResourceV3RuntimeState,
+  lifecycleLaneIds: readonly string[],
+): string {
+  const lifecycleLaneSet = new Set(lifecycleLaneIds);
+  const lifecycleResources = new Set(
+    state.scope?.laneLifecycles
+      .filter((lane) => lifecycleLaneSet.has(lane.laneId))
+      .map((lane) => lane.resource) ?? [],
   );
+  return canonicalStableHashV1({
+    domain: "market-base-resource:v3-successor-source-v1",
+    state: {
+      schemaVersion: state.schemaVersion,
+      catalog: state.catalog,
+      permitChain: state.permitChain ?? null,
+      ledger: state.ledger ?? null,
+      pricingRatchet: state.pricingRatchet
+        ? {
+            schemaVersion: state.pricingRatchet.schemaVersion,
+            initializedAt: state.pricingRatchet.initializedAt,
+            bootstrapFingerprint: state.pricingRatchet.bootstrapFingerprint,
+            entries: state.pricingRatchet.entries.filter((entry) =>
+              lifecycleResources.has(entry.resource),
+            ),
+          }
+        : null,
+      cutoverLatched: state.cutoverLatched === true,
+      lastLifecycleAppliedAttemptSeq: state.lastLifecycleAppliedAttemptSeq ?? 0,
+      blocker: state.blocker ?? null,
+      /**
+       * 排除 scope.updatedAt/registry.lastReconciledTick/checkpoint 等仅由
+       * tick 推进的字段；保留 room incarnation 与 lane stage/status/
+       * shadowEvidence。这样跨 tick 无事实变化的 proposal 可签收，而
+       * qualification reset 或 A→B→A 必然改变 source fingerprint。
+       */
+      stableScope: marketBaseStableScopeProjection(
+        state.scope,
+        lifecycleLaneIds,
+      ),
+    },
+    activationHighWater: data.baseResourceV3ActivationAnchor
+      ? {
+          accountIdentity: data.baseResourceV3ActivationAnchor.accountIdentity,
+          cutoverCheckpointHash:
+            data.baseResourceV3ActivationAnchor.cutoverCheckpointHash,
+          firstV3PermitEpoch:
+            data.baseResourceV3ActivationAnchor.firstV3PermitEpoch,
+          firstV3PermitId: data.baseResourceV3ActivationAnchor.firstV3PermitId,
+          laneTombstoneCheckpointCommitment:
+            data.baseResourceV3ActivationAnchor
+              .laneTombstoneCheckpointCommitment,
+          roomIncarnationHighWater:
+            data.baseResourceV3ActivationAnchor.roomIncarnationHighWater,
+          laneLifecycleHighWater:
+            data.baseResourceV3ActivationAnchor.laneLifecycleHighWater.filter(
+              (entry) => lifecycleLaneSet.has(entry.laneId),
+            ),
+        }
+      : null,
+    outerPermitId: direct.currentPermit?.permitId ?? null,
+    marketDomain: {
+      managedOrders: data.managedOrders,
+      marketReservations: data.marketReservations ?? null,
+      marketStaging: data.marketStaging ?? null,
+      pendingCreate: data.pendingCreate ?? null,
+      pendingMutations: data.pendingMutations,
+    },
+    trustedFloors: Object.fromEntries(
+      [...lifecycleResources]
+        .sort()
+        .map((resource) => [resource, data.trustedFloors[resource] ?? null]),
+    ),
+  });
+}
+
+function validateV2CutoverSource(
+  data: MarketSaleDataState,
+  direct: MarketDirectContinuousAutomationState,
+  tick: number,
+): string | undefined {
+  const ledgerValidation = validateContinuousLedger(direct.ledger, tick);
+  if (!ledgerValidation.ok) {
+    return ledgerValidation.blockerCode || "market_base_v2_ledger_invalid";
+  }
+  const chainValidation = validateMarketDirectContinuousPermitChain(
+    direct.permitChain,
+    {
+      permitEpochHighWater: direct.ledger.permitEpochHighWater,
+      permitChainHeadHighWater: direct.ledger.permitChainHeadHighWater,
+    },
+  );
+  if (!chainValidation.ok) {
+    return chainValidation.reason || "market_base_v2_permit_chain_invalid";
+  }
+  const tip = direct.permitChain.permits[direct.permitChain.permits.length - 1];
+  if (
+    direct.migrationStatus !== "active" ||
+    direct.migrationBlockedReason ||
+    !direct.currentPermit ||
+    !tip ||
+    canonicalStableHashV1(direct.currentPermit) !==
+      canonicalStableHashV1(tip) ||
+    tip.permitId !== direct.permitChain.currentPermitId ||
+    tip.permitHead !== direct.permitChain.permitChainHead ||
+    direct.proposedPermit ||
+    direct.ledger.pending ||
+    direct.ledger.blocker ||
+    direct.ledger.nextAttemptSeq !== direct.ledger.finalizedAttemptSeq + 1 ||
+    Object.keys(direct.pendingDirectDeals).length > 0 ||
+    Object.keys(direct.quarantinedPendingDirectDeals).length > 0
+  ) {
+    return "market_base_v2_cutover_not_quiescent";
+  }
+  if (direct.ledger.checkpoint.prunedThroughSeq !== 0) {
+    return "v2_migration_room_lane_history_incomplete";
+  }
+  return marketBaseOperatorExposureBlocker(data);
+}
+
+function migratedMarketBaseLifetimeCounters(
+  receipts: readonly MarketBaseResourceQuotaReceipt[],
+): MarketBaseResourceLedgerCounters {
+  const counters: {
+    global: { count: number; amount: number };
+    resources: Record<string, { count: number; amount: number }>;
+    rooms: Record<string, { count: number; amount: number }>;
+    lanes: Record<string, { count: number; amount: number }>;
+  } = {
+    global: { count: 0, amount: 0 },
+    resources: {},
+    rooms: {},
+    lanes: {},
+  };
+  for (const receipt of receipts) {
+    if (receipt.status !== "confirmed") continue;
+    counters.global.count += 1;
+    counters.global.amount += receipt.actualAmount;
+    for (const [target, key] of [
+      [counters.resources, receipt.resource],
+      [counters.rooms, receipt.sellerRoom],
+      [counters.lanes, `${receipt.resource}:${receipt.sellerRoom}`],
+    ] as const) {
+      const prior = target[key] ?? {
+        count: 0,
+        amount: 0,
+      };
+      target[key] = {
+        count: prior.count + 1,
+        amount: prior.amount + receipt.actualAmount,
+      };
+    }
+  }
+  return counters;
+}
+
+function migrateV2QuotaReceipts(
+  direct: MarketDirectContinuousAutomationState,
+): MarketBaseResourceQuotaReceipt[] {
+  return direct.ledger.receipts.map((receipt) => {
+    if (!isMarketBaseResource(receipt.resource)) {
+      throw new TypeError(
+        `v2_receipt_resource_outside_base_catalog:${receipt.resource}`,
+      );
+    }
+    return {
+      sourceVersion: 2 as const,
+      attemptSeq: receipt.attemptSeq,
+      evidenceKey: receipt.evidenceKey,
+      status: receipt.status,
+      resource: receipt.resource,
+      sellerRoom: receipt.sellerRoom,
+      plannedAmount: receipt.plannedAmount,
+      actualAmount: receipt.actualAmount,
+      resolvedAt: receipt.resolvedAt,
+      retentionTick: receipt.retentionTick,
+      ...(receipt.transactionTime === undefined
+        ? {}
+        : {
+            transactionTime: receipt.transactionTime,
+          }),
+    };
+  });
+}
+
+function buildFirstMarketBasePricingRatchet(input: {
+  tick: number;
+  trustedFloors: MarketSaleDataState["trustedFloors"];
+}): {
+  pricingRatchet: ReturnType<typeof buildMarketBaseResourcePricingRatchetState>;
+  trustedFloors: MarketSaleDataState["trustedFloors"];
+} {
+  const next = cloneMarketBaseOperatorValue(input.trustedFloors || {});
+  const entries = MARKET_BASE_RESOURCE_CATALOG.map((resource) => {
+    const current = next[resource];
+    if (
+      current !== undefined &&
+      (!Number.isFinite(current.value) ||
+        current.value <= 0 ||
+        typeof current.marketDate !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(current.marketDate) ||
+        !Number.isSafeInteger(current.updatedAt) ||
+        current.updatedAt < 0)
+    ) {
+      throw new TypeError(`market_base_v2_trusted_floor_invalid:${resource}`);
+    }
+    const bootstrap =
+      MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.resources[resource].ratchetFloor;
+    const value = Math.max(current?.value ?? 0, bootstrap);
+    const marketDate =
+      current?.marketDate &&
+      current.marketDate > MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.historyDate
+        ? current.marketDate
+        : MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.historyDate;
+    next[resource] = {
+      value,
+      marketDate,
+      updatedAt: input.tick,
+    };
+    return {
+      resource,
+      value,
+      marketDate,
+    };
+  });
+  const currentEnergy = next[RESOURCE_ENERGY];
+  if (
+    currentEnergy !== undefined &&
+    (!Number.isFinite(currentEnergy.value) ||
+      currentEnergy.value <= 0 ||
+      typeof currentEnergy.marketDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(currentEnergy.marketDate) ||
+      !Number.isSafeInteger(currentEnergy.updatedAt) ||
+      currentEnergy.updatedAt < 0)
+  ) {
+    throw new TypeError("market_base_v2_trusted_floor_invalid:energy");
+  }
+  next[RESOURCE_ENERGY] = {
+    value: Math.max(
+      currentEnergy?.value ?? 0,
+      MARKET_DIRECT_CANARY_POLICY.minEnergyShadowHardFloor,
+    ),
+    marketDate:
+      currentEnergy?.marketDate &&
+      currentEnergy.marketDate >
+        MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.historyDate
+        ? currentEnergy.marketDate
+        : MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.historyDate,
+    updatedAt:
+      currentEnergy &&
+      currentEnergy.value >=
+        MARKET_DIRECT_CANARY_POLICY.minEnergyShadowHardFloor &&
+      currentEnergy.marketDate >=
+        MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.historyDate
+        ? currentEnergy.updatedAt
+        : input.tick,
+  };
+  return {
+    pricingRatchet: buildMarketBaseResourcePricingRatchetState({
+      initializedAt: input.tick,
+      entries,
+    }),
+    trustedFloors: next,
+  };
+}
+
+function inertMarketBaseProposal(
+  input: Omit<MarketBaseResourcePermitProposal, "proposalId">,
+): MarketBaseResourcePermitProposal {
+  return {
+    ...input,
+    proposalId: canonicalStableHashV1({
+      domain: "market-base-resource:operator-proposal-v1",
+      proposal: input,
+    }),
+  };
+}
+
+function buildMarketBaseV2CutoverProposal(
+  data: MarketSaleDataState,
+  direct: MarketDirectContinuousAutomationState,
+  config: ResolvedMarketSaleAutomationConfig,
+  tick: number,
+): MarketBaseResourcePermitProposal {
+  const accountIdentity = readLiveMarketBaseAccountIdentity();
+  if (!accountIdentity) {
+    throw new TypeError("market_base_account_identity_incomplete");
+  }
+  if ((Game.shard?.name || "") !== "shard1") {
+    throw new TypeError("market_base_executor_shard_mismatch");
+  }
+  const sourceBlocker = validateV2CutoverSource(data, direct, tick);
+  if (sourceBlocker) {
+    throw new TypeError(sourceBlocker);
+  }
+  const scopeResult = reconcileLiveMarketBaseResourceScope({
+    tick,
+    accountIdentity,
+    observations: collectLiveMarketBaseRoomObservations(accountIdentity),
+    previous: direct.baseResourceV3?.scope,
+  });
+  if ("blockers" in scopeResult) {
+    throw new TypeError(
+      scopeResult.blockers[0] || "market_base_scope_reconcile_failed",
+    );
+  }
+  const targetScope: MarketBaseResourceScopeState = {
+    ...scopeResult.state,
+    laneLifecycles: scopeResult.state.laneLifecycles.map((lane) => ({
+      ...lane,
+      stage: "shadow" as const,
+      status: "suspended" as const,
+    })),
+  };
+  const sharedPolicy = createMarketBaseSharedPolicy(accountIdentity);
+  if (sharedPolicy.fingerprint !== targetScope.sharedPolicyFingerprint) {
+    throw new TypeError("market_base_scope_shared_policy_mismatch");
+  }
+  const wrappers = direct.permitChain.permits.map((rawRecord) =>
+    wrapAuthenticatedLegacyV2PermitRecord({
+      rawRecord,
+      authenticated: true,
+    }),
+  );
+  let permitChain = createMarketBaseResourcePermitChainState({
+    legacyV2PermitRecords: wrappers,
+  });
+  const v2LedgerCheckpointHash = marketBaseV2LedgerCheckpointHash(direct);
+  const cutover = buildMarketBaseResourceV2EventCutoverCheckpoint({
+    lastV2AttemptSeq: direct.ledger.finalizedAttemptSeq,
+    lastV2OutcomeSeq: direct.ledger.finalizedAttemptSeq,
+    v2ReceiptHeadHash: direct.ledger.receiptHeadHash,
+    v2LedgerCheckpointHash,
+  });
+  const permit = buildMarketBaseResourcePermit({
+    epoch: permitChain.permitEpochHighWater + 1,
+    accountIdentity,
+    sharedPolicy,
+    resourcePolicies: MARKET_BASE_RESOURCE_POLICIES,
+    ratchetHighWater: buildMarketBaseResourceBootstrapRatchetHighWater(tick),
+    signedLaneGrants: targetScope.laneLifecycles.map((lane) =>
+      buildMarketBaseResourceSignedLaneGrant({
+        lane,
+        stage: "shadow",
+        newDealGrant: "suspended",
+      }),
+    ),
+    previousPermitId: permitChain.currentPermitId,
+    previousPermitHead: permitChain.permitChainHead,
+    previousLedgerHead: direct.ledger.receiptHeadHash,
+    v2EventCutoverCheckpoint: cutover,
+    legacyV2GrantSuspension: buildMarketBaseResourceLegacyV2GrantSuspension({
+      previousPermitId: permitChain.currentPermitId,
+      previousPermitHead: permitChain.permitChainHead,
+      cutoverCheckpointHash: cutover.checkpointHash,
+    }),
+    createdAt: tick,
+    operatorAuthorizationFingerprint:
+      marketBaseResourceOperatorAuthorizationFingerprint(config),
+  });
+  const appended = appendMarketBaseResourcePermit(permitChain, permit, {
+    tick,
+    currentShard: "shard1",
+    currentLedgerHead: direct.ledger.receiptHeadHash,
+    currentV2LedgerCheckpointHash: v2LedgerCheckpointHash,
+    currentV2AttemptSeqHighWater: direct.ledger.finalizedAttemptSeq,
+    currentV2OutcomeSeqHighWater: direct.ledger.finalizedAttemptSeq,
+    currentDerivedLanes: targetScope.laneLifecycles,
+    currentLifecycleCheckpointCommitment:
+      marketBaseDerivedLaneLifecycleCheckpointCommitment(
+        targetScope.laneLifecycles,
+      ),
+    hasPending: false,
+    hasQuarantine: false,
+    hasGap: false,
+    hasUnmatchedReservation: false,
+  });
+  if (appended.status === "rejected" || appended.status === "conflict") {
+    throw new TypeError(`market_base_first_permit_${appended.reason}`);
+  }
+  permitChain = appended.state;
+  const legacyQuotaReceipts = migrateV2QuotaReceipts(direct);
+  const lifetimeConfirmed =
+    migratedMarketBaseLifetimeCounters(legacyQuotaReceipts);
+  if (
+    canonicalStableHashV1({
+      global: lifetimeConfirmed.global,
+      resources: lifetimeConfirmed.resources,
+    }) !== canonicalStableHashV1(direct.ledger.lifetimeConfirmed)
+  ) {
+    throw new TypeError("market_base_v2_lifetime_counter_mismatch");
+  }
+  const migrationBasis =
+    buildMarketBaseResourceAuthenticatedV2LedgerMigrationBasis({
+      tick,
+      cutoverCheckpoint: cutover,
+      v2PrunedThroughAttemptSeq: direct.ledger.checkpoint.prunedThroughSeq,
+      legacyQuotaReceipts,
+      legacyV2ConfirmedCanaries: direct.ledger.confirmedCanaries,
+      lifetimeConfirmed,
+      retryNotBefore: direct.ledger.retryNotBefore,
+      authenticated: true,
+    });
+  const ledger = createMarketBaseResourceLedger({
+    tick,
+    permitChain,
+    migrationBasis,
+  });
+  const ledgerValidation = validateMarketBaseResourceLedger(
+    ledger,
+    tick,
+    permitChain,
+  );
+  const anchorValidation = validateMarketBaseResourcePermitChainDominatesAnchor(
+    permitChain,
+    ledger.permitAnchor,
+  );
+  if (!ledgerValidation.ok || !anchorValidation.ok) {
+    throw new TypeError(
+      ledgerValidation.reason ||
+        anchorValidation.reason ||
+        "market_base_migrated_ledger_invalid",
+    );
+  }
+  const migratedRatchet = buildFirstMarketBasePricingRatchet({
+    tick,
+    trustedFloors: data.trustedFloors,
+  });
+  return inertMarketBaseProposal({
+    schemaVersion: 3,
+    kind: "v2-cutover",
+    proposedAt: tick,
+    sourceStateFingerprint: marketBaseV2SourceStateFingerprint(data, direct),
+    operatorAuthorizationFingerprint:
+      marketBaseResourceOperatorAuthorizationFingerprint(config),
+    accountIdentity,
+    executorShard: "shard1",
+    rosterFingerprint: targetScope.rosterFingerprint,
+    laneSetFingerprint: targetScope.laneSetFingerprint,
+    targetScope,
+    targetPermitChain: permitChain,
+    targetLedger: ledger,
+    targetPricingRatchet: migratedRatchet.pricingRatchet,
+    targetTrustedFloors: migratedRatchet.trustedFloors,
+  });
+}
+
+function currentMarketBaseV3Permit(
+  state: MarketBaseResourceV3RuntimeState,
+): MarketBaseResourcePermit | undefined {
+  const retained =
+    state.permitChain?.retainedPermits[
+      (state.permitChain?.retainedPermits.length ?? 0) - 1
+    ];
+  return retained?.schemaVersion === 3 ? retained : undefined;
+}
+
+function continuousReviewStablePayload(
+  snapshot: Omit<
+    MarketBaseResourceContinuousReviewSnapshot,
+    "stableReviewDigest"
+  >,
+): unknown {
+  return {
+    schemaVersion: snapshot.schemaVersion,
+    hashRevision: snapshot.hashRevision,
+    laneId: snapshot.laneId,
+    resource: snapshot.resource,
+    sellerRoom: snapshot.sellerRoom,
+    confirmedCanary: snapshot.confirmedCanary,
+    permit: snapshot.permit,
+    ledger: snapshot.ledger,
+    terminal: {
+      terminalId: snapshot.terminal.terminalId,
+      resourceAmount: snapshot.terminal.resourceAmount,
+      energy: snapshot.terminal.energy,
+      effectivePostDealEnergyReserve:
+        snapshot.terminal.effectivePostDealEnergyReserve,
+    },
+    protection: {
+      entryCommitment: snapshot.protection.entryCommitment,
+      sellableAmount: snapshot.protection.sellableAmount,
+      protectedAmount: snapshot.protection.protectedAmount,
+      productionDemand: snapshot.protection.productionDemand,
+      protectedOutgoing: snapshot.protection.protectedOutgoing,
+      carrierOrInFlight: snapshot.protection.carrierOrInFlight,
+    },
+    quota: snapshot.quota,
+  };
+}
+
+function sealMarketBaseContinuousReviewSnapshot(
+  input: Omit<MarketBaseResourceContinuousReviewSnapshot, "stableReviewDigest">,
+): MarketBaseResourceContinuousReviewSnapshot {
+  return {
+    ...input,
+    stableReviewDigest: canonicalStableHashV1({
+      domain: "market-base-resource:operator-continuous-review-v1",
+      facts: continuousReviewStablePayload(input),
+    }),
+  };
+}
+
+function validateMarketBaseContinuousReviewSnapshot(
+  value: unknown,
+  tick: number,
+): value is MarketBaseResourceContinuousReviewSnapshot {
+  if (!isPlainRecord(value)) return false;
+  const snapshot =
+    value as unknown as MarketBaseResourceContinuousReviewSnapshot;
+  if (
+    snapshot.schemaVersion !== 1 ||
+    snapshot.hashRevision !== "market-base-resource-continuous-review-v1" ||
+    typeof snapshot.laneId !== "string" ||
+    snapshot.laneId.length === 0 ||
+    snapshot.laneId.length > 256 ||
+    !isMarketBaseResource(snapshot.resource) ||
+    typeof snapshot.sellerRoom !== "string" ||
+    snapshot.sellerRoom.length === 0 ||
+    snapshot.sellerRoom.length > 64 ||
+    !Number.isSafeInteger(snapshot.observedAt) ||
+    snapshot.observedAt < 0 ||
+    snapshot.observedAt > tick ||
+    !Number.isSafeInteger(snapshot.sourceFreshThrough) ||
+    snapshot.sourceFreshThrough < tick ||
+    !isPlainRecord(snapshot.confirmedCanary) ||
+    !Number.isSafeInteger(snapshot.confirmedCanary.attemptSeq) ||
+    snapshot.confirmedCanary.attemptSeq <= 0 ||
+    !Number.isSafeInteger(snapshot.confirmedCanary.transactionTime) ||
+    !Number.isSafeInteger(snapshot.confirmedCanary.actualAmount) ||
+    snapshot.confirmedCanary.actualAmount <= 0 ||
+    !Number.isSafeInteger(snapshot.confirmedCanary.actualTransactionEnergy) ||
+    snapshot.confirmedCanary.actualTransactionEnergy < 0 ||
+    !Number.isSafeInteger(snapshot.confirmedCanary.actualNetCreditsMilli) ||
+    snapshot.confirmedCanary.actualNetCreditsMilli <= 0 ||
+    !isPlainRecord(snapshot.permit) ||
+    !isPlainRecord(snapshot.ledger) ||
+    !isPlainRecord(snapshot.terminal) ||
+    !isPlainRecord(snapshot.protection) ||
+    !isPlainRecord(snapshot.quota) ||
+    typeof snapshot.stableReviewDigest !== "string" ||
+    snapshot.stableReviewDigest.length === 0 ||
+    snapshot.stableReviewDigest.length > 256
+  ) {
+    return false;
+  }
+  const { stableReviewDigest: _stableReviewDigest, ...payload } = snapshot;
+  return (
+    snapshot.stableReviewDigest ===
+    sealMarketBaseContinuousReviewSnapshot(payload).stableReviewDigest
+  );
+}
+
+function buildCurrentMarketBaseContinuousReviewSnapshot(
+  data: MarketSaleDataState,
+  state: MarketBaseResourceV3RuntimeState,
+  config: ResolvedMarketSaleAutomationConfig,
+  laneId: string,
+  tick: number,
+): MarketBaseResourceContinuousReviewSnapshot {
+  const permit = currentMarketBaseV3Permit(state);
+  const ledger = state.ledger;
+  const scope = state.scope;
+  const lane = scope?.laneLifecycles.find(
+    (candidate) => candidate.laneId === laneId,
+  );
+  const reviewFacts =
+    ledger && state.permitChain
+      ? marketBaseResourceCanaryReviewFactsFor(
+          ledger,
+          laneId,
+          state.permitChain,
+        )
+      : undefined;
+  const confirmation = reviewFacts?.confirmed;
+  if (
+    !permit ||
+    !ledger ||
+    !scope ||
+    !lane ||
+    !["review_paused", "continuous"].includes(lane.stage) ||
+    (lane.stage === "review_paused" && lane.status !== "suspended") ||
+    (lane.stage === "continuous" &&
+      !["suspended", "writable"].includes(lane.status)) ||
+    !confirmation ||
+    !reviewFacts ||
+    reviewFacts.laneId !== laneId ||
+    reviewFacts.attempt.laneId !== laneId ||
+    reviewFacts.attempt.attemptSeq !== confirmation.attemptSeq ||
+    reviewFacts.attempt.permitId !== confirmation.permitId ||
+    reviewFacts.attempt.permitEpoch !== confirmation.permitEpoch
+  ) {
+    throw new TypeError(
+      "market_base_continuous_review_canary_receipt_unavailable",
+    );
+  }
+  const policy = MARKET_BASE_RESOURCE_POLICIES.find(
+    (candidate) => candidate.resource === lane.resource,
+  );
+  const ratchet = state.pricingRatchet?.entries.find(
+    (candidate) => candidate.resource === lane.resource,
+  );
+  const effectiveFloor = Math.max(
+    policy?.hardFloor ?? Infinity,
+    policy?.economicFloor ?? Infinity,
+    ratchet?.value ?? Infinity,
+  );
+  if (
+    !policy ||
+    !Number.isFinite(effectiveFloor) ||
+    confirmation.actualNetCreditsMilli <
+      Math.ceil(effectiveFloor * 1_000 * confirmation.actualAmount)
+  ) {
+    throw new TypeError("market_base_continuous_review_actual_net_below_floor");
+  }
+  const terminal = readLiveMarketBaseTerminal(
+    lane.sellerRoomName,
+    lane.resource,
+  );
+  if (
+    !terminal ||
+    !terminal.owned ||
+    !terminal.ready ||
+    terminal.cooldown !== 0 ||
+    !Number.isSafeInteger(terminal.effectivePostDealEnergyReserve) ||
+    (terminal.effectivePostDealEnergyReserve ?? -1) < 25_000 ||
+    terminal.energy < (terminal.effectivePostDealEnergyReserve ?? Infinity) ||
+    terminal.resourceAmount < 1_000
+  ) {
+    throw new TypeError("market_base_continuous_review_terminal_not_ready");
+  }
+  const protectionLedger = collectLiveMarketSaleProtectionLedger(
+    config,
+    Object.values(data.managedOrders),
+    {
+      candidates: [
+        {
+          roomName: lane.sellerRoomName,
+          resource: lane.resource,
+        },
+      ],
+      laneReserveByEntry: {
+        [getMarketProtectionEntryKey(lane.sellerRoomName, lane.resource)]:
+          policy.laneReserve,
+      },
+    },
+  );
+  const protection =
+    protectionLedger.entries[
+      getMarketProtectionEntryKey(lane.sellerRoomName, lane.resource)
+    ];
+  if (
+    protectionLedger.globalBlocked ||
+    !protection ||
+    !isMarketProtectionEntryFresh(protection, tick) ||
+    getMarketProtectionSellableAmount(protection, tick) < 1_000
+  ) {
+    throw new TypeError("market_base_continuous_review_protection_incomplete");
+  }
+  const quota = marketBaseResourceQuotaProjection({
+    state: ledger,
+    tick,
+    lanes: [
+      {
+        resource: lane.resource,
+        sellerRoom: lane.sellerRoomName,
+        resourceLimit: policy.rollingMaxAmount,
+      },
+    ],
+  })[0];
+  if (!quota) {
+    throw new TypeError("market_base_continuous_review_quota_unavailable");
+  }
+  const quotaStable = {
+    global: quota.global,
+    resourceQuota: quota.resourceQuota,
+    room: quota.room,
+    lane: quota.lane,
+    lastGlobalConfirmedAt: quota.lastGlobalConfirmedAt ?? null,
+    confirmedCooldownNotBefore: quota.confirmedCooldownNotBefore,
+    retryNotBefore: quota.retryNotBefore,
+  };
+  const contributionProjection = protection.sourceContributions
+    .map((entry) => ({
+      dedupeKey: entry.dedupeKey,
+      stableKey: entry.stableKey ?? null,
+      bucket: entry.bucket,
+      amount: entry.amount,
+      sourceKinds: [...entry.sourceKinds].sort(),
+      managedOrderId: entry.managedOrderId ?? null,
+    }))
+    .sort((left, right) => left.dedupeKey.localeCompare(right.dedupeKey));
+  return sealMarketBaseContinuousReviewSnapshot({
+    schemaVersion: 1,
+    hashRevision: "market-base-resource-continuous-review-v1",
+    laneId,
+    resource: lane.resource,
+    sellerRoom: lane.sellerRoomName,
+    observedAt: tick,
+    sourceFreshThrough: protection.expiresAt,
+    confirmedCanary: {
+      attemptSeq: confirmation.attemptSeq,
+      permitId: confirmation.permitId,
+      receiptEventHash: confirmation.receiptEventHash,
+      transactionTime: confirmation.transactionTime,
+      actualAmount: confirmation.actualAmount,
+      actualTransactionEnergy: confirmation.actualTransactionEnergy,
+      actualNetCreditsMilli: confirmation.actualNetCreditsMilli,
+    },
+    permit: {
+      permitId: permit.permitId,
+      permitEpoch: permit.epoch,
+      permitHead: permit.permitHead,
+    },
+    ledger: {
+      receiptHeadHash: ledger.receiptHeadHash,
+      checkpointHash: ledger.checkpoint.checkpointHash,
+      permitAnchorHash: ledger.permitAnchor.anchorHash,
+      finalizedAttemptSeq: ledger.finalizedAttemptSeq,
+    },
+    terminal: {
+      terminalId: terminal.terminalId,
+      resourceAmount: terminal.resourceAmount,
+      energy: terminal.energy,
+      effectivePostDealEnergyReserve: terminal.effectivePostDealEnergyReserve!,
+      readinessRevision: terminal.revision,
+    },
+    protection: {
+      revision: protection.revision,
+      observedAt: protection.observedAt,
+      expiresAt: protection.expiresAt,
+      entryCommitment: canonicalStableHashV1({
+        domain: "market-base-resource:operator-protection-review-v1",
+        roomName: protection.roomName,
+        resource: protection.resource,
+        totalStock: protection.totalStock,
+        terminalStock: protection.terminalStock,
+        hardReserve: protection.hardReserve,
+        localReserve: protection.localReserve ?? null,
+        absoluteTarget: protection.absoluteTarget ?? null,
+        consumptiveDemand: protection.consumptiveDemand ?? null,
+        boostWar: protection.boostWar ?? null,
+        hubCommitments: protection.hubCommitments ?? null,
+        productionDemand: protection.productionDemand,
+        forecastBuffer: protection.forecastBuffer,
+        protectedOutgoing: protection.protectedOutgoing,
+        carrierOrInFlight: protection.carrierOrInFlight,
+        protectedAmount: protection.protectedAmount,
+        managedExposure: protection.managedExposure,
+        sellableAmount: protection.sellableAmount,
+        contributions: contributionProjection,
+      }),
+      sellableAmount: getMarketProtectionSellableAmount(protection, tick),
+      protectedAmount: protection.protectedAmount,
+      productionDemand: protection.productionDemand,
+      protectedOutgoing: protection.protectedOutgoing,
+      carrierOrInFlight: protection.carrierOrInFlight,
+    },
+    quota: {
+      commitment: canonicalStableHashV1({
+        domain: "market-base-resource:operator-quota-review-v1",
+        quota: quotaStable,
+      }),
+      globalRemaining: quota.global.remaining,
+      resourceRemaining: quota.resourceQuota.remaining,
+      roomRemaining: quota.room.remaining,
+      laneRemaining: quota.lane.remaining,
+      confirmedCooldownNotBefore: quota.confirmedCooldownNotBefore,
+      retryNotBefore: quota.retryNotBefore,
+    },
+  });
+}
+
+function validateV3SuccessorSource(
+  data: MarketSaleDataState,
+  state: MarketBaseResourceV3RuntimeState,
+  config: ResolvedMarketSaleAutomationConfig,
+  tick: number,
+): string | undefined {
+  if (
+    state.cutoverLatched !== true ||
+    !state.permitChain ||
+    !state.ledger ||
+    !state.scope
+  ) {
+    return "market_base_v3_active_state_required";
+  }
+  const permitValidation = validateMarketBaseResourcePermitChain(
+    state.permitChain,
+  );
+  const ledgerValidation = validateMarketBaseResourceLedger(
+    state.ledger,
+    tick,
+    state.permitChain,
+  );
+  const anchorValidation = validateMarketBaseResourcePermitChainDominatesAnchor(
+    state.permitChain,
+    state.ledger.permitAnchor,
+  );
+  const permit = currentMarketBaseV3Permit(state);
+  if (
+    !permitValidation.ok ||
+    !ledgerValidation.ok ||
+    !anchorValidation.ok ||
+    !permit ||
+    permit.operatorAuthorizationFingerprint !==
+      marketBaseResourceOperatorAuthorizationFingerprint(config) ||
+    !validateMarketBaseResourcePricingRatchetState(
+      state.pricingRatchet,
+      permit,
+    ) ||
+    state.permitChain.blocker ||
+    state.ledger.blocker ||
+    state.ledger.pending ||
+    state.blocker
+  ) {
+    return (
+      permitValidation.reason ||
+      ledgerValidation.reason ||
+      anchorValidation.reason ||
+      state.permitChain.blocker?.code ||
+      state.ledger.blocker?.code ||
+      state.blocker ||
+      "market_base_v3_successor_prerequisite_failed"
+    );
+  }
+  return marketBaseOperatorExposureBlocker(data);
+}
+
+function tombstonedMarketBaseGrant(
+  grant: MarketBaseResourceSignedLaneGrant,
+): MarketBaseResourceSignedLaneGrant {
+  const lane: MarketBaseDerivedLaneLifecycle = {
+    laneId: grant.laneId,
+    resource: grant.resource,
+    resourcePolicyId: grant.resourcePolicyId,
+    resourcePolicyFingerprint: grant.resourcePolicyFingerprint,
+    roomInstanceId: grant.roomInstanceId,
+    sellerRoomName: grant.sellerRoom,
+    roomFingerprint: grant.roomFingerprint,
+    sharedPolicyFingerprint: grant.sharedPolicyFingerprint,
+    stage: grant.stage,
+    status: "tombstoned",
+    shadowEvidence: {
+      completeCycles: 0,
+    },
+    stableFingerprint: grant.laneStableFingerprint,
+  };
+  return buildMarketBaseResourceSignedLaneGrant({
+    lane,
+    status: "tombstoned",
+    stage: grant.stage,
+    newDealGrant: "suspended",
+    lifecycleEvidenceDigest: grant.lifecycleEvidenceDigest,
+    reviewDigest: grant.reviewDigest,
+  });
+}
+
+function sameMarketBaseGrantExceptDealGrant(
+  left: MarketBaseResourceSignedLaneGrant,
+  right: MarketBaseResourceSignedLaneGrant,
+): boolean {
+  const {
+    grantFingerprint: _leftGrantFingerprint,
+    newDealGrant: _leftNewDealGrant,
+    ...leftStable
+  } = left;
+  const {
+    grantFingerprint: _rightGrantFingerprint,
+    newDealGrant: _rightNewDealGrant,
+    ...rightStable
+  } = right;
+  return (
+    canonicalStableHashV1(leftStable) === canonicalStableHashV1(rightStable)
+  );
+}
+
+function buildMarketBaseV3SuccessorProposal(
+  data: MarketSaleDataState,
+  direct: MarketDirectContinuousAutomationState,
+  state: MarketBaseResourceV3RuntimeState,
+  activationAnchor: MarketBaseResourceActivationAnchor,
+  config: ResolvedMarketSaleAutomationConfig,
+  tick: number,
+  request: MarketBaseResourcePermitRequest,
+): BuiltMarketBaseV3SuccessorProposal {
+  const blocker = validateV3SuccessorSource(data, state, config, tick);
+  if (blocker) throw new TypeError(blocker);
+  const laneId =
+    typeof request.laneId === "string" ? request.laneId.trim() : "";
+  const targetStage = request.targetStage;
+  if (
+    !laneId ||
+    !["canary", "continuous", "suspend"].includes(targetStage || "")
+  ) {
+    throw new TypeError("market_base_successor_exact_lane_transition_required");
+  }
+  const accountIdentity = readLiveMarketBaseAccountIdentity();
+  if (
+    !accountIdentity ||
+    accountIdentity !== currentMarketBaseV3Permit(state)?.accountIdentity ||
+    (Game.shard?.name || "") !== "shard1"
+  ) {
+    throw new TypeError("market_base_successor_identity_mismatch");
+  }
+  const scopeResult = reconcileLiveMarketBaseResourceScope({
+    tick,
+    accountIdentity,
+    observations: collectLiveMarketBaseRoomObservations(accountIdentity),
+    previous: state.scope,
+    permitChain: state.permitChain,
+    pinnedLaneIds: state.ledger?.pending
+      ? [state.ledger.pending.historicalLane.laneId]
+      : [],
+    expectedPreviousRoomCheckpointCommitment:
+      activationAnchor.roomRegistryCheckpointCommitment,
+    expectedPermitLaneTombstoneCheckpointCommitment:
+      activationAnchor.laneTombstoneCheckpointCommitment,
+    expectedPreviousLaneTombstoneDischargeCheckpointCommitment:
+      activationAnchor.laneTombstoneDischargeCheckpointCommitment,
+  });
+  if ("blockers" in scopeResult) {
+    throw new TypeError(
+      scopeResult.blockers[0] || "market_base_successor_scope_invalid",
+    );
+  }
+  const currentScope = scopeResult.state;
+  const lifecycleBlocker =
+    validateMarketBaseScopeLifecycleEvidence(currentScope);
+  if (lifecycleBlocker) {
+    throw new TypeError(lifecycleBlocker);
+  }
+  const targetLane = currentScope.laneLifecycles.find(
+    (lane) => lane.laneId === laneId,
+  );
+  if (!targetLane) {
+    throw new TypeError("market_base_successor_lane_not_found");
+  }
+  const permitChain = state.permitChain!;
+  const ledger = state.ledger!;
+  const priorPermit = currentMarketBaseV3Permit(state)!;
+  const priorByLane = new Map(
+    priorPermit.signedLaneGrants.map((grant) => [grant.laneId, grant]),
+  );
+  const priorTargetGrant = priorByLane.get(laneId);
+  const retainedV3Permits = permitChain.retainedPermits.filter(
+    (record): record is MarketBaseResourcePermit => record.schemaVersion === 3,
+  );
+  const recoverableCanaryTransitions: Array<{
+    canaryPermit: MarketBaseResourcePermit;
+    preCanaryPermit: MarketBaseResourcePermit;
+    canaryPermitIndex: number;
+  }> = [];
+  if (
+    targetStage === "continuous" &&
+    targetLane.stage === "continuous" &&
+    targetLane.status === "suspended" &&
+    priorTargetGrant?.status === "active" &&
+    priorTargetGrant.stage === "continuous" &&
+    priorTargetGrant.newDealGrant === "suspended"
+  ) {
+    for (const grant of priorPermit.signedLaneGrants) {
+      if (
+        grant.status !== "active" ||
+        grant.stage !== "canary" ||
+        grant.newDealGrant !== "suspended" ||
+        grant.resource !== targetLane.resource ||
+        grant.laneId === laneId
+      ) {
+        continue;
+      }
+      const reviewFacts = marketBaseResourceCanaryReviewFactsFor(
+        ledger,
+        grant.laneId,
+        permitChain,
+      );
+      if (!reviewFacts) continue;
+      const attemptPermitIndex = retainedV3Permits.findIndex(
+        (candidate) =>
+          candidate.permitId === reviewFacts.attempt.permitId &&
+          candidate.epoch === reviewFacts.attempt.permitEpoch,
+      );
+      const attemptPermit = retainedV3Permits[attemptPermitIndex];
+      const attemptCanaryGrant = attemptPermit?.signedLaneGrants.find(
+        (candidate) => candidate.laneId === grant.laneId,
+      );
+      const attemptTarget = attemptPermit?.signedLaneGrants.find(
+        (candidate) => candidate.laneId === laneId,
+      );
+      if (
+        !attemptPermit ||
+        !attemptCanaryGrant ||
+        attemptCanaryGrant.status !== "active" ||
+        attemptCanaryGrant.stage !== "canary" ||
+        attemptCanaryGrant.newDealGrant !== "enabled" ||
+        !attemptTarget ||
+        attemptTarget.status !== "active" ||
+        attemptTarget.stage !== "continuous" ||
+        attemptTarget.newDealGrant !== "suspended"
+      ) {
+        continue;
+      }
+      // attempt 可以发生在 B canary accept 之后的无关 operator permit 下。
+      // 向前只跨越 A/B 两条 grant 完全不变的 contiguous prefix，定位真正
+      // 把 B enabled、A suspended 的首个 permit，再取其 predecessor。
+      let canaryPermitIndex = attemptPermitIndex;
+      while (canaryPermitIndex > 0) {
+        const candidate = retainedV3Permits[canaryPermitIndex - 1];
+        const candidateCanary = candidate.signedLaneGrants.find(
+          (entry) => entry.laneId === grant.laneId,
+        );
+        const candidateTarget = candidate.signedLaneGrants.find(
+          (entry) => entry.laneId === laneId,
+        );
+        if (
+          !candidateCanary ||
+          candidateCanary.newDealGrant !== "enabled" ||
+          canonicalStableHashV1(candidateCanary) !==
+            canonicalStableHashV1(attemptCanaryGrant) ||
+          !candidateTarget ||
+          canonicalStableHashV1(candidateTarget) !==
+            canonicalStableHashV1(attemptTarget)
+        ) {
+          break;
+        }
+        canaryPermitIndex -= 1;
+      }
+      const canaryPermit = retainedV3Permits[canaryPermitIndex];
+      const preCanaryPermit = retainedV3Permits[canaryPermitIndex - 1];
+      if (!canaryPermit || !preCanaryPermit) continue;
+      const canaryGrant = canaryPermit.signedLaneGrants.find(
+        (candidate) => candidate.laneId === grant.laneId,
+      );
+      const canaryTarget = canaryPermit.signedLaneGrants.find(
+        (candidate) => candidate.laneId === laneId,
+      );
+      const preCanaryTarget = preCanaryPermit.signedLaneGrants.find(
+        (candidate) => candidate.laneId === laneId,
+      );
+      const currentCanaryLane = currentScope.laneLifecycles.find(
+        (candidate) => candidate.laneId === grant.laneId,
+      );
+      if (
+        !canaryGrant ||
+        canaryGrant.status !== "active" ||
+        canaryGrant.stage !== "canary" ||
+        canaryGrant.newDealGrant !== "enabled" ||
+        !sameMarketBaseGrantExceptDealGrant(canaryGrant, grant) ||
+        !canaryTarget ||
+        canaryTarget.status !== "active" ||
+        canaryTarget.stage !== "continuous" ||
+        canaryTarget.newDealGrant !== "suspended" ||
+        !preCanaryTarget ||
+        preCanaryTarget.status !== "active" ||
+        preCanaryTarget.stage !== "continuous" ||
+        preCanaryTarget.newDealGrant !== "enabled" ||
+        !sameMarketBaseGrantExceptDealGrant(preCanaryTarget, canaryTarget) ||
+        canonicalStableHashV1(canaryTarget) !==
+          canonicalStableHashV1(priorTargetGrant) ||
+        !currentCanaryLane ||
+        currentCanaryLane.status !== "suspended" ||
+        !["canary", "review_paused"].includes(currentCanaryLane.stage) ||
+        currentCanaryLane.stableFingerprint !== grant.laneStableFingerprint
+      ) {
+        continue;
+      }
+
+      let canarySuspended = false;
+      let suffixStable = true;
+      for (const suffixPermit of retainedV3Permits.slice(
+        canaryPermitIndex + 1,
+      )) {
+        const suffixTarget = suffixPermit.signedLaneGrants.find(
+          (candidate) => candidate.laneId === laneId,
+        );
+        const suffixCanary = suffixPermit.signedLaneGrants.find(
+          (candidate) => candidate.laneId === grant.laneId,
+        );
+        if (
+          !suffixTarget ||
+          canonicalStableHashV1(suffixTarget) !==
+            canonicalStableHashV1(canaryTarget) ||
+          !suffixCanary ||
+          !sameMarketBaseGrantExceptDealGrant(canaryGrant, suffixCanary) ||
+          suffixCanary.status !== "active" ||
+          suffixCanary.stage !== "canary" ||
+          (suffixCanary.newDealGrant === "enabled" && canarySuspended)
+        ) {
+          suffixStable = false;
+          break;
+        }
+        if (suffixCanary.newDealGrant === "suspended") {
+          canarySuspended = true;
+        }
+      }
+      if (!suffixStable || !canarySuspended) continue;
+      recoverableCanaryTransitions.push({
+        canaryPermit,
+        preCanaryPermit,
+        canaryPermitIndex,
+      });
+    }
+  }
+  const isSuspendedContinuousRecovery =
+    recoverableCanaryTransitions.length === 1;
+  const recoveryTransition = recoverableCanaryTransitions[0];
+  const recoverableInterruptedContinuousLaneIds = new Set(
+    isSuspendedContinuousRecovery && recoveryTransition
+      ? priorPermit.signedLaneGrants
+          .filter((currentGrant) => {
+            const canaryPermitGrant =
+              recoveryTransition.canaryPermit.signedLaneGrants.find(
+                (candidate) => candidate.laneId === currentGrant.laneId,
+              );
+            const preCanaryGrant =
+              recoveryTransition.preCanaryPermit.signedLaneGrants.find(
+                (candidate) => candidate.laneId === currentGrant.laneId,
+              );
+            const currentLane = currentScope.laneLifecycles.find(
+              (candidate) => candidate.laneId === currentGrant.laneId,
+            );
+            return Boolean(
+              currentGrant.status === "active" &&
+              currentGrant.stage === "continuous" &&
+              currentGrant.newDealGrant === "suspended" &&
+              currentGrant.resource === targetLane.resource &&
+              canaryPermitGrant &&
+              canaryPermitGrant.status === "active" &&
+              canaryPermitGrant.stage === "continuous" &&
+              canaryPermitGrant.newDealGrant === "suspended" &&
+              canonicalStableHashV1(canaryPermitGrant) ===
+                canonicalStableHashV1(currentGrant) &&
+              preCanaryGrant &&
+              preCanaryGrant.status === "active" &&
+              preCanaryGrant.stage === "continuous" &&
+              preCanaryGrant.newDealGrant === "enabled" &&
+              sameMarketBaseGrantExceptDealGrant(
+                preCanaryGrant,
+                canaryPermitGrant,
+              ) &&
+              retainedV3Permits
+                .slice(recoveryTransition.canaryPermitIndex + 1)
+                .every((suffixPermit) => {
+                  const suffixGrant = suffixPermit.signedLaneGrants.find(
+                    (candidate) => candidate.laneId === currentGrant.laneId,
+                  );
+                  return (
+                    suffixGrant !== undefined &&
+                    canonicalStableHashV1(suffixGrant) ===
+                      canonicalStableHashV1(canaryPermitGrant)
+                  );
+                }) &&
+              currentLane &&
+              currentLane.stage === "continuous" &&
+              currentLane.status === "suspended" &&
+              currentLane.stableFingerprint ===
+                currentGrant.laneStableFingerprint,
+            );
+          })
+          .map((grant) => grant.laneId)
+      : [],
+  );
+  const otherEnabledCanary = priorPermit.signedLaneGrants.find(
+    (grant) =>
+      grant.stage === "canary" &&
+      grant.newDealGrant === "enabled" &&
+      grant.laneId !== laneId,
+  );
+  if (otherEnabledCanary) {
+    throw new TypeError("market_base_other_canary_must_resolve_first");
+  }
+  let confirmedProof:
+    ReturnType<typeof buildMarketBaseResourceConfirmedCanaryProof> | undefined;
+  let targetContinuousReview:
+    MarketBaseResourceContinuousReviewSnapshot | undefined;
+  if (targetStage === "canary") {
+    if (targetLane.stage !== "qualified" || targetLane.status !== "suspended") {
+      throw new TypeError("market_base_lane_not_shadow_qualified");
+    }
+  } else if (targetStage === "continuous") {
+    if (
+      !(
+        targetLane.stage === "review_paused" &&
+        targetLane.status === "suspended"
+      ) &&
+      !isSuspendedContinuousRecovery
+    ) {
+      throw new TypeError("market_base_lane_not_review_paused");
+    }
+    confirmedProof = buildMarketBaseResourceConfirmedCanaryProof(
+      ledger,
+      laneId,
+      permitChain,
+    );
+    targetContinuousReview = buildCurrentMarketBaseContinuousReviewSnapshot(
+      data,
+      {
+        ...state,
+        scope: currentScope,
+      },
+      config,
+      laneId,
+      tick,
+    );
+    if (
+      !validateMarketBaseContinuousReviewSnapshot(
+        request.continuousReview,
+        tick,
+      ) ||
+      request.continuousReview.laneId !== laneId ||
+      request.continuousReview.stableReviewDigest !==
+        targetContinuousReview.stableReviewDigest ||
+      canonicalStableHashV1(
+        continuousReviewStablePayload(request.continuousReview),
+      ) !==
+        canonicalStableHashV1(
+          continuousReviewStablePayload(targetContinuousReview),
+        ) ||
+      typeof request.reviewedEvidenceDigest !== "string" ||
+      request.reviewedEvidenceDigest.trim() !==
+        targetContinuousReview.stableReviewDigest
+    ) {
+      throw new TypeError("market_base_continuous_review_snapshot_mismatch");
+    }
+  } else if (
+    !priorTargetGrant ||
+    priorTargetGrant.status !== "active" ||
+    priorTargetGrant.newDealGrant !== "enabled" ||
+    !["canary", "continuous"].includes(priorTargetGrant.stage)
+  ) {
+    throw new TypeError("market_base_lane_not_writable_for_suspension");
+  } else if (
+    priorTargetGrant.stage === "canary" &&
+    !marketBaseResourceCanaryReviewFactsFor(
+      ledger,
+      priorTargetGrant.laneId,
+      permitChain,
+    )
+  ) {
+    throw new TypeError(
+      "market_base_canary_suspension_requires_terminal_attempt",
+    );
+  }
+
+  const reviewedEvidence: MarketBaseResourceReviewedEvidence[] = [];
+  const continuousReviewSnapshots = new Map<
+    string,
+    MarketBaseResourceContinuousReviewSnapshot
+  >();
+  if (targetContinuousReview) {
+    continuousReviewSnapshots.set(laneId, targetContinuousReview);
+  }
+  const confirmedProofByLane = new Map<
+    string,
+    ReturnType<typeof buildMarketBaseResourceConfirmedCanaryProof>
+  >();
+  if (confirmedProof) {
+    confirmedProofByLane.set(laneId, confirmedProof);
+  }
+  const ensureConfirmedProof = (confirmedLaneId: string) => {
+    const existing = confirmedProofByLane.get(confirmedLaneId);
+    if (existing) return existing;
+    const proof = buildMarketBaseResourceConfirmedCanaryProof(
+      ledger,
+      confirmedLaneId,
+      permitChain,
+    );
+    confirmedProofByLane.set(confirmedLaneId, proof);
+    return proof;
+  };
+  const addContinuousReview = (
+    proof: ReturnType<typeof buildMarketBaseResourceConfirmedCanaryProof>,
+    operatorReviewSnapshotDigest: string,
+  ): void => {
+    if (
+      reviewedEvidence.some(
+        (entry) =>
+          entry.laneId === proof.laneId && entry.kind === "continuous_review",
+      )
+    ) {
+      return;
+    }
+    reviewedEvidence.push({
+      laneId: proof.laneId,
+      kind: "continuous_review",
+      evidenceKey: proof.evidenceKey,
+      digest: operatorReviewSnapshotDigest,
+      permitId: proof.permitId,
+      attemptSeq: proof.attemptSeq,
+      receiptEventHash: proof.receiptEventHash,
+      ledgerCheckpointHash: proof.ledgerCheckpointHash,
+      ledgerReceiptHeadHash: proof.ledgerReceiptHeadHash,
+      ledgerPermitAnchorHash: proof.ledgerPermitAnchorHash,
+      confirmedCanaryReviewDigest: proof.reviewDigest,
+      operatorReviewSnapshotDigest,
+    });
+  };
+  const activeGrants: MarketBaseResourceSignedLaneGrant[] = [];
+  const targetLifecycleByLane = new Map<
+    string,
+    MarketBaseDerivedLaneLifecycle
+  >();
+  for (const lane of currentScope.laneLifecycles) {
+    const old = priorByLane.get(lane.laneId);
+    const identityStable =
+      old?.laneStableFingerprint === lane.stableFingerprint &&
+      old.roomInstanceId === lane.roomInstanceId &&
+      old.roomFingerprint === lane.roomFingerprint;
+    let stage = identityStable && old ? lane.stage : ("shadow" as const);
+    let newDealGrant: "enabled" | "suspended" =
+      identityStable &&
+      old?.newDealGrant === "enabled" &&
+      (stage === "canary" || stage === "continuous")
+        ? "enabled"
+        : "suspended";
+    if (
+      stage === "review_paused" ||
+      stage === "qualified" ||
+      stage === "shadow"
+    ) {
+      newDealGrant = "suspended";
+    }
+    if (lane.laneId === laneId) {
+      if (targetStage === "canary") {
+        stage = "canary";
+        newDealGrant = "enabled";
+      } else if (targetStage === "continuous") {
+        stage = "continuous";
+        newDealGrant = "enabled";
+      } else {
+        newDealGrant = "suspended";
+      }
+    }
+    const suspendForTargetResourceCanary =
+      targetStage === "canary" &&
+      lane.laneId !== laneId &&
+      lane.resource === targetLane.resource &&
+      newDealGrant === "enabled";
+    if (suspendForTargetResourceCanary) {
+      newDealGrant = "suspended";
+    }
+    const resumeForTargetResourceContinuous =
+      targetStage === "continuous" &&
+      lane.laneId !== laneId &&
+      lane.resource === targetLane.resource &&
+      recoverableInterruptedContinuousLaneIds.has(lane.laneId) &&
+      identityStable &&
+      old?.stage === "continuous" &&
+      old.newDealGrant === "suspended" &&
+      lane.stage === "continuous" &&
+      lane.status === "suspended";
+    if (resumeForTargetResourceContinuous) {
+      stage = "continuous";
+      newDealGrant = "enabled";
+    }
+    if (
+      identityStable &&
+      old?.stage === "continuous" &&
+      old.newDealGrant === "enabled" &&
+      lane.laneId !== laneId &&
+      !suspendForTargetResourceCanary
+    ) {
+      const proof = ensureConfirmedProof(lane.laneId);
+      addContinuousReview(proof, old.reviewDigest);
+      activeGrants.push(old);
+      targetLifecycleByLane.set(lane.laneId, {
+        ...lane,
+        stage: "continuous",
+        status: "writable",
+      });
+      continue;
+    }
+    const laneConfirmedProof =
+      stage === "continuous" && newDealGrant === "enabled"
+        ? ensureConfirmedProof(lane.laneId)
+        : undefined;
+    let operatorReviewSnapshotDigest: string | undefined;
+    if (laneConfirmedProof) {
+      let snapshot = continuousReviewSnapshots.get(lane.laneId);
+      if (!snapshot && resumeForTargetResourceContinuous) {
+        snapshot = buildCurrentMarketBaseContinuousReviewSnapshot(
+          data,
+          {
+            ...state,
+            scope: currentScope,
+          },
+          config,
+          lane.laneId,
+          tick,
+        );
+        continuousReviewSnapshots.set(lane.laneId, snapshot);
+      }
+      operatorReviewSnapshotDigest =
+        snapshot?.stableReviewDigest ?? old?.reviewDigest;
+      if (!operatorReviewSnapshotDigest) {
+        throw new TypeError(
+          `market_base_continuous_operator_review_missing:${lane.laneId}`,
+        );
+      }
+      addContinuousReview(laneConfirmedProof, operatorReviewSnapshotDigest);
+    }
+    const lifecycle: MarketBaseDerivedLaneLifecycle = {
+      ...lane,
+      stage,
+      status: newDealGrant === "enabled" ? "writable" : "suspended",
+    };
+    const preserveWritableGrantSuspension =
+      identityStable &&
+      old !== undefined &&
+      newDealGrant === "suspended" &&
+      (old.stage === "canary" || old.stage === "continuous");
+    const grantStage = preserveWritableGrantSuspension ? old!.stage : stage;
+    const grant = buildMarketBaseResourceSignedLaneGrant({
+      lane: lifecycle,
+      stage: grantStage,
+      newDealGrant,
+      ...(preserveWritableGrantSuspension
+        ? {
+            lifecycleEvidenceDigest: old!.lifecycleEvidenceDigest,
+            reviewDigest: old!.reviewDigest,
+          }
+        : {}),
+      ...(laneConfirmedProof
+        ? {
+            reviewDigest: operatorReviewSnapshotDigest!,
+          }
+        : {}),
+    });
+    activeGrants.push(grant);
+    targetLifecycleByLane.set(lane.laneId, lifecycle);
+    if (lane.laneId === laneId && targetStage === "canary") {
+      reviewedEvidence.push({
+        laneId,
+        kind: "shadow_qualification",
+        evidenceKey: canonicalStableHashV1({
+          domain: "market-base-resource:shadow-qualification-review-v1",
+          laneId,
+          lifecycleEvidenceDigest: grant.lifecycleEvidenceDigest,
+        }),
+        digest: grant.lifecycleEvidenceDigest,
+      });
+    }
+  }
+  const activeIds = new Set(activeGrants.map((grant) => grant.laneId));
+  const tombstones = priorPermit.signedLaneGrants
+    .filter((grant) => !activeIds.has(grant.laneId))
+    .map(tombstonedMarketBaseGrant);
+  const signedLaneGrants = [...activeGrants, ...tombstones];
+  const targetScope: MarketBaseResourceScopeState = {
+    ...currentScope,
+    laneLifecycles: currentScope.laneLifecycles.map((lane) =>
+      targetLifecycleByLane.get(lane.laneId)!,
+    ),
+  };
+  const permit = buildMarketBaseResourcePermit({
+    epoch: permitChain.permitEpochHighWater + 1,
+    accountIdentity,
+    sharedPolicy: priorPermit.sharedPolicy,
+    resourcePolicies: priorPermit.resourcePolicies,
+    ratchetHighWater: priorPermit.ratchetHighWater,
+    signedLaneGrants,
+    reviewedEvidence,
+    previousPermitId: permitChain.currentPermitId,
+    previousPermitHead: permitChain.permitChainHead,
+    previousLedgerHead: ledger.receiptHeadHash,
+    createdAt: tick,
+    operatorAuthorizationFingerprint:
+      marketBaseResourceOperatorAuthorizationFingerprint(config),
+  });
+  const receiptReferences = marketBaseResourceRetainedReceiptPermitReferences(
+    ledger,
+    permitChain,
+  );
+  const appended = appendMarketBaseResourcePermit(permitChain, permit, {
+    tick,
+    currentShard: "shard1",
+    currentLedgerHead: ledger.receiptHeadHash,
+    currentLedgerCheckpointHash: ledger.checkpoint.checkpointHash,
+    currentLedgerPermitAnchorHash: ledger.permitAnchor.anchorHash,
+    currentDerivedLanes: targetScope.laneLifecycles,
+    currentLifecycleCheckpointCommitment:
+      marketBaseDerivedLaneLifecycleCheckpointCommitment(
+        targetScope.laneLifecycles,
+      ),
+    hasPending: false,
+    hasQuarantine: false,
+    hasGap: false,
+    hasUnmatchedReservation: false,
+    receiptPermitReferences: receiptReferences,
+    ...(confirmedProofByLane.size > 0
+      ? {
+          confirmedCanaryProofs: [...confirmedProofByLane.values()],
+          activeReviewPermitReferences: [...confirmedProofByLane.values()].map(
+            (proof) => ({
+              sourceId: proof.laneId,
+              permitId: proof.permitId,
+            }),
+          ),
+        }
+      : {}),
+  });
+  if (appended.status === "rejected" || appended.status === "conflict") {
+    throw new TypeError(`market_base_successor_${appended.reason}`);
+  }
+  const reboundLedger = rebindMarketBaseResourceLedgerPermitAnchor(
+    ledger,
+    appended.state,
+  );
+  const validation = validateMarketBaseResourceLedger(
+    reboundLedger,
+    tick,
+    appended.state,
+  );
+  if (!validation.ok) {
+    throw new TypeError(
+      validation.reason || "market_base_successor_ledger_invalid",
+    );
+  }
+  const transitionLaneIds = targetScope.laneLifecycles
+    .filter((lane) => {
+      const priorGrant = priorByLane.get(lane.laneId);
+      const nextGrant = signedLaneGrants.find(
+        (grant) => grant.laneId === lane.laneId,
+      );
+      const currentLane = currentScope.laneLifecycles.find(
+        (candidate) => candidate.laneId === lane.laneId,
+      );
+      return (
+        lane.laneId === laneId ||
+        currentLane?.stage !== lane.stage ||
+        currentLane?.status !== lane.status ||
+        priorGrant?.stage !== nextGrant?.stage ||
+        priorGrant?.status !== nextGrant?.status ||
+        priorGrant?.newDealGrant !== nextGrant?.newDealGrant
+      );
+    })
+    .map((lane) => lane.laneId)
+    .sort((left, right) => left.localeCompare(right));
+  const proposal = inertMarketBaseProposal({
+    schemaVersion: 3,
+    kind: "v3-successor",
+    proposedAt: tick,
+    sourceStateFingerprint: marketBaseV3SourceStateFingerprint(
+      data,
+      direct,
+      state,
+      transitionLaneIds,
+    ),
+    operatorAuthorizationFingerprint:
+      marketBaseResourceOperatorAuthorizationFingerprint(config),
+    accountIdentity,
+    executorShard: "shard1",
+    rosterFingerprint: targetScope.rosterFingerprint,
+    laneSetFingerprint: targetScope.laneSetFingerprint,
+    targetScope,
+    targetPermitChain: appended.state,
+    targetLedger: reboundLedger,
+    targetPricingRatchet: state.pricingRatchet!,
+    targetTrustedFloors: cloneMarketBaseOperatorValue(data.trustedFloors),
+  });
+  return {
+    proposal,
+    transition: {
+      laneId,
+      targetStage,
+      transitionLaneIds,
+    },
+    continuousReviews: [...continuousReviewSnapshots.values()].sort(
+      (left, right) => left.laneId.localeCompare(right.laneId),
+    ),
+  };
+}
+
+function validateFrozenMarketBaseProposal(
+  proposal: MarketBaseResourcePermitProposal,
+): boolean {
+  const { proposalId: _proposalId, ...payload } = proposal;
+  return (
+    proposal.schemaVersion === 3 &&
+    proposal.proposalId ===
+      canonicalStableHashV1({
+        domain: "market-base-resource:operator-proposal-v1",
+        proposal: payload,
+      }) &&
+    validateMarketBaseResourcePermitChain(proposal.targetPermitChain).ok &&
+    validateMarketBaseResourceLedger(
+      proposal.targetLedger,
+      proposal.proposedAt,
+      proposal.targetPermitChain,
+    ).ok &&
+    validateMarketBaseResourcePermitChainDominatesAnchor(
+      proposal.targetPermitChain,
+      proposal.targetLedger.permitAnchor,
+    ).ok &&
+    validateMarketBaseResourcePricingRatchetState(
+      proposal.targetPricingRatchet,
+      proposal.targetPermitChain.retainedPermits[
+        proposal.targetPermitChain.retainedPermits.length - 1
+      ]?.schemaVersion === 3
+        ? (proposal.targetPermitChain.retainedPermits[
+            proposal.targetPermitChain.retainedPermits.length - 1
+          ] as MarketBaseResourcePermit)
+        : undefined,
+    )
+  );
+}
+
+function copyMarketSaleDataForOperator(
+  source: MarketSaleDataState,
+): MarketSaleDataState {
+  const direct = source.directAutomation;
+  return {
+    ...source,
+    trustedFloors: {
+      ...source.trustedFloors,
+    },
+    operatorAudit: [...source.operatorAudit],
+    ...(direct
+      ? {
+          directAutomation: {
+            ...direct,
+            ...(isContinuousDirectState(direct) && direct.baseResourceV3
+              ? {
+                  baseResourceV3: {
+                    ...direct.baseResourceV3,
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+export function proposeMarketBaseResourcePermit(
+  request: MarketBaseResourcePermitRequest = {},
+): OperatorResult {
+  enforceLegacyMarketSafetyLatch();
+  const sourceData = ensureDataState();
+  const sourceDirect = sourceData.directAutomation;
+  if (!isContinuousDirectState(sourceDirect)) {
+    return {
+      ok: false,
+      error: "continuous_direct_state_required",
+    };
+  }
+  const config = resolveMarketSaleAutomationConfig();
+  const configBlocker = marketBaseResourceV3ConfigBlocker(config);
+  if (configBlocker) {
+    return {
+      ok: false,
+      error: configBlocker,
+    };
+  }
+  let commitAttempted = false;
+  try {
+    const data = copyMarketSaleDataForOperator(sourceData);
+    const direct = data.directAutomation;
+    if (!isContinuousDirectState(direct)) {
+      throw new TypeError("continuous_direct_state_required");
+    }
+    const active =
+      direct.baseResourceV3?.permitChain &&
+      hasAcceptedMarketBaseResourceV3Successor(
+        direct.baseResourceV3.permitChain,
+      );
+    const activation = marketBaseResourceActivationState(
+      data,
+      direct.baseResourceV3,
+    );
+    const activeAnchor = activation.latched ? activation.anchor : undefined;
+    const activationBlocker = activation.latched
+      ? activation.blocker
+      : undefined;
+    if (active && (!activation.latched || !activeAnchor || activationBlocker)) {
+      throw new TypeError(
+        activationBlocker
+          ? activationBlocker
+          : "market_base_activation_anchor_required",
+      );
+    }
+    if (active && activeAnchor) {
+      const nestedBlocker = validateMarketBaseNestedActivationState(
+        direct.baseResourceV3,
+        activeAnchor,
+        data.trustedFloors,
+      );
+      if (nestedBlocker) {
+        throw new TypeError(nestedBlocker);
+      }
+    }
+    if (
+      !active &&
+      (request.laneId !== undefined ||
+        request.targetStage !== undefined ||
+        request.reviewedEvidenceDigest !== undefined ||
+        request.continuousReview !== undefined)
+    ) {
+      throw new TypeError("market_base_first_cutover_request_must_be_empty");
+    }
+    const builtSuccessor = active
+      ? buildMarketBaseV3SuccessorProposal(
+          data,
+          direct,
+          direct.baseResourceV3!,
+          activeAnchor
+            ? activeAnchor
+            : (() => {
+                throw new TypeError("market_base_activation_anchor_required");
+              })(),
+          config,
+          Game.time,
+          request,
+        )
+      : undefined;
+    const proposal =
+      builtSuccessor?.proposal ??
+      buildMarketBaseV2CutoverProposal(data, direct, config, Game.time);
+    const base =
+      direct.baseResourceV3 ??
+      reconcileMarketBaseResourcePreflight(undefined, {
+        tick: Game.time,
+        mode: config.mode,
+        config,
+      }).state;
+    direct.baseResourceV3 = {
+      ...base,
+      proposedPermit: proposal,
+    };
+    if (builtSuccessor) {
+      data.baseResourceV3ProposedTransition = {
+        proposalId: proposal.proposalId,
+        ...builtSuccessor.transition,
+      };
+      if (builtSuccessor.continuousReviews.length > 0) {
+        data.baseResourceV3ProposedContinuousReview = {
+          proposalId: proposal.proposalId,
+          snapshots: cloneMarketBaseOperatorValue(
+            builtSuccessor.continuousReviews,
+          ),
+        };
+      } else {
+        delete data.baseResourceV3ProposedContinuousReview;
+      }
+    } else {
+      delete data.baseResourceV3ProposedTransition;
+      delete data.baseResourceV3ProposedContinuousReview;
+    }
+    appendAudit(data, {
+      action: `market_base_permit_proposed:${proposal.kind}`,
+      requestId: proposal.proposalId,
+    });
+    data.pendingDirectDeals = direct.pendingDirectDeals;
+    data.directAutomation = direct;
+    commitAttempted = true;
+    commitMarketSaleDataSnapshot(data);
+    return {
+      ok: true,
+      proposalId: proposal.proposalId,
+      kind: proposal.kind,
+      permitId: proposal.targetPermitChain.currentPermitId,
+      proposedAt: proposal.proposedAt,
+      laneCount: proposal.targetScope.laneLifecycles.length,
+    };
+  } catch (error) {
+    const reason =
+      error instanceof Error
+        ? error.message
+        : "market_base_permit_proposal_failed";
+    if (commitAttempted) {
+      return {
+        ok: false,
+        error: "market_base_permit_proposal_commit_failed",
+      };
+    }
+    const rejected = copyMarketSaleDataForOperator(sourceData);
+    appendAudit(rejected, {
+      action: `market_base_permit_proposal_rejected:${reason.slice(0, 80)}`,
+    });
+    try {
+      commitMarketSaleDataSnapshot(rejected);
+    } catch {
+      // 单次 replacement 失败时原 canonical container 保持不变；不得
+      // 为写审计而再次触碰 proposal/permit/anchor。
+    }
+    return { ok: false, error: reason };
+  }
+}
+
+function validateMarketBaseProposedTransition(
+  data: MarketSaleDataState,
+  proposal: MarketBaseResourcePermitProposal,
+): MarketBaseResourceProposedTransition | undefined {
+  if (proposal.kind !== "v3-successor") {
+    return undefined;
+  }
+  const transition = data.baseResourceV3ProposedTransition;
+  if (
+    !transition ||
+    transition.proposalId !== proposal.proposalId ||
+    typeof transition.laneId !== "string" ||
+    transition.laneId.length === 0 ||
+    transition.laneId.length > 256 ||
+    !["canary", "continuous", "suspend"].includes(transition.targetStage) ||
+    !Array.isArray(transition.transitionLaneIds) ||
+    transition.transitionLaneIds.length === 0 ||
+    transition.transitionLaneIds.length > 112 ||
+    !transition.transitionLaneIds.includes(transition.laneId)
+  ) {
+    return undefined;
+  }
+  const sorted = [...transition.transitionLaneIds].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  if (
+    new Set(sorted).size !== sorted.length ||
+    sorted.some(
+      (laneId, index) =>
+        typeof laneId !== "string" ||
+        laneId.length === 0 ||
+        laneId.length > 256 ||
+        laneId !== transition.transitionLaneIds[index],
+    )
+  ) {
+    return undefined;
+  }
+  return transition;
+}
+
+function expectedContinuousReviewLaneIds(
+  currentPermit: MarketBaseResourcePermit,
+  targetPermit: MarketBaseResourcePermit,
+): string[] {
+  const currentByLane = new Map(
+    currentPermit.signedLaneGrants.map((grant) => [grant.laneId, grant]),
+  );
+  return targetPermit.signedLaneGrants
+    .filter((grant) => {
+      const prior = currentByLane.get(grant.laneId);
+      return (
+        grant.status === "active" &&
+        grant.stage === "continuous" &&
+        grant.newDealGrant === "enabled" &&
+        (prior?.stage !== "continuous" ||
+          prior.newDealGrant !== "enabled" ||
+          prior.reviewDigest !== grant.reviewDigest)
+      );
+    })
+    .map((grant) => grant.laneId)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function validateMarketBaseProposedContinuousReviews(
+  data: MarketSaleDataState,
+  state: MarketBaseResourceV3RuntimeState,
+  proposal: MarketBaseResourcePermitProposal,
+  transition: MarketBaseResourceProposedTransition,
+  config: ResolvedMarketSaleAutomationConfig,
+  tick: number,
+): string | undefined {
+  const currentPermit = currentMarketBaseV3Permit(state);
+  const targetRecord =
+    proposal.targetPermitChain.retainedPermits[
+      proposal.targetPermitChain.retainedPermits.length - 1
+    ];
+  if (!currentPermit || targetRecord?.schemaVersion !== 3) {
+    return "market_base_continuous_review_permit_missing";
+  }
+  const expected = expectedContinuousReviewLaneIds(currentPermit, targetRecord);
+  const binding = data.baseResourceV3ProposedContinuousReview;
+  if (expected.length === 0) {
+    return binding === undefined
+      ? undefined
+      : "market_base_continuous_review_unexpected";
+  }
+  if (
+    !binding ||
+    binding.proposalId !== proposal.proposalId ||
+    !Array.isArray(binding.snapshots) ||
+    binding.snapshots.length !== expected.length ||
+    binding.snapshots.length > 112
+  ) {
+    return "market_base_continuous_review_binding_missing";
+  }
+  const snapshots = [...binding.snapshots].sort((left, right) =>
+    left.laneId.localeCompare(right.laneId),
+  );
+  if (
+    snapshots.some(
+      (snapshot, index) =>
+        snapshot.laneId !== expected[index] ||
+        !transition.transitionLaneIds.includes(snapshot.laneId) ||
+        !validateMarketBaseContinuousReviewSnapshot(
+          snapshot,
+          proposal.proposedAt,
+        ),
+    )
+  ) {
+    return "market_base_continuous_review_binding_invalid";
+  }
+  for (const snapshot of snapshots) {
+    const targetGrant = targetRecord.signedLaneGrants.find(
+      (grant) => grant.laneId === snapshot.laneId,
+    );
+    const review = targetRecord.reviewedEvidence.find(
+      (entry) =>
+        entry.laneId === snapshot.laneId && entry.kind === "continuous_review",
+    );
+    if (
+      !targetGrant ||
+      targetGrant.reviewDigest !== snapshot.stableReviewDigest ||
+      review?.operatorReviewSnapshotDigest !== snapshot.stableReviewDigest
+    ) {
+      return "market_base_continuous_review_permit_binding_mismatch";
+    }
+    let current: MarketBaseResourceContinuousReviewSnapshot | undefined;
+    try {
+      current = buildCurrentMarketBaseContinuousReviewSnapshot(
+        data,
+        state,
+        config,
+        snapshot.laneId,
+        tick,
+      );
+    } catch {
+      current = undefined;
+    }
+    if (
+      !current ||
+      current.stableReviewDigest !== snapshot.stableReviewDigest ||
+      canonicalStableHashV1(continuousReviewStablePayload(current)) !==
+        canonicalStableHashV1(continuousReviewStablePayload(snapshot))
+    ) {
+      return "market_base_continuous_review_facts_changed";
+    }
+  }
+  return undefined;
+}
+
+function mergeAcceptedMarketBaseScope(
+  current: MarketBaseResourceScopeState,
+  target: MarketBaseResourceScopeState,
+  transitionLaneIds: readonly string[] | undefined,
+  firstCutover: boolean,
+): MarketBaseResourceScopeState {
+  const targetByLane = new Map(
+    target.laneLifecycles.map((lane) => [lane.laneId, lane]),
+  );
+  const transitionSet = new Set(
+    firstCutover
+      ? current.laneLifecycles.map((lane) => lane.laneId)
+      : (transitionLaneIds ?? []),
+  );
+  const laneLifecycles = current.laneLifecycles.map((lane) => {
+    const targetLane = targetByLane.get(lane.laneId);
+    if (
+      !targetLane ||
+      targetLane.stableFingerprint !== lane.stableFingerprint ||
+      targetLane.roomInstanceId !== lane.roomInstanceId
+    ) {
+      throw new TypeError(
+        `market_base_proposal_lane_identity_changed:${lane.laneId}`,
+      );
+    }
+    if (!transitionSet.has(lane.laneId)) {
+      return lane;
+    }
+    return {
+      ...lane,
+      stage: targetLane.stage,
+      status: targetLane.status,
+      shadowEvidence: firstCutover
+        ? targetLane.shadowEvidence
+        : lane.shadowEvidence,
+    };
+  });
+  if (laneLifecycles.length !== target.laneLifecycles.length) {
+    throw new TypeError("market_base_proposal_lane_set_changed");
+  }
+  return {
+    ...current,
+    laneLifecycles,
+  };
+}
+
+export function acceptMarketBaseResourcePermit(
+  proposalId: string,
+): OperatorResult {
+  enforceLegacyMarketSafetyLatch();
+  const normalizedId = typeof proposalId === "string" ? proposalId.trim() : "";
+  if (!normalizedId) {
+    return {
+      ok: false,
+      error: "market_base_proposal_id_required",
+    };
+  }
+  const sourceData = ensureDataState();
+  const sourceDirect = sourceData.directAutomation;
+  if (!isContinuousDirectState(sourceDirect)) {
+    return {
+      ok: false,
+      error: "continuous_direct_state_required",
+    };
+  }
+  const sourceState = sourceDirect.baseResourceV3;
+  const sourceProposal = sourceState?.proposedPermit;
+  if (
+    !sourceState ||
+    !sourceProposal ||
+    sourceProposal.proposalId !== normalizedId ||
+    !validateFrozenMarketBaseProposal(sourceProposal)
+  ) {
+    return {
+      ok: false,
+      error: "market_base_proposal_not_found_or_invalid",
+    };
+  }
+  const config = resolveMarketSaleAutomationConfig();
+  const configBlocker = marketBaseResourceV3ConfigBlocker(config);
+  if (configBlocker) {
+    return {
+      ok: false,
+      error: configBlocker,
+    };
+  }
+  let commitAttempted = false;
+  try {
+    const data = copyMarketSaleDataForOperator(sourceData);
+    const direct = data.directAutomation;
+    if (!isContinuousDirectState(direct)) {
+      throw new TypeError("continuous_direct_state_required");
+    }
+    const state = direct.baseResourceV3;
+    const proposal = state?.proposedPermit;
+    if (
+      !state ||
+      !proposal ||
+      proposal.proposalId !== normalizedId ||
+      !validateFrozenMarketBaseProposal(proposal)
+    ) {
+      throw new TypeError("market_base_proposal_not_found_or_invalid");
+    }
+    const activation = marketBaseResourceActivationState(data, state);
+    const activeAnchor = activation.latched ? activation.anchor : undefined;
+    const activationBlocker = activation.latched
+      ? activation.blocker
+      : undefined;
+    const transition = validateMarketBaseProposedTransition(data, proposal);
+    if (
+      proposal.kind === "v3-successor" &&
+      (!transition ||
+        !activeAnchor ||
+        activationBlocker ||
+        validateMarketBaseNestedActivationState(
+          state,
+          activeAnchor,
+          data.trustedFloors,
+        ))
+    ) {
+      throw new TypeError(
+        activationBlocker
+          ? activationBlocker
+          : "market_base_successor_transition_or_anchor_invalid",
+      );
+    }
+    if (proposal.kind === "v2-cutover" && activation.latched) {
+      throw new TypeError(
+        activationBlocker ||
+          "market_base_v2_cutover_after_activation_forbidden",
+      );
+    }
+    if (
+      proposal.operatorAuthorizationFingerprint !==
+        marketBaseResourceOperatorAuthorizationFingerprint(config) ||
+      proposal.accountIdentity !== readLiveMarketBaseAccountIdentity() ||
+      proposal.executorShard !== (Game.shard?.name || "")
+    ) {
+      throw new TypeError("market_base_proposal_authorization_changed");
+    }
+    const sourceBlocker =
+      proposal.kind === "v2-cutover"
+        ? validateV2CutoverSource(data, direct, Game.time)
+        : validateV3SuccessorSource(data, state, config, Game.time);
+    if (sourceBlocker) {
+      throw new TypeError(sourceBlocker);
+    }
+    const currentSourceFingerprint =
+      proposal.kind === "v2-cutover"
+        ? marketBaseV2SourceStateFingerprint(data, direct)
+        : marketBaseV3SourceStateFingerprint(
+            data,
+            direct,
+            state,
+            transition?.transitionLaneIds ?? [],
+          );
+    if (currentSourceFingerprint !== proposal.sourceStateFingerprint) {
+      throw new TypeError("market_base_proposal_source_changed");
+    }
+    const scopeResult = reconcileLiveMarketBaseResourceScope({
+      tick: Game.time,
+      accountIdentity: proposal.accountIdentity,
+      observations: collectLiveMarketBaseRoomObservations(
+        proposal.accountIdentity,
+      ),
+      previous: state.scope,
+      permitChain: state.permitChain,
+      pinnedLaneIds: state.ledger?.pending
+        ? [state.ledger.pending.historicalLane.laneId]
+        : [],
+      ...(activeAnchor
+        ? {
+            expectedPreviousRoomCheckpointCommitment:
+              activeAnchor.roomRegistryCheckpointCommitment,
+            expectedPermitLaneTombstoneCheckpointCommitment:
+              activeAnchor.laneTombstoneCheckpointCommitment,
+            expectedPreviousLaneTombstoneDischargeCheckpointCommitment:
+              activeAnchor.laneTombstoneDischargeCheckpointCommitment,
+          }
+        : {}),
+    });
+    if (
+      "blockers" in scopeResult ||
+      scopeResult.state.rosterFingerprint !== proposal.rosterFingerprint ||
+      scopeResult.state.laneSetFingerprint !== proposal.laneSetFingerprint
+    ) {
+      throw new TypeError("market_base_proposal_scope_changed");
+    }
+    const currentScope = scopeResult.state;
+    const lifecycleBlocker =
+      validateMarketBaseScopeLifecycleEvidence(currentScope);
+    if (lifecycleBlocker) {
+      throw new TypeError(lifecycleBlocker);
+    }
+    if (proposal.kind === "v3-successor" && transition) {
+      const reviewBlocker = validateMarketBaseProposedContinuousReviews(
+        data,
+        state,
+        proposal,
+        transition,
+        config,
+        Game.time,
+      );
+      if (reviewBlocker) {
+        throw new TypeError(reviewBlocker);
+      }
+    }
+    const acceptedScope = mergeAcceptedMarketBaseScope(
+      currentScope,
+      proposal.targetScope,
+      transition?.transitionLaneIds,
+      proposal.kind === "v2-cutover",
+    );
+    const nextState: MarketBaseResourceV3RuntimeState = {
+      ...state,
+      scope: cloneMarketBaseOperatorValue(acceptedScope),
+      permitChain: cloneMarketBaseOperatorValue(proposal.targetPermitChain),
+      ledger: cloneMarketBaseOperatorValue(proposal.targetLedger),
+      pricingRatchet: cloneMarketBaseOperatorValue(
+        proposal.kind === "v2-cutover"
+          ? proposal.targetPricingRatchet
+          : state.pricingRatchet!,
+      ),
+      cutoverLatched: true,
+      lastLifecycleAppliedAttemptSeq: proposal.targetLedger.finalizedAttemptSeq,
+    };
+    delete nextState.proposedPermit;
+    delete nextState.blocker;
+    delete nextState.readinessAuthorization;
+    delete nextState.preflightAt;
+    const nextTrustedFloors =
+      proposal.kind === "v2-cutover"
+        ? cloneMarketBaseOperatorValue(proposal.targetTrustedFloors)
+        : synchronizeMarketBaseTrustedFloors(
+            data.trustedFloors,
+            nextState.pricingRatchet!,
+            Game.time,
+          );
+    const nextAnchor =
+      proposal.kind === "v2-cutover"
+        ? buildMarketBaseResourceActivationAnchor({
+            proposal,
+            scope: nextState.scope!,
+            direct,
+            acceptedAt: Game.time,
+          })
+        : advanceMarketBaseResourceActivationAnchor(
+            activeAnchor!,
+            nextState,
+            nextTrustedFloors,
+            Game.time,
+          );
+    const nestedBlocker = validateMarketBaseNestedActivationState(
+      nextState,
+      nextAnchor,
+      nextTrustedFloors,
+    );
+    if (nestedBlocker) {
+      throw new TypeError(nestedBlocker);
+    }
+    direct.baseResourceV3 = nextState;
+    data.trustedFloors = nextTrustedFloors;
+    data.baseResourceV3ActivationAnchor = nextAnchor;
+    data.baseResourceV3ActivationAnchorMirror =
+      cloneMarketBaseOperatorValue(nextAnchor);
+    delete data.baseResourceV3ProposedTransition;
+    delete data.baseResourceV3ProposedContinuousReview;
+    appendAudit(data, {
+      action: `market_base_permit_accepted:${proposal.kind}`,
+      requestId: normalizedId,
+    });
+    data.pendingDirectDeals = direct.pendingDirectDeals;
+    data.directAutomation = direct;
+    commitAttempted = true;
+    commitMarketSaleDataSnapshot(data);
+    return {
+      ok: true,
+      proposalId: normalizedId,
+      kind: proposal.kind,
+      permitId: nextState.permitChain.currentPermitId,
+      permitEpoch: nextState.permitChain.currentPermitEpoch,
+    };
+  } catch (error) {
+    const reason =
+      error instanceof Error
+        ? error.message
+        : "market_base_permit_accept_failed";
+    if (commitAttempted) {
+      return {
+        ok: false,
+        error: "market_base_permit_accept_commit_failed",
+      };
+    }
+    const rejected = copyMarketSaleDataForOperator(sourceData);
+    appendAudit(rejected, {
+      action: `market_base_permit_accept_rejected:${reason.slice(0, 80)}`,
+      requestId: normalizedId,
+    });
+    try {
+      commitMarketSaleDataSnapshot(rejected);
+    } catch {
+      // 审计 replacement 失败时保持原 proposal/anchor canonical root。
+    }
+    return { ok: false, error: reason };
+  }
+}
+
+const MARKET_BASE_STATUS_ROOM_LIMIT = 16;
+const MARKET_BASE_STATUS_KNOWN_ROOM_LIMIT = 32;
+const MARKET_BASE_STATUS_LANE_LIMIT = 16;
+
+function boundedMarketBaseStatusRecord(
+  value: Record<string, { cap: number; confirmed: number; unmatched: number }>,
+  limit: number,
+): {
+  total: number;
+  entries: Array<{
+    key: string;
+    cap: number;
+    confirmed: number;
+    unmatched: number;
+  }>;
+  truncated: boolean;
+} {
+  const entries = Object.entries(value).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  return {
+    total: entries.length,
+    entries: entries.slice(0, limit).map(([key, quota]) => ({
+      key,
+      cap: quota.cap,
+      confirmed: quota.confirmed,
+      unmatched: quota.unmatched,
+    })),
+    truncated: entries.length > limit,
+  };
+}
+
+export function marketBaseResourceStatus(): unknown {
+  const data = ensureDataState();
+  const direct = data.directAutomation;
+  if (!isContinuousDirectState(direct)) {
+    return {
+      tick: Game.time,
+      error: "continuous_direct_state_required",
+    };
+  }
+  const state = direct.baseResourceV3;
+  const proposal = state?.proposedPermit;
+  const permit = state ? currentMarketBaseV3Permit(state) : undefined;
+  const grants = permit?.signedLaneGrants ?? [];
+  const grantCounts = grants.reduce(
+    (counts, grant) => {
+      const key = `${grant.stage}:${grant.newDealGrant}`;
+      counts[key] = (counts[key] || 0) + 1;
+      return counts;
+    },
+    {} as Record<string, number>,
+  );
+  const continuousReviewCandidates = state?.scope
+    ? state.scope.laneLifecycles
+        .filter(
+          (lane) =>
+            lane.status === "suspended" &&
+            (lane.stage === "review_paused" || lane.stage === "continuous"),
+        )
+        .map((lane) => {
+          try {
+            return {
+              laneId: lane.laneId,
+              snapshot: buildCurrentMarketBaseContinuousReviewSnapshot(
+                data,
+                state,
+                resolveMarketSaleAutomationConfig(),
+                lane.laneId,
+                Game.time,
+              ),
+            };
+          } catch (error) {
+            return {
+              laneId: lane.laneId,
+              blocker:
+                error instanceof Error
+                  ? error.message
+                  : "market_base_continuous_review_unavailable",
+            };
+          }
+        })
+    : [];
+  const scope = state?.scope;
+  const quota = state?.quotaProjection;
+  const hubRuntime = Memory.runtime?.hub;
+  const hubSnapshot = hubRuntime?.committedProtectionSnapshot;
+  const currentRoster = scope
+    ? [...scope.sellerRooms]
+        .sort((left, right) => left.roomName.localeCompare(right.roomName))
+        .slice(0, MARKET_BASE_STATUS_ROOM_LIMIT)
+        .map((room) => ({
+          roomName: room.roomName,
+          roomInstanceId: room.roomInstanceId,
+          incarnation: room.incarnation,
+          roomClass: room.roomClass,
+          terminalId: room.terminalId,
+          status: room.status,
+        }))
+    : [];
+  const terminalEnergyReadiness = scope
+    ? [...scope.sellerRooms]
+        .sort((left, right) => left.roomName.localeCompare(right.roomName))
+        .slice(0, MARKET_BASE_STATUS_ROOM_LIMIT)
+        .map((room) => {
+          const readiness =
+            Memory.runtime?.resourceControl?.rooms?.[room.roomName]
+              ?.marketEnergyReadiness;
+          return {
+            roomName: room.roomName,
+            roomInstanceId: room.roomInstanceId,
+            terminalId: room.terminalId,
+            observation: readiness
+              ? {
+                  revision: readiness.revision,
+                  observedAt: readiness.observedAt,
+                  expiresAt: readiness.expiresAt,
+                  authorizationRevision: readiness.authorizationRevision,
+                  authorized: readiness.authorized,
+                  effectivePostDealEnergyReserve:
+                    readiness.effectivePostDealEnergyReserve,
+                  desiredTerminalEnergy: readiness.desiredTerminalEnergy,
+                  plannedFeedAmount: readiness.plannedFeedAmount,
+                  contributionCount: readiness.contributionCount,
+                  status: readiness.status,
+                  blocker: readiness.blocker,
+                }
+              : undefined,
+          };
+        })
+    : [];
+  return {
+    tick: Game.time,
+    active: Boolean(
+      state?.permitChain &&
+      hasAcceptedMarketBaseResourceV3Successor(state.permitChain),
+    ),
+    cutoverLatched: state?.cutoverLatched === true,
+    blocker: state?.blocker,
+    catalog: state?.catalog
+      ? {
+          revision: state.catalog.revision,
+          configRevision: state.catalog.configRevision,
+          resources: [...state.catalog.resources].slice(
+            0,
+            MARKET_BASE_RESOURCE_CATALOG.length,
+          ),
+        }
+      : undefined,
+    continuousReviewCandidates,
+    proposal: proposal
+      ? {
+          proposalId: proposal.proposalId,
+          kind: proposal.kind,
+          proposedAt: proposal.proposedAt,
+          permitId: proposal.targetPermitChain.currentPermitId,
+          permitEpoch: proposal.targetPermitChain.currentPermitEpoch,
+          rosterFingerprint: proposal.rosterFingerprint,
+          laneSetFingerprint: proposal.laneSetFingerprint,
+        }
+      : undefined,
+    scope: scope
+      ? {
+          roomCount: scope.sellerRooms.length,
+          laneCount: scope.laneLifecycles.length,
+          rosterFingerprint: scope.rosterFingerprint,
+          laneSetFingerprint: scope.laneSetFingerprint,
+          admission: {
+            checkpointCommitment: scope.roomRegistry.checkpointCommitment,
+            lastReconciledTick: scope.roomRegistry.lastReconciledTick,
+            knownRoomCount: scope.roomRegistry.knownRoomNames.length,
+            knownRoomNames: scope.roomRegistry.knownRoomNames.slice(
+              0,
+              MARKET_BASE_STATUS_KNOWN_ROOM_LIMIT,
+            ),
+            truncated:
+              scope.roomRegistry.knownRoomNames.length >
+              MARKET_BASE_STATUS_KNOWN_ROOM_LIMIT,
+          },
+          currentRoster,
+          currentRosterTruncated:
+            scope.sellerRooms.length > MARKET_BASE_STATUS_ROOM_LIMIT,
+          lifecycleCounts: scope.laneLifecycles.reduce(
+            (counts, lane) => {
+              const key = `${lane.stage}:${lane.status}`;
+              counts[key] = (counts[key] || 0) + 1;
+              return counts;
+            },
+            {} as Record<string, number>,
+          ),
+          lifecycleSample: [...scope.laneLifecycles]
+            .sort((left, right) => left.laneId.localeCompare(right.laneId))
+            .slice(0, MARKET_BASE_STATUS_LANE_LIMIT)
+            .map((lane) => ({
+              laneId: lane.laneId,
+              resource: lane.resource,
+              sellerRoomName: lane.sellerRoomName,
+              roomInstanceId: lane.roomInstanceId,
+              stage: lane.stage,
+              status: lane.status,
+              completeCycles: lane.shadowEvidence.completeCycles,
+              lastCompleteTick: lane.shadowEvidence.lastCompleteTick,
+            })),
+          lifecycleSampleTruncated:
+            scope.laneLifecycles.length > MARKET_BASE_STATUS_LANE_LIMIT,
+        }
+      : undefined,
+    permit: permit
+      ? {
+          permitId: permit.permitId,
+          epoch: permit.epoch,
+          grantCounts,
+          ratchetHighWater: permit.ratchetHighWater,
+        }
+      : undefined,
+    ledger: state?.ledger
+      ? {
+          finalizedAttemptSeq: state.ledger.finalizedAttemptSeq,
+          nextAttemptSeq: state.ledger.nextAttemptSeq,
+          receiptHeadHash: state.ledger.receiptHeadHash,
+          checkpointHash: state.ledger.checkpoint.checkpointHash,
+          permitAnchorHash: state.ledger.permitAnchor.anchorHash,
+          retryNotBefore: state.ledger.retryNotBefore,
+          pendingAttemptSeq: state.ledger.pending?.attemptSeq,
+          lifetimeConfirmed: state.ledger.lifetimeConfirmed,
+          legacyV2ConfirmedCanaries: state.ledger.legacyV2ConfirmedCanaries,
+          confirmedCanaryLaneIds: Object.keys(
+            state.ledger.confirmedCanaries,
+          ).sort(),
+          blocker: state.ledger.blocker,
+        }
+      : undefined,
+    quota: quota
+      ? {
+          observedAt: quota.observedAt,
+          cooldownNotBefore: quota.cooldownNotBefore,
+          retryNotBefore: quota.retryNotBefore,
+          global: quota.global,
+          resources: boundedMarketBaseStatusRecord(
+            quota.resources,
+            MARKET_BASE_RESOURCE_CATALOG.length,
+          ),
+          rooms: boundedMarketBaseStatusRecord(
+            quota.rooms,
+            MARKET_BASE_STATUS_ROOM_LIMIT,
+          ),
+          lanes: boundedMarketBaseStatusRecord(
+            quota.lanes,
+            MARKET_BASE_STATUS_LANE_LIMIT,
+          ),
+        }
+      : undefined,
+    hubProtection: {
+      attemptHighWater: hubRuntime?.protectionAttemptHighWater,
+      currentAttempt: hubRuntime?.currentProtectionAttempt
+        ? {
+            attemptRevision:
+              hubRuntime.currentProtectionAttempt.attemptRevision,
+            configIncarnation:
+              hubRuntime.currentProtectionAttempt.configIncarnation,
+            startedAt: hubRuntime.currentProtectionAttempt.startedAt,
+            finishedAt: hubRuntime.currentProtectionAttempt.finishedAt,
+            status: hubRuntime.currentProtectionAttempt.status,
+            valid: hubRuntime.currentProtectionAttempt.valid,
+            reason: hubRuntime.currentProtectionAttempt.reason,
+          }
+        : undefined,
+      committedMarker: hubSnapshot
+        ? {
+            schema: hubSnapshot.schema,
+            planRevision: hubSnapshot.planRevision,
+            configIncarnation: hubSnapshot.configIncarnation,
+            observedAt: hubSnapshot.observedAt,
+            expiresAt: hubSnapshot.expiresAt,
+            status: hubSnapshot.status,
+            valid: hubSnapshot.valid,
+            hubRoomName: hubSnapshot.marker.hubRoomName,
+            planMode: hubSnapshot.marker.planMode,
+            targetCompoundCount: hubSnapshot.marker.targetCompounds.length,
+            failureReason: hubSnapshot.failureReason,
+          }
+        : undefined,
+    },
+    terminalEnergyReadiness: {
+      roomCount: scope?.sellerRooms.length ?? 0,
+      rooms: terminalEnergyReadiness,
+      truncated:
+        (scope?.sellerRooms.length ?? 0) > MARKET_BASE_STATUS_ROOM_LIMIT,
+    },
+    cpu: {
+      preflightAt: state?.preflightAt,
+      planningObservedAt: state?.lastPlanningSnapshot?.observedAt,
+      planningCpuUsed: state?.lastPlanningSnapshot?.cpuUsed,
+      blocker: state?.lastPlanningSnapshot?.blocker ?? state?.blocker,
+    },
+    pricingRatchet: state?.pricingRatchet,
+    lastPlanningSnapshot: state?.lastPlanningSnapshot,
+  };
 }
 
 export function grantMarketSaleMutationLease(
@@ -3999,9 +9954,7 @@ export function revokeMarketSaleMutationLease(
   return { ok: true, lease: { ...lease } };
 }
 
-export function attestMarketSalePendingCreate(
-  orderId: string,
-): OperatorResult {
+export function attestMarketSalePendingCreate(orderId: string): OperatorResult {
   enforceLegacyMarketSafetyLatch();
   const data = ensureDataState();
   const pending = data.pendingCreate;
@@ -4044,10 +9997,15 @@ export function resolveMarketSalePendingCreateAbsence(
   const data = ensureDataState();
   const pending = data.pendingCreate;
   if (!pending) return { ok: false, error: "pending_create_missing" };
-  if (!Array.isArray(candidateIds) || candidateIds.some((id) => typeof id !== "string")) {
+  if (
+    !Array.isArray(candidateIds) ||
+    candidateIds.some((id) => typeof id !== "string")
+  ) {
     return { ok: false, error: "candidate_ids_invalid" };
   }
-  const uniqueIds = [...new Set(candidateIds.map((id) => id.trim()).filter(Boolean))].sort();
+  const uniqueIds = [
+    ...new Set(candidateIds.map((id) => id.trim()).filter(Boolean)),
+  ].sort();
   const liveIds = new Set(readLiveOrders().map((order) => order.id));
   const stillPresent = uniqueIds.filter((id) => liveIds.has(id));
   if (stillPresent.length > 0) {
@@ -4118,9 +10076,7 @@ function switchToNextManagedFeeGap(data: MarketSaleDataState): void {
     gameTime: disappeared.disappearanceGap!.detectedAt,
     orderId: disappeared.orderId,
     resourceType: disappeared.resourceType,
-    remainingFeeDebtMilli: nonNegativeInteger(
-      disappeared.feeDebtMilli,
-    ),
+    remainingFeeDebtMilli: nonNegativeInteger(disappeared.feeDebtMilli),
     reason: "unknown",
   }).ledger;
 }
@@ -4135,8 +10091,7 @@ export function resolveMarketSaleExternalOrderMutation(
   verifiedRemainingFeeDebtMilli: number,
 ): OperatorResult {
   enforceLegacyMarketSafetyLatch();
-  const normalizedOrderId =
-    typeof orderId === "string" ? orderId.trim() : "";
+  const normalizedOrderId = typeof orderId === "string" ? orderId.trim() : "";
   if (!normalizedOrderId) return { ok: false, error: "order_id_required" };
   if (
     !Number.isSafeInteger(verifiedRemainingFeeDebtMilli) ||
@@ -4163,8 +10118,7 @@ export function resolveMarketSaleExternalOrderMutation(
   }
   const ledger = data.feeLedger || createEmptyMarketSaleFeeLedger();
   let resolved:
-    | { ledger: MarketSaleFeeLedgerState; amountMilli: number }
-    | undefined;
+    { ledger: MarketSaleFeeLedgerState; amountMilli: number } | undefined;
   try {
     const reconciled = resolveExternalOrderMutationFeeGap({
       ledger,
@@ -4172,11 +10126,7 @@ export function resolveMarketSaleExternalOrderMutation(
       resourceType: managed.resourceType,
       verifiedRemainingFeeDebtMilli,
     });
-    resolved = extractLedgerCarriedDebt(
-      data,
-      reconciled,
-      managed.resourceType,
-    );
+    resolved = extractLedgerCarriedDebt(data, reconciled, managed.resourceType);
   } catch {
     return { ok: false, error: "fee_reconcile_gap_mismatch" };
   }
@@ -4207,8 +10157,7 @@ export function resolveMarketSaleOrderDisappearance(
   verifiedRefundMilli?: number,
 ): OperatorResult {
   enforceLegacyMarketSafetyLatch();
-  const normalizedOrderId =
-    typeof orderId === "string" ? orderId.trim() : "";
+  const normalizedOrderId = typeof orderId === "string" ? orderId.trim() : "";
   if (!normalizedOrderId) return { ok: false, error: "order_id_required" };
   if (
     classification !== "policy_cancelled" &&
@@ -4251,9 +10200,7 @@ export function resolveMarketSaleOrderDisappearance(
       remainingFeeDebtMilli: nonNegativeInteger(managed.feeDebtMilli),
       reason: classification,
       verifiedRefundMilli:
-        classification === "server_expired"
-          ? verifiedRefundMilli
-          : undefined,
+        classification === "server_expired" ? verifiedRefundMilli : undefined,
     });
   } catch {
     return { ok: false, error: "fee_reconcile_gap_mismatch" };
@@ -4312,15 +10259,10 @@ export function resolveMarketSaleOrderDisappearance(
   };
 }
 
-export function expandMarketSaleCanary(
-  configRevision: string,
-): OperatorResult {
+export function expandMarketSaleCanary(configRevision: string): OperatorResult {
   enforceLegacyMarketSafetyLatch();
   const config = resolveMarketSaleAutomationConfig();
-  if (
-    !config.configRevision ||
-    configRevision !== config.configRevision
-  ) {
+  if (!config.configRevision || configRevision !== config.configRevision) {
     return { ok: false, error: "config_revision_mismatch" };
   }
   if (!Memory.cfg?.marketSaleAutomation) {
@@ -4358,16 +10300,11 @@ export function marketSaleAutomationStatus(): unknown {
     runtime: Memory.runtime?.marketSaleAutomation || null,
     data,
     direct: isContinuousDirectState(data.directAutomation)
-      ? projectContinuousDirectStatus(
-          data.directAutomation,
-          Game.time,
-        )
+      ? projectContinuousDirectStatus(data.directAutomation, Game.time)
       : data.directAutomation || null,
     legacyLatches: {
-      resourceControl:
-        Memory.cfg?.resourceControl?.market?.enabled === false,
-      factoryControl:
-        Memory.cfg?.factoryControl?.market?.enabled === false,
+      resourceControl: Memory.cfg?.resourceControl?.market?.enabled === false,
+      factoryControl: Memory.cfg?.factoryControl?.market?.enabled === false,
     },
   };
 }

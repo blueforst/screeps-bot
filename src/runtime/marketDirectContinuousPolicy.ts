@@ -23,6 +23,21 @@ type CanonicalValue =
   | readonly CanonicalValue[]
   | { readonly [key: string]: CanonicalValue };
 
+// 同一个 Screeps tick 内，canonical root、permit、ledger 与 activation
+// anchor 会被多个独立安全门重复摘要。只有对象本身及全部 object 后代都已
+// 冻结时才缓存规范化序列；因此浅冻结包裹可变子对象不会被错误复用，hash
+// revision 与最终字节序列也完全不变。
+const canonicalStableFrozenSerializationCache = new WeakMap<object, string>();
+const canonicalStableFrozenHashCache = new WeakMap<object, string>();
+
+function canonicalChildSerializationIsImmutable(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value !== "object" ||
+    canonicalStableFrozenSerializationCache.has(value as object)
+  );
+}
+
 function canonicalStableSerialize(
   value: unknown,
   active: unknown[] = [],
@@ -40,6 +55,8 @@ function canonicalStableSerialize(
   if (typeof value !== "object") {
     throw new TypeError(`unsupported canonical value: ${typeof value}`);
   }
+  const cached = canonicalStableFrozenSerializationCache.get(value);
+  if (cached !== undefined) return cached;
   if (active.includes(value)) {
     throw new TypeError("canonical value contains a cycle");
   }
@@ -47,9 +64,16 @@ function canonicalStableSerialize(
   active.push(value);
   try {
     if (Array.isArray(value)) {
-      return `[${value
+      const serialized = `[${value
         .map((entry) => canonicalStableSerialize(entry, active))
         .join(",")}]`;
+      if (
+        Object.isFrozen(value) &&
+        value.every(canonicalChildSerializationIsImmutable)
+      ) {
+        canonicalStableFrozenSerializationCache.set(value, serialized);
+      }
+      return serialized;
     }
 
     const prototype = Object.getPrototypeOf(value);
@@ -57,8 +81,8 @@ function canonicalStableSerialize(
       throw new TypeError("canonical value must contain only plain objects");
     }
     const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
+    const keys = Object.keys(record).sort();
+    const serialized = `{${keys
       .map((key) => {
         if (record[key] === undefined) {
           throw new TypeError("canonical value contains undefined");
@@ -69,6 +93,15 @@ function canonicalStableSerialize(
         )}`;
       })
       .join(",")}}`;
+    if (
+      Object.isFrozen(value) &&
+      keys.every((key) =>
+        canonicalChildSerializationIsImmutable(record[key]),
+      )
+    ) {
+      canonicalStableFrozenSerializationCache.set(value, serialized);
+    }
+    return serialized;
   } finally {
     active.pop();
   }
@@ -92,6 +125,10 @@ function avalanche32(value: number): number {
  * 必须提高 revision 并使旧 shared fingerprint fail-closed。
  */
 export function canonicalStableHashV1(value: unknown): string {
+  if (value !== null && typeof value === "object") {
+    const cached = canonicalStableFrozenHashCache.get(value as object);
+    if (cached !== undefined) return cached;
+  }
   const canonical = canonicalStableSerialize(value);
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
@@ -108,7 +145,15 @@ export function canonicalStableHashV1(value: unknown): string {
     .map(avalanche32)
     .map((word) => word.toString(16).padStart(8, "0"))
     .join("");
-  return `csh1:${words}`;
+  const hash = `csh1:${words}`;
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    canonicalStableFrozenSerializationCache.has(value as object)
+  ) {
+    canonicalStableFrozenHashCache.set(value as object, hash);
+  }
+  return hash;
 }
 
 function deepFreeze<T>(value: T): Readonly<T> {

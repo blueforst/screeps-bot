@@ -14,6 +14,13 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_OUTPUT_PATH = "monitor-data/snapshots.jsonl";
 const RESOURCE_CONTROL_ROUTE_LIMIT = 20;
 const CONTINUOUS_DIRECT_ENTRY_LIMIT = 20;
+const MARKET_BASE_RESOURCE_CATALOG_LIMIT = 7;
+const MARKET_BASE_RESOURCE_ROSTER_LIMIT = 16;
+const MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT = 64;
+const MARKET_BASE_RESOURCE_READINESS_ROOM_LIMIT = 16;
+const OBSERVABILITY_STRING_LIMIT = 256;
+const MONITOR_LOG_LINE_LIMIT = 4_096;
+const MONITOR_LOG_TRUNCATION_SUFFIX = " …[truncated]";
 
 function printHelp() {
   console.log(`Screeps monitor service
@@ -757,6 +764,13 @@ function summarizeHub(hub) {
     pendingExports: hub.pendingExports ?? 0,
     pendingTaskCount: Array.isArray(hub.pendingTasks) ? hub.pendingTasks.length : 0,
     roomTerminalBlockers: Array.isArray(hub.roomTerminalBlockers) ? hub.roomTerminalBlockers : [],
+    protectionAttempt: summarizeHubProtectionAttempt(
+      hub.protectionAttempt,
+    ),
+    committedProtectionMarker:
+      summarizeHubCommittedProtectionMarker(
+        hub.committedProtectionMarker,
+      ),
   };
 }
 
@@ -784,6 +798,171 @@ function summarizeCountMap(value) {
 
 function booleanOrNull(value) {
   return typeof value === "boolean" ? value : null;
+}
+
+function boundedStringOrNull(value) {
+  return typeof value === "string"
+    ? value.slice(0, OBSERVABILITY_STRING_LIMIT)
+    : null;
+}
+
+function boundedMonitorLogLine(value) {
+  if (value.length <= MONITOR_LOG_LINE_LIMIT) {
+    return value;
+  }
+  return (
+    value.slice(
+      0,
+      MONITOR_LOG_LINE_LIMIT -
+        MONITOR_LOG_TRUNCATION_SUFFIX.length,
+    ) + MONITOR_LOG_TRUNCATION_SUFFIX
+  );
+}
+
+function objectOrNull(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : null;
+}
+
+function summarizeRevisionMarker(value) {
+  const marker = objectOrNull(value);
+  if (!marker) return null;
+  return {
+    revision: finiteNumberOrNull(marker.revision),
+    configIncarnation: finiteNumberOrNull(
+      marker.configIncarnation,
+    ),
+    configFingerprint: boundedStringOrNull(
+      marker.configFingerprint,
+    ),
+  };
+}
+
+function summarizeHubProtectionAttempt(value) {
+  const attempt = objectOrNull(value);
+  if (!attempt) return null;
+  return {
+    attemptRevision: finiteNumberOrNull(
+      attempt.attemptRevision,
+    ),
+    configIncarnation: finiteNumberOrNull(
+      attempt.configIncarnation,
+    ),
+    startedAt: finiteNumberOrNull(attempt.startedAt),
+    finishedAt: finiteNumberOrNull(attempt.finishedAt),
+    configFingerprint: boundedStringOrNull(
+      attempt.configFingerprint,
+    ),
+    status: boundedStringOrNull(attempt.status),
+    valid: booleanOrNull(attempt.valid),
+    reason: boundedStringOrNull(attempt.reason),
+  };
+}
+
+function summarizeHubCommittedProtectionMarker(value) {
+  const snapshot = objectOrNull(value);
+  if (!snapshot) return null;
+  const marker = objectOrNull(snapshot.marker);
+  const components = objectOrNull(snapshot.components);
+  const summarizedComponents =
+    components === null
+      ? null
+      : {
+          synthesisConfig: summarizeRevisionMarker(
+            components.synthesisConfig,
+          ),
+          transferTasks: summarizeRevisionMarker(
+            components.transferTasks,
+          ),
+          distributed: summarizeRevisionMarker(
+            components.distributed,
+          ),
+          baseMineralSurplus: summarizeRevisionMarker(
+            components.baseMineralSurplus,
+          ),
+        };
+  const revisions = [
+    finiteNumberOrNull(snapshot.planRevision),
+    finiteNumberOrNull(marker?.revision),
+    summarizedComponents?.synthesisConfig?.revision,
+    summarizedComponents?.transferTasks?.revision,
+    summarizedComponents?.distributed?.revision,
+    summarizedComponents?.baseMineralSurplus?.revision,
+  ];
+  const configIncarnations = [
+    finiteNumberOrNull(snapshot.configIncarnation),
+    finiteNumberOrNull(marker?.configIncarnation),
+    summarizedComponents?.synthesisConfig?.configIncarnation,
+    summarizedComponents?.transferTasks?.configIncarnation,
+    summarizedComponents?.distributed?.configIncarnation,
+    summarizedComponents?.baseMineralSurplus?.configIncarnation,
+  ];
+  const fingerprints = [
+    boundedStringOrNull(snapshot.configFingerprint),
+    boundedStringOrNull(marker?.configFingerprint),
+    summarizedComponents?.synthesisConfig?.configFingerprint,
+    summarizedComponents?.transferTasks?.configFingerprint,
+    summarizedComponents?.distributed?.configFingerprint,
+    summarizedComponents?.baseMineralSurplus?.configFingerprint,
+  ];
+  const revisionComplete = revisions.every(
+    (revision) => revision !== null && revision !== undefined,
+  );
+  const configIncarnationComplete = configIncarnations.every(
+    (incarnation) =>
+      incarnation !== null && incarnation !== undefined,
+  );
+  const fingerprintComplete = fingerprints.every(
+    (fingerprint) =>
+      fingerprint !== null && fingerprint !== undefined,
+  );
+  return {
+    schema: boundedStringOrNull(snapshot.schema),
+    planRevision: finiteNumberOrNull(snapshot.planRevision),
+    configIncarnation: finiteNumberOrNull(
+      snapshot.configIncarnation,
+    ),
+    observedAt: finiteNumberOrNull(snapshot.observedAt),
+    expiresAt: finiteNumberOrNull(snapshot.expiresAt),
+    configFingerprint: boundedStringOrNull(
+      snapshot.configFingerprint,
+    ),
+    status: boundedStringOrNull(snapshot.status),
+    valid: booleanOrNull(snapshot.valid),
+    marker:
+      marker === null
+        ? null
+        : {
+            revision: finiteNumberOrNull(marker.revision),
+            configIncarnation: finiteNumberOrNull(
+              marker.configIncarnation,
+            ),
+            configFingerprint: boundedStringOrNull(
+              marker.configFingerprint,
+            ),
+            hubRoomName: boundedStringOrNull(marker.hubRoomName),
+            planMode: boundedStringOrNull(marker.planMode),
+          },
+    components: summarizedComponents,
+    consistent:
+      revisionComplete &&
+      configIncarnationComplete &&
+      fingerprintComplete
+        ? revisions.every(
+            (revision) => revision === revisions[0],
+          ) &&
+          configIncarnations.every(
+            (incarnation) =>
+              incarnation === configIncarnations[0],
+          ) &&
+          fingerprints.every(
+            (fingerprint) =>
+              fingerprint === fingerprints[0],
+          )
+        : null,
+    failureReason: boundedStringOrNull(snapshot.failureReason),
+  };
 }
 
 function summarizeCountMapOrNull(value) {
@@ -841,6 +1020,60 @@ function summarizeTaskHealth(value) {
     pendingOutgoing: finiteNumberOrNull(value.pendingOutgoing),
     blockedIncoming: summarizeCountMap(value.blockedIncoming),
     blockedOutgoing: summarizeCountMap(value.blockedOutgoing),
+  };
+}
+
+function summarizeMarketEnergyReadiness(value) {
+  const readiness = objectOrNull(value);
+  if (!readiness) return null;
+  return {
+    schemaVersion: finiteNumberOrNull(
+      readiness.schemaVersion,
+    ),
+    revision: boundedStringOrNull(readiness.revision),
+    observedAt: finiteNumberOrNull(readiness.observedAt),
+    expiresAt: finiteNumberOrNull(readiness.expiresAt),
+    authorizationRevision: boundedStringOrNull(
+      readiness.authorizationRevision,
+    ),
+    roomInstanceId: boundedStringOrNull(
+      readiness.roomInstanceId,
+    ),
+    terminalId: boundedStringOrNull(readiness.terminalId),
+    authorized: booleanOrNull(readiness.authorized),
+    effectivePostDealEnergyReserve: finiteNumberOrNull(
+      readiness.effectivePostDealEnergyReserve,
+    ),
+    marketTerminalEnergyTarget: finiteNumberOrNull(
+      readiness.marketTerminalEnergyTarget,
+    ),
+    ordinaryTerminalEnergyTarget: finiteNumberOrNull(
+      readiness.ordinaryTerminalEnergyTarget,
+    ),
+    unresolvedEnergySendAmount: finiteNumberOrNull(
+      readiness.unresolvedEnergySendAmount,
+    ),
+    unresolvedInternalSendFees: finiteNumberOrNull(
+      readiness.unresolvedInternalSendFees,
+    ),
+    terminalScopedProductionEnergyCommitments:
+      finiteNumberOrNull(
+        readiness.terminalScopedProductionEnergyCommitments,
+      ),
+    maxTransactionEnergy: finiteNumberOrNull(
+      readiness.maxTransactionEnergy,
+    ),
+    contributionCount: finiteNumberOrNull(
+      readiness.contributionCount,
+    ),
+    desiredTerminalEnergy: finiteNumberOrNull(
+      readiness.desiredTerminalEnergy,
+    ),
+    plannedFeedAmount: finiteNumberOrNull(
+      readiness.plannedFeedAmount,
+    ),
+    status: boundedStringOrNull(readiness.status),
+    blocker: boundedStringOrNull(readiness.blocker),
   };
 }
 
@@ -915,6 +1148,10 @@ function summarizeResourceControl(runtimeResourceControl, transferTaskStore) {
         capacityReservation: summarizeCapacityReservation(room.capacityReservation),
         staging: summarizeStaging(room.staging),
         taskHealth: summarizeTaskHealth(room.taskHealth),
+        marketEnergyReadiness:
+          summarizeMarketEnergyReadiness(
+            room.marketEnergyReadiness,
+          ),
       };
     });
 
@@ -1750,7 +1987,517 @@ function summarizeContinuousDirectMarketSale(
   };
 }
 
-function summarizeDirectMarketSale(value, referenceTick) {
+function summarizeBoundedStringSet(value, limit) {
+  if (!Array.isArray(value)) return null;
+  const rawValues = [
+    ...new Set(
+      value.filter((entry) => typeof entry === "string"),
+    ),
+  ].sort();
+  return {
+    total: rawValues.length,
+    values: rawValues
+      .slice(0, limit)
+      .map((entry) => boundedStringOrNull(entry)),
+    truncated: rawValues.length > limit,
+  };
+}
+
+function summarizeMarketBaseCatalog(value) {
+  const catalog = objectOrNull(value);
+  if (!catalog) return null;
+  return {
+    revision: boundedStringOrNull(catalog.revision),
+    configRevision: boundedStringOrNull(
+      catalog.configRevision,
+    ),
+    resources: summarizeBoundedStringSet(
+      catalog.resources,
+      MARKET_BASE_RESOURCE_CATALOG_LIMIT,
+    ),
+  };
+}
+
+function summarizeMarketBaseRoster(value) {
+  const scope = objectOrNull(value);
+  if (!scope) return null;
+  const rawRooms = Array.isArray(scope.sellerRooms)
+    ? scope.sellerRooms
+        .filter(
+          (room) =>
+            room &&
+            typeof room === "object" &&
+            !Array.isArray(room),
+        )
+        .sort((left, right) =>
+          String(left.roomName ?? "").localeCompare(
+            String(right.roomName ?? ""),
+          ),
+        )
+    : null;
+  const knownRoomNames = summarizeBoundedStringSet(
+    objectOrNull(scope.roomRegistry)?.knownRoomNames,
+    MARKET_BASE_RESOURCE_ROSTER_LIMIT,
+  );
+  return {
+    updatedAt: finiteNumberOrNull(scope.updatedAt),
+    accountIdentity: boundedStringOrNull(
+      scope.accountIdentity,
+    ),
+    sharedPolicyFingerprint: boundedStringOrNull(
+      scope.sharedPolicyFingerprint,
+    ),
+    rosterFingerprint: boundedStringOrNull(
+      scope.rosterFingerprint,
+    ),
+    laneSetFingerprint: boundedStringOrNull(
+      scope.laneSetFingerprint,
+    ),
+    shadowCursor: boundedStringOrNull(scope.shadowCursor),
+    knownRoomNames,
+    roomCount: rawRooms === null ? null : rawRooms.length,
+    rooms:
+      rawRooms === null
+        ? null
+        : rawRooms
+            .slice(0, MARKET_BASE_RESOURCE_ROSTER_LIMIT)
+            .map((room) => ({
+              roomName: boundedStringOrNull(room.roomName),
+              roomInstanceId: boundedStringOrNull(
+                room.roomInstanceId,
+              ),
+              incarnation: finiteNumberOrNull(
+                room.incarnation,
+              ),
+              roomClass: boundedStringOrNull(room.roomClass),
+              terminalId: boundedStringOrNull(room.terminalId),
+              status: boundedStringOrNull(room.status),
+            })),
+    truncated:
+      rawRooms === null
+        ? null
+        : rawRooms.length >
+          MARKET_BASE_RESOURCE_ROSTER_LIMIT,
+  };
+}
+
+function summarizeMarketBaseLifecycles(value) {
+  const scope = objectOrNull(value);
+  if (!scope || !Array.isArray(scope.laneLifecycles)) {
+    return null;
+  }
+  const lanes = scope.laneLifecycles
+    .filter(
+      (lane) =>
+        lane &&
+        typeof lane === "object" &&
+        !Array.isArray(lane),
+    )
+    .sort((left, right) =>
+      String(left.laneId ?? "").localeCompare(
+        String(right.laneId ?? ""),
+      ),
+    );
+  return {
+    total: lanes.length,
+    samples: lanes
+      .slice(0, MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT)
+      .map((lane) => {
+        const shadow = objectOrNull(lane.shadowEvidence);
+        return {
+          laneId: boundedStringOrNull(lane.laneId),
+          resource: boundedStringOrNull(lane.resource),
+          sellerRoomName: boundedStringOrNull(
+            lane.sellerRoomName,
+          ),
+          roomInstanceId: boundedStringOrNull(
+            lane.roomInstanceId,
+          ),
+          stage: boundedStringOrNull(lane.stage),
+          status: boundedStringOrNull(lane.status),
+          completeShadowCycles: finiteNumberOrNull(
+            shadow?.completeCycles,
+          ),
+          lastCompleteShadowTick: finiteNumberOrNull(
+            shadow?.lastCompleteTick,
+          ),
+          stableFingerprint: boundedStringOrNull(
+            lane.stableFingerprint,
+          ),
+        };
+      }),
+    truncated:
+      lanes.length >
+      MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT,
+  };
+}
+
+function summarizeMarketBaseGrant(value) {
+  const grant = objectOrNull(value);
+  if (!grant) return null;
+  return {
+    laneId: boundedStringOrNull(grant.laneId),
+    roomInstanceId: boundedStringOrNull(
+      grant.roomInstanceId,
+    ),
+    resource: boundedStringOrNull(grant.resource),
+    stage: boundedStringOrNull(grant.stage),
+    status: boundedStringOrNull(grant.status),
+    newDealGrant: boundedStringOrNull(grant.newDealGrant),
+  };
+}
+
+function summarizeMarketBasePermit(value) {
+  const chain = objectOrNull(value);
+  if (!chain) return null;
+  const retained = Array.isArray(chain.retainedPermits)
+    ? chain.retainedPermits.filter(
+        (permit) =>
+          permit &&
+          typeof permit === "object" &&
+          !Array.isArray(permit),
+      )
+    : null;
+  const currentPermit =
+    retained === null
+      ? null
+      : retained.find(
+          (permit) =>
+            permit.permitId === chain.currentPermitId,
+        ) ?? null;
+  const grants = Array.isArray(
+    currentPermit?.signedLaneGrants,
+  )
+    ? currentPermit.signedLaneGrants
+        .map(summarizeMarketBaseGrant)
+        .filter((grant) => grant !== null)
+        .sort((left, right) =>
+          String(left.laneId ?? "").localeCompare(
+            String(right.laneId ?? ""),
+          ),
+        )
+    : null;
+  const prefix = objectOrNull(chain.prefixCheckpoint);
+  const blocker = objectOrNull(chain.blocker);
+  return {
+    schemaVersion: finiteNumberOrNull(
+      chain.schemaVersion,
+    ),
+    hashRevision: boundedStringOrNull(chain.hashRevision),
+    currentPermitEpoch: finiteNumberOrNull(
+      chain.currentPermitEpoch,
+    ),
+    currentPermitId: boundedStringOrNull(
+      chain.currentPermitId,
+    ),
+    permitChainHead: boundedStringOrNull(
+      chain.permitChainHead,
+    ),
+    permitEpochHighWater: finiteNumberOrNull(
+      chain.permitEpochHighWater,
+    ),
+    totalChainLength: finiteNumberOrNull(
+      chain.totalChainLength,
+    ),
+    retainedPermitCount:
+      retained === null ? null : retained.length,
+    prefix:
+      prefix === null
+        ? null
+        : {
+            prunedThroughEpoch: finiteNumberOrNull(
+              prefix.prunedThroughEpoch,
+            ),
+            referencedPermitBindingCount:
+              Array.isArray(
+                prefix.referencedPermitBindings,
+              )
+                ? prefix.referencedPermitBindings.length
+                : null,
+            prefixCommitment: boundedStringOrNull(
+              prefix.prefixCommitment,
+            ),
+          },
+    legacyV2GrantSuspended: booleanOrNull(
+      chain.legacyV2GrantSuspended,
+    ),
+    grants:
+      grants === null
+        ? null
+        : {
+            total: grants.length,
+            samples: grants.slice(
+              0,
+              MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT,
+            ),
+            truncated:
+              grants.length >
+              MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT,
+          },
+    blocker:
+      blocker === null
+        ? typeof chain.blocker === "string"
+          ? {
+              code: chain.blocker,
+              detectedAt: null,
+              detailHash: null,
+            }
+          : null
+        : {
+            code: boundedStringOrNull(blocker.code),
+            detectedAt: finiteNumberOrNull(
+              blocker.detectedAt,
+            ),
+            detailHash: boundedStringOrNull(
+              blocker.detailHash,
+            ),
+          },
+  };
+}
+
+function summarizeMarketBaseQuotaBucket(value) {
+  const quota = objectOrNull(value);
+  if (!quota) return null;
+  const limit =
+    finiteNumberOrNull(quota.limit) ??
+    finiteNumberOrNull(quota.rollingCap) ??
+    finiteNumberOrNull(quota.cap);
+  const confirmed =
+    finiteNumberOrNull(quota.confirmed) ??
+    finiteNumberOrNull(quota.confirmedAmount);
+  const reserved =
+    finiteNumberOrNull(quota.reserved) ??
+    finiteNumberOrNull(quota.unmatchedPlannedAmount) ??
+    finiteNumberOrNull(quota.unmatched);
+  const used =
+    finiteNumberOrNull(quota.used) ??
+    (confirmed !== null && reserved !== null
+      ? confirmed + reserved
+      : null);
+  return {
+    limit,
+    confirmed,
+    reserved,
+    used,
+    remaining:
+      finiteNumberOrNull(quota.remaining) ??
+      (limit !== null && used !== null
+        ? Math.max(0, limit - used)
+        : null),
+  };
+}
+
+function summarizeMarketBaseQuotaMap(value, limit) {
+  const quotas = objectOrNull(value);
+  if (!quotas) return null;
+  const entries = Object.entries(quotas)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return {
+    total: entries.length,
+    samples: Object.fromEntries(
+      entries
+        .slice(0, limit)
+        .map(([key, quota]) => [
+          boundedStringOrNull(key) ?? "",
+          summarizeMarketBaseQuotaBucket(quota),
+        ]),
+    ),
+    truncated: entries.length > limit,
+  };
+}
+
+function summarizeMarketBaseQuota(value) {
+  const quota = objectOrNull(value);
+  if (!quota) return null;
+  return {
+    observedAt: finiteNumberOrNull(quota.observedAt),
+    revision: boundedStringOrNull(quota.revision),
+    global: summarizeMarketBaseQuotaBucket(
+      quota.global,
+    ),
+    resources: summarizeMarketBaseQuotaMap(
+      quota.resources,
+      MARKET_BASE_RESOURCE_CATALOG_LIMIT,
+    ),
+    rooms: summarizeMarketBaseQuotaMap(
+      quota.rooms,
+      MARKET_BASE_RESOURCE_ROSTER_LIMIT,
+    ),
+    lanes: summarizeMarketBaseQuotaMap(
+      quota.lanes,
+      MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT,
+    ),
+    confirmedCooldownNotBefore: finiteNumberOrNull(
+      quota.confirmedCooldownNotBefore ??
+        quota.cooldownNotBefore,
+    ),
+    retryNotBefore: finiteNumberOrNull(
+      quota.retryNotBefore,
+    ),
+  };
+}
+
+function summarizeMarketBaseReadinessAuthorization(value) {
+  const authorization = objectOrNull(value);
+  if (!authorization) return null;
+  const rooms = Array.isArray(authorization.rooms)
+    ? authorization.rooms
+        .filter(
+          (room) =>
+            room &&
+            typeof room === "object" &&
+            !Array.isArray(room),
+        )
+        .sort((left, right) =>
+          String(left.roomName ?? "").localeCompare(
+            String(right.roomName ?? ""),
+          ),
+        )
+    : null;
+  return {
+    schemaVersion: finiteNumberOrNull(
+      authorization.schemaVersion,
+    ),
+    validated: booleanOrNull(authorization.validated),
+    status: boundedStringOrNull(authorization.status),
+    revision: boundedStringOrNull(authorization.revision),
+    updatedAt: finiteNumberOrNull(
+      authorization.updatedAt,
+    ),
+    expiresAt: finiteNumberOrNull(
+      authorization.expiresAt,
+    ),
+    maxTransactionEnergy: finiteNumberOrNull(
+      authorization.maxTransactionEnergy,
+    ),
+    sourcePermitVersion: finiteNumberOrNull(
+      authorization.sourcePermitVersion,
+    ),
+    roomCount: rooms === null ? null : rooms.length,
+    rooms:
+      rooms === null
+        ? null
+        : rooms
+            .slice(
+              0,
+              MARKET_BASE_RESOURCE_READINESS_ROOM_LIMIT,
+            )
+            .map((room) => ({
+              roomName: boundedStringOrNull(room.roomName),
+              roomInstanceId: boundedStringOrNull(
+                room.roomInstanceId,
+              ),
+              terminalId: boundedStringOrNull(room.terminalId),
+              status: boundedStringOrNull(room.status),
+            })),
+    truncated:
+      rooms === null
+        ? null
+        : rooms.length >
+          MARKET_BASE_RESOURCE_READINESS_ROOM_LIMIT,
+  };
+}
+
+function summarizeMarketBasePlanning(value) {
+  const planning = objectOrNull(value);
+  if (!planning) return null;
+  const selected = objectOrNull(planning.selected);
+  return {
+    observedAt: finiteNumberOrNull(planning.observedAt),
+    complete: booleanOrNull(planning.complete),
+    blocker: boundedStringOrNull(planning.blocker),
+    cpuUsed: finiteNumberOrNull(planning.cpuUsed),
+    rawOrderCount: finiteNumberOrNull(
+      planning.rawOrderCount,
+    ),
+    eligibleOrderCount: finiteNumberOrNull(
+      planning.eligibleOrderCount,
+    ),
+    distinctOrderRoomCount: finiteNumberOrNull(
+      planning.distinctOrderRoomCount,
+    ),
+    transactionCostEvaluationBudget:
+      finiteNumberOrNull(
+        planning.transactionCostEvaluationBudget,
+      ),
+    sampledShadowLaneIds: summarizeBoundedStringSet(
+      planning.sampledShadowLaneIds,
+      MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT,
+    ),
+    selected:
+      selected === null
+        ? null
+        : {
+            laneId:
+              boundedStringOrNull(selected.laneId) ??
+              boundedStringOrNull(selected.entryId),
+            resourceType:
+              boundedStringOrNull(selected.resourceType) ??
+              boundedStringOrNull(selected.resource),
+            sellerRoom:
+              boundedStringOrNull(selected.sellerRoom) ??
+              boundedStringOrNull(selected.roomName),
+            orderId: boundedStringOrNull(selected.orderId),
+            grossPrice: finiteNumberOrNull(
+              selected.grossPrice,
+            ),
+            unitNetPrice: finiteNumberOrNull(
+              selected.unitNetPrice,
+            ),
+            transactionEnergy: finiteNumberOrNull(
+              selected.transactionEnergy,
+            ),
+          },
+  };
+}
+
+function summarizeMarketBaseResourceV3(value) {
+  const state = objectOrNull(value);
+  if (!state) return null;
+  const ledger = objectOrNull(state.ledger);
+  const quota =
+    state.quota ??
+    state.quotaProjection ??
+    ledger?.quota ??
+    ledger?.quotaProjection;
+  return {
+    schemaVersion: finiteNumberOrNull(
+      state.schemaVersion,
+    ),
+    catalog: summarizeMarketBaseCatalog(state.catalog),
+    roster: summarizeMarketBaseRoster(state.scope),
+    lifecycle: summarizeMarketBaseLifecycles(
+      state.scope,
+    ),
+    permit: summarizeMarketBasePermit(
+      state.permitChain,
+    ),
+    quota: summarizeMarketBaseQuota(quota),
+    readinessAuthorization:
+      summarizeMarketBaseReadinessAuthorization(
+        state.readinessAuthorization,
+      ),
+    planning: summarizeMarketBasePlanning(
+      state.lastPlanningSnapshot,
+    ),
+    blocker:
+      typeof state.blocker === "string"
+        ? {
+            code: boundedStringOrNull(state.blocker),
+            detectedAt: null,
+            detailHash: null,
+          }
+        : summarizeContinuousDirectBlocker(
+            state.blocker,
+          ),
+  };
+}
+
+function summarizeDirectMarketSale(
+  value,
+  referenceTick,
+  rawDirectAutomation,
+) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
@@ -1758,13 +2505,24 @@ function summarizeDirectMarketSale(value, referenceTick) {
     value.capability === "market-direct-continuous" ||
     value.schemaVersion === 2
   ) {
-    return summarizeContinuousDirectMarketSale(
+    const summary = summarizeContinuousDirectMarketSale(
       value,
       referenceTick,
     );
+    const rawDirect = objectOrNull(rawDirectAutomation);
+    summary.baseResourceV3 =
+      summarizeMarketBaseResourceV3(
+        rawDirect?.baseResourceV3 ??
+          value.baseResourceV3,
+      );
+    return summary;
   }
   return {
     available: true,
+    baseResourceV3: summarizeMarketBaseResourceV3(
+      objectOrNull(rawDirectAutomation)?.baseResourceV3 ??
+        value.baseResourceV3,
+    ),
     strategyActive: booleanOrNull(value.strategyActive),
     shadowConsecutiveCycles: finiteNumberOrNull(
       value.shadowConsecutiveCycles,
@@ -1809,7 +2567,10 @@ function summarizeDirectMarketSale(value, referenceTick) {
   };
 }
 
-function summarizeMarketSaleAutomation(value) {
+function summarizeMarketSaleAutomation(
+  value,
+  rawDirectAutomation = null,
+) {
   const runtime =
     value && typeof value === "object" && !Array.isArray(value)
       ? value
@@ -2028,6 +2789,7 @@ function summarizeMarketSaleAutomation(value) {
     direct: summarizeDirectMarketSale(
       runtime.direct,
       finiteNumberOrNull(runtime.updatedAt),
+      rawDirectAutomation,
     ),
   };
 }
@@ -2108,6 +2870,7 @@ function extractFixtureResourceControlData(parsed) {
       runtimeResourceControl: null,
       transferTaskStore: null,
       runtimeMarketSaleAutomation: null,
+      dataDirectAutomation: null,
     };
   }
 
@@ -2115,6 +2878,13 @@ function extractFixtureResourceControlData(parsed) {
   const data = parsed.data && typeof parsed.data === "object" ? parsed.data : null;
   const dataResourceControl =
     data && data.resourceControl && typeof data.resourceControl === "object" ? data.resourceControl : null;
+  const dataMarketSaleAutomation =
+    data &&
+    data.marketSaleAutomation &&
+    typeof data.marketSaleAutomation === "object" &&
+    !Array.isArray(data.marketSaleAutomation)
+      ? data.marketSaleAutomation
+      : null;
 
   return {
     runtimeResourceControl:
@@ -2131,6 +2901,16 @@ function extractFixtureResourceControlData(parsed) {
       typeof runtime.marketSaleAutomation === "object"
         ? runtime.marketSaleAutomation
         : null,
+    dataDirectAutomation:
+      dataMarketSaleAutomation &&
+      dataMarketSaleAutomation.directAutomation &&
+      typeof dataMarketSaleAutomation.directAutomation ===
+        "object" &&
+      !Array.isArray(
+        dataMarketSaleAutomation.directAutomation,
+      )
+        ? dataMarketSaleAutomation.directAutomation
+        : null,
   };
 }
 
@@ -2144,16 +2924,27 @@ async function fetchOptionalMemoryPath(config, shard, path) {
 }
 
 async function fetchResourceControlData(config, shard) {
-  const [runtimeResourceControl, transferTaskStore, runtimeMarketSaleAutomation] =
+  const [
+    runtimeResourceControl,
+    transferTaskStore,
+    runtimeMarketSaleAutomation,
+    dataDirectAutomation,
+  ] =
     await Promise.all([
     fetchOptionalMemoryPath(config, shard, "runtime.resourceControl"),
     fetchOptionalMemoryPath(config, shard, "data.resourceControl.tasks"),
     fetchOptionalMemoryPath(config, shard, "runtime.marketSaleAutomation"),
+    fetchOptionalMemoryPath(
+      config,
+      shard,
+      "data.marketSaleAutomation.directAutomation",
+    ),
   ]);
   return {
     runtimeResourceControl,
     transferTaskStore,
     runtimeMarketSaleAutomation,
+    dataDirectAutomation,
   };
 }
 
@@ -2169,6 +2960,7 @@ async function fetchMemorySnapshot(config, options = {}) {
       runtimeResourceControl,
       transferTaskStore,
       runtimeMarketSaleAutomation,
+      dataDirectAutomation,
     } = extractFixtureResourceControlData(parsed);
 
     return {
@@ -2180,7 +2972,10 @@ async function fetchMemorySnapshot(config, options = {}) {
       moduleCpu: summarizeModuleCpu(moduleCpu),
       hub: summarizeHub(hub),
       resourceControl: summarizeResourceControl(runtimeResourceControl, transferTaskStore),
-      marketSaleAutomation: summarizeMarketSaleAutomation(runtimeMarketSaleAutomation),
+      marketSaleAutomation: summarizeMarketSaleAutomation(
+        runtimeMarketSaleAutomation,
+        dataDirectAutomation,
+      ),
     };
   }
 
@@ -2195,11 +2990,13 @@ async function fetchMemorySnapshot(config, options = {}) {
     runtimeResourceControl,
     transferTaskStore,
     runtimeMarketSaleAutomation,
+    dataDirectAutomation,
   } = options.includeResourceControl === false
     ? {
         runtimeResourceControl: null,
         transferTaskStore: null,
         runtimeMarketSaleAutomation: null,
+        dataDirectAutomation: null,
       }
     : await fetchResourceControlData(config, config.shard);
 
@@ -2212,7 +3009,10 @@ async function fetchMemorySnapshot(config, options = {}) {
     moduleCpu: summarizeModuleCpu(moduleCpu),
     hub: summarizeHub(hub),
     resourceControl: summarizeResourceControl(runtimeResourceControl, transferTaskStore),
-    marketSaleAutomation: summarizeMarketSaleAutomation(runtimeMarketSaleAutomation),
+    marketSaleAutomation: summarizeMarketSaleAutomation(
+      runtimeMarketSaleAutomation,
+      dataDirectAutomation,
+    ),
   };
 }
 
@@ -2503,24 +3303,44 @@ function logMemorySnapshot(snapshot) {
       ? `${legacy.topPhases[0].phase}:${legacy.topPhases[0].used.toFixed(2)}`
       : "n/a";
     console.log(
-      `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [legacy] moduleCpuTick=${legacy.tick ?? "n/a"} moduleCpuUsed=${legacy.totalUsed ?? "n/a"} topPhase=${legacyTop}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)}${marketSaleStr(snapshot.marketSaleAutomation)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+      boundedMonitorLogLine(
+        `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [legacy] moduleCpuTick=${legacy.tick ?? "n/a"} moduleCpuUsed=${legacy.totalUsed ?? "n/a"} topPhase=${legacyTop}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)}${marketSaleStr(snapshot.marketSaleAutomation)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+      ),
     );
     return;
   }
 
   console.log(
-    `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [cpu-v${cpuVersion}|${cpuSource}] cpuTick=${cpuTick} cpuUsed=${cpuUsed}${emaStr}${fixedStr}${heapStr} topPhase=${topPhase}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)}${marketSaleStr(snapshot.marketSaleAutomation)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+    boundedMonitorLogLine(
+      `[monitor][memory] tick=${summary.latestTick ?? "n/a"} rooms=${summary.roomCount} workers=${summary.totals.workers} carriers=${summary.totals.carriers} loose=${summary.totals.looseEnergy} [cpu-v${cpuVersion}|${cpuSource}] cpuTick=${cpuTick} cpuUsed=${cpuUsed}${emaStr}${fixedStr}${heapStr} topPhase=${topPhase}${hubStr(snapshot.hub)}${resourceControlStr(snapshot.resourceControl)}${marketSaleStr(snapshot.marketSaleAutomation)} remaining=${snapshot.rateLimit.remaining ?? "?"}`,
+    ),
   );
 }
 
 function hubStr(hub) {
   if (!hub || !hub.available) return "";
-  return ` hub=${hub.hubRoomName} status=${hub.status ?? "n/a"} stage=${hub.stage ?? "n/a"} product=${hub.activeProduct ?? "n/a"} imports=${hub.pendingImports} exports=${hub.pendingExports}`;
+  const attempt = hub.protectionAttempt;
+  const committed = hub.committedProtectionMarker;
+  return ` hub=${hub.hubRoomName} status=${hub.status ?? "n/a"} stage=${hub.stage ?? "n/a"} product=${hub.activeProduct ?? "n/a"} imports=${hub.pendingImports} exports=${hub.pendingExports} hubProtection=${attempt?.attemptRevision ?? "n/a"}/${committed?.planRevision ?? "n/a"}:${committed?.status ?? "n/a"}:consistent=${committed?.consistent ?? "n/a"}`;
 }
 
 function resourceControlStr(resourceControl) {
   if (!resourceControl || !resourceControl.available) return "";
-  return ` transferTasks=${resourceControl.pendingTaskCount}`;
+  const readiness = Array.isArray(resourceControl.rooms)
+    ? resourceControl.rooms
+        .map((room) => room.marketEnergyReadiness)
+        .filter((entry) => entry !== null)
+    : [];
+  const ready = readiness.filter(
+    (entry) => entry.status === "ready",
+  ).length;
+  const feedPlanned = readiness.filter(
+    (entry) => entry.status === "feed_planned",
+  ).length;
+  const blocked = readiness.filter(
+    (entry) => entry.status === "blocked",
+  ).length;
+  return ` transferTasks=${resourceControl.pendingTaskCount} marketEnergyReadiness=${ready}/${feedPlanned}/${blocked}`;
 }
 
 function directMarketSaleStr(direct) {
@@ -2544,6 +3364,14 @@ function directMarketSaleStr(direct) {
           })
           .join(",")
       : "n/a";
+    const base = direct.baseResourceV3;
+    const catalog = base?.catalog?.resources;
+    const roster = base?.roster;
+    const lifecycle = base?.lifecycle;
+    const basePermit = base?.permit;
+    const baseQuota = base?.quota;
+    const readiness = base?.readinessAuthorization;
+    const planning = base?.planning;
     return [
       ` directV2=${direct.schemaVersion ?? "n/a"}`,
       ` directPermit=${permit ? `${permit.epoch ?? "n/a"}:${permit.permitId ?? "n/a"}:${permit.permitHead ?? "n/a"}` : "none"}`,
@@ -2554,6 +3382,13 @@ function directMarketSaleStr(direct) {
       ` directCoverage=${direct.coverage?.startTick ?? "n/a"}`,
       ` directHighWater=${direct.highWater ? `${direct.highWater.finalizedAttemptSeq ?? "n/a"}/${direct.highWater.nextAttemptSeq ?? "n/a"}:p${direct.highWater.permitEpoch ?? "n/a"}` : "n/a"}`,
       ` directBlocker=${direct.blocker?.code ?? "none"}`,
+      ` baseCatalog=${catalog ? `${catalog.values.join("")}:${catalog.total}` : "n/a"}`,
+      ` baseRoster=${roster ? `${roster.roomCount ?? "n/a"}/${roster.knownRoomNames?.total ?? "n/a"}` : "n/a"}`,
+      ` baseLifecycle=${lifecycle ? `${lifecycle.total}:truncated=${lifecycle.truncated}` : "n/a"}`,
+      ` basePermit=${basePermit ? `${basePermit.currentPermitEpoch ?? "n/a"}:${basePermit.currentPermitId ?? "n/a"}:retained=${basePermit.retainedPermitCount ?? "n/a"}` : "n/a"}`,
+      ` baseQuota=${baseQuota ? `${baseQuota.global?.used ?? "n/a"}/${baseQuota.global?.limit ?? "n/a"}` : "n/a"}`,
+      ` baseReadiness=${readiness ? `${readiness.roomCount ?? "n/a"}:${readiness.status ?? "n/a"}` : "n/a"}`,
+      ` basePlanning=${planning ? `cpu=${planning.cpuUsed ?? "n/a"}:blocker=${planning.blocker ?? "none"}` : "n/a"}`,
     ].join("");
   }
   const snapshot = direct.snapshot;
@@ -2657,10 +3492,12 @@ async function fetchWithShardFallback(config) {
       runtimeResourceControl,
       transferTaskStore,
       runtimeMarketSaleAutomation,
+      dataDirectAutomation,
     } = await fetchResourceControlData(config, bestShardValue);
     bestResult.resourceControl = summarizeResourceControl(runtimeResourceControl, transferTaskStore);
     bestResult.marketSaleAutomation = summarizeMarketSaleAutomation(
       runtimeMarketSaleAutomation,
+      dataDirectAutomation,
     );
     bestResult.selectedShard = bestShard;
     bestResult.shardCandidates = shardResults;

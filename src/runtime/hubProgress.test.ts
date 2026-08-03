@@ -79,6 +79,8 @@ describe("buildHubProgressSnapshot", () => {
     expect(snapshot.pendingReclaims).toBe(0);
     expect(snapshot.pendingExports).toBe(0);
     expect(snapshot.hubInventory).toEqual({});
+    expect(snapshot.protectionAttempt).toBeNull();
+    expect(snapshot.committedProtectionMarker).toBeNull();
   });
 
   it("includes blocked hub fields", () => {
@@ -105,6 +107,143 @@ describe("buildHubProgressSnapshot", () => {
     expect(snapshot.lastPlanActions).toEqual(["XGH2O", "XUH2O"]);
     expect(snapshot.lastError).toBe("lab_contaminated");
     expect(snapshot.needsPlan).toBe(true);
+  });
+
+  it("projects only bounded Hub protection attempt and component markers", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: {
+        status: "idle",
+        currentProtectionAttempt: {
+          attemptRevision: 8,
+          configIncarnation: 3,
+          startedAt: 198,
+          finishedAt: 199,
+          configFingerprint: "hubcfg-v1:test",
+          status: "committed",
+          valid: true,
+        },
+        committedProtectionSnapshot: {
+          schema: "hub-protection-snapshot-v1",
+          planRevision: 8,
+          configIncarnation: 3,
+          observedAt: 199,
+          expiresAt: 209,
+          configFingerprint: "hubcfg-v1:test",
+          status: "committed",
+          valid: true,
+          marker: {
+            revision: 8,
+            configIncarnation: 3,
+            configFingerprint: "hubcfg-v1:test",
+            hubRoomName: "W1N1",
+            planMode: "distributed",
+            targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ACID],
+            hubReservePerCompound: 5_000,
+          },
+          synthesisConfig: {
+            revision: 8,
+            configIncarnation: 3,
+            configFingerprint: "hubcfg-v1:test",
+            rooms: { W1N1: { reactions: [] } },
+          },
+          transferTasks: {
+            revision: 8,
+            configIncarnation: 3,
+            configFingerprint: "hubcfg-v1:test",
+            tasks: [
+              {
+                id: "large-task-not-projected",
+                resource: RESOURCE_UTRIUM,
+                fromRoomName: "W2N1",
+                toRoomName: "W1N1",
+                amount: 1_000,
+                remainingAmount: 1_000,
+                status: "pending",
+              },
+            ],
+          },
+          distributed: {
+            revision: 8,
+            configIncarnation: 3,
+            configFingerprint: "hubcfg-v1:test",
+            dispatchAssignments: [],
+            routeDecisions: [],
+            allocationLedger: {},
+          },
+          baseMineralSurplus: {
+            revision: 8,
+            configIncarnation: 3,
+            configFingerprint: "hubcfg-v1:test",
+            byRoom: { W1N1: { [RESOURCE_UTRIUM]: 25_000 } },
+          },
+        },
+      },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 200,
+    });
+
+    expect(snapshot.protectionAttempt).toEqual({
+      attemptRevision: 8,
+      configIncarnation: 3,
+      startedAt: 198,
+      finishedAt: 199,
+      configFingerprint: "hubcfg-v1:test",
+      status: "committed",
+      valid: true,
+    });
+    expect(snapshot.committedProtectionMarker).toEqual({
+      schema: "hub-protection-snapshot-v1",
+      planRevision: 8,
+      configIncarnation: 3,
+      observedAt: 199,
+      expiresAt: 209,
+      configFingerprint: "hubcfg-v1:test",
+      status: "committed",
+      valid: true,
+      marker: {
+        revision: 8,
+        configIncarnation: 3,
+        configFingerprint: "hubcfg-v1:test",
+        hubRoomName: "W1N1",
+        planMode: "distributed",
+      },
+      components: {
+        synthesisConfig: {
+          revision: 8,
+          configIncarnation: 3,
+          configFingerprint: "hubcfg-v1:test",
+        },
+        transferTasks: {
+          revision: 8,
+          configIncarnation: 3,
+          configFingerprint: "hubcfg-v1:test",
+        },
+        distributed: {
+          revision: 8,
+          configIncarnation: 3,
+          configFingerprint: "hubcfg-v1:test",
+        },
+        baseMineralSurplus: {
+          revision: 8,
+          configIncarnation: 3,
+          configFingerprint: "hubcfg-v1:test",
+        },
+      },
+    });
+    expect(
+      JSON.stringify(snapshot.committedProtectionMarker),
+    ).not.toContain("large-task-not-projected");
+    expect(
+      JSON.stringify(snapshot.committedProtectionMarker),
+    ).not.toContain("25000");
+    expect(
+      JSON.stringify(snapshot.committedProtectionMarker),
+    ).not.toContain(RESOURCE_CATALYZED_GHODIUM_ACID);
   });
 
   it("handles invisible hub room without crash", () => {
@@ -579,6 +718,8 @@ describe("buildHubOverlayLines", () => {
       hubCarrierCargo: {},
       productionRooms: [],
       t3ReserveStatus: { hubSurplus: 0, totalDeficit: [] },
+      protectionAttempt: null,
+      committedProtectionMarker: null,
       ...overrides,
     };
   }
@@ -1015,6 +1156,8 @@ describe("buildHubVisualModel", () => {
       hubCarrierCargo: {},
       productionRooms: [],
       t3ReserveStatus: { hubSurplus: 0, totalDeficit: [] },
+      protectionAttempt: null,
+      committedProtectionMarker: null,
       ...overrides,
     };
   }

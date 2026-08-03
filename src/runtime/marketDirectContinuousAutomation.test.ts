@@ -4,6 +4,7 @@ import {
   LEGACY_X_V1_OUTCOME_GOLDEN,
   LEGACY_X_V1_REVIEW_EVIDENCE_DIGEST,
   acceptMarketDirectContinuousPermit,
+  defaultMarketDirectContinuousDependencies,
   migrateLegacyDirectToContinuous,
   normalizeContinuousDirectState,
   proposeMarketDirectContinuousPermit,
@@ -13,6 +14,8 @@ import {
   type MarketDirectContinuousAutomationState,
   type MarketDirectContinuousDependencies,
   type MarketDirectContinuousRuntimeCandidate,
+  type MarketDirectContinuousTerminalEnergyContribution,
+  type MarketDirectContinuousTerminalEnergyReadiness,
   type MarketDirectContinuousTerminalSnapshot,
 } from "@/runtime/marketDirectContinuousAutomation";
 import {
@@ -288,12 +291,101 @@ function terminal(
   return {
     roomName: entry.allowedRoomNames[0],
     owned: true,
+    terminalId: `terminal:${entry.allowedRoomNames[0]}`,
     resourceAmount: 200_000,
     energy: 50_000,
     cooldown: 0,
     nativeMineralType: entry.requireNativeMineral
       ? entry.resourceType
       : RESOURCE_OXYGEN,
+  };
+}
+
+function canonicalEnergyContributions(
+  effectivePostDealEnergyReserve = 25_000,
+): MarketDirectContinuousTerminalEnergyContribution[] {
+  return [
+    {
+      id: "ordinary-terminal-target:E6N59",
+      amount: 20_000,
+      kind: "ordinary_terminal_target",
+    },
+    ...(effectivePostDealEnergyReserve > 25_000
+      ? [
+          {
+            id: "production-reservation:fixture",
+            amount:
+              effectivePostDealEnergyReserve - 20_000,
+            kind: "terminal_production_commitment",
+          } as const,
+        ]
+      : []),
+  ];
+}
+
+function terminalEnergyReadiness(
+  tick: number,
+  overrides: Partial<
+    MarketDirectContinuousTerminalEnergyReadiness
+  > = {},
+): MarketDirectContinuousTerminalEnergyReadiness {
+  const status = overrides.status ?? "ready";
+  const effectivePostDealEnergyReserve =
+    overrides.effectivePostDealEnergyReserve ?? 25_000;
+  const contributions =
+    overrides.contributions ??
+    canonicalEnergyContributions(
+      effectivePostDealEnergyReserve,
+    );
+  const sumKind = (
+    kind: MarketDirectContinuousTerminalEnergyContribution["kind"],
+  ): number =>
+    contributions.reduce(
+      (sum, contribution) =>
+        contribution.kind === kind
+          ? sum + contribution.amount
+          : sum,
+      0,
+    );
+  const marketTerminalEnergyTarget =
+    overrides.marketTerminalEnergyTarget ??
+    effectivePostDealEnergyReserve + 1_000;
+  return {
+    schemaVersion: 3,
+    revision: `market-terminal-energy-v3:${tick}`,
+    observedAt: tick,
+    expiresAt: tick + 1,
+    authorizationRevision: `readiness-auth:${tick}`,
+    roomInstanceId: "room:E6N59:1",
+    terminalId: "terminal:E6N59",
+    authorized: true,
+    effectivePostDealEnergyReserve,
+    marketTerminalEnergyTarget,
+    ordinaryTerminalEnergyTarget: sumKind(
+      "ordinary_terminal_target",
+    ),
+    unresolvedEnergySendAmount: sumKind(
+      "pending_energy_send",
+    ),
+    unresolvedInternalSendFees: sumKind(
+      "pending_internal_send_fee",
+    ),
+    terminalScopedProductionEnergyCommitments: sumKind(
+      "terminal_production_commitment",
+    ),
+    maxTransactionEnergy: 1_000,
+    contributionCount: contributions.length,
+    contributions,
+    desiredTerminalEnergy:
+      overrides.desiredTerminalEnergy ??
+      Math.max(50_000, marketTerminalEnergyTarget),
+    plannedFeedAmount:
+      status === "feed_planned" ? 1_000 : 0,
+    status,
+    ...(status === "blocked"
+      ? { blocker: "terminal_headroom" }
+      : {}),
+    ...overrides,
   };
 }
 
@@ -367,6 +459,7 @@ type SecondReadMutation =
   | "credits"
   | "protection"
   | "terminal"
+  | "readiness"
   | "shadow_order";
 
 interface RuntimeHarness {
@@ -381,6 +474,18 @@ interface RuntimeHarness {
   protectionGlobalBlocked?: boolean;
   scopedProtectionBlockedResource?: ResourceConstant;
   missingTerminalResource?: ResourceConstant;
+  missingMarketEnergyReadiness?: boolean;
+  marketEnergyReadinessStatus?:
+    MarketDirectContinuousTerminalEnergyReadiness["status"];
+  effectivePostDealEnergyReserve?: number;
+  terminalEnergy?: number;
+  terminalCooldown?: number;
+  terminalOwned?: boolean;
+  canonicalEnergyContributions?:
+    MarketDirectContinuousTerminalEnergyContribution[];
+  mutateMarketEnergyReadiness?: (
+    readiness: MarketDirectContinuousTerminalEnergyReadiness,
+  ) => void;
   secondReadMutation?: SecondReadMutation;
   claimResult?: boolean;
   executeResult?: ScreepsReturnCode;
@@ -402,8 +507,54 @@ interface RuntimeHarness {
   onRelease?: (requestId: string) => void;
 }
 
+function legacyV2ReadinessIdentity(
+  state: MarketDirectContinuousAutomationState,
+  tick: number,
+  terminalId = "terminal:E6N59",
+): {
+  authorizationRevision: string;
+  roomInstanceId: string;
+} {
+  if (!state.currentPermit) {
+    throw new Error("fixture current permit missing");
+  }
+  const roomInstanceId = canonicalStableHashV1({
+    domain:
+      "market-base-resource:legacy-v2-readiness-room-v1",
+    evidence: {
+      accountIdentity:
+        state.currentPermit.accountIdentity,
+      roomName: "E6N59",
+      terminalId,
+    },
+  });
+  const rooms = [
+    {
+      roomName: "E6N59",
+      roomInstanceId,
+      terminalId,
+      status: "authorized" as const,
+    },
+  ];
+  return {
+    roomInstanceId,
+    authorizationRevision: canonicalStableHashV1({
+      domain:
+        "market-base-resource:readiness-authorization-v1",
+      evidence: {
+        permitHead: state.currentPermit.permitHead,
+        permitId: state.currentPermit.permitId,
+        rooms,
+        sourcePermitVersion: 2,
+        tick,
+      },
+    }),
+  };
+}
+
 function dependenciesFor(
   harness: RuntimeHarness,
+  state?: MarketDirectContinuousAutomationState,
 ): MarketDirectContinuousDependencies {
   const orderReads: Record<string, number> = {};
   const terminalReads: Record<string, number> = {};
@@ -439,6 +590,54 @@ function dependenciesFor(
         return undefined;
       }
       const snapshot = terminal(resource);
+      if (resource === RESOURCE_CATALYST) {
+        if (harness.terminalEnergy !== undefined) {
+          snapshot.energy = harness.terminalEnergy;
+        }
+        if (harness.terminalCooldown !== undefined) {
+          snapshot.cooldown = harness.terminalCooldown;
+        }
+        if (harness.terminalOwned !== undefined) {
+          snapshot.owned = harness.terminalOwned;
+        }
+        if (!harness.missingMarketEnergyReadiness) {
+          const reserve =
+            (harness.effectivePostDealEnergyReserve ??
+              25_000) +
+            (harness.secondReadMutation === "readiness" &&
+            terminalReads[key] === 2
+              ? 1_000
+              : 0);
+          const identity = state
+            ? legacyV2ReadinessIdentity(
+                state,
+                harness.tick,
+              )
+            : undefined;
+          const readiness = terminalEnergyReadiness(
+            harness.tick,
+            {
+              status:
+                harness.marketEnergyReadinessStatus ??
+                "ready",
+              effectivePostDealEnergyReserve: reserve,
+              marketTerminalEnergyTarget: reserve + 1_000,
+              contributions:
+                harness.canonicalEnergyContributions ??
+                canonicalEnergyContributions(reserve),
+              desiredTerminalEnergy: Math.max(
+                snapshot.energy,
+                reserve + 1_000,
+              ),
+              ...(identity || {}),
+            },
+          );
+          harness.mutateMarketEnergyReadiness?.(
+            readiness,
+          );
+          snapshot.marketEnergyReadiness = readiness;
+        }
+      }
       if (
         harness.secondReadMutation === "terminal" &&
         resource === RESOURCE_CATALYST &&
@@ -448,6 +647,16 @@ function dependenciesFor(
       }
       return snapshot;
     }),
+    readCanonicalTerminalEnergyContributions: jest.fn(
+      () =>
+        clone(
+          harness.canonicalEnergyContributions ??
+            canonicalEnergyContributions(
+              harness.effectivePostDealEnergyReserve ??
+                25_000,
+            ),
+        ),
+    ),
     readProtection: jest.fn(() => {
       protectionReads += 1;
       const ledger = protectionLedger(harness.tick);
@@ -568,6 +777,276 @@ function automationInput(
 }
 
 describe("Continuous Direct automation state and permits", () => {
+  it("默认 terminal reader 从 ResourceControl current projection 读取动态 reserve", () => {
+    const previousRooms = Game.rooms;
+    const previousRuntime = Memory.runtime;
+    Game.time = RUN_TICK;
+    const terminalId = "terminal:E6N59";
+    const readiness = terminalEnergyReadiness(RUN_TICK, {
+      terminalId,
+      effectivePostDealEnergyReserve: 26_500,
+      marketTerminalEnergyTarget: 27_500,
+    });
+    const room = {
+      name: "E6N59",
+      controller: { my: true },
+      terminal: {
+        id: terminalId,
+        cooldown: 0,
+        store: {
+          getUsedCapacity: jest.fn(
+            (resource?: ResourceConstant) =>
+              resource === RESOURCE_CATALYST
+                ? 200_000
+                : resource === RESOURCE_ENERGY
+                  ? 27_500
+                  : 227_500,
+          ),
+        },
+      },
+      find: jest.fn(() => []),
+    } as unknown as Room;
+    Game.rooms = { E6N59: room };
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: RUN_TICK,
+        rooms: {
+          E6N59: {
+            marketEnergyReadiness: readiness,
+          },
+        },
+      },
+    } as unknown as Memory["runtime"];
+
+    try {
+      expect(
+        defaultMarketDirectContinuousDependencies.readTerminal(
+          "E6N59",
+          RESOURCE_CATALYST,
+        ),
+      ).toMatchObject({
+        terminalId,
+        energy: 27_500,
+        marketEnergyReadiness: {
+          status: "ready",
+          effectivePostDealEnergyReserve: 26_500,
+          marketTerminalEnergyTarget: 27_500,
+          observedAt: RUN_TICK,
+        },
+      });
+    } finally {
+      Game.rooms = previousRooms;
+      Memory.runtime = previousRuntime;
+    }
+  });
+
+  it("默认 canonical reader 独立重建 pending send、fee、reservation 与 terminal production carrier", () => {
+    const previousCfg = Memory.cfg;
+    const previousData = Memory.data;
+    const previousRuntime = Memory.runtime;
+    const previousCarrierBoard = (
+      global as typeof global & {
+        __carrierTaskBoard?: unknown;
+      }
+    ).__carrierTaskBoard;
+    const mutableGame = Game as unknown as {
+      market?: Game["market"];
+    };
+    const previousMarket = mutableGame.market;
+    Game.time = RUN_TICK;
+    Memory.cfg = {
+      resourceControl: {
+        rooms: {
+          E6N59: {
+            terminalEnergyReserve: 30_000,
+            transferBatchSize: 10_000,
+          },
+        },
+      },
+    } as unknown as Memory["cfg"];
+    Memory.data = {
+      resourceControl: {
+        taskSchemaVersion: 2,
+        tasks: {
+          "energy-task": {
+            id: "energy-task",
+            resource: RESOURCE_ENERGY,
+            fromRoomName: "E6N59",
+            toRoomName: "E7N59",
+            amount: 1_000,
+            remainingAmount: 1_000,
+            status: "pending",
+            createdAt: RUN_TICK,
+            updatedAt: RUN_TICK,
+            origin: "manual",
+            lastProgressAt: RUN_TICK,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+    Memory.runtime = {
+      resourceReservations: {
+        "E6N59:energy:factory": {
+          roomName: "E6N59",
+          resource: RESOURCE_ENERGY,
+          holderId: "factory",
+          amount: 5_000,
+          updatedAt: RUN_TICK,
+          expiresAt: RUN_TICK + 1,
+        },
+      },
+    } as unknown as Memory["runtime"];
+    (
+      global as typeof global & {
+        __carrierTaskBoard?: unknown;
+      }
+    ).__carrierTaskBoard = {
+      E6N59: {
+        "factory-supply": {
+          id: "factory-supply",
+          producer: "factory:test",
+          roomName: "E6N59",
+          type: "factory_supply",
+          priority: 1,
+          createdAt: RUN_TICK,
+          updatedAt: RUN_TICK,
+          steps: [
+            {
+              id: "energy-step",
+              resource: RESOURCE_ENERGY,
+              fromKind: "terminal",
+              toKind: "factory",
+              fromId: "terminal:E6N59",
+              toId: "factory:E6N59",
+              amount: 2_000,
+            },
+          ],
+        },
+      },
+    };
+    mutableGame.market = {
+      ...(previousMarket || {}),
+      calcTransactionCost: jest.fn(() => 500),
+    } as Game["market"];
+
+    try {
+      expect(
+        defaultMarketDirectContinuousDependencies
+          .readCanonicalTerminalEnergyContributions(
+            "E6N59",
+          ),
+      ).toEqual([
+        {
+          id: "ordinary-terminal-target:E6N59",
+          amount: 30_000,
+          kind: "ordinary_terminal_target",
+        },
+        {
+          id: "production-carrier:factory-supply:energy-step",
+          amount: 2_000,
+          kind: "terminal_production_commitment",
+        },
+        {
+          id: "production-reservation:factory",
+          amount: 5_000,
+          kind: "terminal_production_commitment",
+        },
+        {
+          id: "resource-transfer:energy-task:energy",
+          amount: 1_000,
+          kind: "pending_energy_send",
+        },
+        {
+          id: "resource-transfer:energy-task:fee",
+          amount: 500,
+          kind: "pending_internal_send_fee",
+        },
+      ]);
+    } finally {
+      Memory.cfg = previousCfg;
+      Memory.data = previousData;
+      Memory.runtime = previousRuntime;
+      (
+        global as typeof global & {
+          __carrierTaskBoard?: unknown;
+        }
+      ).__carrierTaskBoard = previousCarrierBoard;
+      mutableGame.market = previousMarket;
+    }
+  });
+
+  it("仅为 frozen v2 X/E6 投影当 tick readiness，v3 cutover 后同 tick撤销", () => {
+    const state = acceptedXState();
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {},
+    };
+    const dependencies = dependenciesFor(harness, state);
+
+    runMarketDirectContinuousPreflight(
+      state,
+      {
+        tick: RUN_TICK,
+        config: continuousConfig(),
+      },
+      dependencies,
+    );
+
+    expect(
+      (
+        state.baseResourceV3 as {
+          readinessAuthorization?: unknown;
+        }
+      ).readinessAuthorization,
+    ).toMatchObject({
+      schemaVersion: 3,
+      validated: true,
+      status: "authorized",
+      sourcePermitVersion: 2,
+      updatedAt: RUN_TICK,
+      expiresAt: RUN_TICK,
+      maxTransactionEnergy: 1_000,
+      rooms: [
+        {
+          roomName: "E6N59",
+          terminalId: "terminal:E6N59",
+          status: "authorized",
+        },
+      ],
+    });
+
+    (
+      state.baseResourceV3 as {
+        permitChain?: {
+          legacyV2GrantSuspended: boolean;
+        };
+      }
+    ).permitChain = {
+      legacyV2GrantSuspended: true,
+    };
+    runMarketDirectContinuousPreflight(
+      state,
+      {
+        tick: RUN_TICK + 1,
+        config: continuousConfig(),
+      },
+      dependenciesFor(
+        {
+          ...harness,
+          tick: RUN_TICK + 1,
+        },
+        state,
+      ),
+    );
+    expect(
+      (
+        state.baseResourceV3 as {
+          readinessAuthorization?: unknown;
+        }
+      ).readinessAuthorization,
+    ).toBeUndefined();
+  });
+
   it("仅用完整冻结 v1 证据确定性迁移，并保留 reviewed X 与 genesis 账本", () => {
     expect(
       canonicalStableHashV1(clone(LEGACY_X_V1_OUTCOME_GOLDEN)),
@@ -966,7 +1445,10 @@ describe("Continuous Direct automation state and permits", () => {
         [RESOURCE_ZYNTHIUM]: [],
       },
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(
+      harness,
+      corrupted,
+    );
     expect(
       runMarketDirectContinuousPlanning(
         corrupted,
@@ -1259,8 +1741,10 @@ describe("Continuous Direct automation state and permits", () => {
       },
       claimResult: false,
     };
-    const xOnlyDependencies =
-      dependenciesFor(xOnlyHarness);
+    const xOnlyDependencies = dependenciesFor(
+      xOnlyHarness,
+      xOnlyState,
+    );
 
     const xOnlyResult =
       runMarketDirectContinuousPlanning(
@@ -1320,7 +1804,7 @@ describe("Continuous Direct automation state and permits", () => {
     runMarketDirectContinuousPlanning(
       globalState,
       automationInput(RUN_TICK),
-      dependenciesFor(globalHarness),
+      dependenciesFor(globalHarness, globalState),
     );
 
     expect(globalState.lastPlanningSnapshot?.selected).toMatchObject({
@@ -1331,11 +1815,363 @@ describe("Continuous Direct automation state and permits", () => {
     });
   });
 
+  it("v2 X 接受由真实生产承诺抬高且 terminal 已满足的 current reserve", () => {
+    Game.time = RUN_TICK;
+    const state = acceptedXState();
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-dynamic-energy-reserve",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+        [RESOURCE_HYDROGEN]: [],
+        [RESOURCE_ZYNTHIUM]: [],
+      },
+      effectivePostDealEnergyReserve: 26_500,
+      terminalEnergy: 50_000,
+      claimResult: false,
+      calculateEnergy: (amount) => amount,
+    };
+    const dependencies = dependenciesFor(harness, state);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toMatchObject({
+      continuous_claim_failed: 1,
+    });
+    expect(
+      result.rejectedByReason[
+        "continuous_energy_readiness_invalid:base-x-e6n59-v1"
+      ],
+    ).toBeUndefined();
+    expect(state.lastPlanningSnapshot?.selected).toMatchObject({
+      entryId: "base-x-e6n59-v1",
+      orderId: "x-dynamic-energy-reserve",
+    });
+    expect(state.ledger.pending).toBeUndefined();
+    expect(dependencies.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("v2 X 正常路径逐项绑定 pending send、fee 与 terminal production commitments", () => {
+    Game.time = RUN_TICK;
+    const state = acceptedXState();
+    const contributions:
+      MarketDirectContinuousTerminalEnergyContribution[] = [
+      {
+        id: "ordinary-terminal-target:E6N59",
+        amount: 20_000,
+        kind: "ordinary_terminal_target",
+      },
+      {
+        id: "resource-transfer:energy-task:energy",
+        amount: 10_000,
+        kind: "pending_energy_send",
+      },
+      {
+        id: "resource-transfer:energy-task:fee",
+        amount: 2_000,
+        kind: "pending_internal_send_fee",
+      },
+      {
+        id: "production-carrier:factory:step",
+        amount: 15_000,
+        kind: "terminal_production_commitment",
+      },
+    ];
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-all-energy-commitments",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+        [RESOURCE_HYDROGEN]: [],
+        [RESOURCE_ZYNTHIUM]: [],
+      },
+      canonicalEnergyContributions: contributions,
+      effectivePostDealEnergyReserve: 47_000,
+      terminalEnergy: 60_000,
+      claimResult: false,
+    };
+    const dependencies = dependenciesFor(harness, state);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toMatchObject({
+      continuous_claim_failed: 1,
+    });
+    expect(
+      result.rejectedByReason[
+        "continuous_energy_readiness_invalid:base-x-e6n59-v1"
+      ],
+    ).toBeUndefined();
+  });
+
+  it.each([
+    [
+      "current-tick revision 伪造",
+      (readiness: MarketDirectContinuousTerminalEnergyReadiness) => {
+        readiness.revision =
+          `market-terminal-energy-v3:${RUN_TICK - 1}`;
+      },
+    ],
+    [
+      "authorization revision 错误",
+      (readiness: MarketDirectContinuousTerminalEnergyReadiness) => {
+        readiness.authorizationRevision =
+          "forged-readiness-authorization";
+      },
+    ],
+    [
+      "exact keyset 多字段",
+      (readiness: MarketDirectContinuousTerminalEnergyReadiness) => {
+        (
+          readiness as unknown as Record<string, unknown>
+        ).forged = true;
+      },
+    ],
+    [
+      "真实生产承诺被完整遗漏但投影内部自洽",
+      (readiness: MarketDirectContinuousTerminalEnergyReadiness) => {
+        readiness.contributions =
+          readiness.contributions.filter(
+            (entry) =>
+              entry.kind !==
+              "terminal_production_commitment",
+          );
+        readiness.contributionCount =
+          readiness.contributions.length;
+        readiness.terminalScopedProductionEnergyCommitments = 0;
+        readiness.effectivePostDealEnergyReserve = 25_000;
+        readiness.marketTerminalEnergyTarget = 26_000;
+        readiness.desiredTerminalEnergy = 50_000;
+      },
+    ],
+    [
+      "contribution stable ID 重复",
+      (readiness: MarketDirectContinuousTerminalEnergyReadiness) => {
+        readiness.contributions.push({
+          ...readiness.contributions[0],
+        });
+        readiness.contributionCount =
+          readiness.contributions.length;
+        readiness.ordinaryTerminalEnergyTarget *= 2;
+      },
+    ],
+    [
+      "contribution 总计错误",
+      (readiness: MarketDirectContinuousTerminalEnergyReadiness) => {
+        readiness.terminalScopedProductionEnergyCommitments += 1;
+      },
+    ],
+    [
+      "desired terminal energy 错误",
+      (readiness: MarketDirectContinuousTerminalEnergyReadiness) => {
+        readiness.desiredTerminalEnergy -= 1;
+      },
+    ],
+  ])(
+    "v2 X %s 时 strict canonical readiness 保持零写",
+    (_label, mutate) => {
+      Game.time = RUN_TICK;
+      const state = acceptedXState();
+      const harness: RuntimeHarness = {
+        tick: RUN_TICK,
+        ordersByResource: {
+          [RESOURCE_CATALYST]: [
+            order(
+              "x-strict-readiness",
+              RESOURCE_CATALYST,
+              700,
+              1_000,
+              "E20S20",
+            ),
+          ],
+          [RESOURCE_HYDROGEN]: [],
+          [RESOURCE_ZYNTHIUM]: [],
+        },
+        effectivePostDealEnergyReserve: 45_000,
+        terminalEnergy: 50_000,
+        mutateMarketEnergyReadiness: mutate,
+      };
+      const dependencies = dependenciesFor(
+        harness,
+        state,
+      );
+
+      const result = runMarketDirectContinuousPlanning(
+        state,
+        automationInput(RUN_TICK),
+        dependencies,
+      );
+
+      expect(result.writes).toBe(0);
+      expect(result.rejectedByReason).toMatchObject({
+        "continuous_energy_readiness_invalid:base-x-e6n59-v1": 1,
+      });
+      expect(state.ledger.pending).toBeUndefined();
+      expect(
+        dependencies.executePrepared,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["terminal owner", { terminalOwned: false }],
+    ["terminal cooldown", { terminalCooldown: 1 }],
+    ["terminal energy", { terminalEnergy: 25_999 }],
+  ] as const)(
+    "v2 X %s 不满足 strict readiness 时保持零写",
+    (_label, terminalOverride) => {
+      Game.time = RUN_TICK;
+      const state = acceptedXState();
+      const harness: RuntimeHarness = {
+        tick: RUN_TICK,
+        ordersByResource: {
+          [RESOURCE_CATALYST]: [
+            order(
+              "x-terminal-strict-readiness",
+              RESOURCE_CATALYST,
+              700,
+              1_000,
+              "E20S20",
+            ),
+          ],
+          [RESOURCE_HYDROGEN]: [],
+          [RESOURCE_ZYNTHIUM]: [],
+        },
+        ...terminalOverride,
+      };
+
+      const result = runMarketDirectContinuousPlanning(
+        state,
+        automationInput(RUN_TICK),
+        dependenciesFor(harness, state),
+      );
+
+      expect(result.writes).toBe(0);
+      expect(
+        result.rejectedByReason[
+          "continuous_energy_readiness_invalid:base-x-e6n59-v1"
+        ] ||
+          result.rejectedByReason[
+            "continuous_lane_incomplete:base-x-e6n59-v1"
+          ],
+      ).toBe(1);
+    },
+  );
+
+  it.each([
+    [
+      "feed_planned",
+      "continuous_energy_readiness_feed_planned:base-x-e6n59-v1",
+    ],
+    [
+      "blocked",
+      "continuous_energy_readiness_blocked:base-x-e6n59-v1",
+    ],
+  ] as const)(
+    "v2 X readiness=%s 时保持零写",
+    (status, blocker) => {
+      Game.time = RUN_TICK;
+      const state = acceptedXState();
+      const harness: RuntimeHarness = {
+        tick: RUN_TICK,
+        ordersByResource: {
+          [RESOURCE_CATALYST]: [
+            order(
+              `x-readiness-${status}`,
+              RESOURCE_CATALYST,
+              700,
+              1_000,
+              "E20S20",
+            ),
+          ],
+          [RESOURCE_HYDROGEN]: [],
+          [RESOURCE_ZYNTHIUM]: [],
+        },
+        marketEnergyReadinessStatus: status,
+      };
+      const dependencies = dependenciesFor(harness, state);
+
+      const result = runMarketDirectContinuousPlanning(
+        state,
+        automationInput(RUN_TICK),
+        dependencies,
+      );
+
+      expect(result.writes).toBe(0);
+      expect(result.rejectedByReason).toMatchObject({
+        [blocker]: 1,
+      });
+      expect(state.ledger.pending).toBeUndefined();
+      expect(dependencies.executePrepared).not.toHaveBeenCalled();
+    },
+  );
+
+  it("v2 X 缺少 current ResourceControl readiness 投影时保持零写", () => {
+    Game.time = RUN_TICK;
+    const state = acceptedXState();
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-readiness-missing",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+        [RESOURCE_HYDROGEN]: [],
+        [RESOURCE_ZYNTHIUM]: [],
+      },
+      missingMarketEnergyReadiness: true,
+    };
+    const dependencies = dependenciesFor(harness, state);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toMatchObject({
+      "continuous_energy_readiness_missing:base-x-e6n59-v1": 1,
+    });
+    expect(state.ledger.pending).toBeUndefined();
+    expect(dependencies.executePrepared).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["order remaining", "order"],
     ["credits", "credits"],
     ["protection", "protection"],
     ["terminal", "terminal"],
+    ["effective reserve", "readiness"],
   ] as const)(
     "第二次完整读的 %s 变化时全局零写",
     (_label, mutation) => {
@@ -1358,7 +2194,7 @@ describe("Continuous Direct automation state and permits", () => {
         },
         secondReadMutation: mutation,
       };
-      const dependencies = dependenciesFor(harness);
+      const dependencies = dependenciesFor(harness, state);
 
       const result = runMarketDirectContinuousPlanning(
         state,
@@ -1368,11 +2204,15 @@ describe("Continuous Direct automation state and permits", () => {
 
       expect(result.writes).toBe(0);
       expect(result.planComplete).toBe(false);
+      const expectedBlocker =
+        mutation === "readiness"
+          ? "continuous_energy_readiness_invalid:base-x-e6n59-v1"
+          : "continuous_second_read_changed";
       expect(result.rejectedByReason).toMatchObject({
-        continuous_second_read_changed: 1,
+        [expectedBlocker]: 1,
       });
       expect(state.lastPlanningSnapshot?.blocker).toBe(
-        "continuous_second_read_changed",
+        expectedBlocker,
       );
       expect(state.ledger.pending).toBeUndefined();
       expect(dependencies.executePrepared).not.toHaveBeenCalled();
@@ -1475,7 +2315,7 @@ describe("Continuous Direct automation state and permits", () => {
       };
       const input = automationInput(RUN_TICK);
       configure(input, harness);
-      const dependencies = dependenciesFor(harness);
+      const dependencies = dependenciesFor(harness, state);
 
       const result = runMarketDirectContinuousPlanning(
         state,
@@ -1525,7 +2365,7 @@ describe("Continuous Direct automation state and permits", () => {
     input.candidates.find(
       (entry) => entry.resourceType === RESOURCE_HYDROGEN,
     )!.historyTrusted = false;
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     const result = runMarketDirectContinuousPlanning(
       state,
@@ -1564,7 +2404,7 @@ describe("Continuous Direct automation state and permits", () => {
     input.candidates.find(
       (entry) => entry.resourceType === RESOURCE_HYDROGEN,
     )!.effectiveEnergyShadowPrice = 21;
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     const result = runMarketDirectContinuousPlanning(
       state,
@@ -1599,7 +2439,7 @@ describe("Continuous Direct automation state and permits", () => {
         [RESOURCE_ZYNTHIUM]: [],
       },
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     const result = runMarketDirectContinuousPlanning(
       state,
@@ -1660,7 +2500,7 @@ describe("Continuous Direct automation state and permits", () => {
       },
       secondReadMutation: "shadow_order",
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     const result = runMarketDirectContinuousPlanning(
       state,
@@ -1711,7 +2551,7 @@ describe("Continuous Direct automation state and permits", () => {
       productionIntent: true,
       scopedProtectionBlockedResource: RESOURCE_HYDROGEN,
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     const result = runMarketDirectContinuousPlanning(
       state,
@@ -1765,7 +2605,7 @@ describe("Continuous Direct automation state and permits", () => {
       },
       onRelease: () => events.push("release-after-finalize"),
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     const planned = runMarketDirectContinuousPlanning(
       state,
@@ -1889,7 +2729,7 @@ describe("Continuous Direct automation state and permits", () => {
       },
       executeResult: OK,
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     expect(
       runMarketDirectContinuousPlanning(
@@ -2015,7 +2855,7 @@ describe("Continuous Direct automation state and permits", () => {
       },
       executeResult: OK,
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     expect(
       runMarketDirectContinuousPlanning(
@@ -2122,7 +2962,7 @@ describe("Continuous Direct automation state and permits", () => {
         events.push("release");
       },
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     const result = runMarketDirectContinuousPlanning(
       state,
@@ -2176,7 +3016,7 @@ describe("Continuous Direct automation state and permits", () => {
         ],
       },
     };
-    const dependencies = dependenciesFor(harness);
+    const dependencies = dependenciesFor(harness, state);
 
     for (let cycle = 1; cycle <= 100; cycle += 1) {
       const tick = RUN_TICK + cycle;
@@ -2267,7 +3107,7 @@ describe("Continuous Direct automation state and permits", () => {
         },
       };
       configure(harness);
-      const dependencies = dependenciesFor(harness);
+      const dependencies = dependenciesFor(harness, state);
 
       const result = runMarketDirectContinuousPlanning(
         state,

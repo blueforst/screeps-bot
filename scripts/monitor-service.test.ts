@@ -1,17 +1,29 @@
-import { execFileSync } from "node:child_process";
+import {
+  execFileSync,
+  spawnSync,
+} from "node:child_process";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(__dirname, "..");
 const MONITOR_SCRIPT = resolve(REPO_ROOT, "scripts/monitor-service.mjs");
 
-function readFixtureProjection(fixtureName: string): Record<string, any> {
+function executeFixture(
+  fixturePath: string,
+): { output: string; payload: Record<string, any> } {
   const output = execFileSync(
     process.execPath,
     [
       MONITOR_SCRIPT,
       "--once",
       "--memory-fixture",
-      resolve(REPO_ROOT, `scripts/fixtures/${fixtureName}`),
+      fixturePath,
       "--segment-id",
       "off",
       "--output",
@@ -27,7 +39,16 @@ function readFixtureProjection(fixtureName: string): Record<string, any> {
   if (jsonStart < 0) {
     throw new Error(`monitor CLI 未输出 JSON: ${output}`);
   }
-  return JSON.parse(output.slice(jsonStart + 1));
+  return {
+    output,
+    payload: JSON.parse(output.slice(jsonStart + 1)),
+  };
+}
+
+function readFixtureProjection(fixtureName: string): Record<string, any> {
+  return executeFixture(
+    resolve(REPO_ROOT, `scripts/fixtures/${fixtureName}`),
+  ).payload;
 }
 
 describe("monitor-service ResourceControl terminal headroom projection", () => {
@@ -125,8 +146,181 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
         stickyHeadroomReason: null,
         capacityReservation: null,
         staging: null,
+        marketEnergyReadiness: null,
       }),
     );
+  });
+});
+
+describe("monitor-service Hub protection projection", () => {
+  test("投影 attempt 与 committed component marker，并验证同 revision", () => {
+    const payload = readFixtureProjection(
+      "market-sale-continuous-monitor.json",
+    );
+    const hub = payload.memory.hub;
+
+    expect(hub.protectionAttempt).toEqual({
+      attemptRevision: 17,
+      configIncarnation: 3,
+      startedAt: 50000,
+      finishedAt: 50001,
+      configFingerprint: "hubcfg-v1:stable",
+      status: "committed",
+      valid: true,
+      reason: null,
+    });
+    expect(hub.committedProtectionMarker).toEqual(
+      expect.objectContaining({
+        schema: "hub-protection-snapshot-v1",
+        planRevision: 17,
+        configIncarnation: 3,
+        observedAt: 50001,
+        expiresAt: 50011,
+        configFingerprint: "hubcfg-v1:stable",
+        status: "committed",
+        valid: true,
+        consistent: true,
+        marker: {
+          revision: 17,
+          configIncarnation: 3,
+          configFingerprint: "hubcfg-v1:stable",
+          hubRoomName: "E6N59",
+          planMode: "distributed",
+        },
+      }),
+    );
+    expect(
+      hub.committedProtectionMarker.components,
+    ).toEqual({
+      synthesisConfig: {
+        revision: 17,
+        configIncarnation: 3,
+        configFingerprint: "hubcfg-v1:stable",
+      },
+      transferTasks: {
+        revision: 17,
+        configIncarnation: 3,
+        configFingerprint: "hubcfg-v1:stable",
+      },
+      distributed: {
+        revision: 17,
+        configIncarnation: 3,
+        configFingerprint: "hubcfg-v1:stable",
+      },
+      baseMineralSurplus: {
+        revision: 17,
+        configIncarnation: 3,
+        configFingerprint: "hubcfg-v1:stable",
+      },
+    });
+  });
+
+  test("旧 Hub analytics 缺保护字段时返回 null", () => {
+    const payload = readFixtureProjection(
+      "resource-control-monitor.json",
+    );
+    expect(payload.memory.hub).toEqual(
+      expect.objectContaining({
+        protectionAttempt: null,
+        committedProtectionMarker: null,
+      }),
+    );
+  });
+
+  test("损坏 Memory 的超长字符串与整行日志均被硬截断", () => {
+    const sourcePath = resolve(
+      REPO_ROOT,
+      "scripts/fixtures/market-sale-continuous-monitor.json",
+    );
+    const fixture = JSON.parse(
+      readFileSync(sourcePath, "utf8"),
+    ) as Record<string, any>;
+    const oversized = "x".repeat(8_192);
+    fixture.analytics.hub.protectionAttempt.reason =
+      oversized;
+    const baseResourceV3 =
+      fixture.data.marketSaleAutomation.directAutomation
+        .baseResourceV3;
+    baseResourceV3.scope.accountIdentity = oversized;
+    baseResourceV3.catalog.resources[0] = oversized;
+    baseResourceV3.lastPlanningSnapshot.blocker =
+      oversized;
+    baseResourceV3.blocker = oversized;
+    baseResourceV3.quotaProjection.lanes = {
+      [oversized]: {
+        limit: 1,
+        confirmed: 0,
+        reserved: 0,
+        used: 0,
+        remaining: 1,
+      },
+    };
+    fixture.runtime.marketSaleAutomation.direct.entries[0]
+      .resourceType = oversized;
+
+    const temporaryDirectory = mkdtempSync(
+      resolve(tmpdir(), "screeps-monitor-bounds-"),
+    );
+    const fixturePath = resolve(
+      temporaryDirectory,
+      "fixture.json",
+    );
+    try {
+      writeFileSync(
+        fixturePath,
+        JSON.stringify(fixture),
+        "utf8",
+      );
+      const { payload } = executeFixture(fixturePath);
+      const hub = payload.memory.hub;
+      const base =
+        payload.memory.marketSaleAutomation.direct
+          .baseResourceV3;
+      expect(hub.protectionAttempt.reason).toHaveLength(256);
+      expect(base.roster.accountIdentity).toHaveLength(256);
+      expect(base.catalog.resources.values[6]).toHaveLength(
+        256,
+      );
+      expect(base.planning.blocker).toHaveLength(256);
+      expect(base.blocker.code).toHaveLength(256);
+      expect(
+        Object.keys(base.quota.lanes.samples)[0],
+      ).toHaveLength(256);
+
+      const service = spawnSync(
+        process.execPath,
+        [
+          MONITOR_SCRIPT,
+          "--memory-fixture",
+          fixturePath,
+          "--segment-id",
+          "off",
+          "--output",
+          "off",
+          "--no-http",
+        ],
+        {
+          cwd: REPO_ROOT,
+          encoding: "utf8",
+          timeout: 1_000,
+        },
+      );
+      const memoryLogLine = service.stdout
+        .split("\n")
+        .find((line) =>
+          line.startsWith("[monitor][memory]"),
+        );
+      expect(memoryLogLine).toBeDefined();
+      expect(memoryLogLine!.length).toBeLessThanOrEqual(4_096);
+      expect(
+        memoryLogLine!.endsWith(" …[truncated]"),
+      ).toBe(true);
+    } finally {
+      rmSync(temporaryDirectory, {
+        recursive: true,
+        force: true,
+      });
+    }
   });
 });
 
@@ -240,6 +434,7 @@ describe("monitor-service market sale automation projection", () => {
 
     expect(direct).toEqual({
       available: true,
+      baseResourceV3: null,
       strategyActive: true,
       shadowConsecutiveCycles: 42,
       qualifiedAt: null,
@@ -493,6 +688,87 @@ describe("monitor-service market sale automation projection", () => {
         },
       }),
     );
+
+    expect(direct.baseResourceV3).toEqual(
+      expect.objectContaining({
+        schemaVersion: 3,
+        catalog: {
+          revision: "base-mineral-v1",
+          configRevision: "market-base-resource-v3-r1",
+          resources: {
+            total: 7,
+            values: ["H", "K", "L", "O", "U", "X", "Z"],
+            truncated: false,
+          },
+        },
+        roster: expect.objectContaining({
+          updatedAt: 50003,
+          rosterFingerprint: "roster-v3",
+          laneSetFingerprint: "lane-set-v3",
+          roomCount: 2,
+          truncated: false,
+        }),
+        lifecycle: expect.objectContaining({
+          total: 2,
+          truncated: false,
+        }),
+        permit: expect.objectContaining({
+          currentPermitEpoch: 65,
+          currentPermitId: "mbr-permit-v3:65:current",
+          totalChainLength: 65,
+          retainedPermitCount: 1,
+          legacyV2GrantSuspended: true,
+          prefix: {
+            prunedThroughEpoch: 1,
+            referencedPermitBindingCount: 1,
+            prefixCommitment: "prefix-commitment-1",
+          },
+        }),
+        quota: expect.objectContaining({
+          revision: "quota-v3",
+          global: {
+            limit: 12000,
+            confirmed: 11000,
+            reserved: 0,
+            used: 11000,
+            remaining: 1000,
+          },
+        }),
+        readinessAuthorization: expect.objectContaining({
+          schemaVersion: 3,
+          validated: true,
+          status: "authorized",
+          roomCount: 1,
+          truncated: false,
+        }),
+        planning: expect.objectContaining({
+          complete: false,
+          blocker: "market_base_cpu_ceiling_exceeded",
+          cpuUsed: 25.4,
+          transactionCostEvaluationBudget: 1024,
+        }),
+        blocker: null,
+      }),
+    );
+
+    const resourceControl = payload.memory.resourceControl;
+    expect(resourceControl.rooms).toEqual([
+      expect.objectContaining({
+        roomName: "E6N59",
+        marketEnergyReadiness: expect.objectContaining({
+          schemaVersion: 3,
+          authorizationRevision: "readiness-v3",
+          terminalId: "terminal-e6",
+          authorized: true,
+          effectivePostDealEnergyReserve: 25000,
+          marketTerminalEnergyTarget: 26000,
+          desiredTerminalEnergy: 26000,
+          plannedFeedAmount: 1000,
+          status: "feed_planned",
+          blocker: null,
+        }),
+      }),
+    ]);
   });
 
 });

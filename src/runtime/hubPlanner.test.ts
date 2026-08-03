@@ -35,6 +35,7 @@ import type {
   DirectRouteDecision,
   ProgressEdge,
 } from "@/runtime/hubPlanner";
+import type { HubRuntimeProtectionExtension } from "@/runtime/hubProtectionSnapshot";
 
 describe("hubPlanner defaults", () => {
   describe("getDefaultHubConfig", () => {
@@ -487,12 +488,25 @@ describe("runHubPlanner", () => {
     expect(Memory.runtime.hub.updatedAt).toBe(0);
   });
 
-  it("no-ops when off cadence and needsPlan=false", () => {
+  it("forces the first plan off cadence when the config marker is missing", () => {
     Game.time = 7;
     Memory.runtime.hub.needsPlan = false;
-    const beforeUpdatedAt = Memory.runtime.hub.updatedAt;
+    Game.rooms[HUB_ROOM] = createHubRoom({
+      hasStorage: true,
+      hasTerminal: true,
+      labCount: 3,
+    });
+
     runHubPlanner();
-    expect(Memory.runtime.hub.updatedAt).toBe(beforeUpdatedAt);
+
+    const protection = Memory.runtime.hub as typeof Memory.runtime.hub &
+      HubRuntimeProtectionExtension;
+    expect(Memory.runtime.hub.updatedAt).toBe(7);
+    expect(protection.committedProtectionSnapshot).toMatchObject({
+      valid: true,
+      status: "committed",
+      configIncarnation: 1,
+    });
   });
 
   it("runs on cadence (Game.time % planInterval === 0)", () => {
@@ -520,6 +534,30 @@ describe("runHubPlanner", () => {
     Game.rooms[HUB_ROOM] = room;
     runHubPlanner();
     expect(Memory.runtime.hub.status).toBe("blocked");
+    const protection = Memory.runtime.hub as typeof Memory.runtime.hub &
+      HubRuntimeProtectionExtension;
+    expect(protection.protectionAttemptHighWater).toBe(1);
+    expect(protection.currentProtectionAttempt).toEqual(
+      expect.objectContaining({
+        attemptRevision: 1,
+        status: "blocked",
+        valid: false,
+        reason: "hub_terminal_missing",
+      }),
+    );
+    expect(protection.committedProtectionSnapshot).toEqual(
+      expect.objectContaining({
+        planRevision: 1,
+        status: "blocked",
+        valid: false,
+        distributed: expect.objectContaining({
+          dispatchAssignments: [],
+          allocationLedger: {},
+          routeDecisions: [],
+        }),
+      }),
+    );
+    expect(Memory.runtime.hub.marketSellSurplus).toEqual({});
   });
 
   it("is blocked when hub room has no storage", () => {
@@ -560,6 +598,114 @@ describe("runHubPlanner", () => {
       expect(typeof Memory.runtime.hub.activeProduct).toBe("string");
       expect(Memory.runtime.hub.activeProduct.length).toBeGreaterThan(0);
     }
+    const protection = Memory.runtime.hub as typeof Memory.runtime.hub &
+      HubRuntimeProtectionExtension;
+    expect(protection.currentProtectionAttempt).toEqual(
+      expect.objectContaining({
+        status: "committed",
+        valid: true,
+      }),
+    );
+    expect(protection.committedProtectionSnapshot).toEqual(
+      expect.objectContaining({
+        status: "committed",
+        valid: true,
+      }),
+    );
+  });
+
+  it("forces fresh plans across A→B→A and disable→reenable config incarnations", () => {
+    const room = createHubRoom({
+      hasStorage: true,
+      hasTerminal: true,
+      labCount: 3,
+    });
+    Game.rooms[HUB_ROOM] = room;
+    Game.time = PLAN_INTERVAL;
+
+    runHubPlanner();
+
+    const protection = Memory.runtime.hub as typeof Memory.runtime.hub &
+      HubRuntimeProtectionExtension;
+    const first = protection.committedProtectionSnapshot!;
+    expect(first.valid).toBe(true);
+
+    Game.time += 1;
+    Memory.cfg!.hub!.surplusThreshold = 2_000;
+    runHubPlanner();
+    const second = protection.committedProtectionSnapshot!;
+    expect(second.valid).toBe(true);
+    expect(second.planRevision).toBe(first.planRevision + 1);
+    expect(second.configIncarnation).toBe(first.configIncarnation + 1);
+
+    Game.time += 1;
+    Memory.cfg!.hub!.surplusThreshold = 1_500;
+    runHubPlanner();
+    const third = protection.committedProtectionSnapshot!;
+    expect(third.valid).toBe(true);
+    expect(third.planRevision).toBe(second.planRevision + 1);
+    expect(third.configIncarnation).toBe(second.configIncarnation + 1);
+    expect(third).not.toBe(first);
+
+    Game.time += 1;
+    Memory.cfg!.hub!.enabled = false;
+    runHubPlanner();
+    const disabled = protection.committedProtectionSnapshot!;
+    expect(disabled).toMatchObject({
+      valid: false,
+      status: "blocked",
+      failureReason: "hub_disabled",
+      planRevision: third.planRevision + 1,
+      configIncarnation: third.configIncarnation + 1,
+    });
+
+    Game.time += 1;
+    Memory.cfg!.hub!.enabled = true;
+    runHubPlanner();
+    const reenabled = protection.committedProtectionSnapshot!;
+    expect(reenabled.valid).toBe(true);
+    expect(reenabled.planRevision).toBe(disabled.planRevision + 1);
+    expect(reenabled.configIncarnation).toBe(
+      disabled.configIncarnation + 1,
+    );
+    expect(protection.protectionConfigIncarnationHighWater).toBe(
+      reenabled.configIncarnation,
+    );
+  });
+
+  it("turns a planner throw into a failed invalid-empty snapshot", () => {
+    Game.time = PLAN_INTERVAL;
+    const room = createHubRoom({
+      hasStorage: true,
+      hasTerminal: true,
+      labCount: 3,
+    });
+    room.find = (() => {
+      throw new Error("fixture_cpu_cut");
+    }) as Room["find"];
+    Game.rooms[HUB_ROOM] = room;
+
+    expect(() => runHubPlanner()).not.toThrow();
+
+    const protection = Memory.runtime.hub as typeof Memory.runtime.hub &
+      HubRuntimeProtectionExtension;
+    expect(protection.currentProtectionAttempt).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        valid: false,
+        reason: "fixture_cpu_cut",
+      }),
+    );
+    expect(protection.committedProtectionSnapshot).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        valid: false,
+        baseMineralSurplus: expect.objectContaining({
+          byRoom: { [HUB_ROOM]: {} },
+        }),
+      }),
+    );
+    expect(Memory.runtime.hub.marketSellSurplus).toEqual({});
   });
 
   it("uses distributed synthesis when hub-only inventory lacks base reagents", () => {
@@ -2883,17 +3029,20 @@ describe("runHubPlanner – out-of-cadence regression", () => {
     expect(scConfig!.reactions[0].product).toBe(Memory.runtime.hub.activeProduct);
   });
 
-  it("does NOT run when off cadence and needsPlan=false", () => {
+  it("does not rerun off cadence after the config incarnation has been planned", () => {
     Memory.runtime.hub.needsPlan = false;
 
     const room = createHubRoom({ hasStorage: true, hasTerminal: true, labCount: 3 });
     Game.rooms[HUB_ROOM] = room;
 
+    Game.time = PLAN_INTERVAL;
+    runHubPlanner();
     const beforeUpdatedAt = Memory.runtime.hub.updatedAt;
+    Game.time = PLAN_INTERVAL + 7;
     runHubPlanner();
 
     expect(Memory.runtime.hub.updatedAt).toBe(beforeUpdatedAt);
-    expect(Memory.runtime.hub.status).toBe("idle");
+    expect(Memory.runtime.hub.updatedAt).toBe(PLAN_INTERVAL);
   });
 });
 
@@ -7183,10 +7332,10 @@ describe("planHubImports: local reserve and direct-supply protection", () => {
 });
 
 // ---------------------------------------------------------------------------
-// computeAndStoreMarketSellSurplus tests (tested via runHubPlanner)
+// 已提交基础矿 surplus 测试（通过 runHubPlanner 验证）
 // ---------------------------------------------------------------------------
 
-describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
+describe("committed Hub marketSellSurplus (via runHubPlanner)", () => {
   const SURPLUS_HUB = "S1N1";
   const PLAN_INTERVAL = 50;
 
@@ -7266,9 +7415,7 @@ describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
     } as unknown as Room;
   }
 
-  it("T3 compound above chainTarget creates surplus entry", () => {
-    // hubReservePerCompound=20000, no satellites → chainTarget=20000
-    // Hub has 25000 XUH2O → sellable = 25000 - 20000 = 5000
+  it("never publishes T3 compound surplus even when above chainTarget", () => {
     Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
       [RESOURCE_CATALYZED_UTRIUM_ACID]: 25000,
     });
@@ -7277,7 +7424,7 @@ describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
 
     const surplus = Memory.runtime.hub.marketSellSurplus;
     expect(surplus).toBeDefined();
-    expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBe(5000);
+    expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBeUndefined();
   });
 
   it("T3 compound at chainTarget creates no surplus entry", () => {
@@ -7340,10 +7487,7 @@ describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
     expect(surplus![RESOURCE_OPS]).toBeUndefined();
   });
 
-  it("outgoing transfer amounts reduce surplus", () => {
-    // Hub has 25000 XUH2O, chainTarget=20000 → would be 5000 surplus
-    // But create an outgoing transfer of 3000 XUH2O
-    // Effective = 25000 - 3000 = 22000, surplus = 22000 - 20000 = 2000
+  it("outgoing T3 transfer still cannot create legacy T3 surplus", () => {
     Game.rooms[SURPLUS_HUB] = createSurplusHubRoom({
       [RESOURCE_CATALYZED_UTRIUM_ACID]: 25000,
     });
@@ -7355,7 +7499,7 @@ describe("computeAndStoreMarketSellSurplus (via runHubPlanner)", () => {
 
     const surplus = Memory.runtime.hub.marketSellSurplus;
     expect(surplus).toBeDefined();
-    expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBe(2000);
+    expect(surplus![RESOURCE_CATALYZED_UTRIUM_ACID]).toBeUndefined();
   });
 });
 

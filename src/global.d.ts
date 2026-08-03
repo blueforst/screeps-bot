@@ -1,6 +1,10 @@
 import type { LoDashStatic } from "lodash";
 import type { CreepApi, CreepConfig, RoleName, RoomType } from "@/types/system";
 import type { HubProgressSnapshot } from "@/runtime/hubProgress";
+import type {
+  HubCommittedProtectionSnapshot,
+  HubProtectionAttempt,
+} from "@/runtime/hubProtectionSnapshot";
 import type { RemoteMiningTask } from "@/runtime/remoteMining";
 import type {
   SynthesisRoomCapability,
@@ -28,6 +32,17 @@ import type {
   MarketAccountClaim,
   MarketActionJournalEntry,
 } from "@/runtime/marketActionArbiter";
+import type {
+  MarketTerminalEnergyReadinessObservation,
+} from "@/runtime/resourceControl";
+import type {
+  MarketBaseResourceV3RuntimeState,
+} from "@/runtime/marketBaseResourceAutomation";
+import type {
+  MarketBaseResourceActivationAnchor,
+  MarketBaseResourceContinuousReviewSnapshot,
+  MarketBaseResourcePermitRequest,
+} from "@/runtime/marketSaleAutomation";
 
 declare const _: LoDashStatic;
 
@@ -133,6 +148,27 @@ declare global {
       })
     | undefined;
   var marketDirectContinuousStatus:
+    | (() => unknown)
+    | undefined;
+  var proposeMarketBaseResourcePermit:
+    | ((
+        request?: MarketBaseResourcePermitRequest,
+      ) => {
+        ok: boolean;
+        error?: string;
+        [key: string]: unknown;
+      })
+    | undefined;
+  var acceptMarketBaseResourcePermit:
+    | ((
+        proposalId: string,
+      ) => {
+        ok: boolean;
+        error?: string;
+        [key: string]: unknown;
+      })
+    | undefined;
+  var marketBaseResourceStatus:
     | (() => unknown)
     | undefined;
   var spawnMaxCarrier: (roomName: string) =>
@@ -593,7 +629,10 @@ declare global {
       };
       marketSaleAutomation?: {
         mode?: "off" | "shadow" | "maker" | "direct" | "hybrid" | "emergencyStop";
-        directCapability?: "legacy-canary" | "continuous-v2";
+        directCapability?:
+          | "legacy-canary"
+          | "continuous-v2"
+          | "continuous-v3";
         shadowStrategy?: "maker" | "direct";
         configRevision?: string;
         sellResources?: ResourceConstant[];
@@ -917,6 +956,7 @@ declare global {
                 >
               >;
             };
+            marketEnergyReadiness?: MarketTerminalEnergyReadinessObservation;
           }
         >;
         lastActions: string[];
@@ -1210,6 +1250,9 @@ declare global {
         lastPlanTick?: number;
         lastError?: string;
         marketSellSurplus?: Partial<Record<ResourceConstant, number>>;
+        protectionAttemptHighWater?: number;
+        currentProtectionAttempt?: HubProtectionAttempt;
+        committedProtectionSnapshot?: HubCommittedProtectionSnapshot;
         distributedSynthesis?: {
           roomCapabilities?: Record<string, SynthesisRoomCapability>;
           dispatchAssignments?: SynthesisDispatchAssignment[];
@@ -1388,7 +1431,9 @@ declare global {
         }>;
         directAutomation?:
           | DirectAutomationState
-          | MarketDirectContinuousAutomationState;
+          | (MarketDirectContinuousAutomationState & {
+              baseResourceV3?: MarketBaseResourceV3RuntimeState;
+            });
         pendingDirectDeals?: Record<
           string,
           Partial<PendingDirectDeal> | ContinuousPendingProjection
@@ -1397,6 +1442,25 @@ declare global {
         marketReservations?: Record<string, { amount: number }>;
         directMarketClaim?: MarketAccountClaim;
         marketActionJournal?: MarketActionJournalEntry[];
+        baseResourceV3ActivationAnchor?: MarketBaseResourceActivationAnchor;
+        baseResourceV3ActivationAnchorMirror?: MarketBaseResourceActivationAnchor;
+        baseResourceV3ActivationBlocker?: {
+          schemaVersion: 1;
+          hashRevision: "market-base-resource-activation-blocker-v1";
+          code: string;
+          detectedAt: number;
+          detailHash: string;
+        };
+        baseResourceV3ProposedContinuousReview?: {
+          proposalId: string;
+          snapshots: readonly MarketBaseResourceContinuousReviewSnapshot[];
+        };
+        baseResourceV3ProposedTransition?: {
+          proposalId: string;
+          laneId: string;
+          targetStage: "canary" | "continuous" | "suspend";
+          transitionLaneIds: readonly string[];
+        };
       };
       resourceControl?: {
         taskSchemaVersion?: number;
@@ -1639,52 +1703,7 @@ declare global {
       };
       /** CPU Monitor v2 (canonical). Legacy moduleCpu kept during migration. */
       cpuMonitor?: CpuMonitorMemoryV2;
-      hub?: {
-        updatedAt: number;
-        enabled: boolean;
-        hubRoomName: string;
-        hubRoomVisible: boolean;
-        status: string | null;
-        stage: string | null;
-        activeProduct: string | null;
-        lastPlanActions: string[];
-        missingResources: string[];
-        lastError: string | null;
-        needsPlan: boolean;
-        hubStorageEnergy: number;
-        hubTerminalEnergy: number;
-        hubInventory: Record<string, number>;
-        pendingImports: number;
-        pendingReclaims: number;
-        pendingExports: number;
-        pendingTasks: Array<{
-          resource: string;
-          from: string;
-          to: string;
-          remaining: number;
-          reason: string;
-        }>;
-        roomTerminalBlockers: Array<{
-          room: string;
-          terminalEnergy: number;
-          reserve: number;
-          pendingNonEnergy: number;
-        }>;
-        productionRooms: Array<{
-          roomName: string;
-          product: ResourceConstant;
-          stage: string;
-          progressPercent: number;
-          currentAmount: number;
-          targetAmount: number;
-          isHubRoom: boolean;
-          upstream: Array<{ roomName: string; resource: ResourceConstant }>;
-          downstream: Array<{ roomName: string; resource: ResourceConstant }>;
-          directSupplyAmount: number;
-          hubSurplusAmount: number;
-          blocker: string | null;
-        }>;
-      };
+      hub?: HubProgressSnapshot;
     };
   }
 

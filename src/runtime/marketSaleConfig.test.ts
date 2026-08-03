@@ -1,9 +1,12 @@
 import {
   directSafetyFingerprint,
   enforceLegacyMarketSafetyLatch,
+  MARKET_BASE_RESOURCE_CONFIG_REVISION,
+  MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
   MARKET_DIRECT_CANARY_POLICY,
   MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION,
   MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
+  marketBaseResourceV3ConfigMismatchReasons,
   marketDirectContinuousConfigMismatchReasons,
   resolveMarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
@@ -130,6 +133,70 @@ describe("marketSaleConfig", () => {
     };
   }
 
+  function validBaseResourceV3Raw(): Record<string, unknown> {
+    return {
+      mode: "direct",
+      directCapability: "continuous-v3",
+      configRevision: MARKET_BASE_RESOURCE_CONFIG_REVISION,
+      sellResources: [
+        RESOURCE_HYDROGEN,
+        RESOURCE_OXYGEN,
+        RESOURCE_UTRIUM,
+        RESOURCE_LEMERGIUM,
+        RESOURCE_KEANIUM,
+        RESOURCE_ZYNTHIUM,
+        RESOURCE_CATALYST,
+      ],
+      hardFloor: {
+        [RESOURCE_HYDROGEN]: 428,
+        [RESOURCE_OXYGEN]: 138,
+        [RESOURCE_UTRIUM]: 44,
+        [RESOURCE_LEMERGIUM]: 161,
+        [RESOURCE_KEANIUM]: 96,
+        [RESOURCE_ZYNTHIUM]: 43,
+        [RESOURCE_CATALYST]: 600,
+      },
+      economicFloor: {
+        [RESOURCE_HYDROGEN]: 451,
+        [RESOURCE_OXYGEN]: 145,
+        [RESOURCE_UTRIUM]: 46,
+        [RESOURCE_LEMERGIUM]: 169,
+        [RESOURCE_KEANIUM]: 101,
+        [RESOURCE_ZYNTHIUM]: 45,
+        [RESOURCE_CATALYST]: 600,
+      },
+      forecastBuffer: {
+        [RESOURCE_HYDROGEN]: 100_000,
+        [RESOURCE_OXYGEN]: 100_000,
+        [RESOURCE_UTRIUM]: 100_000,
+        [RESOURCE_LEMERGIUM]: 100_000,
+        [RESOURCE_KEANIUM]: 100_000,
+        [RESOURCE_ZYNTHIUM]: 100_000,
+        [RESOURCE_CATALYST]: 100_000,
+      },
+      minDealAmount: 1_000,
+      makerBatchAmount: 5_000,
+      creditReserve: 0,
+      terminalEnergyReserve: 25_000,
+      maxDirectDealAmount: 1_000,
+      maxDirectDealsPerCycle: 1,
+      minDirectOrderAmount: 1_000,
+      minDirectOrderNotional: 600_000,
+      maxDirectRawOrdersScannedPerCycle: 1_000,
+      maxDirectEligibleOrdersPricedPerCycle: 200,
+      maxDirectTransactionEnergy: 1_000,
+      directCanaryMaxConfirmedDeals: 1,
+      energyShadowHardFloor: 20,
+      planningSnapshotMaxAgeTicks: 10,
+      minHistoryDays: 7,
+      minHistoryTransactions: 100,
+      minHistoryVolume: 100_000,
+      historyFloorRatio: 0.95,
+      historyMaxAgeDays: 2,
+      canary: { enabled: true, allowExpansion: false },
+    };
+  }
+
   it("Direct Shadow 与 active Direct 接受同一首发安全合同", () => {
     const shadow = resolveMarketSaleAutomationConfig(validDirectRaw());
     const active = resolveMarketSaleAutomationConfig(validDirectRaw("direct"));
@@ -156,6 +223,79 @@ describe("marketSaleConfig", () => {
     );
     expect(directSafetyFingerprint(config)).toContain(
       MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
+    );
+  });
+
+  it("Continuous v3 接受七资源任意排列并规范化为 H/K/L/O/U/X/Z", () => {
+    const config = resolveMarketSaleAutomationConfig(
+      validBaseResourceV3Raw(),
+    );
+
+    expect(config.directCapability).toBe("continuous-v3");
+    expect(config.sellResources).toEqual([
+      RESOURCE_HYDROGEN,
+      RESOURCE_KEANIUM,
+      RESOURCE_LEMERGIUM,
+      RESOURCE_OXYGEN,
+      RESOURCE_UTRIUM,
+      RESOURCE_CATALYST,
+      RESOURCE_ZYNTHIUM,
+    ]);
+    expect(config.validForPlanning).toBe(true);
+    expect(config.invalidReasons).toEqual([]);
+    expect(marketBaseResourceV3ConfigMismatchReasons(config)).toEqual(
+      [],
+    );
+    expect(directSafetyFingerprint(config)).toContain(
+      MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
+    );
+  });
+
+  it.each([
+    ["Power", RESOURCE_POWER],
+    ["G", RESOURCE_GHODIUM],
+    ["T3", RESOURCE_CATALYZED_UTRIUM_ACID],
+  ])(
+    "Continuous v3 混入 %s 时不得静默过滤为合法 catalog",
+    (_label, forbidden) => {
+      const raw = validBaseResourceV3Raw();
+      raw.sellResources = [
+        ...(raw.sellResources as ResourceConstant[]),
+        forbidden,
+      ];
+      const config = resolveMarketSaleAutomationConfig(raw);
+
+      expect(config.validForPlanning).toBe(false);
+      expect(config.sellResources).toEqual([]);
+      expect(config.invalidReasons).toContain(
+        `base_resource_sell_resource_forbidden:${forbidden}`,
+      );
+    },
+  );
+
+  it("Continuous v3 重复资源和额外 threshold key 整体 fail-closed", () => {
+    const duplicateRaw = validBaseResourceV3Raw();
+    duplicateRaw.sellResources = [
+      ...(duplicateRaw.sellResources as ResourceConstant[]),
+      RESOURCE_CATALYST,
+    ];
+    const duplicate = resolveMarketSaleAutomationConfig(duplicateRaw);
+    expect(duplicate.validForPlanning).toBe(false);
+    expect(duplicate.sellResources).toEqual([]);
+    expect(duplicate.invalidReasons).toContain(
+      `base_resource_sell_resource_duplicate:${RESOURCE_CATALYST}`,
+    );
+
+    const extraKeyRaw = validBaseResourceV3Raw();
+    extraKeyRaw.hardFloor = {
+      ...(extraKeyRaw.hardFloor as Record<string, number>),
+      [RESOURCE_POWER]: 999_999,
+    };
+    const extraKey = resolveMarketSaleAutomationConfig(extraKeyRaw);
+    expect(extraKey.validForPlanning).toBe(false);
+    expect(extraKey.sellResources).toEqual([]);
+    expect(extraKey.invalidReasons).toContain(
+      `base_resource_hardFloor_extra_key:${RESOURCE_POWER}`,
     );
   });
 

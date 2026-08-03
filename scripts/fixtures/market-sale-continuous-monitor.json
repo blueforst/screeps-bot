@@ -3,9 +3,286 @@
   "analytics": {
     "production": {
       "rooms": {}
+    },
+    "hub": {
+      "updatedAt": 50003,
+      "enabled": true,
+      "hubRoomName": "E6N59",
+      "hubRoomVisible": true,
+      "status": "idle",
+      "stage": null,
+      "activeProduct": null,
+      "missingResources": [],
+      "lastError": null,
+      "needsPlan": false,
+      "hubStorageEnergy": 400000,
+      "hubTerminalEnergy": 26000,
+      "hubInventory": {},
+      "pendingImports": 0,
+      "pendingReclaims": 0,
+      "pendingExports": 0,
+      "pendingTasks": [],
+      "roomTerminalBlockers": [],
+      "protectionAttempt": {
+        "attemptRevision": 17,
+        "configIncarnation": 3,
+        "startedAt": 50000,
+        "finishedAt": 50001,
+        "configFingerprint": "hubcfg-v1:stable",
+        "status": "committed",
+        "valid": true
+      },
+      "committedProtectionMarker": {
+        "schema": "hub-protection-snapshot-v1",
+        "planRevision": 17,
+        "configIncarnation": 3,
+        "observedAt": 50001,
+        "expiresAt": 50011,
+        "configFingerprint": "hubcfg-v1:stable",
+        "status": "committed",
+        "valid": true,
+        "marker": {
+          "revision": 17,
+          "configIncarnation": 3,
+          "configFingerprint": "hubcfg-v1:stable",
+          "hubRoomName": "E6N59",
+          "planMode": "distributed"
+        },
+        "components": {
+          "synthesisConfig": {
+            "revision": 17,
+            "configIncarnation": 3,
+            "configFingerprint": "hubcfg-v1:stable"
+          },
+          "transferTasks": {
+            "revision": 17,
+            "configIncarnation": 3,
+            "configFingerprint": "hubcfg-v1:stable"
+          },
+          "distributed": {
+            "revision": 17,
+            "configIncarnation": 3,
+            "configFingerprint": "hubcfg-v1:stable"
+          },
+          "baseMineralSurplus": {
+            "revision": 17,
+            "configIncarnation": 3,
+            "configFingerprint": "hubcfg-v1:stable"
+          }
+        }
+      }
+    }
+  },
+  "data": {
+    "marketSaleAutomation": {
+      "directAutomation": {
+        "baseResourceV3": {
+          "schemaVersion": 3,
+          "catalog": {
+            "revision": "base-mineral-v1",
+            "configRevision": "market-base-resource-v3-r1",
+            "resources": ["Z", "X", "U", "O", "L", "K", "H"]
+          },
+          "scope": {
+            "schemaVersion": 1,
+            "updatedAt": 50003,
+            "accountIdentity": "account:test",
+            "sharedPolicyFingerprint": "shared-policy-v3",
+            "rosterFingerprint": "roster-v3",
+            "laneSetFingerprint": "lane-set-v3",
+            "shadowCursor": "lane-x-e6",
+            "roomRegistry": {
+              "knownRoomNames": ["E7N57", "E6N59"]
+            },
+            "sellerRooms": [
+              {
+                "roomName": "E7N57",
+                "roomInstanceId": "room-e7-1",
+                "incarnation": 1,
+                "roomClass": "normal",
+                "terminalId": "terminal-e7",
+                "status": "admitted"
+              },
+              {
+                "roomName": "E6N59",
+                "roomInstanceId": "room-e6-1",
+                "incarnation": 1,
+                "roomClass": "hub",
+                "terminalId": "terminal-e6",
+                "status": "admitted"
+              }
+            ],
+            "laneLifecycles": [
+              {
+                "laneId": "lane-z-e7",
+                "resource": "Z",
+                "sellerRoomName": "E7N57",
+                "roomInstanceId": "room-e7-1",
+                "stage": "shadow",
+                "status": "suspended_shadow",
+                "shadowEvidence": {
+                  "completeCycles": 18,
+                  "lastCompleteTick": 50002
+                },
+                "stableFingerprint": "lane-z-fingerprint"
+              },
+              {
+                "laneId": "lane-x-e6",
+                "resource": "X",
+                "sellerRoomName": "E6N59",
+                "roomInstanceId": "room-e6-1",
+                "stage": "canary",
+                "status": "active",
+                "shadowEvidence": {
+                  "completeCycles": 100,
+                  "lastCompleteTick": 49999
+                },
+                "stableFingerprint": "lane-x-fingerprint"
+              }
+            ]
+          },
+          "permitChain": {
+            "schemaVersion": 3,
+            "hashRevision": "market-base-resource-permit-v1",
+            "currentPermitEpoch": 65,
+            "currentPermitId": "mbr-permit-v3:65:current",
+            "permitChainHead": "mbr-head-65",
+            "permitEpochHighWater": 65,
+            "totalChainLength": 65,
+            "legacyV2GrantSuspended": true,
+            "prefixCheckpoint": {
+              "prunedThroughEpoch": 1,
+              "referencedPermitBindings": [
+                { "permitId": "old-ref" }
+              ],
+              "prefixCommitment": "prefix-commitment-1"
+            },
+            "retainedPermits": [
+              {
+                "permitId": "mbr-permit-v3:65:current",
+                "signedLaneGrants": [
+                  {
+                    "laneId": "lane-x-e6",
+                    "roomInstanceId": "room-e6-1",
+                    "resource": "X",
+                    "stage": "canary",
+                    "status": "active",
+                    "newDealGrant": "canary"
+                  }
+                ]
+              }
+            ]
+          },
+          "quotaProjection": {
+            "observedAt": 50003,
+            "revision": "quota-v3",
+            "global": {
+              "limit": 12000,
+              "confirmed": 11000,
+              "reserved": 0,
+              "used": 11000,
+              "remaining": 1000
+            },
+            "resources": {
+              "X": {
+                "limit": 8000,
+                "confirmed": 7000,
+                "reserved": 0,
+                "used": 7000,
+                "remaining": 1000
+              }
+            },
+            "rooms": {
+              "E6N59": {
+                "limit": 5000,
+                "confirmed": 4000,
+                "reserved": 0,
+                "used": 4000,
+                "remaining": 1000
+              }
+            },
+            "lanes": {
+              "lane-x-e6": {
+                "limit": 3000,
+                "confirmed": 2000,
+                "reserved": 0,
+                "used": 2000,
+                "remaining": 1000
+              }
+            },
+            "confirmedCooldownNotBefore": 51000,
+            "retryNotBefore": 0
+          },
+          "readinessAuthorization": {
+            "schemaVersion": 3,
+            "validated": true,
+            "status": "authorized",
+            "revision": "readiness-v3",
+            "updatedAt": 50003,
+            "expiresAt": 50003,
+            "maxTransactionEnergy": 1000,
+            "sourcePermitVersion": 3,
+            "rooms": [
+              {
+                "roomName": "E6N59",
+                "roomInstanceId": "room-e6-1",
+                "terminalId": "terminal-e6",
+                "status": "authorized"
+              }
+            ]
+          },
+          "lastPlanningSnapshot": {
+            "observedAt": 50003,
+            "complete": false,
+            "blocker": "market_base_cpu_ceiling_exceeded",
+            "cpuUsed": 25.4,
+            "rawOrderCount": 700,
+            "eligibleOrderCount": 80,
+            "distinctOrderRoomCount": 32,
+            "transactionCostEvaluationBudget": 1024,
+            "sampledShadowLaneIds": ["lane-z-e7"]
+          }
+        }
+      }
     }
   },
   "runtime": {
+    "resourceControl": {
+      "updatedAt": 50003,
+      "rooms": {
+        "E6N59": {
+          "state": "export",
+          "capacityState": "normal",
+          "storageEnergy": 300000,
+          "terminalEnergy": 25000,
+          "energyFloor": 120000,
+          "energyTarget": 200000,
+          "energyExportStart": 250000,
+          "terminalEnergyReserve": 20000,
+          "marketEnergyReadiness": {
+            "schemaVersion": 3,
+            "revision": "market-energy-ready-e6",
+            "observedAt": 50003,
+            "expiresAt": 50004,
+            "authorizationRevision": "readiness-v3",
+            "roomInstanceId": "room-e6-1",
+            "terminalId": "terminal-e6",
+            "authorized": true,
+            "effectivePostDealEnergyReserve": 25000,
+            "marketTerminalEnergyTarget": 26000,
+            "ordinaryTerminalEnergyTarget": 20000,
+            "unresolvedEnergySendAmount": 0,
+            "unresolvedInternalSendFees": 0,
+            "terminalScopedProductionEnergyCommitments": 0,
+            "maxTransactionEnergy": 1000,
+            "contributionCount": 1,
+            "desiredTerminalEnergy": 26000,
+            "plannedFeedAmount": 1000,
+            "status": "feed_planned"
+          }
+        }
+      }
+    },
     "marketSaleAutomation": {
       "updatedAt": 50003,
       "requestedMode": "direct",

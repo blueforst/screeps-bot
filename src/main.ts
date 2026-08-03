@@ -61,6 +61,7 @@ function gameLoop(): void {
 
   cpuProfiler.measure("announceDeploy", announceDeploy);
   cpuProfiler.measure("marketSalePreflight", runMarketSalePreflight);
+  // 保留冻结生产顺序中的 phase；模块本身由代码级闩永久关闭。
   cpuProfiler.measure("pixelGenerator", runPixelGenerator);
   cpuProfiler.measure("productionMonitor", runProductionMonitor);
   cpuProfiler.measure("hubPlanner", runHubPlanner);

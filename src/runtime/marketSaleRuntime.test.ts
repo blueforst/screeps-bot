@@ -1086,7 +1086,7 @@ describe("market sale live composition", () => {
     ).toBe(1_000);
   });
 
-  it("非 ResourceControl tick 有效缓存且 live 净价满足不变量时保持订单", () => {
+  it("非 ResourceControl tick 的有效缓存不能绕过 Maker 永久排空闩", () => {
     primeMakerPricingCache(1_019);
     const { market } = installNonResourceControlManagedFixture(1_020);
 
@@ -1097,12 +1097,17 @@ describe("market sale live composition", () => {
       collectPricing: jest.fn(() => pricingAt(Game.time)) as never,
     });
 
-    expect(result.phase).toBe("maker");
+    expect(result.effectiveMode).toBe("emergencyStop");
+    expect(result.phase).toMatch(/requested|draining/);
     expect(result.rejectedByReason.current_tick_floor_unknown).toBeUndefined();
     expect(
       result.rejectedByReason.current_tick_floor_violation,
     ).toBeUndefined();
-    expect(market.cancelOrder).not.toHaveBeenCalled();
+    expect(
+      result.rejectedByReason.market_maker_hybrid_permanently_disabled,
+    ).toBe(1);
+    expect(market.cancelOrder).toHaveBeenCalledWith("managed");
+    expect(market.createOrder).not.toHaveBeenCalled();
   });
 
   it("非 ResourceControl tick 生产需求上升挤占 exposure 时立即撤单并保留暴露", () => {

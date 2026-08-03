@@ -17,6 +17,12 @@ import {
   type MarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
 import { collectResourceControlSnapshots } from "@/runtime/resourceControl";
+import {
+  beginHubProtectionAttempt,
+  buildCommittedHubProtectionSnapshot,
+  publishCommittedHubProtectionSnapshot,
+  type HubRuntimeProtectionExtension,
+} from "@/runtime/hubProtectionSnapshot";
 
 const ROOM = "W1N1";
 const TICK = 1_000;
@@ -114,6 +120,28 @@ function mockFloors(
       mineralExportStart: { ...mineralFloor },
     })) as ReturnType<typeof collectResourceControlSnapshots>,
   );
+}
+
+function commitCurrentHubProtection(
+  planMode: "distributed" | "fallback" | "blocked" = "distributed",
+): void {
+  const cfg = Memory.cfg?.hub;
+  const runtime = Memory.runtime?.hub;
+  if (!cfg || !runtime) throw new Error("Hub test fixture is incomplete");
+  const extended = runtime as typeof runtime & HubRuntimeProtectionExtension;
+  const attempt = beginHubProtectionAttempt(extended, cfg, Game.time);
+  const snapshot = buildCommittedHubProtectionSnapshot({
+    revision: attempt.attemptRevision,
+    configIncarnation: attempt.configIncarnation,
+    tick: Game.time,
+    expiresAt: Game.time + Math.max(1, cfg.planInterval || 50),
+    config: cfg,
+    runtime,
+    synthesisRooms: Memory.cfg?.synthesisControl?.rooms ?? {},
+    transferTasks: Memory.data?.resourceControl?.tasks ?? {},
+    planMode,
+  });
+  publishCommittedHubProtectionSnapshot(extended, attempt, snapshot);
 }
 
 beforeEach(() => {
@@ -673,6 +701,7 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
         },
       },
     };
+    commitCurrentHubProtection();
     Memory.cfg!.homeDefense = {
       boostTarget: 1_000,
       rooms: {
@@ -809,6 +838,7 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
         ],
       },
     };
+    commitCurrentHubProtection();
 
     const ledger = collectLiveMarketSaleProtectionLedger(
       config({ [RESOURCE_KEANIUM]: 100 }),
@@ -869,8 +899,12 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
           },
         },
       },
-      marketSellSurplus: {},
+      // A forged legacy surplus must not be consumed by the adapter.
+      marketSellSurplus: {
+        [RESOURCE_KEANIUM]: 9_999,
+      },
     };
+    commitCurrentHubProtection("fallback");
 
     const ledger = collectLiveMarketSaleProtectionLedger(
       config({ [RESOURCE_KEANIUM]: 100 }),
@@ -894,6 +928,96 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
         }),
       ]),
     );
+  });
+
+  it("keeps a fresh commit valid when Synthesis only requests the next plan", () => {
+    Game.rooms[ROOM] = createRoom(
+      ROOM,
+      { [RESOURCE_KEANIUM]: 5_000 },
+      { [RESOURCE_KEANIUM]: 5_000 },
+    );
+    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
+    Memory.cfg!.hub = {
+      enabled: true,
+      hubRoomName: ROOM,
+      planInterval: 200,
+      targetCompounds: [],
+    };
+    Memory.runtime!.hub = {
+      updatedAt: TICK,
+      needsPlan: false,
+      distributedSynthesis: {
+        allocationLedger: {
+          K: {
+            resource: RESOURCE_KEANIUM,
+            totalAmount: 5_000,
+            roomCommitments: { [ROOM]: 5_000 },
+          },
+        },
+      },
+    };
+    commitCurrentHubProtection();
+    Memory.runtime!.hub!.needsPlan = true;
+
+    const ledger = collectLiveMarketSaleProtectionLedger(
+      config({ [RESOURCE_KEANIUM]: 100 }),
+      undefined,
+      {
+        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
+      },
+    );
+    const keanium =
+      ledger.entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
+
+    expect(ledger.globalIssues).toEqual([]);
+    expect(keanium.blocked).toBe(false);
+    expect(keanium.productionDemand).toBe(5_000);
+    expect(keanium.sellableAmount).toBe(5_000);
+  });
+
+  it("fails closed instead of joining fresh-looking legacy Hub fields", () => {
+    Game.rooms[ROOM] = createRoom(
+      ROOM,
+      { [RESOURCE_KEANIUM]: 5_000 },
+      { [RESOURCE_KEANIUM]: 5_000 },
+    );
+    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
+    Memory.cfg!.hub = {
+      enabled: true,
+      hubRoomName: ROOM,
+      planInterval: 200,
+      targetCompounds: [],
+    };
+    Memory.runtime!.hub = {
+      updatedAt: TICK,
+      needsPlan: false,
+      distributedSynthesis: {
+        allocationLedger: {
+          K: {
+            resource: RESOURCE_KEANIUM,
+            totalAmount: 5_000,
+            roomCommitments: { [ROOM]: 5_000 },
+          },
+        },
+      },
+      marketSellSurplus: {
+        [RESOURCE_KEANIUM]: 5_000,
+      },
+    };
+
+    const ledger = collectLiveMarketSaleProtectionLedger(
+      config({ [RESOURCE_KEANIUM]: 0 }),
+      undefined,
+      {
+        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
+      },
+    );
+    const keanium =
+      ledger.entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
+
+    expect(ledger.globalBlocked).toBe(true);
+    expect(keanium.blocked).toBe(true);
+    expect(keanium.sellableAmount).toBe(0);
   });
 
   it("recursively expands active boost and war T3 demand into all base minerals without duplicate lab demand", () => {

@@ -13,6 +13,10 @@ import {
   MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
 } from "@/runtime/marketDirectContinuousPolicy";
 import {
+  MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE,
+  isMarketBaseResource,
+} from "@/runtime/marketBaseResourcePolicy";
+import {
   collectMarketSalePriceSnapshots,
   type CollectMarketSalePriceSnapshotsOptions,
   type MarketSalePriceSnapshotCollection,
@@ -35,7 +39,8 @@ function pricingResultCacheTtl(
   config: MarketSaleAutomationConfig,
 ): number {
   const usesContinuousDirect =
-    config.directCapability === "continuous-v2" &&
+    (config.directCapability === "continuous-v2" ||
+      config.directCapability === "continuous-v3") &&
     (config.mode === "direct" ||
       (config.mode === "shadow" &&
         config.shadowStrategy === "direct"));
@@ -590,7 +595,73 @@ function continuousProtectionOptions(
   candidates: MarketProtectionCandidate[];
   laneReserveByEntry: Record<string, number>;
 } | undefined {
-  if (config.directCapability !== "continuous-v2") return undefined;
+  if (config.directCapability === "continuous-v3") {
+    const rawData = isPlainRecord(
+      Memory.data?.marketSaleAutomation,
+    )
+      ? (Memory.data!.marketSaleAutomation as unknown as Record<
+          string,
+          unknown
+        >)
+      : undefined;
+    const direct = isPlainRecord(
+      rawData?.directAutomation,
+    )
+      ? rawData?.directAutomation
+      : undefined;
+    const v3 = isPlainRecord(
+      direct?.baseResourceV3,
+    )
+      ? direct?.baseResourceV3
+      : undefined;
+    const scope = isPlainRecord(v3?.scope)
+      ? v3?.scope
+      : undefined;
+    const lanes = Array.isArray(scope?.laneLifecycles)
+      ? scope.laneLifecycles
+      : undefined;
+    if (!lanes) return undefined;
+    const candidates: MarketProtectionCandidate[] = [];
+    const laneReserveByEntry: Record<string, number> = {};
+    const seen = new Set<string>();
+    for (const rawLane of lanes) {
+      if (!isPlainRecord(rawLane)) return undefined;
+      const roomName = rawLane.sellerRoomName;
+      const resource = rawLane.resource;
+      if (
+        typeof roomName !== "string" ||
+        roomName.length === 0 ||
+        !isMarketBaseResource(resource)
+      ) {
+        return undefined;
+      }
+      const key = `${roomName}:${resource}`;
+      if (seen.has(key)) return undefined;
+      seen.add(key);
+      candidates.push({
+        roomName,
+        resource:
+          resource as ResourceConstant,
+      });
+      laneReserveByEntry[key] =
+        MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE[
+          resource
+        ].laneReserve;
+    }
+    return {
+      candidates: candidates.sort(
+        (left, right) =>
+          left.roomName.localeCompare(right.roomName) ||
+          String(left.resource).localeCompare(
+            String(right.resource),
+          ),
+      ),
+      laneReserveByEntry,
+    };
+  }
+  if (config.directCapability !== "continuous-v2") {
+    return undefined;
+  }
   const candidates: MarketProtectionCandidate[] = [];
   const laneReserveByEntry: Record<string, number> = {};
   for (const entry of MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE) {
@@ -787,18 +858,49 @@ export function runLiveMarketSaleAutomation(
         );
       }
     }
+    const compositionContext = {
+      ...resolveCompositionContext(),
+      pricingEvidenceFresh,
+      pricingRejectionReason,
+    };
     const candidates = composeMarketSalePlanCandidates(
       config,
       protection,
       pricing,
-      {
-        ...resolveCompositionContext(),
-        pricingEvidenceFresh,
-        pricingRejectionReason,
-      },
+      compositionContext,
     );
+    const readMarketBaseResourceCandidates =
+      config.directCapability ===
+      "continuous-v3"
+        ? () => {
+            // 每次 v3 full read 都重新采集 current production protection。
+            // pricing history/energy snapshot 是本 planning tick 的已验证
+            // resource-scoped 证据；BUY book 与 terminal 由 v3 planner另读。
+            const freshProtection =
+              collectProtection(
+                config,
+                isPlainRecord(
+                  data.managedOrders,
+                )
+                  ? data.managedOrders
+                  : undefined,
+                canonicalContinuousProtection,
+              );
+            return composeMarketSalePlanCandidates(
+              config,
+              freshProtection,
+              pricing,
+              compositionContext,
+            );
+          }
+        : undefined;
     const result = runAutomation({
       candidates,
+      ...(readMarketBaseResourceCandidates
+        ? {
+            readMarketBaseResourceCandidates,
+          }
+        : {}),
       ...domainActivityInput,
     });
     if (resourceControlCurrent && !pricingEvidenceFresh) {

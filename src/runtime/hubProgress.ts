@@ -9,6 +9,12 @@ import type {
   DirectRouteDecision,
   ProgressEdge,
 } from "@/runtime/hubPlanner";
+import type {
+  HubCommittedProtectionSnapshot,
+  HubProtectionAttempt,
+  HubProtectionRevisionMarker,
+  HubRuntimeProtectionExtension,
+} from "@/runtime/hubProtectionSnapshot";
 import { Panel, type VisualSurface } from "@/visual/panel";
 
 export interface HubProgressInput {
@@ -19,16 +25,18 @@ export interface HubProgressInput {
     reservePerRoom?: number;
     hubReservePerCompound?: number;
   } | null;
-  hubRuntime: {
-    status?: "idle" | "importing" | "synthesizing" | "distributing" | "blocked";
-    updatedAt?: number;
-    activeProduct?: string;
-    activeStep?: number;
-    missingResources?: string[];
-    lastPlanActions?: string[];
-    needsPlan?: boolean;
-    lastError?: string;
-  } | null;
+  hubRuntime:
+    | ({
+        status?: "idle" | "importing" | "synthesizing" | "distributing" | "blocked";
+        updatedAt?: number;
+        activeProduct?: string;
+        activeStep?: number;
+        missingResources?: string[];
+        lastPlanActions?: string[];
+        needsPlan?: boolean;
+        lastError?: string;
+      } & HubRuntimeProtectionExtension)
+    | null;
   synthesisRuntime: {
     stage?: string;
     activeProduct?: ResourceConstant;
@@ -155,6 +163,39 @@ export interface HubProgressSnapshot {
     hubSurplus: number;
     totalDeficit: Array<{ compound: string; needed: number }>;
   };
+  /**
+   * 当前 planning attempt 的小型状态投影。它只用于判断旧 committed
+   * snapshot 是否已被新 attempt 作废，不包含任何生产明细。
+   */
+  protectionAttempt?: HubProtectionAttempt | null;
+  /**
+   * committed protection 的有界 revision marker。各组件 revision/fingerprint
+   * 保留在这里，monitor 可据此发现部分提交；大体积 rooms/tasks/ledger 不进入
+   * analytics。
+   */
+  committedProtectionMarker?: HubCommittedProtectionProgressMarker | null;
+}
+
+export interface HubCommittedProtectionProgressMarker {
+  schema: HubCommittedProtectionSnapshot["schema"];
+  planRevision: number;
+  configIncarnation: number;
+  observedAt: number;
+  expiresAt: number;
+  configFingerprint: string;
+  status: HubCommittedProtectionSnapshot["status"];
+  valid: boolean;
+  marker: HubProtectionRevisionMarker & {
+    hubRoomName: string;
+    planMode: HubCommittedProtectionSnapshot["marker"]["planMode"];
+  };
+  components: {
+    synthesisConfig: HubProtectionRevisionMarker;
+    transferTasks: HubProtectionRevisionMarker;
+    distributed: HubProtectionRevisionMarker;
+    baseMineralSurplus: HubProtectionRevisionMarker;
+  };
+  failureReason?: string;
 }
 
 const ANALYTICS_SAMPLE_INTERVAL = 5;
@@ -713,6 +754,76 @@ function buildT3ReserveStatus(
   return { hubSurplus, totalDeficit };
 }
 
+function cloneProtectionAttempt(
+  attempt: HubProtectionAttempt | undefined,
+): HubProtectionAttempt | null {
+  if (!attempt) return null;
+  return {
+    attemptRevision: attempt.attemptRevision,
+    configIncarnation: attempt.configIncarnation,
+    startedAt: attempt.startedAt,
+    ...(attempt.finishedAt === undefined
+      ? {}
+      : { finishedAt: attempt.finishedAt }),
+    configFingerprint: attempt.configFingerprint,
+    status: attempt.status,
+    valid: attempt.valid,
+    ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
+  };
+}
+
+function buildCommittedProtectionMarker(
+  snapshot: HubCommittedProtectionSnapshot | undefined,
+): HubCommittedProtectionProgressMarker | null {
+  if (!snapshot) return null;
+  return {
+    schema: snapshot.schema,
+    planRevision: snapshot.planRevision,
+    configIncarnation: snapshot.configIncarnation,
+    observedAt: snapshot.observedAt,
+    expiresAt: snapshot.expiresAt,
+    configFingerprint: snapshot.configFingerprint,
+    status: snapshot.status,
+    valid: snapshot.valid,
+    marker: {
+      revision: snapshot.marker.revision,
+      configIncarnation: snapshot.marker.configIncarnation,
+      configFingerprint: snapshot.marker.configFingerprint,
+      hubRoomName: snapshot.marker.hubRoomName,
+      planMode: snapshot.marker.planMode,
+    },
+    components: {
+      synthesisConfig: {
+        revision: snapshot.synthesisConfig.revision,
+        configIncarnation:
+          snapshot.synthesisConfig.configIncarnation,
+        configFingerprint: snapshot.synthesisConfig.configFingerprint,
+      },
+      transferTasks: {
+        revision: snapshot.transferTasks.revision,
+        configIncarnation:
+          snapshot.transferTasks.configIncarnation,
+        configFingerprint: snapshot.transferTasks.configFingerprint,
+      },
+      distributed: {
+        revision: snapshot.distributed.revision,
+        configIncarnation:
+          snapshot.distributed.configIncarnation,
+        configFingerprint: snapshot.distributed.configFingerprint,
+      },
+      baseMineralSurplus: {
+        revision: snapshot.baseMineralSurplus.revision,
+        configIncarnation:
+          snapshot.baseMineralSurplus.configIncarnation,
+        configFingerprint: snapshot.baseMineralSurplus.configFingerprint,
+      },
+    },
+    ...(snapshot.failureReason === undefined
+      ? {}
+      : { failureReason: snapshot.failureReason }),
+  };
+}
+
 export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSnapshot {
   const { hubConfig, hubRuntime, synthesisRuntime, currentTick } = input;
 
@@ -741,6 +852,12 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       hubCarrierCargo: {},
       productionRooms: [],
       t3ReserveStatus: { hubSurplus: 0, totalDeficit: [] },
+      protectionAttempt: cloneProtectionAttempt(
+        hubRuntime?.currentProtectionAttempt,
+      ),
+      committedProtectionMarker: buildCommittedProtectionMarker(
+        hubRuntime?.committedProtectionSnapshot,
+      ),
     };
   }
 
@@ -819,6 +936,12 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       hubRoomName,
     ),
     t3ReserveStatus,
+    protectionAttempt: cloneProtectionAttempt(
+      hubRuntime?.currentProtectionAttempt,
+    ),
+    committedProtectionMarker: buildCommittedProtectionMarker(
+      hubRuntime?.committedProtectionSnapshot,
+    ),
   };
 }
 

@@ -6,8 +6,18 @@ import {
 } from "@/runtime/marketSalePricing";
 
 export const MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT = 1_000;
+export const MARKET_DIRECT_CONTINUOUS_MAX_RESOURCES = 7;
+export const MARKET_DIRECT_CONTINUOUS_MAX_SELLER_ROOMS = 16;
+export const MARKET_DIRECT_CONTINUOUS_MAX_LANES = 112;
+export const MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS = 128;
+export const MARKET_DIRECT_CONTINUOUS_MAX_TRANSACTION_ENERGY_EVALUATIONS = 4_096;
+export const MARKET_DIRECT_CONTINUOUS_ROOM_ROLLING_CAP = 5_000;
+export const MARKET_DIRECT_CONTINUOUS_LANE_ROLLING_CAP = 3_000;
 
 export type MarketDirectContinuousGrant = "canary" | "continuous";
+export type MarketDirectContinuousLaneAuthorization =
+  | "writable"
+  | "suspended_shadow";
 
 export interface MarketDirectContinuousPolicy {
   entryId: string;
@@ -27,6 +37,11 @@ export interface MarketDirectContinuousPolicy {
   terminalEnergyReserve: number;
   resourceRollingCap: number;
   opportunityReserve: number;
+  /**
+   * 旧调用方省略时按 frozen v2 evaluator 解释。v3 必须显式声明，
+   * 以免新 bundle 把旧 permit 隐式扩成 Hub/emergency/non-native scope。
+   */
+  evaluatorVersion?: 2 | 3;
 }
 
 export interface MarketDirectContinuousLane {
@@ -36,6 +51,11 @@ export interface MarketDirectContinuousLane {
   hub: boolean;
   capacityEmergency: boolean;
   nativeMineralType?: string;
+  /**
+   * 缺省为 writable，保持 v2 调用兼容。suspended Shadow 只参与有界
+   * observation，不得生成候选。
+   */
+  authorization?: MarketDirectContinuousLaneAuthorization;
 }
 
 export interface MarketDirectContinuousProtection {
@@ -47,10 +67,20 @@ export interface MarketDirectContinuousProtection {
 export interface MarketDirectContinuousTerminal {
   revision: string;
   normal: boolean;
+  /**
+   * V3 的 current Energy-readiness 执行资格。false 表示证据完整但本 lane
+   * 当前安全等待；缺失在 V3 视为结构不完整。V2 不读取本字段。
+   */
+  ready?: boolean;
   claimed: boolean;
   cooldown: number;
   resourceAmount: number;
   energy: number;
+  /**
+   * v3 生产/发送承诺形成的 current reserve；缺省仍使用 policy 的
+   * frozen v2 terminalEnergyReserve。
+   */
+  effectivePostDealEnergyReserve?: number;
 }
 
 export interface MarketDirectContinuousBook {
@@ -70,22 +100,48 @@ export interface MarketDirectContinuousResourceQuota {
   opportunityReserveSatisfied: boolean;
 }
 
+export interface MarketDirectContinuousLaneQuota {
+  complete: boolean;
+  revision: string;
+  roomRollingCap: number;
+  roomConfirmedAmount: number;
+  roomUnmatchedPlannedAmount: number;
+  laneRollingCap: number;
+  laneConfirmedAmount: number;
+  laneUnmatchedPlannedAmount: number;
+}
+
+export type MarketDirectContinuousTransactionEnergyCalculator = (
+  amount: number,
+  order: MarketOrderSnapshot,
+  sellerRoomName: string,
+) => number;
+
 export interface MarketDirectContinuousLaneInput {
   lane: MarketDirectContinuousLane;
   protection: MarketDirectContinuousProtection;
   terminal: MarketDirectContinuousTerminal;
-  book: MarketDirectContinuousBook;
-  calculateTransactionEnergy: (
-    amount: number,
-    order: MarketOrderSnapshot,
-    sellerRoomName: string,
-  ) => number;
+  /**
+   * v2 adapter 保留的 lane 级盘口。v3 应使用 entry.book；存在 entry.book
+   * 时本字段如同时提供，必须与资源级快照逐字段一致。
+   */
+  book?: MarketDirectContinuousBook;
+  /**
+   * v2 adapter 保留的 lane 级成本函数。v3 应使用 entry 级函数。
+   */
+  calculateTransactionEnergy?: MarketDirectContinuousTransactionEnergyCalculator;
+  quota?: MarketDirectContinuousLaneQuota;
 }
 
 export interface MarketDirectContinuousEntryInput {
   policy: MarketDirectContinuousPolicy;
   quota: MarketDirectContinuousResourceQuota;
   lanes: readonly MarketDirectContinuousLaneInput[];
+  /**
+   * v3 资源级完整 BUY book；同资源全部 seller lane 共享这一份不可变快照。
+   */
+  book?: MarketDirectContinuousBook;
+  calculateTransactionEnergy?: MarketDirectContinuousTransactionEnergyCalculator;
 }
 
 export interface MarketDirectContinuousEnergyShadow {
@@ -138,6 +194,11 @@ export type MarketDirectContinuousBlockerReason =
   | "raw_book_limit_exceeded"
   | "eligible_book_limit_exceeded"
   | "duplicate_order_id"
+  | "distinct_order_room_limit_exceeded"
+  | "seller_room_limit_exceeded"
+  | "lane_limit_exceeded"
+  | "transaction_energy_evaluation_limit_exceeded"
+  | "lane_quota_incomplete"
   | "energy_pricing_failed"
   | "unsafe_arithmetic";
 
@@ -162,6 +223,8 @@ export type MarketDirectContinuousTupleRejectionReason =
   | "planned_net_below_floor"
   | "worst_case_net_below_floor"
   | "resource_quota_exhausted"
+  | "room_quota_exhausted"
+  | "lane_quota_exhausted"
   | "global_quota_or_opportunity_reserve";
 
 export interface MarketDirectContinuousTupleRejection {
@@ -191,6 +254,8 @@ export interface MarketDirectContinuousCandidate {
   worstCaseTransactionEnergy: number;
   worstCaseNetCreditsMilli: MilliCredits;
   resourceQuotaBefore: number;
+  roomQuotaBefore: number;
+  laneQuotaBefore: number;
   globalQuotaBefore: number;
   reservedForOtherSafeResources: number;
   tupleKey: string;
@@ -214,6 +279,16 @@ export interface MarketDirectContinuousPlanningResult {
    * 精确规范化证据。fingerprint 用于日志；二次读比较同时检查本字段，避免短哈希碰撞。
    */
   planningEvidence: string;
+  budget: {
+    sellerRooms: number;
+    distinctOrderRooms: number;
+    transactionEnergyEvaluations: number;
+  };
+  isolatedShadowLanes: Array<{
+    entryId: string;
+    roomName: string;
+    reason: "lane_scope_invalid" | "protection_incomplete" | "book_incomplete";
+  }>;
 }
 
 interface EligibleOrder {
@@ -223,12 +298,18 @@ interface EligibleOrder {
   executableNotionalMilli: MilliCredits;
 }
 
-interface PreparedLane {
+interface PreparedResource {
   entry: MarketDirectContinuousEntryInput;
-  laneInput: MarketDirectContinuousLaneInput;
   effectiveNetFloorMilli: MilliCredits;
   minExecutableNotionalMilli: MilliCredits;
+  book: MarketDirectContinuousBook;
   eligibleOrders: EligibleOrder[];
+  resourceCalculator?: MarketDirectContinuousTransactionEnergyCalculator;
+}
+
+interface PreparedLane {
+  preparedResource: PreparedResource;
+  laneInput: MarketDirectContinuousLaneInput;
 }
 
 interface EnergyObservation {
@@ -238,6 +319,8 @@ interface EnergyObservation {
   planned: number;
   worst: number;
 }
+
+class TransactionEnergyEvaluationLimitError extends Error {}
 
 function stableStringCompare(left: string, right: string): number {
   if (left < right) return -1;
@@ -312,7 +395,10 @@ function policyIsValid(policy: MarketDirectContinuousPolicy): boolean {
     isNonNegativeSafeInteger(policy.terminalEnergyReserve) &&
     isPositiveSafeInteger(policy.resourceRollingCap) &&
     isPositiveSafeInteger(policy.opportunityReserve) &&
-    policy.opportunityReserve === MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT
+    policy.opportunityReserve === MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT &&
+    (policy.evaluatorVersion === undefined ||
+      policy.evaluatorVersion === 2 ||
+      policy.evaluatorVersion === 3)
   );
 }
 
@@ -343,6 +429,20 @@ function globalQuotaIsValid(quota: MarketDirectContinuousGlobalQuota): boolean {
   );
 }
 
+function laneQuotaIsValid(quota: MarketDirectContinuousLaneQuota): boolean {
+  return (
+    quota.complete &&
+    typeof quota.revision === "string" &&
+    quota.revision.length > 0 &&
+    quota.roomRollingCap === MARKET_DIRECT_CONTINUOUS_ROOM_ROLLING_CAP &&
+    quota.laneRollingCap === MARKET_DIRECT_CONTINUOUS_LANE_ROLLING_CAP &&
+    isNonNegativeSafeInteger(quota.roomConfirmedAmount) &&
+    isNonNegativeSafeInteger(quota.roomUnmatchedPlannedAmount) &&
+    isNonNegativeSafeInteger(quota.laneConfirmedAmount) &&
+    isNonNegativeSafeInteger(quota.laneUnmatchedPlannedAmount)
+  );
+}
+
 function normalizeOrder(order: MarketOrderSnapshot): Record<string, unknown> {
   return {
     amount: order.amount,
@@ -357,7 +457,42 @@ function normalizeOrder(order: MarketOrderSnapshot): Record<string, unknown> {
   };
 }
 
+function normalizeBook(
+  book: MarketDirectContinuousBook | undefined,
+): Record<string, unknown> | null {
+  if (!book) return null;
+  const normalizedOrders = Array.isArray(book.orders)
+    ? book.orders
+      .map(normalizeOrder)
+      .sort((left, right) =>
+        stableStringCompare(
+          `${String(left.id ?? "")}|${stableCanonical(left)}`,
+          `${String(right.id ?? "")}|${stableCanonical(right)}`,
+        ))
+    : undefined;
+  const canonicalById = new Map<string, string>();
+  const deduplicatedOrders: Array<Record<string, unknown>> = [];
+  for (const normalized of normalizedOrders ?? []) {
+    const orderId = String(normalized.id ?? "");
+    const canonical = stableCanonical(normalized);
+    if (canonicalById.get(orderId) === canonical) continue;
+    canonicalById.set(orderId, canonical);
+    deduplicatedOrders.push(normalized);
+  }
+  return {
+    complete: book.complete,
+    revision: book.revision,
+    ownOrderIds: Array.isArray(book.ownOrderIds)
+      ? [...book.ownOrderIds].sort(stableStringCompare)
+      : "<invalid>",
+    orders: normalizedOrders ? deduplicatedOrders : "<invalid>",
+  };
+}
+
 function normalizeInput(input: PlanMarketDirectContinuousInput): Record<string, unknown> {
+  if (!input || !Array.isArray(input.entries)) {
+    return { invalidInput: true };
+  }
   return {
     energyShadow: { ...input.energyShadow },
     entries: [...input.entries]
@@ -369,6 +504,7 @@ function normalizeInput(input: PlanMarketDirectContinuousInput): Record<string, 
           allowedRooms: [...entry.policy.allowedRooms].sort(stableStringCompare),
         },
         quota: { ...entry.quota },
+        book: normalizeBook(entry.book),
         lanes: [...entry.lanes]
           .sort((left, right) =>
             stableStringCompare(left.lane.roomName, right.lane.roomName))
@@ -376,14 +512,8 @@ function normalizeInput(input: PlanMarketDirectContinuousInput): Record<string, 
             lane: { ...laneInput.lane },
             protection: { ...laneInput.protection },
             terminal: { ...laneInput.terminal },
-            book: {
-              complete: laneInput.book.complete,
-              revision: laneInput.book.revision,
-              ownOrderIds: [...laneInput.book.ownOrderIds].sort(stableStringCompare),
-              orders: [...laneInput.book.orders]
-                .sort((left, right) => stableStringCompare(left.id, right.id))
-                .map(normalizeOrder),
-            },
+            quota: laneInput.quota ? { ...laneInput.quota } : null,
+            legacyBookAdapter: normalizeBook(laneInput.book),
           })),
       })),
     globalQuota: { ...input.globalQuota },
@@ -414,6 +544,53 @@ function stableCanonical(value: unknown): string {
   }
   return JSON.stringify(`<${typeof value}>`);
 }
+
+function canonicalBookEvidence(
+  book: MarketDirectContinuousBook | undefined,
+): string {
+  return stableCanonical(normalizeBook(book));
+}
+
+function collectResourceBookReferences(
+  input: PlanMarketDirectContinuousInput,
+): Array<{
+  book: MarketDirectContinuousBook;
+  orders: readonly MarketOrderSnapshot[];
+  ownOrderIds: readonly string[];
+}> {
+  if (!input || !Array.isArray(input.entries)) return [];
+  const references: Array<{
+    book: MarketDirectContinuousBook;
+    orders: readonly MarketOrderSnapshot[];
+    ownOrderIds: readonly string[];
+  }> = [];
+  const stableEntries = [...input.entries].sort((left, right) =>
+    stableStringCompare(left.policy.entryId, right.policy.entryId));
+  for (const entry of stableEntries) {
+    const book = entry.book ?? (
+      Array.isArray(entry.lanes)
+        ? entry.lanes.find((laneInput) => laneInput.book !== undefined)?.book
+        : undefined
+    );
+    if (book) {
+      references.push({
+        book,
+        orders: book.orders,
+        ownOrderIds: book.ownOrderIds,
+      });
+    }
+  }
+  return references;
+}
+
+const resultBookReferences = new WeakMap<
+  MarketDirectContinuousPlanningResult,
+  ReadonlyArray<{
+    book: MarketDirectContinuousBook;
+    orders: readonly MarketOrderSnapshot[];
+    ownOrderIds: readonly string[];
+  }>
+>();
 
 function shortFingerprint(evidence: string): string {
   let hash = 2_166_136_261;
@@ -448,13 +625,14 @@ export function compareMarketDirectContinuousCandidates(
   left: MarketDirectContinuousCandidate,
   right: MarketDirectContinuousCandidate,
 ): number {
-  const leftUnitCross = checkedMultiply(left.netCreditsMilli, right.plannedAmount);
-  const rightUnitCross = checkedMultiply(right.netCreditsMilli, left.plannedAmount);
-  if (leftUnitCross === undefined || rightUnitCross === undefined) {
-    throw new RangeError("unit-net comparison exceeds safe integer precision");
-  }
-  if (leftUnitCross !== rightUnitCross) {
-    return leftUnitCross > rightUnitCross ? -1 : 1;
+  const unitComparison = compareSafeIntegerRatios(
+    left.netCreditsMilli,
+    left.plannedAmount,
+    right.netCreditsMilli,
+    right.plannedAmount,
+  );
+  if (unitComparison !== 0) {
+    return -unitComparison;
   }
   if (left.netCreditsMilli !== right.netCreditsMilli) {
     return left.netCreditsMilli > right.netCreditsMilli ? -1 : 1;
@@ -469,13 +647,99 @@ export function compareMarketDirectContinuousCandidates(
   return stableStringCompare(left.order.id, right.order.id);
 }
 
+/**
+ * 以连分数比较两个非负 safe-integer 比值，避免高价订单在
+ * `netCreditsMilli * plannedAmount` 交叉相乘时越过 2^53。
+ * 返回值语义与普通 comparator 相同：left < right 为 -1。
+ */
+function compareSafeIntegerRatios(
+  leftNumerator: number,
+  leftDenominator: number,
+  rightNumerator: number,
+  rightDenominator: number,
+): number {
+  if (
+    !Number.isSafeInteger(leftNumerator) ||
+    leftNumerator < 0 ||
+    !Number.isSafeInteger(rightNumerator) ||
+    rightNumerator < 0 ||
+    !Number.isSafeInteger(leftDenominator) ||
+    leftDenominator <= 0 ||
+    !Number.isSafeInteger(rightDenominator) ||
+    rightDenominator <= 0
+  ) {
+    const leftUnit =
+      leftNumerator / leftDenominator;
+    const rightUnit =
+      rightNumerator / rightDenominator;
+    return leftUnit === rightUnit
+      ? 0
+      : leftUnit < rightUnit
+        ? -1
+        : 1;
+  }
+  let leftN = leftNumerator;
+  let leftD = leftDenominator;
+  let rightN = rightNumerator;
+  let rightD = rightDenominator;
+  let direction = 1;
+  while (true) {
+    const leftWhole = Math.floor(
+      leftN / leftD,
+    );
+    const rightWhole = Math.floor(
+      rightN / rightD,
+    );
+    if (leftWhole !== rightWhole) {
+      return (
+        (leftWhole < rightWhole ? -1 : 1) *
+        direction
+      );
+    }
+    const leftRemainder =
+      leftN - leftWhole * leftD;
+    const rightRemainder =
+      rightN - rightWhole * rightD;
+    if (
+      leftRemainder === 0 ||
+      rightRemainder === 0
+    ) {
+      if (
+        leftRemainder ===
+        rightRemainder
+      ) {
+        return 0;
+      }
+      return (
+        (leftRemainder === 0 ? -1 : 1) *
+        direction
+      );
+    }
+    leftN = leftD;
+    leftD = leftRemainder;
+    rightN = rightD;
+    rightD = rightRemainder;
+    direction *= -1;
+  }
+}
+
 function finishResult(
   input: PlanMarketDirectContinuousInput,
   partial: Omit<
     MarketDirectContinuousPlanningResult,
-    "planningFingerprint" | "planningEvidence"
+    | "planningFingerprint"
+    | "planningEvidence"
+    | "budget"
+    | "isolatedShadowLanes"
   >,
   energyObservations: readonly EnergyObservation[] = [],
+  budget: MarketDirectContinuousPlanningResult["budget"] = {
+    sellerRooms: 0,
+    distinctOrderRooms: 0,
+    transactionEnergyEvaluations: 0,
+  },
+  isolatedShadowLanes:
+    MarketDirectContinuousPlanningResult["isolatedShadowLanes"] = [],
 ): MarketDirectContinuousPlanningResult {
   const evidence = stableCanonical({
     input: normalizeInput(input),
@@ -495,13 +759,23 @@ function finishResult(
       admittedTupleKeys: partial.admittedCandidates.map((candidate) =>
         candidate.tupleKey),
       selectedTupleKey: partial.selected?.tupleKey ?? null,
+      budget,
+      isolatedShadowLanes: [...isolatedShadowLanes].sort((left, right) =>
+        stableStringCompare(
+          `${left.entryId}|${left.roomName}|${left.reason}`,
+          `${right.entryId}|${right.roomName}|${right.reason}`,
+        )),
     },
   });
-  return {
+  const result: MarketDirectContinuousPlanningResult = {
     ...partial,
     planningFingerprint: shortFingerprint(evidence),
     planningEvidence: evidence,
+    budget,
+    isolatedShadowLanes,
   };
+  resultBookReferences.set(result, collectResourceBookReferences(input));
+  return result;
 }
 
 function blockedResult(
@@ -509,6 +783,9 @@ function blockedResult(
   blocker: MarketDirectContinuousBlocker,
   rejections: MarketDirectContinuousTupleRejection[] = [],
   energyObservations: readonly EnergyObservation[] = [],
+  budget?: MarketDirectContinuousPlanningResult["budget"],
+  isolatedShadowLanes?:
+    MarketDirectContinuousPlanningResult["isolatedShadowLanes"],
 ): MarketDirectContinuousPlanningResult {
   return finishResult(input, {
     complete: false,
@@ -516,7 +793,7 @@ function blockedResult(
     safeCandidates: [],
     admittedCandidates: [],
     rejections,
-  }, energyObservations);
+  }, energyObservations, budget, isolatedShadowLanes);
 }
 
 /**
@@ -582,11 +859,35 @@ export function planMarketDirectContinuous(
   const entryIds = new Set<string>();
   const resourceTypes = new Set<string>();
   const laneKeys = new Set<string>();
+  const sellerRooms = new Set<string>();
+  const globalOrderIds = new Map<
+    string,
+    { resourceType: string; canonical: string }
+  >();
+  const distinctOrderRooms = new Set<string>();
   const preparedLanes: PreparedLane[] = [];
   const rejections: MarketDirectContinuousTupleRejection[] = [];
+  const isolatedShadowLanes:
+    MarketDirectContinuousPlanningResult["isolatedShadowLanes"] = [];
+  let budget: MarketDirectContinuousPlanningResult["budget"] = {
+    sellerRooms: 0,
+    distinctOrderRooms: 0,
+    transactionEnergyEvaluations: 0,
+  };
 
-  // 第一阶段只验证 scope、完整 book 和 scan budget；在所有 book 证明完整前不做能量定价。
-  for (const entry of input.entries) {
+  if (input.entries.length > MARKET_DIRECT_CONTINUOUS_MAX_RESOURCES) {
+    return blockedResult(input, {
+      reason: "entry_scope_invalid",
+      detail:
+        `${input.entries.length}>${MARKET_DIRECT_CONTINUOUS_MAX_RESOURCES}`,
+    });
+  }
+
+  // 第一阶段只验证完整 scope。任何交易能量计算都必须晚于全 book、
+  // distinct orderRoom 和 evaluation hard budget 的整体核验。
+  const scopeEntries = [...input.entries].sort((left, right) =>
+    stableStringCompare(left.policy.entryId, right.policy.entryId));
+  for (const entry of scopeEntries) {
     const { policy, quota } = entry;
     if (
       !policyIsValid(policy) ||
@@ -594,6 +895,7 @@ export function planMarketDirectContinuous(
       resourceTypes.has(policy.resourceType) ||
       !quotaIsValid(quota, policy) ||
       !Array.isArray(entry.lanes) ||
+      entry.lanes.length === 0 ||
       entry.lanes.length !== policy.allowedRooms.length ||
       new Set(entry.lanes.map((laneInput) => laneInput.lane.roomName)).size !==
         policy.allowedRooms.length ||
@@ -621,27 +923,28 @@ export function planMarketDirectContinuous(
       });
     }
 
-    for (const laneInput of entry.lanes) {
-      const { lane, protection, terminal, book } = laneInput;
+    const writableLanes: MarketDirectContinuousLaneInput[] = [];
+    const structurallyValidShadowLanes: MarketDirectContinuousLaneInput[] = [];
+    const stableLanes = [...entry.lanes].sort((left, right) =>
+      stableStringCompare(left.lane.roomName, right.lane.roomName));
+    for (const laneInput of stableLanes) {
+      const { lane, protection, terminal } = laneInput;
       const laneKey = `${policy.resourceType}|${lane.roomName}`;
+      const authorization = lane.authorization ?? "writable";
+      const v2Scope = (policy.evaluatorVersion ?? 2) === 2;
       if (
         laneKeys.has(laneKey) ||
         lane.resourceType !== policy.resourceType ||
         !policy.allowedRooms.includes(lane.roomName) ||
         !lane.owned ||
-        lane.hub ||
-        lane.capacityEmergency ||
-        (policy.requireNativeMineral &&
+        (authorization !== "writable" &&
+          authorization !== "suspended_shadow") ||
+        (v2Scope && lane.hub) ||
+        (v2Scope && lane.capacityEmergency) ||
+        (v2Scope && policy.requireNativeMineral &&
           lane.nativeMineralType !== policy.resourceType) ||
-        typeof laneInput.calculateTransactionEnergy !== "function" ||
-        !terminal.normal ||
-        terminal.claimed ||
-        !isNonNegativeSafeInteger(terminal.cooldown) ||
-        terminal.cooldown !== 0 ||
-        !isNonNegativeSafeInteger(terminal.resourceAmount) ||
-        !isNonNegativeSafeInteger(terminal.energy) ||
-        typeof terminal.revision !== "string" ||
-        terminal.revision.length === 0
+        typeof lane.roomName !== "string" ||
+        lane.roomName.length === 0
       ) {
         return blockedResult(input, {
           reason: "lane_scope_invalid",
@@ -650,12 +953,54 @@ export function planMarketDirectContinuous(
         });
       }
       laneKeys.add(laneKey);
+      sellerRooms.add(lane.roomName);
+
+      const terminalComplete = (
+        typeof laneInput.calculateTransactionEnergy === "function" ||
+        typeof entry.calculateTransactionEnergy === "function"
+      ) &&
+        terminal.normal &&
+        (v2Scope || typeof terminal.ready === "boolean") &&
+        !terminal.claimed &&
+        isNonNegativeSafeInteger(terminal.cooldown) &&
+        (!v2Scope || terminal.cooldown === 0) &&
+        isNonNegativeSafeInteger(terminal.resourceAmount) &&
+        isNonNegativeSafeInteger(terminal.energy) &&
+        (
+          terminal.effectivePostDealEnergyReserve === undefined ||
+          isNonNegativeSafeInteger(terminal.effectivePostDealEnergyReserve)
+        ) &&
+        typeof terminal.revision === "string" &&
+        terminal.revision.length > 0;
+      if (!terminalComplete) {
+        if (authorization === "suspended_shadow") {
+          isolatedShadowLanes.push({
+            entryId: policy.entryId,
+            roomName: lane.roomName,
+            reason: "lane_scope_invalid",
+          });
+          continue;
+        }
+        return blockedResult(input, {
+          reason: "lane_scope_invalid",
+          entryId: policy.entryId,
+          roomName: lane?.roomName,
+        });
+      }
       if (
         !protection.complete ||
         typeof protection.revision !== "string" ||
         protection.revision.length === 0 ||
         !isNonNegativeSafeInteger(protection.sellableAmount)
       ) {
+        if (authorization === "suspended_shadow") {
+          isolatedShadowLanes.push({
+            entryId: policy.entryId,
+            roomName: lane.roomName,
+            reason: "protection_incomplete",
+          });
+          continue;
+        }
         return blockedResult(input, {
           reason: "protection_incomplete",
           entryId: policy.entryId,
@@ -663,154 +1008,342 @@ export function planMarketDirectContinuous(
         });
       }
       if (
-        !book.complete ||
-        typeof book.revision !== "string" ||
-        book.revision.length === 0 ||
-        !Array.isArray(book.orders) ||
-        !Array.isArray(book.ownOrderIds)
+        authorization === "writable" &&
+        policy.evaluatorVersion === 3 &&
+        (!laneInput.quota || !laneQuotaIsValid(laneInput.quota))
       ) {
+        return blockedResult(input, {
+          reason: "lane_quota_incomplete",
+          entryId: policy.entryId,
+          roomName: lane.roomName,
+        });
+      }
+      if (authorization === "writable") {
+        writableLanes.push(laneInput);
+      } else {
+        structurallyValidShadowLanes.push(laneInput);
+      }
+    }
+
+    if (laneKeys.size > MARKET_DIRECT_CONTINUOUS_MAX_LANES) {
+      return blockedResult(input, {
+        reason: "lane_limit_exceeded",
+        detail: `${laneKeys.size}>${MARKET_DIRECT_CONTINUOUS_MAX_LANES}`,
+      });
+    }
+    if (sellerRooms.size > MARKET_DIRECT_CONTINUOUS_MAX_SELLER_ROOMS) {
+      return blockedResult(input, {
+        reason: "seller_room_limit_exceeded",
+        detail:
+          `${sellerRooms.size}>${MARKET_DIRECT_CONTINUOUS_MAX_SELLER_ROOMS}`,
+      });
+    }
+
+    const book = policy.evaluatorVersion === 3
+      ? entry.book
+      : entry.book ?? entry.lanes[0]?.book;
+    const bookEvidence = canonicalBookEvidence(book);
+    const adapterBookConflict = !book || entry.lanes.some((laneInput) =>
+      laneInput.book !== undefined &&
+      canonicalBookEvidence(laneInput.book) !== bookEvidence);
+    const bookComplete = !adapterBookConflict &&
+      book.complete &&
+      typeof book.revision === "string" &&
+      book.revision.length > 0 &&
+      Array.isArray(book.orders) &&
+      Array.isArray(book.ownOrderIds) &&
+      book.ownOrderIds.every((orderId) =>
+        typeof orderId === "string" && orderId.length > 0);
+    if (!bookComplete) {
+      if (writableLanes.length > 0) {
         return blockedResult(input, {
           reason: "book_incomplete",
           entryId: policy.entryId,
-          roomName: lane.roomName,
+          detail: adapterBookConflict
+            ? "resource_book_not_shared"
+            : "resource_book_invalid",
         });
       }
-      if (book.orders.length > policy.maxRawOrders) {
+      for (const laneInput of structurallyValidShadowLanes) {
+        isolatedShadowLanes.push({
+          entryId: policy.entryId,
+          roomName: laneInput.lane.roomName,
+          reason: "book_incomplete",
+        });
+      }
+      continue;
+    }
+    if (book.orders.length > policy.maxRawOrders) {
+      if (writableLanes.length > 0) {
         return blockedResult(input, {
           reason: "raw_book_limit_exceeded",
           entryId: policy.entryId,
-          roomName: lane.roomName,
           detail: `${book.orders.length}>${policy.maxRawOrders}`,
         });
       }
+      for (const laneInput of structurallyValidShadowLanes) {
+        isolatedShadowLanes.push({
+          entryId: policy.entryId,
+          roomName: laneInput.lane.roomName,
+          reason: "book_incomplete",
+        });
+      }
+      continue;
+    }
 
-      const seenOrderIds = new Set<string>();
-      const ownOrderIds = new Set(book.ownOrderIds);
-      const eligibleOrders: EligibleOrder[] = [];
-      for (const order of book.orders) {
-        const orderId = typeof order?.id === "string" && order.id.length > 0
-          ? order.id
-          : undefined;
-        if (!orderId) {
-          rejections.push({
+    const seenOrderIds = new Map<string, string>();
+    const ownOrderIds = new Set(book.ownOrderIds);
+    const eligibleOrders: EligibleOrder[] = [];
+    const resourceOrderRooms = new Set<string>();
+    let shadowBookIncomplete = false;
+    for (const order of book.orders) {
+      const orderId = typeof order?.id === "string" && order.id.length > 0
+        ? order.id
+        : undefined;
+      if (!orderId) {
+        if (writableLanes.length > 0) {
+          return blockedResult(input, {
+            reason: "book_incomplete",
             entryId: policy.entryId,
-            resourceType: policy.resourceType,
-            roomName: lane.roomName,
-            reason: "invalid_order",
-          });
+            detail: "order_id_missing",
+          }, rejections);
+        }
+        shadowBookIncomplete = true;
+        continue;
+      }
+      const orderCanonical = stableCanonical(normalizeOrder(order));
+      const seenCanonical = seenOrderIds.get(orderId);
+      if (seenCanonical !== undefined) {
+        if (seenCanonical === orderCanonical) {
           continue;
         }
-        if (seenOrderIds.has(orderId)) {
+        if (writableLanes.length > 0) {
           return blockedResult(input, {
             reason: "duplicate_order_id",
             entryId: policy.entryId,
-            roomName: lane.roomName,
             orderId,
+            detail: "same_resource_order_id_conflict",
           }, rejections);
         }
-        seenOrderIds.add(orderId);
+        shadowBookIncomplete = true;
+        continue;
+      }
+      seenOrderIds.set(orderId, orderCanonical);
 
-        let rejectionReason: MarketDirectContinuousTupleRejectionReason | undefined;
-        if (order.type !== "buy") {
-          rejectionReason = "side_mismatch";
-        } else if (order.resourceType !== policy.resourceType) {
-          rejectionReason = "resource_mismatch";
-        } else if (typeof order.roomName !== "string" || order.roomName.length === 0) {
-          rejectionReason = "missing_order_room";
-        } else if (ownOrderIds.has(orderId)) {
-          rejectionReason = "self_order";
-        } else if (
-          !Number.isFinite(order.price) ||
-          order.price <= 0 ||
-          !isPositiveSafeInteger(order.amount) ||
-          (order.remainingAmount !== undefined &&
-            !isPositiveSafeInteger(order.remainingAmount))
-        ) {
-          rejectionReason = "invalid_order";
+      if (
+        order.type !== "buy" ||
+        order.resourceType !== policy.resourceType ||
+        typeof order.roomName !== "string" ||
+        order.roomName.length === 0 ||
+        !Number.isFinite(order.price) ||
+        order.price <= 0 ||
+        !isPositiveSafeInteger(order.amount) ||
+        (order.remainingAmount !== undefined &&
+          !isPositiveSafeInteger(order.remainingAmount))
+      ) {
+        if (writableLanes.length > 0) {
+          return blockedResult(input, {
+            reason: "book_incomplete",
+            entryId: policy.entryId,
+            orderId,
+            detail: "order_shape_or_scope_invalid",
+          }, rejections);
         }
-        const remainingAmount = rejectionReason
-          ? Number.NaN
-          : remainingOrderAmount(order);
-        if (!rejectionReason && remainingAmount < MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT) {
-          rejectionReason = "order_amount_below_plan";
-        }
-        if (rejectionReason) {
+        shadowBookIncomplete = true;
+        continue;
+      }
+      if (ownOrderIds.has(orderId)) {
+        for (const laneInput of writableLanes) {
           rejections.push({
             entryId: policy.entryId,
             resourceType: policy.resourceType,
-            roomName: lane.roomName,
+            roomName: laneInput.lane.roomName,
             orderId,
-            reason: rejectionReason,
+            reason: "self_order",
           });
+        }
+        continue;
+      }
+
+      const remainingAmount = remainingOrderAmount(order);
+      if (remainingAmount < MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT) {
+        for (const laneInput of writableLanes) {
+          rejections.push({
+            entryId: policy.entryId,
+            resourceType: policy.resourceType,
+            roomName: laneInput.lane.roomName,
+            orderId,
+            reason: "order_amount_below_plan",
+          });
+        }
+        continue;
+      }
+
+      let grossPriceMilli: MilliCredits;
+      try {
+        grossPriceMilli = priceToMilliDown(order.price);
+      } catch (error) {
+        if (writableLanes.length === 0) {
+          shadowBookIncomplete = true;
           continue;
         }
-
-        let grossPriceMilli: MilliCredits;
-        try {
-          grossPriceMilli = priceToMilliDown(order.price);
-        } catch (error) {
-          return blockedResult(input, {
-            reason: "unsafe_arithmetic",
-            entryId: policy.entryId,
-            roomName: lane.roomName,
-            orderId,
-            detail: error instanceof Error ? error.message : "order price conversion failed",
-          }, rejections);
+        return blockedResult(input, {
+          reason: "unsafe_arithmetic",
+          entryId: policy.entryId,
+          orderId,
+          detail:
+            error instanceof Error
+              ? error.message
+              : "order price conversion failed",
+        }, rejections);
+      }
+      const executableNotionalMilli = checkedMultiply(
+        grossPriceMilli,
+        MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT,
+      );
+      if (executableNotionalMilli === undefined) {
+        if (writableLanes.length === 0) {
+          shadowBookIncomplete = true;
+          continue;
         }
-        const executableNotionalMilli = checkedMultiply(
-          grossPriceMilli,
-          MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT,
-        );
-        if (executableNotionalMilli === undefined) {
-          return blockedResult(input, {
-            reason: "unsafe_arithmetic",
-            entryId: policy.entryId,
-            roomName: lane.roomName,
-            orderId,
-            detail: "executable notional overflow",
-          }, rejections);
-        }
-        if (executableNotionalMilli < minExecutableNotionalMilli) {
+        return blockedResult(input, {
+          reason: "unsafe_arithmetic",
+          entryId: policy.entryId,
+          orderId,
+          detail: "executable notional overflow",
+        }, rejections);
+      }
+      if (executableNotionalMilli < minExecutableNotionalMilli) {
+        for (const laneInput of writableLanes) {
           rejections.push({
             entryId: policy.entryId,
             resourceType: policy.resourceType,
-            roomName: lane.roomName,
+            roomName: laneInput.lane.roomName,
             orderId,
             reason: "executable_notional_below_minimum",
           });
-          continue;
         }
-        eligibleOrders.push({
-          order,
-          remainingAmount,
-          grossPriceMilli,
-          executableNotionalMilli,
+        continue;
+      }
+      eligibleOrders.push({
+        order,
+        remainingAmount,
+        grossPriceMilli,
+        executableNotionalMilli,
+      });
+      resourceOrderRooms.add(order.roomName);
+    }
+    if (shadowBookIncomplete) {
+      for (const laneInput of structurallyValidShadowLanes) {
+        isolatedShadowLanes.push({
+          entryId: policy.entryId,
+          roomName: laneInput.lane.roomName,
+          reason: "book_incomplete",
         });
       }
-      if (eligibleOrders.length > policy.maxEligibleOrders) {
+      continue;
+    }
+    if (eligibleOrders.length > policy.maxEligibleOrders) {
+      if (writableLanes.length > 0) {
         return blockedResult(input, {
           reason: "eligible_book_limit_exceeded",
           entryId: policy.entryId,
-          roomName: lane.roomName,
           detail: `${eligibleOrders.length}>${policy.maxEligibleOrders}`,
         }, rejections);
       }
+      for (const laneInput of structurallyValidShadowLanes) {
+        isolatedShadowLanes.push({
+          entryId: policy.entryId,
+          roomName: laneInput.lane.roomName,
+          reason: "book_incomplete",
+        });
+      }
+      continue;
+    }
+    for (const [orderId, canonical] of seenOrderIds) {
+      const globalOrder = globalOrderIds.get(orderId);
+      if (globalOrder) {
+        return blockedResult(input, {
+          reason: "duplicate_order_id",
+          entryId: policy.entryId,
+          orderId,
+          detail:
+            `cross_resource:${globalOrder.resourceType}:${policy.resourceType}`,
+        }, rejections);
+      }
+      globalOrderIds.set(orderId, {
+        resourceType: policy.resourceType,
+        canonical,
+      });
+    }
+    for (const orderRoom of resourceOrderRooms) {
+      distinctOrderRooms.add(orderRoom);
+    }
+    const preparedResource: PreparedResource = {
+      entry,
+      effectiveNetFloorMilli,
+      minExecutableNotionalMilli,
+      book,
+      eligibleOrders,
+      resourceCalculator: entry.calculateTransactionEnergy,
+    };
+    for (const laneInput of writableLanes) {
       preparedLanes.push({
-        entry,
+        preparedResource,
         laneInput,
-        effectiveNetFloorMilli,
-        minExecutableNotionalMilli,
-        eligibleOrders,
       });
     }
   }
 
+  budget = {
+    sellerRooms: sellerRooms.size,
+    distinctOrderRooms: distinctOrderRooms.size,
+    transactionEnergyEvaluations: 0,
+  };
+  if (
+    distinctOrderRooms.size >
+    MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS
+  ) {
+    return blockedResult(input, {
+      reason: "distinct_order_room_limit_exceeded",
+      detail:
+        `${distinctOrderRooms.size}>` +
+        `${MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS}`,
+    }, rejections, [], budget, isolatedShadowLanes);
+  }
+  const maximumEvaluations = checkedMultiply(
+    2,
+    checkedMultiply(sellerRooms.size, distinctOrderRooms.size) ??
+      Number.MAX_SAFE_INTEGER,
+  );
+  if (
+    maximumEvaluations === undefined ||
+    maximumEvaluations >
+      MARKET_DIRECT_CONTINUOUS_MAX_TRANSACTION_ENERGY_EVALUATIONS
+  ) {
+    return blockedResult(input, {
+      reason: "transaction_energy_evaluation_limit_exceeded",
+      detail:
+        `${maximumEvaluations ?? "overflow"}>` +
+        `${MARKET_DIRECT_CONTINUOUS_MAX_TRANSACTION_ENERGY_EVALUATIONS}`,
+    }, rejections, [], budget, isolatedShadowLanes);
+  }
+
   const safeCandidates: MarketDirectContinuousCandidate[] = [];
   const energyObservations: EnergyObservation[] = [];
+  const transactionEnergyMemo = new Map<string, number>();
   for (const prepared of preparedLanes) {
-    const { entry, laneInput, effectiveNetFloorMilli } = prepared;
+    const { preparedResource, laneInput } = prepared;
+    const { entry, effectiveNetFloorMilli } = preparedResource;
     const { policy, quota } = entry;
     const { lane, protection, terminal } = laneInput;
+    if (
+      policy.evaluatorVersion === 3 &&
+      (terminal.cooldown !== 0 ||
+        terminal.ready !== true)
+    ) {
+      continue;
+    }
     if (
       protection.sellableAmount < MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT ||
       terminal.resourceAmount < MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT
@@ -818,28 +1351,50 @@ export function planMarketDirectContinuous(
       continue;
     }
 
-    for (const eligible of prepared.eligibleOrders) {
+    for (const eligible of preparedResource.eligibleOrders) {
       let transactionEnergy: number;
       let worstCaseTransactionEnergy: number;
       try {
-        transactionEnergy = laneInput.calculateTransactionEnergy(
+        const calculator = preparedResource.resourceCalculator ??
+          laneInput.calculateTransactionEnergy;
+        if (!calculator || !eligible.order.roomName) {
+          throw new Error("transaction energy calculator unavailable");
+        }
+        const readTransactionEnergy = (amount: number): number => {
+          const memoKey =
+            `${amount}|${lane.roomName}|${eligible.order.roomName}`;
+          const memoized = transactionEnergyMemo.get(memoKey);
+          if (memoized !== undefined) return memoized;
+          if (
+            transactionEnergyMemo.size >=
+            MARKET_DIRECT_CONTINUOUS_MAX_TRANSACTION_ENERGY_EVALUATIONS
+          ) {
+            throw new TransactionEnergyEvaluationLimitError(
+              "transaction energy evaluation hard limit exceeded",
+            );
+          }
+          const observed = calculator(amount, eligible.order, lane.roomName);
+          transactionEnergyMemo.set(memoKey, observed);
+          return observed;
+        };
+        transactionEnergy = readTransactionEnergy(
           MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT,
-          eligible.order,
-          lane.roomName,
         );
-        worstCaseTransactionEnergy = laneInput.calculateTransactionEnergy(
-          1,
-          eligible.order,
-          lane.roomName,
-        );
+        worstCaseTransactionEnergy = readTransactionEnergy(1);
       } catch (error) {
+        budget = {
+          ...budget,
+          transactionEnergyEvaluations: transactionEnergyMemo.size,
+        };
         return blockedResult(input, {
-          reason: "energy_pricing_failed",
+          reason: error instanceof TransactionEnergyEvaluationLimitError
+            ? "transaction_energy_evaluation_limit_exceeded"
+            : "energy_pricing_failed",
           entryId: policy.entryId,
           roomName: lane.roomName,
           orderId: eligible.order.id,
           detail: error instanceof Error ? error.message : "energy pricing threw",
-        }, rejections, energyObservations);
+        }, rejections, energyObservations, budget, isolatedShadowLanes);
       }
       if (
         !isNonNegativeSafeInteger(transactionEnergy) ||
@@ -851,7 +1406,10 @@ export function planMarketDirectContinuous(
           roomName: lane.roomName,
           orderId: eligible.order.id,
           detail: "transaction energy must be a non-negative safe integer",
-        }, rejections, energyObservations);
+        }, rejections, energyObservations, {
+          ...budget,
+          transactionEnergyEvaluations: transactionEnergyMemo.size,
+        }, isolatedShadowLanes);
       }
       energyObservations.push({
         entryId: policy.entryId,
@@ -862,11 +1420,23 @@ export function planMarketDirectContinuous(
       });
 
       let rejectionReason: MarketDirectContinuousTupleRejectionReason | undefined;
-      if (transactionEnergy > policy.maxTransactionEnergy) {
+      const effectivePostDealEnergyReserve = Math.max(
+        policy.terminalEnergyReserve,
+        terminal.effectivePostDealEnergyReserve ??
+          policy.terminalEnergyReserve,
+      );
+      if (
+        transactionEnergy > policy.maxTransactionEnergy ||
+        worstCaseTransactionEnergy > policy.maxTransactionEnergy
+      ) {
         rejectionReason = "transaction_energy_exceeded";
       } else if (
         terminal.energy < transactionEnergy ||
-        terminal.energy - transactionEnergy < policy.terminalEnergyReserve
+        terminal.energy - transactionEnergy <
+          effectivePostDealEnergyReserve ||
+        terminal.energy < worstCaseTransactionEnergy ||
+        terminal.energy - worstCaseTransactionEnergy <
+          effectivePostDealEnergyReserve
       ) {
         rejectionReason = "terminal_energy_reserve";
       }
@@ -894,7 +1464,10 @@ export function planMarketDirectContinuous(
           roomName: lane.roomName,
           orderId: eligible.order.id,
           detail: "energy/floor multiplication overflow",
-        }, rejections, energyObservations);
+        }, rejections, energyObservations, {
+          ...budget,
+          transactionEnergyEvaluations: transactionEnergyMemo.size,
+        }, isolatedShadowLanes);
       }
       const netCreditsMilli = checkedSubtract(
         eligible.executableNotionalMilli,
@@ -914,7 +1487,10 @@ export function planMarketDirectContinuous(
           roomName: lane.roomName,
           orderId: eligible.order.id,
           detail: "net credits subtraction overflow",
-        }, rejections, energyObservations);
+        }, rejections, energyObservations, {
+          ...budget,
+          transactionEnergyEvaluations: transactionEnergyMemo.size,
+        }, isolatedShadowLanes);
       }
       if (!rejectionReason && netCreditsMilli < requiredNetCreditsMilli) {
         rejectionReason = "planned_net_below_floor";
@@ -941,14 +1517,34 @@ export function planMarketDirectContinuous(
         input.globalQuota.confirmedAmount,
         input.globalQuota.unmatchedPlannedAmount,
       );
-      if (resourceQuotaBefore === undefined || globalQuotaBefore === undefined) {
+      const roomQuotaBefore = laneInput.quota
+        ? checkedAdd(
+          laneInput.quota.roomConfirmedAmount,
+          laneInput.quota.roomUnmatchedPlannedAmount,
+        )
+        : 0;
+      const laneQuotaBefore = laneInput.quota
+        ? checkedAdd(
+          laneInput.quota.laneConfirmedAmount,
+          laneInput.quota.laneUnmatchedPlannedAmount,
+        )
+        : 0;
+      if (
+        resourceQuotaBefore === undefined ||
+        globalQuotaBefore === undefined ||
+        roomQuotaBefore === undefined ||
+        laneQuotaBefore === undefined
+      ) {
         return blockedResult(input, {
           reason: "unsafe_arithmetic",
           entryId: policy.entryId,
           roomName: lane.roomName,
           orderId: eligible.order.id,
           detail: "quota addition overflow",
-        }, rejections, energyObservations);
+        }, rejections, energyObservations, {
+          ...budget,
+          transactionEnergyEvaluations: transactionEnergyMemo.size,
+        }, isolatedShadowLanes);
       }
       const candidate: MarketDirectContinuousCandidate = {
         entryId: policy.entryId,
@@ -969,6 +1565,8 @@ export function planMarketDirectContinuous(
         worstCaseTransactionEnergy,
         worstCaseNetCreditsMilli,
         resourceQuotaBefore,
+        roomQuotaBefore,
+        laneQuotaBefore,
         globalQuotaBefore,
         reservedForOtherSafeResources: 0,
         tupleKey: "",
@@ -977,20 +1575,53 @@ export function planMarketDirectContinuous(
       safeCandidates.push(candidate);
     }
   }
+  budget = {
+    ...budget,
+    transactionEnergyEvaluations: transactionEnergyMemo.size,
+  };
   safeCandidates.sort(compareMarketDirectContinuousCandidates);
 
+  const quotaByResource = new Map(
+    input.entries.map((entry) => [entry.policy.resourceType, entry] as const),
+  );
+  const laneInputByKey = new Map<
+    string,
+    MarketDirectContinuousLaneInput
+  >();
+  for (const entry of input.entries) {
+    for (const laneInput of entry.lanes) {
+      laneInputByKey.set(
+        `${entry.policy.resourceType}|${laneInput.lane.roomName}`,
+        laneInput,
+      );
+    }
+  }
   const safeResourceTypes = new Set(
     safeCandidates
       .filter((candidate) => {
-        const entry = input.entries.find((item) =>
-          item.policy.entryId === candidate.entryId)!;
-        return candidate.resourceQuotaBefore +
-          MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT <= entry.quota.rollingCap;
+        const entry = quotaByResource.get(candidate.resourceType)!;
+        if (
+          candidate.resourceQuotaBefore +
+            MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT >
+          entry.quota.rollingCap
+        ) {
+          return false;
+        }
+        if (entry.policy.evaluatorVersion !== 3) return true;
+        const laneInput = laneInputByKey.get(
+          `${candidate.resourceType}|${candidate.roomName}`,
+        );
+        return Boolean(
+          laneInput?.quota &&
+          candidate.roomQuotaBefore +
+            MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT <=
+            laneInput.quota.roomRollingCap &&
+          candidate.laneQuotaBefore +
+            MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT <=
+            laneInput.quota.laneRollingCap,
+        );
       })
       .map((candidate) => candidate.resourceType),
-  );
-  const quotaByResource = new Map(
-    input.entries.map((entry) => [entry.policy.resourceType, entry] as const),
   );
 
   const admittedCandidates: MarketDirectContinuousCandidate[] = [];
@@ -1010,6 +1641,46 @@ export function planMarketDirectContinuous(
       });
       continue;
     }
+    const laneInput = laneInputByKey.get(
+      `${candidate.resourceType}|${candidate.roomName}`,
+    );
+    if (entry.policy.evaluatorVersion === 3) {
+      if (!laneInput?.quota || !laneQuotaIsValid(laneInput.quota)) {
+        return blockedResult(input, {
+          reason: "lane_quota_incomplete",
+          entryId: candidate.entryId,
+          roomName: candidate.roomName,
+        }, rejections, energyObservations, budget, isolatedShadowLanes);
+      }
+      if (
+        candidate.roomQuotaBefore +
+          MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT >
+        laneInput.quota.roomRollingCap
+      ) {
+        rejections.push({
+          entryId: candidate.entryId,
+          resourceType: candidate.resourceType,
+          roomName: candidate.roomName,
+          orderId: candidate.order.id,
+          reason: "room_quota_exhausted",
+        });
+        continue;
+      }
+      if (
+        candidate.laneQuotaBefore +
+          MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT >
+        laneInput.quota.laneRollingCap
+      ) {
+        rejections.push({
+          entryId: candidate.entryId,
+          resourceType: candidate.resourceType,
+          roomName: candidate.roomName,
+          orderId: candidate.order.id,
+          reason: "lane_quota_exhausted",
+        });
+        continue;
+      }
+    }
 
     let reservedForOtherSafeResources = 0;
     for (const resourceType of safeResourceTypes) {
@@ -1025,7 +1696,7 @@ export function planMarketDirectContinuous(
             reason: "unsafe_arithmetic",
             entryId: candidate.entryId,
             detail: "opportunity reserve overflow",
-          }, rejections, energyObservations);
+          }, rejections, energyObservations, budget, isolatedShadowLanes);
         }
         reservedForOtherSafeResources = nextReserve;
       }
@@ -1063,7 +1734,7 @@ export function planMarketDirectContinuous(
     admittedCandidates,
     selected: admittedCandidates[0],
     rejections,
-  }, energyObservations);
+  }, energyObservations, budget, isolatedShadowLanes);
 }
 
 /**
@@ -1074,7 +1745,28 @@ export function isExactMarketDirectContinuousSecondRead(
   planned: MarketDirectContinuousPlanningResult,
   secondRead: MarketDirectContinuousPlanningResult,
 ): boolean {
+  const plannedBooks = resultBookReferences.get(planned);
+  const secondReadBooks = resultBookReferences.get(secondRead);
+  const independentBookSnapshots = (
+    plannedBooks !== undefined &&
+    secondReadBooks !== undefined &&
+    plannedBooks.length === secondReadBooks.length &&
+    plannedBooks.every((reference, index) => {
+      const secondReference = secondReadBooks[index];
+      if (
+        reference.book === secondReference.book ||
+        reference.orders === secondReference.orders ||
+        reference.ownOrderIds === secondReference.ownOrderIds
+      ) {
+        return false;
+      }
+      const secondOrderObjects = new Set(secondReference.orders);
+      return reference.orders.every((order) =>
+        !secondOrderObjects.has(order));
+    })
+  );
   return (
+    independentBookSnapshots &&
     planned.complete &&
     secondRead.complete &&
     planned.blocker === undefined &&

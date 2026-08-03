@@ -39,6 +39,14 @@ import {
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { collectCarrierCargoInventory } from "@/runtime/hubProgress";
 import { getProductReagentMap, roundUpReactionAmount } from "@/runtime/reactionMap";
+import {
+  beginHubProtectionAttempt,
+  buildCommittedHubProtectionSnapshot,
+  observeHubProtectionConfigIncarnation,
+  publishCommittedHubProtectionSnapshot,
+  publishInvalidHubProtectionSnapshot,
+  type HubRuntimeProtectionExtension,
+} from "@/runtime/hubProtectionSnapshot";
 
 export function getDefaultHubConfig(): NonNullable<Memory["cfg"]>["hub"] {
   return {
@@ -1882,53 +1890,191 @@ export function wireDistributedSynthesis(
   return true;
 }
 
+type HubRuntimeState = NonNullable<Memory["runtime"]>["hub"];
+
+type HubPlanningAttemptResult =
+  | {
+      valid: true;
+      planMode: "distributed" | "fallback" | "blocked";
+    }
+  | {
+      valid: false;
+      reason: string;
+    };
+
+function resetUncommittedHubProtectionFields(rt: HubRuntimeState): void {
+  rt.distributedSynthesis = {
+    roomCapabilities: {},
+    dispatchAssignments: [],
+    allocationLedger: {},
+    routeDecisions: [],
+  };
+  rt.marketSellSurplus = {};
+}
+
+function protectionTransferTasks(): unknown[] {
+  const tasks = Memory.data?.resourceControl?.tasks;
+  if (!tasks || typeof tasks !== "object" || Array.isArray(tasks)) return [];
+  return Object.values(tasks);
+}
+
 export function runHubPlanner(): void {
   let cfg = Memory.cfg?.hub;
-  if (cfg?.enabled !== true || !cfg.hubRoomName) {
-    if (cfg?.hubRoomName) clearHubSynthesisReactions(cfg.hubRoomName);
-    return;
-  }
-
-  cfg = normalizeHubConfig(cfg);
-  if (cfg !== Memory.cfg?.hub) {
-    Memory.cfg!.hub = cfg;
+  if (cfg?.enabled === true && cfg.hubRoomName) {
+    cfg = normalizeHubConfig(cfg);
+    if (cfg !== Memory.cfg?.hub) {
+      Memory.cfg!.hub = cfg;
+    }
   }
 
   const rt = Memory.runtime?.hub;
-  if (!rt) return;
+  if (!rt) {
+    if (cfg?.enabled !== true && cfg?.hubRoomName) {
+      clearHubSynthesisReactions(cfg.hubRoomName);
+    }
+    return;
+  }
+
+  const protectionRuntime = rt as HubRuntimeState &
+    HubRuntimeProtectionExtension;
+  const protectionConfig = cfg ?? { enabled: false };
+  const configObservation = observeHubProtectionConfigIncarnation(
+    protectionRuntime,
+    protectionConfig,
+    Game.time,
+  );
+
+  if (cfg?.enabled !== true || !cfg.hubRoomName) {
+    if (cfg?.hubRoomName) clearHubSynthesisReactions(cfg.hubRoomName);
+    if (configObservation.changed) {
+      const disabledAttempt = beginHubProtectionAttempt(
+        protectionRuntime,
+        protectionConfig,
+        Game.time,
+      );
+      resetUncommittedHubProtectionFields(rt);
+      publishInvalidHubProtectionSnapshot(
+        protectionRuntime,
+        disabledAttempt,
+        protectionConfig,
+        Game.time,
+        "blocked",
+        cfg?.enabled === false ? "hub_disabled" : "hub_config_missing",
+      );
+    }
+    return;
+  }
 
   const onCadence = Game.time % (cfg.planInterval || 50) === 0;
-  if (!onCadence && rt.needsPlan !== true) return;
+  if (
+    !configObservation.changed &&
+    !onCadence &&
+    rt.needsPlan !== true
+  ) {
+    return;
+  }
 
+  const attempt = beginHubProtectionAttempt(
+    protectionRuntime,
+    cfg,
+    Game.time,
+  );
+  resetUncommittedHubProtectionFields(rt);
+
+  let published = false;
+  let failureStatus: "blocked" | "failed" = "failed";
+  let failureReason = "hub_planning_incomplete";
+
+  try {
+    const result = runHubPlanningAttempt(cfg, rt);
+    if ("reason" in result) {
+      failureStatus = "blocked";
+      failureReason = result.reason;
+    } else {
+      const snapshot = buildCommittedHubProtectionSnapshot({
+        revision: attempt.attemptRevision,
+        configIncarnation: attempt.configIncarnation,
+        tick: Game.time,
+        expiresAt: Game.time + Math.max(1, cfg.planInterval || 50),
+        config: cfg,
+        runtime: rt,
+        synthesisRooms: Memory.cfg?.synthesisControl?.rooms ?? {},
+        transferTasks: protectionTransferTasks(),
+        planMode: result.planMode,
+      });
+      publishCommittedHubProtectionSnapshot(
+        protectionRuntime,
+        attempt,
+        snapshot,
+      );
+      rt.marketSellSurplus = {
+        ...(snapshot.baseMineralSurplus.byRoom[cfg.hubRoomName] ?? {}),
+      };
+      rt.needsPlan = false;
+      rt.lastPlanTick = Game.time;
+      rt.updatedAt = Game.time;
+      rt.lastError = undefined;
+      published = true;
+    }
+  } catch (error) {
+    failureStatus = "failed";
+    failureReason =
+      error instanceof Error ? error.message : "hub_planning_throw";
+    rt.status = "blocked";
+    rt.lastError = failureReason;
+    try {
+      clearHubSynthesisReactions(cfg.hubRoomName);
+    } catch {
+      // 下方仍会把 protection snapshot 统一提交为 invalid。
+    }
+  } finally {
+    if (!published) {
+      resetUncommittedHubProtectionFields(rt);
+      publishInvalidHubProtectionSnapshot(
+        protectionRuntime,
+        attempt,
+        cfg,
+        Game.time,
+        failureStatus,
+        failureReason,
+      );
+    }
+  }
+}
+
+function runHubPlanningAttempt(
+  cfg: NonNullable<Memory["cfg"]>["hub"],
+  rt: HubRuntimeState,
+): HubPlanningAttemptResult {
   const room = Game.rooms[cfg.hubRoomName];
   if (!room) {
     rt.status = "blocked";
     clearHubSynthesisReactions(cfg.hubRoomName);
-    return;
+    return { valid: false, reason: "hub_room_not_visible" };
   }
 
   if (!room.controller?.my) {
     rt.status = "blocked";
     clearHubSynthesisReactions(cfg.hubRoomName);
-    return;
+    return { valid: false, reason: "hub_room_not_owned" };
   }
 
   if (!room.storage) {
     rt.status = "blocked";
     clearHubSynthesisReactions(cfg.hubRoomName);
-    return;
+    return { valid: false, reason: "hub_storage_missing" };
   }
 
   if (!room.terminal) {
     rt.status = "blocked";
     clearHubSynthesisReactions(cfg.hubRoomName);
-    return;
+    return { valid: false, reason: "hub_terminal_missing" };
   }
 
   if (countLabs(room) < 3) {
     rt.status = "blocked";
     clearHubSynthesisReactions(cfg.hubRoomName);
-    return;
+    return { valid: false, reason: "hub_labs_insufficient" };
   }
 
   const hubInventory: Record<string, number> = {};
@@ -1989,10 +2135,6 @@ export function runHubPlanner(): void {
 
   planHubImports(cfg, transferAmountsBeforeImports);
   const transferAmountsAfterImports = createResourceTransferTaskAmountIndex();
-
-  rt.needsPlan = false;
-  rt.lastPlanTick = Game.time;
-  rt.updatedAt = Game.time;
 
   const distributedPreview = result.blocked
     ? planDistributedSynthesis(
@@ -2062,40 +2204,14 @@ export function runHubPlanner(): void {
     planHubDistribution(cfg);
   }
 
-  computeAndStoreMarketSellSurplus(cfg, hubInventory, chainTarget, targetCompounds);
-}
-
-function computeAndStoreMarketSellSurplus(
-  cfg: NonNullable<Memory["cfg"]>["hub"],
-  hubInventory: Record<string, number>,
-  chainTarget: number,
-  targetCompounds: ResourceConstant[],
-  transferAmounts: ResourceTransferTaskAmountIndex = createResourceTransferTaskAmountIndex(),
-): void {
-  const surplus: Partial<Record<ResourceConstant, number>> = {};
-  const hubRoomName = cfg.hubRoomName;
-
-  for (const [res, amount] of Object.entries(hubInventory)) {
-    if (res === RESOURCE_ENERGY || res === RESOURCE_POWER || res === RESOURCE_OPS) {
-      continue;
-    }
-    if (amount <= 0) continue;
-    const resource = res as ResourceConstant;
-
-    if (!targetCompounds.includes(resource)) {
-      continue;
-    }
-
-    const outgoing = transferAmounts.getOutgoing(hubRoomName, resource);
-    const effective = Math.max(0, amount - outgoing);
-
-    const sellable = Math.max(0, effective - chainTarget);
-    if (sellable >= 100) {
-      surplus[resource] = sellable;
-    }
+  if (result.blocked && !distributedCanProceed) {
+    return { valid: true, planMode: "blocked" };
   }
-
-  if (!Memory.runtime) Memory.runtime = {};
-  if (!Memory.runtime.hub) Memory.runtime.hub = {};
-  Memory.runtime.hub.marketSellSurplus = surplus;
+  return {
+    valid: true,
+    planMode:
+      (rt.distributedSynthesis?.dispatchAssignments?.length ?? 0) > 0
+        ? "distributed"
+        : "fallback",
+  };
 }

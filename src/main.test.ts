@@ -59,6 +59,39 @@ describe("main loop phase ordering", () => {
     expect(marketIdx).toBeGreaterThan(resourceIdx);
   });
 
+  it("freezes the complete production-to-market phase order", () => {
+    const order = extractMeasureOrder(mainSrc);
+    const frozen = [
+      "marketSalePreflight",
+      "pixelGenerator",
+      "productionMonitor",
+      "hubPlanner",
+      "hubUpgradeControl",
+      "synthesisControl",
+      "factoryControl",
+      "mineralExtraction",
+      "resourceControl",
+      "marketSaleAutomation",
+    ];
+    expect(
+      order.filter((phase) => frozen.includes(phase)),
+    ).toEqual(frozen);
+  });
+
+  it("keeps the Pixel phase while the module owns the permanent disabled latch", () => {
+    const pixelSrc = readFileSync(
+      resolve(__dirname, "runtime/pixelGenerator.ts"),
+      "utf-8",
+    );
+    expect(mainSrc).toContain(
+      'cpuProfiler.measure("pixelGenerator", runPixelGenerator)',
+    );
+    expect(pixelSrc).toContain(
+      "PIXEL_GENERATOR_PERMANENTLY_DISABLED = true",
+    );
+    expect(pixelSrc).not.toContain("Game.cpu.generatePixel(");
+  });
+
   it("preserves hubPlanner before synthesisControl ordering", () => {
     const order = extractMeasureOrder(mainSrc);
     const hubIdx = order.indexOf("hubPlanner");

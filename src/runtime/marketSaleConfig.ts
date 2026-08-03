@@ -7,16 +7,54 @@ import {
   MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY,
   canonicalStableHashV1,
 } from "@/runtime/marketDirectContinuousPolicy";
+import {
+  MARKET_BASE_RESOURCE_CATALOG,
+  MARKET_BASE_RESOURCE_CONFIG_REVISION,
+  MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
+  MARKET_BASE_RESOURCE_LANE_DERIVATION_POLICY,
+  MARKET_BASE_RESOURCE_POLICIES,
+  validateMarketBaseResourceRawConfig,
+} from "@/runtime/marketBaseResourcePolicy";
 
 export type MarketSaleThresholdMap = Partial<Record<ResourceConstant, number>>;
 export type MarketSaleStrategy = "maker" | "direct";
 export type MarketSaleDirectCapability =
   | "legacy-canary"
-  | "continuous-v2";
+  | "continuous-v2"
+  | "continuous-v3";
 export type MarketSaleAutomationMode = MarketSaleMode | "direct";
 
 export const MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION =
   "market-direct-continuous-v2-r1" as const;
+
+export { MARKET_BASE_RESOURCE_CONFIG_REVISION };
+
+/**
+ * V3 的静态 runtime 指纹故意不包含动态 roster/lane set。account identity
+ * 与 admission policy 由 exact permit 冻结，当前 scope 只进入两次 full
+ * read/pending/monitor；新增房间不会改写未变化 lane 的稳定 shared 合同。
+ */
+export const MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT =
+  canonicalStableHashV1({
+    domain: "market-base-resource:runtime-v1",
+    configRevision: MARKET_BASE_RESOURCE_CONFIG_REVISION,
+    engineAssumptionCommit: DIRECT_ENGINE_ASSUMPTIONS.commit,
+    catalog: MARKET_BASE_RESOURCE_CATALOG,
+    resourcePolicyFingerprints: MARKET_BASE_RESOURCE_POLICIES.map(
+      (policy) => policy.fingerprint,
+    ),
+    floorBootstrapFingerprint:
+      MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.fingerprint,
+    laneDerivationPolicy:
+      MARKET_BASE_RESOURCE_LANE_DERIVATION_POLICY,
+    historyPolicy: {
+      minHistoryDays: 7,
+      minHistoryTransactions: 100,
+      minHistoryVolume: 100_000,
+      historyFloorRatio: 0.95,
+      historyMaxAgeDays: 2,
+    },
+  });
 
 /**
  * Continuous permit 冻结的是这份代码级运行合同。Memory 配置只允许逐字段
@@ -168,9 +206,9 @@ function normalizeShadowStrategy(value: unknown): MarketSaleStrategy {
 function normalizeDirectCapability(
   value: unknown,
 ): MarketSaleDirectCapability {
-  return value === "continuous-v2"
-    ? "continuous-v2"
-    : "legacy-canary";
+  if (value === "continuous-v3") return "continuous-v3";
+  if (value === "continuous-v2") return "continuous-v2";
+  return "legacy-canary";
 }
 
 function normalizeResourceList(value: unknown): ResourceConstant[] {
@@ -576,6 +614,157 @@ export function marketDirectContinuousConfigMismatchReasons(
 }
 
 /**
+ * V3 只接受签入的七资源安全合同。原始配置的重复/额外项由
+ * validateMarketBaseResourceRawConfig 在 normalizer 前检查；这里再校验
+ * 规范化后的完整值，防止调用方绕过 resolve 直接构造 config。
+ */
+export function marketBaseResourceV3ConfigMismatchReasons(
+  config: MarketSaleAutomationConfig,
+): string[] {
+  const reasons = [
+    ...validateMarketBaseResourceRawConfig({
+      sellResources: config.sellResources,
+      hardFloor: config.hardFloor,
+      economicFloor: config.economicFloor,
+      forecastBuffer: config.forecastBuffer,
+    }).invalidReasons,
+  ];
+  if (config.directCapability !== "continuous-v3") {
+    reasons.push("base_resource_v3_capability_mismatch");
+  }
+  if (config.configRevision !== MARKET_BASE_RESOURCE_CONFIG_REVISION) {
+    reasons.push("base_resource_v3_config_revision_mismatch");
+  }
+  const maximumNotional = Math.max(
+    ...MARKET_BASE_RESOURCE_POLICIES.map(
+      (policy) => policy.minOrderNotional,
+    ),
+  );
+  const sharedValues: Array<readonly [boolean, string]> = [
+    [
+      config.minDealAmount === 1_000,
+      "base_resource_v3_min_deal_amount_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "maxDirectDealAmount",
+        MARKET_DIRECT_CANARY_POLICY.maxDealAmount,
+      ) === 1_000,
+      "base_resource_v3_max_deal_amount_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "maxDirectDealsPerCycle",
+        MARKET_DIRECT_CANARY_POLICY.maxDealsPerCycle,
+      ) === 1,
+      "base_resource_v3_deals_per_cycle_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "minDirectOrderAmount",
+        MARKET_DIRECT_CANARY_POLICY.minOrderAmount,
+      ) === 1_000,
+      "base_resource_v3_min_order_amount_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "minDirectOrderNotional",
+        MARKET_DIRECT_CANARY_POLICY.minOrderNotional,
+      ) === maximumNotional,
+      "base_resource_v3_scalar_notional_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "maxDirectRawOrdersScannedPerCycle",
+        MARKET_DIRECT_CANARY_POLICY.maxRawOrdersScannedPerCycle,
+      ) === 1_000,
+      "base_resource_v3_raw_scan_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "maxDirectEligibleOrdersPricedPerCycle",
+        MARKET_DIRECT_CANARY_POLICY.maxEligibleOrdersPricedPerCycle,
+      ) === 200,
+      "base_resource_v3_eligible_scan_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "maxDirectTransactionEnergy",
+        MARKET_DIRECT_CANARY_POLICY.maxTransactionEnergy,
+      ) === 1_000,
+      "base_resource_v3_transaction_energy_mismatch",
+    ],
+    [
+      config.terminalEnergyReserve === 25_000,
+      "base_resource_v3_terminal_reserve_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "energyShadowHardFloor",
+        MARKET_DIRECT_CANARY_POLICY.minEnergyShadowHardFloor,
+      ) === MARKET_DIRECT_CANARY_POLICY.minEnergyShadowHardFloor,
+      "base_resource_v3_energy_shadow_floor_mismatch",
+    ],
+    [
+      config.energyShadowPrice === undefined,
+      "base_resource_v3_fixed_energy_shadow_forbidden",
+    ],
+    [
+      config.canaryEnabled && !config.canaryAllowExpansion,
+      "base_resource_v3_canary_latch_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "directCanaryMaxConfirmedDeals",
+        MARKET_DIRECT_CANARY_POLICY.maxConfirmedDeals,
+      ) === 1,
+      "base_resource_v3_canary_count_mismatch",
+    ],
+    [
+      directConfigValue(
+        config,
+        "planningSnapshotMaxAgeTicks",
+        MARKET_DIRECT_CANARY_POLICY.planningSnapshotMaxAgeTicks,
+      ) === 10,
+      "base_resource_v3_snapshot_age_mismatch",
+    ],
+    [
+      config.minHistoryDays === 7,
+      "base_resource_v3_history_days_mismatch",
+    ],
+    [
+      config.minHistoryTransactions === 100,
+      "base_resource_v3_history_transactions_mismatch",
+    ],
+    [
+      config.minHistoryVolume === 100_000,
+      "base_resource_v3_history_volume_mismatch",
+    ],
+    [
+      config.historyFloorRatio === 0.95,
+      "base_resource_v3_history_ratio_mismatch",
+    ],
+    [
+      config.historyMaxAgeDays === 2,
+      "base_resource_v3_history_age_mismatch",
+    ],
+  ];
+  for (const [matches, reason] of sharedValues) {
+    if (!matches) reasons.push(reason);
+  }
+  return [...new Set(reasons)].sort();
+}
+
+/**
  * Direct Shadow 与 active Direct 必须在不依赖生命周期 mode 的同一安全策略下
  * 得到相同指纹。Maker Shadow 及其他模式不产生 Direct 指纹，因此无法误继承
  * Direct 资格。
@@ -590,6 +779,20 @@ export function directSafetyFingerprint(
         ? config.shadowStrategy ?? "maker"
         : undefined;
   if (strategy !== "direct") return undefined;
+
+  if (config.directCapability === "continuous-v3") {
+    return JSON.stringify({
+      strategy: "continuous-v3",
+      runtimeFingerprint: MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
+      configRevision: config.configRevision ?? null,
+      sellResources: [...config.sellResources],
+      hardFloor: sortedThresholdMap(config.hardFloor),
+      economicFloor: sortedThresholdMap(config.economicFloor),
+      forecastBuffer: sortedThresholdMap(config.forecastBuffer),
+      mismatchReasons:
+        marketBaseResourceV3ConfigMismatchReasons(config),
+    });
+  }
 
   if (config.directCapability === "continuous-v2") {
     return JSON.stringify({
@@ -692,7 +895,19 @@ export function resolveMarketSaleAutomationConfig(
   const directCapability = normalizeDirectCapability(
     raw.directCapability,
   );
-  const sellResources = normalizeResourceList(raw.sellResources);
+  const usesDirectStrategy =
+    mode === "direct" ||
+    (mode === "shadow" && shadowStrategy === "direct");
+  const rawV3Validation =
+    usesDirectStrategy && directCapability === "continuous-v3"
+      ? validateMarketBaseResourceRawConfig(raw)
+      : undefined;
+  const sellResources =
+    rawV3Validation?.valid && rawV3Validation.canonical
+      ? [...rawV3Validation.canonical.sellResources] as ResourceConstant[]
+      : rawV3Validation
+        ? []
+        : normalizeResourceList(raw.sellResources);
   const hardFloor = normalizeThresholdMap(raw.hardFloor, 0, 1_000_000);
   const economicFloor = normalizeThresholdMap(raw.economicFloor, 0, 1_000_000);
   const forecastBuffer = normalizeThresholdMap(raw.forecastBuffer, 0, 1_000_000);
@@ -832,11 +1047,14 @@ export function resolveMarketSaleAutomationConfig(
     }
   }
 
-  const usesDirectStrategy =
-    mode === "direct" || (mode === "shadow" && shadowStrategy === "direct");
   if (usesDirectStrategy) {
     if (!rawCanaryShapeValid) {
       invalidReasons.push("direct_canary_config_invalid");
+    }
+    if (rawV3Validation) {
+      for (const reason of rawV3Validation.invalidReasons) {
+        addInvalidReason(invalidReasons, reason);
+      }
     }
     if (directCapability === "legacy-canary") {
     const rawAllowlistIsExactlyX =
@@ -1045,6 +1263,16 @@ export function resolveMarketSaleAutomationConfig(
     directCapability === "continuous-v2"
   ) {
     for (const reason of marketDirectContinuousConfigMismatchReasons(
+      resolved,
+    )) {
+      addInvalidReason(invalidReasons, reason);
+    }
+  }
+  if (
+    usesDirectStrategy &&
+    directCapability === "continuous-v3"
+  ) {
+    for (const reason of marketBaseResourceV3ConfigMismatchReasons(
       resolved,
     )) {
       addInvalidReason(invalidReasons, reason);
