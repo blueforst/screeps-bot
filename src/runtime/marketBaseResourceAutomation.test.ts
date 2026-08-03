@@ -1837,13 +1837,29 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(deps.executePrepared).not.toHaveBeenCalled();
   });
 
-  it("Energy 可选分量显式为 undefined 时先规范化再生成 canonical evidence", () => {
+  it("V3 可选 Energy/Protection 字段显式为 undefined 时先规范化再生成 canonical evidence", () => {
     const { state, deps, input } = v3RuntimeFixture();
     const runtimeInput = input();
     const originalReadCandidates = runtimeInput.readCandidates;
     runtimeInput.readCandidates = () =>
       originalReadCandidates().map((candidate) => ({
         ...candidate,
+        protectionEntry: {
+          ...candidate.protectionEntry,
+          sourceContributions: [
+            {
+              dedupeKey: "floor:test",
+              stableKey: "floor:test",
+              anonymous: false,
+              bucket: "hardReserve",
+              amount: 100_000,
+              sourceKinds: ["floor"],
+              managedOrderId: undefined,
+              observedAt: candidate.protectionEntry.observedAt,
+              expiresAt: candidate.protectionEntry.expiresAt,
+            },
+          ],
+        },
         energyShadowComponents: {
           ...candidate.energyShadowComponents,
           explicit: undefined,

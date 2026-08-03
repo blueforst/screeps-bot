@@ -5336,6 +5336,71 @@ function canonicalEnergyShadowComponents(
   };
 }
 
+function canonicalProtectionEntry(
+  entry: MarketProtectionEntry,
+): MarketProtectionEntry {
+  return {
+    revision: entry.revision,
+    observedAt: entry.observedAt,
+    expiresAt: entry.expiresAt,
+    roomName: entry.roomName,
+    resource: entry.resource,
+    totalStock: entry.totalStock,
+    terminalStock: entry.terminalStock,
+    hardReserve: entry.hardReserve,
+    ...(entry.localReserve !== undefined
+      ? { localReserve: entry.localReserve }
+      : {}),
+    ...(entry.absoluteTarget !== undefined
+      ? { absoluteTarget: entry.absoluteTarget }
+      : {}),
+    ...(entry.consumptiveDemand !== undefined
+      ? { consumptiveDemand: entry.consumptiveDemand }
+      : {}),
+    ...(entry.boostWar !== undefined ? { boostWar: entry.boostWar } : {}),
+    ...(entry.hubCommitments !== undefined
+      ? { hubCommitments: entry.hubCommitments }
+      : {}),
+    productionDemand: entry.productionDemand,
+    forecastBuffer: entry.forecastBuffer,
+    protectedOutgoing: entry.protectedOutgoing,
+    carrierOrInFlight: entry.carrierOrInFlight,
+    protectedAmount: entry.protectedAmount,
+    grossSurplus: entry.grossSurplus,
+    managedExposure: entry.managedExposure,
+    newExposureCapacity: entry.newExposureCapacity,
+    sellableAmount: entry.sellableAmount,
+    fresh: entry.fresh,
+    blocked: entry.blocked,
+    blockedReasons: [...entry.blockedReasons],
+    issues: entry.issues.map((issue) => ({
+      code: issue.code,
+      ...(issue.sourceKind !== undefined
+        ? { sourceKind: issue.sourceKind }
+        : {}),
+      ...(issue.stableKey !== undefined
+        ? { stableKey: issue.stableKey }
+        : {}),
+      ...(issue.detail !== undefined ? { detail: issue.detail } : {}),
+    })),
+    sourceContributions: entry.sourceContributions.map((contribution) => ({
+      dedupeKey: contribution.dedupeKey,
+      ...(contribution.stableKey !== undefined
+        ? { stableKey: contribution.stableKey }
+        : {}),
+      anonymous: contribution.anonymous,
+      bucket: contribution.bucket,
+      amount: contribution.amount,
+      sourceKinds: [...contribution.sourceKinds],
+      ...(contribution.managedOrderId !== undefined
+        ? { managedOrderId: contribution.managedOrderId }
+        : {}),
+      observedAt: contribution.observedAt,
+      expiresAt: contribution.expiresAt,
+    })),
+  };
+}
+
 function candidateEnergyEvidence(
   candidate: MarketBaseResourceRuntimeCandidate,
   tick: number,
@@ -5619,6 +5684,9 @@ function liveScopeForRead(
       // commitment 前重建精确字段集，保留“缺失”语义且不放宽 hash 合同。
       candidates = input.readCandidates().map((candidate) => ({
         ...candidate,
+        protectionEntry: canonicalProtectionEntry(
+          candidate.protectionEntry,
+        ),
         energyShadowComponents: canonicalEnergyShadowComponents(
           candidate.energyShadowComponents,
         ),
