@@ -3818,10 +3818,10 @@ const marketBaseResourceExactScopeCommitmentCache = new Map<
   readonly MarketBaseResourceExactScopeCommitmentCacheEntry[]
 >();
 
-function marketBaseResourceExactStructuralEqual(
+function marketBaseResourceExactStructuralEqualUnchecked(
   left: unknown,
   right: unknown,
-  seen = new WeakMap<object, WeakSet<object>>(),
+  activeRight: WeakSet<object>,
 ): boolean {
   if (left === right) return true;
   if (
@@ -3835,44 +3835,65 @@ function marketBaseResourceExactStructuralEqual(
   }
   const leftObject = left as object;
   const rightObject = right as object;
-  const seenRights = seen.get(leftObject);
-  if (seenRights?.has(rightObject)) return true;
-  if (seenRights) {
-    seenRights.add(rightObject);
-  } else {
-    seen.set(leftObject, new WeakSet([rightObject]));
-  }
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return (
-      left.length === right.length &&
-      left.every((entry, index) =>
-        marketBaseResourceExactStructuralEqual(entry, right[index], seen),
-      )
-    );
-  }
-  const leftPrototype = Object.getPrototypeOf(leftObject);
-  const rightPrototype = Object.getPrototypeOf(rightObject);
-  if (
-    (leftPrototype !== Object.prototype && leftPrototype !== null) ||
-    (rightPrototype !== Object.prototype && rightPrototype !== null)
-  ) {
-    return false;
-  }
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord);
-  const rightKeys = Object.keys(rightRecord);
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key) =>
-        Object.prototype.hasOwnProperty.call(rightRecord, key) &&
-        marketBaseResourceExactStructuralEqual(
+  if (activeRight.has(rightObject)) return false;
+  activeRight.add(rightObject);
+  try {
+    if (Array.isArray(left) && Array.isArray(right)) {
+      if (left.length !== right.length) return false;
+      for (let index = 0; index < left.length; index += 1) {
+        if (
+          !marketBaseResourceExactStructuralEqualUnchecked(
+            left[index],
+            right[index],
+            activeRight,
+          )
+        ) {
+          return false;
+        }
+      }
+      return true;
+    }
+    const leftPrototype = Object.getPrototypeOf(leftObject);
+    const rightPrototype = Object.getPrototypeOf(rightObject);
+    if (
+      (leftPrototype !== Object.prototype && leftPrototype !== null) ||
+      (rightPrototype !== Object.prototype && rightPrototype !== null)
+    ) {
+      return false;
+    }
+    const leftRecord = left as Record<string, unknown>;
+    const rightRecord = right as Record<string, unknown>;
+    const leftKeys = Object.keys(leftRecord);
+    if (leftKeys.length !== Object.keys(rightRecord).length) return false;
+    for (const key of leftKeys) {
+      if (
+        !Object.prototype.hasOwnProperty.call(rightRecord, key) ||
+        !marketBaseResourceExactStructuralEqualUnchecked(
           leftRecord[key],
           rightRecord[key],
-          seen,
-        ),
-    )
+          activeRight,
+        )
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } finally {
+    activeRight.delete(rightObject);
+  }
+}
+
+function marketBaseResourceExactStructuralEqual(
+  left: unknown,
+  right: unknown,
+): boolean {
+  // cache 里的 left 都来自通过语义认证并递归冻结的 canonical scope。
+  // 单个 active-right WeakSet 同时拒绝候选环并完成逐字段比较，避免旧实现
+  // 为每个嵌套对象创建 WeakSet 后在紧随的 hot automation 中触发 GC。
+  return marketBaseResourceExactStructuralEqualUnchecked(
+    left,
+    right,
+    new WeakSet<object>(),
   );
 }
 
