@@ -53,7 +53,7 @@
 
 ## 7. 合并、部署与 Live 分阶段启用
 
-- [ ] 7.1 将审查通过的 worktree 分支合并到 main，确认无用户改动被覆盖并运行最终 smoke
+- [x] 7.1 将审查通过的 worktree 分支合并到 main，确认无用户改动被覆盖并运行最终 smoke
 - [ ] 7.2 `npm run push` 部署兼容 bundle，核对 deploy tag、Pixel/legacy sellers 关闭、v2 state/ledger/quota 无损与零异常 pending
 - [ ] 7.3 验证 Hub committed snapshot 至少跨两个 planInterval，E6 readiness feed 在无更高承诺时达到 26,000 且不侵占生产/terminal headroom
 - [ ] 7.4 在 WAL 静止时提出并签收首个 v3 successor：同 tick suspend legacy X，按部署时实际 roster 登记全部 lane 为 shadow+suspended，并核对未来新房只能自动加入 Derived Shadow
@@ -66,3 +66,4 @@
 - 完整 Jest：115 个 suite、3189 个 test 全部通过；定向 512 receipt 满环 fixture 同时断言 cold runtime gate 最多一次 full audit、hot automation 不再重复 full/runtime gate，quota receipt 在已认证 context 内复用，且同一 25 CPU 窗口覆盖 outer preflight 到 claim。
 - 性能门禁：cold preflight P95 `<100ms`、ResourceControl+terminal read P95 `<75ms`、hot automation P95 `<20ms`、总 P95 `<150ms`；本轮 full Jest 的 512-ring prepare P95 为 `8.802ms`，三路独立终审中的 cold fixture 连续复跑均通过，诊断探针已删除。
 - 静态市场写面检查：`Game.market.deal` 仅存在于 `marketActionArbiter` 的受控执行入口；Pixel、legacy seller 与 Maker/hybrid 均由代码级闩阻断。
+- 主分支快进合并后最终 smoke：`main`、upgrader 与基础矿物自动化共 3 个 suite / 70 个 test 通过；512 receipt cold-Memory active outer tick 定向 fixture 通过。
