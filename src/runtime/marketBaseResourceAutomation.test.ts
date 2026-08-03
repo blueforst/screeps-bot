@@ -1837,6 +1837,38 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(deps.executePrepared).not.toHaveBeenCalled();
   });
 
+  it("Energy 可选分量显式为 undefined 时先规范化再生成 canonical evidence", () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    const runtimeInput = input();
+    const originalReadCandidates = runtimeInput.readCandidates;
+    runtimeInput.readCandidates = () =>
+      originalReadCandidates().map((candidate) => ({
+        ...candidate,
+        energyShadowComponents: {
+          ...candidate.energyShadowComponents,
+          explicit: undefined,
+        },
+      }));
+    deps.readCurrentBuyOrders.mockReturnValue([]);
+
+    const result = runMarketBaseResourceAutomation(
+      state,
+      runtimeInput,
+      deps,
+    );
+
+    expect(result.planComplete).toBe(true);
+    expect(result.rejectedByReason).not.toHaveProperty(
+      "canonical value contains undefined",
+    );
+    expect(state.lastPlanningSnapshot).toMatchObject({
+      complete: true,
+    });
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
   it("candidate ratchet floor 低于 current high-water 时整轮零写", () => {
     const { state, deps, input } = v3RuntimeFixture();
     state.pricingRatchet = currentPolicyPricingRatchet();

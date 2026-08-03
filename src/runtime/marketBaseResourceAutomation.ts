@@ -5319,6 +5319,23 @@ function runtimeCandidateKey(roomName: string, resource: string): string {
   return `${roomName}:${resource}`;
 }
 
+function canonicalEnergyShadowComponents(
+  components: MarketBaseResourceRuntimeCandidate["energyShadowComponents"],
+): MarketBaseResourceRuntimeCandidate["energyShadowComponents"] {
+  return {
+    hardFloor: components.hardFloor,
+    ...(components.explicit !== undefined
+      ? { explicit: components.explicit }
+      : {}),
+    ...(components.historyFloor !== undefined
+      ? { historyFloor: components.historyFloor }
+      : {}),
+    ...(components.ratchetFloor !== undefined
+      ? { ratchetFloor: components.ratchetFloor }
+      : {}),
+  };
+}
+
 function candidateEnergyEvidence(
   candidate: MarketBaseResourceRuntimeCandidate,
   tick: number,
@@ -5597,7 +5614,15 @@ function liveScopeForRead(
     const scope = reconciled.state;
     let candidates: readonly MarketBaseResourceRuntimeCandidate[];
     try {
-      candidates = input.readCandidates();
+      // Pricing evidence 的可选分量在 JS 对象中可能以显式 undefined
+      // 存在；canonical hash 故意拒绝 undefined。V3 在进入任何 evidence
+      // commitment 前重建精确字段集，保留“缺失”语义且不放宽 hash 合同。
+      candidates = input.readCandidates().map((candidate) => ({
+        ...candidate,
+        energyShadowComponents: canonicalEnergyShadowComponents(
+          candidate.energyShadowComponents,
+        ),
+      }));
     } catch {
       return incomplete("market_base_v3_candidate_read_failed");
     }
