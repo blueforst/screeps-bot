@@ -272,6 +272,110 @@ describe("collectMarketSalePriceSnapshots", () => {
     });
   });
 
+  it("V3 跨日低历史价只推进日期，不回退基础资源或 Energy 高水位", () => {
+    const cfg = config({
+      hardFloor: { [RESOURCE_KEANIUM]: 0.4 },
+      economicFloor: { [RESOURCE_KEANIUM]: 0.3 },
+    });
+    const dataStore: MarketSalePricingDataStore = {
+      trustedFloors: {
+        [RESOURCE_KEANIUM]: {
+          value: 1,
+          marketDate: "2026-07-24",
+          updatedAt: 100,
+        },
+      },
+    };
+    const api = readMarket({ historyPrice: 0.5 });
+
+    const result = collectMarketSalePriceSnapshots(
+      cfg,
+      dataStore,
+      [RESOURCE_KEANIUM],
+      {
+        market: api.market,
+        gameTime: 200,
+        utcNow: UTC_NOW,
+        nondecreasingTrustedFloors: true,
+      },
+    );
+
+    expect(result.snapshots[RESOURCE_KEANIUM]).toMatchObject({
+      historyDate: "2026-07-25",
+      historyFloor: 0.5,
+      ratchetFloor: 1,
+      effectiveNetFloor: 1,
+    });
+    expect(dataStore.trustedFloors).toMatchObject({
+      [RESOURCE_KEANIUM]: {
+        value: 1,
+        marketDate: "2026-07-25",
+        updatedAt: 200,
+      },
+    });
+
+    const directCfg = resolveMarketSaleAutomationConfig({
+      mode: "shadow",
+      shadowStrategy: "direct",
+      configRevision: "direct-energy-v3-high-water-test",
+      sellResources: [RESOURCE_CATALYST],
+      hardFloor: { [RESOURCE_CATALYST]: 600 },
+      economicFloor: { [RESOURCE_CATALYST]: 600 },
+      forecastBuffer: { [RESOURCE_CATALYST]: 100_000 },
+      creditReserve: 1_000_000,
+      minDealAmount: 1_000,
+      energyShadowPrice: 1,
+      energyShadowHardFloor: 20,
+      terminalEnergyReserve: 25_000,
+      minHistoryDays: 5,
+      minHistoryTransactions: 1,
+      minHistoryVolume: 1,
+      historyFloorRatio: 1,
+      historyMaxAgeDays: 2,
+      canary: { enabled: true, allowExpansion: false },
+    });
+    const energyStore: MarketSalePricingDataStore = {
+      trustedFloors: {
+        [RESOURCE_ENERGY]: {
+          value: 40,
+          marketDate: "2026-07-24",
+          updatedAt: 100,
+        },
+      },
+    };
+    const directApi = readMarket({
+      historyPrice: (resource) =>
+        resource === RESOURCE_ENERGY ? 30 : 650,
+      orderPrice: 700,
+    });
+    const energyResult = collectMarketSalePriceSnapshots(
+      directCfg,
+      energyStore,
+      [RESOURCE_CATALYST],
+      {
+        market: directApi.market,
+        gameTime: 200,
+        utcNow: UTC_NOW,
+        nondecreasingTrustedFloors: true,
+      },
+    );
+
+    expect(energyResult.energyShadowEvidence).toMatchObject({
+      trusted: true,
+      observedAt: 200,
+      historyFloor: 30,
+      ratchetFloor: 40,
+      effective: 40,
+    });
+    expect(energyStore.trustedFloors).toMatchObject({
+      [RESOURCE_ENERGY]: {
+        value: 40,
+        marketDate: "2026-07-25",
+        updatedAt: 200,
+      },
+    });
+  });
+
   it("历史超过 freshness 窗口时冻结已有缓存并 fail closed", () => {
     const cfg = config({ historyMaxAgeDays: 2 });
     const dataStore: MarketSalePricingDataStore = {

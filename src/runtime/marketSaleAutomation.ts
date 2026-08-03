@@ -237,9 +237,26 @@ export interface MarketSalePlanCandidate {
 export interface MarketSaleAutomationInput {
   candidates?: readonly MarketSalePlanCandidate[];
   readMarketBaseResourceCandidates?: () => readonly MarketSalePlanCandidate[];
+  /**
+   * V3 live pricing 在冻结 canonical floor root 的 detached 副本上生成的
+   * successor。source identity 是同 tick 私有 capability 的一部分；outer
+   * 验证高水位后，才会连同 pricing ratchet 与双 activation anchor 原子提交。
+   */
+  marketBaseResourceTrustedFloorSuccessor?:
+    MarketBaseResourceTrustedFloorSuccessorInput;
   stagingAmount?: number;
   reservationAmount?: number;
   marketDomainActivityValid?: boolean;
+}
+
+export interface MarketBaseResourceTrustedFloorSuccessorInput {
+  readonly sourceTrustedFloors: object;
+  readonly trustedFloors: Partial<
+    Record<
+      ResourceConstant,
+      { value: number; marketDate: string; updatedAt: number }
+    >
+  >;
 }
 
 export interface MarketSaleAutomationResult {
@@ -651,6 +668,96 @@ function synchronizeMarketBaseTrustedFloors(
     return current;
   }
   return next;
+}
+
+function resolveMarketBaseTrustedFloorSuccessor(
+  current: MarketSaleDataState["trustedFloors"],
+  proposal: MarketBaseResourceTrustedFloorSuccessorInput,
+  tick: number,
+):
+  | { ok: true; trustedFloors: MarketSaleDataState["trustedFloors"] }
+  | { ok: false; reason: string } {
+  try {
+    if (
+      proposal.sourceTrustedFloors !== current ||
+      !isPlainRecord(proposal.trustedFloors)
+    ) {
+      return { ok: false, reason: "source_identity_mismatch" };
+    }
+    const next = cloneMarketBaseOperatorValue(
+      proposal.trustedFloors,
+    ) as MarketSaleDataState["trustedFloors"];
+    const currentKeys = Object.keys(current).sort();
+    const nextKeys = Object.keys(next).sort();
+    if (
+      currentKeys.length !== nextKeys.length ||
+      currentKeys.some((key, index) => key !== nextKeys[index])
+    ) {
+      return { ok: false, reason: "key_set_mismatch" };
+    }
+    for (const resource of MARKET_BASE_RESOURCE_TRUSTED_FLOOR_RESOURCES) {
+      if (
+        !isPlainRecord(current[resource]) ||
+        !isPlainRecord(next[resource]) ||
+        !hasExactRecordKeys(current[resource], [
+          "marketDate",
+          "updatedAt",
+          "value",
+        ]) ||
+        !hasExactRecordKeys(next[resource], [
+          "marketDate",
+          "updatedAt",
+          "value",
+        ])
+      ) {
+        return { ok: false, reason: `entry_shape_invalid:${resource}` };
+      }
+    }
+    const currentHighWater = marketBaseResourceTrustedFloorHighWater(current);
+    const nextHighWater = marketBaseResourceTrustedFloorHighWater(next);
+    let changed = false;
+    for (let index = 0; index < currentHighWater.length; index += 1) {
+      const previous = currentHighWater[index];
+      const candidate = nextHighWater[index];
+      if (
+        !candidate ||
+        candidate.resource !== previous.resource ||
+        candidate.value < previous.value ||
+        candidate.marketDate < previous.marketDate ||
+        candidate.updatedAt < previous.updatedAt ||
+        candidate.updatedAt > tick
+      ) {
+        return { ok: false, reason: "high_water_rollback" };
+      }
+      const entryChanged =
+        candidate.value !== previous.value ||
+        candidate.marketDate !== previous.marketDate ||
+        candidate.updatedAt !== previous.updatedAt;
+      if (entryChanged && candidate.updatedAt !== tick) {
+        return { ok: false, reason: "updated_at_not_current" };
+      }
+      changed ||= entryChanged;
+    }
+    const anchoredResources = new Set<string>(
+      MARKET_BASE_RESOURCE_TRUSTED_FLOOR_RESOURCES,
+    );
+    for (const key of currentKeys) {
+      if (anchoredResources.has(key)) continue;
+      if (
+        canonicalStableHashV1({ value: current[key as ResourceConstant] }) !==
+        canonicalStableHashV1({ value: next[key as ResourceConstant] })
+      ) {
+        return { ok: false, reason: `unscoped_entry_changed:${key}` };
+      }
+    }
+    if (!changed) {
+      return { ok: true, trustedFloors: current };
+    }
+    freezeMarketBaseOuterCanonicalValue(next);
+    return { ok: true, trustedFloors: next };
+  } catch {
+    return { ok: false, reason: "shape_invalid" };
+  }
 }
 
 function marketBaseResourceRuntimeSafetyProjection(
@@ -6046,7 +6153,7 @@ export function runMarketSaleAutomation(
   const cpuGetUsed = Game.cpu?.getUsed;
   const baseResourceV3CpuStartedAt =
     typeof cpuGetUsed === "function" ? cpuGetUsed.call(Game.cpu) : Number.NaN;
-  const baseResourceV3 = reconcileBaseResourceV3State(context);
+  let baseResourceV3 = reconcileBaseResourceV3State(context);
   const structuralWriteBlocker = structuralMarketSaleWriteBlocker(
     context.data,
     context.config,
@@ -6108,6 +6215,26 @@ export function runMarketSaleAutomation(
     const lifecyclePhaseReady =
       (context.config.mode === "shadow" && phase === "shadow") ||
       (context.config.mode === "direct" && phase === "direct");
+    if (
+      baseResourceV3.activeV3Successor &&
+      input.marketBaseResourceTrustedFloorSuccessor
+    ) {
+      const adopted = adoptMarketBaseResourceTrustedFloorSuccessor(
+        context,
+        baseResourceV3,
+        input.marketBaseResourceTrustedFloorSuccessor,
+      );
+      if ("reason" in adopted) {
+        reject(
+          context,
+          `market_base_v3_pricing_successor_rejected:${adopted.reason}`,
+        );
+        context.shadowPlanComplete = false;
+        updateDrain(context, mode);
+        return finalizeResult(context, context.config.mode, mode);
+      }
+      baseResourceV3 = adopted.state;
+    }
     const directState = context.data.directAutomation!;
     const v2DispatchConfig = frozenV2DispatchConfig(context.config);
     const v3PlanningState =
@@ -6551,6 +6678,193 @@ function registerMarketBaseResourceCanonicalRoot(
     registerMarketBaseResourceCanonicalRootThisTick(data);
   }
   return read;
+}
+
+function adoptMarketBaseResourceTrustedFloorSuccessor(
+  context: RunContext,
+  current: ReturnType<typeof reconcileBaseResourceV3State>,
+  proposal: MarketBaseResourceTrustedFloorSuccessorInput,
+):
+  | {
+      ok: true;
+      state: ReturnType<typeof reconcileBaseResourceV3State>;
+    }
+  | { ok: false; reason: string } {
+  const sourceRoot = context.data;
+  if (
+    !current.activeV3Successor ||
+    !current.state ||
+    !current.ledgerRuntimeAnchor ||
+    !current.readinessRuntimeCapability ||
+    Memory.data?.marketSaleAutomation !==
+      (sourceRoot as unknown as NonNullable<
+        NonNullable<Memory["data"]>["marketSaleAutomation"]
+      >)
+  ) {
+    return { ok: false, reason: "source_root_unavailable" };
+  }
+  const resolved = resolveMarketBaseTrustedFloorSuccessor(
+    sourceRoot.trustedFloors,
+    proposal,
+    Game.time,
+  );
+  if ("reason" in resolved) {
+    return { ok: false, reason: resolved.reason };
+  }
+  if (resolved.trustedFloors === sourceRoot.trustedFloors) {
+    return { ok: true, state: current };
+  }
+  const sourceState = current.state;
+  const activation = marketBaseResourceActivationState(
+    sourceRoot,
+    sourceState,
+  );
+  const permit = currentMarketBaseV3Permit(sourceState);
+  if (
+    !activation.latched ||
+    activation.blocker ||
+    !activation.anchor ||
+    !permit ||
+    !sourceState.pricingRatchet
+  ) {
+    return { ok: false, reason: "activation_unavailable" };
+  }
+  let proposedPricingRatchet: MarketBaseResourcePricingRatchetState;
+  try {
+    proposedPricingRatchet = buildMarketBaseResourcePricingRatchetState({
+      initializedAt: sourceState.pricingRatchet.initializedAt,
+      entries: MARKET_BASE_RESOURCE_CATALOG.map((resource) => {
+        const entry = resolved.trustedFloors[resource];
+        if (!entry) {
+          throw new TypeError(`trusted_floor_missing:${resource}`);
+        }
+        return {
+          resource,
+          value: entry.value,
+          marketDate: entry.marketDate,
+        };
+      }),
+    });
+  } catch {
+    return { ok: false, reason: "pricing_ratchet_invalid" };
+  }
+  if (!validateMarketBaseResourcePricingRatchetState(
+    proposedPricingRatchet,
+    permit,
+  )) {
+    return { ok: false, reason: "pricing_ratchet_permit_mismatch" };
+  }
+  const nextPricingRatchet =
+    proposedPricingRatchet.fingerprint ===
+    sourceState.pricingRatchet.fingerprint
+      ? sourceState.pricingRatchet
+      : proposedPricingRatchet;
+  const nextState: MarketBaseResourceV3RuntimeState =
+    nextPricingRatchet === sourceState.pricingRatchet
+      ? sourceState
+      : {
+          ...sourceState,
+          pricingRatchet: nextPricingRatchet,
+        };
+  const nextRuntimeCapability =
+    advanceMarketBaseResourceReadinessRuntimeCapabilityFromRoot(
+      sourceRoot,
+      nextState,
+      Game.time,
+    );
+  if (
+    !nextRuntimeCapability ||
+    !validateMarketBaseResourceReadinessRuntimeCapability(
+      nextRuntimeCapability,
+      nextState,
+      Game.time,
+      current.ledgerRuntimeAnchor,
+    )
+  ) {
+    return { ok: false, reason: "runtime_capability_invalid" };
+  }
+  let nextAnchor: MarketBaseResourceActivationAnchor;
+  try {
+    nextAnchor = advanceMarketBaseResourceActivationAnchor(
+      activation.anchor,
+      nextState,
+      resolved.trustedFloors,
+      Game.time,
+      current.ledgerRuntimeAnchor,
+    );
+  } catch {
+    return { ok: false, reason: "activation_anchor_advance_failed" };
+  }
+  if (
+    validateMarketBaseNestedActivationState(
+      nextState,
+      nextAnchor,
+      resolved.trustedFloors,
+      {
+        runtimeOnly: true,
+        runtimeCapability: nextRuntimeCapability,
+      },
+    )
+  ) {
+    return { ok: false, reason: "successor_validation_failed" };
+  }
+  const sourceDirect = sourceRoot.directAutomation;
+  if (!isContinuousDirectState(sourceDirect)) {
+    return { ok: false, reason: "direct_state_invalid" };
+  }
+  const nextDirect: MarketDirectContinuousAutomationState = {
+    ...sourceDirect,
+    baseResourceV3: nextState,
+  };
+  const nextData: MarketSaleDataState = {
+    ...sourceRoot,
+    trustedFloors: resolved.trustedFloors,
+    directAutomation: nextDirect,
+    pendingDirectDeals: nextDirect.pendingDirectDeals,
+    baseResourceV3ActivationAnchor: nextAnchor,
+    baseResourceV3ActivationAnchorMirror:
+      cloneMarketBaseOperatorValue(nextAnchor),
+  };
+  const registered = registerMarketBaseResourceCanonicalRoot(
+    nextData,
+    "direct",
+    nextRuntimeCapability,
+  );
+  if (
+    (!nextState.readinessAuthorization && registered.reason !== "missing") ||
+    (nextState.readinessAuthorization && !registered.ok)
+  ) {
+    return { ok: false, reason: "canonical_register_failed" };
+  }
+  const stored = nextData as unknown as NonNullable<
+    NonNullable<Memory["data"]>["marketSaleAutomation"]
+  >;
+  try {
+    if (
+      Memory.data?.marketSaleAutomation !==
+      (sourceRoot as unknown as NonNullable<
+        NonNullable<Memory["data"]>["marketSaleAutomation"]
+      >)
+    ) {
+      return { ok: false, reason: "source_root_changed" };
+    }
+    Memory.data!.marketSaleAutomation = stored;
+  } catch {
+    return { ok: false, reason: "canonical_commit_failed" };
+  }
+  if (Memory.data?.marketSaleAutomation !== stored) {
+    return { ok: false, reason: "canonical_commit_rejected" };
+  }
+  context.data = nextData;
+  return {
+    ok: true,
+    state: {
+      activeV3Successor: true,
+      state: nextState,
+      ledgerRuntimeAnchor: nextAnchor.ledger,
+      readinessRuntimeCapability: nextRuntimeCapability,
+    },
+  };
 }
 
 /**

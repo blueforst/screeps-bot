@@ -3332,6 +3332,173 @@ describe("marketSaleAutomation 编排", () => {
     expect(currentMarketBaseV3StateFixture().ledger?.pending).toBeUndefined();
   });
 
+  it("V3 原子接纳 detached trusted-floor successor，保持 frozen source 且同 tick 零 deal", () => {
+    activateMarketBaseV3Fixture();
+    Game.time += 1;
+    runMarketSalePreflight();
+    markDirectLegacyExposureDrainedFixture();
+    Memory.runtime = {
+      ...Memory.runtime,
+      resourceControl: {
+        updatedAt: Game.time,
+        rooms: {},
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    };
+    const sourceRoot = Memory.data!.marketSaleAutomation!;
+    const sourceFloors = sourceRoot.trustedFloors as Record<
+      ResourceConstant,
+      { value: number; marketDate: string; updatedAt: number }
+    >;
+    const sourceHydrogen = { ...sourceFloors[RESOURCE_HYDROGEN] };
+    const sourceEnergy = { ...sourceFloors[RESOURCE_ENERGY] };
+    const nextHistoryDate = new Date(
+      `${sourceHydrogen.marketDate}T00:00:00.000Z`,
+    );
+    nextHistoryDate.setUTCDate(nextHistoryDate.getUTCDate() + 1);
+    const successorFloors = Object.fromEntries(
+      Object.entries(sourceFloors).map(([resource, entry]) => [
+        resource,
+        { ...entry },
+      ]),
+    ) as typeof sourceFloors;
+    successorFloors[RESOURCE_HYDROGEN] = {
+      value: sourceHydrogen.value,
+      marketDate: nextHistoryDate.toISOString().slice(0, 10),
+      updatedAt: Game.time,
+    };
+    successorFloors[RESOURCE_ENERGY] = {
+      ...sourceEnergy,
+      marketDate: nextHistoryDate.toISOString().slice(0, 10),
+      updatedAt: Game.time,
+    };
+    let runtimeCalled = false;
+    const runtimeSpy = jest
+      .spyOn(
+        marketBaseResourceAutomationModule,
+        "runMarketBaseResourceAutomation",
+      )
+      .mockImplementation(
+        (source, _input, dependencies): MarketBaseResourceAutomationResult => {
+          runtimeCalled = true;
+          expect(source.pricingRatchet?.entries).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                resource: RESOURCE_HYDROGEN,
+                value: sourceHydrogen.value,
+                marketDate: successorFloors[RESOURCE_HYDROGEN].marketDate,
+              }),
+            ]),
+          );
+          expect(dependencies.readTrustedFloors()).toMatchObject({
+            [RESOURCE_HYDROGEN]: successorFloors[RESOURCE_HYDROGEN],
+            [RESOURCE_ENERGY]: successorFloors[RESOURCE_ENERGY],
+          });
+          expect(Memory.data!.marketSaleAutomation).not.toBe(sourceRoot);
+          return {
+            actions: [],
+            rejectedByReason: {},
+            writes: 0,
+            planComplete: true,
+            state: source,
+          };
+        },
+      );
+    let result: ReturnType<typeof runMarketSaleAutomation>;
+    try {
+      result = runMarketSaleAutomation({
+        candidates: [],
+        marketBaseResourceTrustedFloorSuccessor: {
+          sourceTrustedFloors: sourceFloors,
+          trustedFloors: successorFloors,
+        },
+      });
+    } finally {
+      runtimeSpy.mockRestore();
+    }
+
+    expect(
+      Object.keys(result.rejectedByReason).filter((reason) =>
+        reason.startsWith("market_base_v3_pricing_successor_rejected:"),
+      ),
+    ).toEqual([]);
+    expect(result.rejectedByReason).not.toHaveProperty(
+      "market_base_readiness_runtime_capability_unavailable",
+    );
+    expect(runtimeCalled).toBe(true);
+    expect(sourceFloors[RESOURCE_HYDROGEN]).toEqual(sourceHydrogen);
+    expect(sourceFloors[RESOURCE_ENERGY]).toEqual(sourceEnergy);
+    expect(Object.isFrozen(sourceFloors)).toBe(true);
+    expect(Memory.data!.marketSaleAutomation!.trustedFloors).toMatchObject({
+      [RESOURCE_HYDROGEN]: successorFloors[RESOURCE_HYDROGEN],
+      [RESOURCE_ENERGY]: successorFloors[RESOURCE_ENERGY],
+    });
+    const canonical = Memory.data!.marketSaleAutomation as unknown as {
+      baseResourceV3ActivationAnchor: { anchorHash: string };
+      baseResourceV3ActivationAnchorMirror: { anchorHash: string };
+    };
+    expect(canonical.baseResourceV3ActivationAnchorMirror.anchorHash).toBe(
+      canonical.baseResourceV3ActivationAnchor.anchorHash,
+    );
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
+  it("V3 拒绝 detached trusted-floor 回退，保持 exact root 且不进入 inner planning", () => {
+    activateMarketBaseV3Fixture();
+    Game.time += 1;
+    runMarketSalePreflight();
+    markDirectLegacyExposureDrainedFixture();
+    Memory.runtime = {
+      ...Memory.runtime,
+      resourceControl: {
+        updatedAt: Game.time,
+        rooms: {},
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    };
+    const sourceRoot = Memory.data!.marketSaleAutomation!;
+    const sourceFloors = sourceRoot.trustedFloors as Record<
+      ResourceConstant,
+      { value: number; marketDate: string; updatedAt: number }
+    >;
+    const rollbackFloors = Object.fromEntries(
+      Object.entries(sourceFloors).map(([resource, entry]) => [
+        resource,
+        { ...entry },
+      ]),
+    ) as typeof sourceFloors;
+    rollbackFloors[RESOURCE_HYDROGEN] = {
+      ...rollbackFloors[RESOURCE_HYDROGEN],
+      value: rollbackFloors[RESOURCE_HYDROGEN].value - 1,
+      updatedAt: Game.time,
+    };
+    const runtimeSpy = jest.spyOn(
+      marketBaseResourceAutomationModule,
+      "runMarketBaseResourceAutomation",
+    );
+    let result: ReturnType<typeof runMarketSaleAutomation>;
+    try {
+      result = runMarketSaleAutomation({
+        candidates: [],
+        marketBaseResourceTrustedFloorSuccessor: {
+          sourceTrustedFloors: sourceFloors,
+          trustedFloors: rollbackFloors,
+        },
+      });
+    } finally {
+      runtimeSpy.mockRestore();
+    }
+
+    expect(result.rejectedByReason).toHaveProperty(
+      "market_base_v3_pricing_successor_rejected:high_water_rollback",
+    );
+    expect(Memory.data!.marketSaleAutomation).toBe(sourceRoot);
+    expect(runtimeSpy).not.toHaveBeenCalled();
+    expect(Game.market.deal).not.toHaveBeenCalled();
+  });
+
   it("stable scope 连续三 tick 重签 readiness，ResourceControl ready 且 inner 每 tick 可用", () => {
     const target = activateMarketBaseV3CanaryFixture();
     markDirectLegacyExposureDrainedFixture();

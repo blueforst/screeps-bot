@@ -2,6 +2,7 @@ import {
   collectMarketSaleDomainActivity,
   runMarketSaleAutomation,
   type MarketSaleAutomationResult,
+  type MarketBaseResourceTrustedFloorSuccessorInput,
   type MarketSalePlanCandidate,
 } from "@/runtime/marketSaleAutomation";
 import {
@@ -316,13 +317,54 @@ function pricingResultSignature(
   pricingStore: MarketSalePricingDataStore,
 ): string {
   const resources = [...config.sellResources].sort();
+  const trustedFloors = isPlainRecord(pricingStore.trustedFloors)
+    ? Object.keys(pricingStore.trustedFloors)
+        .sort((left, right) => left.localeCompare(right))
+        .map((resource) => {
+          const entry = (
+            pricingStore.trustedFloors as Record<string, unknown>
+          )[resource];
+          return isPlainRecord(entry)
+            ? [
+                resource,
+                entry.value ?? null,
+                entry.marketDate ?? null,
+                entry.updatedAt ?? null,
+              ]
+            : [resource, entry ?? null];
+        })
+    : [["<invalid>", pricingStore.trustedFloors ?? null]];
   return JSON.stringify({
     config: cacheSignature(config),
     carriedFeeDebtMilli: resources.map((resource) => [
       resource,
       pricingStore.carriedFeeDebtMilli?.[resource] ?? 0,
     ]),
+    trustedFloors,
   });
+}
+
+function detachedPricingStore(
+  data: Record<string, unknown>,
+): MarketSalePricingDataStore {
+  const rawTrustedFloors = data.trustedFloors;
+  const trustedFloors = isPlainRecord(rawTrustedFloors)
+    ? Object.fromEntries(
+        Object.entries(rawTrustedFloors).map(([resource, entry]) => [
+          resource,
+          isPlainRecord(entry) ? { ...entry } : entry,
+        ]),
+      )
+    : rawTrustedFloors;
+  return {
+    trustedFloors:
+      trustedFloors as MarketSalePricingDataStore["trustedFloors"],
+    carriedFeeDebtMilli: isPlainRecord(data.carriedFeeDebtMilli)
+      ? (data.carriedFeeDebtMilli as MarketSalePricingDataStore[
+          "carriedFeeDebtMilli"
+        ])
+      : undefined,
+  };
 }
 
 function resetPricingCaches(signature?: string): void {
@@ -445,6 +487,8 @@ function collectCachedPricing(
   const options: CollectMarketSalePriceSnapshotsOptions = {
     market: createCachedReadMarket(Game.time),
     gameTime: Game.time,
+    nondecreasingTrustedFloors:
+      config.directCapability === "continuous-v3",
   };
   const value = collectPricing(
     config,
@@ -457,7 +501,9 @@ function collectCachedPricing(
     options,
   );
   pricingResultCache = {
-    signature,
+    // Adapter 可在 detached store 上推进 trusted-floor successor；缓存必须
+    // 绑定推进后的 commitment，不能让旧 floor root 命中新的定价证据。
+    signature: pricingResultSignature(config, pricingStore),
     refreshedAt: Game.time,
     value,
   };
@@ -813,8 +859,17 @@ export function runLiveMarketSaleAutomation(
         ? canonicalContinuousProtection
         : { candidates: exposureCandidates },
     );
-    const pricingStore =
-      data as unknown as MarketSalePricingDataStore;
+    const usesMarketBaseResourceSuccessor =
+      config.directCapability === "continuous-v3";
+    // V3 preflight 会递归冻结 canonical trustedFloors 以关闭 TOCTOU。
+    // 定价层仍需要推进 ratchet cache，因此只能在 detached store 上计算，
+    // 再把 successor 交回持有 opaque provenance 的 outer 原子接纳。
+    const pricingStore = usesMarketBaseResourceSuccessor
+      ? detachedPricingStore(data as unknown as Record<string, unknown>)
+      : (data as unknown as MarketSalePricingDataStore);
+    const trustedFloorSource = usesMarketBaseResourceSuccessor
+      ? (data as unknown as Record<string, unknown>).trustedFloors
+      : undefined;
     ensurePricingCacheSignature(cacheSignature(config));
     const resultCacheTtl = pricingResultCacheTtl(config);
     const bucket = Game.cpu?.bucket;
@@ -894,12 +949,28 @@ export function runLiveMarketSaleAutomation(
             );
           }
         : undefined;
+    const marketBaseResourceTrustedFloorSuccessor:
+      | MarketBaseResourceTrustedFloorSuccessorInput
+      | undefined =
+      usesMarketBaseResourceSuccessor &&
+      pricingEvidenceFresh &&
+      trustedFloorSource !== null &&
+      typeof trustedFloorSource === "object" &&
+      isPlainRecord(pricingStore.trustedFloors)
+        ? {
+            sourceTrustedFloors: trustedFloorSource,
+            trustedFloors: pricingStore.trustedFloors,
+          }
+        : undefined;
     const result = runAutomation({
       candidates,
       ...(readMarketBaseResourceCandidates
         ? {
             readMarketBaseResourceCandidates,
           }
+        : {}),
+      ...(marketBaseResourceTrustedFloorSuccessor
+        ? { marketBaseResourceTrustedFloorSuccessor }
         : {}),
       ...domainActivityInput,
     });

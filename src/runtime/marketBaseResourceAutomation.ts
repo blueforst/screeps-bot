@@ -4466,8 +4466,56 @@ export function advanceMarketBaseResourceReadinessRuntimeCapabilityFromRoot(
   if (!isPlainRecord(marketSaleRoot)) return undefined;
   const cached =
     marketBaseResourceCanonicalReadinessRuntimeCache.get(marketSaleRoot);
+  if (!cached) return undefined;
+  const currentSafety = cached.runtimeSession.safetyContext;
+  const invariantIdentityUnchanged =
+    state.schemaVersion === currentSafety.schemaVersion &&
+    state.catalog === currentSafety.catalog &&
+    state.cutoverLatched === currentSafety.cutoverLatched &&
+    state.blocker === currentSafety.blocker &&
+    state.hardBlocker === currentSafety.hardBlocker;
+  const currentPricingRatchet = cached.state.pricingRatchet;
+  const pricingRatchetChanged =
+    state.pricingRatchet !== currentSafety.pricingRatchet;
+  const pricingRatchetDominates = Boolean(
+    !pricingRatchetChanged ||
+      (currentPricingRatchet &&
+        state.pricingRatchet &&
+        state.pricingRatchet.initializedAt ===
+          currentPricingRatchet.initializedAt &&
+        state.pricingRatchet.bootstrapFingerprint ===
+          currentPricingRatchet.bootstrapFingerprint &&
+        validateMarketBaseResourcePricingRatchetState(
+          state.pricingRatchet,
+          currentV3Permit(cached.permitChain),
+        ) &&
+        state.pricingRatchet.entries.every((entry, index) => {
+          const previous = currentPricingRatchet.entries[index];
+          return (
+            previous?.resource === entry.resource &&
+            entry.value >= previous.value &&
+            entry.marketDate >= previous.marketDate
+          );
+        })),
+  );
+  const successorSafetyContext =
+    !pricingRatchetChanged
+      ? currentSafety
+      : {
+          schemaVersion: state.schemaVersion,
+          catalog: state.catalog,
+          cutoverLatched: state.cutoverLatched,
+          blocker: state.blocker,
+          hardBlocker: state.hardBlocker,
+          pricingRatchet: state.pricingRatchet,
+          invariantCommitment:
+            marketBaseResourceRuntimeInvariantCommitment(state),
+          pricingRatchetCommitment:
+            marketBaseResourceRuntimePricingRatchetCommitment(state),
+        };
   if (
-    !cached ||
+    !invariantIdentityUnchanged ||
+    !pricingRatchetDominates ||
     !readCachedMarketBaseResourceCanonicalReadiness(
       marketSaleRoot,
       "direct",
@@ -4479,6 +4527,7 @@ export function advanceMarketBaseResourceReadinessRuntimeCapabilityFromRoot(
     marketBaseResourceRuntimeSnapshotMismatch(state, {
       ...cached.runtimeSession,
       scopeContext: undefined,
+      safetyContext: successorSafetyContext,
     })
   ) {
     return undefined;
@@ -4500,29 +4549,7 @@ export function advanceMarketBaseResourceReadinessRuntimeCapabilityFromRoot(
           : state.scope
             ? createMarketBaseResourceRuntimeScopeContext(state.scope, true)
             : undefined,
-      safetyContext:
-        state.schemaVersion ===
-          cached.runtimeSession.safetyContext.schemaVersion &&
-        state.catalog === cached.runtimeSession.safetyContext.catalog &&
-        state.cutoverLatched ===
-          cached.runtimeSession.safetyContext.cutoverLatched &&
-        state.blocker === cached.runtimeSession.safetyContext.blocker &&
-        state.hardBlocker === cached.runtimeSession.safetyContext.hardBlocker &&
-        state.pricingRatchet ===
-          cached.runtimeSession.safetyContext.pricingRatchet
-          ? cached.runtimeSession.safetyContext
-          : {
-              schemaVersion: state.schemaVersion,
-              catalog: state.catalog,
-              cutoverLatched: state.cutoverLatched,
-              blocker: state.blocker,
-              hardBlocker: state.hardBlocker,
-              pricingRatchet: state.pricingRatchet,
-              invariantCommitment:
-                marketBaseResourceRuntimeInvariantCommitment(state),
-              pricingRatchetCommitment:
-                marketBaseResourceRuntimePricingRatchetCommitment(state),
-            },
+      safetyContext: successorSafetyContext,
     },
     tick,
   );

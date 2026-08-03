@@ -142,6 +142,8 @@ export interface CollectMarketSalePriceSnapshotsOptions {
   market?: MarketSalePricingReadMarket;
   gameTime?: number;
   utcNow?: Date;
+  /** V3 activation anchor 使用不可回退高水位；日期可推进，floor 不得下降。 */
+  nondecreasingTrustedFloors?: boolean;
 }
 
 interface ResolvedCandidate {
@@ -605,10 +607,13 @@ export function collectMarketSalePriceSnapshots(
           if (advanced.reason === "older_history_day") {
             energyFailureDetail = "history_date_rollback";
           } else {
-            ratchetFloor = advanced.state.floor;
+            ratchetFloor =
+              options.nondecreasingTrustedFloors && previousEntry
+                ? Math.max(previousEntry.value, advanced.state.floor)
+                : advanced.state.floor;
             if (!dataStore.trustedFloors) dataStore.trustedFloors = {};
             dataStore.trustedFloors[RESOURCE_ENERGY] = {
-              value: advanced.state.floor,
+              value: ratchetFloor,
               marketDate: advanced.state.historyDate,
               updatedAt: observedAt,
             };
@@ -800,16 +805,25 @@ export function collectMarketSalePriceSnapshots(
             },
             { maxDailyDropRatio: 0.05 },
           );
-          snapshot.ratchetFloor = advanced.state.floor;
+          const successorFloor =
+            options.nondecreasingTrustedFloors && previousEntry
+              ? Math.max(previousEntry.value, advanced.state.floor)
+              : advanced.state.floor;
+          snapshot.ratchetFloor = successorFloor;
+          const successorChanged = Boolean(
+            !previousEntry ||
+              previousEntry.value !== successorFloor ||
+              previousEntry.marketDate !== advanced.state.historyDate,
+          );
           if (advanced.reason === "older_history_day") {
             addRejection(rejections, "history_date_rollback");
-          } else if (advanced.changed) {
+          } else if (successorChanged) {
             try {
               if (!dataStore.trustedFloors) {
                 dataStore.trustedFloors = {};
               }
               dataStore.trustedFloors[candidate.resource] = {
-                value: advanced.state.floor,
+                value: successorFloor,
                 marketDate: advanced.state.historyDate,
                 updatedAt: observedAt,
               };

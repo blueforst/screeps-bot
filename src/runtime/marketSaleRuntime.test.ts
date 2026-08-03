@@ -13,6 +13,11 @@ import type {
   MarketSaleProtectionLedger,
 } from "@/runtime/marketSaleProtection";
 import type { MarketSalePriceSnapshotCollection } from "@/runtime/marketSalePricingAdapter";
+import {
+  MARKET_BASE_RESOURCE_CATALOG,
+  MARKET_BASE_RESOURCE_CONFIG_REVISION,
+  MARKET_BASE_RESOURCE_POLICIES,
+} from "@/runtime/marketBaseResourcePolicy";
 
 function config(): MarketSaleAutomationConfig {
   return {
@@ -352,6 +357,69 @@ function installContinuousPricingCacheFixture(tick: number): void {
   Memory.runtime!.marketSaleAutomation!.phase = "direct";
 }
 
+function installMarketBaseV3PricingCacheFixture(
+  tick: number,
+): Record<
+  ResourceConstant,
+  { value: number; marketDate: string; updatedAt: number }
+> {
+  installContinuousPricingCacheFixture(tick);
+  const configured = Memory.cfg!.marketSaleAutomation!;
+  configured.directCapability = "continuous-v3";
+  configured.configRevision = MARKET_BASE_RESOURCE_CONFIG_REVISION;
+  configured.sellResources = [...MARKET_BASE_RESOURCE_CATALOG];
+  configured.hardFloor = Object.fromEntries(
+    MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
+      policy.resource,
+      policy.hardFloor,
+    ]),
+  );
+  configured.economicFloor = Object.fromEntries(
+    MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
+      policy.resource,
+      policy.economicFloor,
+    ]),
+  );
+  configured.forecastBuffer = Object.fromEntries(
+    MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
+      policy.resource,
+      policy.laneReserve,
+    ]),
+  );
+  const trustedFloors = Object.fromEntries(
+    [
+      ...MARKET_BASE_RESOURCE_CATALOG.map((resource) => {
+        const policy = MARKET_BASE_RESOURCE_POLICIES.find(
+          (candidate) => candidate.resource === resource,
+        )!;
+        return [
+          resource,
+          {
+            value: policy.economicFloor,
+            marketDate: "2026-07-24",
+            updatedAt: tick - 10,
+          },
+        ];
+      }),
+      [
+        RESOURCE_ENERGY,
+        {
+          value: 20,
+          marketDate: "2026-07-24",
+          updatedAt: tick - 10,
+        },
+      ],
+    ],
+  ) as Record<
+    ResourceConstant,
+    { value: number; marketDate: string; updatedAt: number }
+  >;
+  for (const entry of Object.values(trustedFloors)) Object.freeze(entry);
+  Object.freeze(trustedFloors);
+  Memory.data!.marketSaleAutomation!.trustedFloors = trustedFloors;
+  return trustedFloors;
+}
+
 function installNonResourceControlManagedFixture(tick: number): {
   market: Partial<Market> & { orders: Record<string, Order> };
 } {
@@ -650,6 +718,127 @@ describe("market sale live composition", () => {
     expect(collectPricing).toHaveBeenCalledTimes(3);
     expect(collectPricing.mock.results.map((result) => result.value.observedAt))
       .toEqual([100, 111, 122]);
+  });
+
+  it("continuous-v3 在 detached floor store 定价，并以 successor commitment 约束缓存", () => {
+    const initialFloors = installMarketBaseV3PricingCacheFixture(100);
+    let proposedFloors:
+      | Record<
+          ResourceConstant,
+          { value: number; marketDate: string; updatedAt: number }
+        >
+      | undefined;
+    const collectPricing = jest.fn(
+      (
+        _config: unknown,
+        store: {
+          trustedFloors: Record<
+            ResourceConstant,
+            { value: number; marketDate: string; updatedAt: number }
+          >;
+        },
+        _candidates: unknown,
+        options: { nondecreasingTrustedFloors?: boolean },
+      ) => {
+        expect(store.trustedFloors).not.toBe(initialFloors);
+        expect(Object.isFrozen(store.trustedFloors)).toBe(false);
+        expect(options.nondecreasingTrustedFloors).toBe(true);
+        store.trustedFloors[RESOURCE_ENERGY] = {
+          ...store.trustedFloors[RESOURCE_ENERGY],
+          updatedAt: Game.time,
+        };
+        proposedFloors = store.trustedFloors;
+        return pricingAt(Game.time);
+      },
+    );
+    const runAutomation = jest.fn(() => automationResult());
+    const dependencies = {
+      collectPricing: collectPricing as never,
+      collectProtection: jest.fn(() => protectionAt(Game.time)) as never,
+      runAutomation: runAutomation as never,
+    };
+
+    runLiveMarketSaleAutomation(dependencies);
+
+    expect(initialFloors[RESOURCE_ENERGY]).toEqual({
+      value: 20,
+      marketDate: "2026-07-24",
+      updatedAt: 90,
+    });
+    expect(runAutomation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        marketBaseResourceTrustedFloorSuccessor: {
+          sourceTrustedFloors: initialFloors,
+          trustedFloors: proposedFloors,
+        },
+      }),
+    );
+
+    const committedFloors = Object.fromEntries(
+      Object.entries(proposedFloors!).map(([resource, entry]) => [
+        resource,
+        { ...entry },
+      ]),
+    ) as typeof initialFloors;
+    Memory.data!.marketSaleAutomation!.trustedFloors = committedFloors;
+    Game.time = 101;
+    Memory.runtime!.resourceControl!.updatedAt = Game.time;
+    runLiveMarketSaleAutomation(dependencies);
+    expect(collectPricing).toHaveBeenCalledTimes(1);
+
+    Memory.data!.marketSaleAutomation!.trustedFloors = {
+      ...committedFloors,
+      [RESOURCE_HYDROGEN]: {
+        ...committedFloors[RESOURCE_HYDROGEN],
+        value: committedFloors[RESOURCE_HYDROGEN].value + 1,
+        updatedAt: 102,
+      },
+    };
+    Game.time = 102;
+    Memory.runtime!.resourceControl!.updatedAt = Game.time;
+    runLiveMarketSaleAutomation(dependencies);
+    expect(collectPricing).toHaveBeenCalledTimes(2);
+  });
+
+  it("continuous-v3 pricing 先改 detached floor 后抛错时丢弃 partial successor", () => {
+    const initialFloors = installMarketBaseV3PricingCacheFixture(100);
+    const market = Game.market as Partial<Market> & { deal: jest.Mock };
+    market.deal = jest.fn(() => OK);
+    const collectPricing = jest.fn(
+      (
+        _config: unknown,
+        store: {
+          trustedFloors: Record<
+            ResourceConstant,
+            { value: number; marketDate: string; updatedAt: number }
+          >;
+        },
+      ) => {
+        store.trustedFloors[RESOURCE_HYDROGEN] = {
+          ...store.trustedFloors[RESOURCE_HYDROGEN],
+          value: store.trustedFloors[RESOURCE_HYDROGEN].value + 100,
+          updatedAt: Game.time,
+        };
+        throw new Error("partial-pricing-failure");
+      },
+    );
+    const runAutomation = jest.fn((_input: unknown) => automationResult());
+
+    const result = runLiveMarketSaleAutomation({
+      collectPricing: collectPricing as never,
+      collectProtection: jest.fn(() => protectionAt(Game.time)) as never,
+      runAutomation: runAutomation as never,
+    });
+
+    expect(runAutomation).toHaveBeenCalledTimes(1);
+    expect(runAutomation.mock.calls[0]![0]).not.toHaveProperty(
+      "marketBaseResourceTrustedFloorSuccessor",
+    );
+    expect(Memory.data!.marketSaleAutomation!.trustedFloors).toBe(
+      initialFloors,
+    );
+    expect(result.rejectedByReason.pricing_refresh_failed).toBe(1);
+    expect(market.deal).not.toHaveBeenCalled();
   });
 
   it("Maker keeps its 100-tick pricing cache even when an inactive Continuous capability remains configured", () => {
