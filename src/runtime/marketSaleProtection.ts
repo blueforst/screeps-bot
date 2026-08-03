@@ -288,14 +288,24 @@ function addIssue(
   issues: MarketProtectionIssue[],
   issue: MarketProtectionIssue,
 ): void {
-  const identity = `${issue.code}|${issue.sourceKind ?? ""}|${issue.stableKey ?? ""}|${issue.detail ?? ""}`;
+  const normalized: MarketProtectionIssue = {
+    code: issue.code,
+    ...(issue.sourceKind !== undefined
+      ? { sourceKind: issue.sourceKind }
+      : {}),
+    ...(issue.stableKey !== undefined
+      ? { stableKey: issue.stableKey }
+      : {}),
+    ...(issue.detail !== undefined ? { detail: issue.detail } : {}),
+  };
+  const identity = `${normalized.code}|${normalized.sourceKind ?? ""}|${normalized.stableKey ?? ""}|${normalized.detail ?? ""}`;
   const alreadyPresent = issues.some(
     (existing) =>
       `${existing.code}|${existing.sourceKind ?? ""}|${existing.stableKey ?? ""}|${existing.detail ?? ""}` ===
       identity,
   );
   if (!alreadyPresent) {
-    issues.push(issue);
+    issues.push(normalized);
   }
 }
 
@@ -467,12 +477,12 @@ function collectContributions(
       if (!existing) {
         deduped.set(dedupeKey, {
           dedupeKey,
-          stableKey,
+          ...(stableKey !== undefined ? { stableKey } : {}),
           anonymous,
           bucket,
           amount,
           sourceKinds: [sourceKind],
-          managedOrderId,
+          ...(managedOrderId !== undefined ? { managedOrderId } : {}),
           observedAt: factObservedAt,
           expiresAt: factExpiresAt,
         });
@@ -506,7 +516,7 @@ function collectContributions(
       if (!existing.sourceKinds.includes(sourceKind)) {
         existing.sourceKinds.push(sourceKind);
       }
-      if (!existing.managedOrderId) {
+      if (!existing.managedOrderId && managedOrderId !== undefined) {
         existing.managedOrderId = managedOrderId;
       }
     }

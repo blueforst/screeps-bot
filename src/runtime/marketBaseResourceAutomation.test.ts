@@ -1837,7 +1837,39 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(deps.executePrepared).not.toHaveBeenCalled();
   });
 
-  it("V3 可选 Energy/Protection 字段显式为 undefined 时先规范化再生成 canonical evidence", () => {
+  it("Energy 可选分量显式为 undefined 时先规范化再生成 canonical evidence", () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    const runtimeInput = input();
+    const originalReadCandidates = runtimeInput.readCandidates;
+    runtimeInput.readCandidates = () =>
+      originalReadCandidates().map((candidate) => ({
+        ...candidate,
+        energyShadowComponents: {
+          ...candidate.energyShadowComponents,
+          explicit: undefined,
+        },
+      }));
+    deps.readCurrentBuyOrders.mockReturnValue([]);
+
+    const result = runMarketBaseResourceAutomation(
+      state,
+      runtimeInput,
+      deps,
+    );
+
+    expect(result.planComplete).toBe(true);
+    expect(result.rejectedByReason).not.toHaveProperty(
+      "canonical value contains undefined",
+    );
+    expect(state.lastPlanningSnapshot).toMatchObject({
+      complete: true,
+    });
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("非 canonical protection 可选字段不得被洗白且在 commit 前闭锁", () => {
     const { state, deps, input } = v3RuntimeFixture();
     const runtimeInput = input();
     const originalReadCandidates = runtimeInput.readCandidates;
@@ -1860,12 +1892,7 @@ describe("Market Base Resource V3 live WAL glue", () => {
             },
           ],
         },
-        energyShadowComponents: {
-          ...candidate.energyShadowComponents,
-          explicit: undefined,
-        },
       }));
-    deps.readCurrentBuyOrders.mockReturnValue([]);
 
     const result = runMarketBaseResourceAutomation(
       state,
@@ -1873,12 +1900,13 @@ describe("Market Base Resource V3 live WAL glue", () => {
       deps,
     );
 
-    expect(result.planComplete).toBe(true);
-    expect(result.rejectedByReason).not.toHaveProperty(
+    expect(result.planComplete).toBe(false);
+    expect(result.rejectedByReason).toHaveProperty(
       "canonical value contains undefined",
     );
     expect(state.lastPlanningSnapshot).toMatchObject({
-      complete: true,
+      complete: false,
+      blocker: "canonical value contains undefined",
     });
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();

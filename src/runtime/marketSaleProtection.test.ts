@@ -9,6 +9,7 @@ import {
   type MarketProtectionSourceKind,
   type MarketProtectionSourceSnapshot,
 } from "@/runtime/marketSaleProtection";
+import { canonicalStableHashV1 } from "@/runtime/marketDirectContinuousPolicy";
 
 const TICK = 12_345;
 const ROOM = "W1N1";
@@ -181,6 +182,41 @@ describe("marketSaleProtection", () => {
           contribution.sourceKinds.includes("blockedOutgoing"),
       ),
     ).toHaveLength(2);
+  });
+
+  it("构造器不物化可选 undefined，完整与异常 protection entry 均可 canonical hash", () => {
+    const complete = entryFrom();
+    const floor = complete.sourceContributions.find((contribution) =>
+      contribution.sourceKinds.includes("floor"),
+    );
+    expect(floor).toBeDefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(floor, "managedOrderId"),
+    ).toBe(false);
+
+    const invalid = entryFrom({
+      stock: snapshot([fact(-1)]),
+      blockedOutgoing: snapshot([
+        fact(25, { status: "blocked" }),
+      ]),
+    });
+    const anonymous = invalid.sourceContributions.find(
+      (contribution) => contribution.anonymous,
+    );
+    expect(anonymous).toBeDefined();
+    expect(
+      Object.prototype.hasOwnProperty.call(anonymous, "stableKey"),
+    ).toBe(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(anonymous, "managedOrderId"),
+    ).toBe(false);
+    expect(
+      invalid.issues.every((issue) =>
+        Object.values(issue).every((value) => value !== undefined),
+      ),
+    ).toBe(true);
+    expect(() => canonicalStableHashV1(complete)).not.toThrow();
+    expect(() => canonicalStableHashV1(invalid)).not.toThrow();
   });
 
   it("keeps pending blocked outgoing protected until explicitly disposable and expired", () => {
