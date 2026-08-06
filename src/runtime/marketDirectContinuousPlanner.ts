@@ -181,6 +181,29 @@ export interface PlanMarketDirectContinuousInput {
   writeContext: MarketDirectContinuousWriteContext;
 }
 
+/**
+ * collector 从单次 full read 签发的脱离快照。快照内部只包含
+ * planner 会读取的原始字段，并且全部是普通对象/真实数组/原始值。
+ * 调用方不得跨 full read 或 tick 保留它。
+ */
+export interface MarketDirectContinuousDetachedBookSnapshot {
+  readonly book: MarketDirectContinuousBook;
+}
+
+/**
+ * 仅允许一次 planner 调用消费的不透明能力。真实授权函数由本模块的
+ * WeakMap 身份注册表保管，所以不能靠传入一个冻结 book 自行声明为可信。
+ */
+export interface MarketDirectContinuousInvocationBookCapability {
+  readonly book: MarketDirectContinuousBook;
+}
+
+export interface MarketDirectContinuousInvocationOptions {
+  readonly detachedBookCapabilities?: readonly MarketDirectContinuousInvocationBookCapability[];
+  /** 仅供确定性路径观测；抛错不得影响 planner 结果。 */
+  readonly observeNormalizationArtifact?: (used: boolean) => void;
+}
+
 export type MarketDirectContinuousBlockerReason =
   | "invalid_input"
   | "write_context_incomplete"
@@ -457,6 +480,307 @@ function normalizeOrder(order: MarketOrderSnapshot): Record<string, unknown> {
   };
 }
 
+interface MarketDirectContinuousNormalizedOrderArtifact {
+  readonly source: MarketOrderSnapshot;
+  readonly normalized: Record<string, unknown>;
+  readonly canonical: string;
+  readonly sortKey: string;
+}
+
+interface MarketDirectContinuousNormalizedBookArtifact {
+  readonly book: MarketDirectContinuousBook;
+  readonly orders: readonly MarketOrderSnapshot[];
+  readonly ownOrderIds: readonly string[];
+  readonly sourceOrders: MarketOrderSnapshot[];
+  readonly normalizedOrders: MarketDirectContinuousNormalizedOrderArtifact[];
+  valid: boolean;
+  normalizedBook?: Record<string, unknown>;
+}
+
+interface MarketDirectContinuousInvocationArtifacts {
+  readonly inputEntries: readonly MarketDirectContinuousEntryInput[];
+  readonly capabilities: ReadonlyMap<
+    MarketDirectContinuousBook,
+    MarketDirectContinuousInvocationBookCapability
+  >;
+  readonly books: Map<
+    MarketDirectContinuousBook,
+    MarketDirectContinuousNormalizedBookArtifact
+  >;
+  readonly canonicalFragments: Map<object, string>;
+  callbackInvoked: boolean;
+  invalid: boolean;
+}
+
+interface InvocationBookCapabilityRegistration {
+  readonly book: MarketDirectContinuousBook;
+  consumed: boolean;
+}
+
+// 这两个 WeakMap 是模块内的身份注册表，不存储订单归一化或规划证据。
+// key 随单次 full-read 快照/调用能力一同被 GC，且无法从对象反射得到注册记录。
+const detachedBookSnapshotIssuers = new WeakMap<
+  MarketDirectContinuousDetachedBookSnapshot,
+  () => MarketDirectContinuousInvocationBookCapability
+>();
+const invocationBookCapabilityRegistrations = new WeakMap<
+  MarketDirectContinuousInvocationBookCapability,
+  InvocationBookCapabilityRegistration
+>();
+
+function copyDetachedOrder(
+  source: MarketOrderSnapshot,
+): MarketOrderSnapshot | undefined {
+  if (!source || typeof source !== "object") return undefined;
+  const id = source.id;
+  const type = source.type;
+  const resourceType = source.resourceType;
+  const price = source.price;
+  const amount = source.amount;
+  const remainingAmount = source.remainingAmount;
+  const totalAmount = source.totalAmount;
+  const roomName = source.roomName;
+  const created = source.created;
+  if (
+    typeof id !== "string" ||
+    typeof type !== "string" ||
+    typeof resourceType !== "string" ||
+    typeof price !== "number" ||
+    typeof amount !== "number" ||
+    (remainingAmount !== undefined && typeof remainingAmount !== "number") ||
+    (totalAmount !== undefined && typeof totalAmount !== "number") ||
+    (roomName !== undefined && typeof roomName !== "string") ||
+    (created !== undefined && typeof created !== "number")
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    id,
+    type,
+    resourceType,
+    price,
+    amount,
+    ...(remainingAmount === undefined ? {} : { remainingAmount }),
+    ...(totalAmount === undefined ? {} : { totalAmount }),
+    ...(roomName === undefined ? {} : { roomName }),
+    ...(created === undefined ? {} : { created }),
+  });
+}
+
+/**
+ * 把 collector 的当前 book 复制为没有 getter/Proxy/嵌套可变值的冻结快照。
+ * 任何读取或形状异常都只会拒绝签发，planner 仍可走原有完整归一化路径。
+ */
+export function createMarketDirectContinuousDetachedBookSnapshot(
+  source: MarketDirectContinuousBook,
+): MarketDirectContinuousDetachedBookSnapshot | undefined {
+  try {
+    if (!source || typeof source !== "object") return undefined;
+    const complete = source.complete;
+    const revision = source.revision;
+    const sourceOrders = source.orders;
+    const sourceOwnOrderIds = source.ownOrderIds;
+    if (
+      typeof complete !== "boolean" ||
+      typeof revision !== "string" ||
+      !Array.isArray(sourceOrders) ||
+      !Array.isArray(sourceOwnOrderIds)
+    ) {
+      return undefined;
+    }
+    const orders: MarketOrderSnapshot[] = [];
+    for (let index = 0; index < sourceOrders.length; index += 1) {
+      const order = copyDetachedOrder(sourceOrders[index]);
+      if (!order) return undefined;
+      orders.push(order);
+    }
+    const ownOrderIds: string[] = [];
+    for (let index = 0; index < sourceOwnOrderIds.length; index += 1) {
+      const orderId = sourceOwnOrderIds[index];
+      if (typeof orderId !== "string") return undefined;
+      ownOrderIds.push(orderId);
+    }
+    Object.freeze(orders);
+    Object.freeze(ownOrderIds);
+    const book: MarketDirectContinuousBook = Object.freeze({
+      complete,
+      revision,
+      orders,
+      ownOrderIds,
+    });
+    const issue = (): MarketDirectContinuousInvocationBookCapability => {
+      const capability: MarketDirectContinuousInvocationBookCapability =
+        Object.freeze({ book });
+      invocationBookCapabilityRegistrations.set(capability, {
+        book,
+        consumed: false,
+      });
+      return capability;
+    };
+    const snapshot: MarketDirectContinuousDetachedBookSnapshot =
+      Object.freeze({ book });
+    detachedBookSnapshotIssuers.set(snapshot, issue);
+    return snapshot;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 从本次 full-read 快照签发一枚一次性 planner 能力。 */
+export function issueMarketDirectContinuousInvocationBookCapability(
+  snapshot: MarketDirectContinuousDetachedBookSnapshot,
+): MarketDirectContinuousInvocationBookCapability | undefined {
+  try {
+    const issue = detachedBookSnapshotIssuers.get(snapshot);
+    return typeof issue === "function" ? issue() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function consumeInvocationBookCapability(
+  capability: MarketDirectContinuousInvocationBookCapability,
+  book: MarketDirectContinuousBook,
+): boolean {
+  try {
+    const registration = invocationBookCapabilityRegistrations.get(capability);
+    if (
+      !registration ||
+      registration.consumed ||
+      registration.book !== book
+    ) {
+      return false;
+    }
+    registration.consumed = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createInvocationArtifacts(
+  input: PlanMarketDirectContinuousInput,
+  options: MarketDirectContinuousInvocationOptions | undefined,
+): MarketDirectContinuousInvocationArtifacts | undefined {
+  try {
+    const capabilities = options?.detachedBookCapabilities;
+    if (!Array.isArray(capabilities) || capabilities.length === 0) {
+      return undefined;
+    }
+    const byBook = new Map<
+      MarketDirectContinuousBook,
+      MarketDirectContinuousInvocationBookCapability
+    >();
+    for (const capability of capabilities) {
+      const book = capability?.book;
+      if (!book || byBook.has(book)) return undefined;
+      byBook.set(book, capability);
+    }
+    return {
+      inputEntries: input.entries,
+      capabilities: byBook,
+      books: new Map(),
+      canonicalFragments: new Map(),
+      callbackInvoked: false,
+      invalid: false,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function beginBookArtifact(
+  artifacts: MarketDirectContinuousInvocationArtifacts | undefined,
+  book: MarketDirectContinuousBook,
+  usesOnlyV3ResourceBook: boolean,
+): MarketDirectContinuousNormalizedBookArtifact | undefined {
+  if (!artifacts || !usesOnlyV3ResourceBook) return undefined;
+  try {
+    const capability = artifacts.capabilities.get(book);
+    if (
+      !capability ||
+      artifacts.books.has(book) ||
+      !consumeInvocationBookCapability(capability, book)
+    ) {
+      artifacts.invalid = true;
+      return undefined;
+    }
+    const artifact: MarketDirectContinuousNormalizedBookArtifact = {
+      book,
+      orders: book.orders,
+      ownOrderIds: book.ownOrderIds,
+      sourceOrders: [],
+      normalizedOrders: [],
+      valid: true,
+    };
+    artifacts.books.set(book, artifact);
+    return artifact;
+  } catch {
+    artifacts.invalid = true;
+    return undefined;
+  }
+}
+
+function captureOrderArtifact(
+  artifacts: MarketDirectContinuousInvocationArtifacts | undefined,
+  artifact: MarketDirectContinuousNormalizedBookArtifact | undefined,
+  source: MarketOrderSnapshot,
+  normalized: Record<string, unknown>,
+  canonical: string,
+): void {
+  if (!artifacts || !artifact) return;
+  try {
+    artifact.sourceOrders.push(source);
+    artifact.normalizedOrders.push({
+      source,
+      normalized,
+      canonical,
+      sortKey: `${String(normalized.id ?? "")}|${canonical}`,
+    });
+    artifacts.canonicalFragments.set(normalized, canonical);
+  } catch {
+    artifact.valid = false;
+    artifacts.invalid = true;
+  }
+}
+
+function finalizeBookArtifact(
+  artifacts: MarketDirectContinuousInvocationArtifacts | undefined,
+  artifact: MarketDirectContinuousNormalizedBookArtifact | undefined,
+): void {
+  if (
+    !artifacts ||
+    !artifact ||
+    !artifact.valid ||
+    artifact.sourceOrders.length !== artifact.orders.length ||
+    artifact.normalizedOrders.length !== artifact.orders.length
+  ) {
+    return;
+  }
+  const sortedOrders = [...artifact.normalizedOrders].sort((left, right) =>
+    stableStringCompare(left.sortKey, right.sortKey));
+  const canonicalById = new Map<string, string>();
+  const deduplicatedOrders: Array<Record<string, unknown>> = [];
+  for (const { normalized, canonical } of sortedOrders) {
+    const orderId = String(normalized.id ?? "");
+    if (canonicalById.get(orderId) === canonical) continue;
+    canonicalById.set(orderId, canonical);
+    deduplicatedOrders.push(normalized);
+  }
+  const normalizedBook: Record<string, unknown> = {
+    complete: artifact.book.complete,
+    revision: artifact.book.revision,
+    ownOrderIds: [...artifact.ownOrderIds].sort(stableStringCompare),
+    orders: deduplicatedOrders,
+  };
+  const canonical = stableCanonicalWithFragments(
+    normalizedBook,
+    artifacts.canonicalFragments,
+  );
+  artifacts.canonicalFragments.set(normalizedBook, canonical);
+  artifact.normalizedBook = normalizedBook;
+}
+
 function normalizeBook(
   book: MarketDirectContinuousBook | undefined,
 ): Record<string, unknown> | null {
@@ -493,7 +817,10 @@ function normalizeBook(
   };
 }
 
-function normalizeInput(input: PlanMarketDirectContinuousInput): Record<string, unknown> {
+function normalizeInput(
+  input: PlanMarketDirectContinuousInput,
+  artifacts?: MarketDirectContinuousInvocationArtifacts,
+): Record<string, unknown> {
   if (!input || !Array.isArray(input.entries)) {
     return { invalidInput: true };
   }
@@ -508,7 +835,9 @@ function normalizeInput(input: PlanMarketDirectContinuousInput): Record<string, 
           allowedRooms: [...entry.policy.allowedRooms].sort(stableStringCompare),
         },
         quota: { ...entry.quota },
-        book: normalizeBook(entry.book),
+        book: artifacts
+          ? artifacts.books.get(entry.book!)!.normalizedBook!
+          : normalizeBook(entry.book),
         lanes: [...entry.lanes]
           .sort((left, right) =>
             stableStringCompare(left.lane.roomName, right.lane.roomName))
@@ -547,6 +876,95 @@ function stableCanonical(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(`<${typeof value}>`);
+}
+
+function stableCanonicalWithFragments(
+  value: unknown,
+  canonicalFragments: ReadonlyMap<object, string>,
+): string {
+  if (value === null || typeof value !== "object") {
+    return stableCanonical(value);
+  }
+  const fragment = canonicalFragments.get(value);
+  if (fragment !== undefined) return fragment;
+  if (Array.isArray(value)) {
+    return `[${value
+      .map((entry) =>
+        stableCanonicalWithFragments(entry, canonicalFragments))
+      .join(",")}]`;
+  }
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object)
+    .sort(stableStringCompare)
+    .map((key) =>
+      `${JSON.stringify(key)}:` +
+      stableCanonicalWithFragments(object[key], canonicalFragments))
+    .join(",")}}`;
+}
+
+function usableInvocationArtifacts(
+  input: PlanMarketDirectContinuousInput,
+  artifacts: MarketDirectContinuousInvocationArtifacts | undefined,
+  selected: MarketDirectContinuousCandidate | undefined,
+  isolatedShadowLanes:
+    MarketDirectContinuousPlanningResult["isolatedShadowLanes"],
+): MarketDirectContinuousInvocationArtifacts | undefined {
+  try {
+    if (
+      !artifacts ||
+      artifacts.invalid ||
+      artifacts.callbackInvoked ||
+      selected !== undefined ||
+      isolatedShadowLanes.length > 0 ||
+      input.entries !== artifacts.inputEntries ||
+      artifacts.books.size !== input.entries.length
+    ) {
+      return undefined;
+    }
+    for (const entry of input.entries) {
+      if (
+        entry.policy.evaluatorVersion !== 3 ||
+        entry.lanes.some((laneInput) => laneInput.book !== undefined) ||
+        !entry.book
+      ) {
+        return undefined;
+      }
+      const artifact = artifacts.books.get(entry.book);
+      if (
+        !artifact ||
+        artifact.book !== entry.book ||
+        artifact.orders !== entry.book.orders ||
+        artifact.ownOrderIds !== entry.book.ownOrderIds ||
+        artifact.sourceOrders.length !== entry.book.orders.length ||
+        artifact.sourceOrders.some(
+          (source, index) => source !== entry.book!.orders[index],
+        )
+      ) {
+        return undefined;
+      }
+    }
+    // 只有所有业务分支都证明是无候选、无 callback 的安全路径后，
+    // 才付出排序和 book canonical 成本。任何 artifact 异常都回退旧路径。
+    for (const artifact of artifacts.books.values()) {
+      finalizeBookArtifact(artifacts, artifact);
+      if (!artifact.normalizedBook) return undefined;
+    }
+    return artifacts.invalid ? undefined : artifacts;
+  } catch {
+    if (artifacts) artifacts.invalid = true;
+    return undefined;
+  }
+}
+
+function observeNormalizationArtifact(
+  options: MarketDirectContinuousInvocationOptions | undefined,
+  used: boolean,
+): void {
+  try {
+    options?.observeNormalizationArtifact?.(used);
+  } catch {
+    // 观测钩子不属于规划输入，绝不能改变规划结果。
+  }
 }
 
 function canonicalBookEvidence(
@@ -744,9 +1162,10 @@ function finishResult(
   },
   isolatedShadowLanes:
     MarketDirectContinuousPlanningResult["isolatedShadowLanes"] = [],
+  normalizationArtifacts?: MarketDirectContinuousInvocationArtifacts,
 ): MarketDirectContinuousPlanningResult {
-  const evidence = stableCanonical({
-    input: normalizeInput(input),
+  const evidenceInput = {
+    input: normalizeInput(input, normalizationArtifacts),
     observation: {
       blocker: partial.blocker ?? null,
       energy: [...energyObservations].sort((left, right) =>
@@ -770,7 +1189,13 @@ function finishResult(
           `${right.entryId}|${right.roomName}|${right.reason}`,
         )),
     },
-  });
+  };
+  const evidence = normalizationArtifacts
+    ? stableCanonicalWithFragments(
+        evidenceInput,
+        normalizationArtifacts.canonicalFragments,
+      )
+    : stableCanonical(evidenceInput);
   const result: MarketDirectContinuousPlanningResult = {
     ...partial,
     planningFingerprint: shortFingerprint(evidence),
@@ -806,6 +1231,7 @@ function blockedResult(
  */
 export function planMarketDirectContinuous(
   input: PlanMarketDirectContinuousInput,
+  options?: MarketDirectContinuousInvocationOptions,
 ): MarketDirectContinuousPlanningResult {
   if (
     !input ||
@@ -878,6 +1304,9 @@ export function planMarketDirectContinuous(
     distinctOrderRooms: 0,
     transactionEnergyEvaluations: 0,
   };
+  const normalizationArtifacts = options === undefined
+    ? undefined
+    : createInvocationArtifacts(input, options);
 
   if (input.entries.length > MARKET_DIRECT_CONTINUOUS_MAX_RESOURCES) {
     return blockedResult(input, {
@@ -1101,6 +1530,13 @@ export function planMarketDirectContinuous(
       continue;
     }
 
+    const bookArtifact = normalizationArtifacts
+      ? beginBookArtifact(
+          normalizationArtifacts,
+          book,
+          usesOnlyV3ResourceBook,
+        )
+      : undefined;
     const seenOrderIds = new Map<string, string>();
     const ownOrderIds = new Set(book.ownOrderIds);
     const eligibleOrders: EligibleOrder[] = [];
@@ -1121,7 +1557,17 @@ export function planMarketDirectContinuous(
         shadowBookIncomplete = true;
         continue;
       }
-      const orderCanonical = stableCanonical(normalizeOrder(order));
+      const normalizedOrder = normalizeOrder(order);
+      const orderCanonical = stableCanonical(normalizedOrder);
+      if (bookArtifact) {
+        captureOrderArtifact(
+          normalizationArtifacts,
+          bookArtifact,
+          order,
+          normalizedOrder,
+          orderCanonical,
+        );
+      }
       const seenCanonical = seenOrderIds.get(orderId);
       if (seenCanonical !== undefined) {
         if (seenCanonical === orderCanonical) {
@@ -1382,6 +1828,9 @@ export function planMarketDirectContinuous(
             throw new TransactionEnergyEvaluationLimitError(
               "transaction energy evaluation hard limit exceeded",
             );
+          }
+          if (normalizationArtifacts) {
+            normalizationArtifacts.callbackInvoked = true;
           }
           const observed = calculator(amount, eligible.order, lane.roomName);
           transactionEnergyMemo.set(memoKey, observed);
@@ -1737,14 +2186,60 @@ export function planMarketDirectContinuous(
     });
   }
   admittedCandidates.sort(compareMarketDirectContinuousCandidates);
-
-  return finishResult(input, {
-    complete: true,
+  const selected = admittedCandidates[0];
+  const usableArtifacts = normalizationArtifacts
+    ? usableInvocationArtifacts(
+        input,
+        normalizationArtifacts,
+        selected,
+        isolatedShadowLanes,
+      )
+    : undefined;
+  const partial = {
+    complete: true as const,
     safeCandidates,
     admittedCandidates,
-    selected: admittedCandidates[0],
+    selected,
     rejections,
-  }, energyObservations, budget, isolatedShadowLanes);
+  };
+  if (!normalizationArtifacts) {
+    const result = finishResult(
+      input,
+      partial,
+      energyObservations,
+      budget,
+      isolatedShadowLanes,
+    );
+    if (options !== undefined) {
+      observeNormalizationArtifact(options, false);
+    }
+    return result;
+  }
+  if (usableArtifacts) {
+    try {
+      const result = finishResult(
+        input,
+        partial,
+        energyObservations,
+        budget,
+        isolatedShadowLanes,
+        usableArtifacts,
+      );
+      observeNormalizationArtifact(options, true);
+      return result;
+    } catch {
+      // artifact 是可选性能路径；任何异常都必须使用原有归一化重建证据。
+    }
+  }
+  const result = finishResult(
+    input,
+    partial,
+    energyObservations,
+    budget,
+    isolatedShadowLanes,
+  );
+  observeNormalizationArtifact(options, false);
+  return result;
 }
 
 /**

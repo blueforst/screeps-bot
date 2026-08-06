@@ -1,11 +1,14 @@
 import {
+  createMarketDirectContinuousDetachedBookSnapshot,
   isExactMarketDirectContinuousSecondRead,
+  issueMarketDirectContinuousInvocationBookCapability,
   MARKET_DIRECT_CONTINUOUS_MAX_DISTINCT_ORDER_ROOMS,
   MARKET_DIRECT_CONTINUOUS_MAX_SELLER_ROOMS,
   MARKET_DIRECT_CONTINUOUS_MAX_TRANSACTION_ENERGY_EVALUATIONS,
   MARKET_DIRECT_CONTINUOUS_PLANNED_AMOUNT,
   planMarketDirectContinuous,
   type MarketDirectContinuousEntryInput,
+  type MarketDirectContinuousDetachedBookSnapshot,
   type PlanMarketDirectContinuousInput,
 } from "@/runtime/marketDirectContinuousPlanner";
 import type { MarketOrderSnapshot } from "@/runtime/marketSalePricing";
@@ -247,6 +250,25 @@ function v3Entry(
       },
     })),
   };
+}
+
+function detachBook(
+  entry: MarketDirectContinuousEntryInput,
+): MarketDirectContinuousDetachedBookSnapshot {
+  const detached = createMarketDirectContinuousDetachedBookSnapshot(entry.book!);
+  if (!detached) throw new Error("detached book fixture failed");
+  entry.book = detached.book;
+  return detached;
+}
+
+function issueBookCapability(
+  detached: MarketDirectContinuousDetachedBookSnapshot,
+) {
+  const capability = issueMarketDirectContinuousInvocationBookCapability(
+    detached,
+  );
+  if (!capability) throw new Error("book capability fixture failed");
+  return capability;
 }
 
 describe("multi-resource full-book tuple planner", () => {
@@ -569,29 +591,368 @@ describe("multi-resource full-book tuple planner", () => {
     expect(reversed.planningEvidence).toBe(forward.planningEvidence);
   });
 
-  it("V3 无 lane book adapter 时只在最终 evidence 规范化资源 book", () => {
-    let mapReads = 0;
-    const rawOrder = order("raw-low", "X", 1, 1_000, "E1N1");
-    const proxiedOrders = new Proxy([rawOrder], {
-      get: (target, property, receiver) => {
-        if (property === "map") mapReads += 1;
-        return Reflect.get(target, property, receiver);
-      },
-    });
+  it("V3 无 adapter 的低价脱离快照复用 invocation artifact 且 evidence 不变", () => {
+    const rawOrders = Array.from({ length: 116 }, (_unused, index) =>
+      order(`raw-low-${index}`, "X", 1, 1_000, `E${index}N1`));
     const energy = jest.fn(() => 0);
-    const proxied = planMarketDirectContinuous(planningInput([
-      v3Entry("X", ["W1N1"], proxiedOrders, energy),
-    ]));
-    const plain = planMarketDirectContinuous(planningInput([
-      v3Entry("X", ["W1N1"], [{ ...rawOrder }], () => 0),
+    const fastEntry = v3Entry("X", ["W1N1"], rawOrders, energy);
+    const detached = detachBook(fastEntry);
+    const probe = jest.fn();
+    const fast = planMarketDirectContinuous(
+      planningInput([fastEntry]),
+      {
+        detachedBookCapabilities: [issueBookCapability(detached)],
+        observeNormalizationArtifact: probe,
+      },
+    );
+    const slow = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["W1N1"], rawOrders.map((candidate) => ({ ...candidate })), () => 0),
     ]));
 
-    expect(proxied.complete).toBe(true);
-    expect(proxied.safeCandidates).toHaveLength(0);
+    expect(fast.complete).toBe(true);
+    expect(fast.safeCandidates).toHaveLength(0);
     expect(energy).not.toHaveBeenCalled();
-    expect(mapReads).toBe(1);
-    expect(proxied.planningEvidence).toBe(plain.planningEvidence);
-    expect(proxied.planningFingerprint).toBe(plain.planningFingerprint);
+    expect(probe).toHaveBeenCalledWith(true);
+    expect(fast.planningEvidence).toBe(slow.planningEvidence);
+    expect(fast.planningFingerprint).toBe(slow.planningFingerprint);
+  });
+
+  it("多资源 artifact 精确保留排序、重复 ID、ownOrderIds 与可选字段", () => {
+    const x = {
+      ...order("x-low", "X", 1, 1_000, "E1N1"),
+      created: -0,
+      remainingAmount: 1_000,
+      totalAmount: 1_000,
+    };
+    const h = {
+      ...order("h-low", "H", 1, 1_000, "E2N2"),
+      created: Number.POSITIVE_INFINITY,
+    };
+    const fastX = v3Entry("X", ["W1N1"], [{ ...x }, { ...x }], () => 0);
+    const fastH = v3Entry("H", ["W2N2"], [{ ...h }, { ...h }], () => 0);
+    fastX.book!.ownOrderIds = ["manual-b", "manual-a", "manual-a"];
+    fastH.book!.ownOrderIds = ["manual-z", "manual-z"];
+    const detachedBooks = [detachBook(fastX), detachBook(fastH)];
+    const probe = jest.fn();
+    const fast = planMarketDirectContinuous(
+      planningInput([fastH, fastX]),
+      {
+        detachedBookCapabilities: detachedBooks.map(issueBookCapability),
+        observeNormalizationArtifact: probe,
+      },
+    );
+
+    const slowX = v3Entry("X", ["W1N1"], [{ ...x }, { ...x }], () => 0);
+    const slowH = v3Entry("H", ["W2N2"], [{ ...h }, { ...h }], () => 0);
+    slowX.book!.ownOrderIds = ["manual-a", "manual-b", "manual-a"];
+    slowH.book!.ownOrderIds = ["manual-z", "manual-z"];
+    const slow = planMarketDirectContinuous(planningInput([slowX, slowH]));
+
+    expect(fast.complete).toBe(true);
+    expect(fast.selected).toBeUndefined();
+    expect(probe).toHaveBeenCalledWith(true);
+    expect(fast.rejections).toEqual(slow.rejections);
+    expect(fast.planningEvidence).toBe(slow.planningEvidence);
+    expect(fast.planningFingerprint).toBe(slow.planningFingerprint);
+  });
+
+  it.each([false, true])(
+    "order deepFreeze=%s 时反射复制真能力仍无法伪造信任",
+    (deepFreezeOrder) => {
+      const untrusted = v3Entry(
+        "X",
+        ["W1N1"],
+        [order("raw-low", "X", 1)],
+        () => 0,
+      );
+      if (deepFreezeOrder) Object.freeze(untrusted.book!.orders[0]);
+      Object.freeze(untrusted.book!.orders);
+      Object.freeze(untrusted.book!.ownOrderIds);
+      Object.freeze(untrusted.book!);
+
+      const donorEntry = v3Entry(
+        "X",
+        ["W9N9"],
+        [order("donor-low", "X", 1)],
+        () => 0,
+      );
+      const donorCapability = issueBookCapability(detachBook(donorEntry));
+      const forged = Object.create(Object.getPrototypeOf(donorCapability));
+      for (const key of Reflect.ownKeys(donorCapability)) {
+        const descriptor = Object.getOwnPropertyDescriptor(
+          donorCapability,
+          key,
+        )!;
+        Object.defineProperty(
+          forged,
+          key,
+          key === "book"
+            ? { ...descriptor, value: untrusted.book }
+            : descriptor,
+        );
+      }
+      Object.freeze(forged);
+      const probe = jest.fn();
+      const expected = planMarketDirectContinuous(planningInput([untrusted]));
+      const result = planMarketDirectContinuous(
+        planningInput([untrusted]),
+        {
+          detachedBookCapabilities: [forged],
+          observeNormalizationArtifact: probe,
+        },
+      );
+
+      expect(result.complete).toBe(true);
+      expect(result.selected).toBeUndefined();
+      expect(probe).toHaveBeenCalledWith(false);
+      expect(result.planningEvidence).toBe(expected.planningEvidence);
+      expect(result.planningFingerprint).toBe(expected.planningFingerprint);
+    },
+  );
+
+  it("同一能力只能使用一次，再次调用自动回退", () => {
+    const fastEntry = v3Entry(
+      "X",
+      ["W1N1"],
+      [order("raw-low", "X", 1)],
+      () => 0,
+    );
+    const detached = detachBook(fastEntry);
+    const capability = issueBookCapability(detached);
+    const probe = jest.fn();
+    const input = planningInput([fastEntry]);
+
+    const first = planMarketDirectContinuous(input, {
+      detachedBookCapabilities: [capability],
+      observeNormalizationArtifact: probe,
+    });
+    const second = planMarketDirectContinuous(input, {
+      detachedBookCapabilities: [capability],
+      observeNormalizationArtifact: probe,
+    });
+
+    expect(probe.mock.calls).toEqual([[true], [false]]);
+    expect(second.planningEvidence).toBe(first.planningEvidence);
+    expect(second.planningFingerprint).toBe(first.planningFingerprint);
+  });
+
+  it("脱离快照拒绝抛错 getter 和非原始规范化字段", () => {
+    const throwing = v3Entry("X", ["W1N1"], [order("getter", "X", 1)], () => 0);
+    Object.defineProperty(throwing.book!.orders[0], "price", {
+      configurable: true,
+      get: () => {
+        throw new Error("getter must not escape snapshot factory");
+      },
+    });
+    expect(createMarketDirectContinuousDetachedBookSnapshot(throwing.book!))
+      .toBeUndefined();
+
+    const nested = v3Entry("X", ["W1N1"], [order("nested", "X", 1)], () => 0);
+    (nested.book!.orders[0] as unknown as { price: unknown }).price = {
+      mutable: true,
+    };
+    expect(createMarketDirectContinuousDetachedBookSnapshot(nested.book!))
+      .toBeUndefined();
+
+    const source = v3Entry(
+      "X",
+      ["W1N1"],
+      [{ ...order("plain", "X", 1), remainingAmount: 1_000 }],
+      () => 0,
+    ).book!;
+    const detached = createMarketDirectContinuousDetachedBookSnapshot(source)!;
+    expect(Object.getPrototypeOf(detached.book)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(detached.book.orders)).toBe(Array.prototype);
+    expect(Object.getPrototypeOf(detached.book.orders[0])).toBe(
+      Object.prototype,
+    );
+    expect(Object.isFrozen(detached.book)).toBe(true);
+    expect(Object.isFrozen(detached.book.orders)).toBe(true);
+    expect(Object.isFrozen(detached.book.ownOrderIds)).toBe(true);
+    expect(Object.isFrozen(detached.book.orders[0])).toBe(true);
+    expect(detached.book).not.toBe(source);
+    expect(detached.book.orders).not.toBe(source.orders);
+    expect(detached.book.orders[0]).not.toBe(source.orders[0]);
+    expect(
+      Object.values(detached.book.orders[0]).every(
+        (value) => value === undefined || Object(value) !== value,
+      ),
+    ).toBe(true);
+  });
+
+  it("能耗 callback 被调用后即使无 selected 也回退旧规范化", () => {
+    const energy = jest.fn((amount: number) => amount === 1 ? 1 : 100);
+    const fastEntry = v3Entry("X", ["W1N1"], [order("priced", "X", 700)], energy);
+    fastEntry.lanes[0].terminal.energy = 25_000;
+    const detached = detachBook(fastEntry);
+    const probe = jest.fn();
+    const result = planMarketDirectContinuous(
+      planningInput([fastEntry]),
+      {
+        detachedBookCapabilities: [issueBookCapability(detached)],
+        observeNormalizationArtifact: probe,
+      },
+    );
+    const slowEntry = v3Entry(
+      "X",
+      ["W1N1"],
+      [order("priced", "X", 700)],
+      (amount) => amount === 1 ? 1 : 100,
+    );
+    slowEntry.lanes[0].terminal.energy = 25_000;
+    const slow = planMarketDirectContinuous(planningInput([slowEntry]));
+
+    expect(result.complete).toBe(true);
+    expect(result.selected).toBeUndefined();
+    expect(result.rejections).toContainEqual(expect.objectContaining({
+      orderId: "priced",
+      reason: "terminal_energy_reserve",
+    }));
+    expect(energy).toHaveBeenCalledTimes(2);
+    expect(probe).toHaveBeenCalledWith(false);
+    expect(result.planningEvidence).toBe(slow.planningEvidence);
+    expect(result.planningFingerprint).toBe(slow.planningFingerprint);
+  });
+
+  it("能耗 callback 抛错时 blocked result 仍走旧规范化", () => {
+    const energy = jest.fn(() => {
+      throw new Error("pricing unavailable");
+    });
+    const fastEntry = v3Entry("X", ["W1N1"], [order("priced", "X", 700)], energy);
+    const detached = detachBook(fastEntry);
+    const result = planMarketDirectContinuous(
+      planningInput([fastEntry]),
+      { detachedBookCapabilities: [issueBookCapability(detached)] },
+    );
+    const slow = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["W1N1"], [order("priced", "X", 700)], () => {
+        throw new Error("pricing unavailable");
+      }),
+    ]));
+
+    expect(result).toMatchObject({
+      complete: false,
+      blocker: { reason: "energy_pricing_failed" },
+    });
+    expect(energy).toHaveBeenCalledTimes(1);
+    expect(result.planningEvidence).toBe(slow.planningEvidence);
+    expect(result.planningFingerprint).toBe(slow.planningFingerprint);
+  });
+
+  it("adapter 或局部隔离存在时必定回退，证据与旧路径完全一致", () => {
+    const adapterFast = v3Entry(
+      "X",
+      ["W1N1"],
+      [order("adapter-low", "X", 1)],
+      () => 0,
+    );
+    const adapterDetached = detachBook(adapterFast);
+    adapterFast.lanes[0].book = adapterFast.book;
+    const adapterProbe = jest.fn();
+    const adapterResult = planMarketDirectContinuous(
+      planningInput([adapterFast]),
+      {
+        detachedBookCapabilities: [issueBookCapability(adapterDetached)],
+        observeNormalizationArtifact: adapterProbe,
+      },
+    );
+    const adapterSlow = v3Entry(
+      "X",
+      ["W1N1"],
+      [order("adapter-low", "X", 1)],
+      () => 0,
+    );
+    adapterSlow.lanes[0].book = adapterSlow.book;
+    const adapterExpected = planMarketDirectContinuous(
+      planningInput([adapterSlow]),
+    );
+    expect(adapterProbe).toHaveBeenCalledWith(false);
+    expect(adapterResult.planningEvidence).toBe(
+      adapterExpected.planningEvidence,
+    );
+    expect(adapterResult.planningFingerprint).toBe(
+      adapterExpected.planningFingerprint,
+    );
+
+    const isolatedFast = v3Entry(
+      "X",
+      ["W1N1", "W2N2"],
+      [order("isolated-low", "X", 1)],
+      () => 0,
+    );
+    isolatedFast.lanes[1].lane.authorization = "suspended_shadow";
+    isolatedFast.lanes[1].protection.complete = false;
+    const isolatedDetached = detachBook(isolatedFast);
+    const isolatedProbe = jest.fn();
+    const isolatedResult = planMarketDirectContinuous(
+      planningInput([isolatedFast]),
+      {
+        detachedBookCapabilities: [issueBookCapability(isolatedDetached)],
+        observeNormalizationArtifact: isolatedProbe,
+      },
+    );
+    const isolatedSlow = v3Entry(
+      "X",
+      ["W1N1", "W2N2"],
+      [order("isolated-low", "X", 1)],
+      () => 0,
+    );
+    isolatedSlow.lanes[1].lane.authorization = "suspended_shadow";
+    isolatedSlow.lanes[1].protection.complete = false;
+    const isolatedExpected = planMarketDirectContinuous(
+      planningInput([isolatedSlow]),
+    );
+    expect(isolatedProbe).toHaveBeenCalledWith(false);
+    expect(isolatedResult.planningEvidence).toBe(
+      isolatedExpected.planningEvidence,
+    );
+    expect(isolatedResult.planningFingerprint).toBe(
+      isolatedExpected.planningFingerprint,
+    );
+  });
+
+  it("artifact 观测钩子抛错不改变规划结果", () => {
+    const fastEntry = v3Entry(
+      "X",
+      ["W1N1"],
+      [order("raw-low", "X", 1)],
+      () => 0,
+    );
+    const detached = detachBook(fastEntry);
+
+    expect(() =>
+      planMarketDirectContinuous(planningInput([fastEntry]), {
+        detachedBookCapabilities: [issueBookCapability(detached)],
+        observeNormalizationArtifact: () => {
+          throw new Error("observer failure");
+        },
+      })
+    ).not.toThrow();
+  });
+
+  it("artifact options 的 getter/Proxy 抛错时仍完整回退旧路径", () => {
+    const makeInput = () => planningInput([
+      v3Entry(
+        "X",
+        ["W1N1"],
+        [order("raw-low", "X", 1)],
+        () => 0,
+      ),
+    ]);
+    const expected = planMarketDirectContinuous(makeInput());
+    const throwingOptions = new Proxy({}, {
+      get: () => {
+        throw new Error("options getter failure");
+      },
+    });
+
+    const result = planMarketDirectContinuous(
+      makeInput(),
+      throwingOptions,
+    );
+
+    expect(result.planningEvidence).toBe(expected.planningEvidence);
+    expect(result.planningFingerprint).toBe(expected.planningFingerprint);
   });
 
   it("自有 BUY order 在 tuple 前排除，外部高价单仍可成交", () => {

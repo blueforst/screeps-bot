@@ -551,6 +551,69 @@ describe("Market Base Resource V3 runtime", () => {
     expect(covered.size).toBe(10);
   });
 
+  it("Shadow artifact 只冻结 collector clone，不冻结市场 API 原对象", () => {
+    const apiOrder = order(
+      "api-low",
+      RESOURCE_HYDROGEN,
+      1,
+      1_000,
+      "E1N1",
+    );
+    const apiOrders = [apiOrder];
+    const deps = dependencies({
+      scope: scope([
+        entry(RESOURCE_HYDROGEN, ["W1N1"], "suspended_shadow", 100),
+      ]),
+      books: { [RESOURCE_HYDROGEN]: apiOrders },
+    });
+    deps.readCurrentBuyOrders.mockImplementation(() => apiOrders);
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.shadowObservations).toEqual([
+      expect.objectContaining({ result: "safe_no_opportunity" }),
+    ]);
+    expect(Object.isFrozen(apiOrders)).toBe(false);
+    expect(Object.isFrozen(apiOrder)).toBe(false);
+  });
+
+  it("8 条 Shadow 面对 128 条低价单时全部使用调用内归一化 artifact", () => {
+    const shadow = immutablePolicyEntry(
+      "H",
+      Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N1`),
+      "suspended_shadow",
+    );
+    const raw = Array.from({ length: 128 }, (_unused, index) =>
+      order(
+        `low-${String(index).padStart(3, "0")}`,
+        RESOURCE_HYDROGEN,
+        1,
+        1_000,
+        `E${index}S1`,
+      ));
+    const deps = dependencies({
+      scope: scope([shadow]),
+      books: { [RESOURCE_HYDROGEN]: raw },
+    });
+    const artifactProbe = jest.fn();
+    deps.observeShadowNormalizationArtifact = artifactProbe;
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.rawOrderCount).toBe(128);
+    expect(result.eligibleOrderCount).toBe(0);
+    expect(result.sampledShadowLaneIds).toHaveLength(8);
+    expect(result.shadowObservations).toHaveLength(8);
+    expect(result.shadowObservations.every(
+      (observation) => observation.result === "safe_no_opportunity",
+    )).toBe(true);
+    expect(artifactProbe).toHaveBeenCalledTimes(8);
+    expect(artifactProbe.mock.calls.every(([used]) => used === true)).toBe(true);
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
   it.each([
     [8, 7, 56],
     [16, 14, 112],
@@ -723,6 +786,8 @@ describe("Market Base Resource V3 runtime", () => {
       scope: scope([shadow]),
       books: { [RESOURCE_HYDROGEN]: books },
     });
+    const artifactProbe = jest.fn();
+    deps.observeShadowNormalizationArtifact = artifactProbe;
     const result = planMarketBaseResourceTwoRead(deps);
 
     expect(result.complete).toBe(true);
@@ -739,6 +804,8 @@ describe("Market Base Resource V3 runtime", () => {
     expect(deps.calculateTransactionEnergy).toHaveBeenCalledTimes(
       2 * 8 * 128,
     );
+    expect(artifactProbe).toHaveBeenCalledTimes(8);
+    expect(artifactProbe.mock.calls.every(([used]) => used === false)).toBe(true);
   });
 
   it("201 eligible 与 1,001 raw 均在 transaction-energy 前闭锁，1,000 raw 可完整读取", () => {

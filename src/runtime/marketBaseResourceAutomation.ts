@@ -9,11 +9,14 @@ import {
   releasePreparedDirectMarketClaims,
 } from "@/runtime/marketActionArbiter";
 import {
+  createMarketDirectContinuousDetachedBookSnapshot,
   isExactMarketDirectContinuousSecondRead,
+  issueMarketDirectContinuousInvocationBookCapability,
   MARKET_DIRECT_CONTINUOUS_LANE_ROLLING_CAP,
   MARKET_DIRECT_CONTINUOUS_ROOM_ROLLING_CAP,
   planMarketDirectContinuous,
   type MarketDirectContinuousBook,
+  type MarketDirectContinuousDetachedBookSnapshot,
   type MarketDirectContinuousEntryInput,
   type MarketDirectContinuousLaneInput,
   type MarketDirectContinuousPlanningResult,
@@ -2088,6 +2091,8 @@ export interface MarketBaseResourcePlanningDependencies {
     toRoomName: string,
   ) => number;
   cpuUsed: () => number;
+  /** 仅供测试/诊断确认 Shadow 是否走了快照归一化路径。 */
+  observeShadowNormalizationArtifact?: (used: boolean) => void;
 }
 
 export function readLiveMarketBaseTerminal(
@@ -2691,7 +2696,7 @@ function cloneBookForRead(
   return {
     complete: true,
     orders: [...local.values()].sort((left, right) =>
-      stableCompare(left.id, right.id),
+      stableCompare(left.id, right.id)
     ),
   };
 }
@@ -2765,11 +2770,14 @@ function collectFullRead(
   ) {
     return blockedFullRead(scope, "market_base_own_orders_invalid");
   }
-
   const shadow = selectedShadowLaneIds(scope.entries, cursor);
   const sampledShadowSet = new Set(shadow.selected);
   const seenOrderIds = new Map<string, string>();
   const books = new Map<string, MarketDirectContinuousBook>();
+  const detachedShadowBooks = new Map<
+    string,
+    MarketDirectContinuousDetachedBookSnapshot
+  >();
   const shadowBookBlockers = new Map<string, string>();
   const terminalEvidence: unknown[] = [];
   const terminalReads: Record<string, MarketBaseResourceTerminalRead> = {};
@@ -2857,7 +2865,7 @@ function collectFullRead(
     for (const order of eligible) {
       evaluatedDistinctOrderRooms.add(order.roomName!);
     }
-    books.set(resource, {
+    let book: MarketDirectContinuousBook = {
       complete: true,
       revision: canonicalStableHashV1({
         domain: "market-base-resource:book-v1",
@@ -2867,7 +2875,21 @@ function collectFullRead(
       }),
       orders: cloned.orders,
       ownOrderIds: [...ownOrderIds].sort(stableCompare),
-    });
+    };
+    // 快路径仅用于本次 full read 中被抽样、且 collector 已证明
+    // eligible=0 的纯 Shadow 资源。任何 writable 或有候选资源都保持旧路径。
+    if (
+      !resourceHasWritableLane &&
+      sampledLaneIds.length > 0 &&
+      eligible.length === 0
+    ) {
+      const detached = createMarketDirectContinuousDetachedBookSnapshot(book);
+      if (detached) {
+        detachedShadowBooks.set(resource, detached);
+        book = detached.book;
+      }
+    }
+    books.set(resource, book);
   }
   if (
     evaluatedDistinctOrderRooms.size >
@@ -3077,56 +3099,77 @@ function collectFullRead(
       }
       let local: MarketDirectContinuousPlanningResult;
       try {
-        local = planMarketDirectContinuous({
-          entries: [
-            {
-              ...entry,
-              policy: {
-                ...entry.policy,
-                allowedRooms: [shadowLane.lane.roomName],
-              },
-              lanes: [
-                {
-                  ...shadowLane,
-                  lane: {
-                    ...shadowLane.lane,
-                    // 仅用于纯函数机会判断；原始 scope/grant 仍是
-                    // suspended，且本模块不拥有任何写入口。
-                    authorization: "writable",
-                  },
+        const detached = detachedShadowBooks.get(entry.policy.resourceType);
+        const capability = detached
+          ? issueMarketDirectContinuousInvocationBookCapability(detached)
+          : undefined;
+        const invocationOptions =
+          capability || dependencies.observeShadowNormalizationArtifact
+            ? {
+                ...(capability
+                  ? { detachedBookCapabilities: [capability] }
+                  : {}),
+                ...(dependencies.observeShadowNormalizationArtifact
+                  ? {
+                      observeNormalizationArtifact:
+                        dependencies.observeShadowNormalizationArtifact,
+                    }
+                  : {}),
+              }
+            : undefined;
+        local = planMarketDirectContinuous(
+          {
+            entries: [
+              {
+                ...entry,
+                policy: {
+                  ...entry.policy,
+                  allowedRooms: [shadowLane.lane.roomName],
                 },
-              ],
-              book,
-              calculateTransactionEnergy: (
-                amount: number,
-                order: MarketOrderSnapshot,
-                sellerRoomName: string,
-              ) => {
-                if (!order.roomName) {
-                  throw new Error("market base shadow order room missing");
-                }
-                return calculateBoundedTransactionEnergy(
-                  amount,
-                  sellerRoomName,
-                  order.roomName,
-                );
-              },
-            } as MarketDirectContinuousEntryInput,
-          ],
-          energyShadow: { ...scope.energyShadow },
-          globalQuota: { ...scope.globalQuota },
-          writeContext: {
-            ...scope.writeContext,
-            revision: canonicalStableHashV1({
-              domain: "market-base-resource:shadow-read-context-v1",
-              laneId: sourceLane.laneId,
-              originalRevision: scope.writeContext.revision,
-              scopeEvidence: scope.scopeEvidence,
-            }),
-            pendingState: "none",
-            arbiterState: "available",
+                lanes: [
+                  {
+                    ...shadowLane,
+                    lane: {
+                      ...shadowLane.lane,
+                      // 仅用于纯函数机会判断；原始 scope/grant 仍是
+                      // suspended，且本模块不拥有任何写入口。
+                      authorization: "writable",
+                    },
+                  },
+                ],
+                book,
+                calculateTransactionEnergy: (
+                  amount: number,
+                  order: MarketOrderSnapshot,
+                  sellerRoomName: string,
+                ) => {
+                  if (!order.roomName) {
+                    throw new Error("market base shadow order room missing");
+                  }
+                  return calculateBoundedTransactionEnergy(
+                    amount,
+                    sellerRoomName,
+                    order.roomName,
+                  );
+                },
+              } as MarketDirectContinuousEntryInput,
+            ],
+            energyShadow: { ...scope.energyShadow },
+            globalQuota: { ...scope.globalQuota },
+            writeContext: {
+              ...scope.writeContext,
+              revision: canonicalStableHashV1({
+                domain: "market-base-resource:shadow-read-context-v1",
+                laneId: sourceLane.laneId,
+                originalRevision: scope.writeContext.revision,
+                scopeEvidence: scope.scopeEvidence,
+              }),
+              pendingState: "none",
+              arbiterState: "available",
+            },
           },
-        });
+          invocationOptions,
+        );
       } catch {
         shadowObservations.push({
           laneId: sourceLane.laneId,
