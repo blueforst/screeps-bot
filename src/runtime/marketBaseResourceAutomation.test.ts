@@ -257,6 +257,7 @@ interface Harness {
   scope: MarketBaseResourcePlanningScopeSnapshot;
   secondScope?: MarketBaseResourcePlanningScopeSnapshot;
   books: Partial<Record<ResourceConstant, MarketOrderSnapshot[]>>;
+  secondBooks?: Partial<Record<ResourceConstant, MarketOrderSnapshot[]>>;
   throwBook?: ResourceConstant;
   mutateNonSelectedTerminal?: boolean;
 }
@@ -286,6 +287,7 @@ function dependencies(
   readCurrentBuyOrders: jest.Mock;
 } {
   const terminalReads = new Map<string, number>();
+  const bookReads = new Map<ResourceConstant, number>();
   let scopeReads = 0;
   return {
     readScope: jest.fn(() => {
@@ -302,8 +304,14 @@ function dependencies(
       if (harness.throwBook === resource) {
         throw new Error("fixture book unavailable");
       }
+      const reads = (bookReads.get(resource) || 0) + 1;
+      bookReads.set(resource, reads);
       return JSON.parse(
-        JSON.stringify(harness.books[resource] || []),
+        JSON.stringify(
+          reads === 2 && harness.secondBooks?.[resource]
+            ? harness.secondBooks[resource]
+            : harness.books[resource] || [],
+        ),
       ) as MarketOrderSnapshot[];
     }),
     readOwnOrders: jest.fn(() => []),
@@ -414,6 +422,47 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.blocker).toBe("market_base_second_read_scope_changed");
     expect(result.selected).toBeUndefined();
     expect(result.first?.selected?.order.id).toBe("h-best");
+  });
+
+  it("第二读只改低于成交门槛的 raw order 仍整轮拒绝且 book 对象独立", () => {
+    const high = order(
+      "h-best",
+      RESOURCE_HYDROGEN,
+      800,
+      1_000,
+      "E20S20",
+    );
+    const low = order(
+      "h-low",
+      RESOURCE_HYDROGEN,
+      1,
+      1_000,
+      "E21S21",
+    );
+    const deps = dependencies({
+      scope: scope([
+        immutablePolicyEntry("H", ["W1N1"], "writable"),
+      ]),
+      books: {
+        [RESOURCE_HYDROGEN]: [high, low],
+      },
+      secondBooks: {
+        [RESOURCE_HYDROGEN]: [high, { ...low, price: 2 }],
+      },
+    });
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(false);
+    expect(result.blocker).toBe("market_base_second_read_changed");
+    expect(result.first?.selected?.order.id).toBe("h-best");
+    expect(deps.readCurrentBuyOrders).toHaveBeenCalledTimes(2);
+    expect(deps.readCurrentBuyOrders.mock.results[0]?.value).not.toBe(
+      deps.readCurrentBuyOrders.mock.results[1]?.value,
+    );
+    // 第二份完整 book 已在第二次 planner 前因 raw evidence 改变而拒绝；
+    // 只有第一份计划执行 planned/worst 两种能耗探针。
+    expect(deps.calculateTransactionEnergy).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -654,26 +703,156 @@ describe("Market Base Resource V3 runtime", () => {
     expect(deps.readCurrentBuyOrders).not.toHaveBeenCalled();
   });
 
-  it("transaction-energy 预算计入 sampled Shadow lane 和其 eligible 目的房", () => {
+  it("8 条同资源 Shadow 可完整处理 200 eligible/128 目的房", () => {
     const shadow = immutablePolicyEntry(
       "H",
       Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N1`),
       "suspended_shadow",
     );
-    const books = Array.from({ length: 128 }, (_unused, index) =>
-      order(`h-${index}`, RESOURCE_HYDROGEN, 700, 1_000, `E${index}S1`),
+    const books = Array.from({ length: 200 }, (_unused, index) =>
+      order(
+        `h-${String(index).padStart(3, "0")}`,
+        RESOURCE_HYDROGEN,
+        700,
+        1_000,
+        `E${index % 128}S1`,
+      ),
     );
 
+    const deps = dependencies({
+      scope: scope([shadow]),
+      books: { [RESOURCE_HYDROGEN]: books },
+    });
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.rawOrderCount).toBe(200);
+    expect(result.eligibleOrderCount).toBe(200);
+    expect(result.distinctOrderRoomCount).toBe(128);
+    expect(result.transactionCostEvaluationBudget).toBe(2 * 8 * 128);
+    expect(result.sampledShadowLaneIds).toHaveLength(8);
+    expect(result.shadowObservations).toHaveLength(8);
+    expect(result.shadowObservations.every(
+      (observation) => observation.result === "safe_opportunity",
+    )).toBe(true);
+    expect(result.nextShadowCursor).toBeDefined();
+    expect(deps.calculateTransactionEnergy).toHaveBeenCalledTimes(
+      2 * 8 * 128,
+    );
+  });
+
+  it("201 eligible 与 1,001 raw 均在 transaction-energy 前闭锁，1,000 raw 可完整读取", () => {
+    const writable = immutablePolicyEntry("H", ["W1N1"], "writable");
+    const eligible = Array.from({ length: 201 }, (_unused, index) =>
+      order(
+        `eligible-${String(index).padStart(3, "0")}`,
+        RESOURCE_HYDROGEN,
+        700,
+        1_000,
+        "E1S1",
+      ),
+    );
+    const eligibleDeps = dependencies({
+      scope: scope([writable]),
+      books: { [RESOURCE_HYDROGEN]: eligible },
+    });
+
+    const eligibleOverflow = planMarketBaseResourceTwoRead(eligibleDeps);
+
+    expect(eligibleOverflow.complete).toBe(false);
+    expect(eligibleOverflow.blocker).toBe(
+      "market_base_eligible_book_limit_exceeded:H",
+    );
+    expect(eligibleDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
+
+    const raw = Array.from({ length: 1_001 }, (_unused, index) =>
+      order(
+        `raw-${String(index).padStart(4, "0")}`,
+        RESOURCE_HYDROGEN,
+        1,
+        1_000,
+        "E1S1",
+      ),
+    );
+    const atLimitDeps = dependencies({
+      scope: scope([writable]),
+      books: { [RESOURCE_HYDROGEN]: raw.slice(0, 1_000) },
+    });
+    const atLimit = planMarketBaseResourceTwoRead(atLimitDeps);
+    expect(atLimit.complete).toBe(true);
+    expect(atLimit.rawOrderCount).toBe(1_000);
+    expect(atLimit.eligibleOrderCount).toBe(0);
+    expect(atLimitDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
+
+    const overflowDeps = dependencies({
+      scope: scope([writable]),
+      books: { [RESOURCE_HYDROGEN]: raw },
+    });
+    const overflow = planMarketBaseResourceTwoRead(overflowDeps);
+    expect(overflow.complete).toBe(false);
+    expect(overflow.blocker).toBe("market_base_raw_book_limit_exceeded");
+    expect(overflowDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
+  it("56 lane 下 writable+7 Shadow 共用 128-order book 时完成独立双读", () => {
+    const rooms = Array.from(
+      { length: 8 },
+      (_unused, index) => `W${index + 1}N1`,
+    );
+    const entries = MARKET_BASE_RESOURCE_CATALOG.map((resource) =>
+      immutablePolicyEntry(resource, rooms, "suspended_shadow"),
+    );
+    const catalyst = entries.find(
+      (candidate) => candidate.policy.resourceType === RESOURCE_CATALYST,
+    )!;
+    catalyst.lanes[0]!.lane.authorization = "writable";
+    const books = Array.from({ length: 128 }, (_unused, index) =>
+      order(
+        `x-${String(index).padStart(3, "0")}`,
+        RESOURCE_CATALYST,
+        700,
+        1_000,
+        `E${index}S1`,
+      ),
+    );
+    const deps = dependencies({
+      scope: scope(entries),
+      books: { [RESOURCE_CATALYST]: books },
+    });
+
     const result = planMarketBaseResourceTwoRead(
-      dependencies({
-        scope: scope([shadow]),
-        books: { [RESOURCE_HYDROGEN]: books },
-      }),
+      deps,
+      "lane:U:W8N1",
     );
 
     expect(result.complete).toBe(true);
-    expect(result.distinctOrderRoomCount).toBe(128);
-    expect(result.transactionCostEvaluationBudget).toBe(2 * 8 * 128);
+    expect(result.selected).toMatchObject({
+      resourceType: RESOURCE_CATALYST,
+      roomName: "W1N1",
+    });
+    expect(result.sampledShadowLaneIds).toHaveLength(8);
+    expect(result.sampledShadowLaneIds.filter((laneId) =>
+      laneId.startsWith("lane:X:"),
+    )).toHaveLength(7);
+    const catalystShadowObservations = result.shadowObservations.filter(
+      (observation) => observation.laneId.startsWith("lane:X:"),
+    );
+    expect(catalystShadowObservations).toHaveLength(7);
+    expect(catalystShadowObservations.every(
+      (observation) => observation.result === "safe_opportunity",
+    )).toBe(true);
+    expect(
+      deps.readCurrentBuyOrders.mock.calls.filter(
+        ([resource]) => resource === RESOURCE_CATALYST,
+      ),
+    ).toHaveLength(2);
+    expect(deps.readScope).toHaveBeenCalledTimes(2);
+    expect(deps.readCurrentBuyOrders.mock.results[0]?.value).not.toBe(
+      deps.readCurrentBuyOrders.mock.results[2]?.value,
+    );
+    expect(deps.calculateTransactionEnergy).toHaveBeenCalledTimes(
+      2 * 2 * 8 * 128,
+    );
   });
 
   it("first planner 后 CPU 超限不返回 Shadow cursor 或可应用证据", () => {

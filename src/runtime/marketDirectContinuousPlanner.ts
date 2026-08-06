@@ -463,18 +463,22 @@ function normalizeBook(
   if (!book) return null;
   const normalizedOrders = Array.isArray(book.orders)
     ? book.orders
-      .map(normalizeOrder)
+      .map((order) => {
+        const normalized = normalizeOrder(order);
+        const canonical = stableCanonical(normalized);
+        return {
+          normalized,
+          canonical,
+          sortKey: `${String(normalized.id ?? "")}|${canonical}`,
+        };
+      })
       .sort((left, right) =>
-        stableStringCompare(
-          `${String(left.id ?? "")}|${stableCanonical(left)}`,
-          `${String(right.id ?? "")}|${stableCanonical(right)}`,
-        ))
+        stableStringCompare(left.sortKey, right.sortKey))
     : undefined;
   const canonicalById = new Map<string, string>();
   const deduplicatedOrders: Array<Record<string, unknown>> = [];
-  for (const normalized of normalizedOrders ?? []) {
+  for (const { normalized, canonical } of normalizedOrders ?? []) {
     const orderId = String(normalized.id ?? "");
-    const canonical = stableCanonical(normalized);
     if (canonicalById.get(orderId) === canonical) continue;
     canonicalById.set(orderId, canonical);
     deduplicatedOrders.push(normalized);

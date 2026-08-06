@@ -3644,6 +3644,160 @@ describe("marketSaleAutomation 编排", () => {
     },
   );
 
+  it("active outer tick 在 raw128/eligible0 盘口完成 Shadow 规划且零成交", () => {
+    for (const [roomName, terminalId] of [
+      ["E1N1", "dddddddddddddddddddddddd"],
+      ["E2N2", "eeeeeeeeeeeeeeeeeeeeeeee"],
+      ["E3N3", "ffffffffffffffffffffffff"],
+      ["E4N4", "111111111111111111111111"],
+      ["E5N5", "222222222222222222222222"],
+      ["E7N7", "333333333333333333333333"],
+    ] as const) {
+      installOwnedMarketBaseRoom(roomName, terminalId);
+    }
+    for (const room of Object.values(Game.rooms)) {
+      (
+        room as Room & {
+          find: jest.Mock<unknown[], []>;
+        }
+      ).find = jest.fn(() => []);
+    }
+    activateMarketBaseV3Fixture();
+    markDirectLegacyExposureDrainedFixture();
+
+    const state = currentMarketBaseV3StateFixture();
+    expect(state.scope!.sellerRooms).toHaveLength(8);
+    expect(state.scope!.laneLifecycles).toHaveLength(56);
+    expect(
+      state.scope!.laneLifecycles.every(
+        (lane) => lane.stage === "shadow" && lane.status === "suspended",
+      ),
+    ).toBe(true);
+    const currentPermit =
+      state.permitChain!.retainedPermits[
+        state.permitChain!.retainedPermits.length - 1
+      ];
+    expect(currentPermit).toMatchObject({ schemaVersion: 3 });
+    if (!currentPermit || currentPermit.schemaVersion !== 3) {
+      throw new Error("expected current V3 market-base permit");
+    }
+    expect(currentPermit.signedLaneGrants).toHaveLength(56);
+    expect(
+      currentPermit.signedLaneGrants.every(
+        (grant) =>
+          grant.stage === "shadow" && grant.newDealGrant === "suspended",
+      ),
+    ).toBe(true);
+    const sampledResource = [...state.scope!.laneLifecycles].sort((left, right) =>
+      left.laneId.localeCompare(right.laneId),
+    )[0]!.resource;
+    const rawBook = Array.from({ length: 128 }, (_, index) =>
+      order(`outer-raw-${String(index).padStart(3, "0")}`, {
+        type: ORDER_BUY,
+        resourceType: sampledResource,
+        roomName: "E9N9",
+        price: 0.001,
+        totalAmount: 1_000,
+        remainingAmount: 1_000,
+        amount: 1_000,
+      }),
+    );
+    (Game.market.getAllOrders as jest.Mock).mockImplementation(
+      (filter?: { type?: string; resourceType?: string }) =>
+        filter?.type === ORDER_BUY && filter.resourceType === sampledResource
+          ? rawBook.map((candidate) => ({ ...candidate }))
+          : [],
+    );
+
+    const readCandidates = (): readonly MarketSalePlanCandidate[] => {
+      const current = currentMarketBaseV3StateFixture();
+      const trustedFloors = (
+        Memory.data!.marketSaleAutomation as unknown as {
+          trustedFloors: Record<
+            string,
+            { value: number; marketDate: string; updatedAt: number }
+          >;
+        }
+      ).trustedFloors;
+      const trustedEnergyFloor = trustedFloors[RESOURCE_ENERGY]!;
+      return current.scope!.sellerRooms.flatMap((sellerRoom) =>
+        MARKET_BASE_RESOURCE_POLICIES.map((policy) => {
+          const trustedFloor = trustedFloors[policy.resource]!;
+          return candidate({
+            roomName: sellerRoom.roomName,
+            resourceType: policy.resource,
+            protectionEntry: protectionEntry({
+              roomName: sellerRoom.roomName,
+              resource: policy.resource,
+              revision: Game.time,
+              observedAt: Game.time,
+              expiresAt: Game.time,
+            }),
+            effectiveNetFloor: Math.max(
+              policy.hardFloor,
+              policy.economicFloor,
+              trustedFloor.value,
+            ),
+            directHistoryTrusted: true,
+            historyFloor: policy.economicFloor,
+            ratchetFloor: trustedFloor.value,
+            effectiveEnergyShadowPrice: trustedEnergyFloor.value,
+            energyShadowObservedAt: trustedEnergyFloor.updatedAt,
+            energyShadowComponents: {
+              hardFloor: trustedEnergyFloor.value,
+              ratchetFloor: trustedEnergyFloor.value,
+            },
+            isHubRoom: sellerRoom.roomClass === "hub",
+          });
+        }),
+      );
+    };
+    Game.time += (10 - (Game.time % 10)) % 10;
+    runMarketSalePreflight();
+    runResourceControl();
+    const sourceTrustedFloors = (
+      Memory.data!.marketSaleAutomation as unknown as {
+        trustedFloors: Record<
+          string,
+          { value: number; marketDate: string; updatedAt: number }
+        >;
+      }
+    ).trustedFloors;
+    const result = runMarketSaleAutomation({
+      candidates: [],
+      readMarketBaseResourceCandidates: readCandidates,
+      marketBaseResourceTrustedFloorSuccessor: {
+        sourceTrustedFloors,
+        trustedFloors: Object.fromEntries(
+          Object.entries(sourceTrustedFloors).map(([resource, floor]) => [
+            resource,
+            { ...floor, updatedAt: Game.time },
+          ]),
+        ),
+      },
+    });
+    expect(result.rejectedByReason).not.toHaveProperty(
+      "market_base_cpu_ceiling_exceeded",
+    );
+    expect(currentMarketBaseV3StateFixture().lastPlanningSnapshot).toMatchObject(
+      {
+        complete: true,
+        rawOrderCount: 128,
+        eligibleOrderCount: 0,
+        transactionCostEvaluationBudget: 0,
+      },
+    );
+    expect(
+      (Game.market.getAllOrders as jest.Mock).mock.calls.filter(
+        ([filter]) =>
+          (filter as { resourceType?: string } | undefined)?.resourceType ===
+          sampledResource,
+      ),
+    ).toHaveLength(1);
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getTerminalActionClaims()).toHaveLength(0);
+  });
+
   it("cold Memory 512 receipt 满环的完整 active outer tick 保持单次预算且不重复 full audit", () => {
     for (const [roomName, terminalId] of [
       ["E1N1", "dddddddddddddddddddddddd"],

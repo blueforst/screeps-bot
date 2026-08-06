@@ -548,6 +548,27 @@ describe("multi-resource full-book tuple planner", () => {
     });
   });
 
+  it("订单排列变化保持逐字相同 planning evidence 与最佳 tuple", () => {
+    const orders = [
+      order("order-c", "X", 702, 1_000, "E3N3"),
+      order("order-a", "X", 700, 1_000, "E1N1"),
+      order("order-b", "X", 701, 1_000, "E2N2"),
+    ];
+    const forward = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["W1N1"], orders, () => 0),
+    ]));
+    const reversed = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["W1N1"], [...orders].reverse(), () => 0),
+    ]));
+
+    expect(forward.complete).toBe(true);
+    expect(reversed.complete).toBe(true);
+    expect(forward.selected?.order.id).toBe("order-c");
+    expect(reversed.selected?.order.id).toBe("order-c");
+    expect(reversed.planningFingerprint).toBe(forward.planningFingerprint);
+    expect(reversed.planningEvidence).toBe(forward.planningEvidence);
+  });
+
   it("自有 BUY order 在 tuple 前排除，外部高价单仍可成交", () => {
     const shared = v3Entry("X", ["E1N1"], [
       order("self", "X", 800),
