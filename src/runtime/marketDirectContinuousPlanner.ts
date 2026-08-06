@@ -1046,10 +1046,16 @@ export function planMarketDirectContinuous(
     const book = policy.evaluatorVersion === 3
       ? entry.book
       : entry.book ?? entry.lanes[0]?.book;
-    const bookEvidence = canonicalBookEvidence(book);
-    const adapterBookConflict = !book || entry.lanes.some((laneInput) =>
-      laneInput.book !== undefined &&
-      canonicalBookEvidence(laneInput.book) !== bookEvidence);
+    const usesOnlyV3ResourceBook =
+      policy.evaluatorVersion === 3 &&
+      entry.lanes.every((laneInput) => laneInput.book === undefined);
+    let adapterBookConflict = !book;
+    if (!usesOnlyV3ResourceBook) {
+      const bookEvidence = canonicalBookEvidence(book);
+      adapterBookConflict ||= entry.lanes.some((laneInput) =>
+        laneInput.book !== undefined &&
+        canonicalBookEvidence(laneInput.book) !== bookEvidence);
+    }
     const bookComplete = !adapterBookConflict &&
       book.complete &&
       typeof book.revision === "string" &&

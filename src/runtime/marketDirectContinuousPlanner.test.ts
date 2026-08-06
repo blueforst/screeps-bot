@@ -569,6 +569,31 @@ describe("multi-resource full-book tuple planner", () => {
     expect(reversed.planningEvidence).toBe(forward.planningEvidence);
   });
 
+  it("V3 无 lane book adapter 时只在最终 evidence 规范化资源 book", () => {
+    let mapReads = 0;
+    const rawOrder = order("raw-low", "X", 1, 1_000, "E1N1");
+    const proxiedOrders = new Proxy([rawOrder], {
+      get: (target, property, receiver) => {
+        if (property === "map") mapReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const energy = jest.fn(() => 0);
+    const proxied = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["W1N1"], proxiedOrders, energy),
+    ]));
+    const plain = planMarketDirectContinuous(planningInput([
+      v3Entry("X", ["W1N1"], [{ ...rawOrder }], () => 0),
+    ]));
+
+    expect(proxied.complete).toBe(true);
+    expect(proxied.safeCandidates).toHaveLength(0);
+    expect(energy).not.toHaveBeenCalled();
+    expect(mapReads).toBe(1);
+    expect(proxied.planningEvidence).toBe(plain.planningEvidence);
+    expect(proxied.planningFingerprint).toBe(plain.planningFingerprint);
+  });
+
   it("自有 BUY order 在 tuple 前排除，外部高价单仍可成交", () => {
     const shared = v3Entry("X", ["E1N1"], [
       order("self", "X", 800),
@@ -810,6 +835,21 @@ describe("multi-resource full-book tuple planner", () => {
       },
       safeCandidates: [],
     });
+
+    const matching = v3Entry(
+      "X",
+      ["E1N1"],
+      [order("x", "X", 700)],
+      () => 0,
+    );
+    matching.lanes[0].book = {
+      ...matching.book!,
+      orders: matching.book!.orders.map((candidate) => ({ ...candidate })),
+      ownOrderIds: [...matching.book!.ownOrderIds],
+    };
+    expect(
+      planMarketDirectContinuous(planningInput([matching])).complete,
+    ).toBe(true);
 
     const shared = v3Entry(
       "X",

@@ -3779,14 +3779,25 @@ describe("marketSaleAutomation 编排", () => {
     expect(result.rejectedByReason).not.toHaveProperty(
       "market_base_cpu_ceiling_exceeded",
     );
-    expect(currentMarketBaseV3StateFixture().lastPlanningSnapshot).toMatchObject(
-      {
-        complete: true,
-        rawOrderCount: 128,
-        eligibleOrderCount: 0,
-        transactionCostEvaluationBudget: 0,
-      },
-    );
+    const plannedState = currentMarketBaseV3StateFixture();
+    expect(plannedState.lastPlanningSnapshot).toMatchObject({
+      complete: true,
+      rawOrderCount: 128,
+      eligibleOrderCount: 0,
+      transactionCostEvaluationBudget: 0,
+    });
+    const sampledLaneIds =
+      plannedState.lastPlanningSnapshot!.sampledShadowLaneIds;
+    expect(sampledLaneIds).toHaveLength(8);
+    expect(plannedState.scope!.shadowCursor).toBe(sampledLaneIds[7]);
+    const sampledLifecycles = plannedState.scope!.laneLifecycles
+      .filter((lane) => sampledLaneIds.includes(lane.laneId));
+    expect(sampledLifecycles).toHaveLength(8);
+    expect(
+      sampledLifecycles.every(
+        (lane) => lane.shadowEvidence.completeCycles === 1,
+      ),
+    ).toBe(true);
     expect(
       (Game.market.getAllOrders as jest.Mock).mock.calls.filter(
         ([filter]) =>
