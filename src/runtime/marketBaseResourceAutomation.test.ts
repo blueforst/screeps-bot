@@ -2,10 +2,14 @@ import {
   MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE,
   applyMarketBaseResourceShadowObservations,
   buildMarketBaseResourcePricingRatchetState,
+  marketBaseResourceCpuFallbackRequiresCanonicalCommit,
   marketBaseResourceOperatorAuthorizationFingerprint,
+  materializeMarketBaseResourceCpuFallback,
+  observeMarketBaseResourceOuterPrecommitCpu,
   planMarketBaseResourceTwoRead,
   reconcileLiveMarketBaseResourceScope,
   runMarketBaseResourceAutomation,
+  validateMarketBaseResourceReadinessRuntimeCapability,
   type MarketBaseResourceAutomationInput,
   type MarketBaseResourcePlanningDependencies,
   type MarketBaseResourcePlanningScopeSnapshot,
@@ -2912,6 +2916,10 @@ describe("Market Base Resource V3 live WAL glue", () => {
       candidateIdentityOrderChecks: 1,
     });
     expect(state.lastPlanningSnapshot?.selected).toBeUndefined();
+    expect(result.cpuTrace).toEqual(state.lastPlanningSnapshot?.cpuTrace);
+    expect(result.cpuTrace).not.toBe(state.lastPlanningSnapshot?.cpuTrace);
+    result.cpuTrace!.cpuAfterInnerApply = 99;
+    expect(state.lastPlanningSnapshot?.cpuTrace?.cpuAfterInnerApply).toBe(0);
     expect(state.ledger?.pending).toBeUndefined();
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();
@@ -2965,6 +2973,374 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();
     expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("inner apply CPU cut 保留一次性 reset-only capability，且 clone/重放均失败", () => {
+    const { state, harness, deps, input } = v3RuntimeFixture(false);
+    harness.tick = 200;
+    state.preflightAt = harness.tick;
+    const hydrogenLane = state.scope!.laneLifecycles.find(
+      (lane) => lane.resource === RESOURCE_HYDROGEN,
+    )!;
+    for (let tick = 101; tick <= 199; tick += 1) {
+      state.scope = applyMarketBaseResourceShadowObservations(
+        state.scope!,
+        tick,
+        [
+          {
+            laneId: hydrogenLane.laneId,
+            result: "safe_no_opportunity",
+          },
+        ],
+        undefined,
+      );
+    }
+    const canonicalScope = state.scope!;
+    const canonicalSource = { ...state };
+    const cursorBefore = canonicalScope.shadowCursor;
+    deps.readCurrentBuyOrders.mockImplementation(
+      (resource: ResourceConstant) => {
+        if (resource === RESOURCE_HYDROGEN) {
+          throw new Error("injected shadow book gap");
+        }
+        return [];
+      },
+    );
+    deps.cpuUsed.mockImplementation(() =>
+      state.scope === canonicalScope ? 1 : 26,
+    );
+
+    const result = runMarketBaseResourceAutomation(
+      state,
+      { ...input(), cpuStartedAt: 0 },
+      deps,
+    );
+
+    expect(result.planComplete).toBe(false);
+    expect(result.rejectedByReason).toMatchObject({
+      market_base_cpu_ceiling_exceeded: 1,
+    });
+    expect(result.cpuTrace).toMatchObject({
+      observedAt: harness.tick,
+      cpuAfterOuterSession: 1,
+      cpuAfterScopeCore: 1,
+      cpuAfterMarketFacts: 1,
+      cpuAfterShadowBatch: 1,
+      cpuAfterInnerApply: 26,
+      cpuCutPhase: "inner_apply",
+      marketFactsDisposition: "read",
+    });
+    expect(result.cpuFallbackCapability).toBeDefined();
+    expect(
+      marketBaseResourceCpuFallbackRequiresCanonicalCommit(
+        result.cpuFallbackCapability,
+        canonicalSource,
+        harness.tick,
+      ),
+    ).toBe(true);
+    const clonedCapability = JSON.parse(
+      JSON.stringify(result.cpuFallbackCapability),
+    );
+    expect(
+      materializeMarketBaseResourceCpuFallback(
+        clonedCapability,
+        result.cpuTrace!,
+      ),
+    ).toBeUndefined();
+
+    const fallback = materializeMarketBaseResourceCpuFallback(
+      result.cpuFallbackCapability,
+      result.cpuTrace!,
+    );
+    expect(fallback).toBeDefined();
+    expect(fallback?.appliedResetCount).toBe(1);
+    expect(fallback?.state.scope?.shadowCursor).toBe(cursorBefore);
+    expect(
+      fallback?.state.scope?.laneLifecycles.find(
+        (lane) => lane.laneId === hydrogenLane.laneId,
+      ),
+    ).toMatchObject({
+      stage: "shadow",
+      status: "suspended",
+      shadowEvidence: { completeCycles: 0 },
+    });
+    expect(fallback?.state.lastPlanningSnapshot?.selected).toBeUndefined();
+    expect(
+      validateMarketBaseResourceReadinessRuntimeCapability(
+        fallback?.readinessRuntimeCapability,
+        fallback!.state,
+        harness.tick,
+        fallback?.ledgerRuntimeAnchor,
+      ),
+    ).toBe(true);
+    expect(fallback?.state).not.toBe(result.state);
+    expect(
+      materializeMarketBaseResourceCpuFallback(
+        result.cpuFallbackCapability,
+        result.cpuTrace!,
+      ),
+    ).toBeUndefined();
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("Shadow batch 内 CPU cut 仍为已确定的 99-cycle reset 铸造 fallback", () => {
+    const { state, harness, deps, input } = v3RuntimeFixture(false);
+    harness.tick = 200;
+    state.preflightAt = harness.tick;
+    const hydrogenLane = state.scope!.laneLifecycles.find(
+      (lane) => lane.resource === RESOURCE_HYDROGEN,
+    )!;
+    for (let tick = 101; tick <= 199; tick += 1) {
+      state.scope = applyMarketBaseResourceShadowObservations(
+        state.scope!,
+        tick,
+        [{ laneId: hydrogenLane.laneId, result: "safe_no_opportunity" }],
+        undefined,
+      );
+    }
+    const canonicalSource = { ...state };
+    const cursorBefore = state.scope!.shadowCursor;
+    let determinedIncomplete = false;
+    deps.readCurrentBuyOrders.mockImplementation(
+      (resource: ResourceConstant) => {
+        if (resource === RESOURCE_HYDROGEN) {
+          determinedIncomplete = true;
+          throw new Error("injected shadow book gap before batch");
+        }
+        return [];
+      },
+    );
+    deps.cpuUsed.mockImplementation(() =>
+      determinedIncomplete ? 26 : 1,
+    );
+
+    const result = runMarketBaseResourceAutomation(
+      state,
+      { ...input(), cpuStartedAt: 0 },
+      deps,
+    );
+
+    expect(result.planComplete).toBe(false);
+    expect(result.rejectedByReason).toMatchObject({
+      market_base_cpu_ceiling_exceeded: 1,
+    });
+    expect(result.cpuTrace).toMatchObject({
+      cpuCutPhase: "market_facts_read1",
+      marketFactsDisposition: "read",
+    });
+    expect(result.cpuFallbackCapability).toBeDefined();
+    expect(
+      marketBaseResourceCpuFallbackRequiresCanonicalCommit(
+        result.cpuFallbackCapability,
+        canonicalSource,
+        harness.tick,
+      ),
+    ).toBe(true);
+    const fallback = materializeMarketBaseResourceCpuFallback(
+      result.cpuFallbackCapability,
+      result.cpuTrace!,
+    );
+    expect(fallback?.appliedResetCount).toBe(1);
+    expect(fallback?.state.scope?.shadowCursor).toBe(cursorBefore);
+    expect(
+      fallback?.state.scope?.laneLifecycles.find(
+        (lane) => lane.laneId === hydrogenLane.laneId,
+      ),
+    ).toMatchObject({
+      stage: "shadow",
+      status: "suspended",
+      shadowEvidence: { completeCycles: 0 },
+    });
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [20, 10, "inner_apply"],
+    [26, 20, "shadow_batch_read1"],
+  ] as const)(
+    "raw CPU 高水位 %i 后回拨到 %i 仍 fail closed（%s）",
+    (firstRaw, secondRaw, expectedPhase) => {
+      const { state, deps, input } = v3RuntimeFixture(false);
+      const scopeBefore = state.scope!;
+      const cursorBefore = scopeBefore.shadowCursor;
+      let rawGateReads = 0;
+      deps.cpuUsed.mockImplementation(() => {
+        if (
+          new Error().stack?.includes(
+            "marketBaseResourceCpuExceededSince",
+          )
+        ) {
+          rawGateReads += 1;
+          if (rawGateReads === 1) return 1;
+          return rawGateReads === 2 ? firstRaw : secondRaw;
+        }
+        return 1;
+      });
+
+      const result = runMarketBaseResourceAutomation(
+        state,
+        { ...input(), cpuStartedAt: 0 },
+        deps,
+      );
+
+      expect(result.planComplete).toBe(false);
+      expect(result.rejectedByReason).toHaveProperty(
+        "market_base_cpu_ceiling_exceeded",
+      );
+      expect(result.cpuTrace).toMatchObject({
+        cpuAfterShadowBatch: firstRaw,
+        cpuCutPhase: expectedPhase,
+      });
+      expect(state.lastPlanningSnapshot).toMatchObject({
+        complete: false,
+        blocker: "market_base_cpu_ceiling_exceeded",
+        cpuUsed: firstRaw,
+      });
+      expect(state.scope!.shadowCursor).toBe(cursorBefore);
+      expect(
+        state.scope!.laneLifecycles.every(
+          (lane) => lane.shadowEvidence.completeCycles === 0,
+        ),
+      ).toBe(true);
+      expect(deps.commitPreparedState).not.toHaveBeenCalled();
+      expect(deps.claimPrepared).not.toHaveBeenCalled();
+      expect(deps.executePrepared).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [26, 10],
+    [20, 10],
+  ] as const)(
+    "入口 CPU 高水位 %i 后回拨到 %i 仍在 outer fail closed",
+    (entryRaw, rolledBackRaw) => {
+      const { state, deps, input } = v3RuntimeFixture(false);
+      const scopeBefore = state.scope!;
+      let cpuReads = 0;
+      deps.cpuUsed.mockImplementation(() => {
+        cpuReads += 1;
+        return cpuReads === 1 ? entryRaw : rolledBackRaw;
+      });
+
+      const result = runMarketBaseResourceAutomation(
+        state,
+        { ...input(), cpuStartedAt: 0 },
+        deps,
+      );
+
+      expect(result.planComplete).toBe(false);
+      expect(result.rejectedByReason).toHaveProperty(
+        "market_base_cpu_ceiling_exceeded",
+      );
+      expect(result.cpuTrace).toMatchObject({
+        cpuAfterOuterSession: null,
+        cpuCutPhase: "outer_session",
+      });
+      expect(state.lastPlanningSnapshot).toMatchObject({
+        complete: false,
+        blocker: "market_base_cpu_ceiling_exceeded",
+        cpuUsed: entryRaw,
+      });
+      expect(state.scope).toBe(scopeBefore);
+      expect(deps.commitPreparedState).not.toHaveBeenCalled();
+      expect(deps.claimPrepared).not.toHaveBeenCalled();
+      expect(deps.executePrepared).not.toHaveBeenCalled();
+    },
+  );
+
+  it("第二读 scope 后提前失败仍保留单调 trace，outer 以历史最大值拒绝 CPU 回拨", () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    const runtimeInput = input();
+    const firstCandidates = runtimeInput.readCandidates;
+    let candidateReads = 0;
+    runtimeInput.readCandidates = () => {
+      candidateReads += 1;
+      if (candidateReads === 2) {
+        throw new Error("injected second-read candidate failure");
+      }
+      return firstCandidates();
+    };
+    let scopeReads = 0;
+    deps.readAccountIdentity = jest.fn(() => {
+      scopeReads += 1;
+      return V3_TEST_ACCOUNT;
+    });
+    deps.cpuUsed.mockImplementation(() => (scopeReads >= 2 ? 20 : 1));
+
+    const result = runMarketBaseResourceAutomation(
+      state,
+      { ...runtimeInput, cpuStartedAt: 0 },
+      deps,
+    );
+
+    expect(result.planComplete).toBe(false);
+    expect(result.rejectedByReason).toHaveProperty(
+      "market_base_v3_candidate_read_failed",
+    );
+    expect(result.cpuTrace).toEqual({
+      observedAt: runtimeInput.tick,
+      cpuAfterOuterSession: 1,
+      cpuAfterScopeCore: 20,
+      cpuAfterMarketFacts: null,
+      cpuAfterShadowBatch: null,
+      cpuAfterInnerApply: null,
+      cpuCutPhase: null,
+      marketFactsDisposition: "read",
+    });
+    expect(result.cpuRawHighWater).toBe(20);
+    expect(
+      observeMarketBaseResourceOuterPrecommitCpu(result.cpuTrace!, 0, 15),
+    ).toMatchObject({
+      exceeded: true,
+      trace: { cpuCutPhase: "outer_precommit" },
+    });
+    expect(
+      observeMarketBaseResourceOuterPrecommitCpu(
+        result.cpuTrace!,
+        0,
+        22,
+        24,
+      ),
+    ).toMatchObject({
+      exceeded: true,
+      trace: { cpuCutPhase: "outer_precommit" },
+    });
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("outer precommit 只用未截断 raw delta 闭锁并保留第一 cut phase", () => {
+    const source = {
+      observedAt: 200,
+      cpuAfterOuterSession: 10,
+      cpuAfterScopeCore: 20,
+      cpuAfterMarketFacts: 24,
+      cpuAfterShadowBatch: 24.5,
+      cpuAfterInnerApply: 24.9,
+      cpuCutPhase: null,
+      marketFactsDisposition: "read" as const,
+    };
+    const outer = observeMarketBaseResourceOuterPrecommitCpu(source, 100, 126);
+    expect(outer).toEqual({
+      trace: { ...source, cpuCutPhase: "outer_precommit" },
+      exceeded: true,
+      rawDelta: 26,
+    });
+    expect(source.cpuCutPhase).toBeNull();
+
+    const alreadyCut = observeMarketBaseResourceOuterPrecommitCpu(
+      { ...source, cpuCutPhase: "inner_apply" },
+      100,
+      124.95,
+    );
+    expect(alreadyCut.exceeded).toBe(true);
+    expect(alreadyCut.rawDelta).toBeCloseTo(24.95);
+    expect(alreadyCut.trace.cpuCutPhase).toBe("inner_apply");
   });
 
   it("state ratchet 回拨后不能借旧 trusted floor 自动修复", () => {

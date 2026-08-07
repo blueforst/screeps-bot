@@ -806,6 +806,15 @@ function boundedStringOrNull(value) {
     : null;
 }
 
+function finiteNumberWithinOrNull(value, minimum, maximum) {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= minimum &&
+    value <= maximum
+    ? value
+    : null;
+}
+
 function boundedMonitorLogLine(value) {
   if (value.length <= MONITOR_LOG_LINE_LIMIT) {
     return value;
@@ -2398,6 +2407,95 @@ function summarizeMarketBaseReadinessAuthorization(value) {
   };
 }
 
+const MARKET_BASE_RESOURCE_CPU_CUT_PHASES = new Set([
+  "outer_session",
+  "scope_core_read1",
+  "scope_core_read2",
+  "market_facts_read1",
+  "market_facts_read2",
+  "shadow_batch_read1",
+  "shadow_batch_read2",
+  "inner_apply",
+  "outer_precommit",
+]);
+const MARKET_BASE_RESOURCE_MARKET_FACTS_DISPOSITIONS = new Set([
+  "not_reached",
+  "skipped_no_consumer",
+  "read",
+]);
+
+function closedEnumOrNull(value, allowed) {
+  return typeof value === "string" && allowed.has(value) ? value : null;
+}
+
+function summarizeMarketBaseCpuTrace(value) {
+  const trace = objectOrNull(value);
+  if (!trace) return null;
+  const exactFields = [
+    "observedAt",
+    "cpuAfterOuterSession",
+    "cpuAfterScopeCore",
+    "cpuAfterMarketFacts",
+    "cpuAfterShadowBatch",
+    "cpuAfterInnerApply",
+    "cpuCutPhase",
+    "marketFactsDisposition",
+  ];
+  if (
+    Object.keys(trace).length !== exactFields.length ||
+    exactFields.some((field) => !(field in trace)) ||
+    !Number.isSafeInteger(trace.observedAt) ||
+    trace.observedAt < 0
+  ) {
+    return null;
+  }
+  const cpuValues = [
+    trace.cpuAfterOuterSession,
+    trace.cpuAfterScopeCore,
+    trace.cpuAfterMarketFacts,
+    trace.cpuAfterShadowBatch,
+    trace.cpuAfterInnerApply,
+  ];
+  let previous = 0;
+  let trailingNull = false;
+  for (const candidate of cpuValues) {
+    if (candidate === null) {
+      trailingNull = true;
+      continue;
+    }
+    if (
+      trailingNull ||
+      typeof candidate !== "number" ||
+      !Number.isFinite(candidate) ||
+      candidate < previous ||
+      candidate < 0 ||
+      candidate > 100
+    ) {
+      return null;
+    }
+    previous = candidate;
+  }
+  if (
+    (trace.cpuCutPhase !== null &&
+      !MARKET_BASE_RESOURCE_CPU_CUT_PHASES.has(trace.cpuCutPhase)) ||
+    !MARKET_BASE_RESOURCE_MARKET_FACTS_DISPOSITIONS.has(
+      trace.marketFactsDisposition,
+    )
+  ) {
+    return null;
+  }
+  return {
+    observedAt: trace.observedAt,
+    cpuAfterOuterSession: cpuValues[0],
+    cpuAfterScopeCore: cpuValues[1],
+    cpuAfterMarketFacts: cpuValues[2],
+    cpuAfterShadowBatch: cpuValues[3],
+    cpuAfterInnerApply: cpuValues[4],
+    cpuCutPhase: trace.cpuCutPhase,
+    marketFactsDisposition: trace.marketFactsDisposition,
+  };
+}
+
 function summarizeMarketBasePlanning(value) {
   const planning = objectOrNull(value);
   if (!planning) return null;
@@ -2435,6 +2533,7 @@ function summarizeMarketBasePlanning(value) {
     candidateIdentityOrderChecks: finiteNumberOrNull(
       planning.candidateIdentityOrderChecks,
     ),
+    cpuTrace: summarizeMarketBaseCpuTrace(planning.cpuTrace),
     sampledShadowLaneIds: summarizeBoundedStringSet(
       planning.sampledShadowLaneIds,
       MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT,
@@ -2466,7 +2565,7 @@ function summarizeMarketBasePlanning(value) {
   };
 }
 
-function summarizeMarketBaseResourceV3(value) {
+function summarizeMarketBaseResourceV3(value, runtimeCpuTraceValue) {
   const state = objectOrNull(value);
   if (!state) return null;
   const ledger = objectOrNull(state.ledger);
@@ -2475,6 +2574,21 @@ function summarizeMarketBaseResourceV3(value) {
     state.quotaProjection ??
     ledger?.quota ??
     ledger?.quotaProjection;
+  const planning = summarizeMarketBasePlanning(
+    state.lastPlanningSnapshot,
+  );
+  const runtimeCpuTrace = summarizeMarketBaseCpuTrace(
+    runtimeCpuTraceValue,
+  );
+  const canonicalCpuTrace = planning?.cpuTrace ?? null;
+  const cpuTrace =
+    runtimeCpuTrace &&
+    (!canonicalCpuTrace ||
+      (runtimeCpuTrace.observedAt ?? -1) >=
+        (canonicalCpuTrace.observedAt ?? -1))
+      ? runtimeCpuTrace
+      : canonicalCpuTrace;
+  if (planning) planning.cpuTrace = cpuTrace;
   return {
     schemaVersion: finiteNumberOrNull(
       state.schemaVersion,
@@ -2492,9 +2606,8 @@ function summarizeMarketBaseResourceV3(value) {
       summarizeMarketBaseReadinessAuthorization(
         state.readinessAuthorization,
       ),
-    planning: summarizeMarketBasePlanning(
-      state.lastPlanningSnapshot,
-    ),
+    planning,
+    cpuTrace,
     blocker:
       typeof state.blocker === "string"
         ? {
@@ -2529,6 +2642,7 @@ function summarizeDirectMarketSale(
       summarizeMarketBaseResourceV3(
         rawDirect?.baseResourceV3 ??
           value.baseResourceV3,
+        value.baseResourceV3CpuTrace,
       );
     return summary;
   }
@@ -2537,6 +2651,7 @@ function summarizeDirectMarketSale(
     baseResourceV3: summarizeMarketBaseResourceV3(
       objectOrNull(rawDirectAutomation)?.baseResourceV3 ??
         value.baseResourceV3,
+      value.baseResourceV3CpuTrace,
     ),
     strategyActive: booleanOrNull(value.strategyActive),
     shadowConsecutiveCycles: finiteNumberOrNull(

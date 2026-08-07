@@ -271,7 +271,7 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 - **THEN** 必须依次持久化 outcome、receipt/head/checkpoint/lifetime、processed key，最后删除 pending；任一 CPU cut 必须可幂等恢复
 
 ### Requirement: 多房间规划的 CPU 与观测必须有界
-系统 MUST 每个 resource 每次 full read 最多读取一次 BUY book，并在房间间复用；raw/eligible 上限为 1,000/200，全部 eligible books 合并后的 distinct orderRoom 上限为 128。transaction-cost memo 以 `(amount,sellerRoom,orderRoom)` 去重，因此单次 full read 的合法最坏上限精确为 `2×16×128=4,096`；market planning CPU ceiling 为 25。全部 writable lane MUST 每轮完整扫描且绝不轮转/截断；超限 MUST 在 tuple evaluation 前零写。suspended Shadow MUST 按冻结 catalog resource-major、资源内 opaque laneId 排序构造不跨资源的最多 8-lane cohort；边界以全部 active lane 固定分块后再过滤 Shadow，持久 cursor 必须版本化绑定 `(resource,laneId)` cohort anchor。
+系统 MUST 每个 resource 每次 full read 最多读取一次 BUY book，并在房间间复用；raw/eligible 上限为 1,000/200，全部 eligible books 合并后的 distinct orderRoom 上限为 128。transaction-cost memo 以 `(amount,sellerRoom,orderRoom)` 去重，因此单次 full read 的合法最坏上限精确为 `2×16×128=4,096`；market planning CPU ceiling 为 25，且同一窗口 MUST 从 outer 首次 CPU 读覆盖 runtime session、scope core、market facts、Shadow batch、inner apply、候选 root 私有注册直到最终 precommit。全部 writable lane MUST 每轮完整扫描且绝不轮转/截断；超限 MUST 在 tuple evaluation 前零写。suspended Shadow MUST 按冻结 catalog resource-major、资源内 opaque laneId 排序构造不跨资源的最多 8-lane cohort；边界以全部 active lane 固定分块后再过滤 Shadow，持久 cursor 必须版本化绑定 `(resource,laneId)` cohort anchor。
 
 #### Scenario: 八房同资源
 - **WHEN** 同一资源在八个房间都有 lane
@@ -296,6 +296,30 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 #### Scenario: Shadow CPU Cut
 - **WHEN** 某批 Shadow 已选中，但候选身份扫描、批/逐 lane planner 或 transaction-energy 在形成完整 observation 前超过 CPU ceiling
 - **THEN** 身份扫描必须至少每 32 条 order 检查一次同一 CPU 窗口，planner 必须在调用前后检查；该批不推进、不清零、不计完整周期，cursor 也不得把它们当作已完成跳过，未执行逐 lane fallback 时 mode 不得标成 `batch_fallback`；writable scope 若存在则本 tick 零写
+
+#### Scenario: Inner Apply 或 Outer Precommit CPU Cut
+- **WHEN** planner 已形成完整纯 Shadow 结果，但 inner apply 后或完整候选 root 私有注册后，同一 raw CPU 窗口超过 25、读数无效或回拨
+- **THEN** 系统必须把 `planComplete` 置为 false，禁止提交 cursor、完整周期、qualification、ratchet、WAL、claim 或 deal；只有最多 8 条本轮已采样、`shadow/qualified+suspended` 且已存在正向资格的 incomplete lane 可通过独立认证的 reset-only root 清零，0/1/8 条 reset 均必须保持规划前 cursor、ledger、permit 与 ratchet
+
+#### Scenario: Outer 最终 Exact CAS
+- **WHEN** 完整候选 root 已私有注册，而 fresh CPU callback 期间 canonical root 或当前 context 被替换
+- **THEN** 系统必须在 CPU 读取之后重做 exact identity CAS，保留并发 root、丢弃完整候选与 fallback，零 WAL、零 claim、零 deal；仅私有注册但未提交的 orphan root 不得使仍认证的 source root 在同 tick 重入时被误报
+
+#### Scenario: Outer Root Setter Fail Closed
+- **WHEN** full root 或 reset-only root 的最终 setter 抛错、静默拒绝，或把 canonical root 替换为另一个对象
+- **THEN** 系统必须捕获异常、验证写后 exact identity、把 `planComplete` 置为 false 并保持零 WAL、零 claim、零 deal；不得用第二次 source 写入覆盖未知并发 root，context 也不得指向未落盘候选
+
+#### Scenario: CPU Raw High-water 不可回拨
+- **WHEN** inner 入口第一次 CPU 读数或任一后续 outer/inner gate/telemetry 已观察到更高 raw CPU，随后读数下降、无效，或第二读只完成 scope-core/部分 market facts 就提前失败
+- **THEN** 入口读数必须已纳入统一 high-water，首个 cut 必须永久保留并禁止 full root 提交；partial read 的结束观测只能更新 raw high-water，只有前序里程碑完整时才可写下一字段，因此五段 trace 必须单调且只允许 trailing null；inner 必须另把未截断 high-water 交给 outer，缺失、无效或小于 trace 最大值时 fail closed；outer 必须在注册 root 或调用 fresh CPU callback 前复制精确 trace 与 primitive high-water，之后不得受 inner 返回对象篡改，并据该快照而非仅靠 trace 判定回拨；monitor 对非单调、null-hole、额外字段或越界 trace 整条返回 unavailable
+
+#### Scenario: Full Root 注册失败不吞 Negative Reset
+- **WHEN** 纯 Shadow 本轮已确定最多 8 条必要 incomplete reset，但完整候选 root 的 capability/anchor 注册失败
+- **THEN** 若独立 reset-only root 已认证且最终 exact setter 成功，系统必须只提交该 negative reset，保持规划前 cursor、ratchet、ledger 与 permit；snapshot 必须记录真实 root blocker，不得伪造 CPU cut
+
+#### Scenario: Prepared WAL 优先
+- **WHEN** canonical prepared WAL 已通过 outer exact CAS 落盘
+- **THEN** 后续 CPU 诊断不得使用 Shadow reset-only fallback 覆盖或回退该 root；pending 必须按既有 WAL/claim/deal 恢复合同保留
 
 #### Scenario: 纯 Shadow 无机会批量复核
 - **WHEN** 本轮同一资源 cohort 的全部采样 lane 都是 suspended Shadow、没有 writable lane，局部 incomplete 的 preObserved 与 terminal/protection/book 完整的 ready 子集互斥并精确覆盖 sampled lane，且 collector 证明 `eligible=0`
@@ -323,7 +347,7 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 
 #### Scenario: Monitor 有界
 - **WHEN** 56 条 lane 与大量订单持续运行
-- **THEN** monitor 必须展示 catalog/roster/lane-set、permit、lifecycle、quota、best tuple、Hub marker、energy readiness、CPU blocker、Shadow planner mode/invocation count/实际 transaction-energy evaluation count/evaluated Shadow resource count/candidate identity order checks 的有界摘要，不得持久化 lane×order 原始矩阵；evaluated Shadow resource count 表示每次 full read 的 cohort distinct resource 宽度，双读取最大值而不累加，candidate identity order checks 则按两读实际检查量累加
+- **THEN** monitor 必须展示 catalog/roster/lane-set、permit、lifecycle、quota、best tuple、Hub marker、energy readiness、CPU blocker、Shadow planner mode/invocation count/实际 transaction-energy evaluation count/evaluated Shadow resource count/candidate identity order checks，以及五个上限 100 的累计 CPU 分段、首个闭集 cut phase 和 market-facts disposition；未提交 canonical root 时更新的 runtime trace 必须优先于旧 snapshot。不得持久化 lane×order 原始矩阵；trace 不得参与任何授权或安全决策；evaluated Shadow resource count 表示每次 full read 的 cohort distinct resource 宽度，双读取最大值而不累加，candidate identity order checks 则按两读实际检查量累加
 
 #### Scenario: Resource Cohort 不代表 Mixed Ready
 - **WHEN** 任一资源出现 writable lane 且同资源仍有多条 suspended Shadow lane

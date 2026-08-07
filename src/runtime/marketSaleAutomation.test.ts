@@ -867,6 +867,171 @@ function persistMarketBaseFixtureState(
   ) as typeof nextAnchor;
 }
 
+function buildOuterShadowProgressResult(
+  source: MarketBaseResourceV3RuntimeState,
+): MarketBaseResourceAutomationResult {
+  const lane = source.scope!.laneLifecycles.find(
+    (candidate) =>
+      candidate.stage === "shadow" && candidate.status === "suspended",
+  )!;
+  const nextScope = applyMarketBaseResourceShadowObservations(
+    source.scope!,
+    Game.time,
+    [{ laneId: lane.laneId, result: "safe_no_opportunity" }],
+    lane.laneId,
+  );
+  const state: MarketBaseResourceV3RuntimeState = {
+    ...source,
+    scope: nextScope,
+    lastPlanningSnapshot: {
+      observedAt: Game.time,
+      complete: true,
+      sampledShadowLaneIds: [lane.laneId],
+      cpuUsed: 5,
+      rawOrderCount: 0,
+      eligibleOrderCount: 0,
+      distinctOrderRoomCount: 0,
+      transactionCostEvaluationBudget: 0,
+      shadowPlannerMode: "batch_zero_candidate",
+      shadowPlannerInvocationCount: 1,
+      actualTransactionEnergyEvaluations: 0,
+      evaluatedShadowResourceCount: 1,
+      candidateIdentityOrderChecks: 0,
+    },
+  };
+  const ledgerRuntimeAnchor = buildMarketBaseResourceLedgerRuntimeAnchor(
+    state.ledger!,
+    state.permitChain!,
+  );
+  const readinessRuntimeCapability =
+    createMarketBaseResourceReadinessRuntimeCapability(
+      state,
+      Game.time,
+      ledgerRuntimeAnchor,
+    );
+  if (!readinessRuntimeCapability) {
+    throw new Error("outer shadow fixture capability unavailable");
+  }
+  return {
+    actions: [],
+    rejectedByReason: {},
+    writes: 0,
+    planComplete: true,
+    state,
+    ledgerRuntimeAnchor,
+    readinessRuntimeCapability,
+    cpuRawHighWater: 5,
+    cpuTrace: {
+      observedAt: Game.time,
+      cpuAfterOuterSession: 1,
+      cpuAfterScopeCore: 2,
+      cpuAfterMarketFacts: 3,
+      cpuAfterShadowBatch: 4,
+      cpuAfterInnerApply: 5,
+      cpuCutPhase: null,
+      marketFactsDisposition: "read",
+    },
+  };
+}
+
+type MarketSaleStoredRoot = NonNullable<
+  NonNullable<Memory["data"]>["marketSaleAutomation"]
+>;
+
+function installMarketSaleRootSetterFault(
+  source: MarketSaleStoredRoot,
+  mode: "throw" | "throw_after_write" | "swallow" | "substitute",
+): {
+  concurrent: MarketSaleStoredRoot;
+  current: () => MarketSaleStoredRoot;
+  restore: () => void;
+} {
+  const concurrent = {
+    ...source,
+    operatorAudit: [
+      ...((
+        source as unknown as {
+          operatorAudit?: unknown[];
+        }
+      ).operatorAudit ?? []),
+      { tick: Game.time, action: "injected_root_setter_substitution" },
+    ],
+  } as MarketSaleStoredRoot;
+  let stored = source;
+  Object.defineProperty(Memory.data!, "marketSaleAutomation", {
+    configurable: true,
+    get: () => stored,
+    set: (candidate: MarketSaleStoredRoot) => {
+      if (mode === "throw") {
+        throw new Error("injected root setter throw");
+      }
+      if (mode === "throw_after_write") {
+        stored = candidate;
+        throw new Error("injected root setter post-write throw");
+      }
+      if (mode === "substitute") {
+        stored = concurrent;
+      }
+      // swallow 刻意保留 source。
+    },
+  });
+  return {
+    concurrent,
+    current: () => stored,
+    restore: () => {
+      Object.defineProperty(Memory.data!, "marketSaleAutomation", {
+        configurable: true,
+        writable: true,
+        value: stored,
+      });
+    },
+  };
+}
+
+function currentMarketBasePlanningCandidates(): MarketSalePlanCandidate[] {
+  const current = currentMarketBaseV3StateFixture();
+  const trustedFloors = (
+    Memory.data!.marketSaleAutomation as unknown as {
+      trustedFloors: Record<
+        string,
+        { value: number; marketDate: string; updatedAt: number }
+      >;
+    }
+  ).trustedFloors;
+  const trustedEnergyFloor = trustedFloors[RESOURCE_ENERGY]!;
+  return current.scope!.sellerRooms.flatMap((sellerRoom) =>
+    MARKET_BASE_RESOURCE_POLICIES.map((policy) => {
+      const trustedFloor = trustedFloors[policy.resource]!;
+      return candidate({
+        roomName: sellerRoom.roomName,
+        resourceType: policy.resource,
+        protectionEntry: protectionEntry({
+          roomName: sellerRoom.roomName,
+          resource: policy.resource,
+          revision: Game.time,
+          observedAt: Game.time,
+          expiresAt: Game.time,
+        }),
+        effectiveNetFloor: Math.max(
+          policy.hardFloor,
+          policy.economicFloor,
+          trustedFloor.value,
+        ),
+        directHistoryTrusted: true,
+        historyFloor: policy.economicFloor,
+        ratchetFloor: trustedFloor.value,
+        effectiveEnergyShadowPrice: trustedEnergyFloor.value,
+        energyShadowObservedAt: trustedEnergyFloor.updatedAt,
+        energyShadowComponents: {
+          hardFloor: trustedEnergyFloor.value,
+          ratchetFloor: trustedEnergyFloor.value,
+        },
+        isHubRoom: sellerRoom.roomClass === "hub",
+      });
+    }),
+  );
+}
+
 function qualifyMarketBaseLaneFixture(laneId: string): void {
   const state = currentMarketBaseV3StateFixture();
   let scope = state.scope!;
@@ -3332,6 +3497,767 @@ describe("marketSaleAutomation 编排", () => {
     expect(currentMarketBaseV3StateFixture().ledger?.pending).toBeUndefined();
   });
 
+  it("outer 私下注册完整 root 后 CPU 超限时不提交进度，runtime trace 仍可见且同 tick 可重入", () => {
+    activateMarketBaseV3Fixture();
+    markDirectLegacyExposureDrainedFixture();
+    Memory.runtime = {
+      ...Memory.runtime,
+      resourceControl: {
+        updatedAt: Game.time,
+        rooms: {},
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    };
+    let innerReturned = false;
+    let canonicalBeforePlanning:
+      | NonNullable<NonNullable<Memory["data"]>["marketSaleAutomation"]>
+      | undefined;
+    const runtimeSpy = jest
+      .spyOn(
+        marketBaseResourceAutomationModule,
+        "runMarketBaseResourceAutomation",
+      )
+      .mockImplementation((source) => {
+        canonicalBeforePlanning = Memory.data!.marketSaleAutomation!;
+        const result = buildOuterShadowProgressResult(source);
+        innerReturned = true;
+        return result;
+      });
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(() =>
+      innerReturned ? 26 : 0,
+    );
+
+    let first: ReturnType<typeof runMarketSaleAutomation>;
+    try {
+      first = runMarketSaleAutomation({ candidates: [] });
+      expect(first.rejectedByReason).toMatchObject({
+        market_base_cpu_ceiling_exceeded: 1,
+      });
+      expect(Memory.data!.marketSaleAutomation).toBe(
+        canonicalBeforePlanning,
+      );
+      expect(
+        (
+          Memory.runtime!.marketSaleAutomation!.direct as unknown as {
+            baseResourceV3CpuTrace?: { cpuCutPhase?: string };
+          }
+        ).baseResourceV3CpuTrace,
+      ).toMatchObject({
+        observedAt: Game.time,
+        cpuCutPhase: "outer_precommit",
+        cpuAfterInnerApply: 5,
+      });
+      expect(
+        Memory.runtime!.marketSaleAutomation!.shadowConsecutiveCycles,
+      ).toBe(0);
+      expect(Game.market.deal).not.toHaveBeenCalled();
+      expect(getTerminalActionClaims()).toHaveLength(0);
+
+      // 被丢弃的 full root 已进入私有 registry，但当前 canonical source 也
+      // 仍是已认证 root；同 tick 重入不能被 orphan 误报为 root replacement。
+      innerReturned = false;
+      (Game.cpu.getUsed as jest.Mock).mockReturnValue(0);
+      const second = runMarketSaleAutomation({ candidates: [] });
+      expect(second.rejectedByReason).not.toHaveProperty(
+        "market_base_v3_same_tick_root_replaced",
+      );
+    } finally {
+      runtimeSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ["回拨", 24, 22, false],
+    ["缺失", undefined, 22, false],
+    ["在 fresh CPU callback 中被篡改", 24, 22, true],
+  ] as const)(
+    "partial inner trace 之外的 raw high-water %s 时仍在 outer 最终门禁闭锁",
+    (_caseName, innerRawHighWater, outerRaw, mutateDuringFreshCpu) => {
+      activateMarketBaseV3Fixture();
+      markDirectLegacyExposureDrainedFixture();
+      Memory.runtime = {
+        ...Memory.runtime,
+        resourceControl: {
+          updatedAt: Game.time,
+          rooms: {},
+          lastActions: [],
+          lastMarketActions: [],
+        },
+      };
+      let canonicalBeforePlanning: MarketSaleStoredRoot | undefined;
+      let innerReturned = false;
+      let returnedResult: MarketBaseResourceAutomationResult | undefined;
+      const runtimeSpy = jest
+        .spyOn(
+          marketBaseResourceAutomationModule,
+          "runMarketBaseResourceAutomation",
+        )
+        .mockImplementation((source) => {
+          canonicalBeforePlanning = Memory.data!.marketSaleAutomation!;
+          const result = buildOuterShadowProgressResult(source);
+          if (innerRawHighWater === undefined) {
+            delete result.cpuRawHighWater;
+          } else {
+            result.cpuRawHighWater = innerRawHighWater;
+          }
+          result.cpuTrace = {
+            observedAt: Game.time,
+            cpuAfterOuterSession: 1,
+            cpuAfterScopeCore: 20,
+            cpuAfterMarketFacts: null,
+            cpuAfterShadowBatch: null,
+            cpuAfterInnerApply: null,
+            cpuCutPhase: null,
+            marketFactsDisposition: "read",
+          };
+          returnedResult = result;
+          innerReturned = true;
+          return result;
+        });
+      (Game.cpu.getUsed as jest.Mock).mockImplementation(() => {
+        if (!innerReturned) return 0;
+        if (mutateDuringFreshCpu && returnedResult) {
+          returnedResult.cpuRawHighWater = 20;
+        }
+        return outerRaw;
+      });
+
+      let result: ReturnType<typeof runMarketSaleAutomation>;
+      try {
+        result = runMarketSaleAutomation({ candidates: [] });
+      } finally {
+        runtimeSpy.mockRestore();
+      }
+
+      expect(result.rejectedByReason).toMatchObject({
+        market_base_cpu_ceiling_exceeded: 1,
+      });
+      expect(canonicalBeforePlanning).toBeDefined();
+      expect(Memory.data!.marketSaleAutomation).toBe(canonicalBeforePlanning);
+      expect(
+        (
+          Memory.runtime!.marketSaleAutomation!.direct as unknown as {
+            baseResourceV3CpuTrace?: { cpuCutPhase?: string };
+          }
+        ).baseResourceV3CpuTrace,
+      ).toMatchObject({ cpuCutPhase: "outer_precommit" });
+      expect(Game.market.deal).not.toHaveBeenCalled();
+      expect(getTerminalActionClaims()).toHaveLength(0);
+    },
+  );
+
+  it("outer fresh CPU callback 替换 canonical root 时最终 exact CAS 拒绝覆盖", () => {
+    activateMarketBaseV3Fixture();
+    markDirectLegacyExposureDrainedFixture();
+    Memory.runtime = {
+      ...Memory.runtime,
+      resourceControl: {
+        updatedAt: Game.time,
+        rooms: {},
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    };
+    let innerReturned = false;
+    let concurrent:
+      | NonNullable<NonNullable<Memory["data"]>["marketSaleAutomation"]>
+      | undefined;
+    const runtimeSpy = jest
+      .spyOn(
+        marketBaseResourceAutomationModule,
+        "runMarketBaseResourceAutomation",
+      )
+      .mockImplementation((source) => {
+        const result = buildOuterShadowProgressResult(source);
+        innerReturned = true;
+        return result;
+      });
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(() => {
+      if (!innerReturned) return 0;
+      if (!concurrent) {
+        concurrent = {
+          ...Memory.data!.marketSaleAutomation!,
+          operatorAudit: [
+            ...(
+              Memory.data!.marketSaleAutomation as unknown as {
+                operatorAudit: unknown[];
+              }
+            ).operatorAudit,
+            { tick: Game.time, action: "injected_outer_cpu_cas" },
+          ],
+        } as NonNullable<
+          NonNullable<Memory["data"]>["marketSaleAutomation"]
+        >;
+        Memory.data!.marketSaleAutomation = concurrent;
+      }
+      return 10;
+    });
+
+    let result: ReturnType<typeof runMarketSaleAutomation>;
+    try {
+      result = runMarketSaleAutomation({ candidates: [] });
+    } finally {
+      runtimeSpy.mockRestore();
+    }
+
+    expect(result.rejectedByReason).toMatchObject({
+      market_base_v3_returned_commit_conflict: 1,
+    });
+    expect(Memory.data!.marketSaleAutomation).toBe(concurrent);
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getTerminalActionClaims()).toHaveLength(0);
+  });
+
+  it.each([
+    "throw",
+    "throw_after_write",
+    "swallow",
+    "substitute",
+  ] as const)("outer full-root setter %s 时捕获失败且不覆盖并发 root", (mode) => {
+    activateMarketBaseV3Fixture();
+    markDirectLegacyExposureDrainedFixture();
+    Memory.runtime = {
+      ...Memory.runtime,
+      resourceControl: {
+        updatedAt: Game.time,
+        rooms: {},
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    };
+    let canonicalAtFault: MarketSaleStoredRoot | undefined;
+    let fault:
+      | ReturnType<typeof installMarketSaleRootSetterFault>
+      | undefined;
+    let innerReturned = false;
+    const runtimeSpy = jest
+      .spyOn(
+        marketBaseResourceAutomationModule,
+        "runMarketBaseResourceAutomation",
+      )
+      .mockImplementation((source) => {
+        const result = buildOuterShadowProgressResult(source);
+        canonicalAtFault = Memory.data!.marketSaleAutomation!;
+        fault = installMarketSaleRootSetterFault(canonicalAtFault, mode);
+        innerReturned = true;
+        return result;
+      });
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(() =>
+      innerReturned ? 10 : 0,
+    );
+
+    let result: ReturnType<typeof runMarketSaleAutomation>;
+    try {
+      result = runMarketSaleAutomation({ candidates: [] });
+    } finally {
+      runtimeSpy.mockRestore();
+      fault?.restore();
+    }
+
+    expect(result.rejectedByReason).toMatchObject({
+      market_base_v3_returned_commit_failed: 1,
+    });
+    expect(canonicalAtFault).toBeDefined();
+    expect(fault).toBeDefined();
+    if (mode === "substitute") {
+      expect(Memory.data!.marketSaleAutomation).toBe(fault!.concurrent);
+    } else if (mode === "throw_after_write") {
+      expect(Memory.data!.marketSaleAutomation).not.toBe(canonicalAtFault);
+    } else {
+      expect(Memory.data!.marketSaleAutomation).toBe(canonicalAtFault);
+    }
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getTerminalActionClaims()).toHaveLength(0);
+  });
+
+  it.each([0, 1, 8])(
+    "outer CPU cut 对 %i 条正向 Shadow 证据只提交必要的 reset-only root",
+    (positiveEvidenceCount) => {
+      for (const [roomName, terminalId] of [
+        ["E1N1", "dddddddddddddddddddddddd"],
+        ["E2N2", "eeeeeeeeeeeeeeeeeeeeeeee"],
+        ["E3N3", "ffffffffffffffffffffffff"],
+        ["E4N4", "111111111111111111111111"],
+        ["E5N5", "222222222222222222222222"],
+        ["E7N7", "333333333333333333333333"],
+      ] as const) {
+        installOwnedMarketBaseRoom(roomName, terminalId);
+      }
+      for (const room of Object.values(Game.rooms)) {
+        (
+          room as Room & {
+            find: jest.Mock<unknown[], []>;
+          }
+        ).find = jest.fn(() => []);
+      }
+      activateMarketBaseV3Fixture();
+      markDirectLegacyExposureDrainedFixture();
+      const initialState = currentMarketBaseV3StateFixture();
+      const hydrogenLanes = initialState.scope!.laneLifecycles
+        .filter((lane) => lane.resource === RESOURCE_HYDROGEN)
+        .sort((left, right) => left.laneId.localeCompare(right.laneId));
+      expect(hydrogenLanes).toHaveLength(8);
+
+      Game.time += 1;
+      if (positiveEvidenceCount > 0) {
+        const qualifiedScope = applyMarketBaseResourceShadowObservations(
+          initialState.scope!,
+          Game.time,
+          hydrogenLanes
+            .slice(0, positiveEvidenceCount)
+            .map((lane) => ({
+              laneId: lane.laneId,
+              result: "safe_no_opportunity" as const,
+            })),
+          undefined,
+        );
+        persistMarketBaseFixtureState({
+          ...initialState,
+          scope: qualifiedScope,
+        });
+      }
+      Game.time += 1;
+      Game.time += (10 - (Game.time % 10)) % 10;
+      runMarketSalePreflight();
+      runResourceControl();
+      const sourceRoot = Memory.data!.marketSaleAutomation!;
+      const sourceState = currentMarketBaseV3StateFixture();
+      const sourceCursor = sourceState.scope!.shadowCursor;
+      const sourceRatchet = canonicalStableHashV1(sourceState.pricingRatchet);
+      const sourceLedger = canonicalStableHashV1(sourceState.ledger);
+      const sourcePermit = canonicalStableHashV1(sourceState.permitChain);
+      const planningCandidates = currentMarketBasePlanningCandidates();
+      (Game.market.getAllOrders as jest.Mock).mockImplementation(
+        (filter?: { type?: string; resourceType?: string }) => {
+          if (
+            filter?.type === ORDER_BUY &&
+            filter.resourceType === RESOURCE_HYDROGEN
+          ) {
+            throw new Error("injected hydrogen shadow book gap");
+          }
+          return [];
+        },
+      );
+      const originalRun =
+        marketBaseResourceAutomationModule.runMarketBaseResourceAutomation;
+      let innerReturned = false;
+      const runtimeSpy = jest
+        .spyOn(
+          marketBaseResourceAutomationModule,
+          "runMarketBaseResourceAutomation",
+        )
+        .mockImplementation((...args) => {
+          const result = originalRun(...args);
+          innerReturned = true;
+          return result;
+        });
+      (Game.cpu.getUsed as jest.Mock).mockImplementation(() =>
+        innerReturned ? 26 : 0,
+      );
+
+      let result: ReturnType<typeof runMarketSaleAutomation>;
+      try {
+        result = runMarketSaleAutomation({
+          candidates: [],
+          readMarketBaseResourceCandidates: () => planningCandidates,
+        });
+      } finally {
+        runtimeSpy.mockRestore();
+      }
+
+      expect(result.rejectedByReason).toMatchObject({
+        market_base_cpu_ceiling_exceeded: 1,
+      });
+      if (positiveEvidenceCount === 0) {
+        expect(Memory.data!.marketSaleAutomation).toBe(sourceRoot);
+      } else {
+        expect(Memory.data!.marketSaleAutomation).not.toBe(sourceRoot);
+      }
+      const persisted = currentMarketBaseV3StateFixture();
+      const persistedHydrogen = persisted.scope!.laneLifecycles.filter(
+        (lane) => lane.resource === RESOURCE_HYDROGEN,
+      );
+      expect(
+        persistedHydrogen.every(
+          (lane) =>
+            lane.stage === "shadow" &&
+            lane.status === "suspended" &&
+            lane.shadowEvidence.completeCycles === 0,
+        ),
+      ).toBe(true);
+      expect(
+        persistedHydrogen.filter(
+          (lane) => lane.shadowEvidence.lastCompleteTick === Game.time,
+        ),
+      ).toHaveLength(positiveEvidenceCount);
+      expect(persisted.scope!.shadowCursor).toBe(sourceCursor);
+      expect(canonicalStableHashV1(persisted.pricingRatchet)).toBe(
+        sourceRatchet,
+      );
+      expect(canonicalStableHashV1(persisted.ledger)).toBe(sourceLedger);
+      expect(canonicalStableHashV1(persisted.permitChain)).toBe(sourcePermit);
+      if (positiveEvidenceCount > 0) {
+        expect(persisted.lastPlanningSnapshot).toMatchObject({
+          complete: false,
+          blocker: "market_base_cpu_ceiling_exceeded",
+          cpuTrace: {
+            cpuCutPhase: "outer_precommit",
+            marketFactsDisposition: "read",
+          },
+        });
+        expect(persisted.lastPlanningSnapshot?.selected).toBeUndefined();
+      }
+      expect(
+        (
+          Memory.runtime!.marketSaleAutomation!.direct as unknown as {
+            baseResourceV3CpuTrace?: { cpuCutPhase?: string };
+          }
+        ).baseResourceV3CpuTrace,
+      ).toMatchObject({ cpuCutPhase: "outer_precommit" });
+      expect(
+        Memory.runtime!.marketSaleAutomation!.shadowConsecutiveCycles,
+      ).toBe(0);
+      expect(Game.market.deal).not.toHaveBeenCalled();
+      expect(getTerminalActionClaims()).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    "throw",
+    "throw_after_write",
+    "swallow",
+    "substitute",
+  ] as const)(
+    "outer reset-only fallback setter %s 时 fail closed 且不覆盖并发 root",
+    (mode) => {
+      activateMarketBaseV3Fixture();
+      markDirectLegacyExposureDrainedFixture();
+      const initialState = currentMarketBaseV3StateFixture();
+      const hydrogenLane = initialState.scope!.laneLifecycles.find(
+        (lane) => lane.resource === RESOURCE_HYDROGEN,
+      )!;
+      Game.time += 1;
+      persistMarketBaseFixtureState({
+        ...initialState,
+        scope: applyMarketBaseResourceShadowObservations(
+          initialState.scope!,
+          Game.time,
+          [
+            {
+              laneId: hydrogenLane.laneId,
+              result: "safe_no_opportunity",
+            },
+          ],
+          undefined,
+        ),
+      });
+      Game.time += 1;
+      Game.time += (10 - (Game.time % 10)) % 10;
+      runMarketSalePreflight();
+      runResourceControl();
+      const planningCandidates = currentMarketBasePlanningCandidates();
+      (Game.market.getAllOrders as jest.Mock).mockImplementation(
+        (filter?: { type?: string; resourceType?: string }) => {
+          if (
+            filter?.type === ORDER_BUY &&
+            filter.resourceType === RESOURCE_HYDROGEN
+          ) {
+            throw new Error("injected hydrogen shadow book gap");
+          }
+          return [];
+        },
+      );
+      let innerReturned = false;
+      let canonicalAtFault: MarketSaleStoredRoot | undefined;
+      let fault:
+        | ReturnType<typeof installMarketSaleRootSetterFault>
+        | undefined;
+      const originalRun =
+        marketBaseResourceAutomationModule.runMarketBaseResourceAutomation;
+      const runtimeSpy = jest
+        .spyOn(
+          marketBaseResourceAutomationModule,
+          "runMarketBaseResourceAutomation",
+        )
+        .mockImplementation((...args) => {
+          const result = originalRun(...args);
+          innerReturned = true;
+          canonicalAtFault = Memory.data!.marketSaleAutomation!;
+          fault = installMarketSaleRootSetterFault(canonicalAtFault, mode);
+          return result;
+        });
+      (Game.cpu.getUsed as jest.Mock).mockImplementation(() =>
+        innerReturned ? 26 : 0,
+      );
+      let result: ReturnType<typeof runMarketSaleAutomation>;
+      try {
+        result = runMarketSaleAutomation({
+          candidates: [],
+          readMarketBaseResourceCandidates: () => planningCandidates,
+        });
+      } finally {
+        runtimeSpy.mockRestore();
+        fault?.restore();
+      }
+
+      expect(result.rejectedByReason).toMatchObject({
+        market_base_cpu_ceiling_exceeded: 1,
+        market_base_v3_cpu_fallback_commit_failed: 1,
+      });
+      expect(canonicalAtFault).toBeDefined();
+      expect(fault).toBeDefined();
+      if (mode === "substitute") {
+        expect(Memory.data!.marketSaleAutomation).toBe(fault!.concurrent);
+      } else if (mode === "throw_after_write") {
+        expect(Memory.data!.marketSaleAutomation).not.toBe(canonicalAtFault);
+      } else {
+        expect(Memory.data!.marketSaleAutomation).toBe(canonicalAtFault);
+      }
+      const persistedLane = currentMarketBaseV3StateFixture()
+        .scope!.laneLifecycles.find(
+          (lane) => lane.laneId === hydrogenLane.laneId,
+        )!;
+      expect(persistedLane.shadowEvidence.completeCycles).toBe(
+        mode === "throw_after_write" ? 0 : 1,
+      );
+      expect(Game.market.deal).not.toHaveBeenCalled();
+      expect(getTerminalActionClaims()).toHaveLength(0);
+    },
+  );
+
+  it("full root 注册失败时仍提交已认证的 reset-only fallback", () => {
+    activateMarketBaseV3Fixture();
+    markDirectLegacyExposureDrainedFixture();
+    const initialState = currentMarketBaseV3StateFixture();
+    const hydrogenLane = initialState.scope!.laneLifecycles.find(
+      (lane) => lane.resource === RESOURCE_HYDROGEN,
+    )!;
+    Game.time += 1;
+    persistMarketBaseFixtureState({
+      ...initialState,
+      scope: applyMarketBaseResourceShadowObservations(
+        initialState.scope!,
+        Game.time,
+        [
+          {
+            laneId: hydrogenLane.laneId,
+            result: "safe_no_opportunity",
+          },
+        ],
+        undefined,
+      ),
+    });
+    Game.time += 1;
+    Game.time += (10 - (Game.time % 10)) % 10;
+    runMarketSalePreflight();
+    runResourceControl();
+    const sourceRoot = Memory.data!.marketSaleAutomation!;
+    const planningCandidates = currentMarketBasePlanningCandidates();
+    (Game.market.getAllOrders as jest.Mock).mockImplementation(
+      (filter?: { type?: string; resourceType?: string }) => {
+        if (
+          filter?.type === ORDER_BUY &&
+          filter.resourceType === RESOURCE_HYDROGEN
+        ) {
+          throw new Error("injected hydrogen shadow book gap");
+        }
+        return [];
+      },
+    );
+    const originalRun =
+      marketBaseResourceAutomationModule.runMarketBaseResourceAutomation;
+    const runtimeSpy = jest
+      .spyOn(
+        marketBaseResourceAutomationModule,
+        "runMarketBaseResourceAutomation",
+      )
+      .mockImplementation((...args) => {
+        const result = originalRun(...args);
+        // fallback recipe 已绑定 mutation 前的纯 Shadow base state；只破坏
+        // returned full state/capability 的 exact 对应，验证 full failure
+        // 不能压掉独立 negative reset。
+        result.state.readinessAuthorization = {
+          schemaVersion: 3,
+          validated: true,
+          status: "authorized",
+          revision: "injected-invalid-full-root",
+          updatedAt: Game.time,
+          expiresAt: Game.time,
+          maxTransactionEnergy: 1_000,
+          sourcePermitVersion: 2,
+          rooms: [],
+        };
+        return result;
+      });
+
+    let result: ReturnType<typeof runMarketSaleAutomation>;
+    try {
+      result = runMarketSaleAutomation({
+        candidates: [],
+        readMarketBaseResourceCandidates: () => planningCandidates,
+      });
+    } finally {
+      runtimeSpy.mockRestore();
+    }
+
+    expect(result.rejectedByReason).toMatchObject({
+      market_base_v3_returned_anchor_missing_or_invalid: 1,
+    });
+    expect(result.rejectedByReason).not.toHaveProperty(
+      "market_base_v3_cpu_fallback_commit_failed",
+    );
+    expect(Memory.data!.marketSaleAutomation).not.toBe(sourceRoot);
+    expect(
+      currentMarketBaseV3StateFixture().scope!.laneLifecycles.find(
+        (lane) => lane.laneId === hydrogenLane.laneId,
+      )?.shadowEvidence.completeCycles,
+    ).toBe(0);
+    expect(currentMarketBaseV3StateFixture().lastPlanningSnapshot).toMatchObject(
+      {
+        complete: false,
+        blocker: "market_base_v3_returned_anchor_missing_or_invalid",
+        cpuTrace: { cpuCutPhase: null },
+      },
+    );
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getTerminalActionClaims()).toHaveLength(0);
+  });
+
+  it("prepared WAL 已落盘时不进入 Shadow outer fallback 或第二次 precommit gate", () => {
+    activateMarketBaseV3CanaryFixture();
+    markDirectLegacyExposureDrainedFixture();
+    Memory.runtime = {
+      ...Memory.runtime,
+      resourceControl: {
+        updatedAt: Game.time,
+        rooms: {},
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    };
+    let cpuReads = 0;
+    (Game.cpu.getUsed as jest.Mock).mockImplementation(() => {
+      cpuReads += 1;
+      return cpuReads === 1 ? 0 : 100;
+    });
+    const runtimeSpy = jest
+      .spyOn(
+        marketBaseResourceAutomationModule,
+        "runMarketBaseResourceAutomation",
+      )
+      .mockImplementation(
+        (source, _input, dependencies): MarketBaseResourceAutomationResult => {
+          const preparedState = buildPreparedMarketBaseV3StateFixture(source);
+          const ledgerRuntimeAnchor =
+            buildMarketBaseResourceLedgerRuntimeAnchor(
+              preparedState.ledger!,
+              preparedState.permitChain!,
+            );
+          const readinessRuntimeCapability =
+            createMarketBaseResourceReadinessRuntimeCapability(
+              preparedState,
+              Game.time,
+              ledgerRuntimeAnchor,
+            );
+          expect(readinessRuntimeCapability).toBeDefined();
+          expect(
+            dependencies.commitPreparedState(
+              preparedState,
+              ledgerRuntimeAnchor,
+              readinessRuntimeCapability,
+            ),
+          ).toBe(true);
+          return {
+            actions: [],
+            rejectedByReason: {},
+            writes: 0,
+            planComplete: false,
+            state: preparedState,
+            ledgerRuntimeAnchor,
+            readinessRuntimeCapability,
+            cpuTrace: {
+              observedAt: Game.time,
+              cpuAfterOuterSession: 1,
+              cpuAfterScopeCore: 2,
+              cpuAfterMarketFacts: 3,
+              cpuAfterShadowBatch: 4,
+              cpuAfterInnerApply: 5,
+              cpuCutPhase: null,
+              marketFactsDisposition: "read",
+            },
+          };
+        },
+      );
+
+    try {
+      runMarketSaleAutomation({ candidates: [] });
+    } finally {
+      runtimeSpy.mockRestore();
+    }
+
+    expect(cpuReads).toBe(1);
+    expect(currentMarketBaseV3StateFixture().ledger?.pending).toMatchObject({
+      schemaVersion: 3,
+      orderId: "outer-wal-buy-order",
+      attemptAt: Game.time,
+    });
+    expect(Game.market.deal).not.toHaveBeenCalled();
+    expect(getTerminalActionClaims()).toHaveLength(0);
+  });
+
+  it("跨非规划 tick 保留 CPU trace 时重建精确有界字段集并丢弃注入字段", () => {
+    activateMarketBaseV3Fixture();
+    markDirectLegacyExposureDrainedFixture();
+    Memory.runtime = {
+      ...Memory.runtime,
+      resourceControl: {
+        updatedAt: Game.time - 1,
+        rooms: {},
+        lastActions: [],
+        lastMarketActions: [],
+      },
+    };
+    const runtime = Memory.runtime!.marketSaleAutomation!;
+    (
+      runtime as unknown as {
+        direct: Record<string, unknown>;
+      }
+    ).direct = {
+      ...(runtime.direct as unknown as Record<string, unknown>),
+      baseResourceV3CpuTrace: {
+        observedAt: Game.time - 1,
+        cpuAfterOuterSession: 1,
+        cpuAfterScopeCore: 2,
+        cpuAfterMarketFacts: 3,
+        cpuAfterShadowBatch: 4,
+        cpuAfterInnerApply: 5,
+        cpuCutPhase: null,
+        marketFactsDisposition: "read",
+        injected: "x".repeat(10_000),
+      },
+    };
+
+    runMarketSaleAutomation({ candidates: [] });
+
+    expect(
+      (
+        Memory.runtime!.marketSaleAutomation!.direct as unknown as {
+          baseResourceV3CpuTrace?: unknown;
+        }
+      ).baseResourceV3CpuTrace,
+    ).toEqual({
+      observedAt: Game.time - 1,
+      cpuAfterOuterSession: 1,
+      cpuAfterScopeCore: 2,
+      cpuAfterMarketFacts: 3,
+      cpuAfterShadowBatch: 4,
+      cpuAfterInnerApply: 5,
+      cpuCutPhase: null,
+      marketFactsDisposition: "read",
+    });
+  });
+
   it("V3 原子接纳 detached trusted-floor successor，保持 frozen source 且同 tick 零 deal", () => {
     activateMarketBaseV3Fixture();
     Game.time += 1;
@@ -3785,7 +4711,23 @@ describe("marketSaleAutomation 编排", () => {
       rawOrderCount: 128,
       eligibleOrderCount: 0,
       transactionCostEvaluationBudget: 0,
+      cpuTrace: {
+        cpuAfterOuterSession: 0,
+        cpuAfterScopeCore: 0,
+        cpuAfterMarketFacts: 0,
+        cpuAfterShadowBatch: 0,
+        cpuAfterInnerApply: 0,
+        cpuCutPhase: null,
+        marketFactsDisposition: "read",
+      },
     });
+    expect(
+      (
+        Memory.runtime!.marketSaleAutomation!.direct as unknown as {
+          baseResourceV3CpuTrace?: unknown;
+        }
+      ).baseResourceV3CpuTrace,
+    ).toEqual(plannedState.lastPlanningSnapshot?.cpuTrace);
     const sampledLaneIds =
       plannedState.lastPlanningSnapshot!.sampledShadowLaneIds;
     expect(sampledLaneIds).toHaveLength(8);

@@ -130,8 +130,62 @@ export const MARKET_BASE_RESOURCE_MAX_ELIGIBLE_ORDERS_PER_RESOURCE = 200;
 export const MARKET_BASE_RESOURCE_MAX_DISTINCT_ORDER_ROOMS = 128;
 export const MARKET_BASE_RESOURCE_MAX_TRANSACTION_COST_EVALUATIONS = 4_096;
 export const MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING = 25;
+export const MARKET_BASE_RESOURCE_CPU_TRACE_MAX = 100;
 const MARKET_BASE_RESOURCE_SHADOW_CURSOR_V2_PREFIX =
   "mbr-shadow-cursor-v2|" as const;
+
+export type MarketBaseResourceCpuCutPhase =
+  | "outer_session"
+  | "scope_core_read1"
+  | "scope_core_read2"
+  | "market_facts_read1"
+  | "market_facts_read2"
+  | "shadow_batch_read1"
+  | "shadow_batch_read2"
+  | "inner_apply"
+  | "outer_precommit";
+
+export type MarketBaseResourceMarketFactsDisposition =
+  | "not_reached"
+  | "skipped_no_consumer"
+  | "read";
+
+/**
+ * 仅用于诊断同一个 outer CPU 窗口。字段不进入 permit、scope evidence、
+ * pricing、protection、quota、排序或授权；有界值也绝不反向驱动 CPU gate。
+ */
+export interface MarketBaseResourceCpuTrace {
+  observedAt: number;
+  cpuAfterOuterSession: number | null;
+  cpuAfterScopeCore: number | null;
+  cpuAfterMarketFacts: number | null;
+  cpuAfterShadowBatch: number | null;
+  cpuAfterInnerApply: number | null;
+  cpuCutPhase: MarketBaseResourceCpuCutPhase | null;
+  marketFactsDisposition: MarketBaseResourceMarketFactsDisposition;
+}
+
+type MarketBaseResourceCpuTraceField =
+  | "cpuAfterOuterSession"
+  | "cpuAfterScopeCore"
+  | "cpuAfterMarketFacts"
+  | "cpuAfterShadowBatch"
+  | "cpuAfterInnerApply";
+
+const MARKET_BASE_RESOURCE_CPU_TRACE_FIELDS:
+  readonly MarketBaseResourceCpuTraceField[] = [
+    "cpuAfterOuterSession",
+    "cpuAfterScopeCore",
+    "cpuAfterMarketFacts",
+    "cpuAfterShadowBatch",
+    "cpuAfterInnerApply",
+  ];
+
+interface MarketBaseResourceCpuTraceRecorder {
+  readonly startedAt: number;
+  readonly trace: MarketBaseResourceCpuTrace;
+  lastRawDelta: number;
+}
 
 export function marketBaseResourceOperatorAuthorizationFingerprint(
   config: ResolvedMarketSaleAutomationConfig,
@@ -312,6 +366,7 @@ export interface MarketBaseResourcePlanningSnapshot {
   actualTransactionEnergyEvaluations: number;
   evaluatedShadowResourceCount: number;
   candidateIdentityOrderChecks: number;
+  cpuTrace?: MarketBaseResourceCpuTrace;
 }
 
 export interface MarketBaseResourcePricingRatchetState {
@@ -582,12 +637,34 @@ export interface MarketBaseResourceAutomationResult {
    * ResourceControl 与 terminal reader 复用。
    */
   readinessRuntimeCapability?: MarketBaseResourceReadinessRuntimeCapability;
+  /**
+   * 本 tick 的非授权诊断观测。outer 可将它投影到 runtime Memory；它不是
+   * canonical root 的组成部分，也不能单独替代未截断 raw CPU gate。
+   */
+  cpuTrace?: MarketBaseResourceCpuTrace;
+  /**
+   * 同一 outer 窗口内未截断、不可回拨的 CPU 高水位。它只在本次调用栈
+   * 内交给 outer 最终门禁，不能持久化、不能参与任何市场授权或 canonical
+   * hash；缺失或小于 trace 已记录值时 outer 必须 fail closed。
+   */
+  cpuRawHighWater?: number;
+  /**
+   * 仅纯 Shadow/no-selected 路径可返回的一次性 reset-only materializer。
+   * 它不能 JSON clone、不能写入 Memory，也不能用于 prepared/WAL 路径。
+   */
+  cpuFallbackCapability?: MarketBaseResourceCpuFallbackCapability;
 }
 
 declare const MARKET_BASE_RESOURCE_READINESS_RUNTIME_CAPABILITY_BRAND: unique symbol;
 
 export interface MarketBaseResourceReadinessRuntimeCapability {
   readonly [MARKET_BASE_RESOURCE_READINESS_RUNTIME_CAPABILITY_BRAND]: true;
+}
+
+declare const MARKET_BASE_RESOURCE_CPU_FALLBACK_CAPABILITY_BRAND: unique symbol;
+
+export interface MarketBaseResourceCpuFallbackCapability {
+  readonly [MARKET_BASE_RESOURCE_CPU_FALLBACK_CAPABILITY_BRAND]: true;
 }
 
 export interface MarketBaseResourcePreflightResult {
@@ -2851,13 +2928,132 @@ function cloneBookForRead(
 function cpuExceeded(
   dependencies: MarketBaseResourcePlanningDependencies,
   cpuStartedAt: number,
+  recorder?: MarketBaseResourceCpuTraceRecorder,
+  phase?: MarketBaseResourceCpuCutPhase,
+  field?: MarketBaseResourceCpuTraceField,
 ): boolean {
+  if (recorder && phase && field) {
+    return observeMarketBaseResourceCpuTrace(
+      recorder,
+      dependencies,
+      field,
+      phase,
+    ).exceeded;
+  }
   const used = dependencies.cpuUsed();
-  return (
+  const exceeded =
     !Number.isFinite(used) ||
     used < cpuStartedAt ||
-    used - cpuStartedAt > MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING
+    used - cpuStartedAt > MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING;
+  if (exceeded && recorder && phase) recorder.trace.cpuCutPhase ??= phase;
+  return exceeded;
+}
+
+function createMarketBaseResourceCpuTraceRecorder(
+  observedAt: number,
+  startedAt: number,
+  currentAtEntry: number,
+): MarketBaseResourceCpuTraceRecorder {
+  return {
+    startedAt,
+    // 入口读数本身已经属于同一个 outer 25 CPU 窗口。即使后续
+    // Game.cpu.getUsed() 回拨，也不能把已观察到的高水位重新打开。
+    lastRawDelta: currentAtEntry - startedAt,
+    trace: {
+      observedAt,
+      cpuAfterOuterSession: null,
+      cpuAfterScopeCore: null,
+      cpuAfterMarketFacts: null,
+      cpuAfterShadowBatch: null,
+      cpuAfterInnerApply: null,
+      cpuCutPhase: null,
+      marketFactsDisposition: "not_reached",
+    },
+  };
+}
+
+function observeMarketBaseResourceCpuHighWater(
+  recorder: MarketBaseResourceCpuTraceRecorder,
+  dependencies: Pick<MarketBaseResourcePlanningDependencies, "cpuUsed">,
+  phase: MarketBaseResourceCpuCutPhase,
+): { exceeded: boolean; rawDelta?: number } {
+  const current = dependencies.cpuUsed();
+  const rawDelta = current - recorder.startedAt;
+  const invalid =
+    !Number.isFinite(current) ||
+    !Number.isFinite(recorder.startedAt) ||
+    current < recorder.startedAt ||
+    !Number.isFinite(rawDelta) ||
+    rawDelta < recorder.lastRawDelta;
+  if (invalid) {
+    recorder.trace.cpuCutPhase ??= phase;
+    return { exceeded: true };
+  }
+  recorder.lastRawDelta = rawDelta;
+  const exceeded =
+    recorder.trace.cpuCutPhase !== null ||
+    rawDelta > MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING;
+  if (exceeded) recorder.trace.cpuCutPhase ??= phase;
+  return { exceeded, rawDelta };
+}
+
+function cloneMarketBaseResourceCpuTrace(
+  recorder: MarketBaseResourceCpuTraceRecorder,
+): MarketBaseResourceCpuTrace {
+  return { ...recorder.trace };
+}
+
+function observeMarketBaseResourceCpuTrace(
+  recorder: MarketBaseResourceCpuTraceRecorder,
+  dependencies: Pick<MarketBaseResourcePlanningDependencies, "cpuUsed">,
+  field: MarketBaseResourceCpuTraceField,
+  phase: MarketBaseResourceCpuCutPhase,
+): { exceeded: boolean; rawDelta?: number } {
+  const observed = observeMarketBaseResourceCpuHighWater(
+    recorder,
+    dependencies,
+    phase,
   );
+  if (observed.rawDelta === undefined) return observed;
+  const rawDelta = observed.rawDelta;
+  const fieldIndex = MARKET_BASE_RESOURCE_CPU_TRACE_FIELDS.indexOf(field);
+  if (
+    fieldIndex > 0 &&
+    MARKET_BASE_RESOURCE_CPU_TRACE_FIELDS.slice(0, fieldIndex).some(
+      (priorField) => recorder.trace[priorField] === null,
+    )
+  ) {
+    // 任一前置里程碑未到达时只更新 raw high-water；绝不制造
+    // non-null after null 的诊断空洞。
+    return observed;
+  }
+  const bounded = Math.min(rawDelta, MARKET_BASE_RESOURCE_CPU_TRACE_MAX);
+  const previous = recorder.trace[field];
+  recorder.trace[field] =
+    previous === null ? bounded : Math.max(previous, bounded);
+  return observed;
+}
+
+function setMarketBaseResourceMarketFactsDisposition(
+  recorder: MarketBaseResourceCpuTraceRecorder | undefined,
+  disposition: MarketBaseResourceMarketFactsDisposition,
+): void {
+  if (recorder) recorder.trace.marketFactsDisposition = disposition;
+}
+
+function beginMarketBaseResourceCpuTraceRead(
+  recorder: MarketBaseResourceCpuTraceRecorder | undefined,
+  readIndex: 1 | 2,
+): void {
+  if (!recorder || readIndex !== 2) return;
+  // 这五个字段描述“当前最终一读”经过的累计 CPU 里程碑。第二读开始后，
+  // 第一读的 facts/batch 数值不能与第二读更晚的 scope-core 数值混排，
+  // 否则 partial second read 会生成非单调 trace 并被 runtime fail-close
+  // 投影整条丢弃。保留 outer/scope，清空尚未由第二读重新到达的后继阶段。
+  recorder.trace.cpuAfterMarketFacts = null;
+  recorder.trace.cpuAfterShadowBatch = null;
+  recorder.trace.cpuAfterInnerApply = null;
+  recorder.trace.marketFactsDisposition = "not_reached";
 }
 
 function blockedFullRead(
@@ -3422,6 +3618,8 @@ function collectFullRead(
   dependencies: MarketBaseResourcePlanningDependencies,
   cursor: string | undefined,
   cpuStartedAt: number,
+  cpuTraceRecorder?: MarketBaseResourceCpuTraceRecorder,
+  readIndex: 1 | 2 = 1,
 ): FullReadResult {
   const scope = dependencies.readScope();
   if (
@@ -3439,9 +3637,19 @@ function collectFullRead(
   if (!scopeIsBounded(scope)) {
     return blockedFullRead(scope, "market_base_scope_limit_or_count_mismatch");
   }
-  if (cpuExceeded(dependencies, cpuStartedAt)) {
+  if (
+    cpuExceeded(
+      dependencies,
+      cpuStartedAt,
+      cpuTraceRecorder,
+      readIndex === 1 ? "scope_core_read1" : "scope_core_read2",
+      "cpuAfterScopeCore",
+    )
+  ) {
     return blockedFullRead(scope, "market_base_cpu_ceiling_exceeded");
   }
+
+  setMarketBaseResourceMarketFactsDisposition(cpuTraceRecorder, "read");
 
   let ownOrders: readonly MarketOrderSnapshot[];
   try {
@@ -3631,7 +3839,17 @@ function collectFullRead(
   let actualTransactionEnergyEvaluations = 0;
   let planningCpuCut = false;
   const planningCpuExceeded = (): boolean => {
-    if (!cpuExceeded(dependencies, cpuStartedAt)) return false;
+    if (
+      !cpuExceeded(
+        dependencies,
+        cpuStartedAt,
+        cpuTraceRecorder,
+        readIndex === 1 ? "shadow_batch_read1" : "shadow_batch_read2",
+        "cpuAfterShadowBatch",
+      )
+    ) {
+      return false;
+    }
     planningCpuCut = true;
     return true;
   };
@@ -3695,8 +3913,12 @@ function collectFullRead(
     candidateIdentityOrderChecks:
       shadowPlanningMetrics.candidateIdentityOrderChecks,
   });
-  const blockedByPlanningCpu = (): FullReadResult =>
-    blockedFullRead(scope, "market_base_cpu_ceiling_exceeded", {
+  const blockedByPlanningCpu = (): FullReadResult => {
+    if (cpuTraceRecorder) {
+      cpuTraceRecorder.trace.cpuCutPhase ??=
+        readIndex === 1 ? "shadow_batch_read1" : "shadow_batch_read2";
+    }
+    return blockedFullRead(scope, "market_base_cpu_ceiling_exceeded", {
       sampledShadowLaneIds: shadow.selected,
       shadowObservations,
       rawOrderCount,
@@ -3705,6 +3927,7 @@ function collectFullRead(
       transactionCostEvaluationBudget,
       ...currentShadowPlanningTelemetry(),
     });
+  };
   for (const entry of scope.entries) {
     const lanes: MarketDirectContinuousLaneInput[] = [];
     const entryPreparedShadowLanes: PreparedShadowPlanningLane[] = [];
@@ -3919,6 +4142,18 @@ function collectFullRead(
     } as MarketDirectContinuousEntryInput);
   }
 
+  if (
+    cpuTraceRecorder &&
+    observeMarketBaseResourceCpuTrace(
+      cpuTraceRecorder,
+      dependencies,
+      "cpuAfterMarketFacts",
+      readIndex === 1 ? "market_facts_read1" : "market_facts_read2",
+    ).exceeded
+  ) {
+    return blockedByPlanningCpu();
+  }
+
   const preObservedLaneIds = new Set(
     shadowObservations.map((observation) => observation.laneId),
   );
@@ -3999,6 +4234,17 @@ function collectFullRead(
         ...currentShadowPlanningTelemetry(),
       },
     );
+  }
+  if (
+    cpuTraceRecorder &&
+    observeMarketBaseResourceCpuTrace(
+      cpuTraceRecorder,
+      dependencies,
+      "cpuAfterShadowBatch",
+      readIndex === 1 ? "shadow_batch_read1" : "shadow_batch_read2",
+    ).exceeded
+  ) {
+    return blockedByPlanningCpu();
   }
   // 批路径与 fresh-capability 回退必须对同一 lane 集合给出相同的稳定
   // 投影顺序，避免 planner entry 顺序成为 lifecycle observation 的隐含输入。
@@ -4168,6 +4414,63 @@ function combinedTwoReadPlanningTelemetry(
   };
 }
 
+function observeMarketBaseResourcePlanningCpu(
+  dependencies: MarketBaseResourcePlanningDependencies,
+  cpuStartedAt: number,
+  recorder: MarketBaseResourceCpuTraceRecorder | undefined,
+  readIndex: 1 | 2,
+  shadowBatchMilestoneReached = true,
+): { cpuUsed: number; exceeded: boolean } {
+  if (recorder) {
+    const phase: MarketBaseResourceCpuCutPhase = shadowBatchMilestoneReached
+      ? readIndex === 1
+        ? "shadow_batch_read1"
+        : "shadow_batch_read2"
+      : recorder.trace.cpuAfterMarketFacts !== null
+        ? readIndex === 1
+          ? "shadow_batch_read1"
+          : "shadow_batch_read2"
+        : recorder.trace.marketFactsDisposition === "read"
+          ? readIndex === 1
+            ? "market_facts_read1"
+            : "market_facts_read2"
+          : readIndex === 1
+            ? "scope_core_read1"
+            : "scope_core_read2";
+    // incomplete full read 只能更新 raw high-water，不能凭一次通用结束读
+    // 伪造尚未到达的 shadow-batch 里程碑，否则会形成 null-hole。
+    const observed = shadowBatchMilestoneReached
+      ? observeMarketBaseResourceCpuTrace(
+          recorder,
+          dependencies,
+          "cpuAfterShadowBatch",
+          phase,
+        )
+      : observeMarketBaseResourceCpuHighWater(
+          recorder,
+          dependencies,
+          phase,
+        );
+    return {
+      cpuUsed: observed.rawDelta ?? recorder.lastRawDelta,
+      exceeded: observed.exceeded,
+    };
+  }
+  const current = dependencies.cpuUsed();
+  const cpuUsed = current - cpuStartedAt;
+  return {
+    cpuUsed:
+      Number.isFinite(cpuUsed) && cpuUsed >= 0
+        ? cpuUsed
+        : MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING,
+    exceeded:
+      !Number.isFinite(current) ||
+      current < cpuStartedAt ||
+      !Number.isFinite(cpuUsed) ||
+      cpuUsed > MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING,
+  };
+}
+
 /**
  * V3 纯双读内核：第一读完整扫描全部 writable lane，仅在真正准备写入时
  * 执行独立第二读。任何 scope/non-selected lane/book/terminal/quota/arbiter
@@ -4177,13 +4480,27 @@ export function planMarketBaseResourceTwoRead(
   dependencies: MarketBaseResourcePlanningDependencies,
   shadowCursor?: string,
   cpuStartedAtOverride?: number,
+  cpuTraceRecorder?: MarketBaseResourceCpuTraceRecorder,
 ): MarketBaseResourceTwoReadPlan {
   const cpuStartedAt = cpuStartedAtOverride ?? dependencies.cpuUsed();
   if (!Number.isFinite(cpuStartedAt)) {
     return emptyResult(0, "market_base_cpu_observation_invalid");
   }
-  const firstRead = collectFullRead(dependencies, shadowCursor, cpuStartedAt);
-  let cpuDelta = dependencies.cpuUsed() - cpuStartedAt;
+  const firstRead = collectFullRead(
+    dependencies,
+    shadowCursor,
+    cpuStartedAt,
+    cpuTraceRecorder,
+    1,
+  );
+  let cpuObservation = observeMarketBaseResourcePlanningCpu(
+    dependencies,
+    cpuStartedAt,
+    cpuTraceRecorder,
+    1,
+    firstRead.complete && Boolean(firstRead.plannerInput),
+  );
+  let cpuDelta = cpuObservation.cpuUsed;
   if (!firstRead.complete || !firstRead.plannerInput) {
     return emptyResult(
       cpuDelta,
@@ -4191,9 +4508,9 @@ export function planMarketBaseResourceTwoRead(
       firstRead,
     );
   }
-  if (cpuExceeded(dependencies, cpuStartedAt)) {
+  if (cpuObservation.exceeded) {
     return emptyResult(
-      dependencies.cpuUsed() - cpuStartedAt,
+      cpuDelta,
       "market_base_cpu_ceiling_exceeded",
       firstRead,
     );
@@ -4205,11 +4522,17 @@ export function planMarketBaseResourceTwoRead(
     };
   }
   const first = planMarketDirectContinuous(firstRead.plannerInput);
-  cpuDelta = dependencies.cpuUsed() - cpuStartedAt;
-  if (cpuExceeded(dependencies, cpuStartedAt)) {
+  cpuObservation = observeMarketBaseResourcePlanningCpu(
+    dependencies,
+    cpuStartedAt,
+    cpuTraceRecorder,
+    1,
+  );
+  cpuDelta = cpuObservation.cpuUsed;
+  if (cpuObservation.exceeded) {
     return {
       ...emptyResult(
-        dependencies.cpuUsed() - cpuStartedAt,
+        cpuDelta,
         "market_base_cpu_ceiling_exceeded",
         firstRead,
       ),
@@ -4243,11 +4566,39 @@ export function planMarketBaseResourceTwoRead(
       cpuUsed: cpuDelta,
     };
   }
-  const secondRead = collectFullRead(dependencies, shadowCursor, cpuStartedAt);
+  const secondRead = collectFullRead(
+    dependencies,
+    shadowCursor,
+    cpuStartedAt,
+    cpuTraceRecorder,
+    2,
+  );
+  cpuObservation = observeMarketBaseResourcePlanningCpu(
+    dependencies,
+    cpuStartedAt,
+    cpuTraceRecorder,
+    2,
+    secondRead.complete && Boolean(secondRead.plannerInput),
+  );
+  cpuDelta = cpuObservation.cpuUsed;
+  if (cpuObservation.exceeded) {
+    return {
+      ...emptyResult(
+        cpuDelta,
+        "market_base_cpu_ceiling_exceeded",
+        firstRead,
+      ),
+      first,
+      secondScopeEvidence: secondRead.scope.scopeEvidence,
+      firstReadEvidence: firstRead.evidence,
+      secondReadEvidence: secondRead.evidence,
+      ...combinedTwoReadPlanningTelemetry(firstRead, secondRead),
+    };
+  }
   if (!secondRead.complete || !secondRead.plannerInput) {
     return {
       ...emptyResult(
-        dependencies.cpuUsed() - cpuStartedAt,
+        cpuDelta,
         secondRead.blocker || "market_base_second_read_incomplete",
         firstRead,
       ),
@@ -4267,7 +4618,7 @@ export function planMarketBaseResourceTwoRead(
   ) {
     return {
       ...emptyResult(
-        dependencies.cpuUsed() - cpuStartedAt,
+        cpuDelta,
         "market_base_second_read_scope_changed",
         firstRead,
       ),
@@ -4286,7 +4637,7 @@ export function planMarketBaseResourceTwoRead(
   ) {
     return {
       ...emptyResult(
-        dependencies.cpuUsed() - cpuStartedAt,
+        cpuDelta,
         "market_base_second_read_changed",
         firstRead,
       ),
@@ -4297,10 +4648,17 @@ export function planMarketBaseResourceTwoRead(
       ...combinedTwoReadPlanningTelemetry(firstRead, secondRead),
     };
   }
-  if (cpuExceeded(dependencies, cpuStartedAt)) {
+  cpuObservation = observeMarketBaseResourcePlanningCpu(
+    dependencies,
+    cpuStartedAt,
+    cpuTraceRecorder,
+    2,
+  );
+  cpuDelta = cpuObservation.cpuUsed;
+  if (cpuObservation.exceeded) {
     return {
       ...emptyResult(
-        dependencies.cpuUsed() - cpuStartedAt,
+        cpuDelta,
         "market_base_cpu_ceiling_exceeded",
         firstRead,
       ),
@@ -4312,7 +4670,28 @@ export function planMarketBaseResourceTwoRead(
     };
   }
   const second = planMarketDirectContinuous(secondRead.plannerInput);
-  cpuDelta = dependencies.cpuUsed() - cpuStartedAt;
+  cpuObservation = observeMarketBaseResourcePlanningCpu(
+    dependencies,
+    cpuStartedAt,
+    cpuTraceRecorder,
+    2,
+  );
+  cpuDelta = cpuObservation.cpuUsed;
+  if (cpuObservation.exceeded) {
+    return {
+      ...emptyResult(
+        cpuDelta,
+        "market_base_cpu_ceiling_exceeded",
+        firstRead,
+      ),
+      first,
+      second,
+      secondScopeEvidence: secondRead.scope.scopeEvidence,
+      firstReadEvidence: firstRead.evidence,
+      secondReadEvidence: secondRead.evidence,
+      ...combinedTwoReadPlanningTelemetry(firstRead, secondRead),
+    };
+  }
   if (!isExactMarketDirectContinuousSecondRead(first, second)) {
     return {
       ...emptyResult(cpuDelta, "market_base_second_read_changed", firstRead),
@@ -4324,13 +4703,11 @@ export function planMarketBaseResourceTwoRead(
       ...combinedTwoReadPlanningTelemetry(firstRead, secondRead),
     };
   }
-  if (!second.selected || cpuExceeded(dependencies, cpuStartedAt)) {
+  if (!second.selected) {
     return {
       ...emptyResult(
-        dependencies.cpuUsed() - cpuStartedAt,
-        second.selected
-          ? "market_base_cpu_ceiling_exceeded"
-          : "market_base_second_read_no_selection",
+        cpuDelta,
+        "market_base_second_read_no_selection",
         firstRead,
       ),
       first,
@@ -4373,7 +4750,7 @@ export function planMarketBaseResourceTwoRead(
     distinctOrderRoomCount: firstRead.distinctOrderRoomCount,
     transactionCostEvaluationBudget: firstRead.transactionCostEvaluationBudget,
     ...combinedTwoReadPlanningTelemetry(firstRead, secondRead),
-    cpuUsed: dependencies.cpuUsed() - cpuStartedAt,
+    cpuUsed: cpuDelta,
   };
 }
 
@@ -4595,6 +4972,31 @@ const marketBaseResourceReadinessRuntimeCapabilities = new WeakMap<
   object,
   MarketBaseResourceReadinessRuntimeCapabilityState
 >();
+
+interface MarketBaseResourceCpuFallbackRecipe {
+  readonly tick: number;
+  readonly baseState: MarketBaseResourceV3RuntimeState;
+  readonly baseSession: MarketBaseResourceRuntimeSession;
+  readonly scopeBeforePlanning: MarketBaseResourceScopeState;
+  readonly ratchetBeforePlanning:
+    | MarketBaseResourcePricingRatchetState
+    | undefined;
+  readonly sampledShadowLaneIds: readonly string[];
+  readonly incompleteObservations: readonly MarketBaseResourceShadowObservation[];
+  consumed: boolean;
+}
+
+const marketBaseResourceCpuFallbackCapabilities = new WeakMap<
+  object,
+  MarketBaseResourceCpuFallbackRecipe
+>();
+
+export interface MarketBaseResourceCpuFallbackResult {
+  state: MarketBaseResourceV3RuntimeState;
+  ledgerRuntimeAnchor: MarketBaseResourceLedgerRuntimeAnchor;
+  readinessRuntimeCapability: MarketBaseResourceReadinessRuntimeCapability;
+  appliedResetCount: number;
+}
 
 interface MarketBaseResourceCanonicalReadinessRuntimeCache {
   readonly tick: number;
@@ -6012,6 +6414,363 @@ function replaceMarketBaseResourceRuntimePricingRatchet(
   };
 }
 
+function boundedCpuFallbackIncompleteObservations(
+  scope: MarketBaseResourceScopeState,
+  sampledShadowLaneIds: readonly string[],
+  observations: readonly MarketBaseResourceShadowObservation[],
+): MarketBaseResourceShadowObservation[] | undefined {
+  if (
+    sampledShadowLaneIds.length >
+      MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE ||
+    new Set(sampledShadowLaneIds).size !== sampledShadowLaneIds.length ||
+    observations.length > MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE ||
+    new Set(observations.map((observation) => observation.laneId)).size !==
+      observations.length
+  ) {
+    return undefined;
+  }
+  const sampled = new Set(sampledShadowLaneIds);
+  const laneById = new Map(
+    scope.laneLifecycles.map((lane) => [lane.laneId, lane]),
+  );
+  if (
+    observations.some((observation) => {
+      const lane = laneById.get(observation.laneId);
+      return (
+        observation.result !== "incomplete" ||
+        !sampled.has(observation.laneId) ||
+        !lane ||
+        (lane.stage !== "shadow" && lane.stage !== "qualified") ||
+        lane.status !== "suspended"
+      );
+    })
+  ) {
+    return undefined;
+  }
+  // 已经处于零周期 Shadow 的 lane 没有任何正向资格可清除。outer CPU
+  // cut 时不为刷新负向 digest 强迫构造第二份 canonical root；一旦存在
+  // 正向周期或 qualified 状态，reset 必须进入 fallback。
+  return observations
+    .filter((observation) => {
+      const lane = laneById.get(observation.laneId)!;
+      return (
+        lane.stage === "qualified" || lane.shadowEvidence.completeCycles > 0
+      );
+    })
+    .map((observation) => ({
+      laneId: observation.laneId,
+      result: "incomplete" as const,
+      ...(observation.blocker
+        ? { blocker: observation.blocker.slice(0, 160) }
+        : {}),
+    }));
+}
+
+function isPureSuspendedShadowCpuFallbackState(
+  state: MarketBaseResourceV3RuntimeState,
+  session: MarketBaseResourceRuntimeSession,
+  scope: MarketBaseResourceScopeState,
+): boolean {
+  const permit = currentV3Permit(session.permitContext.state);
+  if (
+    !permit ||
+    state.readinessAuthorization !== undefined ||
+    state.proposedPermit !== undefined ||
+    state.ledger?.pending !== undefined ||
+    state.ledger?.blocker !== undefined ||
+    scope.laneLifecycles.length !== permit.signedLaneGrants.length
+  ) {
+    return false;
+  }
+  const scopeLaneIds = new Set(
+    scope.laneLifecycles.map((lane) => lane.laneId),
+  );
+  return (
+    scopeLaneIds.size === scope.laneLifecycles.length &&
+    scope.laneLifecycles.every(
+      (lane) =>
+        (lane.stage === "shadow" || lane.stage === "qualified") &&
+        lane.status === "suspended",
+    ) &&
+    permit.signedLaneGrants.every(
+      (grant) =>
+        scopeLaneIds.has(grant.laneId) &&
+        grant.status === "active" &&
+        (grant.stage === "shadow" || grant.stage === "qualified") &&
+        grant.newDealGrant === "suspended",
+    )
+  );
+}
+
+function issueMarketBaseResourceCpuFallbackCapability(
+  state: MarketBaseResourceV3RuntimeState,
+  session: MarketBaseResourceRuntimeSession,
+  scopeBeforePlanning: MarketBaseResourceScopeState,
+  ratchetBeforePlanning: MarketBaseResourcePricingRatchetState | undefined,
+  sampledShadowLaneIds: readonly string[],
+  observations: readonly MarketBaseResourceShadowObservation[],
+  tick: number,
+): MarketBaseResourceCpuFallbackCapability | undefined {
+  const incompleteObservations = boundedCpuFallbackIncompleteObservations(
+    scopeBeforePlanning,
+    sampledShadowLaneIds,
+    observations,
+  );
+  const baseState: MarketBaseResourceV3RuntimeState = {
+    ...state,
+    scope: scopeBeforePlanning,
+    pricingRatchet: ratchetBeforePlanning,
+  };
+  const baseSession: MarketBaseResourceRuntimeSession = {
+    ...session,
+    ...(session.scopeContext
+      ? { scopeContext: { ...session.scopeContext } }
+      : {}),
+    safetyContext: { ...session.safetyContext },
+  };
+  if (
+    !incompleteObservations ||
+    session.ledgerContext.tick !== tick ||
+    session.permitContext.tick !== tick ||
+    baseSession.scopeContext?.snapshot !== scopeBeforePlanning ||
+    marketBaseResourceRuntimeSnapshotMismatch(baseState, baseSession)
+  ) {
+    return undefined;
+  }
+  const capability = Object.freeze({});
+  marketBaseResourceCpuFallbackCapabilities.set(capability, {
+    tick,
+    baseState,
+    baseSession,
+    scopeBeforePlanning,
+    ratchetBeforePlanning,
+    sampledShadowLaneIds: [...sampledShadowLaneIds],
+    incompleteObservations,
+    consumed: false,
+  });
+  return capability as MarketBaseResourceCpuFallbackCapability;
+}
+
+function validMarketBaseResourceCpuTrace(
+  trace: MarketBaseResourceCpuTrace,
+  tick: number,
+  requireCut: boolean,
+): boolean {
+  const cpuValues = [
+    trace.cpuAfterOuterSession,
+    trace.cpuAfterScopeCore,
+    trace.cpuAfterMarketFacts,
+    trace.cpuAfterShadowBatch,
+    trace.cpuAfterInnerApply,
+  ];
+  const values = cpuValues.filter((value): value is number => value !== null);
+  const firstNullIndex = cpuValues.findIndex((value) => value === null);
+  return (
+    trace.observedAt === tick &&
+    (firstNullIndex < 0 ||
+      cpuValues.slice(firstNullIndex).every((value) => value === null)) &&
+    values.every(
+      (value) =>
+        Number.isFinite(value) &&
+        value >= 0 &&
+        value <= MARKET_BASE_RESOURCE_CPU_TRACE_MAX,
+    ) &&
+    values.every((value, index) => index === 0 || value >= values[index - 1]!) &&
+    (!requireCut || trace.cpuCutPhase !== null) &&
+    (trace.cpuCutPhase === null ||
+      [
+        "outer_session",
+        "scope_core_read1",
+        "scope_core_read2",
+        "market_facts_read1",
+        "market_facts_read2",
+        "shadow_batch_read1",
+        "shadow_batch_read2",
+        "inner_apply",
+        "outer_precommit",
+      ].includes(trace.cpuCutPhase)) &&
+    (trace.marketFactsDisposition === "not_reached" ||
+      trace.marketFactsDisposition === "skipped_no_consumer" ||
+      trace.marketFactsDisposition === "read")
+  );
+}
+
+export function observeMarketBaseResourceOuterPrecommitCpu(
+  source: MarketBaseResourceCpuTrace,
+  startedAt: number,
+  current: number,
+  suppliedRawHighWater?: number,
+): {
+  trace: MarketBaseResourceCpuTrace;
+  exceeded: boolean;
+  rawDelta?: number;
+} {
+  const trace = { ...source };
+  const priorValues = [
+    trace.cpuAfterOuterSession,
+    trace.cpuAfterScopeCore,
+    trace.cpuAfterMarketFacts,
+    trace.cpuAfterShadowBatch,
+    trace.cpuAfterInnerApply,
+  ].filter((value): value is number => value !== null);
+  // 即使输入来自旧 bundle 或部分损坏的跨读 trace，也不能用“最后一个”
+  // 较小字段放宽 CPU 回拨检查；历史最大 raw delta 才是单调高水位。
+  const tracePrior = priorValues.length > 0 ? Math.max(...priorValues) : 0;
+  const rawHighWaterProvided = suppliedRawHighWater !== undefined;
+  const rawHighWaterInvalid =
+    rawHighWaterProvided &&
+    (!Number.isFinite(suppliedRawHighWater) ||
+      suppliedRawHighWater! < 0 ||
+      suppliedRawHighWater! < tracePrior);
+  const prior = rawHighWaterProvided ? suppliedRawHighWater! : tracePrior;
+  const rawDelta = current - startedAt;
+  const invalid =
+    rawHighWaterInvalid ||
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(current) ||
+    current < startedAt ||
+    !Number.isFinite(rawDelta) ||
+    rawDelta < prior;
+  // inner 一旦记录任何 first-cut（包含未超过 25 但观测回拨/无效），outer
+  // 只能继续 fail closed，不能被较小的 fresh read “重新打开”。
+  const exceeded =
+    source.cpuCutPhase !== null ||
+    invalid ||
+    rawDelta > MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING;
+  if (exceeded) trace.cpuCutPhase ??= "outer_precommit";
+  return invalid ? { trace, exceeded: true } : { trace, exceeded, rawDelta };
+}
+
+export function marketBaseResourceCpuFallbackRequiresCanonicalCommit(
+  capability: MarketBaseResourceCpuFallbackCapability | undefined,
+  canonicalSource: MarketBaseResourceV3RuntimeState,
+  tick: number,
+): boolean {
+  if (!capability || typeof capability !== "object") return false;
+  const recipe = marketBaseResourceCpuFallbackCapabilities.get(
+    capability as object,
+  );
+  if (!recipe || recipe.consumed || recipe.tick !== tick) return false;
+  if (recipe.incompleteObservations.length > 0) return true;
+  const keys = new Set([
+    ...Object.keys(canonicalSource),
+    ...Object.keys(recipe.baseState),
+  ]);
+  for (const key of keys) {
+    if (key === "lastPlanningSnapshot") continue;
+    if (
+      (canonicalSource as unknown as Record<string, unknown>)[key] !==
+      (recipe.baseState as unknown as Record<string, unknown>)[key]
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function materializeMarketBaseResourceCpuFallback(
+  capability: MarketBaseResourceCpuFallbackCapability | undefined,
+  trace: MarketBaseResourceCpuTrace,
+  blocker:
+    | "market_base_cpu_ceiling_exceeded"
+    | "market_base_v3_returned_anchor_missing_or_invalid" =
+    "market_base_cpu_ceiling_exceeded",
+): MarketBaseResourceCpuFallbackResult | undefined {
+  if (!capability || typeof capability !== "object") return undefined;
+  const recipe = marketBaseResourceCpuFallbackCapabilities.get(
+    capability as object,
+  );
+  if (!recipe || recipe.consumed) return undefined;
+  recipe.consumed = true;
+  if (
+    !validMarketBaseResourceCpuTrace(
+      trace,
+      recipe.tick,
+      blocker === "market_base_cpu_ceiling_exceeded",
+    ) ||
+    marketBaseResourceRuntimeSnapshotMismatch(
+      recipe.baseState,
+      recipe.baseSession,
+    )
+  ) {
+    return undefined;
+  }
+  const resetScope = applyMarketBaseResourceShadowObservations(
+    recipe.scopeBeforePlanning,
+    recipe.tick,
+    recipe.incompleteObservations,
+    undefined,
+  );
+  if (
+    resetScope.shadowCursor !== recipe.scopeBeforePlanning.shadowCursor ||
+    recipe.incompleteObservations.length >
+      MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE
+  ) {
+    return undefined;
+  }
+  const previous = recipe.baseState.lastPlanningSnapshot;
+  const latestCpu = [
+    trace.cpuAfterOuterSession,
+    trace.cpuAfterScopeCore,
+    trace.cpuAfterMarketFacts,
+    trace.cpuAfterShadowBatch,
+    trace.cpuAfterInnerApply,
+  ].reduce<number>(
+    (latest, value) => (value === null ? latest : Math.max(latest, value)),
+    blocker === "market_base_cpu_ceiling_exceeded"
+      ? MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING
+      : 0,
+  );
+  const fallbackSnapshot: MarketBaseResourcePlanningSnapshot = {
+    ...(previous || {
+      observedAt: recipe.tick,
+      sampledShadowLaneIds: [],
+      rawOrderCount: 0,
+      eligibleOrderCount: 0,
+      distinctOrderRoomCount: 0,
+      transactionCostEvaluationBudget: 0,
+      shadowPlannerMode: "none" as const,
+      shadowPlannerInvocationCount: 0,
+      actualTransactionEnergyEvaluations: 0,
+      evaluatedShadowResourceCount: 0,
+      candidateIdentityOrderChecks: 0,
+    }),
+    observedAt: recipe.tick,
+    complete: false,
+    blocker,
+    cpuUsed: latestCpu,
+    cpuTrace: { ...trace },
+  };
+  delete fallbackSnapshot.selected;
+  const fallbackState: MarketBaseResourceV3RuntimeState = {
+    ...recipe.baseState,
+    scope: resetScope,
+    pricingRatchet: recipe.ratchetBeforePlanning,
+    lastPlanningSnapshot: fallbackSnapshot,
+  };
+  const fallbackSession: MarketBaseResourceRuntimeSession = {
+    ...recipe.baseSession,
+    scopeContext:
+      resetScope === recipe.scopeBeforePlanning
+        ? recipe.baseSession.scopeContext
+        : createMarketBaseResourceRuntimeScopeContext(resetScope, true),
+    safetyContext: { ...recipe.baseSession.safetyContext },
+  };
+  const readinessRuntimeCapability =
+    issueMarketBaseResourceReadinessRuntimeCapability(
+      fallbackState,
+      fallbackSession,
+      recipe.tick,
+    );
+  if (!readinessRuntimeCapability) return undefined;
+  return {
+    state: fallbackState,
+    ledgerRuntimeAnchor: fallbackSession.ledgerRuntimeAnchor,
+    readinessRuntimeCapability,
+    appliedResetCount: recipe.incompleteObservations.length,
+  };
+}
+
 function openMarketBaseResourceRuntimeSession(
   state: MarketBaseResourceV3RuntimeState,
   tick: number,
@@ -6312,6 +7071,8 @@ function liveScopeForRead(
   input: MarketBaseResourceAutomationInput,
   dependencies: MarketBaseResourceRuntimeDependencies,
   session: MarketBaseResourceRuntimeSession,
+  cpuTraceRecorder?: MarketBaseResourceCpuTraceRecorder,
+  readIndex: 1 | 2 = 1,
 ): MarketBaseResourcePlanningScopeSnapshot {
   const incomplete = (
     blocker: string,
@@ -6349,6 +7110,7 @@ function liveScopeForRead(
       arbiterState: "blocked",
     },
   });
+  beginMarketBaseResourceCpuTraceRead(cpuTraceRecorder, readIndex);
   try {
     const runtimeMismatch = marketBaseResourceRuntimeSnapshotMismatch(
       state,
@@ -6500,7 +7262,22 @@ function liveScopeForRead(
       );
     }
     const scope = reconciled.state;
+    if (
+      cpuTraceRecorder &&
+      observeMarketBaseResourceCpuTrace(
+        cpuTraceRecorder,
+        dependencies,
+        "cpuAfterScopeCore",
+        readIndex === 1 ? "scope_core_read1" : "scope_core_read2",
+      ).exceeded
+    ) {
+      return incomplete("market_base_cpu_ceiling_exceeded");
+    }
     let candidates: readonly MarketBaseResourceRuntimeCandidate[];
+    // readCandidates 会读取 protection/pricing 等 live market facts；即使
+    // callback 抛错，诊断也必须明确记录“已尝试读取”，不能留在
+    // not_reached。
+    setMarketBaseResourceMarketFactsDisposition(cpuTraceRecorder, "read");
     try {
       // Pricing evidence 的可选分量在 JS 对象中可能以显式 undefined
       // 存在；canonical hash 故意拒绝 undefined。V3 在进入任何 evidence
@@ -7428,6 +8205,7 @@ function reconcilePending(
 function planningSnapshotFrom(
   tick: number,
   plan: MarketBaseResourceTwoReadPlan,
+  cpuTrace?: MarketBaseResourceCpuTrace,
 ): MarketBaseResourcePlanningSnapshot {
   const selected = plan.selected;
   return {
@@ -7465,6 +8243,7 @@ function planningSnapshotFrom(
       plan.actualTransactionEnergyEvaluations,
     evaluatedShadowResourceCount: plan.evaluatedShadowResourceCount,
     candidateIdentityOrderChecks: plan.candidateIdentityOrderChecks,
+    ...(cpuTrace ? { cpuTrace: { ...cpuTrace } } : {}),
   };
 }
 
@@ -7480,7 +8259,18 @@ function sameFullReadComponents(plan: MarketBaseResourceTwoReadPlan): boolean {
 function marketBaseResourceCpuExceededSince(
   dependencies: MarketBaseResourceRuntimeDependencies,
   startedAt: number,
+  recorder?: MarketBaseResourceCpuTraceRecorder,
+  field?: MarketBaseResourceCpuTraceField,
+  phase?: MarketBaseResourceCpuCutPhase,
 ): boolean {
+  if (recorder && field && phase) {
+    return observeMarketBaseResourceCpuTrace(
+      recorder,
+      dependencies,
+      field,
+      phase,
+    ).exceeded;
+  }
   const current = dependencies.cpuUsed();
   return (
     !Number.isFinite(current) ||
@@ -7507,8 +8297,31 @@ function markPlanningCpuExceeded(
   tick: number,
   startedAt: number,
   dependencies: MarketBaseResourceRuntimeDependencies,
+  cpuTraceRecorder?: MarketBaseResourceCpuTraceRecorder,
+  phase?: MarketBaseResourceCpuCutPhase,
 ): void {
-  const current = dependencies.cpuUsed();
+  const field: MarketBaseResourceCpuTraceField =
+    phase === "outer_session"
+      ? "cpuAfterOuterSession"
+      : phase === "scope_core_read1" || phase === "scope_core_read2"
+        ? "cpuAfterScopeCore"
+        : phase === "market_facts_read1" || phase === "market_facts_read2"
+          ? "cpuAfterMarketFacts"
+          : phase === "shadow_batch_read1" ||
+              phase === "shadow_batch_read2"
+            ? "cpuAfterShadowBatch"
+            : "cpuAfterInnerApply";
+  const observed =
+    cpuTraceRecorder && phase
+      ? observeMarketBaseResourceCpuTrace(
+          cpuTraceRecorder,
+          dependencies,
+          field,
+          phase,
+        )
+      : undefined;
+  const current = observed ? undefined : dependencies.cpuUsed();
+  const observedDelta = cpuTraceRecorder?.lastRawDelta;
   const previous = state.lastPlanningSnapshot;
   const currentAttempt = previous?.observedAt === tick ? previous : undefined;
   state.lastPlanningSnapshot = {
@@ -7537,9 +8350,14 @@ function markPlanningCpuExceeded(
     complete: false,
     blocker: "market_base_cpu_ceiling_exceeded",
     cpuUsed:
-      Number.isFinite(current) && current >= startedAt
-        ? current - startedAt
+      observedDelta !== undefined
+        ? observedDelta
+        : Number.isFinite(current) && current! >= startedAt
+          ? current! - startedAt
         : MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING,
+    ...(cpuTraceRecorder
+      ? { cpuTrace: cloneMarketBaseResourceCpuTrace(cpuTraceRecorder) }
+      : {}),
   };
 }
 
@@ -7557,6 +8375,10 @@ export function runMarketBaseResourceAutomation(
   const rejectedByReason: Record<string, number> = {};
   let writes = 0;
   let runtimeSession: MarketBaseResourceRuntimeSession | undefined;
+  let cpuTraceRecorder: MarketBaseResourceCpuTraceRecorder | undefined;
+  let cpuFallbackCapability:
+    | MarketBaseResourceCpuFallbackCapability
+    | undefined;
   const rejectOnce = (reason: string): void => {
     incrementReason(rejectedByReason, reason);
   };
@@ -7576,6 +8398,13 @@ export function runMarketBaseResourceAutomation(
       writes,
       planComplete,
       state,
+      ...(cpuTraceRecorder
+        ? {
+            cpuTrace: cloneMarketBaseResourceCpuTrace(cpuTraceRecorder),
+            cpuRawHighWater: cpuTraceRecorder.lastRawDelta,
+          }
+        : {}),
+      ...(cpuFallbackCapability ? { cpuFallbackCapability } : {}),
       ...(anchoredSession
         ? {
             ledgerRuntimeAnchor: anchoredSession.ledgerRuntimeAnchor,
@@ -7599,6 +8428,27 @@ export function runMarketBaseResourceAutomation(
     planningCpuStartedAt > cpuObservedAtEntry
   ) {
     rejectOnce("market_base_cpu_observation_invalid");
+    return finish(false);
+  }
+  cpuTraceRecorder = createMarketBaseResourceCpuTraceRecorder(
+    input.tick,
+    planningCpuStartedAt,
+    cpuObservedAtEntry,
+  );
+  if (
+    cpuTraceRecorder.lastRawDelta >
+    MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING
+  ) {
+    cpuTraceRecorder.trace.cpuCutPhase = "outer_session";
+    markPlanningCpuExceeded(
+      state,
+      input.tick,
+      planningCpuStartedAt,
+      dependencies,
+      cpuTraceRecorder,
+      "outer_session",
+    );
+    rejectOnce("market_base_cpu_ceiling_exceeded");
     return finish(false);
   }
   let preflightRuntimeAnchor: MarketBaseResourceLedgerRuntimeAnchor | undefined;
@@ -7661,6 +8511,26 @@ export function runMarketBaseResourceAutomation(
     : undefined;
 
   if (
+    observeMarketBaseResourceCpuTrace(
+      cpuTraceRecorder,
+      dependencies,
+      "cpuAfterOuterSession",
+      "outer_session",
+    ).exceeded
+  ) {
+    markPlanningCpuExceeded(
+      state,
+      input.tick,
+      planningCpuStartedAt,
+      dependencies,
+      cpuTraceRecorder,
+      "outer_session",
+    );
+    rejectOnce("market_base_cpu_ceiling_exceeded");
+    return finish(false);
+  }
+
+  if (
     !input.fullPlanningTick ||
     input.config.mode !== "direct" ||
     input.emergencyStop ||
@@ -7693,12 +8563,22 @@ export function runMarketBaseResourceAutomation(
     return finish(false);
   }
 
-  if (marketBaseResourceCpuExceededSince(dependencies, planningCpuStartedAt)) {
+  if (
+    marketBaseResourceCpuExceededSince(
+      dependencies,
+      planningCpuStartedAt,
+      cpuTraceRecorder,
+      "cpuAfterOuterSession",
+      "outer_session",
+    )
+  ) {
     markPlanningCpuExceeded(
       state,
       input.tick,
       planningCpuStartedAt,
       dependencies,
+      cpuTraceRecorder,
+      "outer_session",
     );
     rejectOnce("market_base_cpu_ceiling_exceeded");
     return finish(false);
@@ -7723,10 +8603,20 @@ export function runMarketBaseResourceAutomation(
       ratchetBeforePlanning,
     );
   };
+  let liveScopeReadCount = 0;
   const plan = planMarketBaseResourceTwoRead(
     {
-      readScope: () =>
-        liveScopeForRead(state, input, dependencies, runtimeSession),
+      readScope: () => {
+        liveScopeReadCount += 1;
+        return liveScopeForRead(
+          state,
+          input,
+          dependencies,
+          runtimeSession,
+          cpuTraceRecorder,
+          liveScopeReadCount >= 2 ? 2 : 1,
+        );
+      },
       readCurrentBuyOrders: dependencies.readCurrentBuyOrders,
       readOwnOrders: dependencies.readOwnOrders,
       readTerminal: dependencies.readTerminal,
@@ -7735,8 +8625,13 @@ export function runMarketBaseResourceAutomation(
     },
     scopeBeforePlanning.shadowCursor,
     planningCpuStartedAt,
+    cpuTraceRecorder,
   );
-  state.lastPlanningSnapshot = planningSnapshotFrom(input.tick, plan);
+  state.lastPlanningSnapshot = planningSnapshotFrom(
+    input.tick,
+    plan,
+    cloneMarketBaseResourceCpuTrace(cpuTraceRecorder),
+  );
 
   const runtimeMismatchAfterPlan = marketBaseResourceRuntimeSnapshotMismatch(
     state,
@@ -7748,10 +8643,68 @@ export function runMarketBaseResourceAutomation(
     rejectOnce(runtimeMismatchAfterPlan);
     return finish(false);
   }
+  const afterPlanCpuPhase: MarketBaseResourceCpuCutPhase =
+    plan.secondScopeEvidence !== undefined ||
+    plan.secondReadEvidence !== undefined
+      ? "shadow_batch_read2"
+      : "shadow_batch_read1";
   const cpuExceededAfterPlan = marketBaseResourceCpuExceededSince(
     dependencies,
     planningCpuStartedAt,
+    cpuTraceRecorder,
+    "cpuAfterShadowBatch",
+    afterPlanCpuPhase,
   );
+  const pureShadowFallbackEligible =
+    !plan.selected &&
+    isPureSuspendedShadowCpuFallbackState(
+      state,
+      runtimeSession,
+      scopeBeforePlanning,
+    );
+  if (pureShadowFallbackEligible) {
+    // capability 必须在 incomplete/CPU early return 之前铸造。否则 99-cycle
+    // 或 qualified lane 已确定的 incomplete reset 会随 outer 全 root 一同
+    // 被 CPU gate 丢弃，canonical 仍残留旧正向资格。
+    cpuFallbackCapability = issueMarketBaseResourceCpuFallbackCapability(
+      state,
+      runtimeSession,
+      scopeBeforePlanning,
+      ratchetBeforePlanning,
+      plan.sampledShadowLaneIds,
+      plan.shadowObservations.filter(
+        (observation) => observation.result === "incomplete",
+      ),
+      input.tick,
+    );
+    if (!cpuFallbackCapability) {
+      rollbackPlanningState(plan.shadowObservations);
+      if (cpuExceededAfterPlan) {
+        markPlanningCpuExceeded(
+          state,
+          input.tick,
+          planningCpuStartedAt,
+          dependencies,
+          cpuTraceRecorder,
+          plan.secondScopeEvidence !== undefined ||
+          plan.secondReadEvidence !== undefined
+            ? "shadow_batch_read2"
+            : "shadow_batch_read1",
+        );
+      } else {
+        state.lastPlanningSnapshot = {
+          ...state.lastPlanningSnapshot!,
+          observedAt: input.tick,
+          complete: false,
+          blocker: "market_base_cpu_fallback_capability_unavailable",
+          cpuTrace: cloneMarketBaseResourceCpuTrace(cpuTraceRecorder),
+        };
+        delete state.lastPlanningSnapshot.selected;
+      }
+      rejectOnce("market_base_cpu_fallback_capability_unavailable");
+      return finish(false);
+    }
+  }
   if (!plan.complete || cpuExceededAfterPlan) {
     // 已确定的 lane-local incomplete 必须立即清零旧 99/qualified 证据；
     // shared/second-read/CPU blocker 不能吞掉 reset。完整观测和 cursor
@@ -7763,6 +8716,11 @@ export function runMarketBaseResourceAutomation(
         input.tick,
         planningCpuStartedAt,
         dependencies,
+        cpuTraceRecorder,
+        plan.secondScopeEvidence !== undefined ||
+        plan.secondReadEvidence !== undefined
+          ? "shadow_batch_read2"
+          : "shadow_batch_read1",
       );
     }
     const reason =
@@ -7790,13 +8748,23 @@ export function runMarketBaseResourceAutomation(
     rejectOnce("market_base_v3_pricing_ratchet_candidate_invalid");
     return finish(false);
   }
-  if (marketBaseResourceCpuExceededSince(dependencies, planningCpuStartedAt)) {
+  if (
+    marketBaseResourceCpuExceededSince(
+      dependencies,
+      planningCpuStartedAt,
+      cpuTraceRecorder,
+      "cpuAfterInnerApply",
+      "inner_apply",
+    )
+  ) {
     rollbackPlanningState(plan.shadowObservations);
     markPlanningCpuExceeded(
       state,
       input.tick,
       planningCpuStartedAt,
       dependencies,
+      cpuTraceRecorder,
+      "inner_apply",
     );
     rejectOnce("market_base_cpu_ceiling_exceeded");
     return finish(false);
@@ -7807,6 +8775,40 @@ export function runMarketBaseResourceAutomation(
     runtimeSession,
     nextRatchet,
   );
+  if (
+    observeMarketBaseResourceCpuTrace(
+      cpuTraceRecorder,
+      dependencies,
+      "cpuAfterInnerApply",
+      "inner_apply",
+    ).exceeded
+  ) {
+    const trace = cloneMarketBaseResourceCpuTrace(cpuTraceRecorder);
+    // outer 还必须把完整候选 root 私下注册后再做一次 fresh CPU read。
+    // 因此这里不能提前消费一次性 fallback capability；先把 working state
+    // 回滚到只含已确定 incomplete reset 的安全形态，并让 outer 在最终
+    // gate 前物化独立的 reset-only state/session/capability。
+    rollbackPlanningState(plan.shadowObservations);
+    state.lastPlanningSnapshot = {
+      ...state.lastPlanningSnapshot!,
+      observedAt: input.tick,
+      complete: false,
+      blocker: "market_base_cpu_ceiling_exceeded",
+      cpuUsed: Math.max(
+        MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING,
+        cpuTraceRecorder.lastRawDelta,
+      ),
+      cpuTrace: trace,
+    };
+    delete state.lastPlanningSnapshot.selected;
+    rejectOnce("market_base_cpu_ceiling_exceeded");
+    return finish(false);
+  }
+  state.lastPlanningSnapshot = {
+    ...state.lastPlanningSnapshot!,
+    cpuUsed: cpuTraceRecorder.lastRawDelta,
+    cpuTrace: cloneMarketBaseResourceCpuTrace(cpuTraceRecorder),
+  };
   const selected = plan.selected;
   if (!selected) {
     return finish(true);
@@ -7918,13 +8920,23 @@ export function runMarketBaseResourceAutomation(
     rejectOnce("market_base_v3_execution_evidence_incomplete");
     return finish(false);
   }
-  if (marketBaseResourceCpuExceededSince(dependencies, planningCpuStartedAt)) {
+  if (
+    marketBaseResourceCpuExceededSince(
+      dependencies,
+      planningCpuStartedAt,
+      cpuTraceRecorder,
+      "cpuAfterInnerApply",
+      "inner_apply",
+    )
+  ) {
     rollbackPlanningState(plan.shadowObservations);
     markPlanningCpuExceeded(
       state,
       input.tick,
       planningCpuStartedAt,
       dependencies,
+      cpuTraceRecorder,
+      "inner_apply",
     );
     rejectOnce("market_base_cpu_ceiling_exceeded");
     return finish(false);
@@ -8041,7 +9053,15 @@ export function runMarketBaseResourceAutomation(
   }
   actions.push(`market-base-v3-prepared:${requestId}`);
 
-  if (marketBaseResourceCpuExceededSince(dependencies, planningCpuStartedAt)) {
+  if (
+    marketBaseResourceCpuExceededSince(
+      dependencies,
+      planningCpuStartedAt,
+      cpuTraceRecorder,
+      "cpuAfterInnerApply",
+      "inner_apply",
+    )
+  ) {
     state.ledger = ledgerBeforePrepare;
     runtimeSession.ledgerRuntimeAnchor = runtimeAnchorBeforePrepare;
     runtimeSession.ledgerContext = runtimeContextBeforePrepare;
@@ -8052,6 +9072,8 @@ export function runMarketBaseResourceAutomation(
       input.tick,
       planningCpuStartedAt,
       dependencies,
+      cpuTraceRecorder,
+      "inner_apply",
     );
     rejectOnce("market_base_cpu_ceiling_exceeded");
     actions.push(`market-base-v3-prepare-rolled-back-cpu:${requestId}`);
@@ -8123,12 +9145,22 @@ export function runMarketBaseResourceAutomation(
 
   // commit 本身也计入同一个 25 CPU 窗口。此后 pending 已成为 canonical
   // WAL，任何停止都只能保守保留，交由下一 tick frozen preflight 收敛。
-  if (marketBaseResourceCpuExceededSince(dependencies, planningCpuStartedAt)) {
+  if (
+    marketBaseResourceCpuExceededSince(
+      dependencies,
+      planningCpuStartedAt,
+      cpuTraceRecorder,
+      "cpuAfterInnerApply",
+      "inner_apply",
+    )
+  ) {
     markPlanningCpuExceeded(
       state,
       input.tick,
       planningCpuStartedAt,
       dependencies,
+      cpuTraceRecorder,
+      "inner_apply",
     );
     rejectOnce("market_base_cpu_ceiling_exceeded");
     actions.push(`market-base-v3-committed-pending-cpu:${requestId}`);
@@ -8194,7 +9226,15 @@ export function runMarketBaseResourceAutomation(
     return finish(false);
   }
 
-  if (marketBaseResourceCpuExceededSince(dependencies, planningCpuStartedAt)) {
+  if (
+    marketBaseResourceCpuExceededSince(
+      dependencies,
+      planningCpuStartedAt,
+      cpuTraceRecorder,
+      "cpuAfterInnerApply",
+      "inner_apply",
+    )
+  ) {
     try {
       dependencies.releasePrepared(requestId);
     } catch {
@@ -8206,6 +9246,8 @@ export function runMarketBaseResourceAutomation(
       input.tick,
       planningCpuStartedAt,
       dependencies,
+      cpuTraceRecorder,
+      "inner_apply",
     );
     rejectOnce("market_base_cpu_ceiling_exceeded");
     actions.push(`market-base-v3-claim-released-pending-cpu:${requestId}`);

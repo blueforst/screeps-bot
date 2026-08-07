@@ -56,8 +56,11 @@ import {
   defaultMarketBaseResourceRuntimeDependencies,
   deriveMarketBaseResourceCanonicalReadinessAuthorization,
   marketBaseResourceActivationAnchorSelfHash,
+  marketBaseResourceCpuFallbackRequiresCanonicalCommit,
   marketBaseResourceOperatorAuthorizationFingerprint,
   marketBaseResourceOuterScopeCommitment,
+  materializeMarketBaseResourceCpuFallback,
+  observeMarketBaseResourceOuterPrecommitCpu,
   readLiveMarketBaseAccountIdentity,
   registerMarketBaseResourceCanonicalReadinessRuntimeCapability,
   reconcileLiveMarketBaseResourceScope,
@@ -70,6 +73,10 @@ import {
   validateMarketBaseResourceReadinessRuntimeCapability,
   validateMarketBaseResourcePricingRatchetState,
   type MarketBaseResourceAutomationResult,
+  type MarketBaseResourceCpuCutPhase,
+  type MarketBaseResourceCpuFallbackResult,
+  type MarketBaseResourceCpuTrace,
+  type MarketBaseResourceMarketFactsDisposition,
   type MarketBaseResourcePermitProposal,
   type MarketBaseResourcePricingRatchetState,
   type MarketBaseResourceReadinessRuntimeCapability,
@@ -2589,6 +2596,7 @@ interface RunContext {
   stagingAmount: number;
   reservationAmount: number;
   marketDomainActivityValid: boolean;
+  marketBaseResourceCpuTrace?: MarketBaseResourceCpuTrace;
 }
 
 type OperatorResult =
@@ -3661,6 +3669,20 @@ function mergeDirectResult(
     context.rejectedByReason[reason] =
       (context.rejectedByReason[reason] || 0) + nonNegativeInteger(count);
   }
+}
+
+function isMarketBaseResourceAutomationResult(
+  result:
+    | ReturnType<typeof runDirectAutomationPlanning>
+    | MarketDirectContinuousResult
+    | MarketBaseResourceAutomationResult,
+): result is MarketBaseResourceAutomationResult {
+  return (
+    "state" in result &&
+    isPlainRecord(result.state) &&
+    result.state.schemaVersion === 3 &&
+    isPlainRecord(result.state.catalog)
+  );
 }
 
 function marketBaseResourceCanonicalStateChanged(
@@ -5749,10 +5771,99 @@ function updateShadowCount(
   context.runtime.lastShadowCycleTick = Game.time;
 }
 
+const MARKET_BASE_RESOURCE_CPU_CUT_PHASES: readonly MarketBaseResourceCpuCutPhase[] = [
+  "outer_session",
+  "scope_core_read1",
+  "scope_core_read2",
+  "market_facts_read1",
+  "market_facts_read2",
+  "shadow_batch_read1",
+  "shadow_batch_read2",
+  "inner_apply",
+  "outer_precommit",
+];
+const MARKET_BASE_RESOURCE_MARKET_FACTS_DISPOSITIONS: readonly MarketBaseResourceMarketFactsDisposition[] = [
+  "not_reached",
+  "skipped_no_consumer",
+  "read",
+];
+
+function boundedMarketBaseResourceCpuTrace(
+  value: unknown,
+): MarketBaseResourceCpuTrace | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const boundedCpu = (field: string): number | null | undefined => {
+    const candidate = value[field];
+    if (candidate === null) return null;
+    return typeof candidate === "number" &&
+      Number.isFinite(candidate) &&
+      candidate >= 0 &&
+      candidate <= 100
+      ? candidate
+      : undefined;
+  };
+  const cpuAfterOuterSession = boundedCpu("cpuAfterOuterSession");
+  const cpuAfterScopeCore = boundedCpu("cpuAfterScopeCore");
+  const cpuAfterMarketFacts = boundedCpu("cpuAfterMarketFacts");
+  const cpuAfterShadowBatch = boundedCpu("cpuAfterShadowBatch");
+  const cpuAfterInnerApply = boundedCpu("cpuAfterInnerApply");
+  const cpuValues = [
+    cpuAfterOuterSession,
+    cpuAfterScopeCore,
+    cpuAfterMarketFacts,
+    cpuAfterShadowBatch,
+    cpuAfterInnerApply,
+  ];
+  const observedValues = cpuValues.filter(
+    (candidate): candidate is number => typeof candidate === "number",
+  );
+  const firstNullIndex = cpuValues.findIndex((candidate) => candidate === null);
+  const cpuCutPhase = value.cpuCutPhase;
+  const marketFactsDisposition = value.marketFactsDisposition;
+  if (
+    !Number.isSafeInteger(value.observedAt) ||
+    (value.observedAt as number) < 0 ||
+    (value.observedAt as number) > Game.time ||
+    cpuValues.some((candidate) => candidate === undefined) ||
+    (firstNullIndex >= 0 &&
+      cpuValues
+        .slice(firstNullIndex)
+        .some((candidate) => candidate !== null)) ||
+    observedValues.some(
+      (candidate, index) =>
+        index > 0 && candidate < observedValues[index - 1]!,
+    ) ||
+    (cpuCutPhase !== null &&
+      !MARKET_BASE_RESOURCE_CPU_CUT_PHASES.includes(
+        cpuCutPhase as MarketBaseResourceCpuCutPhase,
+      )) ||
+    !MARKET_BASE_RESOURCE_MARKET_FACTS_DISPOSITIONS.includes(
+      marketFactsDisposition as MarketBaseResourceMarketFactsDisposition,
+    )
+  ) {
+    return undefined;
+  }
+  return {
+    observedAt: value.observedAt as number,
+    cpuAfterOuterSession: cpuAfterOuterSession!,
+    cpuAfterScopeCore: cpuAfterScopeCore!,
+    cpuAfterMarketFacts: cpuAfterMarketFacts!,
+    cpuAfterShadowBatch: cpuAfterShadowBatch!,
+    cpuAfterInnerApply: cpuAfterInnerApply!,
+    cpuCutPhase: cpuCutPhase as MarketBaseResourceCpuCutPhase | null,
+    marketFactsDisposition:
+      marketFactsDisposition as MarketBaseResourceMarketFactsDisposition,
+  };
+}
+
 function projectContinuousDirectRuntimeStatus(
   state: MarketDirectContinuousAutomationState,
   strategyActive: boolean,
+  marketBaseResourceCpuTrace?: unknown,
 ): unknown {
+  const boundedCpuTrace = boundedMarketBaseResourceCpuTrace(
+    marketBaseResourceCpuTrace,
+  );
   const lifecycleByEntry: Record<string, unknown> = {};
   for (const [entryId, lifecycle] of Object.entries(
     state.lifecycleByEntry,
@@ -5834,6 +5945,13 @@ function projectContinuousDirectRuntimeStatus(
       quarantinedCount: Object.keys(state.quarantinedPendingDirectDeals).length,
     },
     lastPlanningSnapshot: state.lastPlanningSnapshot,
+    ...(boundedCpuTrace
+      ? {
+          baseResourceV3CpuTrace: {
+            ...boundedCpuTrace,
+          },
+        }
+      : {}),
   };
 }
 
@@ -5944,6 +6062,11 @@ function projectRuntime(
   context.runtime.canaryLock = context.data.canaryLock;
   const directState = context.data.directAutomation!;
   if (isContinuousDirectState(directState)) {
+    const priorDirectRuntime = isPlainRecord(context.runtime.direct)
+      ? context.runtime.direct
+      : undefined;
+    const priorBaseResourceCpuTrace =
+      priorDirectRuntime?.baseResourceV3CpuTrace;
     (
       context.runtime as unknown as {
         direct?: unknown;
@@ -5951,6 +6074,7 @@ function projectRuntime(
     ).direct = projectContinuousDirectRuntimeStatus(
       directState,
       usesDirectStrategy(context.config),
+      context.marketBaseResourceCpuTrace ?? priorBaseResourceCpuTrace,
     );
   } else {
     const directSnapshotStatus = directAutomationSnapshotStatus(
@@ -6374,26 +6498,56 @@ export function runMarketSaleAutomation(
             candidates: toDirectRuntimeCandidates(context, candidates),
             makerExposurePresent: makerExposurePresent(context),
           });
+    const v3DirectResult = isMarketBaseResourceAutomationResult(directResult)
+      ? directResult
+      : undefined;
+    // inner 返回对象只在此处读取一次。后续私有 root 注册与 fresh CPU
+    // callback 都不得再从可变返回对象读取 CPU 证据，避免 TOCTOU 重开门。
+    const v3DirectCpuTraceSnapshot = v3DirectResult?.cpuTrace
+      ? Object.freeze({
+          observedAt: v3DirectResult.cpuTrace.observedAt,
+          cpuAfterOuterSession:
+            v3DirectResult.cpuTrace.cpuAfterOuterSession,
+          cpuAfterScopeCore: v3DirectResult.cpuTrace.cpuAfterScopeCore,
+          cpuAfterMarketFacts: v3DirectResult.cpuTrace.cpuAfterMarketFacts,
+          cpuAfterShadowBatch: v3DirectResult.cpuTrace.cpuAfterShadowBatch,
+          cpuAfterInnerApply: v3DirectResult.cpuTrace.cpuAfterInnerApply,
+          cpuCutPhase: v3DirectResult.cpuTrace.cpuCutPhase,
+          marketFactsDisposition:
+            v3DirectResult.cpuTrace.marketFactsDisposition,
+        })
+      : undefined;
+    const v3DirectCpuRawHighWaterSnapshot =
+      v3DirectResult?.cpuRawHighWater;
     context.shadowPlanComplete = directResult.planComplete;
+    if (
+      "cpuTrace" in directResult &&
+      directResult.cpuTrace &&
+      planningCycleCurrent &&
+      lifecyclePhaseReady
+    ) {
+      context.marketBaseResourceCpuTrace = {
+        ...directResult.cpuTrace,
+      };
+    }
     mergeDirectResult(context, directResult);
     if (
       preparedV3RootCommitted &&
       preparedV3CanonicalRoot &&
-      "state" in directResult &&
-      directResult.state.schemaVersion === 3 &&
-      "catalog" in directResult.state
+      v3DirectResult
     ) {
-      commitReturnedMarketBaseResourceState(
+      const returnedCommitted = commitReturnedMarketBaseResourceState(
         context,
         preparedV3CanonicalRoot,
-        directResult.state,
-        "ledgerRuntimeAnchor" in directResult
-          ? directResult.ledgerRuntimeAnchor
-          : undefined,
-        "readinessRuntimeCapability" in directResult
-          ? directResult.readinessRuntimeCapability
-          : preparedV3ReadinessRuntimeCapability,
+        v3DirectResult.state,
+        v3DirectResult.ledgerRuntimeAnchor,
+        v3DirectResult.readinessRuntimeCapability ??
+          preparedV3ReadinessRuntimeCapability,
       );
+      if (!returnedCommitted) {
+        context.shadowPlanComplete = false;
+        reject(context, "market_base_v3_returned_commit_failed");
+      }
     }
     const v3ReturnedCanonicalConflict = Boolean(
       baseResourceV3.activeV3Successor &&
@@ -6412,61 +6566,60 @@ export function runMarketSaleAutomation(
       !preparedV3RootCommitted &&
       isContinuousDirectState(directState) &&
       v3CanonicalStateBeforePlanning &&
-      "state" in directResult &&
-      directResult.state.schemaVersion === 3 &&
-      "catalog" in directResult.state &&
-      marketBaseResourceCanonicalStateChanged(
-        v3CanonicalStateBeforePlanning,
-        directResult.state,
-      )
+      v3DirectCpuTraceSnapshot &&
+      planningCycleCurrent &&
+      lifecyclePhaseReady
     ) {
       if (!v3ReturnedCanonicalConflict) {
-        const activation = marketBaseResourceActivationState(
-          context.data,
-          baseResourceV3.state,
-        );
-        const returnedLedgerRuntimeAnchor =
-          "ledgerRuntimeAnchor" in directResult
-            ? directResult.ledgerRuntimeAnchor
-            : undefined;
-        const returnedRuntimeCapability =
-          "readinessRuntimeCapability" in directResult
-            ? directResult.readinessRuntimeCapability
-            : undefined;
-        const returnedRuntimeAuthenticated =
-          returnedLedgerRuntimeAnchor &&
-          validateMarketBaseResourceReadinessRuntimeCapability(
-            returnedRuntimeCapability,
-            directResult.state,
-            Game.time,
-            returnedLedgerRuntimeAnchor,
-          );
-        const nextTrustedFloors = synchronizeMarketBaseTrustedFloors(
-          context.data.trustedFloors,
-          directResult.state.pricingRatchet!,
-          Game.time,
-        );
-        const nextAnchor =
-          activation.latched &&
-          activation.anchor &&
-          directResult.state.scope &&
-          returnedLedgerRuntimeAnchor &&
-          returnedRuntimeAuthenticated
-            ? advanceMarketBaseResourceActivationAnchor(
-                activation.anchor,
-                directResult.state,
-                nextTrustedFloors,
-                Game.time,
-                returnedLedgerRuntimeAnchor,
-              )
-            : undefined;
-        const nextDirect = {
-          ...directState,
-          baseResourceV3: directResult.state,
+        type ReturnedRootCandidate = {
+          data: MarketSaleDataState;
+          state: MarketBaseResourceV3RuntimeState;
         };
-        if (!nextAnchor) {
-          reject(context, "market_base_v3_returned_anchor_missing_or_invalid");
-        } else {
+        const prepareReturnedRootCandidate = (
+          candidateState: MarketBaseResourceV3RuntimeState,
+          ledgerRuntimeAnchor:
+            | MarketBaseResourceLedgerRuntimeAnchor
+            | undefined,
+          runtimeCapability:
+            | MarketBaseResourceReadinessRuntimeCapability
+            | undefined,
+        ): ReturnedRootCandidate | undefined => {
+          const activation = marketBaseResourceActivationState(
+            context.data,
+            baseResourceV3.state,
+          );
+          const runtimeAuthenticated =
+            ledgerRuntimeAnchor &&
+            validateMarketBaseResourceReadinessRuntimeCapability(
+              runtimeCapability,
+              candidateState,
+              Game.time,
+              ledgerRuntimeAnchor,
+            );
+          const nextTrustedFloors = synchronizeMarketBaseTrustedFloors(
+            context.data.trustedFloors,
+            candidateState.pricingRatchet!,
+            Game.time,
+          );
+          const nextAnchor =
+            activation.latched &&
+            activation.anchor &&
+            candidateState.scope &&
+            ledgerRuntimeAnchor &&
+            runtimeAuthenticated
+              ? advanceMarketBaseResourceActivationAnchor(
+                  activation.anchor,
+                  candidateState,
+                  nextTrustedFloors,
+                  Game.time,
+                  ledgerRuntimeAnchor,
+                )
+              : undefined;
+          if (!nextAnchor) return undefined;
+          const nextDirect = {
+            ...directState,
+            baseResourceV3: candidateState,
+          };
           const nextData: MarketSaleDataState = {
             ...context.data,
             trustedFloors: nextTrustedFloors,
@@ -6479,19 +6632,143 @@ export function runMarketSaleAutomation(
           const registered = registerMarketBaseResourceCanonicalRoot(
             nextData,
             context.config.mode,
-            returnedRuntimeCapability,
+            runtimeCapability,
           );
           if (
-            (!directResult.state.readinessAuthorization &&
+            (!candidateState.readinessAuthorization &&
               registered.reason !== "missing") ||
-            (directResult.state.readinessAuthorization && !registered.ok)
+            (candidateState.readinessAuthorization && !registered.ok)
           ) {
+            return undefined;
+          }
+          return { data: nextData, state: candidateState };
+        };
+
+        const returnedStateChanged =
+          marketBaseResourceCanonicalStateChanged(
+            v3CanonicalStateBeforePlanning,
+            v3DirectResult.state,
+          );
+        const returnedLedgerRuntimeAnchor =
+          v3DirectResult.ledgerRuntimeAnchor;
+        const returnedRuntimeCapability =
+          v3DirectResult.readinessRuntimeCapability;
+        const fallbackCapability = v3DirectResult.cpuFallbackCapability;
+        const fallbackCommitRequired =
+          marketBaseResourceCpuFallbackRequiresCanonicalCommit(
+            fallbackCapability,
+            v3CanonicalStateBeforePlanning,
+            Game.time,
+          );
+        const fullRoot = returnedStateChanged
+          ? prepareReturnedRootCandidate(
+              v3DirectResult.state,
+              returnedLedgerRuntimeAnchor,
+              returnedRuntimeCapability,
+            )
+          : undefined;
+        const fullRootPreparationFailed =
+          returnedStateChanged && !fullRoot;
+        if (fullRootPreparationFailed) {
+          context.shadowPlanComplete = false;
+          reject(context, "market_base_v3_returned_anchor_missing_or_invalid");
+        }
+        let fallback: MarketBaseResourceCpuFallbackResult | undefined;
+        let fallbackRoot: ReturnedRootCandidate | undefined;
+        if (fallbackCommitRequired) {
+          const fallbackForFullRootFailure =
+            fullRootPreparationFailed &&
+            v3DirectCpuTraceSnapshot.cpuCutPhase === null;
+          const fallbackBlocker = fallbackForFullRootFailure
+            ? ("market_base_v3_returned_anchor_missing_or_invalid" as const)
+            : ("market_base_cpu_ceiling_exceeded" as const);
+          fallback = materializeMarketBaseResourceCpuFallback(
+            fallbackCapability,
+            fallbackForFullRootFailure
+              ? v3DirectCpuTraceSnapshot
+              : {
+                  ...v3DirectCpuTraceSnapshot,
+                  cpuCutPhase:
+                    v3DirectCpuTraceSnapshot.cpuCutPhase ?? "outer_precommit",
+                },
+            fallbackBlocker,
+          );
+          fallbackRoot = fallback
+            ? prepareReturnedRootCandidate(
+                fallback.state,
+                fallback.ledgerRuntimeAnchor,
+                fallback.readinessRuntimeCapability,
+              )
+            : undefined;
+          if (!fallback || !fallbackRoot) {
+            context.shadowPlanComplete = false;
             reject(
               context,
-              "market_base_readiness_runtime_capability_register_failed",
+              "market_base_v3_cpu_fallback_prepare_failed",
             );
-          } else {
-            commitContextMarketSaleData(context, nextData);
+          }
+        }
+        const cpuGetUsedBeforeCommit = Game.cpu?.getUsed;
+        const cpuObservedBeforeCommit =
+          typeof cpuGetUsedBeforeCommit === "function"
+            ? cpuGetUsedBeforeCommit.call(Game.cpu)
+            : Number.NaN;
+        const outerCpu = observeMarketBaseResourceOuterPrecommitCpu(
+          v3DirectCpuTraceSnapshot,
+          baseResourceV3CpuStartedAt,
+          cpuObservedBeforeCommit,
+          // V3 inner 必须同时返回本调用栈内不可回拨的 raw high-water；
+          // 缺失视为 NaN，禁止仅凭有界 trace 重新打开最终提交门。
+          v3DirectCpuRawHighWaterSnapshot ?? Number.NaN,
+        );
+        context.marketBaseResourceCpuTrace = outerCpu.trace;
+        const sourceRootStillExact =
+          Memory.data?.marketSaleAutomation ===
+            (v3CanonicalRootBeforePlanning as unknown as NonNullable<
+              NonNullable<Memory["data"]>["marketSaleAutomation"]
+            >) && context.data === v3CanonicalRootBeforePlanning;
+        if (!sourceRootStillExact) {
+          context.shadowPlanComplete = false;
+          reject(context, "market_base_v3_returned_commit_conflict");
+        } else if (outerCpu.exceeded) {
+          context.shadowPlanComplete = false;
+          reject(context, "market_base_cpu_ceiling_exceeded");
+          if (fallbackCommitRequired && fallbackRoot) {
+            if (
+              !commitExactContextMarketSaleData(
+                context,
+                v3CanonicalRootBeforePlanning,
+                fallbackRoot.data,
+              )
+            ) {
+              context.shadowPlanComplete = false;
+              reject(context, "market_base_v3_cpu_fallback_commit_failed");
+            }
+          }
+        } else if (returnedStateChanged && fullRoot) {
+          if (
+            !commitExactContextMarketSaleData(
+              context,
+              v3CanonicalRootBeforePlanning,
+              fullRoot.data,
+            )
+          ) {
+            context.shadowPlanComplete = false;
+            reject(context, "market_base_v3_returned_commit_failed");
+          }
+        } else if (fallbackCommitRequired && fallbackRoot) {
+          // full root 注册失败不应压掉已认证的 lane-local negative reset。
+          // 在 CPU 健康时也只提交独立 fallback，绝不带入 cursor/ratchet
+          // 或其它未认证的 full-state 进度。
+          context.shadowPlanComplete = false;
+          if (
+            !commitExactContextMarketSaleData(
+              context,
+              v3CanonicalRootBeforePlanning,
+              fallbackRoot.data,
+            )
+          ) {
+            reject(context, "market_base_v3_cpu_fallback_commit_failed");
           }
         }
       }
@@ -6636,6 +6913,43 @@ function commitContextMarketSaleData(
 ): void {
   commitMarketSaleDataSnapshot(data);
   context.data = data;
+}
+
+function commitExactContextMarketSaleData(
+  context: RunContext,
+  expectedSource: MarketSaleDataState,
+  candidate: MarketSaleDataState,
+): boolean {
+  const expectedStored = expectedSource as unknown as NonNullable<
+    NonNullable<Memory["data"]>["marketSaleAutomation"]
+  >;
+  const candidateStored = candidate as unknown as NonNullable<
+    NonNullable<Memory["data"]>["marketSaleAutomation"]
+  >;
+  if (
+    context.data !== expectedSource ||
+    Memory.data?.marketSaleAutomation !== expectedStored
+  ) {
+    return false;
+  }
+  try {
+    Memory.data!.marketSaleAutomation = candidateStored;
+  } catch {
+    // 绝不以“回滚 source”覆盖 setter 安装的未知并发 root。若 assignment
+    // 已精确落下 candidate 后才抛错，只同步 context 以避免同 tick 分叉，
+    // 但仍返回 false 让调用方报告 commit failure。
+    if (Memory.data?.marketSaleAutomation === candidateStored) {
+      context.data = candidate;
+    }
+    return false;
+  }
+  if (Memory.data?.marketSaleAutomation !== candidateStored) {
+    // silent reject 保留 source；substitution 则保留 concurrent root。
+    // 两者都不再执行第二次写入。
+    return false;
+  }
+  context.data = candidate;
+  return true;
 }
 
 function registerMarketBaseResourceCanonicalRoot(
@@ -7314,13 +7628,11 @@ function commitReturnedMarketBaseResourceState(
   ) {
     return false;
   }
-  const stored = nextData as unknown as NonNullable<
-    NonNullable<Memory["data"]>["marketSaleAutomation"]
-  >;
-
-  Memory.data!.marketSaleAutomation = stored;
-  context.data = nextData;
-  return true;
+  return commitExactContextMarketSaleData(
+    context,
+    preparedCanonicalRoot,
+    nextData,
+  );
 }
 
 function continuousPermitConfigBlocker(

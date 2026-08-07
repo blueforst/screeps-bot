@@ -803,8 +803,140 @@ describe("monitor-service market sale automation projection", () => {
         expect.objectContaining({
           evaluatedShadowResourceCount: null,
           candidateIdentityOrderChecks: null,
+          cpuTrace: null,
         }),
       );
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("未提交 canonical root 时优先投影更新的 runtime CPU trace", () => {
+    const sourcePath = resolve(
+      REPO_ROOT,
+      "scripts/fixtures/market-sale-continuous-monitor.json",
+    );
+    const fixture = JSON.parse(
+      readFileSync(sourcePath, "utf8"),
+    ) as Record<string, any>;
+    const planning =
+      fixture.data.marketSaleAutomation.directAutomation.baseResourceV3
+        .lastPlanningSnapshot;
+    planning.cpuTrace = {
+      observedAt: 700,
+      cpuAfterOuterSession: 1,
+      cpuAfterScopeCore: 2,
+      cpuAfterMarketFacts: 3,
+      cpuAfterShadowBatch: 4,
+      cpuAfterInnerApply: 5,
+      cpuCutPhase: null,
+      marketFactsDisposition: "read",
+    };
+    fixture.runtime.marketSaleAutomation.direct.baseResourceV3CpuTrace = {
+      observedAt: 701,
+      cpuAfterOuterSession: 6,
+      cpuAfterScopeCore: 12,
+      cpuAfterMarketFacts: 19,
+      cpuAfterShadowBatch: 24,
+      cpuAfterInnerApply: 25,
+      cpuCutPhase: "outer_precommit",
+      marketFactsDisposition: "read",
+    };
+
+    const temporaryDirectory = mkdtempSync(
+      resolve(tmpdir(), "screeps-monitor-cpu-trace-"),
+    );
+    const fixturePath = resolve(temporaryDirectory, "fixture.json");
+    try {
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const { payload } = executeFixture(fixturePath);
+      const projected =
+        payload.memory.marketSaleAutomation.direct.baseResourceV3;
+      expect(projected.cpuTrace).toEqual({
+        observedAt: 701,
+        cpuAfterOuterSession: 6,
+        cpuAfterScopeCore: 12,
+        cpuAfterMarketFacts: 19,
+        cpuAfterShadowBatch: 24,
+        cpuAfterInnerApply: 25,
+        cpuCutPhase: "outer_precommit",
+        marketFactsDisposition: "read",
+      });
+      expect(projected.planning.cpuTrace).toEqual(projected.cpuTrace);
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test("CPU trace 任一数值或枚举非法时整条 fail closed 为 null", () => {
+    const sourcePath = resolve(
+      REPO_ROOT,
+      "scripts/fixtures/market-sale-continuous-monitor.json",
+    );
+    const fixture = JSON.parse(
+      readFileSync(sourcePath, "utf8"),
+    ) as Record<string, any>;
+    fixture.runtime.marketSaleAutomation.direct.baseResourceV3CpuTrace = {
+      observedAt: 701,
+      cpuAfterOuterSession: -1,
+      cpuAfterScopeCore: 101,
+      cpuAfterMarketFacts: Number.POSITIVE_INFINITY,
+      cpuAfterShadowBatch: "24",
+      cpuAfterInnerApply: 25,
+      cpuCutPhase: "forged_phase",
+      marketFactsDisposition: "forged_disposition",
+    };
+
+    const temporaryDirectory = mkdtempSync(
+      resolve(tmpdir(), "screeps-monitor-invalid-cpu-trace-"),
+    );
+    const fixturePath = resolve(temporaryDirectory, "fixture.json");
+    try {
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const { payload } = executeFixture(fixturePath);
+      expect(
+        payload.memory.marketSaleAutomation.direct.baseResourceV3.cpuTrace,
+      ).toBeNull();
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    ["非单调", { cpuAfterScopeCore: 20, cpuAfterMarketFacts: 10 }],
+    ["null 洞", { cpuAfterScopeCore: null, cpuAfterMarketFacts: 10 }],
+    ["额外字段", { injected: "forged" }],
+    ["非安全 tick", { observedAt: Number.MAX_SAFE_INTEGER + 1 }],
+  ])("CPU trace %s 时 monitor 丢弃整条诊断", (_label, mutation) => {
+    const sourcePath = resolve(
+      REPO_ROOT,
+      "scripts/fixtures/market-sale-continuous-monitor.json",
+    );
+    const fixture = JSON.parse(
+      readFileSync(sourcePath, "utf8"),
+    ) as Record<string, any>;
+    fixture.runtime.marketSaleAutomation.direct.baseResourceV3CpuTrace = {
+      observedAt: 701,
+      cpuAfterOuterSession: 1,
+      cpuAfterScopeCore: 2,
+      cpuAfterMarketFacts: 3,
+      cpuAfterShadowBatch: 4,
+      cpuAfterInnerApply: 5,
+      cpuCutPhase: null,
+      marketFactsDisposition: "read",
+      ...mutation,
+    };
+
+    const temporaryDirectory = mkdtempSync(
+      resolve(tmpdir(), "screeps-monitor-structural-cpu-trace-"),
+    );
+    const fixturePath = resolve(temporaryDirectory, "fixture.json");
+    try {
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const { payload } = executeFixture(fixturePath);
+      expect(
+        payload.memory.marketSaleAutomation.direct.baseResourceV3.cpuTrace,
+      ).toBeNull();
     } finally {
       rmSync(temporaryDirectory, { recursive: true, force: true });
     }

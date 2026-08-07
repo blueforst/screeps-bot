@@ -1092,6 +1092,29 @@ declare global {
           confirmedDealCount: number;
           pausedForReview: boolean;
           migrationBlockedReason?: string;
+          baseResourceV3CpuTrace?: {
+            observedAt: number;
+            cpuAfterOuterSession: number | null;
+            cpuAfterScopeCore: number | null;
+            cpuAfterMarketFacts: number | null;
+            cpuAfterShadowBatch: number | null;
+            cpuAfterInnerApply: number | null;
+            cpuCutPhase:
+              | "outer_session"
+              | "scope_core_read1"
+              | "scope_core_read2"
+              | "market_facts_read1"
+              | "market_facts_read2"
+              | "shadow_batch_read1"
+              | "shadow_batch_read2"
+              | "inner_apply"
+              | "outer_precommit"
+              | null;
+            marketFactsDisposition:
+              | "not_reached"
+              | "skipped_no_consumer"
+              | "read";
+          };
           exposure: {
             pendingCount: number;
             quarantinedCount: number;

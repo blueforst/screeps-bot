@@ -28,6 +28,7 @@
 - [x] 3.9（历史实现，已由 3.10 取代）在纯 suspended Shadow `eligible>0` 时只批处理 exact ready 子集；保留局部 incomplete reset，禁止 normalization capability 和 selected/admitted 外泄，验证冻结 book/order/binding/预算/callback，原生能耗 miss 前后 CPU 截断，并投影 planner mode/invocation/实际 evaluation 标量
 - [x] 3.10 将 suspended Shadow 统一改为冻结 catalog resource-major cohort：按全部 active lane 固定最多 8 条单资源分块、版本化 `(resource,laneId)` anchor/legacy remap；恢复 eligible=0 validation-only 专支并投影资源数/候选身份检查标量。该项仅批准全 Shadow 部署，mixed CPU 仍为 Canary 前硬门
 - [x] 3.11 将 25 CPU 同一窗口扩展到批/逐 lane planner 前后，候选身份扫描每 32 条复核；CPU cut 前未实际执行 fallback 时保持真实 mode，并明确双读资源宽度取最大值、身份检查量累加的遥测语义
+- [x] 3.12 将 25 CPU 窗口继续覆盖 outer session、scope core、market facts、Shadow batch、inner apply、完整候选 root 私有注册与最终 precommit；最终 fresh CPU read 后重做 exact root/context CAS，超限丢弃全部正向进度，只允许最多 8 条已采样 suspended Shadow/qualified lane 的必要 incomplete reset-only root
 
 ## 4. 生产保护、Hub 与 Terminal Energy
 
@@ -47,6 +48,7 @@
 - [x] 5.4 扩展 console/monitor，投影 catalog/admission/current roster/lane lifecycle、permit、quota、Hub marker、energy readiness、CPU blocker 的有界摘要
 - [x] 5.5 对 Pixel、legacy ResourceControl/Hub/Factory seller、Maker/hybrid 加代码级永久闩；验证配置误开仍不能消费新 base surplus，且唯一 `Game.market.deal` arbiter 入口不变
 - [x] 5.6 覆盖跨版本 pending 后 scope 变化、historical permit/prefix binding 损坏、部分成交/CPU-cut、512 receipt coverage、终态槽预留、ring 满仍收敛 pending、quota 与 bounded Memory
+- [x] 5.7 增加 runtime-only bounded CPU trace；固定五个累计分段、首个 cut phase 与 market-facts disposition，canonical 正常提交时可镜像 snapshot，但任何字段均不得参与 permit、价格、保护、quota 或授权；未提交 canonical root 时 monitor 仍优先展示更新的 runtime trace
 
 ## 6. 验证与独立复审
 
@@ -54,6 +56,7 @@
 - [x] 6.2 运行 `npx tsc --noEmit`、`npm run build`、静态市场写门禁与 `openspec validate market-base-resource-all-rooms --strict`
 - [x] 6.3 运行完整 Jest，记录套件/测试数、CPU fixture 与冻结 diff
 - [x] 6.4 由独立 subagent 分别审查 permit/WAL、价格/多 lane、生产/Hub/Energy，修复全部 P0/P1
+- [x] 6.5 对 post-apply/precommit CPU gate 运行 0/1/8 reset、clone/replay、root setter/CAS、same-tick reentry、prepared WAL 优先级、monitor 兼容与完整 Jest；再由三路独立 subagent 终审并修复全部 P0/P1
 
 ## 7. 合并、部署与 Live 分阶段启用
 
@@ -98,3 +101,12 @@
 - 同一 25 CPU 窗口现覆盖 batch/per-lane planner 与外部 artifact 前后，候选身份扫描每 32 条检查一次；CPU cut 不再进入尚未发生的 fallback、不推进 cursor、不形成完整 observation，mode 保持实际路径。`evaluatedShadowResourceCount` 明确为单次 full-read cohort 的资源宽度，双读取最大值；身份检查量按两读累加。旧 planning snapshot 缺新增字段时 monitor 安全投影 `null`。
 - 部署前 live 旧版本 `32991bd` 在 tick `72834960` 仍复现跨资源批次 CPU `27.593771399988327`、`market_base_cpu_ceiling_exceeded`；56/56 grant 均为 `shadow+suspended`，managed/pending mutation/pending create/terminal claim 均为零，证明当前故障与本修复目标一致且未发生新市场写入。
 - 三路独立终审中，文档/兼容测试与细粒度 CPU/遥测 P2/P3 均已修复并复核关闭；唯一保留问题是 same-resource mixed `1 writable + 7 Shadow + 128 order-room` 双读可达 4,096 次原生 transaction-energy 的交易活性 P1。该 P1 不阻断全 `suspended_shadow` 部署观察，但继续硬性阻断任何 Canary/Continuous/writable permit 与真实成交。
+
+## Shadow CPU Trace 与最终提交门禁验证记录（2026-08-07）
+
+- 最终 `npx tsc --noEmit`、`npm run build`、`git diff --check` 与 `npx openspec validate market-base-resource-all-rooms --strict` 均通过；静态写面仍只有 `marketActionArbiter` 持有受控市场写入口。
+- 受影响面定向回归为 3 个 suite / 185 个 test 全部通过。完整拆分 Jest：排除 wall-clock Ledger benchmark 的 114 个 suite / 3,256 个 test 全部通过；`marketBaseResourceLedger.test.ts` 独立 1 个 suite / 21 个 test 全部通过，合计 115 个 suite / 3,277 个 test。
+- Ledger 独立基准保持门禁内：cold runtime gate median/p95 为 `5.735/5.838ms`，prepare median/p95 为 `8.623/8.973ms`；未修改任何阈值。
+- 同一 25 CPU 窗口现覆盖 inner 入口首次读数、outer session、scope/facts/Shadow planner、inner apply 与最终 precommit。入口读数直接初始化不可回拨 raw high-water；回拨、无效、超过 25 或已有 first-cut 均永久闭锁。第二读 partial failure 只更新 raw high-water，里程碑必须保持 prefix-complete/trailing-null，monitor 对非单调、null-hole、额外字段和越界值整条 fail closed。
+- inner 通过不持久化的 `cpuRawHighWater` 把 partial trace 未能表示的 raw 峰值交给 outer；outer 在任何 root 注册或 fresh CPU callback 前逐字段冻结精确 trace 并复制 primitive high-water。覆盖 `24→22` 回拨、高水位缺失、fresh callback 篡改返回对象、0/1/8 reset-only、clone/replay、setter throw/throw-after-write/swallow/substitute、exact CAS、same-tick reentry、full-root 注册失败与 prepared WAL 优先级。
+- 三路独立终审最终均未发现本次范围的 P0/P1/P2，并批准只保持全部 lane/grant 为 `shadow+suspended` 的 Shadow-only 合并部署。same-resource mixed writable+Shadow 的 25 CPU 活性仍是独立 P1，继续硬性阻断 Canary、Continuous、writable grant 与真实成交。
