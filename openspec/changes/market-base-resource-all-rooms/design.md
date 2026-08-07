@@ -201,9 +201,13 @@ WAL 提交顺序保持 `outcome → receipt/head/checkpoint/lifetime → process
 - room/lane/order/rejection 观测均使用上述固定长度；不得把 lane×order 原始矩阵写入 Memory。
 - 新 Hub `baseMineralSurplus` 只能被 v3 Direct protection adapter 读取；legacy ResourceControl/Hub seller 必须有代码级永久闩，配置误开也不能消费该字段或调用市场写入口。
 
-纯 Shadow 无机会路径允许一个严格受限的调用内优化：仅当本轮全部采样 lane 都是 `suspended_shadow`、scope 中不存在 writable lane、terminal/protection 均完整、collector 对所有相关资源均证明 `eligible=0`，且每个资源都持有本次 full read 签发的 detached book capability 时，才把最多 8 条采样 lane 合并为一次多资源 planner 调用。调用内临时把这些 lane 标成 writable 只为强制 planner 走完整订单验证；原 scope、permit 与 grant 始终 suspended，批结果也不进入双读、WAL、claim 或 deal。
+纯 Shadow 无机会路径允许一个严格受限的调用内优化：仅当本轮全部采样 lane 都是 `suspended_shadow`、scope 中不存在 writable lane、已形成局部 incomplete reset 的 `preObserved` 与其余 ready lane 互斥且精确覆盖 sampled lane、ready lane 的 terminal/protection/book 完整、collector 对所有相关资源均证明 `eligible=0`，且 ready 子集的每个资源都持有本次 full read 签发的 detached book capability 时，才把最多 8 条 ready lane 合并为一次多资源 planner 调用。调用内临时把这些 ready lane 标成 writable 只为强制 planner 走完整订单验证；preObserved reset 保持原样，原 scope、permit 与 grant 始终 suspended，批结果也不进入双读、WAL、claim 或 deal。
 
 批调用的 write-context revision 必须绑定排序后的 `laneId/resource/roomName/roomInstanceId`、原 revision、scope evidence、current roster 与 lane-set fingerprint。只有 planner `complete=true`、无 blocker/selected/safe/admitted/isolated lane、能耗回调为零、normalization artifact 恰好成功一次且 lane/book/capability 覆盖完全一致时，才可把结果投影为逐 lane `safe_no_opportunity` 或 `production_priority_wait`。任一异常、意外候选、回调、映射缺失或 artifact 失败都丢弃整批结果，并用同一 detached snapshot 新签的一次性 capability 回退到原逐 lane 路径；若批失败后已经超过 25 CPU，则不强制回退、不推进 cursor，也不生成完整 observation。
+
+纯 Shadow 有候选路径复用上述 exact-ready-subset 入口；区别是候选路径不得传 detached normalization capability，必须走 planner 原 canonical finish，并要求 artifact observer 精确返回 `false`。synthetic writable、planner 的 `selected`/`admittedCandidates` 和正式 `plannerEntries` 均不得离开 helper；只有 `safeCandidates` 可按唯一 `(resource, sellerRoom)` 映射回精确 `laneId`，用于生成 `safe_opportunity`/`safe_no_opportunity`。每个 candidate/rejection/order 必须属于对应冻结 detached book，safe/admitted/selected tuple 集合必须满足子集关系和唯一性，seller room、distinct order room、实际 transaction-energy callback 数必须与 collector 上界闭合。任何不一致丢弃整批结果并以同一冻结 book 新签能力逐 lane 回退。模式由 collector 的全量 `eligibleOrderCount` 决定：全局为零时走 capability/artifact=true；全局大于零时即使 ready 子集自身最终无候选，也必须走无 capability/artifact=false 的保守 canonical 路径。
+
+transaction-energy memo 的每次原生 miss 必须在调用前后检查同一个 25 CPU 窗口；一旦越界，禁止后续原生计算、逐 lane 回退、cursor 推进和安全 observation。planning snapshot/monitor 只增加有界标量 `shadowPlannerMode`、`shadowPlannerInvocationCount`、`actualTransactionEnergyEvaluations`，不得记录 lane×order 矩阵。该优化不提高 CPU ceiling，也不改变任何 permit、Shadow/Canary 生命周期或生产保护。
 
 当 `plannerEntries.length=0` 时不存在任何写入消费者，collector 可以省略 full-read book/terminal/protection evidence 的第二次深哈希；订单 clone、resource scope、terminal、protection、CPU 与批 planner 校验仍必须完整执行。只要存在 writable lane，原有完整 first/second-read evidence 和比较合同保持不变。
 

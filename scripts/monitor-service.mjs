@@ -2420,6 +2420,15 @@ function summarizeMarketBasePlanning(value) {
       finiteNumberOrNull(
         planning.transactionCostEvaluationBudget,
       ),
+    shadowPlannerMode: boundedStringOrNull(
+      planning.shadowPlannerMode,
+    ),
+    shadowPlannerInvocationCount: finiteNumberOrNull(
+      planning.shadowPlannerInvocationCount,
+    ),
+    actualTransactionEnergyEvaluations: finiteNumberOrNull(
+      planning.actualTransactionEnergyEvaluations,
+    ),
     sampledShadowLaneIds: summarizeBoundedStringSet(
       planning.sampledShadowLaneIds,
       MARKET_BASE_RESOURCE_LIFECYCLE_LIMIT,

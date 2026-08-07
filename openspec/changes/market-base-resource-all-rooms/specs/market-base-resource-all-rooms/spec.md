@@ -294,12 +294,20 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 - **THEN** 该批不推进、不清零、不计完整周期，cursor 也不得把它们当作已完成跳过；writable scope 若存在则本 tick 零写
 
 #### Scenario: 纯 Shadow 无机会批量复核
-- **WHEN** 本轮全部采样 lane 都是 suspended Shadow、没有 writable lane、terminal/protection 完整，且 collector 对全部相关资源证明 `eligible=0`
-- **THEN** 系统 MAY 使用一次多资源 planner 调用复核最多 8 条 lane，但必须让每条 lane 都进入完整 planner 校验、为每个 detached book 使用一次性 capability，并且只有无 blocker、无候选、无能耗回调、无 isolated lane、artifact 与 lane/resource/room/instance 覆盖完全一致时才投影逐 lane 完整 observation；批结果不得进入双读、WAL、claim 或 deal
+- **WHEN** 本轮全部采样 lane 都是 suspended Shadow、没有 writable lane，局部 incomplete 的 preObserved 与 terminal/protection/book 完整的 ready 子集互斥并精确覆盖 sampled lane，且 collector 对全部相关资源证明 `eligible=0`
+- **THEN** 系统 MAY 使用一次多资源 planner 调用复核最多 8 条 ready lane，同时保留 preObserved reset；必须让每条 ready lane 都进入完整 planner 校验、为每个 ready resource 的 detached book 使用一次性 capability，并且只有无 blocker、无候选、无能耗回调、无 isolated lane、artifact 与 lane/resource/room/instance 覆盖完全一致时才投影逐 lane 完整 observation；批结果不得进入双读、WAL、claim 或 deal
+
+#### Scenario: 纯 Shadow 有候选的 Ready 子集批量复核
+- **WHEN** 本轮没有 writable lane、全部 sampled lane 均为 suspended Shadow，部分 lane 已形成 terminal/protection/book 局部 incomplete reset，其余 exact ready 子集对应的 collector `eligible>0`
+- **THEN** 系统 MAY 对 ready 子集执行一次多资源 planner，但不得传 detached normalization capability，必须要求 artifact observer 为 `false`；preObserved 与 ready 必须互斥且精确覆盖 sampled lane，只有经冻结 book/order identity、`resource+sellerRoom+laneId` 唯一映射、tuple 子集关系和 callback/budget 闭合验证的 `safeCandidates` 可投影 observation，`selected`/`admittedCandidates`、synthetic writable 和正式 planner entry 均不得进入双读、WAL、claim 或 deal；模式按 collector 全局 eligible 计数判定，ready 子集自身无候选也不得退回 capability 快路径
 
 #### Scenario: Shadow 批量复核异常
-- **WHEN** 批调用出现异常、意外候选、transaction-energy 回调、artifact 失败或 lane/book/capability 映射不完整
+- **WHEN** `eligible=0` 批调用出现意外候选/transaction-energy 回调，或任一批调用出现异常、artifact 模式错误、callback 数量不符、lane/book/order 映射或 exact-ready 覆盖不完整
 - **THEN** 系统必须丢弃全部批结果并用新签的一次性 capability 回退到原逐 lane planner；若此时已超过 25 CPU，则不得强制回退、推进 cursor 或保留安全 observation
+
+#### Scenario: Candidate Batch 原生能耗 CPU Cut
+- **WHEN** 候选批规划的任一 transaction-energy memo miss 在原生计算前或后越过同一 25 CPU ceiling
+- **THEN** 系统必须立即停止后续原生计算，整批不回退、不推进 cursor、不保留安全 observation，并保持正式 selection、WAL、claim 与 deal 全为空
 
 #### Scenario: 无 Writable Lane 不生成写证据
 - **WHEN** full read 完成且 `plannerEntries` 为空
@@ -311,7 +319,7 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 
 #### Scenario: Monitor 有界
 - **WHEN** 56 条 lane 与大量订单持续运行
-- **THEN** monitor 必须展示 catalog/roster/lane-set、permit、lifecycle、quota、best tuple、Hub marker、energy readiness 与 CPU blocker 的有界摘要，不得持久化 lane×order 原始矩阵
+- **THEN** monitor 必须展示 catalog/roster/lane-set、permit、lifecycle、quota、best tuple、Hub marker、energy readiness、CPU blocker、Shadow planner mode/invocation count/实际 transaction-energy evaluation count 的有界摘要，不得持久化 lane×order 原始矩阵
 
 ### Requirement: V3 持久历史必须有不可复活的硬上界
 系统 MUST 固定 active rooms 16、known room names 32、active lanes 112、recent room tombstones 64、recent lane tombstones 224、连续 full permit suffix 64、full receipts 512、outcomes 50、rejection samples 32、monitor samples 64。receipt 只有 `retentionTick < tick-29,999` 且已被连续 checkpoint 吸收时才可裁剪。历史压缩 MUST 形成 canonical prefix checkpoint，绑定覆盖范围、first/last ID、prev/head hash、epoch/incarnation/canary high-water、累计 quota/lifetime 与 prefix commitment。

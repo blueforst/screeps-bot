@@ -367,6 +367,7 @@ describe("Market Base Resource V3 runtime", () => {
       ),
     ).toHaveLength(2);
     expect(result.firstReadEvidence).toBeDefined();
+    expect(result.actualTransactionEnergyEvaluations).toBe(4);
   });
 
   it("第二读非选中 writable lane 变化也整轮零写，不换次优单", () => {
@@ -562,6 +563,9 @@ describe("Market Base Resource V3 runtime", () => {
         blocker: "book_incomplete",
       },
     ]);
+    expect(result.shadowPlannerMode).toBe("per_lane");
+    expect(result.shadowPlannerInvocationCount).toBe(1);
+    expect(result.actualTransactionEnergyEvaluations).toBe(0);
     expect(result.selected).toBeUndefined();
     expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
   });
@@ -723,6 +727,169 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.firstReadEvidence).toBeUndefined();
   });
 
+  it("线上同形状的 6 资源 8 lane/94 raw/8 eligible 只批规划 ready 精确子集", () => {
+    const makeHarness = (): Harness => {
+      const entries = [
+        immutablePolicyEntry(
+          "H",
+          ["E3N59", "E4N58"],
+          "suspended_shadow",
+        ),
+        immutablePolicyEntry(
+          "L",
+          ["E7N57", "E1N57"],
+          "suspended_shadow",
+        ),
+        immutablePolicyEntry("U", ["E7N57"], "suspended_shadow"),
+        immutablePolicyEntry("O", ["E5N59"], "suspended_shadow"),
+        immutablePolicyEntry("Z", ["E5N59"], "suspended_shadow"),
+        immutablePolicyEntry("X", ["W1N57"], "suspended_shadow"),
+      ].map((candidate) => ({
+        ...candidate,
+        quota: {
+          ...candidate.quota,
+          rollingCap: candidate.policy.resourceRollingCap,
+        },
+      }));
+      entries
+        .find((candidate) => candidate.policy.resourceType === RESOURCE_HYDROGEN)!
+        .lanes.find((lane) => lane.lane.roomName === "E4N58")!.lane.hub = true;
+      for (const [resource, roomName] of [
+        [RESOURCE_HYDROGEN, "E3N59"],
+        [RESOURCE_HYDROGEN, "E4N58"],
+        [RESOURCE_OXYGEN, "E5N59"],
+        [RESOURCE_UTRIUM, "E7N57"],
+      ] as const) {
+        entries
+          .find((candidate) => candidate.policy.resourceType === resource)!
+          .lanes.find((lane) => lane.lane.roomName === roomName)!
+          .protection.complete = false;
+      }
+      const bookShape: Array<{
+        resource: ResourceConstant;
+        raw: number;
+        eligibleRooms: readonly string[];
+      }> = [
+        { resource: RESOURCE_HYDROGEN, raw: 16, eligibleRooms: ["E1S10", "E2S10"] },
+        { resource: RESOURCE_LEMERGIUM, raw: 18, eligibleRooms: ["E3S10", "E4S10"] },
+        { resource: RESOURCE_UTRIUM, raw: 14, eligibleRooms: ["E5S10"] },
+        { resource: RESOURCE_OXYGEN, raw: 15, eligibleRooms: ["E6S10"] },
+        { resource: RESOURCE_ZYNTHIUM, raw: 14, eligibleRooms: ["E7S10"] },
+        { resource: RESOURCE_CATALYST, raw: 17, eligibleRooms: ["E8S10"] },
+      ];
+      const books = Object.fromEntries(
+        bookShape.map(({ resource, raw, eligibleRooms }) => {
+          const candidates = eligibleRooms.map((roomName, index) =>
+            order(
+              `${resource}-eligible-${index}`,
+              resource,
+              700,
+              1_000,
+              roomName,
+            ));
+          const lowOrders = Array.from(
+            { length: raw - candidates.length },
+            (_unused, index) =>
+              order(
+                `${resource}-low-${String(index).padStart(2, "0")}`,
+                resource,
+                1,
+                index === 0 ? 100_000 : 1_000,
+                `W${index + 1}S20`,
+              ),
+          );
+          return [resource, [...lowOrders, ...candidates]];
+        }),
+      ) as Partial<Record<ResourceConstant, MarketOrderSnapshot[]>>;
+      return { scope: scope(entries), books };
+    };
+    const batchDeps = dependencies(makeHarness());
+    const fallbackDeps = dependencies(makeHarness());
+    const batchProbe = jest.fn();
+    const throwingProbe = jest.fn((_used: boolean) => {
+      throw new Error("force fresh-capability fallback oracle");
+    });
+    batchDeps.observeShadowNormalizationArtifact = batchProbe;
+    fallbackDeps.observeShadowNormalizationArtifact = throwingProbe;
+
+    const batch = planMarketBaseResourceTwoRead(batchDeps);
+    const fallback = planMarketBaseResourceTwoRead(fallbackDeps);
+
+    expect(batch.complete).toBe(true);
+    expect(batch.selected).toBeUndefined();
+    expect(batch.firstReadEvidence).toBeUndefined();
+    expect(batch.rawOrderCount).toBe(94);
+    expect(batch.eligibleOrderCount).toBe(8);
+    expect(batch.distinctOrderRoomCount).toBe(8);
+    expect(batch.transactionCostEvaluationBudget).toBe(96);
+    expect(batch.sampledShadowLaneIds).toHaveLength(8);
+    expect(batch.shadowObservations.filter(
+      (observation) =>
+        observation.result === "incomplete" &&
+        observation.blocker === "market_base_protection_incomplete",
+    )).toHaveLength(4);
+    expect(batch.shadowObservations.filter(
+      (observation) => observation.result === "safe_opportunity",
+    )).toHaveLength(4);
+    expect(batch.shadowPlannerMode).toBe("batch_candidate");
+    expect(batch.shadowPlannerInvocationCount).toBe(1);
+    expect(batch.actualTransactionEnergyEvaluations).toBe(12);
+    expect(batchProbe).toHaveBeenCalledTimes(1);
+    expect(batchProbe).toHaveBeenLastCalledWith(false);
+    expect(fallback.complete).toBe(true);
+    expect(fallback.shadowObservations).toEqual(batch.shadowObservations);
+    expect(fallback.shadowPlannerMode).toBe("batch_fallback");
+    expect(fallback.shadowPlannerInvocationCount).toBe(5);
+    expect(throwingProbe).toHaveBeenCalledTimes(5);
+  });
+
+  it("候选批规划按 resource+room 区分同房资源并支持 ready Hub", () => {
+    const entries = [
+      immutablePolicyEntry("H", ["E4N58"], "suspended_shadow"),
+      immutablePolicyEntry("L", ["E7N57"], "suspended_shadow"),
+      immutablePolicyEntry("U", ["E7N57"], "suspended_shadow"),
+    ].map((candidate) => ({
+      ...candidate,
+      quota: {
+        ...candidate.quota,
+        rollingCap: candidate.policy.resourceRollingCap,
+      },
+    }));
+    entries[0]!.lanes[0]!.lane.hub = true;
+    const deps = dependencies({
+      scope: scope(entries),
+      books: {
+        [RESOURCE_HYDROGEN]: [
+          order("h-hub-safe", RESOURCE_HYDROGEN, 700, 1_000, "E1S11"),
+        ],
+        [RESOURCE_LEMERGIUM]: [
+          order("l-safe", RESOURCE_LEMERGIUM, 700, 1_000, "E2S11"),
+        ],
+        [RESOURCE_UTRIUM]: [
+          order("u-low", RESOURCE_UTRIUM, 1, 100_000, "E3S11"),
+        ],
+      },
+    });
+    const artifactProbe = jest.fn();
+    deps.observeShadowNormalizationArtifact = artifactProbe;
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.shadowPlannerMode).toBe("batch_candidate");
+    expect(result.shadowPlannerInvocationCount).toBe(1);
+    expect(result.actualTransactionEnergyEvaluations).toBe(4);
+    expect(result.shadowObservations).toEqual([
+      { laneId: "lane:H:E4N58", result: "safe_opportunity" },
+      { laneId: "lane:L:E7N57", result: "safe_opportunity" },
+      { laneId: "lane:U:E7N57", result: "safe_no_opportunity" },
+    ]);
+    expect(artifactProbe).toHaveBeenCalledTimes(1);
+    expect(artifactProbe).toHaveBeenLastCalledWith(false);
+    expect(result.selected).toBeUndefined();
+    expect(result.firstReadEvidence).toBeUndefined();
+  });
+
   it.each([
     ["pending", "active", "available"],
     ["arbiter", "none", "claimed"],
@@ -759,7 +926,7 @@ describe("Market Base Resource V3 runtime", () => {
     expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
   });
 
-  it("任一 Shadow terminal 不完整时跳过批规划并保持逐 lane 隔离", () => {
+  it("Shadow terminal 不完整只隔离该 lane，其余 ready 子集仍批规划", () => {
     const shadow = immutablePolicyEntry(
       "H",
       Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N3`),
@@ -789,12 +956,15 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.shadowObservations.filter(
       (observation) => observation.result === "safe_no_opportunity",
     )).toHaveLength(7);
-    expect(artifactProbe).toHaveBeenCalledTimes(7);
+    expect(artifactProbe).toHaveBeenCalledTimes(1);
     expect(artifactProbe.mock.calls.every(([used]) => used === true)).toBe(true);
     expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+    expect(result.shadowPlannerMode).toBe("batch_zero_candidate");
+    expect(result.shadowPlannerInvocationCount).toBe(1);
+    expect(result.actualTransactionEnergyEvaluations).toBe(0);
   });
 
-  it("任一 Shadow protection 不完整时跳过批规划并保持逐 lane 隔离", () => {
+  it("Shadow protection 不完整只隔离该 lane，其余 ready 子集仍批规划", () => {
     const shadow = immutablePolicyEntry(
       "H",
       Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N9`),
@@ -820,9 +990,12 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.shadowObservations.filter(
       (observation) => observation.result === "safe_no_opportunity",
     )).toHaveLength(7);
-    expect(artifactProbe).toHaveBeenCalledTimes(7);
+    expect(artifactProbe).toHaveBeenCalledTimes(1);
     expect(artifactProbe.mock.calls.every(([used]) => used === true)).toBe(true);
     expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+    expect(result.shadowPlannerMode).toBe("batch_zero_candidate");
+    expect(result.shadowPlannerInvocationCount).toBe(1);
+    expect(result.actualTransactionEnergyEvaluations).toBe(0);
   });
 
   it("批规划遇到 collector/planner 形状差异时回退并整批 fail closed", () => {
@@ -1187,8 +1360,52 @@ describe("Market Base Resource V3 runtime", () => {
     expect(deps.calculateTransactionEnergy).toHaveBeenCalledTimes(
       2 * 8 * 128,
     );
-    expect(artifactProbe).toHaveBeenCalledTimes(8);
+    expect(artifactProbe).toHaveBeenCalledTimes(1);
     expect(artifactProbe.mock.calls.every(([used]) => used === false)).toBe(true);
+    expect(result.shadowPlannerMode).toBe("batch_candidate");
+    expect(result.shadowPlannerInvocationCount).toBe(1);
+    expect(result.actualTransactionEnergyEvaluations).toBe(2 * 8 * 128);
+  });
+
+  it("候选批规划在原生 transaction-energy 越过 CPU ceiling 后立即停算", () => {
+    const shadow = immutablePolicyEntry(
+      "H",
+      Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N10`),
+      "suspended_shadow",
+    );
+    const deps = dependencies({
+      scope: scope([shadow]),
+      books: {
+        [RESOURCE_HYDROGEN]: Array.from({ length: 8 }, (_unused, index) =>
+          order(
+            `h-cpu-${index}`,
+            RESOURCE_HYDROGEN,
+            700,
+            1_000,
+            `E${index + 1}S10`,
+          )),
+      },
+    });
+    let liveCpu = 0;
+    deps.cpuUsed = jest.fn(() => liveCpu);
+    deps.calculateTransactionEnergy = jest.fn(() => {
+      liveCpu += 6;
+      return 0;
+    });
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(false);
+    expect(result.blocker).toBe("market_base_cpu_ceiling_exceeded");
+    expect(result.selected).toBeUndefined();
+    expect(result.first).toBeUndefined();
+    expect(result.firstReadEvidence).toBeUndefined();
+    expect(result.nextShadowCursor).toBeUndefined();
+    expect(result.shadowObservations).toEqual([]);
+    expect(result.shadowPlannerMode).toBe("batch_fallback");
+    expect(result.shadowPlannerInvocationCount).toBe(1);
+    expect(result.actualTransactionEnergyEvaluations).toBe(5);
+    expect(deps.calculateTransactionEnergy).toHaveBeenCalledTimes(5);
   });
 
   it("201 eligible 与 1,001 raw 均在 transaction-energy 前闭锁，1,000 raw 可完整读取", () => {
@@ -1321,7 +1538,16 @@ describe("Market Base Resource V3 runtime", () => {
       },
     });
     const cpuUsed = deps.cpuUsed as jest.Mock;
-    cpuUsed.mockImplementation(() => (cpuUsed.mock.calls.length >= 5 ? 26 : 0));
+    let postFourthNativeChecks = 0;
+    cpuUsed.mockImplementation(() => {
+      if ((deps.calculateTransactionEnergy as jest.Mock).mock.calls.length < 4) {
+        return 0;
+      }
+      postFourthNativeChecks += 1;
+      // 第四次原生 transaction-energy 计算后的同一 callback 后置检查和
+      // planner 后 CPU delta 仍允许完成；紧随其后的 outer ceiling gate 截断。
+      return postFourthNativeChecks >= 3 ? 26 : 0;
+    });
 
     const result = planMarketBaseResourceTwoRead(deps);
 
@@ -1330,6 +1556,40 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.first?.selected?.order.id).toBe("x-write");
     expect(result.nextShadowCursor).toBeUndefined();
     expect(result.shadowObservations).toEqual([]);
+  });
+
+  it("second formal planner 变化时仍完整汇总两读 Shadow 与原生能耗遥测", () => {
+    const deps = dependencies({
+      scope: scope([
+        immutablePolicyEntry("H", ["W1N1"], "suspended_shadow"),
+        immutablePolicyEntry("X", ["W2N2"], "writable"),
+      ]),
+      books: {
+        [RESOURCE_HYDROGEN]: [
+          order("h-shadow", RESOURCE_HYDROGEN, 700, 1_000, "E1S1"),
+        ],
+        [RESOURCE_CATALYST]: [
+          order("x-write", RESOURCE_CATALYST, 700, 1_000, "E2S2"),
+        ],
+      },
+    });
+    const calculateTransactionEnergy =
+      deps.calculateTransactionEnergy as jest.Mock;
+    calculateTransactionEnergy.mockImplementation(() =>
+      calculateTransactionEnergy.mock.calls.length >= 7 ? 1 : 0,
+    );
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(false);
+    expect(result.blocker).toBe("market_base_second_read_changed");
+    expect(result.first?.selected?.order.id).toBe("x-write");
+    expect(result.second?.selected?.order.id).toBe("x-write");
+    expect(calculateTransactionEnergy).toHaveBeenCalledTimes(8);
+    expect(result.shadowPlannerMode).toBe("per_lane");
+    expect(result.shadowPlannerInvocationCount).toBe(2);
+    expect(result.actualTransactionEnergyEvaluations).toBe(8);
+    expect(result.selected).toBeUndefined();
   });
 
   it("同 tick Shadow 重复 observation 幂等，而冲突 observation 重置证据", () => {
@@ -1530,7 +1790,7 @@ interface V3RuntimeHarness {
   }>;
 }
 
-function v3RuntimeFixture(): {
+function v3RuntimeFixture(writableCatalyst = true): {
   state: MarketBaseResourceV3RuntimeState;
   harness: V3RuntimeHarness;
   deps: MarketBaseResourceRuntimeDependencies & {
@@ -1576,7 +1836,7 @@ function v3RuntimeFixture(): {
   });
   if (!reconciled.ok) throw new Error("fixture scope rejected");
   const lanes = reconciled.state.laneLifecycles.map((lane) =>
-    lane.resource === RESOURCE_CATALYST
+    writableCatalyst && lane.resource === RESOURCE_CATALYST
       ? {
           ...lane,
           stage: "canary" as const,
@@ -1597,11 +1857,11 @@ function v3RuntimeFixture(): {
     entryGrants: MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map((entry) => ({
       entryId: entry.entryId,
       stage:
-        entry.resourceType === RESOURCE_CATALYST
+        writableCatalyst && entry.resourceType === RESOURCE_CATALYST
           ? ("continuous" as const)
           : ("shadow" as const),
       newDealGrant:
-        entry.resourceType === RESOURCE_CATALYST
+        writableCatalyst && entry.resourceType === RESOURCE_CATALYST
           ? ("enabled" as const)
           : ("suspended" as const),
       resourceFingerprint: entry.resourceFingerprint,
@@ -1674,37 +1934,39 @@ function v3RuntimeFixture(): {
     chain = result.state;
   };
   append(first);
-  const canaryGrant = buildMarketBaseResourceSignedLaneGrant({
-    lane: lanes.find((lane) => lane.resource === RESOURCE_CATALYST)!,
-    stage: "canary",
-    newDealGrant: "enabled",
-  });
-  append(
-    buildMarketBaseResourcePermit({
-      epoch: 3,
-      accountIdentity: V3_TEST_ACCOUNT,
-      sharedPolicy: shared,
-      ratchetHighWater,
-      signedLaneGrants: lanes.map((lane) =>
-        lane.resource === RESOURCE_CATALYST
-          ? canaryGrant
-          : buildMarketBaseResourceSignedLaneGrant({ lane, stage: "shadow" }),
-      ),
-      reviewedEvidence: [
-        {
-          laneId: canaryGrant.laneId,
-          kind: "shadow_qualification",
-          evidenceKey: v3Digest("qualified:x"),
-          digest: canaryGrant.lifecycleEvidenceDigest,
-        },
-      ],
-      previousPermitId: chain.currentPermitId,
-      previousPermitHead: chain.permitChainHead,
-      previousLedgerHead: V3_V2_HEAD,
-      createdAt: 101,
-      operatorAuthorizationFingerprint,
-    }),
-  );
+  if (writableCatalyst) {
+    const canaryGrant = buildMarketBaseResourceSignedLaneGrant({
+      lane: lanes.find((lane) => lane.resource === RESOURCE_CATALYST)!,
+      stage: "canary",
+      newDealGrant: "enabled",
+    });
+    append(
+      buildMarketBaseResourcePermit({
+        epoch: 3,
+        accountIdentity: V3_TEST_ACCOUNT,
+        sharedPolicy: shared,
+        ratchetHighWater,
+        signedLaneGrants: lanes.map((lane) =>
+          lane.resource === RESOURCE_CATALYST
+            ? canaryGrant
+            : buildMarketBaseResourceSignedLaneGrant({ lane, stage: "shadow" }),
+        ),
+        reviewedEvidence: [
+          {
+            laneId: canaryGrant.laneId,
+            kind: "shadow_qualification",
+            evidenceKey: v3Digest("qualified:x"),
+            digest: canaryGrant.lifecycleEvidenceDigest,
+          },
+        ],
+        previousPermitId: chain.currentPermitId,
+        previousPermitHead: chain.permitChainHead,
+        previousLedgerHead: V3_V2_HEAD,
+        createdAt: 101,
+        operatorAuthorizationFingerprint,
+      }),
+    );
+  }
   const migrationBasis =
     buildMarketBaseResourceAuthenticatedV2LedgerMigrationBasis({
       tick: 100,
@@ -2345,6 +2607,29 @@ describe("Market Base Resource scope tombstone discharge", () => {
 });
 
 describe("Market Base Resource V3 live WAL glue", () => {
+  it("全 Shadow 候选批规划不进入 WAL、claim 或 deal", () => {
+    const { state, deps, input } = v3RuntimeFixture(false);
+
+    const result = runMarketBaseResourceAutomation(state, input(), deps);
+
+    expect(result.planComplete).toBe(true);
+    expect(result.writes).toBe(0);
+    expect(state.lastPlanningSnapshot).toMatchObject({
+      complete: true,
+      eligibleOrderCount: 1,
+      transactionCostEvaluationBudget: 2,
+      shadowPlannerMode: "batch_candidate",
+      shadowPlannerInvocationCount: 1,
+      actualTransactionEnergyEvaluations: 2,
+    });
+    expect(state.lastPlanningSnapshot?.selected).toBeUndefined();
+    expect(state.ledger?.pending).toBeUndefined();
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+    expect(deps.releasePrepared).not.toHaveBeenCalled();
+  });
+
   it("可信价格上调会在 prepare commit 前单调持久化到 state ratchet", () => {
     const { state, harness, deps, input } = v3RuntimeFixture();
 
@@ -2821,6 +3106,17 @@ describe("Market Base Resource V3 live WAL glue", () => {
   it("outer anchor reader 与 runtime session 铸造成本计入同一 25 CPU 窗口", () => {
     const { state, harness, deps, input } = v3RuntimeFixture();
     state.preflightAt = harness.tick;
+    // 模拟上一版 bundle 留下、尚无 Shadow planner telemetry 的 snapshot。
+    (state as any).lastPlanningSnapshot = {
+      observedAt: harness.tick - 1,
+      complete: true,
+      sampledShadowLaneIds: [],
+      cpuUsed: 1,
+      rawOrderCount: 0,
+      eligibleOrderCount: 0,
+      distinctOrderRoomCount: 0,
+      transactionCostEvaluationBudget: 0,
+    };
     let anchorRead = false;
     const readLedgerRuntimeAnchor = deps.readLedgerRuntimeAnchor as jest.Mock;
     readLedgerRuntimeAnchor.mockImplementation(
@@ -2841,6 +3137,66 @@ describe("Market Base Resource V3 live WAL glue", () => {
     });
     expect(readLedgerRuntimeAnchor).toHaveBeenCalledTimes(1);
     expect(deps.readCurrentBuyOrders).not.toHaveBeenCalled();
+    expect(state.lastPlanningSnapshot).toMatchObject({
+      complete: false,
+      blocker: "market_base_cpu_ceiling_exceeded",
+      shadowPlannerMode: "none",
+      shadowPlannerInvocationCount: 0,
+      actualTransactionEnergyEvaluations: 0,
+    });
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("pre-planner CPU cut 不把上一 tick 的非零 planner telemetry 冒充当前值", () => {
+    const { state, harness, deps, input } = v3RuntimeFixture();
+    state.preflightAt = harness.tick;
+    state.lastPlanningSnapshot = {
+      observedAt: harness.tick - 1,
+      complete: true,
+      sampledShadowLaneIds: ["previous-lane"],
+      cpuUsed: 10,
+      rawOrderCount: 94,
+      eligibleOrderCount: 8,
+      distinctOrderRoomCount: 8,
+      transactionCostEvaluationBudget: 96,
+      shadowPlannerMode: "batch_candidate",
+      shadowPlannerInvocationCount: 1,
+      actualTransactionEnergyEvaluations: 12,
+    };
+    let anchorRead = false;
+    (deps.readLedgerRuntimeAnchor as jest.Mock).mockImplementation(
+      (current: MarketBaseResourceV3RuntimeState) => {
+        anchorRead = true;
+        return buildMarketBaseResourceLedgerRuntimeAnchor(
+          current.ledger!,
+          current.permitChain!,
+        );
+      },
+    );
+    deps.cpuUsed.mockImplementation(() => (anchorRead ? 26 : 0));
+
+    const result = runMarketBaseResourceAutomation(state, input(), deps);
+
+    expect(result.rejectedByReason).toMatchObject({
+      market_base_cpu_ceiling_exceeded: 1,
+    });
+    expect(deps.readCurrentBuyOrders).not.toHaveBeenCalled();
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+    expect(state.lastPlanningSnapshot).toMatchObject({
+      observedAt: harness.tick,
+      complete: false,
+      blocker: "market_base_cpu_ceiling_exceeded",
+      sampledShadowLaneIds: [],
+      rawOrderCount: 0,
+      eligibleOrderCount: 0,
+      distinctOrderRoomCount: 0,
+      transactionCostEvaluationBudget: 0,
+      shadowPlannerMode: "none",
+      shadowPlannerInvocationCount: 0,
+      actualTransactionEnergyEvaluations: 0,
+    });
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();
     expect(deps.executePrepared).not.toHaveBeenCalled();

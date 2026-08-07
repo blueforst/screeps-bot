@@ -24,7 +24,8 @@
 - [x] 3.5 写前双读动态 roster/lane set、非选中 lane、book/order、terminal/protection/energy/quota/permit/arbiter；任一变化零写
 - [x] 3.6 实现 raw/eligible/distinct-orderRoom/evaluation/CPU hard budget，测试 `2×16×128=4096` 与 129 目的房；writable 永不轮转或截断，超限整轮零写；仅 suspended Shadow 用 8-lane cursor
 - [x] 3.7 覆盖多房同资源、跨资源、高价小单/低价大单、远距高 gross、非选中 lane 变优、动态 roster 变化、56/112 lane 无饥饿轮转、cursor 重映射与预算超限测试
-- [x] 3.8 在纯 suspended Shadow、全资源 `eligible=0` 且无 writable lane 时合并为一次多资源 planner 调用；严格验证 artifact/覆盖/零候选/零回调，失败用新 capability 回退，CPU cut 不推进，并省略无写消费者的 full-read evidence 深哈希
+- [x] 3.8 在纯 suspended Shadow、全资源 `eligible=0` 且无 writable lane 时只对 exact ready 子集合并一次多资源 planner 调用，并保留局部 incomplete reset；严格验证 capability/artifact/覆盖/零候选/零回调，失败用新 capability 回退，CPU cut 不推进，并省略无写消费者的 full-read evidence 深哈希
+- [x] 3.9 在纯 suspended Shadow `eligible>0` 时只批处理 exact ready 子集；保留局部 incomplete reset，禁止 normalization capability 和 selected/admitted 外泄，验证冻结 book/order/binding/预算/callback，原生能耗 miss 前后 CPU 截断，并投影 planner mode/invocation/实际 evaluation 标量
 
 ## 4. 生产保护、Hub 与 Terminal Energy
 
@@ -76,3 +77,13 @@
 - Ledger 独立基准：cold runtime gate median/p95 为 `5.929/6.116ms`，prepare median/p95 为 `8.784/10.902ms`；未修改其阈值。
 - 实时盘口形状 fixture（5 resource、8 Shadow lane、112 raw、collector `eligible=0`）只执行一次多资源 normalization artifact、零 transaction-energy callback、八条 observation 完整；批失败、CPU cut、输入乱序、pending/arbiter、terminal/protection incomplete 和 fresh capability 回退均有确定性测试。
 - 三路独立终审分别复核 lifecycle/权限、订单簿/CPU、生产/OpenSpec/测试；修复混合 writable scope 丢失较早 lane-local reset 的 P2 后，最终 P0–P3 均为零并批准仅以 Shadow 部署。真实交易授权未改变。
+
+## 候选订单 Shadow 批规划优化验证记录（2026-08-07）
+
+- 最终 `npx tsc --noEmit`、`npm run build`、`git diff --check` 与 `npx openspec validate market-base-resource-all-rooms --strict` 均通过。
+- 最终拆分 Jest：排除 wall-clock Ledger benchmark 的 114 个 suite / 3,216 个 test 全部通过；`marketBaseResourceLedger.test.ts` 独立 1 个 suite / 21 个 test 全部通过，合计 115 个 suite / 3,237 个 test。
+- Ledger 独立基准保持门禁内：cold runtime gate median/p95 为 `5.737/5.912ms`，prepare median/p95 为 `8.640/9.078ms`；未修改阈值。
+- 线上同形状 fixture 固定 6 resource、8 sampled lane、6 unique seller room、94 raw、8 eligible、8 distinct order room 与 collector budget 96；4 条 production protection incomplete lane 保留局部 reset，其余 4 条 exact ready lane 只执行一次 candidate batch，normalization observer 为 `false`、原生 transaction-energy evaluation 为 12，fresh-capability fallback oracle 的逐 lane 结果完全一致。
+- CPU fixture 在第 5 次原生 transaction-energy 计算后越过 25 ceiling，随后零原生调用、零回退、零 cursor、零 formal selected；全 Shadow runtime fixture 同时断言零 WAL commit、零 claim、零 deal。另覆盖同一 seller room 的 L/U 均 ready 但机会结果不同，以及 ready Hub candidate，锁定 `resource+room+laneId` 精确投影。
+- 三路终审发现并修复：旧/上一 tick planning snapshot 遥测继承、第二读失败漏计实际调用、late writable early-return 漏计 Shadow 调用，以及 eligible=0 exact-ready-subset 的 OpenSpec 漂移；所有修复均有确定性回归。
+- 部署前 live 基线 tick `72833950` 仍为 `1e4416a`：planning complete、CPU `23.440539199997147`、raw 116、eligible 8、distinct order room 8、budget 80；全部 grant 仍为 Shadow+suspended，formal selected/WAL/claim/deal 为空。真实交易授权与生产保护均未放宽。

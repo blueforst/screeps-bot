@@ -240,6 +240,9 @@
             "eligibleOrderCount": 80,
             "distinctOrderRoomCount": 32,
             "transactionCostEvaluationBudget": 1024,
+            "shadowPlannerMode": "batch_candidate",
+            "shadowPlannerInvocationCount": 1,
+            "actualTransactionEnergyEvaluations": 96,
             "sampledShadowLaneIds": ["lane-z-e7"]
           }
         }
