@@ -24,6 +24,7 @@
 - [x] 3.5 写前双读动态 roster/lane set、非选中 lane、book/order、terminal/protection/energy/quota/permit/arbiter；任一变化零写
 - [x] 3.6 实现 raw/eligible/distinct-orderRoom/evaluation/CPU hard budget，测试 `2×16×128=4096` 与 129 目的房；writable 永不轮转或截断，超限整轮零写；仅 suspended Shadow 用 8-lane cursor
 - [x] 3.7 覆盖多房同资源、跨资源、高价小单/低价大单、远距高 gross、非选中 lane 变优、动态 roster 变化、56/112 lane 无饥饿轮转、cursor 重映射与预算超限测试
+- [x] 3.8 在纯 suspended Shadow、全资源 `eligible=0` 且无 writable lane 时合并为一次多资源 planner 调用；严格验证 artifact/覆盖/零候选/零回调，失败用新 capability 回退，CPU cut 不推进，并省略无写消费者的 full-read evidence 深哈希
 
 ## 4. 生产保护、Hub 与 Terminal Energy
 
@@ -67,3 +68,11 @@
 - 性能门禁：cold preflight P95 `<100ms`、ResourceControl+terminal read P95 `<75ms`、hot automation P95 `<20ms`、总 P95 `<150ms`；本轮 full Jest 的 512-ring prepare P95 为 `8.802ms`，三路独立终审中的 cold fixture 连续复跑均通过，诊断探针已删除。
 - 静态市场写面检查：`Game.market.deal` 仅存在于 `marketActionArbiter` 的受控执行入口；Pixel、legacy seller 与 Maker/hybrid 均由代码级闩阻断。
 - 主分支快进合并后最终 smoke：`main`、upgrader 与基础矿物自动化共 3 个 suite / 70 个 test 通过；512 receipt cold-Memory active outer tick 定向 fixture 通过。
+
+## Shadow 批规划优化验证记录（2026-08-07）
+
+- `npx tsc --noEmit`、`npm run build`、`git diff --check` 与 `openspec validate market-base-resource-all-rooms --strict` 均通过。
+- 完整拆分 Jest：排除 wall-clock Ledger benchmark 的 114 个 suite / 3,210 个 test 全部通过；`marketBaseResourceLedger.test.ts` 独立 1 个 suite / 21 个 test 全部通过，合计覆盖 115 个 suite / 3,231 个 test。
+- Ledger 独立基准：cold runtime gate median/p95 为 `5.929/6.116ms`，prepare median/p95 为 `8.784/10.902ms`；未修改其阈值。
+- 实时盘口形状 fixture（5 resource、8 Shadow lane、112 raw、collector `eligible=0`）只执行一次多资源 normalization artifact、零 transaction-energy callback、八条 observation 完整；批失败、CPU cut、输入乱序、pending/arbiter、terminal/protection incomplete 和 fresh capability 回退均有确定性测试。
+- 三路独立终审分别复核 lifecycle/权限、订单簿/CPU、生产/OpenSpec/测试；修复混合 writable scope 丢失较早 lane-local reset 的 P2 后，最终 P0–P3 均为零并批准仅以 Shadow 部署。真实交易授权未改变。

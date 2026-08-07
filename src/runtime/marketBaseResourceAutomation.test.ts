@@ -366,6 +366,7 @@ describe("Market Base Resource V3 runtime", () => {
         ([resource]) => resource === RESOURCE_CATALYST,
       ),
     ).toHaveLength(2);
+    expect(result.firstReadEvidence).toBeDefined();
   });
 
   it("第二读非选中 writable lane 变化也整轮零写，不换次优单", () => {
@@ -520,6 +521,51 @@ describe("Market Base Resource V3 runtime", () => {
     ]);
   });
 
+  it("后续 writable 提前阻断时保留较早 Shadow 的 lane-local reset", () => {
+    const shadowH = entry(
+      RESOURCE_HYDROGEN,
+      ["W1N1"],
+      "suspended_shadow",
+      100,
+    );
+    const writableX = entry(
+      RESOURCE_CATALYST,
+      ["W2N2"],
+      "writable",
+      500,
+    );
+    const deps = dependencies({
+      scope: scope([shadowH, writableX]),
+      books: {
+        [RESOURCE_HYDROGEN]: [
+          order("h-invalid", RESOURCE_HYDROGEN, 0, 1_000, "E1S1"),
+        ],
+        [RESOURCE_CATALYST]: [],
+      },
+    });
+    deps.readTerminal = jest.fn((roomName, resource) =>
+      roomName === "W2N2"
+        ? undefined
+        : terminal(roomName, resource, "terminal:stable"),
+    );
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(false);
+    expect(result.blocker).toBe(
+      "market_base_terminal_incomplete:lane:X:W2N2",
+    );
+    expect(result.shadowObservations).toEqual([
+      {
+        laneId: "lane:H:W1N1",
+        result: "incomplete",
+        blocker: "book_incomplete",
+      },
+    ]);
+    expect(result.selected).toBeUndefined();
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
   it("8-lane Shadow cursor 在两轮覆盖 10 lane 且完整观测推进", () => {
     const rooms = Array.from(
       { length: 10 },
@@ -578,7 +624,7 @@ describe("Market Base Resource V3 runtime", () => {
     expect(Object.isFrozen(apiOrder)).toBe(false);
   });
 
-  it("8 条 Shadow 面对 128 条低价单时全部使用调用内归一化 artifact", () => {
+  it("8 条 Shadow 面对 128 条低价单时只执行一次批量归一化", () => {
     const shadow = immutablePolicyEntry(
       "H",
       Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N1`),
@@ -609,9 +655,346 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.shadowObservations.every(
       (observation) => observation.result === "safe_no_opportunity",
     )).toBe(true);
-    expect(artifactProbe).toHaveBeenCalledTimes(8);
+    expect(artifactProbe).toHaveBeenCalledTimes(1);
     expect(artifactProbe.mock.calls.every(([used]) => used === true)).toBe(true);
     expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+    expect(result.firstReadEvidence).toBeUndefined();
+  });
+
+  it("实时形状的 5 资源 8 lane/112 raw 只执行一次 Shadow 批规划", () => {
+    const entries = [
+      immutablePolicyEntry("H", ["W1N1", "W2N1"], "suspended_shadow"),
+      immutablePolicyEntry("K", ["W3N1"], "suspended_shadow"),
+      immutablePolicyEntry(
+        "O",
+        ["W4N1", "W5N1", "W6N1"],
+        "suspended_shadow",
+      ),
+      immutablePolicyEntry("U", ["W7N1"], "suspended_shadow"),
+      immutablePolicyEntry("Z", ["W8N1"], "suspended_shadow"),
+    ].map((candidate) => ({
+      ...candidate,
+      quota: {
+        ...candidate.quota,
+        rollingCap: candidate.policy.resourceRollingCap,
+      },
+    }));
+    const resourceCounts: Array<[ResourceConstant, number]> = [
+      [RESOURCE_HYDROGEN, 24],
+      [RESOURCE_KEANIUM, 20],
+      [RESOURCE_OXYGEN, 28],
+      [RESOURCE_UTRIUM, 18],
+      [RESOURCE_ZYNTHIUM, 22],
+    ];
+    const books = Object.fromEntries(
+      resourceCounts.map(([resource, count]) => [
+        resource,
+        Array.from({ length: count }, (_unused, index) =>
+          order(
+            `${resource}-low-${String(index).padStart(3, "0")}`,
+            resource,
+            1,
+            1_000,
+            `E${index}S2`,
+          )),
+      ]),
+    ) as Partial<Record<ResourceConstant, MarketOrderSnapshot[]>>;
+    const deps = dependencies({
+      scope: scope(entries),
+      books,
+    });
+    const artifactProbe = jest.fn();
+    deps.observeShadowNormalizationArtifact = artifactProbe;
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.rawOrderCount).toBe(112);
+    expect(result.eligibleOrderCount).toBe(0);
+    expect(result.sampledShadowLaneIds).toHaveLength(8);
+    expect(result.shadowObservations).toHaveLength(8);
+    expect(result.shadowObservations.every(
+      (observation) => observation.result === "safe_no_opportunity",
+    )).toBe(true);
+    expect(deps.readCurrentBuyOrders).toHaveBeenCalledTimes(5);
+    expect(artifactProbe).toHaveBeenCalledTimes(1);
+    expect(artifactProbe).toHaveBeenLastCalledWith(true);
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+    expect(result.firstReadEvidence).toBeUndefined();
+  });
+
+  it.each([
+    ["pending", "active", "available"],
+    ["arbiter", "none", "claimed"],
+  ] as const)("纯 Shadow 批规划保留 %s 生产优先等待分类", (
+    _label,
+    pendingState,
+    arbiterState,
+  ) => {
+    const waitingScope = scope([
+      immutablePolicyEntry(
+        "H",
+        Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N2`),
+        "suspended_shadow",
+      ),
+    ]);
+    waitingScope.writeContext.pendingState = pendingState;
+    waitingScope.writeContext.arbiterState = arbiterState;
+    const deps = dependencies({
+      scope: waitingScope,
+      books: { [RESOURCE_HYDROGEN]: [] },
+    });
+    const artifactProbe = jest.fn();
+    deps.observeShadowNormalizationArtifact = artifactProbe;
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.shadowObservations).toHaveLength(8);
+    expect(result.shadowObservations.every(
+      (observation) => observation.result === "production_priority_wait",
+    )).toBe(true);
+    expect(artifactProbe).toHaveBeenCalledTimes(1);
+    expect(artifactProbe).toHaveBeenLastCalledWith(true);
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
+  it("任一 Shadow terminal 不完整时跳过批规划并保持逐 lane 隔离", () => {
+    const shadow = immutablePolicyEntry(
+      "H",
+      Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N3`),
+      "suspended_shadow",
+    );
+    const deps = dependencies({
+      scope: scope([shadow]),
+      books: { [RESOURCE_HYDROGEN]: [] },
+    });
+    deps.readTerminal = jest.fn((roomName, resource) =>
+      roomName === "W1N3"
+        ? undefined
+        : terminal(roomName, resource, "terminal:stable"),
+    );
+    const artifactProbe = jest.fn();
+    deps.observeShadowNormalizationArtifact = artifactProbe;
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.shadowObservations).toHaveLength(8);
+    expect(result.shadowObservations).toContainEqual({
+      laneId: "lane:H:W1N3",
+      result: "incomplete",
+      blocker: "market_base_terminal_incomplete",
+    });
+    expect(result.shadowObservations.filter(
+      (observation) => observation.result === "safe_no_opportunity",
+    )).toHaveLength(7);
+    expect(artifactProbe).toHaveBeenCalledTimes(7);
+    expect(artifactProbe.mock.calls.every(([used]) => used === true)).toBe(true);
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
+  it("任一 Shadow protection 不完整时跳过批规划并保持逐 lane 隔离", () => {
+    const shadow = immutablePolicyEntry(
+      "H",
+      Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N9`),
+      "suspended_shadow",
+    );
+    shadow.lanes[0]!.protection.complete = false;
+    const deps = dependencies({
+      scope: scope([shadow]),
+      books: { [RESOURCE_HYDROGEN]: [] },
+    });
+    const artifactProbe = jest.fn();
+    deps.observeShadowNormalizationArtifact = artifactProbe;
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.shadowObservations).toHaveLength(8);
+    expect(result.shadowObservations).toContainEqual({
+      laneId: "lane:H:W1N9",
+      result: "incomplete",
+      blocker: "market_base_protection_incomplete",
+    });
+    expect(result.shadowObservations.filter(
+      (observation) => observation.result === "safe_no_opportunity",
+    )).toHaveLength(7);
+    expect(artifactProbe).toHaveBeenCalledTimes(7);
+    expect(artifactProbe.mock.calls.every(([used]) => used === true)).toBe(true);
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
+  it("批规划遇到 collector/planner 形状差异时回退并整批 fail closed", () => {
+    const shadow = immutablePolicyEntry(
+      "H",
+      Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N4`),
+      "suspended_shadow",
+    );
+    const malformed = order(
+      "malformed-price",
+      RESOURCE_HYDROGEN,
+      0,
+      1_000,
+      "E1S4",
+    );
+    const deps = dependencies({
+      scope: scope([shadow]),
+      books: { [RESOURCE_HYDROGEN]: [malformed] },
+    });
+    deps.readCurrentBuyOrders.mockImplementation(() => [malformed]);
+    const artifactProbe = jest.fn();
+    deps.observeShadowNormalizationArtifact = artifactProbe;
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(true);
+    expect(result.eligibleOrderCount).toBe(0);
+    expect(result.shadowObservations).toHaveLength(8);
+    expect(result.shadowObservations.every(
+      (observation) =>
+        observation.result === "incomplete" &&
+        observation.blocker === "book_incomplete",
+    )).toBe(true);
+    expect(result.nextShadowCursor).toBeDefined();
+    expect(artifactProbe).not.toHaveBeenCalled();
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
+  it("批规划失败且已越过 CPU 上限时不强制逐 lane 回退或推进 cursor", () => {
+    const shadow = immutablePolicyEntry(
+      "H",
+      Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N5`),
+      "suspended_shadow",
+    );
+    const malformed = order(
+      "malformed-zero-price",
+      RESOURCE_HYDROGEN,
+      0,
+      1_000,
+      "E1S5",
+    );
+    const deps = dependencies({
+      scope: scope([shadow]),
+      books: { [RESOURCE_HYDROGEN]: [malformed] },
+    });
+    const cpuUsed = deps.cpuUsed as jest.Mock;
+    cpuUsed
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(26)
+      .mockReturnValue(26);
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(false);
+    expect(result.blocker).toBe("market_base_cpu_ceiling_exceeded");
+    expect(result.nextShadowCursor).toBeUndefined();
+    expect(result.shadowObservations).toEqual([]);
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
+  it("批规划对 entry/lane 输入排列保持完全相同的 lane 投影", () => {
+    const makeEntries = () => {
+      const hydrogen = immutablePolicyEntry(
+        "H",
+        ["W1N6", "W2N6", "W3N6", "W4N6"],
+        "suspended_shadow",
+      );
+      const oxygen = immutablePolicyEntry(
+        "O",
+        ["W5N6", "W6N6", "W7N6", "W8N6"],
+        "suspended_shadow",
+      );
+      oxygen.quota = {
+        ...oxygen.quota,
+        rollingCap: oxygen.policy.resourceRollingCap,
+      };
+      return [hydrogen, oxygen];
+    };
+    const forwardEntries = makeEntries();
+    const reversedEntries = makeEntries().reverse();
+    reversedEntries.forEach((candidate) => candidate.lanes.reverse());
+    const books = {
+      [RESOURCE_HYDROGEN]: [
+        order("h-low", RESOURCE_HYDROGEN, 1, 1_000, "E1S6"),
+      ],
+      [RESOURCE_OXYGEN]: [
+        order("o-low", RESOURCE_OXYGEN, 1, 1_000, "E2S6"),
+      ],
+    };
+    const forwardProbe = jest.fn();
+    const reversedProbe = jest.fn();
+    const forwardDeps = dependencies({
+      scope: scope(forwardEntries),
+      books,
+    });
+    const reversedDeps = dependencies({
+      scope: scope(reversedEntries),
+      books,
+    });
+    forwardDeps.observeShadowNormalizationArtifact = forwardProbe;
+    reversedDeps.observeShadowNormalizationArtifact = reversedProbe;
+
+    const forward = planMarketBaseResourceTwoRead(forwardDeps);
+    const reversed = planMarketBaseResourceTwoRead(reversedDeps);
+
+    expect(forward.complete).toBe(true);
+    expect(reversed.complete).toBe(true);
+    expect(reversed.sampledShadowLaneIds).toEqual(
+      forward.sampledShadowLaneIds,
+    );
+    expect(reversed.shadowObservations).toEqual(forward.shadowObservations);
+    expect(forwardProbe).toHaveBeenCalledTimes(1);
+    expect(reversedProbe).toHaveBeenCalledTimes(1);
+    expect(forwardDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
+    expect(reversedDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
+  });
+
+  it("批观测钩子异常时重新签发能力并与逐 lane 结果一致", () => {
+    const makeHarness = (): Harness => ({
+      scope: scope([
+        immutablePolicyEntry(
+          "H",
+          Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N7`),
+          "suspended_shadow",
+        ),
+      ]),
+      books: {
+        [RESOURCE_HYDROGEN]: Array.from(
+          { length: 32 },
+          (_unused, index) =>
+            order(
+              `low-${String(index).padStart(2, "0")}`,
+              RESOURCE_HYDROGEN,
+              1,
+              1_000,
+              `E${index}S7`,
+            ),
+        ),
+      },
+    });
+    const batchDeps = dependencies(makeHarness());
+    const fallbackDeps = dependencies(makeHarness());
+    const batchProbe = jest.fn();
+    const throwingProbe = jest.fn((_used: boolean) => {
+      throw new Error("diagnostic probe failed");
+    });
+    batchDeps.observeShadowNormalizationArtifact = batchProbe;
+    fallbackDeps.observeShadowNormalizationArtifact = throwingProbe;
+
+    const batch = planMarketBaseResourceTwoRead(batchDeps);
+    const fallback = planMarketBaseResourceTwoRead(fallbackDeps);
+
+    expect(batch.complete).toBe(true);
+    expect(fallback.complete).toBe(true);
+    expect(fallback.shadowObservations).toEqual(batch.shadowObservations);
+    expect(fallback.sampledShadowLaneIds).toEqual(batch.sampledShadowLaneIds);
+    expect(batchProbe).toHaveBeenCalledTimes(1);
+    expect(throwingProbe).toHaveBeenCalledTimes(9);
+    expect(throwingProbe.mock.calls.every(([used]) => used === true)).toBe(true);
+    expect(batchDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
+    expect(fallbackDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
   });
 
   it.each([

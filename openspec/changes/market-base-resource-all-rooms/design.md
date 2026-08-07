@@ -201,6 +201,12 @@ WAL 提交顺序保持 `outcome → receipt/head/checkpoint/lifetime → process
 - room/lane/order/rejection 观测均使用上述固定长度；不得把 lane×order 原始矩阵写入 Memory。
 - 新 Hub `baseMineralSurplus` 只能被 v3 Direct protection adapter 读取；legacy ResourceControl/Hub seller 必须有代码级永久闩，配置误开也不能消费该字段或调用市场写入口。
 
+纯 Shadow 无机会路径允许一个严格受限的调用内优化：仅当本轮全部采样 lane 都是 `suspended_shadow`、scope 中不存在 writable lane、terminal/protection 均完整、collector 对所有相关资源均证明 `eligible=0`，且每个资源都持有本次 full read 签发的 detached book capability 时，才把最多 8 条采样 lane 合并为一次多资源 planner 调用。调用内临时把这些 lane 标成 writable 只为强制 planner 走完整订单验证；原 scope、permit 与 grant 始终 suspended，批结果也不进入双读、WAL、claim 或 deal。
+
+批调用的 write-context revision 必须绑定排序后的 `laneId/resource/roomName/roomInstanceId`、原 revision、scope evidence、current roster 与 lane-set fingerprint。只有 planner `complete=true`、无 blocker/selected/safe/admitted/isolated lane、能耗回调为零、normalization artifact 恰好成功一次且 lane/book/capability 覆盖完全一致时，才可把结果投影为逐 lane `safe_no_opportunity` 或 `production_priority_wait`。任一异常、意外候选、回调、映射缺失或 artifact 失败都丢弃整批结果，并用同一 detached snapshot 新签的一次性 capability 回退到原逐 lane 路径；若批失败后已经超过 25 CPU，则不强制回退、不推进 cursor，也不生成完整 observation。
+
+当 `plannerEntries.length=0` 时不存在任何写入消费者，collector 可以省略 full-read book/terminal/protection evidence 的第二次深哈希；订单 clone、resource scope、terminal、protection、CPU 与批 planner 校验仍必须完整执行。只要存在 writable lane，原有完整 first/second-read evidence 和比较合同保持不变。
+
 ## Risks / Trade-offs
 
 - [lane 的资格与 Canary 周期较长] → suspended Shadow 每轮稳定采样最多 8 条、56/112 条分别最多 7/14 个健康周期覆盖一次，每次只启用一个 canary；优先处理当前确有大额 surplus 的 E1/X、E3/H、E4/X、E5/U、E6/X、E7N57/Z、E7N58/L、W1/K。

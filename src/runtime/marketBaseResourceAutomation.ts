@@ -18,6 +18,7 @@ import {
   type MarketDirectContinuousBook,
   type MarketDirectContinuousDetachedBookSnapshot,
   type MarketDirectContinuousEntryInput,
+  type MarketDirectContinuousInvocationBookCapability,
   type MarketDirectContinuousLaneInput,
   type MarketDirectContinuousPlanningResult,
   type PlanMarketDirectContinuousInput,
@@ -2732,6 +2733,351 @@ function blockedFullRead(
   };
 }
 
+interface PreparedShadowPlanningLane {
+  entry: V3EntryInput;
+  sourceLane: V3LaneInput;
+  plannerLane: MarketDirectContinuousLaneInput;
+  book: MarketDirectContinuousBook;
+  detachedBook?: MarketDirectContinuousDetachedBookSnapshot;
+}
+
+function shadowPlanningBindings(
+  records: readonly PreparedShadowPlanningLane[],
+): Array<{
+  laneId: string;
+  resource: string;
+  roomInstanceId: string;
+  roomName: string;
+}> {
+  return records
+    .map((record) => ({
+      laneId: record.sourceLane.laneId,
+      resource: record.entry.policy.resourceType,
+      roomInstanceId: record.sourceLane.roomInstanceId,
+      roomName: record.sourceLane.lane.roomName,
+    }))
+    .sort((left, right) => stableCompare(left.laneId, right.laneId));
+}
+
+function hasExactShadowPlanningCoverage(
+  records: readonly PreparedShadowPlanningLane[],
+  sampledLaneIds: readonly string[],
+): boolean {
+  const bindings = shadowPlanningBindings(records);
+  const expected = [...sampledLaneIds].sort(stableCompare);
+  return (
+    bindings.length === expected.length &&
+    new Set(bindings.map((binding) => binding.laneId)).size ===
+      bindings.length &&
+    bindings.every(
+      (binding, index) =>
+        binding.laneId === expected[index] &&
+        binding.resource.length > 0 &&
+        binding.roomInstanceId.length > 0 &&
+        binding.roomName.length > 0,
+    )
+  );
+}
+
+function hasExactShadowObservationCoverage(
+  observations: readonly MarketBaseResourceShadowObservation[],
+  sampledLaneIds: readonly string[],
+): boolean {
+  const observed = observations
+    .map((observation) => observation.laneId)
+    .sort(stableCompare);
+  const expected = [...sampledLaneIds].sort(stableCompare);
+  return (
+    observed.length === expected.length &&
+    new Set(observed).size === observed.length &&
+    observed.every((laneId, index) => laneId === expected[index])
+  );
+}
+
+function planSingleShadowLane(
+  record: PreparedShadowPlanningLane,
+  scope: MarketBaseResourcePlanningScopeSnapshot,
+  dependencies: MarketBaseResourcePlanningDependencies,
+  calculateTransactionEnergy: (
+    amount: number,
+    fromRoomName: string,
+    toRoomName: string,
+  ) => number,
+): MarketBaseResourceShadowObservation {
+  const { entry, sourceLane, plannerLane, book, detachedBook } = record;
+  let local: MarketDirectContinuousPlanningResult;
+  try {
+    const capability = detachedBook
+      ? issueMarketDirectContinuousInvocationBookCapability(detachedBook)
+      : undefined;
+    const invocationOptions =
+      capability || dependencies.observeShadowNormalizationArtifact
+        ? {
+            ...(capability
+              ? { detachedBookCapabilities: [capability] }
+              : {}),
+            ...(dependencies.observeShadowNormalizationArtifact
+              ? {
+                  observeNormalizationArtifact:
+                    dependencies.observeShadowNormalizationArtifact,
+                }
+              : {}),
+          }
+        : undefined;
+    local = planMarketDirectContinuous(
+      {
+        entries: [
+          {
+            ...entry,
+            policy: {
+              ...entry.policy,
+              allowedRooms: [plannerLane.lane.roomName],
+            },
+            lanes: [
+              {
+                ...plannerLane,
+                lane: {
+                  ...plannerLane.lane,
+                  // 仅用于纯函数机会判断；原始 scope/grant 仍是
+                  // suspended，且本模块不拥有任何写入口。
+                  authorization: "writable",
+                },
+              },
+            ],
+            book,
+            calculateTransactionEnergy: (
+              amount: number,
+              order: MarketOrderSnapshot,
+              sellerRoomName: string,
+            ) => {
+              if (!order.roomName) {
+                throw new Error("market base shadow order room missing");
+              }
+              return calculateTransactionEnergy(
+                amount,
+                sellerRoomName,
+                order.roomName,
+              );
+            },
+          } as MarketDirectContinuousEntryInput,
+        ],
+        energyShadow: { ...scope.energyShadow },
+        globalQuota: { ...scope.globalQuota },
+        writeContext: {
+          ...scope.writeContext,
+          revision: canonicalStableHashV1({
+            domain: "market-base-resource:shadow-read-context-v1",
+            laneId: sourceLane.laneId,
+            originalRevision: scope.writeContext.revision,
+            scopeEvidence: scope.scopeEvidence,
+          }),
+          pendingState: "none",
+          arbiterState: "available",
+        },
+      },
+      invocationOptions,
+    );
+  } catch {
+    return {
+      laneId: sourceLane.laneId,
+      result: "incomplete",
+      blocker: "market_base_shadow_planner_failed",
+    };
+  }
+  if (!local.complete) {
+    return {
+      laneId: sourceLane.laneId,
+      result: "incomplete",
+      blocker: local.blocker?.reason || "market_base_shadow_plan_incomplete",
+    };
+  }
+  return {
+    laneId: sourceLane.laneId,
+    result:
+      scope.writeContext.pendingState !== "none" ||
+      scope.writeContext.arbiterState !== "available"
+        ? "production_priority_wait"
+        : local.safeCandidates.length > 0
+          ? "safe_opportunity"
+          : "safe_no_opportunity",
+  };
+}
+
+/**
+ * collector 已证明全部采样资源 eligible=0 后，允许一次纯函数 planner
+ * 同时复核多资源 Shadow lane。结果只投影为 qualification observation；
+ * 任一候选、能耗回调、隔离 lane、artifact 或覆盖异常都返回 undefined，
+ * 由调用方使用新的一次性 capability 回退到逐 lane 旧路径。
+ */
+function tryPlanPureShadowBatch(
+  records: readonly PreparedShadowPlanningLane[],
+  sampledLaneIds: readonly string[],
+  scope: MarketBaseResourcePlanningScopeSnapshot,
+  dependencies: MarketBaseResourcePlanningDependencies,
+): MarketBaseResourceShadowObservation[] | undefined {
+  if (
+    records.length === 0 ||
+    !hasExactShadowPlanningCoverage(records, sampledLaneIds) ||
+    records.some(
+      (record) =>
+        record.sourceLane.lane.authorization !== "suspended_shadow" ||
+        !record.detachedBook ||
+        record.detachedBook.book !== record.book,
+    )
+  ) {
+    return undefined;
+  }
+
+  const bindings = shadowPlanningBindings(records);
+  const recordsByResource = new Map<string, PreparedShadowPlanningLane[]>();
+  for (const record of records) {
+    const resource = record.entry.policy.resourceType;
+    const existing = recordsByResource.get(resource);
+    if (existing) existing.push(record);
+    else recordsByResource.set(resource, [record]);
+  }
+
+  const capabilities: MarketDirectContinuousInvocationBookCapability[] = [];
+  const batchEntries: MarketDirectContinuousEntryInput[] = [];
+  let transactionEnergyCallbacks = 0;
+  for (const resource of [...recordsByResource.keys()].sort(stableCompare)) {
+    const resourceRecords = recordsByResource.get(resource)!;
+    resourceRecords.sort((left, right) =>
+      stableCompare(left.sourceLane.laneId, right.sourceLane.laneId),
+    );
+    const first = resourceRecords[0]!;
+    const rooms = resourceRecords.map(
+      (record) => record.sourceLane.lane.roomName,
+    );
+    if (
+      new Set(rooms).size !== rooms.length ||
+      resourceRecords.some(
+        (record) =>
+          record.entry !== first.entry ||
+          record.book !== first.book ||
+          record.detachedBook !== first.detachedBook ||
+          record.entry.policy.resourceType !== resource ||
+          record.sourceLane.lane.resourceType !== resource,
+      )
+    ) {
+      return undefined;
+    }
+    const capability = issueMarketDirectContinuousInvocationBookCapability(
+      first.detachedBook!,
+    );
+    if (!capability || capability.book !== first.book) return undefined;
+    capabilities.push(capability);
+    batchEntries.push({
+      ...first.entry,
+      policy: {
+        ...first.entry.policy,
+        allowedRooms: [...rooms].sort(stableCompare),
+      },
+      lanes: resourceRecords.map((record) => ({
+        ...record.plannerLane,
+        lane: {
+          ...record.plannerLane.lane,
+          // 批调用中每条 lane 都必须可被 planner 评估；真实授权仍只
+          // 存在于原 scope，且本结果没有任何写入消费者。
+          authorization: "writable",
+        },
+      })),
+      book: first.book,
+      calculateTransactionEnergy: () => {
+        transactionEnergyCallbacks += 1;
+        throw new Error("unexpected pure Shadow batch energy evaluation");
+      },
+    } as MarketDirectContinuousEntryInput);
+  }
+
+  const actualBindings = batchEntries
+    .flatMap((entry) =>
+      entry.lanes.map((lane) => {
+        const identified = lane as MarketDirectContinuousLaneInput & {
+          laneId?: string;
+          roomInstanceId?: string;
+        };
+        return {
+          laneId: identified.laneId || "",
+          resource: entry.policy.resourceType,
+          roomInstanceId: identified.roomInstanceId || "",
+          roomName: lane.lane.roomName,
+        };
+      }),
+    )
+    .sort((left, right) => stableCompare(left.laneId, right.laneId));
+  if (
+    canonicalStableHashV1(actualBindings) !==
+      canonicalStableHashV1(bindings) ||
+    capabilities.length !== batchEntries.length ||
+    new Set(capabilities.map((capability) => capability.book)).size !==
+      capabilities.length
+  ) {
+    return undefined;
+  }
+
+  const artifactSignals: boolean[] = [];
+  let batch: MarketDirectContinuousPlanningResult;
+  try {
+    batch = planMarketDirectContinuous(
+      {
+        entries: batchEntries,
+        energyShadow: { ...scope.energyShadow },
+        globalQuota: { ...scope.globalQuota },
+        writeContext: {
+          ...scope.writeContext,
+          revision: canonicalStableHashV1({
+            bindings,
+            currentLaneSetFingerprint: scope.currentLaneSetFingerprint,
+            currentRosterFingerprint: scope.currentRosterFingerprint,
+            domain: "market-base-resource:shadow-batch-read-context-v1",
+            originalRevision: scope.writeContext.revision,
+            scopeEvidence: scope.scopeEvidence,
+          }),
+          pendingState: "none",
+          arbiterState: "available",
+        },
+      },
+      {
+        detachedBookCapabilities: capabilities,
+        observeNormalizationArtifact: (used) => {
+          artifactSignals.push(used);
+        },
+      },
+    );
+  } catch {
+    return undefined;
+  }
+  if (
+    !batch.complete ||
+    batch.blocker !== undefined ||
+    batch.selected !== undefined ||
+    batch.safeCandidates.length !== 0 ||
+    batch.admittedCandidates.length !== 0 ||
+    batch.isolatedShadowLanes.length !== 0 ||
+    batch.budget.transactionEnergyEvaluations !== 0 ||
+    transactionEnergyCallbacks !== 0 ||
+    artifactSignals.length !== 1 ||
+    artifactSignals[0] !== true
+  ) {
+    return undefined;
+  }
+  try {
+    dependencies.observeShadowNormalizationArtifact?.(true);
+  } catch {
+    return undefined;
+  }
+  const result =
+    scope.writeContext.pendingState !== "none" ||
+      scope.writeContext.arbiterState !== "available"
+      ? "production_priority_wait"
+      : "safe_no_opportunity";
+  return bindings.map((binding) => ({
+    laneId: binding.laneId,
+    result,
+  }));
+}
+
 function collectFullRead(
   dependencies: MarketBaseResourcePlanningDependencies,
   cursor: string | undefined,
@@ -2960,10 +3306,15 @@ function collectFullRead(
     return value;
   };
 
+  const scopeHasWritableLane = scope.entries.some((entry) =>
+    entry.lanes.some((lane) => lane.lane.authorization === "writable"),
+  );
   const plannerEntries: MarketDirectContinuousEntryInput[] = [];
+  const preparedShadowLanes: PreparedShadowPlanningLane[] = [];
   const shadowObservations: MarketBaseResourceShadowObservation[] = [];
   for (const entry of scope.entries) {
     const lanes: MarketDirectContinuousLaneInput[] = [];
+    const entryPreparedShadowLanes: PreparedShadowPlanningLane[] = [];
     const sortedLanes = [...entry.lanes].sort((left, right) =>
       stableCompare(left.laneId, right.laneId),
     );
@@ -3097,106 +3448,29 @@ function collectFullRead(
         }
         continue;
       }
-      let local: MarketDirectContinuousPlanningResult;
-      try {
-        const detached = detachedShadowBooks.get(entry.policy.resourceType);
-        const capability = detached
-          ? issueMarketDirectContinuousInvocationBookCapability(detached)
-          : undefined;
-        const invocationOptions =
-          capability || dependencies.observeShadowNormalizationArtifact
-            ? {
-                ...(capability
-                  ? { detachedBookCapabilities: [capability] }
-                  : {}),
-                ...(dependencies.observeShadowNormalizationArtifact
-                  ? {
-                      observeNormalizationArtifact:
-                        dependencies.observeShadowNormalizationArtifact,
-                    }
-                  : {}),
-              }
-            : undefined;
-        local = planMarketDirectContinuous(
-          {
-            entries: [
-              {
-                ...entry,
-                policy: {
-                  ...entry.policy,
-                  allowedRooms: [shadowLane.lane.roomName],
-                },
-                lanes: [
-                  {
-                    ...shadowLane,
-                    lane: {
-                      ...shadowLane.lane,
-                      // 仅用于纯函数机会判断；原始 scope/grant 仍是
-                      // suspended，且本模块不拥有任何写入口。
-                      authorization: "writable",
-                    },
-                  },
-                ],
-                book,
-                calculateTransactionEnergy: (
-                  amount: number,
-                  order: MarketOrderSnapshot,
-                  sellerRoomName: string,
-                ) => {
-                  if (!order.roomName) {
-                    throw new Error("market base shadow order room missing");
-                  }
-                  return calculateBoundedTransactionEnergy(
-                    amount,
-                    sellerRoomName,
-                    order.roomName,
-                  );
-                },
-              } as MarketDirectContinuousEntryInput,
-            ],
-            energyShadow: { ...scope.energyShadow },
-            globalQuota: { ...scope.globalQuota },
-            writeContext: {
-              ...scope.writeContext,
-              revision: canonicalStableHashV1({
-                domain: "market-base-resource:shadow-read-context-v1",
-                laneId: sourceLane.laneId,
-                originalRevision: scope.writeContext.revision,
-                scopeEvidence: scope.scopeEvidence,
-              }),
-              pendingState: "none",
-              arbiterState: "available",
-            },
-          },
-          invocationOptions,
-        );
-      } catch {
-        shadowObservations.push({
-          laneId: sourceLane.laneId,
-          result: "incomplete",
-          blocker: "market_base_shadow_planner_failed",
-        });
-        continue;
-      }
-      if (!local.complete) {
-        shadowObservations.push({
-          laneId: sourceLane.laneId,
-          result: "incomplete",
-          blocker:
-            local.blocker?.reason || "market_base_shadow_plan_incomplete",
-        });
-        continue;
-      }
-      shadowObservations.push({
-        laneId: sourceLane.laneId,
-        result:
-          scope.writeContext.pendingState !== "none" ||
-          scope.writeContext.arbiterState !== "available"
-            ? "production_priority_wait"
-            : local.safeCandidates.length > 0
-              ? "safe_opportunity"
-              : "safe_no_opportunity",
+      entryPreparedShadowLanes.push({
+        entry,
+        sourceLane,
+        plannerLane: shadowLane,
+        book,
+        detachedBook: detachedShadowBooks.get(entry.policy.resourceType),
       });
+    }
+    if (scopeHasWritableLane) {
+      // 混合 scope 保持原逐 entry 时序：若后续 writable entry fail closed，
+      // 已确定的较早 Shadow lane-local reset 仍须随 blocker 返回。
+      for (const record of entryPreparedShadowLanes) {
+        shadowObservations.push(
+          planSingleShadowLane(
+            record,
+            scope,
+            dependencies,
+            calculateBoundedTransactionEnergy,
+          ),
+        );
+      }
+    } else {
+      preparedShadowLanes.push(...entryPreparedShadowLanes);
     }
     const writableLanes = lanes.filter(
       (lane) =>
@@ -3238,6 +3512,60 @@ function collectFullRead(
     } as MarketDirectContinuousEntryInput);
   }
 
+  const pureShadowBatchEligible =
+    !scopeHasWritableLane &&
+    eligibleOrderCount === 0 &&
+    shadowObservations.length === 0 &&
+    hasExactShadowPlanningCoverage(preparedShadowLanes, shadow.selected);
+  const batchObservations = pureShadowBatchEligible
+    ? tryPlanPureShadowBatch(
+        preparedShadowLanes,
+        shadow.selected,
+        scope,
+        dependencies,
+      )
+    : undefined;
+  if (batchObservations) {
+    shadowObservations.push(...batchObservations);
+  } else {
+    // 批路径可能已消费 capability；回退逐 lane 时必须从同一 detached
+    // snapshot 重新签发，绝不复用批调用中的一次性对象。
+    if (pureShadowBatchEligible && cpuExceeded(dependencies, cpuStartedAt)) {
+      return blockedFullRead(scope, "market_base_cpu_ceiling_exceeded", {
+        sampledShadowLaneIds: shadow.selected,
+        shadowObservations,
+        rawOrderCount,
+        eligibleOrderCount,
+        distinctOrderRoomCount: evaluatedDistinctOrderRooms.size,
+        transactionCostEvaluationBudget,
+      });
+    }
+    for (const record of preparedShadowLanes) {
+      shadowObservations.push(
+        planSingleShadowLane(
+          record,
+          scope,
+          dependencies,
+          calculateBoundedTransactionEnergy,
+        ),
+      );
+    }
+  }
+  if (!hasExactShadowObservationCoverage(shadowObservations, shadow.selected)) {
+    return blockedFullRead(
+      scope,
+      "market_base_shadow_observation_coverage_incomplete",
+      {
+        sampledShadowLaneIds: shadow.selected,
+        shadowObservations,
+        rawOrderCount,
+        eligibleOrderCount,
+        distinctOrderRoomCount: evaluatedDistinctOrderRooms.size,
+        transactionCostEvaluationBudget,
+      },
+    );
+  }
+
   const plannerInput: PlanMarketDirectContinuousInput = {
     entries: plannerEntries,
     energyShadow: { ...scope.energyShadow },
@@ -3253,41 +3581,46 @@ function collectFullRead(
       }),
     },
   };
-  const evidence: MarketBaseResourceFullReadEvidence = {
-    bookFingerprint: canonicalStableHashV1({
-      books: [...books.entries()]
-        .sort(([left], [right]) => stableCompare(left, right))
-        .map(([resource, book]) => ({
-          book,
-          resource,
-        })),
-      domain: "market-base-resource:full-read-books-v1",
-    }),
-    protectionFingerprint:
-      scope.protectionFingerprint ||
-      canonicalStableHashV1({
-        domain: "market-base-resource:full-read-protection-v1",
-        entries: plannerEntries.map((entry) => ({
-          lanes: entry.lanes.map((lane) => ({
-            protection: lane.protection,
-            roomName: lane.lane.roomName,
-          })),
-          resource: entry.policy.resourceType,
-        })),
-      }),
-    energyReadinessFingerprint: canonicalStableHashV1({
-      domain: "market-base-resource:full-read-energy-readiness-v1",
-      energyShadow: scope.energyShadow,
-      terminalEvidence,
-    }),
-    arbiterFingerprint:
-      scope.arbiterFingerprint ||
-      canonicalStableHashV1({
-        domain: "market-base-resource:full-read-arbiter-v1",
-        writeContext: scope.writeContext,
-      }),
-    pricingRatchetFingerprint: scope.pricingRatchet?.fingerprint || "",
-  };
+  // 无 writable lane 时本函数随即返回 Shadow qualification 结果；完整
+  // 双读证据没有任何写入消费者，因此不重复深哈希整本订单和 terminal。
+  const evidence: MarketBaseResourceFullReadEvidence | undefined =
+    plannerEntries.length === 0
+      ? undefined
+      : {
+          bookFingerprint: canonicalStableHashV1({
+            books: [...books.entries()]
+              .sort(([left], [right]) => stableCompare(left, right))
+              .map(([resource, book]) => ({
+                book,
+                resource,
+              })),
+            domain: "market-base-resource:full-read-books-v1",
+          }),
+          protectionFingerprint:
+            scope.protectionFingerprint ||
+            canonicalStableHashV1({
+              domain: "market-base-resource:full-read-protection-v1",
+              entries: plannerEntries.map((entry) => ({
+                lanes: entry.lanes.map((lane) => ({
+                  protection: lane.protection,
+                  roomName: lane.lane.roomName,
+                })),
+                resource: entry.policy.resourceType,
+              })),
+            }),
+          energyReadinessFingerprint: canonicalStableHashV1({
+            domain: "market-base-resource:full-read-energy-readiness-v1",
+            energyShadow: scope.energyShadow,
+            terminalEvidence,
+          }),
+          arbiterFingerprint:
+            scope.arbiterFingerprint ||
+            canonicalStableHashV1({
+              domain: "market-base-resource:full-read-arbiter-v1",
+              writeContext: scope.writeContext,
+            }),
+          pricingRatchetFingerprint: scope.pricingRatchet?.fingerprint || "",
+        };
   return {
     complete: true,
     scope,
@@ -3299,7 +3632,7 @@ function collectFullRead(
     eligibleOrderCount,
     distinctOrderRoomCount: evaluatedDistinctOrderRooms.size,
     transactionCostEvaluationBudget,
-    evidence,
+    ...(evidence ? { evidence } : {}),
     terminalReads,
   };
 }

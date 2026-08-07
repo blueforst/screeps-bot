@@ -293,6 +293,18 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 - **WHEN** 某批 Shadow 已选中但在形成完整 observation 前超过 CPU ceiling
 - **THEN** 该批不推进、不清零、不计完整周期，cursor 也不得把它们当作已完成跳过；writable scope 若存在则本 tick 零写
 
+#### Scenario: 纯 Shadow 无机会批量复核
+- **WHEN** 本轮全部采样 lane 都是 suspended Shadow、没有 writable lane、terminal/protection 完整，且 collector 对全部相关资源证明 `eligible=0`
+- **THEN** 系统 MAY 使用一次多资源 planner 调用复核最多 8 条 lane，但必须让每条 lane 都进入完整 planner 校验、为每个 detached book 使用一次性 capability，并且只有无 blocker、无候选、无能耗回调、无 isolated lane、artifact 与 lane/resource/room/instance 覆盖完全一致时才投影逐 lane 完整 observation；批结果不得进入双读、WAL、claim 或 deal
+
+#### Scenario: Shadow 批量复核异常
+- **WHEN** 批调用出现异常、意外候选、transaction-energy 回调、artifact 失败或 lane/book/capability 映射不完整
+- **THEN** 系统必须丢弃全部批结果并用新签的一次性 capability 回退到原逐 lane planner；若此时已超过 25 CPU，则不得强制回退、推进 cursor 或保留安全 observation
+
+#### Scenario: 无 Writable Lane 不生成写证据
+- **WHEN** full read 完成且 `plannerEntries` 为空
+- **THEN** 系统 MAY 省略只供写前双读使用的整本 book/terminal/protection evidence 深哈希，但仍必须完成订单 clone、scope、terminal、protection、CPU 和 Shadow planner 校验；只要存在 writable lane 就必须恢复完整双读证据
+
 #### Scenario: Cache 不发生白名单抖动
 - **WHEN** 七种基础矿物与 Energy history 均被缓存
 - **THEN** 八项必须在固定 cache 上界内稳定工作，禁止资源不能触发第九项 eviction
