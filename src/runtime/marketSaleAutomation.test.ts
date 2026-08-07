@@ -3688,13 +3688,10 @@ describe("marketSaleAutomation 编排", () => {
           grant.stage === "shadow" && grant.newDealGrant === "suspended",
       ),
     ).toBe(true);
-    const sampledResource = [...state.scope!.laneLifecycles].sort((left, right) =>
-      left.laneId.localeCompare(right.laneId),
-    )[0]!.resource;
     const rawBook = Array.from({ length: 128 }, (_, index) =>
       order(`outer-raw-${String(index).padStart(3, "0")}`, {
         type: ORDER_BUY,
-        resourceType: sampledResource,
+        resourceType: RESOURCE_HYDROGEN,
         roomName: "E9N9",
         price: 0.001,
         totalAmount: 1_000,
@@ -3704,8 +3701,11 @@ describe("marketSaleAutomation 编排", () => {
     );
     (Game.market.getAllOrders as jest.Mock).mockImplementation(
       (filter?: { type?: string; resourceType?: string }) =>
-        filter?.type === ORDER_BUY && filter.resourceType === sampledResource
-          ? rawBook.map((candidate) => ({ ...candidate }))
+        filter?.type === ORDER_BUY && filter.resourceType
+          ? rawBook.map((candidate) => ({
+              ...candidate,
+              resourceType: filter.resourceType,
+            }))
           : [],
     );
 
@@ -3789,10 +3789,17 @@ describe("marketSaleAutomation 编排", () => {
     const sampledLaneIds =
       plannedState.lastPlanningSnapshot!.sampledShadowLaneIds;
     expect(sampledLaneIds).toHaveLength(8);
-    expect(plannedState.scope!.shadowCursor).toBe(sampledLaneIds[7]);
     const sampledLifecycles = plannedState.scope!.laneLifecycles
       .filter((lane) => sampledLaneIds.includes(lane.laneId));
     expect(sampledLifecycles).toHaveLength(8);
+    const sampledResources = [
+      ...new Set(sampledLifecycles.map((lane) => lane.resource)),
+    ];
+    expect(sampledResources).toHaveLength(1);
+    const sampledResource = sampledResources[0]!;
+    expect(plannedState.scope!.shadowCursor).toBe(
+      `mbr-shadow-cursor-v2|${sampledResource}|${sampledLaneIds[7]}`,
+    );
     expect(
       sampledLifecycles.every(
         (lane) => lane.shadowEvidence.completeCycles === 1,

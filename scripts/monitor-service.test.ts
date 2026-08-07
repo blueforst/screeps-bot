@@ -749,6 +749,8 @@ describe("monitor-service market sale automation projection", () => {
           shadowPlannerMode: "batch_candidate",
           shadowPlannerInvocationCount: 1,
           actualTransactionEnergyEvaluations: 96,
+          evaluatedShadowResourceCount: 1,
+          candidateIdentityOrderChecks: 700,
         }),
         blocker: null,
       }),
@@ -772,6 +774,40 @@ describe("monitor-service market sale automation projection", () => {
         }),
       }),
     ]);
+  });
+
+  test("旧 V3 planning snapshot 缺少新增资源与身份检查指标时安全投影 null", () => {
+    const sourcePath = resolve(
+      REPO_ROOT,
+      "scripts/fixtures/market-sale-continuous-monitor.json",
+    );
+    const fixture = JSON.parse(
+      readFileSync(sourcePath, "utf8"),
+    ) as Record<string, any>;
+    const planning =
+      fixture.data.marketSaleAutomation.directAutomation.baseResourceV3
+        .lastPlanningSnapshot;
+    delete planning.evaluatedShadowResourceCount;
+    delete planning.candidateIdentityOrderChecks;
+
+    const temporaryDirectory = mkdtempSync(
+      resolve(tmpdir(), "screeps-monitor-old-planning-"),
+    );
+    const fixturePath = resolve(temporaryDirectory, "fixture.json");
+    try {
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const { payload } = executeFixture(fixturePath);
+      expect(
+        payload.memory.marketSaleAutomation.direct.baseResourceV3.planning,
+      ).toEqual(
+        expect.objectContaining({
+          evaluatedShadowResourceCount: null,
+          candidateIdentityOrderChecks: null,
+        }),
+      );
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 
 });

@@ -243,6 +243,8 @@
             "shadowPlannerMode": "batch_candidate",
             "shadowPlannerInvocationCount": 1,
             "actualTransactionEnergyEvaluations": 96,
+            "evaluatedShadowResourceCount": 1,
+            "candidateIdentityOrderChecks": 700,
             "sampledShadowLaneIds": ["lane-z-e7"]
           }
         }

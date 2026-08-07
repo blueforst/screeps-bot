@@ -107,7 +107,7 @@ validator 据此按记录自身显式版本或受认证 legacy cutoff 分派 can
 
 每次 full planning：
 
-1. 对七种资源各读取一次可信历史和完整 BUY book；同资源所有房间共享同一不可变 book snapshot。同 ID 同 canonical 内容只计一次；同 ID 内容冲突、跨资源重复、resource/type 不匹配或无法排除自有订单时该 book 不完整。写前第二读必须重新调用 API 并构造独立 snapshot/object，不能复用第一读缓存或 memo。
+1. 对正式 writable universe 涉及的全部资源，以及本轮 suspended Shadow resource-major cohort 的单一资源，各读取一次可信历史和完整 BUY book；纯 Shadow 时不得为未采样资源提前读 book。同资源所有房间共享同一不可变 book snapshot。同 ID 同 canonical 内容只计一次；同 ID 内容冲突、跨资源重复、resource/type 不匹配或无法排除自有订单时该 book 不完整。存在 writable 消费者时，写前第二读必须重新调用 API 并构造独立 snapshot/object，不能复用第一读缓存或 memo。
 2. 为 permit 中全部 lane 读取 ownership、terminal、capacity、Hub class、保护、quota 与 lifecycle。
 3. suspended Shadow lane 的局部不完整只重置自身；任一 writable lane 的 terminal/book/protection 不完整，或任一 shared/未知作用域证据不完整，本 tick 全局零写。
 4. 只有 `sellableAmount>=1,000`、terminal 实存至少 1,000、cooldown 0、能量和 quota 完整的 writable lane 才生成 tuple；无可售量的完整 lane 是安全无机会，不需要伪造候选。
@@ -115,7 +115,7 @@ validator 据此按记录自身显式版本或受认证 legacy cutoff 分派 can
 6. 先按单位净价、总净额、gross price 降序，再按 resource/room/orderId 升序稳定排序。订单剩余量、库存量、capacity state 和配置顺序不得排在价格之前。
 7. 写前重新读取完整 writable lane universe、动态 roster、book/order、terminal、protection、energy、quota、permit/head、arbiter 和 production intent；任何变化或最佳 tuple 改变都零写，不换次优单。全部 writable lane 每轮必须完整扫描，绝不轮转或截断；超预算时整轮零写。
 
-只有 suspended Shadow 可按排序 laneId 使用持久 cursor 轮转，`maxShadowLanesPerCycle=8`。在 roster 不变且 CPU/依赖完整时，56/112 条 active lane 分别最多 7/14 个完整规划周期被采样一次；roster 改变时 cursor 以最后 laneId 的稳定后继重映射，不能跳过前缀。未采样 lane 不推进也不清零；CPU cut/依赖不完整的采样不算完整观测，cursor 仅在该批 observation 形成终态后推进。
+只有 suspended Shadow 使用持久 cursor 轮转，`maxShadowLanesPerCycle=8`。调度器按冻结 catalog 的 resource-major 顺序构造 cohort，资源内按 opaque `laneId` 排序，每资源每 8 条 active lane（包含 writable）固定分块，再过滤其中 suspended lane；批次绝不跨资源补位，cohort anchor 即该 active chunk 的末 lane，即使 anchor 已晋级 writable 也不改变边界。cursor 使用有版本的 `(resource,laneId)`，legacy bare laneId 位于某 cohort 时视该 cohort 已完成并迁移到下一非空 cohort；anchor 缺失时按 catalog resource index + laneId 的严格稳定后继重映射并环回。稳定 suspended 集合的完整覆盖周期数为各资源 active chunk 中含 Shadow 的 cohort 数之和；当前 56/112 条 active lane 分别最多 7/14 个完整规划周期被采样一次。未采样 lane 不推进也不清零；CPU cut/依赖不完整的采样不算完整观测，cursor 仅在该批 observation 形成终态后推进。
 
 容量 emergency 不再单独降低经济资格。Direct deal 若只消耗 terminal 中现有基础矿物与交易能量，且保护/底价/terminal 均完整，可以释放空间；它不能因为 emergency 获得更低 floor、更大 batch 或更宽 quota。
 
@@ -201,13 +201,15 @@ WAL 提交顺序保持 `outcome → receipt/head/checkpoint/lifetime → process
 - room/lane/order/rejection 观测均使用上述固定长度；不得把 lane×order 原始矩阵写入 Memory。
 - 新 Hub `baseMineralSurplus` 只能被 v3 Direct protection adapter 读取；legacy ResourceControl/Hub seller 必须有代码级永久闩，配置误开也不能消费该字段或调用市场写入口。
 
-纯 Shadow 无机会路径允许一个严格受限的调用内优化：仅当本轮全部采样 lane 都是 `suspended_shadow`、scope 中不存在 writable lane、已形成局部 incomplete reset 的 `preObserved` 与其余 ready lane 互斥且精确覆盖 sampled lane、ready lane 的 terminal/protection/book 完整、collector 对所有相关资源均证明 `eligible=0`，且 ready 子集的每个资源都持有本次 full read 签发的 detached book capability 时，才把最多 8 条 ready lane 合并为一次多资源 planner 调用。调用内临时把这些 ready lane 标成 writable 只为强制 planner 走完整订单验证；preObserved reset 保持原样，原 scope、permit 与 grant 始终 suspended，批结果也不进入双读、WAL、claim 或 deal。
+纯 Shadow 无机会路径允许一个严格受限的调用内优化：仅当本轮全部采样 lane 都是同一 resource-major cohort 的 `suspended_shadow`、scope 中不存在 writable lane、已形成局部 incomplete reset 的 `preObserved` 与其余 ready lane 互斥且精确覆盖 sampled lane、ready lane 的 terminal/protection/book 完整、collector 对该资源证明 `eligible=0`，且 ready 子集持有本次 full read 签发的 detached book capability 时，才把最多 8 条 ready lane 合并为一次 planner 调用。调用内临时把这些 ready lane 标成 writable 只为强制 planner 走完整订单验证；preObserved reset 保持原样，原 scope、permit 与 grant 始终 suspended，批结果也不进入双读、WAL、claim 或 deal。
 
 批调用的 write-context revision 必须绑定排序后的 `laneId/resource/roomName/roomInstanceId`、原 revision、scope evidence、current roster 与 lane-set fingerprint。只有 planner `complete=true`、无 blocker/selected/safe/admitted/isolated lane、能耗回调为零、normalization artifact 恰好成功一次且 lane/book/capability 覆盖完全一致时，才可把结果投影为逐 lane `safe_no_opportunity` 或 `production_priority_wait`。任一异常、意外候选、回调、映射缺失或 artifact 失败都丢弃整批结果，并用同一 detached snapshot 新签的一次性 capability 回退到原逐 lane 路径；若批失败后已经超过 25 CPU，则不强制回退、不推进 cursor，也不生成完整 observation。
 
-纯 Shadow 有候选路径复用上述 exact-ready-subset 入口；区别是候选路径不得传 detached normalization capability，必须走 planner 原 canonical finish，并要求 artifact observer 精确返回 `false`。synthetic writable、planner 的 `selected`/`admittedCandidates` 和正式 `plannerEntries` 均不得离开 helper；只有 `safeCandidates` 可按唯一 `(resource, sellerRoom)` 映射回精确 `laneId`，用于生成 `safe_opportunity`/`safe_no_opportunity`。每个 candidate/rejection/order 必须属于对应冻结 detached book，safe/admitted/selected tuple 集合必须满足子集关系和唯一性，seller room、distinct order room、实际 transaction-energy callback 数必须与 collector 上界闭合。任何不一致丢弃整批结果并以同一冻结 book 新签能力逐 lane 回退。模式由 collector 的全量 `eligibleOrderCount` 决定：全局为零时走 capability/artifact=true；全局大于零时即使 ready 子集自身最终无候选，也必须走无 capability/artifact=false 的保守 canonical 路径。
+纯 Shadow 有候选路径复用上述 exact-ready-subset 入口；区别是候选路径不得传 detached normalization capability，必须走 planner 原 canonical finish，并要求 artifact observer 精确返回 `false`。synthetic writable、planner 的 `selected`/`admittedCandidates` 和正式 `plannerEntries` 均不得离开 helper；只有 `safeCandidates` 可按唯一 `(resource, sellerRoom)` 映射回精确 `laneId`，用于生成 `safe_opportunity`/`safe_no_opportunity`。每个 candidate/rejection/order 必须属于对应冻结 detached book，safe/admitted/selected tuple 集合必须满足子集关系和唯一性，seller room、distinct order room、实际 transaction-energy callback 数必须与 collector 上界闭合。任何不一致丢弃整批结果并以同一冻结 book 新签能力逐 lane 回退。模式由该单资源 cohort collector 的全量 `eligibleOrderCount` 决定：为零时走 capability/artifact=true 的专用 validation-only 分支，且不得为 candidate-only 校验再次遍历 order book 或构造 tuple Set；大于零时即使 ready 子集自身最终无候选，也必须走无 capability/artifact=false 的保守 canonical 路径。
 
-transaction-energy memo 的每次原生 miss 必须在调用前后检查同一个 25 CPU 窗口；一旦越界，禁止后续原生计算、逐 lane 回退、cursor 推进和安全 observation。planning snapshot/monitor 只增加有界标量 `shadowPlannerMode`、`shadowPlannerInvocationCount`、`actualTransactionEnergyEvaluations`，不得记录 lane×order 矩阵。该优化不提高 CPU ceiling，也不改变任何 permit、Shadow/Canary 生命周期或生产保护。
+transaction-energy memo 的每次原生 miss、批/逐 lane planner 调用前后都必须检查同一个 25 CPU 窗口；候选身份扫描每 32 条 order 至少检查一次。一旦越界，禁止后续原生计算、尚未发生的逐 lane 回退、cursor 推进和安全 observation；未真正进入 fallback 时不得把 mode 记为 `batch_fallback`。planning snapshot/monitor 只增加有界标量 `shadowPlannerMode`、`shadowPlannerInvocationCount`、`actualTransactionEnergyEvaluations`、`evaluatedShadowResourceCount` 与 `candidateIdentityOrderChecks`，不得记录 lane×order 矩阵。其中 `evaluatedShadowResourceCount` 表示单次 full read 所采样 Shadow cohort 的 distinct resource 宽度，双读按最大值合并而不累加，不代表 BUY-book API 总调用次数；`candidateIdentityOrderChecks` 才按两读实际检查条数累加。该优化不提高 CPU ceiling，也不改变任何 permit、Shadow/Canary 生命周期或生产保护。
+
+resource-major cohort 只解决当前全 suspended Shadow 的订单簿固定成本，不构成 Canary/Continuous 的活性证明。同资源同时存在 writable 与多条 Shadow 时，现有 mixed 路径仍可能逐 lane 重复 normalization，并在正式全局 planner/第二读之前耗尽 25 CPU；因此任何 writable grant 前必须另行通过 same-resource mixed 的真实 CPU 合同和线上门禁，不能以本次纯 Shadow 结果授权交易。
 
 当 `plannerEntries.length=0` 时不存在任何写入消费者，collector 可以省略 full-read book/terminal/protection evidence 的第二次深哈希；订单 clone、resource scope、terminal、protection、CPU 与批 planner 校验仍必须完整执行。只要存在 writable lane，原有完整 first/second-read evidence 和比较合同保持不变。
 

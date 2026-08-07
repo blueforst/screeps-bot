@@ -662,10 +662,12 @@ describe("Market Base Resource V3 runtime", () => {
     expect(artifactProbe).toHaveBeenCalledTimes(1);
     expect(artifactProbe.mock.calls.every(([used]) => used === true)).toBe(true);
     expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
+    expect(result.evaluatedShadowResourceCount).toBe(1);
+    expect(result.candidateIdentityOrderChecks).toBe(0);
     expect(result.firstReadEvidence).toBeUndefined();
   });
 
-  it("实时形状的 5 资源 8 lane/112 raw 只执行一次 Shadow 批规划", () => {
+  it("resource-major cohort 不跨资源补位且 eligible=0 跳过候选身份扫描", () => {
     const entries = [
       immutablePolicyEntry("H", ["W1N1", "W2N1"], "suspended_shadow"),
       immutablePolicyEntry("K", ["W3N1"], "suspended_shadow"),
@@ -713,21 +715,26 @@ describe("Market Base Resource V3 runtime", () => {
     const result = planMarketBaseResourceTwoRead(deps);
 
     expect(result.complete).toBe(true);
-    expect(result.rawOrderCount).toBe(112);
+    expect(result.rawOrderCount).toBe(24);
     expect(result.eligibleOrderCount).toBe(0);
-    expect(result.sampledShadowLaneIds).toHaveLength(8);
-    expect(result.shadowObservations).toHaveLength(8);
+    expect(result.sampledShadowLaneIds).toEqual([
+      "lane:H:W1N1",
+      "lane:H:W2N1",
+    ]);
+    expect(result.shadowObservations).toHaveLength(2);
     expect(result.shadowObservations.every(
       (observation) => observation.result === "safe_no_opportunity",
     )).toBe(true);
-    expect(deps.readCurrentBuyOrders).toHaveBeenCalledTimes(5);
+    expect(deps.readCurrentBuyOrders).toHaveBeenCalledTimes(1);
+    expect(result.evaluatedShadowResourceCount).toBe(1);
+    expect(result.candidateIdentityOrderChecks).toBe(0);
     expect(artifactProbe).toHaveBeenCalledTimes(1);
     expect(artifactProbe).toHaveBeenLastCalledWith(true);
     expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
     expect(result.firstReadEvidence).toBeUndefined();
   });
 
-  it("线上同形状的 6 资源 8 lane/94 raw/8 eligible 只批规划 ready 精确子集", () => {
+  it("resource cohort 的候选批规划只处理同资源 ready 精确子集", () => {
     const makeHarness = (): Harness => {
       const entries = [
         immutablePolicyEntry(
@@ -756,7 +763,6 @@ describe("Market Base Resource V3 runtime", () => {
         .lanes.find((lane) => lane.lane.roomName === "E4N58")!.lane.hub = true;
       for (const [resource, roomName] of [
         [RESOURCE_HYDROGEN, "E3N59"],
-        [RESOURCE_HYDROGEN, "E4N58"],
         [RESOURCE_OXYGEN, "E5N59"],
         [RESOURCE_UTRIUM, "E7N57"],
       ] as const) {
@@ -818,32 +824,34 @@ describe("Market Base Resource V3 runtime", () => {
     expect(batch.complete).toBe(true);
     expect(batch.selected).toBeUndefined();
     expect(batch.firstReadEvidence).toBeUndefined();
-    expect(batch.rawOrderCount).toBe(94);
-    expect(batch.eligibleOrderCount).toBe(8);
-    expect(batch.distinctOrderRoomCount).toBe(8);
-    expect(batch.transactionCostEvaluationBudget).toBe(96);
-    expect(batch.sampledShadowLaneIds).toHaveLength(8);
+    expect(batch.rawOrderCount).toBe(16);
+    expect(batch.eligibleOrderCount).toBe(2);
+    expect(batch.distinctOrderRoomCount).toBe(2);
+    expect(batch.transactionCostEvaluationBudget).toBe(8);
+    expect(batch.sampledShadowLaneIds).toHaveLength(2);
     expect(batch.shadowObservations.filter(
       (observation) =>
         observation.result === "incomplete" &&
         observation.blocker === "market_base_protection_incomplete",
-    )).toHaveLength(4);
+    )).toHaveLength(1);
     expect(batch.shadowObservations.filter(
       (observation) => observation.result === "safe_opportunity",
-    )).toHaveLength(4);
+    )).toHaveLength(1);
     expect(batch.shadowPlannerMode).toBe("batch_candidate");
     expect(batch.shadowPlannerInvocationCount).toBe(1);
-    expect(batch.actualTransactionEnergyEvaluations).toBe(12);
+    expect(batch.actualTransactionEnergyEvaluations).toBe(4);
+    expect(batch.evaluatedShadowResourceCount).toBe(1);
+    expect(batch.candidateIdentityOrderChecks).toBe(16);
     expect(batchProbe).toHaveBeenCalledTimes(1);
     expect(batchProbe).toHaveBeenLastCalledWith(false);
     expect(fallback.complete).toBe(true);
     expect(fallback.shadowObservations).toEqual(batch.shadowObservations);
     expect(fallback.shadowPlannerMode).toBe("batch_fallback");
-    expect(fallback.shadowPlannerInvocationCount).toBe(5);
-    expect(throwingProbe).toHaveBeenCalledTimes(5);
+    expect(fallback.shadowPlannerInvocationCount).toBe(2);
+    expect(throwingProbe).toHaveBeenCalledTimes(2);
   });
 
-  it("候选批规划按 resource+room 区分同房资源并支持 ready Hub", () => {
+  it("同房不同资源按 cohort 独立观测并支持 ready Hub", () => {
     const entries = [
       immutablePolicyEntry("H", ["E4N58"], "suspended_shadow"),
       immutablePolicyEntry("L", ["E7N57"], "suspended_shadow"),
@@ -873,21 +881,37 @@ describe("Market Base Resource V3 runtime", () => {
     const artifactProbe = jest.fn();
     deps.observeShadowNormalizationArtifact = artifactProbe;
 
-    const result = planMarketBaseResourceTwoRead(deps);
+    const hydrogen = planMarketBaseResourceTwoRead(deps);
+    const lemergium = planMarketBaseResourceTwoRead(
+      deps,
+      hydrogen.nextShadowCursor,
+    );
+    const utrium = planMarketBaseResourceTwoRead(
+      deps,
+      lemergium.nextShadowCursor,
+    );
 
-    expect(result.complete).toBe(true);
-    expect(result.shadowPlannerMode).toBe("batch_candidate");
-    expect(result.shadowPlannerInvocationCount).toBe(1);
-    expect(result.actualTransactionEnergyEvaluations).toBe(4);
-    expect(result.shadowObservations).toEqual([
+    expect(hydrogen.complete).toBe(true);
+    expect(hydrogen.shadowPlannerMode).toBe("batch_candidate");
+    expect(hydrogen.shadowPlannerInvocationCount).toBe(1);
+    expect(hydrogen.actualTransactionEnergyEvaluations).toBe(2);
+    expect(hydrogen.shadowObservations).toEqual([
       { laneId: "lane:H:E4N58", result: "safe_opportunity" },
+    ]);
+    expect(lemergium.shadowObservations).toEqual([
       { laneId: "lane:L:E7N57", result: "safe_opportunity" },
+    ]);
+    expect(utrium.shadowObservations).toEqual([
       { laneId: "lane:U:E7N57", result: "safe_no_opportunity" },
     ]);
-    expect(artifactProbe).toHaveBeenCalledTimes(1);
-    expect(artifactProbe).toHaveBeenLastCalledWith(false);
-    expect(result.selected).toBeUndefined();
-    expect(result.firstReadEvidence).toBeUndefined();
+    expect(artifactProbe.mock.calls.map(([used]) => used)).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    expect(hydrogen.selected).toBeUndefined();
+    expect(lemergium.selected).toBeUndefined();
+    expect(utrium.selected).toBeUndefined();
   });
 
   it.each([
@@ -1117,6 +1141,7 @@ describe("Market Base Resource V3 runtime", () => {
     expect(reversed.sampledShadowLaneIds).toEqual(
       forward.sampledShadowLaneIds,
     );
+    expect(reversed.nextShadowCursor).toBe(forward.nextShadowCursor);
     expect(reversed.shadowObservations).toEqual(forward.shadowObservations);
     expect(forwardProbe).toHaveBeenCalledTimes(1);
     expect(reversedProbe).toHaveBeenCalledTimes(1);
@@ -1166,6 +1191,8 @@ describe("Market Base Resource V3 runtime", () => {
     expect(batchProbe).toHaveBeenCalledTimes(1);
     expect(throwingProbe).toHaveBeenCalledTimes(9);
     expect(throwingProbe.mock.calls.every(([used]) => used === true)).toBe(true);
+    expect(batch.candidateIdentityOrderChecks).toBe(0);
+    expect(fallback.candidateIdentityOrderChecks).toBe(0);
     expect(batchDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
     expect(fallbackDeps.calculateTransactionEnergy).not.toHaveBeenCalled();
   });
@@ -1192,11 +1219,23 @@ describe("Market Base Resource V3 runtime", () => {
       let cursor: string | undefined;
 
       for (let cycle = 0; cycle < cycleCount; cycle += 1) {
+        const callsBefore = deps.readCurrentBuyOrders.mock.calls.length;
         const result = planMarketBaseResourceTwoRead(deps, cursor);
         expect(result.complete).toBe(true);
         expect(result.sampledShadowLaneIds).toHaveLength(
           MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE,
         );
+        expect(
+          new Set(
+            result.sampledShadowLaneIds.map(
+              (laneId) => laneId.split(":")[1],
+            ),
+          ).size,
+        ).toBe(1);
+        expect(result.evaluatedShadowResourceCount).toBe(1);
+        expect(
+          deps.readCurrentBuyOrders.mock.calls.length - callsBefore,
+        ).toBe(1);
         result.sampledShadowLaneIds.forEach((laneId) => covered.add(laneId));
         cursor = result.nextShadowCursor;
       }
@@ -1205,7 +1244,78 @@ describe("Market Base Resource V3 runtime", () => {
     },
   );
 
-  it("cursor 所指 lane 被移除后从稳定排序的下一条 lane 继续", () => {
+  it("9 房按每资源 8+1 的 14 个 cohort 覆盖 63 lane 且绝不跨资源", () => {
+    const rooms = Array.from(
+      { length: 9 },
+      (_unused, index) => `W${index + 1}N9`,
+    );
+    const deps = dependencies({
+      scope: scope(
+        MARKET_BASE_RESOURCE_CATALOG.map((resource) =>
+          immutablePolicyEntry(resource, rooms, "suspended_shadow"),
+        ),
+      ),
+      books: {},
+    });
+    const covered = new Set<string>();
+    const cohortSizes: number[] = [];
+    let cursor: string | undefined;
+
+    for (let cycle = 0; cycle < 14; cycle += 1) {
+      const callsBefore = deps.readCurrentBuyOrders.mock.calls.length;
+      const result = planMarketBaseResourceTwoRead(deps, cursor);
+      expect(result.complete).toBe(true);
+      const resources = new Set(
+        result.sampledShadowLaneIds.map((laneId) => laneId.split(":")[1]),
+      );
+      expect(resources.size).toBe(1);
+      expect(result.evaluatedShadowResourceCount).toBe(1);
+      expect(result.candidateIdentityOrderChecks).toBe(0);
+      expect(
+        deps.readCurrentBuyOrders.mock.calls.length - callsBefore,
+      ).toBe(1);
+      cohortSizes.push(result.sampledShadowLaneIds.length);
+      result.sampledShadowLaneIds.forEach((laneId) => covered.add(laneId));
+      cursor = result.nextShadowCursor;
+    }
+
+    expect(covered.size).toBe(63);
+    expect(cohortSizes).toEqual(
+      MARKET_BASE_RESOURCE_CATALOG.flatMap(() => [8, 1]),
+    );
+  });
+
+  it("legacy cursor 位于新 cohort 中段时迁移后 14 周期仍完整覆盖", () => {
+    const rooms = Array.from(
+      { length: 16 },
+      (_unused, index) => `W${index + 1}N10`,
+    );
+    const deps = dependencies({
+      scope: scope(
+        MARKET_BASE_RESOURCE_CATALOG.map((resource) =>
+          immutablePolicyEntry(resource, rooms, "suspended_shadow"),
+        ),
+      ),
+      books: {},
+    });
+    const hydrogenIds = rooms
+      .map((roomName) => `lane:H:${roomName}`)
+      .sort((left, right) => left.localeCompare(right));
+    let cursor: string | undefined = hydrogenIds[3];
+    const covered = new Set<string>();
+
+    for (let cycle = 0; cycle < 14; cycle += 1) {
+      const result = planMarketBaseResourceTwoRead(deps, cursor);
+      expect(result.complete).toBe(true);
+      result.sampledShadowLaneIds.forEach((laneId) => covered.add(laneId));
+      cursor = result.nextShadowCursor;
+    }
+
+    expect(covered.size).toBe(112);
+    expect(cursor).toMatch(/^mbr-shadow-cursor-v2\|H\|lane:H:/);
+  });
+
+  it("cursor lane 被移除后选择稳定后继所在 cohort 且保持无饥饿", () => {
     const rooms = Array.from(
       { length: 10 },
       (_unused, index) => `W${index + 1}N7`,
@@ -1218,8 +1328,14 @@ describe("Market Base Resource V3 runtime", () => {
       }),
     );
     const removedCursor = first.nextShadowCursor!;
+    const removedCursorLaneId = removedCursor.slice(
+      removedCursor.lastIndexOf("|") + 1,
+    );
     const retainedRooms = original.lanes
-      .filter((lane) => `lane:H:${lane.lane.roomName}` !== removedCursor)
+      .filter(
+        (lane) =>
+          `lane:H:${lane.lane.roomName}` !== removedCursorLaneId,
+      )
       .map((lane) => lane.lane.roomName);
     const retained = immutablePolicyEntry(
       "H",
@@ -1230,7 +1346,9 @@ describe("Market Base Resource V3 runtime", () => {
       .map((roomName) => `lane:H:${roomName}`)
       .sort((left, right) => left.localeCompare(right));
     const expectedSuccessor =
-      sortedIds.find((laneId) => laneId.localeCompare(removedCursor) > 0) ??
+      sortedIds.find(
+        (laneId) => laneId.localeCompare(removedCursorLaneId) > 0,
+      ) ??
       sortedIds[0];
 
     const remapped = planMarketBaseResourceTwoRead(
@@ -1242,7 +1360,91 @@ describe("Market Base Resource V3 runtime", () => {
     );
 
     expect(remapped.complete).toBe(true);
-    expect(remapped.sampledShadowLaneIds[0]).toBe(expectedSuccessor);
+    expect(remapped.sampledShadowLaneIds).toContain(expectedSuccessor);
+    expect(remapped.nextShadowCursor).toMatch(
+      /^mbr-shadow-cursor-v2\|H\|lane:H:/,
+    );
+    const wrapped = planMarketBaseResourceTwoRead(
+      dependencies({
+        scope: scope([retained]),
+        books: {},
+      }),
+      remapped.nextShadowCursor,
+    );
+    expect(
+      new Set([
+        ...remapped.sampledShadowLaneIds,
+        ...wrapped.sampledShadowLaneIds,
+      ]).size,
+    ).toBe(retainedRooms.length);
+  });
+
+  it("损坏 cursor 与 Z 尾部缺失 anchor 均确定性环回首个 H cohort", () => {
+    const rooms = ["W1N11", "W2N11"];
+    const makeDeps = () =>
+      dependencies({
+        scope: scope(
+          MARKET_BASE_RESOURCE_CATALOG.map((resource) =>
+            immutablePolicyEntry(resource, rooms, "suspended_shadow"),
+          ),
+        ),
+        books: {},
+      });
+
+    const malformed = planMarketBaseResourceTwoRead(
+      makeDeps(),
+      "mbr-shadow-cursor-v2|BAD|not-a-lane",
+    );
+    const wrapped = planMarketBaseResourceTwoRead(
+      makeDeps(),
+      "mbr-shadow-cursor-v2|Z|lane:Z:zzzz",
+    );
+
+    expect(malformed.sampledShadowLaneIds.every(
+      (laneId) => laneId.startsWith("lane:H:"),
+    )).toBe(true);
+    expect(wrapped.sampledShadowLaneIds).toEqual(
+      malformed.sampledShadowLaneIds,
+    );
+    expect(wrapped.nextShadowCursor).toBe(malformed.nextShadowCursor);
+  });
+
+  it("pure/mixed 使用同一 active cohort anchor，writable 只从 Shadow sample 过滤", () => {
+    const rooms = Array.from(
+      { length: 8 },
+      (_unused, index) => `W${index + 1}N12`,
+    );
+    const pureEntries = MARKET_BASE_RESOURCE_CATALOG.map((resource) =>
+      immutablePolicyEntry(resource, rooms, "suspended_shadow"),
+    );
+    const mixedEntries = MARKET_BASE_RESOURCE_CATALOG.map((resource) =>
+      immutablePolicyEntry(resource, rooms, "suspended_shadow"),
+    );
+    mixedEntries
+      .find((entry) => entry.policy.resourceType === RESOURCE_CATALYST)!
+      .lanes[7]!.lane.authorization = "writable";
+    const cursor = "lane:U:W8N12";
+
+    const pure = planMarketBaseResourceTwoRead(
+      dependencies({ scope: scope(pureEntries), books: {} }),
+      cursor,
+    );
+    const mixed = planMarketBaseResourceTwoRead(
+      dependencies({ scope: scope(mixedEntries), books: {} }),
+      cursor,
+    );
+
+    expect(pure.sampledShadowLaneIds).toHaveLength(8);
+    expect(mixed.sampledShadowLaneIds).toHaveLength(7);
+    expect(mixed.sampledShadowLaneIds).toEqual(
+      pure.sampledShadowLaneIds.filter(
+        (laneId) => laneId !== "lane:X:W8N12",
+      ),
+    );
+    expect(mixed.nextShadowCursor).toBe(pure.nextShadowCursor);
+    expect(pure.nextShadowCursor).toBe(
+      "mbr-shadow-cursor-v2|X|lane:X:W8N12",
+    );
   });
 
   it("全 Shadow 收集完成后 CPU 超限不推进 observation 或 cursor", () => {
@@ -1265,6 +1467,35 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.blocker).toBe("market_base_cpu_ceiling_exceeded");
     expect(result.nextShadowCursor).toBeUndefined();
     expect(result.shadowObservations).toEqual([]);
+  });
+
+  it("eligible=0 批 planner 的非能耗工作越过 CPU ceiling 后不进入 fallback", () => {
+    const deps = dependencies({
+      scope: scope([
+        immutablePolicyEntry(
+          "H",
+          Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N13`),
+          "suspended_shadow",
+        ),
+      ]),
+      books: { [RESOURCE_HYDROGEN]: [] },
+    });
+    let cpuChecks = 0;
+    deps.cpuUsed = jest.fn(() => {
+      cpuChecks += 1;
+      return cpuChecks >= 5 ? 26 : 0;
+    });
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(false);
+    expect(result.blocker).toBe("market_base_cpu_ceiling_exceeded");
+    expect(result.nextShadowCursor).toBeUndefined();
+    expect(result.shadowObservations).toEqual([]);
+    expect(result.shadowPlannerMode).toBe("none");
+    expect(result.shadowPlannerInvocationCount).toBe(1);
+    expect(result.candidateIdentityOrderChecks).toBe(0);
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
   });
 
   it("129 个目的房在 transaction-cost 评估前整轮 fail closed", () => {
@@ -1365,6 +1596,8 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.shadowPlannerMode).toBe("batch_candidate");
     expect(result.shadowPlannerInvocationCount).toBe(1);
     expect(result.actualTransactionEnergyEvaluations).toBe(2 * 8 * 128);
+    expect(result.evaluatedShadowResourceCount).toBe(1);
+    expect(result.candidateIdentityOrderChecks).toBe(200);
   });
 
   it("候选批规划在原生 transaction-energy 越过 CPU ceiling 后立即停算", () => {
@@ -1402,10 +1635,51 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.firstReadEvidence).toBeUndefined();
     expect(result.nextShadowCursor).toBeUndefined();
     expect(result.shadowObservations).toEqual([]);
-    expect(result.shadowPlannerMode).toBe("batch_fallback");
+    expect(result.shadowPlannerMode).toBe("none");
     expect(result.shadowPlannerInvocationCount).toBe(1);
     expect(result.actualTransactionEnergyEvaluations).toBe(5);
     expect(deps.calculateTransactionEnergy).toHaveBeenCalledTimes(5);
+  });
+
+  it("候选身份扫描期间分段检查 CPU，超限后不进入 planner 或 fallback", () => {
+    const shadow = immutablePolicyEntry(
+      "H",
+      Array.from({ length: 8 }, (_unused, index) => `W${index + 1}N14`),
+      "suspended_shadow",
+    );
+    const rawBook = [
+      order("eligible", RESOURCE_HYDROGEN, 700, 1_000, "E1S14"),
+      ...Array.from({ length: 999 }, (_unused, index) =>
+        order(
+          `ineligible-${String(index).padStart(3, "0")}`,
+          RESOURCE_HYDROGEN,
+          0,
+          1_000,
+          "E1S14",
+        )),
+    ];
+    const deps = dependencies({
+      scope: scope([shadow]),
+      books: { [RESOURCE_HYDROGEN]: rawBook },
+    });
+    let cpuChecks = 0;
+    deps.cpuUsed = jest.fn(() => {
+      cpuChecks += 1;
+      return cpuChecks >= 6 ? 26 : 0;
+    });
+
+    const result = planMarketBaseResourceTwoRead(deps);
+
+    expect(result.complete).toBe(false);
+    expect(result.blocker).toBe("market_base_cpu_ceiling_exceeded");
+    expect(result.rawOrderCount).toBe(1_000);
+    expect(result.eligibleOrderCount).toBe(1);
+    expect(result.candidateIdentityOrderChecks).toBe(64);
+    expect(result.shadowPlannerMode).toBe("none");
+    expect(result.shadowPlannerInvocationCount).toBe(0);
+    expect(result.nextShadowCursor).toBeUndefined();
+    expect(result.shadowObservations).toEqual([]);
+    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
   });
 
   it("201 eligible 与 1,001 raw 均在 transaction-energy 前闭锁，1,000 raw 可完整读取", () => {
@@ -1472,7 +1746,9 @@ describe("Market Base Resource V3 runtime", () => {
     const catalyst = entries.find(
       (candidate) => candidate.policy.resourceType === RESOURCE_CATALYST,
     )!;
-    catalyst.lanes[0]!.lane.authorization = "writable";
+    // cohort anchor 本身可晋级 writable；边界仍由全部 active lane 固定，
+    // Shadow 只过滤出其余 7 条，next cursor 仍指向稳定 anchor。
+    catalyst.lanes[7]!.lane.authorization = "writable";
     const books = Array.from({ length: 128 }, (_unused, index) =>
       order(
         `x-${String(index).padStart(3, "0")}`,
@@ -1495,9 +1771,9 @@ describe("Market Base Resource V3 runtime", () => {
     expect(result.complete).toBe(true);
     expect(result.selected).toMatchObject({
       resourceType: RESOURCE_CATALYST,
-      roomName: "W1N1",
+      roomName: "W8N1",
     });
-    expect(result.sampledShadowLaneIds).toHaveLength(8);
+    expect(result.sampledShadowLaneIds).toHaveLength(7);
     expect(result.sampledShadowLaneIds.filter((laneId) =>
       laneId.startsWith("lane:X:"),
     )).toHaveLength(7);
@@ -1515,7 +1791,11 @@ describe("Market Base Resource V3 runtime", () => {
     ).toHaveLength(2);
     expect(deps.readScope).toHaveBeenCalledTimes(2);
     expect(deps.readCurrentBuyOrders.mock.results[0]?.value).not.toBe(
-      deps.readCurrentBuyOrders.mock.results[2]?.value,
+      deps.readCurrentBuyOrders.mock.results[1]?.value,
+    );
+    expect(result.evaluatedShadowResourceCount).toBe(1);
+    expect(result.nextShadowCursor).toBe(
+      "mbr-shadow-cursor-v2|X|lane:X:W8N1",
     );
     expect(deps.calculateTransactionEnergy).toHaveBeenCalledTimes(
       2 * 2 * 8 * 128,
@@ -2609,6 +2889,13 @@ describe("Market Base Resource scope tombstone discharge", () => {
 describe("Market Base Resource V3 live WAL glue", () => {
   it("全 Shadow 候选批规划不进入 WAL、claim 或 deal", () => {
     const { state, deps, input } = v3RuntimeFixture(false);
+    const utriumLane = state.scope!.laneLifecycles.find(
+      (lane) => lane.resource === RESOURCE_UTRIUM,
+    )!;
+    state.scope = {
+      ...state.scope!,
+      shadowCursor: `mbr-shadow-cursor-v2|U|${utriumLane.laneId}`,
+    };
 
     const result = runMarketBaseResourceAutomation(state, input(), deps);
 
@@ -2621,6 +2908,8 @@ describe("Market Base Resource V3 live WAL glue", () => {
       shadowPlannerMode: "batch_candidate",
       shadowPlannerInvocationCount: 1,
       actualTransactionEnergyEvaluations: 2,
+      evaluatedShadowResourceCount: 1,
+      candidateIdentityOrderChecks: 1,
     });
     expect(state.lastPlanningSnapshot?.selected).toBeUndefined();
     expect(state.ledger?.pending).toBeUndefined();
@@ -2881,6 +3170,15 @@ describe("Market Base Resource V3 live WAL glue", () => {
       )?.shadowEvidence.completeCycles,
     ).toBe(99);
     harness.tick = 200;
+    const zynthiumLane = state.scope!.laneLifecycles.find(
+      (lane) => lane.resource === RESOURCE_ZYNTHIUM,
+    )!;
+    const cursorBefore =
+      `mbr-shadow-cursor-v2|Z|${zynthiumLane.laneId}`;
+    state.scope = {
+      ...state.scope!,
+      shadowCursor: cursorBefore,
+    };
     let catalystRead = 0;
     deps.readCurrentBuyOrders.mockImplementation(
       (resource: ResourceConstant) => {
@@ -2915,7 +3213,7 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(reset.stage).toBe("shadow");
     expect(reset.shadowEvidence.completeCycles).toBe(0);
     expect(reset.shadowEvidence.lastCompleteTick).toBe(200);
-    expect(state.scope.shadowCursor).toBe(hydrogenLane.laneId);
+    expect(state.scope.shadowCursor).toBe(cursorBefore);
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.executePrepared).not.toHaveBeenCalled();
   });
@@ -3143,6 +3441,8 @@ describe("Market Base Resource V3 live WAL glue", () => {
       shadowPlannerMode: "none",
       shadowPlannerInvocationCount: 0,
       actualTransactionEnergyEvaluations: 0,
+      evaluatedShadowResourceCount: 0,
+      candidateIdentityOrderChecks: 0,
     });
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();
@@ -3164,6 +3464,8 @@ describe("Market Base Resource V3 live WAL glue", () => {
       shadowPlannerMode: "batch_candidate",
       shadowPlannerInvocationCount: 1,
       actualTransactionEnergyEvaluations: 12,
+      evaluatedShadowResourceCount: 6,
+      candidateIdentityOrderChecks: 94,
     };
     let anchorRead = false;
     (deps.readLedgerRuntimeAnchor as jest.Mock).mockImplementation(
@@ -3196,6 +3498,8 @@ describe("Market Base Resource V3 live WAL glue", () => {
       shadowPlannerMode: "none",
       shadowPlannerInvocationCount: 0,
       actualTransactionEnergyEvaluations: 0,
+      evaluatedShadowResourceCount: 0,
+      candidateIdentityOrderChecks: 0,
     });
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();

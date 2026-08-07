@@ -130,6 +130,8 @@ export const MARKET_BASE_RESOURCE_MAX_ELIGIBLE_ORDERS_PER_RESOURCE = 200;
 export const MARKET_BASE_RESOURCE_MAX_DISTINCT_ORDER_ROOMS = 128;
 export const MARKET_BASE_RESOURCE_MAX_TRANSACTION_COST_EVALUATIONS = 4_096;
 export const MARKET_BASE_RESOURCE_PLANNING_CPU_CEILING = 25;
+const MARKET_BASE_RESOURCE_SHADOW_CURSOR_V2_PREFIX =
+  "mbr-shadow-cursor-v2|" as const;
 
 export function marketBaseResourceOperatorAuthorizationFingerprint(
   config: ResolvedMarketSaleAutomationConfig,
@@ -308,6 +310,8 @@ export interface MarketBaseResourcePlanningSnapshot {
     | "batch_fallback";
   shadowPlannerInvocationCount: number;
   actualTransactionEnergyEvaluations: number;
+  evaluatedShadowResourceCount: number;
+  candidateIdentityOrderChecks: number;
 }
 
 export interface MarketBaseResourcePricingRatchetState {
@@ -2438,6 +2442,8 @@ export interface MarketBaseResourceTwoReadPlan {
   shadowPlannerMode: MarketBaseResourcePlanningSnapshot["shadowPlannerMode"];
   shadowPlannerInvocationCount: number;
   actualTransactionEnergyEvaluations: number;
+  evaluatedShadowResourceCount: number;
+  candidateIdentityOrderChecks: number;
   cpuUsed: number;
 }
 
@@ -2464,6 +2470,8 @@ interface FullReadResult {
   shadowPlannerMode: MarketBaseResourcePlanningSnapshot["shadowPlannerMode"];
   shadowPlannerInvocationCount: number;
   actualTransactionEnergyEvaluations: number;
+  evaluatedShadowResourceCount: number;
+  candidateIdentityOrderChecks: number;
   evidence?: MarketBaseResourceFullReadEvidence;
   terminalReads?: Record<string, MarketBaseResourceTerminalRead>;
 }
@@ -2535,6 +2543,83 @@ function eligibleForBudget(
   );
 }
 
+interface MarketBaseResourceShadowCursorV2 {
+  resource: MarketBaseResource;
+  laneId: string;
+}
+
+interface MarketBaseResourceShadowCohort {
+  resource: MarketBaseResource;
+  activeLaneIds: string[];
+  shadowLaneIds: string[];
+  anchorLaneId: string;
+}
+
+function encodeMarketBaseResourceShadowCursor(
+  cursor: MarketBaseResourceShadowCursorV2,
+): string {
+  return `${MARKET_BASE_RESOURCE_SHADOW_CURSOR_V2_PREFIX}${cursor.resource}|${cursor.laneId}`;
+}
+
+function parseMarketBaseResourceShadowCursor(
+  cursor: string | undefined,
+): MarketBaseResourceShadowCursorV2 | undefined {
+  if (!cursor?.startsWith(MARKET_BASE_RESOURCE_SHADOW_CURSOR_V2_PREFIX)) {
+    return undefined;
+  }
+  const payload = cursor.slice(
+    MARKET_BASE_RESOURCE_SHADOW_CURSOR_V2_PREFIX.length,
+  );
+  const separator = payload.indexOf("|");
+  if (separator <= 0 || separator === payload.length - 1) return undefined;
+  const resource = payload.slice(0, separator);
+  const laneId = payload.slice(separator + 1);
+  return MARKET_BASE_RESOURCE_CATALOG.includes(
+    resource as MarketBaseResource,
+  )
+    ? { resource: resource as MarketBaseResource, laneId }
+    : undefined;
+}
+
+function marketBaseResourceShadowCohorts(
+  entries: readonly V3EntryInput[],
+): MarketBaseResourceShadowCohort[] {
+  const cohorts: MarketBaseResourceShadowCohort[] = [];
+  for (const resource of MARKET_BASE_RESOURCE_CATALOG) {
+    const activeLanes = entries
+      .filter((entry) => entry.policy.resourceType === resource)
+      .flatMap((entry) => entry.lanes)
+      .sort((left, right) => stableCompare(left.laneId, right.laneId));
+    for (
+      let offset = 0;
+      offset < activeLanes.length;
+      offset += MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE
+    ) {
+      const chunk = activeLanes.slice(
+        offset,
+        offset + MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE,
+      );
+      const activeLaneIds = chunk.map((lane) => lane.laneId);
+      cohorts.push({
+        resource,
+        activeLaneIds,
+        shadowLaneIds: chunk
+          .filter(
+            (lane) => lane.lane.authorization === "suspended_shadow",
+          )
+          .map((lane) => lane.laneId),
+        anchorLaneId: activeLaneIds[activeLaneIds.length - 1]!,
+      });
+    }
+  }
+  return cohorts;
+}
+
+/**
+ * Suspended Shadow 统一按冻结 catalog 的 resource-major cohort 轮转。
+ * cohort 边界由全部 active lane（含 writable）决定，晋级不会重排边界；
+ * 每批最多 8 条且绝不跨资源补位。正式 writable universe 不经过这里。
+ */
 function selectedShadowLaneIds(
   entries: readonly V3EntryInput[],
   cursor: string | undefined,
@@ -2542,37 +2627,83 @@ function selectedShadowLaneIds(
   selected: string[];
   nextCursor?: string;
 } {
-  const laneIds = entries
-    .flatMap((entry) =>
-      entry.lanes
-        .filter((lane) => lane.lane.authorization === "suspended_shadow")
-        .map((lane) => lane.laneId),
-    )
-    .sort(stableCompare);
-  if (laneIds.length === 0) return { selected: [] };
-  let start = 0;
+  const cohorts = marketBaseResourceShadowCohorts(entries);
+  const nonEmptyCohortIndexes = cohorts
+    .map((cohort, index) => ({ cohort, index }))
+    .filter(({ cohort }) => cohort.shadowLaneIds.length > 0)
+    .map(({ index }) => index);
+  if (nonEmptyCohortIndexes.length === 0) return { selected: [] };
+
+  const orderedActiveLanes = cohorts.flatMap((cohort, cohortIndex) =>
+    cohort.activeLaneIds.map((laneId) => ({
+      cohortIndex,
+      laneId,
+      resource: cohort.resource,
+    })),
+  );
+  const nextNonEmptyAfter = (cohortIndex: number): number => {
+    for (let offset = 1; offset <= cohorts.length; offset += 1) {
+      const candidate = (cohortIndex + offset) % cohorts.length;
+      if (cohorts[candidate]!.shadowLaneIds.length > 0) return candidate;
+    }
+    return nonEmptyCohortIndexes[0]!;
+  };
+  const nonEmptyAtOrAfter = (cohortIndex: number): number => {
+    for (let offset = 0; offset < cohorts.length; offset += 1) {
+      const candidate = (cohortIndex + offset) % cohorts.length;
+      if (cohorts[candidate]!.shadowLaneIds.length > 0) return candidate;
+    }
+    return nonEmptyCohortIndexes[0]!;
+  };
+
+  let selectedCohortIndex = nonEmptyCohortIndexes[0]!;
   if (cursor) {
-    const exact = laneIds.indexOf(cursor);
-    if (exact >= 0) {
-      start = (exact + 1) % laneIds.length;
+    const versioned = parseMarketBaseResourceShadowCursor(cursor);
+    const exact = orderedActiveLanes.find(
+      (lane) =>
+        lane.laneId === (versioned?.laneId ?? cursor) &&
+        (!versioned || lane.resource === versioned.resource),
+    );
+    if (exact) {
+      // legacy cursor 可能位于新 cohort 中段；保守视该 cohort 已完成，
+      // 从下一 cohort 开始，最多一轮后即可重新覆盖。
+      selectedCohortIndex = nextNonEmptyAfter(exact.cohortIndex);
     } else {
-      const successor = laneIds.findIndex(
-        (laneId) => stableCompare(laneId, cursor) > 0,
+      let successor:
+        | (typeof orderedActiveLanes)[number]
+        | undefined;
+      if (versioned) {
+        const resourceIndex = MARKET_BASE_RESOURCE_CATALOG.indexOf(
+          versioned.resource,
+        );
+        successor = orderedActiveLanes.find((lane) => {
+          const laneResourceIndex = MARKET_BASE_RESOURCE_CATALOG.indexOf(
+            lane.resource,
+          );
+          return (
+            laneResourceIndex > resourceIndex ||
+            (laneResourceIndex === resourceIndex &&
+              stableCompare(lane.laneId, versioned.laneId) > 0)
+          );
+        });
+      } else {
+        successor = [...orderedActiveLanes]
+          .sort((left, right) => stableCompare(left.laneId, right.laneId))
+          .find((lane) => stableCompare(lane.laneId, cursor) > 0);
+      }
+      selectedCohortIndex = nonEmptyAtOrAfter(
+        successor?.cohortIndex ?? nonEmptyCohortIndexes[0]!,
       );
-      start = successor >= 0 ? successor : 0;
     }
   }
-  const count = Math.min(
-    MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE,
-    laneIds.length,
-  );
-  const selected = Array.from(
-    { length: count },
-    (_unused, offset) => laneIds[(start + offset) % laneIds.length],
-  );
+
+  const selectedCohort = cohorts[selectedCohortIndex]!;
   return {
-    selected,
-    nextCursor: selected[selected.length - 1],
+    selected: [...selectedCohort.shadowLaneIds],
+    nextCursor: encodeMarketBaseResourceShadowCursor({
+      resource: selectedCohort.resource,
+      laneId: selectedCohort.anchorLaneId,
+    }),
   };
 }
 
@@ -2747,6 +2878,8 @@ function blockedFullRead(
     shadowPlannerMode: "none",
     shadowPlannerInvocationCount: 0,
     actualTransactionEnergyEvaluations: 0,
+    evaluatedShadowResourceCount: 0,
+    candidateIdentityOrderChecks: 0,
     ...partial,
   };
 }
@@ -2763,6 +2896,7 @@ interface ShadowPlanningMetrics {
   mode: MarketBaseResourcePlanningSnapshot["shadowPlannerMode"];
   plannerInvocationCount: number;
   batchAttempted: boolean;
+  candidateIdentityOrderChecks: number;
 }
 
 function shadowPlanningBindings(
@@ -2953,9 +3087,11 @@ function tryPlanPureShadowBatch(
     toRoomName: string,
   ) => number,
   metrics: ShadowPlanningMetrics,
+  planningCpuExceeded: () => boolean,
 ): MarketBaseResourceShadowObservation[] | undefined {
   metrics.batchAttempted = true;
   if (
+    planningCpuExceeded() ||
     records.length === 0 ||
     !hasExactShadowPlanningCoverage(records, readyLaneIds) ||
     records.some(
@@ -2996,6 +3132,7 @@ function tryPlanPureShadowBatch(
     string,
     Map<string, MarketOrderSnapshot>
   >();
+  const candidatePath = collector.eligibleOrderCount > 0;
   let transactionEnergyCallbacks = 0;
   for (const resource of [...recordsByResource.keys()].sort(stableCompare)) {
     const resourceRecords = recordsByResource.get(resource)!;
@@ -3019,13 +3156,20 @@ function tryPlanPureShadowBatch(
     ) {
       return undefined;
     }
-    const orders = new Map<string, MarketOrderSnapshot>();
-    for (const order of first.book.orders) {
-      if (!order.id || orders.has(order.id)) return undefined;
-      orders.set(order.id, order);
+    if (candidatePath) {
+      const orders = new Map<string, MarketOrderSnapshot>();
+      for (const [index, order] of first.book.orders.entries()) {
+        // raw book 最多 1,000 条；每 32 条复核同一 CPU 窗口，避免候选
+        // 身份校验本身在进入 planner 前无界超支。
+        if (index % 32 === 0 && planningCpuExceeded()) return undefined;
+        metrics.candidateIdentityOrderChecks += 1;
+        if (!order.id || orders.has(order.id)) return undefined;
+        orders.set(order.id, order);
+      }
+      if (planningCpuExceeded()) return undefined;
+      orderByResourceAndId.set(resource, orders);
     }
-    orderByResourceAndId.set(resource, orders);
-    if (collector.eligibleOrderCount === 0) {
+    if (!candidatePath) {
       const capability = issueMarketDirectContinuousInvocationBookCapability(
         first.detachedBook!,
       );
@@ -3053,6 +3197,10 @@ function tryPlanPureShadowBatch(
         order: MarketOrderSnapshot,
         sellerRoomName: string,
       ) => {
+        if (!candidatePath) {
+          transactionEnergyCallbacks += 1;
+          throw new Error("unexpected zero-candidate Shadow energy evaluation");
+        }
         const record = recordByBinding.get(
           bindingKey(resource, sellerRoomName),
         );
@@ -3097,11 +3245,11 @@ function tryPlanPureShadowBatch(
   if (
     canonicalStableHashV1(actualBindings) !==
       canonicalStableHashV1(bindings) ||
-    (collector.eligibleOrderCount === 0 &&
+    (!candidatePath &&
       (capabilities.length !== batchEntries.length ||
         new Set(capabilities.map((capability) => capability.book)).size !==
           capabilities.length)) ||
-    (collector.eligibleOrderCount > 0 && capabilities.length !== 0)
+    (candidatePath && capabilities.length !== 0)
   ) {
     return undefined;
   }
@@ -3109,6 +3257,7 @@ function tryPlanPureShadowBatch(
   const artifactSignals: boolean[] = [];
   let batch: MarketDirectContinuousPlanningResult;
   try {
+    if (planningCpuExceeded()) return undefined;
     metrics.plannerInvocationCount += 1;
     batch = planMarketDirectContinuous(
       {
@@ -3138,13 +3287,14 @@ function tryPlanPureShadowBatch(
         },
       },
     );
+    if (planningCpuExceeded()) return undefined;
   } catch {
     return undefined;
   }
   const expectedSellerRooms = new Set(
     bindings.map((binding) => binding.roomName),
   ).size;
-  const expectedArtifact = collector.eligibleOrderCount === 0;
+  const expectedArtifact = !candidatePath;
   const candidateMatchesReadyBinding = (
     candidate: MarketDirectContinuousPlanningResult["safeCandidates"][number],
   ): boolean => {
@@ -3176,12 +3326,6 @@ function tryPlanPureShadowBatch(
           ?.has(rejection.orderId)),
     );
   };
-  const safeTupleKeys = new Set(
-    batch.safeCandidates.map((candidate) => candidate.tupleKey),
-  );
-  const admittedTupleKeys = new Set(
-    batch.admittedCandidates.map((candidate) => candidate.tupleKey),
-  );
   if (
     !batch.complete ||
     batch.blocker !== undefined ||
@@ -3198,38 +3342,60 @@ function tryPlanPureShadowBatch(
     transactionEnergyCallbacks !==
       batch.budget.transactionEnergyEvaluations ||
     artifactSignals.length !== 1 ||
-    artifactSignals[0] !== expectedArtifact ||
-    safeTupleKeys.size !== batch.safeCandidates.length ||
-    admittedTupleKeys.size !== batch.admittedCandidates.length ||
-    batch.safeCandidates.some(
-      (candidate) => !candidateMatchesReadyBinding(candidate),
-    ) ||
-    batch.admittedCandidates.some(
-      (candidate) =>
-        !candidateMatchesReadyBinding(candidate) ||
-        !safeTupleKeys.has(candidate.tupleKey),
-    ) ||
-    batch.rejections.some(
-      (rejection) => !rejectionMatchesReadyBinding(rejection),
-    ) ||
-    (batch.selected !== undefined &&
-      (!candidateMatchesReadyBinding(batch.selected) ||
-        !admittedTupleKeys.has(batch.selected.tupleKey))) ||
-    (collector.eligibleOrderCount === 0 &&
-      (batch.selected !== undefined ||
-        batch.safeCandidates.length !== 0 ||
-        batch.admittedCandidates.length !== 0 ||
-        batch.budget.transactionEnergyEvaluations !== 0 ||
-        transactionEnergyCallbacks !== 0))
+    artifactSignals[0] !== expectedArtifact
   ) {
     return undefined;
   }
+  if (!candidatePath) {
+    // collector + detached one-shot capability 已证明零候选。这里保持旧的
+    // validation-only 合同，不再为 candidate-only 身份检查二次扫描整本
+    // order book 或构造 tuple Set。
+    if (
+      batch.selected !== undefined ||
+      batch.safeCandidates.length !== 0 ||
+      batch.admittedCandidates.length !== 0 ||
+      batch.budget.transactionEnergyEvaluations !== 0 ||
+      transactionEnergyCallbacks !== 0 ||
+      metrics.candidateIdentityOrderChecks !== 0
+    ) {
+      return undefined;
+    }
+  } else {
+    const safeTupleKeys = new Set(
+      batch.safeCandidates.map((candidate) => candidate.tupleKey),
+    );
+    const admittedTupleKeys = new Set(
+      batch.admittedCandidates.map((candidate) => candidate.tupleKey),
+    );
+    if (
+      safeTupleKeys.size !== batch.safeCandidates.length ||
+      admittedTupleKeys.size !== batch.admittedCandidates.length ||
+      batch.safeCandidates.some(
+        (candidate) => !candidateMatchesReadyBinding(candidate),
+      ) ||
+      batch.admittedCandidates.some(
+        (candidate) =>
+          !candidateMatchesReadyBinding(candidate) ||
+          !safeTupleKeys.has(candidate.tupleKey),
+      ) ||
+      batch.rejections.some(
+        (rejection) => !rejectionMatchesReadyBinding(rejection),
+      ) ||
+      (batch.selected !== undefined &&
+        (!candidateMatchesReadyBinding(batch.selected) ||
+          !admittedTupleKeys.has(batch.selected.tupleKey)))
+    ) {
+      return undefined;
+    }
+  }
   try {
+    if (planningCpuExceeded()) return undefined;
     dependencies.observeShadowNormalizationArtifact?.(expectedArtifact);
+    if (planningCpuExceeded()) return undefined;
   } catch {
     return undefined;
   }
-  metrics.mode = collector.eligibleOrderCount === 0
+  metrics.mode = !candidatePath
     ? "batch_zero_candidate"
     : "batch_candidate";
   const result =
@@ -3292,6 +3458,13 @@ function collectFullRead(
   }
   const shadow = selectedShadowLaneIds(scope.entries, cursor);
   const sampledShadowSet = new Set(shadow.selected);
+  const evaluatedShadowResourceCount = new Set(
+    scope.entries
+      .filter((entry) =>
+        entry.lanes.some((lane) => sampledShadowSet.has(lane.laneId)),
+      )
+      .map((entry) => entry.policy.resourceType),
+  ).size;
   const seenOrderIds = new Map<string, string>();
   const books = new Map<string, MarketDirectContinuousBook>();
   const detachedShadowBooks = new Map<
@@ -3456,7 +3629,12 @@ function collectFullRead(
   }
   const transactionEnergyMemo = new Map<string, number>();
   let actualTransactionEnergyEvaluations = 0;
-  let transactionEnergyCpuCut = false;
+  let planningCpuCut = false;
+  const planningCpuExceeded = (): boolean => {
+    if (!cpuExceeded(dependencies, cpuStartedAt)) return false;
+    planningCpuCut = true;
+    return true;
+  };
   const calculateBoundedTransactionEnergy = (
     amount: number,
     fromRoomName: string,
@@ -3473,8 +3651,7 @@ function collectFullRead(
         "market_base_transaction_cost_evaluation_limit_exceeded",
       );
     }
-    if (cpuExceeded(dependencies, cpuStartedAt)) {
-      transactionEnergyCpuCut = true;
+    if (planningCpuExceeded()) {
       throw new RangeError("market_base_cpu_ceiling_exceeded");
     }
     actualTransactionEnergyEvaluations += 1;
@@ -3483,8 +3660,7 @@ function collectFullRead(
       fromRoomName,
       toRoomName,
     );
-    if (cpuExceeded(dependencies, cpuStartedAt)) {
-      transactionEnergyCpuCut = true;
+    if (planningCpuExceeded()) {
       throw new RangeError("market_base_cpu_ceiling_exceeded");
     }
     transactionEnergyMemo.set(key, value);
@@ -3501,18 +3677,34 @@ function collectFullRead(
     mode: "none",
     plannerInvocationCount: 0,
     batchAttempted: false,
+    candidateIdentityOrderChecks: 0,
   };
   const currentShadowPlanningTelemetry = (): Pick<
     FullReadResult,
     | "shadowPlannerMode"
     | "shadowPlannerInvocationCount"
     | "actualTransactionEnergyEvaluations"
+    | "evaluatedShadowResourceCount"
+    | "candidateIdentityOrderChecks"
   > => ({
     shadowPlannerMode: shadowPlanningMetrics.mode,
     shadowPlannerInvocationCount:
       shadowPlanningMetrics.plannerInvocationCount,
     actualTransactionEnergyEvaluations,
+    evaluatedShadowResourceCount,
+    candidateIdentityOrderChecks:
+      shadowPlanningMetrics.candidateIdentityOrderChecks,
   });
+  const blockedByPlanningCpu = (): FullReadResult =>
+    blockedFullRead(scope, "market_base_cpu_ceiling_exceeded", {
+      sampledShadowLaneIds: shadow.selected,
+      shadowObservations,
+      rawOrderCount,
+      eligibleOrderCount,
+      distinctOrderRoomCount: evaluatedDistinctOrderRooms.size,
+      transactionCostEvaluationBudget,
+      ...currentShadowPlanningTelemetry(),
+    });
   for (const entry of scope.entries) {
     const lanes: MarketDirectContinuousLaneInput[] = [];
     const entryPreparedShadowLanes: PreparedShadowPlanningLane[] = [];
@@ -3662,6 +3854,7 @@ function collectFullRead(
       // 混合 scope 保持原逐 entry 时序：若后续 writable entry fail closed，
       // 已确定的较早 Shadow lane-local reset 仍须随 blocker 返回。
       for (const record of entryPreparedShadowLanes) {
+        if (planningCpuExceeded()) return blockedByPlanningCpu();
         shadowPlanningMetrics.mode = "per_lane";
         shadowPlanningMetrics.plannerInvocationCount += 1;
         shadowObservations.push(
@@ -3672,20 +3865,7 @@ function collectFullRead(
             calculateBoundedTransactionEnergy,
           ),
         );
-        if (transactionEnergyCpuCut) {
-          return blockedFullRead(scope, "market_base_cpu_ceiling_exceeded", {
-            sampledShadowLaneIds: shadow.selected,
-            shadowObservations,
-            rawOrderCount,
-            eligibleOrderCount,
-            distinctOrderRoomCount: evaluatedDistinctOrderRooms.size,
-            transactionCostEvaluationBudget,
-            shadowPlannerMode: shadowPlanningMetrics.mode,
-            shadowPlannerInvocationCount:
-              shadowPlanningMetrics.plannerInvocationCount,
-            actualTransactionEnergyEvaluations,
-          });
-        }
+        if (planningCpuExceeded()) return blockedByPlanningCpu();
       }
     } else {
       preparedShadowLanes.push(...entryPreparedShadowLanes);
@@ -3769,6 +3949,7 @@ function collectFullRead(
         },
         calculateBoundedTransactionEnergy,
         shadowPlanningMetrics,
+        planningCpuExceeded,
       )
     : undefined;
   if (batchObservations) {
@@ -3778,22 +3959,11 @@ function collectFullRead(
     // snapshot 重新签发，绝不复用批调用中的一次性对象。
     if (
       pureShadowBatchEligible &&
-      (transactionEnergyCpuCut || cpuExceeded(dependencies, cpuStartedAt))
+      (planningCpuCut || planningCpuExceeded())
     ) {
-      return blockedFullRead(scope, "market_base_cpu_ceiling_exceeded", {
-        sampledShadowLaneIds: shadow.selected,
-        shadowObservations,
-        rawOrderCount,
-        eligibleOrderCount,
-        distinctOrderRoomCount: evaluatedDistinctOrderRooms.size,
-        transactionCostEvaluationBudget,
-        shadowPlannerMode: shadowPlanningMetrics.batchAttempted
-          ? "batch_fallback"
-          : shadowPlanningMetrics.mode,
-        shadowPlannerInvocationCount:
-          shadowPlanningMetrics.plannerInvocationCount,
-        actualTransactionEnergyEvaluations,
-      });
+      // CPU cut 发生后尚未真正进入逐 lane fallback，mode 保留实际已完成
+      // 的路径；batchAttempted/invocationCount 已足够表明批调用进度。
+      return blockedByPlanningCpu();
     }
     if (preparedShadowLanes.length > 0) {
       shadowPlanningMetrics.mode = shadowPlanningMetrics.batchAttempted
@@ -3801,6 +3971,7 @@ function collectFullRead(
         : "per_lane";
     }
     for (const record of preparedShadowLanes) {
+      if (planningCpuExceeded()) return blockedByPlanningCpu();
       shadowPlanningMetrics.plannerInvocationCount += 1;
       shadowObservations.push(
         planSingleShadowLane(
@@ -3810,22 +3981,10 @@ function collectFullRead(
           calculateBoundedTransactionEnergy,
         ),
       );
-      if (transactionEnergyCpuCut) {
-        return blockedFullRead(scope, "market_base_cpu_ceiling_exceeded", {
-          sampledShadowLaneIds: shadow.selected,
-          shadowObservations,
-          rawOrderCount,
-          eligibleOrderCount,
-          distinctOrderRoomCount: evaluatedDistinctOrderRooms.size,
-          transactionCostEvaluationBudget,
-          shadowPlannerMode: shadowPlanningMetrics.mode,
-          shadowPlannerInvocationCount:
-            shadowPlanningMetrics.plannerInvocationCount,
-          actualTransactionEnergyEvaluations,
-        });
-      }
+      if (planningCpuExceeded()) return blockedByPlanningCpu();
     }
   }
+  if (planningCpuExceeded()) return blockedByPlanningCpu();
   if (!hasExactShadowObservationCoverage(shadowObservations, shadow.selected)) {
     return blockedFullRead(
       scope,
@@ -3923,6 +4082,9 @@ function collectFullRead(
     get actualTransactionEnergyEvaluations() {
       return readActualTransactionEnergyEvaluations();
     },
+    evaluatedShadowResourceCount,
+    candidateIdentityOrderChecks:
+      shadowPlanningMetrics.candidateIdentityOrderChecks,
     ...(evidence ? { evidence } : {}),
     terminalReads,
   };
@@ -3962,6 +4124,10 @@ function emptyResult(
     shadowPlannerInvocationCount: read?.shadowPlannerInvocationCount || 0,
     actualTransactionEnergyEvaluations:
       read?.actualTransactionEnergyEvaluations || 0,
+    evaluatedShadowResourceCount:
+      read?.evaluatedShadowResourceCount || 0,
+    candidateIdentityOrderChecks:
+      read?.candidateIdentityOrderChecks || 0,
     cpuUsed,
   };
 }
@@ -3974,6 +4140,8 @@ function combinedTwoReadPlanningTelemetry(
   | "shadowPlannerMode"
   | "shadowPlannerInvocationCount"
   | "actualTransactionEnergyEvaluations"
+  | "evaluatedShadowResourceCount"
+  | "candidateIdentityOrderChecks"
 > {
   return {
     // lifecycle observation 仍来自第一读；mode 也优先描述第一读采用的
@@ -3988,6 +4156,15 @@ function combinedTwoReadPlanningTelemetry(
     actualTransactionEnergyEvaluations:
       firstRead.actualTransactionEnergyEvaluations +
       secondRead.actualTransactionEnergyEvaluations,
+    // 这是每次 full read 中 sampled Shadow cohort 的资源宽度，不是累计
+    // BUY-book API 调用数；同一 cohort 的双读不应把 1 误报成 2。
+    evaluatedShadowResourceCount: Math.max(
+      firstRead.evaluatedShadowResourceCount,
+      secondRead.evaluatedShadowResourceCount,
+    ),
+    candidateIdentityOrderChecks:
+      firstRead.candidateIdentityOrderChecks +
+      secondRead.candidateIdentityOrderChecks,
   };
 }
 
@@ -4059,6 +4236,10 @@ export function planMarketBaseResourceTwoRead(
       shadowPlannerInvocationCount: firstRead.shadowPlannerInvocationCount,
       actualTransactionEnergyEvaluations:
         firstRead.actualTransactionEnergyEvaluations,
+      evaluatedShadowResourceCount:
+        firstRead.evaluatedShadowResourceCount,
+      candidateIdentityOrderChecks:
+        firstRead.candidateIdentityOrderChecks,
       cpuUsed: cpuDelta,
     };
   }
@@ -7282,6 +7463,8 @@ function planningSnapshotFrom(
     shadowPlannerInvocationCount: plan.shadowPlannerInvocationCount,
     actualTransactionEnergyEvaluations:
       plan.actualTransactionEnergyEvaluations,
+    evaluatedShadowResourceCount: plan.evaluatedShadowResourceCount,
+    candidateIdentityOrderChecks: plan.candidateIdentityOrderChecks,
   };
 }
 
@@ -7336,14 +7519,20 @@ function markPlanningCpuExceeded(
       eligibleOrderCount: 0,
       distinctOrderRoomCount: 0,
       transactionCostEvaluationBudget: 0,
+      evaluatedShadowResourceCount: 0,
+      candidateIdentityOrderChecks: 0,
     }),
-    // 线上旧 snapshot 没有这三个字段；即使新 bundle 首轮在 planner 前
+    // 线上旧 snapshot 没有这些字段；即使新 bundle 首轮在 planner 前
     // CPU cut，也必须立即升级为完整、有界的诊断合同。
     shadowPlannerMode: currentAttempt?.shadowPlannerMode ?? "none",
     shadowPlannerInvocationCount:
       currentAttempt?.shadowPlannerInvocationCount ?? 0,
     actualTransactionEnergyEvaluations:
       currentAttempt?.actualTransactionEnergyEvaluations ?? 0,
+    evaluatedShadowResourceCount:
+      currentAttempt?.evaluatedShadowResourceCount ?? 0,
+    candidateIdentityOrderChecks:
+      currentAttempt?.candidateIdentityOrderChecks ?? 0,
     observedAt: tick,
     complete: false,
     blocker: "market_base_cpu_ceiling_exceeded",

@@ -24,8 +24,10 @@
 - [x] 3.5 写前双读动态 roster/lane set、非选中 lane、book/order、terminal/protection/energy/quota/permit/arbiter；任一变化零写
 - [x] 3.6 实现 raw/eligible/distinct-orderRoom/evaluation/CPU hard budget，测试 `2×16×128=4096` 与 129 目的房；writable 永不轮转或截断，超限整轮零写；仅 suspended Shadow 用 8-lane cursor
 - [x] 3.7 覆盖多房同资源、跨资源、高价小单/低价大单、远距高 gross、非选中 lane 变优、动态 roster 变化、56/112 lane 无饥饿轮转、cursor 重映射与预算超限测试
-- [x] 3.8 在纯 suspended Shadow、全资源 `eligible=0` 且无 writable lane 时只对 exact ready 子集合并一次多资源 planner 调用，并保留局部 incomplete reset；严格验证 capability/artifact/覆盖/零候选/零回调，失败用新 capability 回退，CPU cut 不推进，并省略无写消费者的 full-read evidence 深哈希
-- [x] 3.9 在纯 suspended Shadow `eligible>0` 时只批处理 exact ready 子集；保留局部 incomplete reset，禁止 normalization capability 和 selected/admitted 外泄，验证冻结 book/order/binding/预算/callback，原生能耗 miss 前后 CPU 截断，并投影 planner mode/invocation/实际 evaluation 标量
+- [x] 3.8（历史实现，已由 3.10 取代）在纯 suspended Shadow、全资源 `eligible=0` 且无 writable lane 时只对 exact ready 子集合并一次多资源 planner 调用，并保留局部 incomplete reset；严格验证 capability/artifact/覆盖/零候选/零回调，失败用新 capability 回退，CPU cut 不推进，并省略无写消费者的 full-read evidence 深哈希
+- [x] 3.9（历史实现，已由 3.10 取代）在纯 suspended Shadow `eligible>0` 时只批处理 exact ready 子集；保留局部 incomplete reset，禁止 normalization capability 和 selected/admitted 外泄，验证冻结 book/order/binding/预算/callback，原生能耗 miss 前后 CPU 截断，并投影 planner mode/invocation/实际 evaluation 标量
+- [x] 3.10 将 suspended Shadow 统一改为冻结 catalog resource-major cohort：按全部 active lane 固定最多 8 条单资源分块、版本化 `(resource,laneId)` anchor/legacy remap；恢复 eligible=0 validation-only 专支并投影资源数/候选身份检查标量。该项仅批准全 Shadow 部署，mixed CPU 仍为 Canary 前硬门
+- [x] 3.11 将 25 CPU 同一窗口扩展到批/逐 lane planner 前后，候选身份扫描每 32 条复核；CPU cut 前未实际执行 fallback 时保持真实 mode，并明确双读资源宽度取最大值、身份检查量累加的遥测语义
 
 ## 4. 生产保护、Hub 与 Terminal Energy
 
@@ -87,3 +89,12 @@
 - CPU fixture 在第 5 次原生 transaction-energy 计算后越过 25 ceiling，随后零原生调用、零回退、零 cursor、零 formal selected；全 Shadow runtime fixture 同时断言零 WAL commit、零 claim、零 deal。另覆盖同一 seller room 的 L/U 均 ready 但机会结果不同，以及 ready Hub candidate，锁定 `resource+room+laneId` 精确投影。
 - 三路终审发现并修复：旧/上一 tick planning snapshot 遥测继承、第二读失败漏计实际调用、late writable early-return 漏计 Shadow 调用，以及 eligible=0 exact-ready-subset 的 OpenSpec 漂移；所有修复均有确定性回归。
 - 部署前 live 基线 tick `72833950` 仍为 `1e4416a`：planning complete、CPU `23.440539199997147`、raw 116、eligible 8、distinct order room 8、budget 80；全部 grant 仍为 Shadow+suspended，formal selected/WAL/claim/deal 为空。真实交易授权与生产保护均未放宽。
+
+## Resource-major Shadow Cohort 修复验证记录（2026-08-07）
+
+- 最终 `npx tsc --noEmit`、`npm run build`、`git diff --check` 与 `npx openspec validate market-base-resource-all-rooms --strict` 均通过。
+- 最终拆分 Jest：排除 wall-clock Ledger benchmark 的 114 个 suite / 3,223 个 test 全部通过；`marketBaseResourceLedger.test.ts` 独立 1 个 suite / 21 个 test 全部通过，合计 115 个 suite / 3,244 个 test。Ledger cold runtime gate median/p95 为 `5.774/5.897ms`，prepare median/p95 为 `8.604/9.202ms`，未修改门禁阈值。
+- suspended Shadow 现按冻结 catalog 的单资源 cohort 轮转：8/16 房分别在 7/14 周期覆盖 56/112 lane，9 房严格按每资源 `8+1` 在 14 周期覆盖 63 lane；legacy、删除、损坏 cursor、writable anchor 过滤、Hub/ready subset 与局部 production incomplete 均有确定性回归。纯 Shadow 每个 full read 只读取一个资源 book；`eligible=0` 的 candidate identity/transaction-energy 均为零。
+- 同一 25 CPU 窗口现覆盖 batch/per-lane planner 与外部 artifact 前后，候选身份扫描每 32 条检查一次；CPU cut 不再进入尚未发生的 fallback、不推进 cursor、不形成完整 observation，mode 保持实际路径。`evaluatedShadowResourceCount` 明确为单次 full-read cohort 的资源宽度，双读取最大值；身份检查量按两读累加。旧 planning snapshot 缺新增字段时 monitor 安全投影 `null`。
+- 部署前 live 旧版本 `32991bd` 在 tick `72834960` 仍复现跨资源批次 CPU `27.593771399988327`、`market_base_cpu_ceiling_exceeded`；56/56 grant 均为 `shadow+suspended`，managed/pending mutation/pending create/terminal claim 均为零，证明当前故障与本修复目标一致且未发生新市场写入。
+- 三路独立终审中，文档/兼容测试与细粒度 CPU/遥测 P2/P3 均已修复并复核关闭；唯一保留问题是 same-resource mixed `1 writable + 7 Shadow + 128 order-room` 双读可达 4,096 次原生 transaction-energy 的交易活性 P1。该 P1 不阻断全 `suspended_shadow` 部署观察，但继续硬性阻断任何 Canary/Continuous/writable permit 与真实成交。

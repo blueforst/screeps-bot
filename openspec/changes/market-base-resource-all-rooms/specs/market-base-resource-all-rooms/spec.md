@@ -271,7 +271,7 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 - **THEN** 必须依次持久化 outcome、receipt/head/checkpoint/lifetime、processed key，最后删除 pending；任一 CPU cut 必须可幂等恢复
 
 ### Requirement: 多房间规划的 CPU 与观测必须有界
-系统 MUST 每个 resource 每次 full read 最多读取一次 BUY book，并在房间间复用；raw/eligible 上限为 1,000/200，全部 eligible books 合并后的 distinct orderRoom 上限为 128。transaction-cost memo 以 `(amount,sellerRoom,orderRoom)` 去重，因此单次 full read 的合法最坏上限精确为 `2×16×128=4,096`；market planning CPU ceiling 为 25。全部 writable lane MUST 每轮完整扫描且绝不轮转/截断；超限 MUST 在 tuple evaluation 前零写。只有 suspended Shadow 可按排序 laneId、持久 cursor 每个健康周期最多采样 8 条。
+系统 MUST 每个 resource 每次 full read 最多读取一次 BUY book，并在房间间复用；raw/eligible 上限为 1,000/200，全部 eligible books 合并后的 distinct orderRoom 上限为 128。transaction-cost memo 以 `(amount,sellerRoom,orderRoom)` 去重，因此单次 full read 的合法最坏上限精确为 `2×16×128=4,096`；market planning CPU ceiling 为 25。全部 writable lane MUST 每轮完整扫描且绝不轮转/截断；超限 MUST 在 tuple evaluation 前零写。suspended Shadow MUST 按冻结 catalog resource-major、资源内 opaque laneId 排序构造不跨资源的最多 8-lane cohort；边界以全部 active lane 固定分块后再过滤 Shadow，持久 cursor 必须版本化绑定 `(resource,laneId)` cohort anchor。
 
 #### Scenario: 八房同资源
 - **WHEN** 同一资源在八个房间都有 lane
@@ -287,19 +287,23 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 
 #### Scenario: Shadow 稳定轮转
 - **WHEN** roster 稳定且依赖/CPU 完整
-- **THEN** 56/112 条 suspended Shadow lane 必须分别在最多 7/14 个完整 planning cycles 内各采样一次；roster 变化时 cursor 按最后 laneId 的稳定后继重映射，不能永久饥饿前缀
+- **THEN** 每轮 sampled Shadow 必须只属于一个资源；56/112 条 suspended Shadow lane 必须分别在最多 7/14 个完整 planning cycles 内各采样一次，9 房必须按每资源 `8+1` 在 14 周期覆盖 63 lane；legacy/删除 cursor 必须稳定迁移且不得永久饥饿
+
+#### Scenario: Writable 晋级不重排 Shadow Cohort
+- **WHEN** 某 cohort 的 active lane 晋级 writable 或其 anchor 本身已 writable
+- **THEN** cohort 仍按全部 active lane 的原固定 chunk 定界，只过滤 suspended lane 作为 Shadow sample；writable lane 仍进入正式全量 planner，cursor 可继续绑定该 writable anchor
 
 #### Scenario: Shadow CPU Cut
-- **WHEN** 某批 Shadow 已选中但在形成完整 observation 前超过 CPU ceiling
-- **THEN** 该批不推进、不清零、不计完整周期，cursor 也不得把它们当作已完成跳过；writable scope 若存在则本 tick 零写
+- **WHEN** 某批 Shadow 已选中，但候选身份扫描、批/逐 lane planner 或 transaction-energy 在形成完整 observation 前超过 CPU ceiling
+- **THEN** 身份扫描必须至少每 32 条 order 检查一次同一 CPU 窗口，planner 必须在调用前后检查；该批不推进、不清零、不计完整周期，cursor 也不得把它们当作已完成跳过，未执行逐 lane fallback 时 mode 不得标成 `batch_fallback`；writable scope 若存在则本 tick 零写
 
 #### Scenario: 纯 Shadow 无机会批量复核
-- **WHEN** 本轮全部采样 lane 都是 suspended Shadow、没有 writable lane，局部 incomplete 的 preObserved 与 terminal/protection/book 完整的 ready 子集互斥并精确覆盖 sampled lane，且 collector 对全部相关资源证明 `eligible=0`
-- **THEN** 系统 MAY 使用一次多资源 planner 调用复核最多 8 条 ready lane，同时保留 preObserved reset；必须让每条 ready lane 都进入完整 planner 校验、为每个 ready resource 的 detached book 使用一次性 capability，并且只有无 blocker、无候选、无能耗回调、无 isolated lane、artifact 与 lane/resource/room/instance 覆盖完全一致时才投影逐 lane 完整 observation；批结果不得进入双读、WAL、claim 或 deal
+- **WHEN** 本轮同一资源 cohort 的全部采样 lane 都是 suspended Shadow、没有 writable lane，局部 incomplete 的 preObserved 与 terminal/protection/book 完整的 ready 子集互斥并精确覆盖 sampled lane，且 collector 证明 `eligible=0`
+- **THEN** 系统 MAY 使用一次 planner 调用复核最多 8 条 ready lane，同时保留 preObserved reset；必须让每条 ready lane 都进入完整 planner 校验、为 detached book 使用一次性 capability，并且只有无 blocker、无候选、无能耗回调、无 isolated lane、artifact 与 lane/resource/room/instance 覆盖完全一致时才投影逐 lane 完整 observation；candidate-only order identity 与 tuple Set 检查次数必须为零，批结果不得进入双读、WAL、claim 或 deal
 
 #### Scenario: 纯 Shadow 有候选的 Ready 子集批量复核
-- **WHEN** 本轮没有 writable lane、全部 sampled lane 均为 suspended Shadow，部分 lane 已形成 terminal/protection/book 局部 incomplete reset，其余 exact ready 子集对应的 collector `eligible>0`
-- **THEN** 系统 MAY 对 ready 子集执行一次多资源 planner，但不得传 detached normalization capability，必须要求 artifact observer 为 `false`；preObserved 与 ready 必须互斥且精确覆盖 sampled lane，只有经冻结 book/order identity、`resource+sellerRoom+laneId` 唯一映射、tuple 子集关系和 callback/budget 闭合验证的 `safeCandidates` 可投影 observation，`selected`/`admittedCandidates`、synthetic writable 和正式 planner entry 均不得进入双读、WAL、claim 或 deal；模式按 collector 全局 eligible 计数判定，ready 子集自身无候选也不得退回 capability 快路径
+- **WHEN** 本轮没有 writable lane、同一资源 cohort 的全部 sampled lane 均为 suspended Shadow，部分 lane 已形成 terminal/protection/book 局部 incomplete reset，其余 exact ready 子集对应的 collector `eligible>0`
+- **THEN** 系统 MAY 对该 ready 子集执行一次 planner，但不得传 detached normalization capability，必须要求 artifact observer 为 `false`；preObserved 与 ready 必须互斥且精确覆盖 sampled lane，只有经冻结 book/order identity、`resource+sellerRoom+laneId` 唯一映射、tuple 子集关系和 callback/budget 闭合验证的 `safeCandidates` 可投影 observation，`selected`/`admittedCandidates`、synthetic writable 和正式 planner entry 均不得进入双读、WAL、claim 或 deal；模式按该 cohort collector 的 eligible 计数判定，ready 子集自身无候选也不得退回 capability 快路径
 
 #### Scenario: Shadow 批量复核异常
 - **WHEN** `eligible=0` 批调用出现意外候选/transaction-energy 回调，或任一批调用出现异常、artifact 模式错误、callback 数量不符、lane/book/order 映射或 exact-ready 覆盖不完整
@@ -319,7 +323,11 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 
 #### Scenario: Monitor 有界
 - **WHEN** 56 条 lane 与大量订单持续运行
-- **THEN** monitor 必须展示 catalog/roster/lane-set、permit、lifecycle、quota、best tuple、Hub marker、energy readiness、CPU blocker、Shadow planner mode/invocation count/实际 transaction-energy evaluation count 的有界摘要，不得持久化 lane×order 原始矩阵
+- **THEN** monitor 必须展示 catalog/roster/lane-set、permit、lifecycle、quota、best tuple、Hub marker、energy readiness、CPU blocker、Shadow planner mode/invocation count/实际 transaction-energy evaluation count/evaluated Shadow resource count/candidate identity order checks 的有界摘要，不得持久化 lane×order 原始矩阵；evaluated Shadow resource count 表示每次 full read 的 cohort distinct resource 宽度，双读取最大值而不累加，candidate identity order checks 则按两读实际检查量累加
+
+#### Scenario: Resource Cohort 不代表 Mixed Ready
+- **WHEN** 任一资源出现 writable lane 且同资源仍有多条 suspended Shadow lane
+- **THEN** 正式 writable universe 和全局单位净价排序不得被 cohort 缩窄；在 same-resource mixed 双读通过独立 25 CPU 活性门禁前不得授予 Canary/Continuous，CPU 超限仍须零 WAL、零 claim、零 deal
 
 ### Requirement: V3 持久历史必须有不可复活的硬上界
 系统 MUST 固定 active rooms 16、known room names 32、active lanes 112、recent room tombstones 64、recent lane tombstones 224、连续 full permit suffix 64、full receipts 512、outcomes 50、rejection samples 32、monitor samples 64。receipt 只有 `retentionTick < tick-29,999` 且已被连续 checkpoint 吸收时才可裁剪。历史压缩 MUST 形成 canonical prefix checkpoint，绑定覆盖范围、first/last ID、prev/head hash、epoch/incarnation/canary high-water、累计 quota/lifetime 与 prefix commitment。
