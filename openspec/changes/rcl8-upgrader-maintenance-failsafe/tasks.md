@@ -16,6 +16,6 @@
 
 ## 4. 部署与观察
 
-- [ ] 4.1 更新版本并从干净 worktree 部署包含市场 CPU、colonizer 与 RCL8 maintenance 的完整 bundle。
-- [ ] 4.2 只读确认 shard1 部署标签、健康 RCL8 清理/计时安全、市场 Shadow 与零写入状态。
+- [x] 4.1 更新版本并从干净 worktree 部署包含市场 CPU、colonizer 与 RCL8 maintenance 的完整 bundle（`2026.8.8-2+d7a96c9`）。
+- [x] 4.2 只读确认 shard1 部署标签、健康 RCL8 清理/计时安全、市场 Shadow 与零写入状态（tick 72856700/72856701：三个 RCL8 控制器剩余 199,999 tick，56/56 lane 为 Shadow/suspended，市场写入与风险状态全零）。
 - [ ] 4.3 等待并对比部署后的完整 120 样本 CPU 窗口；未达到窗口前不得宣称线上稳态收益。
