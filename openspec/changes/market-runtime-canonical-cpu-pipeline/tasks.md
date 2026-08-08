@@ -21,9 +21,9 @@
 
 - [x] 4.1 运行定向 Jest、完整 Jest、`npx tsc --noEmit`、`npm run build`、`git diff --check` 与 OpenSpec strict validation
 - [x] 4.2 从基于 HEAD 的干净临时 worktree 构建并部署，避免夹带现有 upgrader/hub/colonizer dirty 改动
-- [ ] 4.3 通过 monitor 核对 shard1 deployTag、多个完整 Shadow tick、CPU trace 与零 managed/pending/claim/deal
-- [ ] 4.4 等待至少 1200 tick 后比较完整 120 样本窗口并记录长期 CPU 结果；未完成前保持 Canary/Continuous 关闭
+- [x] 4.3 通过多轮 monitor 核对 shard1 最终 bundle `2026.8.8-3+47cc10a@2026-08-08T08:06:32.418Z`：纯新窗口内在 ticks 72857590、72857870、72858590 形成完整 `batch_zero_candidate` Shadow planning，CPU 分别为 20.5012、20.3504、21.2328，blocker 均为预期的 `market_base_no_writable_lane`；抽样 runtime trace 在 ticks 72857680、72857900、72858130、72858350 仍于 `scope_core_read1` 截止（scope 累计 27.3224–28.9836 CPU），最终 tick 72858640 才完成 inner apply 并在 outer precommit 门禁截止（24.4061 CPU），故不声称所有 planning tick 均完成或 scope 热点已消失。各轮采样的 56/56 lane/grant 均为 Shadow/suspended，managed order、pending create/mutation、terminal claim、staging、reservation、exposure、fee 与 safety violation 均为 0。
+- [x] 4.4 等待得到 tick 72857450–72858640 的纯新完整 120 样本窗口（interval 10、history 120）：相对部署前完整窗口，总 CPU 均值 97.4166→98.2284（+0.83%）、EMA 97.8689→92.9536（-5.02%）、max 142.4000→166.7643（+17.11%），bucket avg/min 均为 10,000；market automation 35.9009→37.3936（+4.16%）、preflight 7.8334→7.5479（-3.64%），合计 43.7343→44.9416（+2.76%）；creepWork 27.3979→30.1432（+10.02%），其子项 pathing 13.5003→16.4221（+21.64%）。该窗口证明安全和 bucket 稳定，但在 8 房、2 worker、9 carrier 及世界负载漂移下没有可归因的线上整体 CPU 降幅；保留本地 profile 的定向热点收益结论，不将本次聚合波动宣称为因果改善。Canary/Continuous 继续关闭。
 
 验证记录：两次完整 Jest 均为 115/116 suite、3292/3293 case；唯一未绿是未改动 ledger 的 wall-clock median 在全套负载下约 11.3 ms 超过 10 ms，隔离复跑为 8.80 ms 并通过原门槛，未放宽阈值。其余定向测试、TypeScript、build、diff check 与 strict validation 全部通过。
 
-部署记录：已从 detached clean worktree 上传 `2026.8.8-1+2fcf643@2026-08-08T06:20:51.240Z`。部署后 9 个样本尚未形成稳态窗口，最近 trace 仍在 `outer_precommit` 或 `scope_core_read1` 截止，故 4.3/4.4 保持未完成；56/56 grant 均为 `shadow+suspended`，managed/pending/terminal claim/exposure 等写面均为零。
+初始部署记录：从 detached clean worktree 上传 `2026.8.8-1+2fcf643@2026-08-08T06:20:51.240Z` 后只有 9 个样本，当时不足以完成 4.3/4.4；该 CPU 实现随后随完整 bundle `2026.8.8-3+47cc10a` 取得纯新 120 样本，最终结果与剩余 scope 热点见 4.3/4.4。两阶段各轮采样的 56/56 grant 均为 `shadow+suspended`，managed/pending/terminal claim/exposure 等写面均为零。
