@@ -10,6 +10,10 @@ import { spawnMaxCarrierRaw } from "@/runtime/consoleCommands";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getSafeZone } from "@/runtime/safeZone";
+import {
+  RCL8_UPGRADER_MAINTENANCE_BODY,
+  RCL8_UPGRADER_RECOVERY_START_TICKS,
+} from "@/runtime/upgraderPolicy";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -735,6 +739,47 @@ describe("spawnPlanner strategic priority", () => {
     scheduleSpawnTasks();
 
     expect(spawn.memory.spawnList).toContain(upgraderConfig);
+  });
+
+  it("places an authenticated RCL8 maintenance upgrader ahead of emergency, war, and managed configs", () => {
+    const room = createRoom("E4N58");
+    room.controller!.level = 8;
+    room.controller!.ticksToDowngrade = RCL8_UPGRADER_RECOVERY_START_TICKS;
+    const spawn = createSpawn(room);
+    const maintenance = "E4N58:upgrader:0";
+    const emergency = `E4N58:manual:maxcarrier:${Game.time}`;
+    const war = "E4N58:war:E5N58:g1:healer:0";
+    const worker = "E4N58:worker:0";
+    spawn.memory.spawnList = [worker, war, emergency, maintenance];
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps = {
+      carrier: {
+        name: "carrier",
+        room,
+        memory: { role: "carrier" },
+      } as Creep,
+    };
+    Memory.data = {
+      manualUpgraders: {
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time },
+      },
+      creepConfigs: {
+        [maintenance]: {
+          role: "upgrader",
+          args: [room.name],
+          roomName: room.name,
+          body: [...RCL8_UPGRADER_MAINTENANCE_BODY],
+        },
+        [emergency]: { role: "carrier", args: [], roomName: room.name, body: [CARRY, MOVE] },
+        [war]: { role: "healer", args: [], roomName: room.name, body: [HEAL, MOVE] },
+        [worker]: { role: "worker", args: [], roomName: room.name, body: [WORK, CARRY, MOVE] },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList?.[0]).toBe(maintenance);
   });
 });
 

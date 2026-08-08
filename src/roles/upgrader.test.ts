@@ -8,6 +8,7 @@ import { prepareCombatBoost } from "@/roles/combatBoosts";
 import { pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 import { moveToTarget } from "@/roles/shared";
 import { upgraderRole } from "@/roles/upgrader";
+import { RCL8_UPGRADER_RECOVERY_START_TICKS } from "@/runtime/upgraderPolicy";
 import { createMockStore } from "@mock/powerBank";
 
 const mockedPrepareBoost = prepareCombatBoost as jest.MockedFunction<typeof prepareCombatBoost>;
@@ -18,7 +19,13 @@ function createPos(): RoomPosition {
   return { getRangeTo: jest.fn(() => 1) } as unknown as RoomPosition;
 }
 
-function createRoom(structures: Structure[] = [], level = 7, my = true, name = "E4N58"): Room {
+function createRoom(
+  structures: Structure[] = [],
+  level = 7,
+  my = true,
+  name = "E4N58",
+  ticksToDowngrade = level === 8 ? 200_000 : 150_000,
+): Room {
   const room = {
     name,
     find: jest.fn(() => structures),
@@ -26,6 +33,7 @@ function createRoom(structures: Structure[] = [], level = 7, my = true, name = "
   const controller = {
     my,
     level,
+    ticksToDowngrade,
     pos: createPos(),
     room,
   } as StructureController;
@@ -116,17 +124,27 @@ describe("upgraderRole", () => {
     expect(mockedPickupEnergy).toHaveBeenCalledWith(creep, { swampCost: 8 });
   });
 
-  it("works at RCL8 but stops after the managed task is removed", () => {
+  it("does not work at RCL8 even while stale managed state still exists", () => {
     const room = createRoom([], 8);
     Game.rooms.E4N58 = room;
     const creep = createCreep(room, 100);
 
+    expect(upgraderRole("E4N58", "upgrader:E4N58").prepare?.(creep)).toBe(true);
+    expect(mockedPrepareBoost).not.toHaveBeenCalled();
     expect(upgraderRole("E4N58", "upgrader:E4N58").target(creep)).toBe(false);
-    expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
-
-    delete Memory.data!.manualUpgraders!.E4N58;
+    expect(creep.upgradeController).not.toHaveBeenCalled();
     expect(upgraderRole("E4N58", "upgrader:E4N58").source?.(creep)).toBe(false);
     expect(mockedMoveToTarget).not.toHaveBeenCalled();
+  });
+
+  it("works at RCL8 while an authenticated maintenance task is inside the recovery window", () => {
+    const room = createRoom([], 8, true, "E4N58", RCL8_UPGRADER_RECOVERY_START_TICKS);
+    Game.rooms.E4N58 = room;
+    Memory.data!.creepConfigs!["E4N58:upgrader:0"].args = ["E4N58"];
+    const creep = createCreep(room, 100);
+
+    expect(upgraderRole("E4N58").target(creep)).toBe(false);
+    expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
   });
 
   it("works at RCL6 with an active manual task", () => {

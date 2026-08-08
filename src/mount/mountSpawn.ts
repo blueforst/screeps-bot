@@ -2,6 +2,7 @@ import { isSpawnActive } from "@/runtime/tickContext";
 import { getHarvesterBody, spawnProfiles } from "@/config/spawnProfiles";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
+import { isRcl8MaintenanceUpgraderConfig } from "@/runtime/upgraderPolicy";
 import type { RoleName } from "@/types/system";
 
 function isTransientConfigName(configName: string): boolean {
@@ -115,6 +116,26 @@ function shouldYieldToEmergencyCarrier(spawn: StructureSpawn, configName: string
     hasWaitingEmergencyCarrierOnAnotherSpawn(spawn);
 }
 
+function hasWaitingRcl8MaintenanceOnAnotherSpawn(spawn: StructureSpawn): boolean {
+  const creepConfigs = getCreepConfigService();
+  return Object.values(Game.spawns).some((candidate) => {
+    if (
+      candidate === spawn ||
+      candidate.room.name !== spawn.room.name ||
+      candidate.spawning ||
+      !isSpawnActive(candidate)
+    ) {
+      return false;
+    }
+
+    const configName = candidate.memory.spawnList?.[0];
+    return !!configName && isRcl8MaintenanceUpgraderConfig(
+      configName,
+      creepConfigs.get(configName),
+    );
+  });
+}
+
 export function mountSpawn(): void {
   StructureSpawn.prototype.addTask = function addTask(configName: string): number {
     const queue = ensureQueue(this);
@@ -180,10 +201,15 @@ export function mountSpawn(): void {
     }
 
     const currentTask = queue[0];
-    if (shouldYieldEnergyToWar(this, currentTask)) {
+    const currentConfig = getCreepConfigService().get(currentTask);
+    const isRcl8Maintenance = isRcl8MaintenanceUpgraderConfig(currentTask, currentConfig);
+    if (!isRcl8Maintenance && hasWaitingRcl8MaintenanceOnAnotherSpawn(this)) {
       return;
     }
-    if (shouldYieldToEmergencyCarrier(this, currentTask)) {
+    if (!isRcl8Maintenance && shouldYieldEnergyToWar(this, currentTask)) {
+      return;
+    }
+    if (!isRcl8Maintenance && shouldYieldToEmergencyCarrier(this, currentTask)) {
       return;
     }
     const success = this.mainSpawn(currentTask);

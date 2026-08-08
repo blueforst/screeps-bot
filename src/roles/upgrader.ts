@@ -3,6 +3,7 @@ import { pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 import { moveToTarget } from "@/roles/shared";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { releasePickupReservation } from "@/runtime/energyPickupReservation";
+import { isDedicatedUpgraderControllerRunnable } from "@/runtime/upgraderPolicy";
 import type { RoleFactory } from "@/types/system";
 
 type ControllerLocalEnergySource = StructureLink | StructureContainer;
@@ -22,7 +23,7 @@ function getActiveController(roomName: string | undefined, creep: Creep): Struct
     return null;
   }
   const controller = Game.rooms[roomName]?.controller;
-  if (!controller?.my) return null;
+  if (!controller || !isDedicatedUpgraderControllerRunnable(controller)) return null;
   return controller;
 }
 

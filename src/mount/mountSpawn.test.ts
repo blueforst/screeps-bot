@@ -8,6 +8,10 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
 }));
 
 import { mountSpawn } from "@/mount/mountSpawn";
+import {
+  RCL8_UPGRADER_MAINTENANCE_BODY,
+  RCL8_UPGRADER_RECOVERY_START_TICKS,
+} from "@/runtime/upgraderPolicy";
 
 type SpawnPrototype = {
   work(this: StructureSpawn): void;
@@ -296,5 +300,65 @@ describe("mountSpawn war energy reservation", () => {
     prototype.work.call(upgraderSpawn);
     expect(upgraderSpawn.spawnCreep).toHaveBeenCalled();
     expect(upgraderSpawn.memory.spawnList).toEqual([]);
+  });
+
+  it("does not make an authenticated RCL8 maintenance upgrader yield to war or emergency carriers", () => {
+    const room = {
+      name: "E4N58",
+      energyAvailable: 300,
+      energyCapacityAvailable: 5600,
+      controller: {
+        my: true,
+        level: 8,
+        ticksToDowngrade: RCL8_UPGRADER_RECOVERY_START_TICKS,
+      },
+    } as Room;
+    const maintenance = "E4N58:upgrader:0";
+    const war = "E4N58:war:E5N58:g1:healer:0";
+    const emergency = `E4N58:manual:maxcarrier:${Game.time}`;
+    Memory.data = {
+      manualUpgraders: {
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time },
+      },
+      creepConfigs: {
+        [maintenance]: {
+          role: "upgrader",
+          args: [room.name],
+          roomName: room.name,
+          body: [...RCL8_UPGRADER_MAINTENANCE_BODY],
+        },
+        [war]: { role: "healer", args: [], roomName: room.name, body: [HEAL, MOVE] },
+        [emergency]: { role: "carrier", args: [], roomName: room.name, body: [CARRY, MOVE] },
+      },
+    } as Memory["data"];
+    Game.rooms[room.name] = room;
+    const maintenanceSpawn = createSpawn("Spawn1", room, [maintenance]);
+    const warSpawn = createSpawn("Spawn2", room, [war]);
+    const emergencySpawn = createSpawn("Spawn3", room, [emergency]);
+    Object.setPrototypeOf(maintenanceSpawn, prototype);
+    Object.setPrototypeOf(warSpawn, prototype);
+    Object.setPrototypeOf(emergencySpawn, prototype);
+    Game.spawns = {
+      Spawn1: maintenanceSpawn,
+      Spawn2: warSpawn,
+      Spawn3: emergencySpawn,
+    };
+
+    prototype.work.call(warSpawn);
+    prototype.work.call(emergencySpawn);
+
+    expect(warSpawn.spawnCreep).not.toHaveBeenCalled();
+    expect(emergencySpawn.spawnCreep).not.toHaveBeenCalled();
+
+    prototype.work.call(maintenanceSpawn);
+
+    expect(maintenanceSpawn.spawnCreep).toHaveBeenCalledWith(
+      RCL8_UPGRADER_MAINTENANCE_BODY,
+      `upgrader-${Game.time}`,
+      expect.objectContaining({
+        memory: expect.objectContaining({ configName: maintenance }),
+      }),
+    );
+    expect(maintenanceSpawn.memory.spawnList).toEqual([]);
   });
 });

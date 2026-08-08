@@ -1,9 +1,21 @@
-import { harvesterRole } from "@/roles/harvester";
+import { createHarvesterRole } from "@/roles/harvester";
 import { moveToTargetRoom } from "@/roles/shared";
 import type { RoleFactory } from "@/types/system";
 
+function shouldSkipFullContainerHarvestIntent(creep: Creep): boolean {
+  if (creep.body.some((part) => part.type === CARRY && part.hits > 0)) {
+    return false;
+  }
+  return creep.pos.lookFor(LOOK_STRUCTURES).some((structure) => {
+    if (structure.structureType !== STRUCTURE_CONTAINER) return false;
+    return (structure as StructureContainer).store.getFreeCapacity(RESOURCE_ENERGY) <= 0;
+  });
+}
+
 export const colonizerHarvesterRole: RoleFactory = (targetRoom?: string, sourceId?: string, encodedRouteRooms?: string) => {
-  const baseRole = harvesterRole(sourceId);
+  const baseRole = createHarvesterRole(sourceId, {
+    shouldSkipHarvestIntent: shouldSkipFullContainerHarvestIntent,
+  });
 
   return {
     source: (creep): boolean => {

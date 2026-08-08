@@ -6,6 +6,7 @@ import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction"
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { getSafeZone } from "@/runtime/safeZone";
 import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
+import { isRcl8MaintenanceUpgraderConfig } from "@/runtime/upgraderPolicy";
 import type { CreepConfig } from "@/types/system";
 
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
@@ -51,6 +52,9 @@ function getSpawnRolePriority(role: CreepConfig["role"] | undefined): number {
 
 function getSpawnConfigPriority(roomName: string, configName: string): number {
   const config = getCreepConfigService().get(configName);
+  if (isRcl8MaintenanceUpgraderConfig(configName, config)) {
+    return -1;
+  }
   if (isEmergencyCarrierConfigName(roomName, configName)) {
     return 0;
   }
@@ -504,8 +508,9 @@ function queueMissingConfig(
   }
 
   if (shouldQueueConfig(spawns, targetSpawn, configName, config, context)) {
-    const shouldInsertCarrierAtFront = !emergencySpawn && config.role === "carrier" && getConfigCreeps(configName, context).length === 0;
-    queueConfig(targetSpawn, configName, { toFront: shouldInsertCarrierAtFront });
+    const shouldInsertAtFront = isRcl8MaintenanceUpgraderConfig(configName, config) ||
+      (!emergencySpawn && config.role === "carrier" && getConfigCreeps(configName, context).length === 0);
+    queueConfig(targetSpawn, configName, { toFront: shouldInsertAtFront });
   }
 }
 

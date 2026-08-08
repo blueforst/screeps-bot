@@ -5,6 +5,11 @@ jest.mock("@/runtime/powerBankBoost", () => ({
 
 import { HUB_UPGRADER_BODY, getUpgraderStatus, runHubUpgradeControl, startUpgrader, stopUpgrader } from "@/runtime/hubUpgradeControl";
 import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
+import {
+  RCL8_UPGRADER_MAINTENANCE_BODY,
+  RCL8_UPGRADER_RECOVERY_START_TICKS,
+  RCL8_UPGRADER_RECOVERY_STOP_TICKS,
+} from "@/runtime/upgraderPolicy";
 
 const mockedPrepareBoosts = prepareBoosts as jest.MockedFunction<typeof prepareBoosts>;
 const mockedReleaseBoostLabs = releaseBoostLabs as jest.MockedFunction<typeof releaseBoostLabs>;
@@ -40,6 +45,7 @@ function createUpgraderRoom(
   name = "E4N58",
   localXgh2o: LocalXgh2o = { storage: 450, labs: [0] },
   energyCapacityAvailable = 5600,
+  ticksToDowngrade = level === 8 ? 200_000 : 150_000,
 ): Room {
   const storage = localXgh2o.storage === undefined
     ? undefined
@@ -52,7 +58,7 @@ function createUpgraderRoom(
   );
   return {
     name,
-    controller: { level, my } as StructureController,
+    controller: { level, my, ticksToDowngrade } as StructureController,
     energyCapacityAvailable,
     storage,
     terminal,
@@ -83,19 +89,23 @@ describe("runHubUpgradeControl", () => {
     Memory.creeps = {};
     Game.creeps = {};
     Game.spawns = {};
+    delete Game.flags.RESERVE_E4N58;
     Game.rooms.E4N58 = createUpgraderRoom();
     delete Game.rooms.W1N57;
+    delete Game.rooms.W1N58;
     mockedPrepareBoosts.mockReturnValue({ status: "preparing", labs: [] });
   });
 
-  it("automatically maintains one upgrader in every owned room", () => {
+  it("automatically maintains one upgrader in every owned room below RCL8", () => {
     Game.rooms.W1N57 = createUpgraderRoom(6, true, "W1N57", {}, 2300);
+    Game.rooms.W1N58 = createUpgraderRoom(8, true, "W1N58");
 
     runHubUpgradeControl();
 
     expect(Object.keys(Memory.data?.manualUpgraders || {})).toEqual(["E4N58", "W1N57"]);
     expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.role).toBe("upgrader");
     expect(Memory.data?.creepConfigs?.["W1N57:upgrader:0"]?.role).toBe("upgrader");
+    expect(Memory.data?.creepConfigs?.["W1N58:upgrader:0"]).toBeUndefined();
   });
 
   it("starts one fixed-body manual upgrader for an owned RCL7 room", () => {
@@ -128,13 +138,98 @@ describe("runHubUpgradeControl", () => {
     expect(body.reduce((sum, part) => sum + BODYPART_COST[part], 0)).toBe(1800);
   });
 
-  it("keeps an upgrader at RCL8", () => {
+  it("does not start an upgrader at RCL8", () => {
     Game.rooms.E4N58 = createUpgraderRoom(8);
 
     runHubUpgradeControl();
 
+    expect(Memory.data?.manualUpgraders?.E4N58).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toBeUndefined();
+    expect(startUpgrader("E4N58")).toBe("ERR_UPGRADER_NOT_REQUIRED_AT_RCL8:E4N58");
+  });
+
+  it("starts a minimal unboosted RCL8 maintenance upgrader at the recovery threshold", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(
+      8,
+      true,
+      "E4N58",
+      { storage: 1000, labs: [1000] },
+      5600,
+      RCL8_UPGRADER_RECOVERY_START_TICKS,
+    );
+
+    runHubUpgradeControl();
+
     expect(Memory.data?.manualUpgraders?.E4N58).toBeDefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toEqual({
+      role: "upgrader",
+      args: ["E4N58"],
+      roomName: "E4N58",
+      body: RCL8_UPGRADER_MAINTENANCE_BODY,
+    });
+    expect(mockedPrepareBoosts).not.toHaveBeenCalled();
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("upgrader:E4N58", "E4N58");
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E4N58", "E4N58");
+  });
+
+  it("starts RCL8 maintenance independently of RESERVE worker suppression", () => {
+    Game.flags.RESERVE_E4N58 = { name: "RESERVE_E4N58" } as Flag;
+    Game.rooms.E4N58 = createUpgraderRoom(
+      8,
+      true,
+      "E4N58",
+      {},
+      5600,
+      RCL8_UPGRADER_RECOVERY_START_TICKS,
+    );
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.body).toEqual(RCL8_UPGRADER_MAINTENANCE_BODY);
+  });
+
+  it("releases an orphan legacy boost task while keeping active RCL8 maintenance", () => {
+    Memory.runtime = {
+      powerBankBoost: {
+        "hubUpgrade:E4N58": {},
+      },
+    } as unknown as Memory["runtime"];
+    Game.rooms.E4N58 = createUpgraderRoom(
+      8,
+      true,
+      "E4N58",
+      {},
+      5600,
+      RCL8_UPGRADER_RECOVERY_START_TICKS,
+    );
+
+    runHubUpgradeControl();
+
     expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toBeDefined();
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E4N58", "E4N58");
+  });
+
+  it("keeps RCL8 maintenance through the hysteresis band and cleans it at the stop threshold", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(
+      8,
+      true,
+      "E4N58",
+      {},
+      5600,
+      RCL8_UPGRADER_RECOVERY_START_TICKS,
+    );
+    runHubUpgradeControl();
+    const createdAt = Memory.data?.manualUpgraders?.E4N58?.createdAt;
+
+    Game.rooms.E4N58.controller!.ticksToDowngrade = RCL8_UPGRADER_RECOVERY_START_TICKS + 1;
+    runHubUpgradeControl();
+    expect(Memory.data?.manualUpgraders?.E4N58?.createdAt).toBe(createdAt);
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toBeDefined();
+
+    Game.rooms.E4N58.controller!.ticksToDowngrade = RCL8_UPGRADER_RECOVERY_STOP_TICKS;
+    runHubUpgradeControl();
+    expect(Memory.data?.manualUpgraders?.E4N58).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toBeUndefined();
   });
 
   it("rejects a room that is not owned", () => {
@@ -199,6 +294,29 @@ describe("runHubUpgradeControl", () => {
     );
   });
 
+  it("automatically cleans the task, queue, spawn, creep, and boost at RCL8", () => {
+    startUpgrader("E4N58");
+    const configName = "E4N58:upgrader:0";
+    const creep = createUpgrader("upgrader0", configName);
+    Game.creeps = { upgrader0: creep };
+    const cancel = jest.fn(() => OK);
+    Game.spawns.Spawn1 = {
+      memory: { spawnList: [configName, "E4N58:worker:0"] },
+      spawning: { name: "upgrader-spawning", cancel } as unknown as Spawning,
+    } as StructureSpawn;
+    Memory.creeps = { "upgrader-spawning": { configName } as CreepMemory };
+    Game.rooms.E4N58 = createUpgraderRoom(8);
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.manualUpgraders?.E4N58).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[configName]).toBeUndefined();
+    expect(Game.spawns.Spawn1.memory.spawnList).toEqual(["E4N58:worker:0"]);
+    expect(cancel).toHaveBeenCalled();
+    expect(creep.suicide).toHaveBeenCalled();
+    expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("upgrader:E4N58", "E4N58");
+  });
+
   it("automatically cleans the task, queue, spawn, creep, and boost after ownership is lost", () => {
     startUpgrader("E4N58");
     const configName = "E4N58:upgrader:0";
@@ -242,6 +360,30 @@ describe("runHubUpgradeControl", () => {
 
     expect(Memory.data?.creepConfigs?.["E4N58:hubUpgrader:0"]).toBeUndefined();
     expect(mockedReleaseBoostLabs).toHaveBeenCalledWith("hubUpgrade:E4N58", "E4N58");
+  });
+
+  it("cleans a nonstandard upgrader config from queue and active spawning", () => {
+    const legacyConfig = "legacy-upgrade-job";
+    Memory.data!.creepConfigs![legacyConfig] = {
+      role: "upgrader",
+      args: ["E4N58"],
+      roomName: "E4N58",
+      body: [WORK, CARRY, MOVE],
+    };
+    const cancel = jest.fn(() => OK);
+    Game.spawns.Spawn1 = {
+      memory: { spawnList: [legacyConfig, "E4N58:worker:0"] },
+      spawning: { name: "legacy-upgrader-spawning", cancel } as unknown as Spawning,
+    } as StructureSpawn;
+    Memory.creeps = {
+      "legacy-upgrader-spawning": { configName: legacyConfig } as CreepMemory,
+    };
+
+    runHubUpgradeControl();
+
+    expect(Memory.data?.creepConfigs?.[legacyConfig]).toBeUndefined();
+    expect(Game.spawns.Spawn1.memory.spawnList).toEqual(["E4N58:worker:0"]);
+    expect(cancel).toHaveBeenCalled();
   });
 
   it("reports the selected boost state", () => {
