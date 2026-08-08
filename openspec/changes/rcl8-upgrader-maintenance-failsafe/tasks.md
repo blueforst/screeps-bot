@@ -25,6 +25,6 @@
 - [x] 4.1 更新版本并从干净 worktree 部署包含市场 CPU、colonizer 与 RCL8 maintenance 的完整 bundle（`2026.8.8-2+d7a96c9`）。
 - [x] 4.2 只读确认 shard1 部署标签、健康 RCL8 清理/计时安全、市场 Shadow 与零写入状态（tick 72856700/72856701：三个 RCL8 控制器剩余 199,999 tick，56/56 lane 为 Shadow/suspended，市场写入与风险状态全零）。
 - [x] 4.3 用户在旧部署达到完整窗口前收紧 RCL8 worker task 合同；`d7a96c9` 观察于 18/120 样本终止，不作为稳态收益结论。
-- [ ] 4.4 更新版本并从干净 worktree 部署新的 RCL8 worker task 合同。
-- [ ] 4.5 只读确认 shard1 新部署、健康 RCL8 零通用 upgrade task/零专用配置、低计时专用最小 upgrader 合同与市场 Shadow 零写入状态。
+- [x] 4.4 从 commit `47cc10a` 的干净 detached worktree 部署新的 RCL8 worker task 合同；上传 1 个模块至 Screeps `default` branch，实际标签为 `2026.8.8-3+47cc10a@2026-08-08T08:06:32.418Z`。
+- [x] 4.5 只读确认 shard1 新部署：tick 72857404 的 E4N58/E6N59/W1N57 worker task board 均已刷新且通用 upgrade task 为 0，同时仍存在 build/repair task；tick 72857319 三个 RCL8 均剩余 199,380 tick，健康态无 manual task、专用 config、creep、queue 或 spawning。当前未自然进入 175,000 tick 启动窗口，最小 `[WORK,CARRY,MOVE]`、175,000/195,000 滞回与单实例合同仅由测试覆盖、未宣称本轮实机触发。部署后市场仍为 56/56 Shadow/suspended，managed order、pending mutation、terminal claim、staging、reservation、exposure、fee 与 safety violation 均为 0。
 - [ ] 4.6 等待并对比新部署后的完整 120 样本 CPU 窗口；未达到窗口前不得宣称线上稳态收益。
