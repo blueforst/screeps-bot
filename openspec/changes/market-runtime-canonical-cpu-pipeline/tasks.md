@@ -20,8 +20,10 @@
 ## 4. 验证、部署与观察
 
 - [x] 4.1 运行定向 Jest、完整 Jest、`npx tsc --noEmit`、`npm run build`、`git diff --check` 与 OpenSpec strict validation
-- [ ] 4.2 从基于 HEAD 的干净临时 worktree 构建并部署，避免夹带现有 upgrader/hub/colonizer dirty 改动
+- [x] 4.2 从基于 HEAD 的干净临时 worktree 构建并部署，避免夹带现有 upgrader/hub/colonizer dirty 改动
 - [ ] 4.3 通过 monitor 核对 shard1 deployTag、多个完整 Shadow tick、CPU trace 与零 managed/pending/claim/deal
 - [ ] 4.4 等待至少 1200 tick 后比较完整 120 样本窗口并记录长期 CPU 结果；未完成前保持 Canary/Continuous 关闭
 
 验证记录：两次完整 Jest 均为 115/116 suite、3292/3293 case；唯一未绿是未改动 ledger 的 wall-clock median 在全套负载下约 11.3 ms 超过 10 ms，隔离复跑为 8.80 ms 并通过原门槛，未放宽阈值。其余定向测试、TypeScript、build、diff check 与 strict validation 全部通过。
+
+部署记录：已从 detached clean worktree 上传 `2026.8.8-1+2fcf643@2026-08-08T06:20:51.240Z`。部署后 9 个样本尚未形成稳态窗口，最近 trace 仍在 `outer_precommit` 或 `scope_core_read1` 截止，故 4.3/4.4 保持未完成；56/56 grant 均为 `shadow+suspended`，managed/pending/terminal claim/exposure 等写面均为零。
