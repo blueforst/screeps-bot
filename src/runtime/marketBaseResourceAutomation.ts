@@ -43,6 +43,7 @@ import {
 import type { MarketOrderSnapshot } from "@/runtime/marketSalePricing";
 import {
   directSafetyFingerprint,
+  MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
   type ResolvedMarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
 import {
@@ -197,11 +198,24 @@ export function marketBaseResourceOperatorAuthorizationFingerprint(
 function marketBaseResourceOperatorAuthorizationFingerprintFromDirectSafety(
   fingerprint: string | undefined,
 ): string {
+  if (
+    fingerprint ===
+    MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT
+  ) {
+    return MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT;
+  }
   return canonicalStableHashV1({
     domain: "market-base-resource:operator-authorization-v1",
     directSafetyFingerprint: fingerprint,
   });
 }
+
+export const MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT =
+  canonicalStableHashV1({
+    domain: "market-base-resource:operator-authorization-v1",
+    directSafetyFingerprint:
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+  });
 
 function pricingRatchetPayload(input: {
   initializedAt: number;
@@ -7111,17 +7125,22 @@ function createMarketBaseResourceStaticReadAttestation(
   try {
     const directFingerprint = directSafetyFingerprint(input.config);
     const directFingerprintPayload =
-      typeof directFingerprint === "string"
+      typeof directFingerprint === "string" &&
+      directFingerprint !==
+        MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT
         ? (JSON.parse(directFingerprint) as unknown)
         : undefined;
-    const configReasons =
-      isPlainRecord(directFingerprintPayload) &&
-      Array.isArray(directFingerprintPayload.mismatchReasons) &&
-      directFingerprintPayload.mismatchReasons.every(
-        (reason) => typeof reason === "string",
-      )
-        ? (directFingerprintPayload.mismatchReasons as string[])
-        : ["market_base_v3_config_invalid"];
+    const configReasons: readonly string[] =
+      directFingerprint ===
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT
+        ? []
+        : isPlainRecord(directFingerprintPayload) &&
+            Array.isArray(directFingerprintPayload.mismatchReasons) &&
+            directFingerprintPayload.mismatchReasons.every(
+              (reason) => typeof reason === "string",
+            )
+          ? (directFingerprintPayload.mismatchReasons as string[])
+          : ["market_base_v3_config_invalid"];
     if (!input.config.validForPlanning || configReasons.length > 0) {
       return {
         ok: false,

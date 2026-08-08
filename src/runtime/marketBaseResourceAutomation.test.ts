@@ -1,4 +1,5 @@
 import {
+  MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
   MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE,
   applyMarketBaseResourceShadowObservations,
   buildMarketBaseResourcePricingRatchetState,
@@ -60,7 +61,11 @@ import {
   buildMarketDirectContinuousPermit,
   canonicalStableHashV1,
 } from "@/runtime/marketDirectContinuousPolicy";
-import { resolveMarketSaleAutomationConfig } from "@/runtime/marketSaleConfig";
+import {
+  directSafetyFingerprint,
+  MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+  resolveMarketSaleAutomationConfig,
+} from "@/runtime/marketSaleConfig";
 import type { MarketProtectionEntry } from "@/runtime/marketSaleProtection";
 
 function order(
@@ -2925,6 +2930,55 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(deps.readArbiterSnapshot).toHaveBeenCalledTimes(2);
     expect(deps.readOutgoingWindow).toHaveBeenCalledTimes(2);
     expect(deps.readOwnOrders).toHaveBeenCalledTimes(2);
+  });
+
+  it("unprovenanced own index getter 不能 TOCTOU 提升 canonical operator，static fail closed 且零写", () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    const runtimeInput = input();
+    runtimeInput.config = {
+      ...runtimeInput.config,
+      sellResources: [...runtimeInput.config.sellResources],
+      invalidReasons: [...runtimeInput.config.invalidReasons],
+    };
+    let reads = 0;
+    Object.defineProperty(runtimeInput.config.sellResources, 0, {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        if (reads === 2) {
+          runtimeInput.config.planningSnapshotMaxAgeTicks = 999_999;
+        }
+        return RESOURCE_HYDROGEN;
+      },
+    });
+
+    const direct = directSafetyFingerprint(runtimeInput.config);
+    expect(reads).toBe(2);
+    expect(runtimeInput.config.planningSnapshotMaxAgeTicks).toBe(999_999);
+    expect(direct).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+    );
+    expect(
+      marketBaseResourceOperatorAuthorizationFingerprint(runtimeInput.config),
+    ).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+    );
+
+    const result = runMarketBaseResourceAutomation(
+      state,
+      runtimeInput,
+      deps,
+    );
+
+    expect(result.planComplete).toBe(false);
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toHaveProperty(
+      "base_resource_v3_snapshot_age_mismatch",
+    );
+    expect(state.ledger?.pending).toBeUndefined();
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
   });
 
   it("第二读 callback 不能原位改写已认证 config，失败时零写", () => {

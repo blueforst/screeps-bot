@@ -776,6 +776,17 @@ export interface MarketBaseResourceRawConfigValidation {
   };
 }
 
+export interface MarketBaseResourceRawConfigParse {
+  readonly valid: boolean;
+  readonly invalidReasons: readonly string[];
+  readonly parsed?: {
+    readonly sellResources: readonly MarketBaseResource[];
+    readonly hardFloor: Readonly<Record<MarketBaseResource, number>>;
+    readonly economicFloor: Readonly<Record<MarketBaseResource, number>>;
+    readonly forecastBuffer: Readonly<Record<MarketBaseResource, number>>;
+  };
+}
+
 function validateExactThresholdMap(
   rawValue: unknown,
   field: "hardFloor" | "economicFloor" | "forecastBuffer",
@@ -791,6 +802,7 @@ function validateExactThresholdMap(
       addReason(reasons, `base_resource_${field}_extra_key:${key}`);
     }
   }
+  const parsed: Partial<Record<MarketBaseResource, number>> = {};
   for (const resource of MARKET_BASE_RESOURCE_CATALOG) {
     if (!Object.prototype.hasOwnProperty.call(rawValue, resource)) {
       addReason(reasons, `base_resource_${field}_missing_key:${resource}`);
@@ -803,26 +815,28 @@ function validateExactThresholdMap(
         : field === "economicFloor"
           ? expectedPolicy.economicFloor
           : expectedPolicy.laneReserve;
-    if (!isFinitePositive(rawValue[resource])) {
+    const value = rawValue[resource];
+    if (!isFinitePositive(value)) {
       addReason(reasons, `base_resource_${field}_value_invalid:${resource}`);
-    } else if (rawValue[resource] !== expected) {
+    } else if (value !== expected) {
       addReason(reasons, `base_resource_${field}_value_mismatch:${resource}`);
     }
+    parsed[resource] = value as number;
   }
   if (!exactStringArray(keys, MARKET_BASE_RESOURCE_CATALOG_SORTED)) {
     return undefined;
   }
-  return Object.fromEntries(
-    MARKET_BASE_RESOURCE_CATALOG.map((resource) => [
-      resource,
-      rawValue[resource] as number,
-    ]),
-  ) as Record<MarketBaseResource, number>;
+  return parsed as Record<MarketBaseResource, number>;
 }
 
-export function validateMarketBaseResourceRawConfig(
+/**
+ * Raw V3 config 的唯一精确 parser。它完成公开 validator 的全部 shape、
+ * catalog 与 threshold 检查，但刻意不物化 canonical fingerprint，供只需要
+ * mismatch reasons 的 hot path 复用。
+ */
+export function parseMarketBaseResourceRawConfig(
   rawValue: unknown,
-): MarketBaseResourceRawConfigValidation {
+): MarketBaseResourceRawConfigParse {
   const reasons: string[] = [];
   if (!isPlainRecord(rawValue)) {
     return {
@@ -881,7 +895,7 @@ export function validateMarketBaseResourceRawConfig(
       invalidReasons: deepFreeze(reasons.sort()),
     };
   }
-  const canonicalPayload = {
+  const parsed = {
     sellResources: MARKET_BASE_RESOURCE_CATALOG,
     hardFloor,
     economicFloor,
@@ -890,10 +904,24 @@ export function validateMarketBaseResourceRawConfig(
   return {
     valid: true,
     invalidReasons: deepFreeze([]),
+    parsed: deepFreeze(parsed),
+  };
+}
+
+export function validateMarketBaseResourceRawConfig(
+  rawValue: unknown,
+): MarketBaseResourceRawConfigValidation {
+  const result = parseMarketBaseResourceRawConfig(rawValue);
+  if (!result.valid || !result.parsed) {
+    return result;
+  }
+  return {
+    valid: true,
+    invalidReasons: result.invalidReasons,
     canonical: deepFreeze({
-      ...canonicalPayload,
+      ...result.parsed,
       fingerprint: canonicalStableHashV1({
-        config: canonicalPayload,
+        config: result.parsed,
         domain: "market-base-resource:raw-config-v1",
         revision: MARKET_BASE_RESOURCE_CONFIG_REVISION,
       }),

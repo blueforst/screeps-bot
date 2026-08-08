@@ -1,6 +1,7 @@
 import {
   directSafetyFingerprint,
   enforceLegacyMarketSafetyLatch,
+  MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
   MARKET_BASE_RESOURCE_CONFIG_REVISION,
   MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
   MARKET_DIRECT_CANARY_POLICY,
@@ -10,6 +11,11 @@ import {
   marketDirectContinuousConfigMismatchReasons,
   resolveMarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
+import {
+  MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+  marketBaseResourceOperatorAuthorizationFingerprint,
+} from "@/runtime/marketBaseResourceAutomation";
+import { canonicalStableHashV1 } from "@/runtime/marketDirectContinuousPolicy";
 
 describe("marketSaleConfig", () => {
   beforeEach(() => {
@@ -248,6 +254,286 @@ describe("marketSaleConfig", () => {
     );
     expect(directSafetyFingerprint(config)).toContain(
       MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
+    );
+  });
+
+  it("canonical V3 direct/shadow 复用逐字相同的 direct 与 operator 指纹", () => {
+    const activeRaw = validBaseResourceV3Raw();
+    const rawSellResources = activeRaw.sellResources as ResourceConstant[];
+    const rawHardFloor = activeRaw.hardFloor as Record<string, number>;
+    const rawEconomicFloor = activeRaw.economicFloor as Record<string, number>;
+    const rawForecastBuffer = activeRaw.forecastBuffer as Record<string, number>;
+    const active = resolveMarketSaleAutomationConfig(
+      activeRaw,
+    );
+    const shadowRaw = validBaseResourceV3Raw();
+    shadowRaw.mode = "shadow";
+    shadowRaw.shadowStrategy = "direct";
+    const shadow = resolveMarketSaleAutomationConfig(shadowRaw);
+    const thresholdEntries = (value: Record<string, number>) =>
+      Object.entries(value).sort(([left], [right]) =>
+        left.localeCompare(right),
+      );
+    const originalCanonicalResult = JSON.stringify({
+      strategy: "continuous-v3",
+      runtimeFingerprint: MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
+      configRevision: active.configRevision ?? null,
+      sellResources: [...active.sellResources],
+      hardFloor: thresholdEntries(active.hardFloor),
+      economicFloor: thresholdEntries(active.economicFloor),
+      forecastBuffer: thresholdEntries(active.forecastBuffer),
+      mismatchReasons: marketBaseResourceV3ConfigMismatchReasons(active),
+    });
+    const frozenObjects = new Set<object>();
+    const expectReachableGraphFrozen = (value: unknown): void => {
+      if (value === null || typeof value !== "object") return;
+      const object = value as object;
+      if (frozenObjects.has(object)) return;
+      frozenObjects.add(object);
+      expect(Object.isFrozen(object)).toBe(true);
+      for (const key of Reflect.ownKeys(object)) {
+        const descriptor = Object.getOwnPropertyDescriptor(object, key);
+        expect(descriptor).toBeDefined();
+        expect(descriptor && "value" in descriptor).toBe(true);
+        if (descriptor && "value" in descriptor) {
+          expectReachableGraphFrozen(descriptor.value);
+        }
+      }
+    };
+
+    expect(directSafetyFingerprint(active)).toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+    );
+    expectReachableGraphFrozen(active);
+    expectReachableGraphFrozen(shadow);
+    expect(active.sellResources).not.toBe(rawSellResources);
+    expect(active.hardFloor).not.toBe(rawHardFloor);
+    expect(active.economicFloor).not.toBe(rawEconomicFloor);
+    expect(active.forecastBuffer).not.toBe(rawForecastBuffer);
+    expect(MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT).toBe(
+      originalCanonicalResult,
+    );
+    expect(directSafetyFingerprint(shadow)).toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(active)).toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(shadow)).toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+    );
+    expect(
+      MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+    ).toBe(
+      canonicalStableHashV1({
+        domain: "market-base-resource:operator-authorization-v1",
+        directSafetyFingerprint:
+          MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+      }),
+    );
+
+    rawSellResources.reverse();
+    rawHardFloor[RESOURCE_HYDROGEN] =
+      rawHardFloor[RESOURCE_HYDROGEN]! + 1;
+    rawEconomicFloor[RESOURCE_CATALYST] =
+      rawEconomicFloor[RESOURCE_CATALYST]! + 1;
+    rawForecastBuffer[RESOURCE_OXYGEN] =
+      rawForecastBuffer[RESOURCE_OXYGEN]! + 1;
+    expect(active.sellResources).toEqual([
+      RESOURCE_HYDROGEN,
+      RESOURCE_KEANIUM,
+      RESOURCE_LEMERGIUM,
+      RESOURCE_OXYGEN,
+      RESOURCE_UTRIUM,
+      RESOURCE_CATALYST,
+      RESOURCE_ZYNTHIUM,
+    ]);
+    expect(directSafetyFingerprint(active)).toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+    );
+  });
+
+  it("sellResources own every 不能篡改 exact gate 或碰撞 canonical 指纹", () => {
+    const canonical = resolveMarketSaleAutomationConfig(
+      validBaseResourceV3Raw(),
+    );
+    const config = {
+      ...canonical,
+      sellResources: [...canonical.sellResources],
+      invalidReasons: [...canonical.invalidReasons],
+    };
+    const hostileEvery = jest.fn(() => {
+      config.planningSnapshotMaxAgeTicks = 999_999;
+      return true;
+    });
+    Object.defineProperty(config.sellResources, "every", {
+      configurable: true,
+      value: hostileEvery,
+    });
+
+    const direct = directSafetyFingerprint(config);
+
+    expect(hostileEvery).not.toHaveBeenCalled();
+    expect(config.planningSnapshotMaxAgeTicks).toBe(10);
+    expect(direct).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+    );
+    expect(JSON.parse(direct!).mismatchReasons).toContain(
+      "base_resource_v3_noncanonical_direct_input",
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(config)).toBe(
+      canonicalStableHashV1({
+        domain: "market-base-resource:operator-authorization-v1",
+        directSafetyFingerprint: direct,
+      }),
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(config)).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+    );
+  });
+
+  it("unprovenanced own index getter 的双读 TOCTOU 不能命中 canonical", () => {
+    const canonical = resolveMarketSaleAutomationConfig(
+      validBaseResourceV3Raw(),
+    );
+    const config = {
+      ...canonical,
+      sellResources: [...canonical.sellResources],
+      invalidReasons: [...canonical.invalidReasons],
+    };
+    let reads = 0;
+    Object.defineProperty(config.sellResources, 0, {
+      configurable: true,
+      get: () => {
+        reads += 1;
+        if (reads === 2) {
+          config.planningSnapshotMaxAgeTicks = 999_999;
+        }
+        return RESOURCE_HYDROGEN;
+      },
+    });
+
+    const direct = directSafetyFingerprint(config);
+
+    expect(reads).toBe(2);
+    expect(config.planningSnapshotMaxAgeTicks).toBe(999_999);
+    expect(direct).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+    );
+    expect(JSON.parse(direct!).mismatchReasons).toContain(
+      "base_resource_v3_noncanonical_direct_input",
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(config)).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+    );
+  });
+
+  it("invalidReasons 非空不能由 fallback 字符串碰撞提升 canonical operator", () => {
+    const canonical = resolveMarketSaleAutomationConfig(
+      validBaseResourceV3Raw(),
+    );
+    const invalid = {
+      ...canonical,
+      validForPlanning: true,
+      invalidReasons: ["synthetic_invalid_reason"],
+    };
+
+    const direct = directSafetyFingerprint(invalid);
+
+    expect(direct).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+    );
+    expect(JSON.parse(direct!).mismatchReasons).toContain(
+      "base_resource_v3_noncanonical_direct_input",
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(invalid)).toBe(
+      canonicalStableHashV1({
+        domain: "market-base-resource:operator-authorization-v1",
+        directSafetyFingerprint: direct,
+      }),
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(invalid)).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+    );
+  });
+
+  it("资源重排和 config 偏差走完整非 canonical operator 计算", () => {
+    const canonical = resolveMarketSaleAutomationConfig(
+      validBaseResourceV3Raw(),
+    );
+    const cases = [
+      {
+        ...canonical,
+        sellResources: [...canonical.sellResources].reverse(),
+      },
+      {
+        ...canonical,
+        hardFloor: {
+          ...canonical.hardFloor,
+          [RESOURCE_HYDROGEN]: canonical.hardFloor[RESOURCE_HYDROGEN]! + 1,
+        },
+      },
+      {
+        ...canonical,
+        configRevision: `${MARKET_BASE_RESOURCE_CONFIG_REVISION}-changed`,
+      },
+      {
+        ...canonical,
+        sellResources: [...canonical.sellResources, RESOURCE_ENERGY],
+      },
+    ];
+
+    expect(marketBaseResourceV3ConfigMismatchReasons(cases[0]!)).toEqual([]);
+    for (const candidate of cases) {
+      const direct = directSafetyFingerprint(candidate);
+      expect(direct).not.toBe(
+        MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+      );
+      expect(marketBaseResourceOperatorAuthorizationFingerprint(candidate)).toBe(
+        canonicalStableHashV1({
+          domain: "market-base-resource:operator-authorization-v1",
+          directSafetyFingerprint: direct,
+        }),
+      );
+      expect(marketBaseResourceOperatorAuthorizationFingerprint(candidate)).not.toBe(
+        MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+      );
+    }
+  });
+
+  it("resolved config 原位 mutation 不会继承 canonical 快路", () => {
+    const canonical = resolveMarketSaleAutomationConfig(
+      validBaseResourceV3Raw(),
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(canonical)).toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
+    );
+    expect(Object.isFrozen(canonical)).toBe(true);
+    expect(Object.isFrozen(canonical.economicFloor)).toBe(true);
+    expect(() => {
+      canonical.economicFloor[RESOURCE_CATALYST] =
+        canonical.economicFloor[RESOURCE_CATALYST]! + 1;
+    }).toThrow(TypeError);
+
+    const config = {
+      ...canonical,
+      sellResources: [...canonical.sellResources],
+      hardFloor: { ...canonical.hardFloor },
+      economicFloor: { ...canonical.economicFloor },
+      forecastBuffer: { ...canonical.forecastBuffer },
+      invalidReasons: [...canonical.invalidReasons],
+    };
+    config.economicFloor[RESOURCE_CATALYST] =
+      config.economicFloor[RESOURCE_CATALYST]! + 1;
+    const mutatedDirect = directSafetyFingerprint(config);
+    expect(mutatedDirect).not.toBe(
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
+    );
+    expect(marketBaseResourceOperatorAuthorizationFingerprint(config)).toBe(
+      canonicalStableHashV1({
+        domain: "market-base-resource:operator-authorization-v1",
+        directSafetyFingerprint: mutatedDirect,
+      }),
     );
   });
 

@@ -7,6 +7,7 @@ import {
   deriveMarketBaseLaneId,
   isMarketBaseResource,
   MARKET_BASE_RESOURCE_CATALOG,
+  MARKET_BASE_RESOURCE_CONFIG_REVISION,
   MARKET_BASE_RESOURCE_EVIDENCE_SHA256,
   MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
   MARKET_BASE_RESOURCE_LANE_DERIVATION_POLICY,
@@ -19,6 +20,7 @@ import {
   marketBaseDerivedLaneLifecycleCheckpointCommitment,
   marketBaseDerivedLaneSetFingerprint,
   marketBaseRoomRegistryCheckpointCommitment,
+  parseMarketBaseResourceRawConfig,
   reconcileMarketBaseDerivedLanes,
   reconcileMarketBaseSellerRooms,
   type MarketBaseResource,
@@ -261,6 +263,95 @@ describe("marketBaseResourcePolicy catalog/config/bootstrap", () => {
       validateMarketBaseResourceRawConfig(missing).invalidReasons,
     ).toContain("base_resource_sell_resource_missing:O");
   });
+
+  it("共享 exact parser 与公开 validator 同源，但只由公开入口物化 fingerprint", () => {
+    const raw = rawV3ResourceConfig();
+    const parsed = parseMarketBaseResourceRawConfig(raw);
+    const validated = validateMarketBaseResourceRawConfig(raw);
+
+    expect(parsed.valid).toBe(true);
+    expect(parsed.invalidReasons).toEqual([]);
+    expect(parsed.parsed).toBeDefined();
+    expect(parsed.parsed).not.toHaveProperty("fingerprint");
+    expect(validated.canonical).toEqual({
+      ...parsed.parsed,
+      fingerprint: canonicalStableHashV1({
+        config: parsed.parsed,
+        domain: "market-base-resource:raw-config-v1",
+        revision: MARKET_BASE_RESOURCE_CONFIG_REVISION,
+      }),
+    });
+
+    const malformed = rawV3ResourceConfig();
+    malformed.sellResources = [
+      ...(malformed.sellResources as string[]),
+      "X",
+      "energy",
+    ];
+    delete (malformed.hardFloor as Record<string, number>).O;
+    (malformed.forecastBuffer as Record<string, number>).H = Number.NaN;
+    expect(parseMarketBaseResourceRawConfig(malformed).invalidReasons).toEqual(
+      validateMarketBaseResourceRawConfig(malformed).invalidReasons,
+    );
+  });
+
+  it.each(["hardFloor", "economicFloor", "forecastBuffer"] as const)(
+    "%s accessor 只读一次，第三读突变不能污染 parsed/canonical",
+    (field) => {
+      const fixture = () => {
+        const raw = rawV3ResourceConfig();
+        const expected = {
+          ...(raw[field] as Record<MarketBaseResource, number>),
+        };
+        const reads = Object.fromEntries(
+          MARKET_BASE_RESOURCE_CATALOG.map((resource) => [resource, 0]),
+        ) as Record<MarketBaseResource, number>;
+        const accessorMap: Record<string, number> = {};
+        for (const resource of MARKET_BASE_RESOURCE_CATALOG) {
+          Object.defineProperty(accessorMap, resource, {
+            configurable: true,
+            enumerable: true,
+            get: () => {
+              reads[resource] += 1;
+              return reads[resource] >= 3
+                ? expected[resource] + 1
+                : expected[resource];
+            },
+          });
+        }
+        raw[field] = accessorMap;
+        return { raw, expected, reads };
+      };
+
+      const parsedFixture = fixture();
+      const parsed = parseMarketBaseResourceRawConfig(parsedFixture.raw);
+      expect(parsed.valid).toBe(true);
+      expect(parsed.parsed?.[field]).toEqual(parsedFixture.expected);
+      expect(parsedFixture.reads).toEqual(
+        Object.fromEntries(
+          MARKET_BASE_RESOURCE_CATALOG.map((resource) => [resource, 1]),
+        ),
+      );
+
+      const validatedFixture = fixture();
+      const validated = validateMarketBaseResourceRawConfig(
+        validatedFixture.raw,
+      );
+      const ordinary = validateMarketBaseResourceRawConfig(
+        rawV3ResourceConfig(),
+      );
+      expect(validated.valid).toBe(true);
+      expect(validated.canonical?.[field]).toEqual(validatedFixture.expected);
+      expect(validated.canonical?.fingerprint).toBe(
+        ordinary.canonical?.fingerprint,
+      );
+      expect(validatedFixture.reads).toEqual(
+        Object.fromEntries(
+          MARKET_BASE_RESOURCE_CATALOG.map((resource) => [resource, 1]),
+        ),
+      );
+    },
+  );
 
   it.each(["hardFloor", "economicFloor", "forecastBuffer"] as const)(
     "raw validator 拒绝 %s 的额外 threshold key",

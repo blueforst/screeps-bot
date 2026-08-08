@@ -13,6 +13,7 @@ import {
   MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
   MARKET_BASE_RESOURCE_LANE_DERIVATION_POLICY,
   MARKET_BASE_RESOURCE_POLICIES,
+  parseMarketBaseResourceRawConfig,
   validateMarketBaseResourceRawConfig,
 } from "@/runtime/marketBaseResourcePolicy";
 
@@ -55,6 +56,61 @@ export const MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT =
       historyMaxAgeDays: 2,
     },
   });
+
+/**
+ * 逐字等同于 canonical resolved V3 direct config 的公开安全指纹。运行时
+ * 只有 resolver 完成 exact parser/scalar checks、递归冻结并登记私有
+ * provenance 后才复用；自建对象、clone、spread 与 accessor 均不得命中。
+ */
+export const MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT =
+  JSON.stringify({
+    strategy: "continuous-v3",
+    runtimeFingerprint: MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
+    configRevision: MARKET_BASE_RESOURCE_CONFIG_REVISION,
+    sellResources: [...MARKET_BASE_RESOURCE_CATALOG],
+    hardFloor: sortedThresholdMap(
+      Object.fromEntries(
+        MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
+          policy.resource,
+          policy.hardFloor,
+        ]),
+      ),
+    ),
+    economicFloor: sortedThresholdMap(
+      Object.fromEntries(
+        MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
+          policy.resource,
+          policy.economicFloor,
+        ]),
+      ),
+    ),
+    forecastBuffer: sortedThresholdMap(
+      Object.fromEntries(
+        MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
+          policy.resource,
+          policy.laneReserve,
+        ]),
+      ),
+    ),
+    mismatchReasons: [],
+  });
+
+const marketBaseResourceCanonicalResolvedConfigs = new WeakSet<object>();
+
+function freezeCanonicalResolvedConfig<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const key of Reflect.ownKeys(value as object)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value as object, key);
+      if (descriptor && "value" in descriptor) {
+        freezeCanonicalResolvedConfig(descriptor.value);
+      }
+    }
+    if (!Object.isFrozen(value)) {
+      Object.freeze(value);
+    }
+  }
+  return value;
+}
 
 /**
  * Continuous permit 冻结的是这份代码级运行合同。Memory 配置只允许逐字段
@@ -622,7 +678,7 @@ export function marketBaseResourceV3ConfigMismatchReasons(
   config: MarketSaleAutomationConfig,
 ): string[] {
   const reasons = [
-    ...validateMarketBaseResourceRawConfig({
+    ...parseMarketBaseResourceRawConfig({
       sellResources: config.sellResources,
       hardFloor: config.hardFloor,
       economicFloor: config.economicFloor,
@@ -781,7 +837,16 @@ export function directSafetyFingerprint(
   if (strategy !== "direct") return undefined;
 
   if (config.directCapability === "continuous-v3") {
-    return JSON.stringify({
+    if (
+      typeof config === "object" &&
+      config !== null &&
+      marketBaseResourceCanonicalResolvedConfigs.has(config)
+    ) {
+      return MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT;
+    }
+    const mismatchReasons =
+      marketBaseResourceV3ConfigMismatchReasons(config);
+    const fallbackPayload = {
       strategy: "continuous-v3",
       runtimeFingerprint: MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
       configRevision: config.configRevision ?? null,
@@ -789,8 +854,24 @@ export function directSafetyFingerprint(
       hardFloor: sortedThresholdMap(config.hardFloor),
       economicFloor: sortedThresholdMap(config.economicFloor),
       forecastBuffer: sortedThresholdMap(config.forecastBuffer),
-      mismatchReasons:
-        marketBaseResourceV3ConfigMismatchReasons(config),
+      mismatchReasons,
+    };
+    const fallbackFingerprint = JSON.stringify(fallbackPayload);
+    if (
+      fallbackFingerprint !==
+      MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT
+    ) {
+      return fallbackFingerprint;
+    }
+    // 私有 provenance、validForPlanning/invalidReasons 与 hostile accessor
+    // 不进入历史 payload；unprovenanced fallback 若发生逐字碰撞，必须显式
+    // 打破它，避免 operator equality 把自建输入重新提升成 canonical 证明。
+    return JSON.stringify({
+      ...fallbackPayload,
+      mismatchReasons: [
+        ...mismatchReasons,
+        "base_resource_v3_noncanonical_direct_input",
+      ],
     });
   }
 
@@ -1279,6 +1360,17 @@ export function resolveMarketSaleAutomationConfig(
     }
   }
   resolved.validForPlanning = invalidReasons.length === 0;
+  if (
+    usesDirectStrategy &&
+    directCapability === "continuous-v3" &&
+    rawV3Validation?.valid === true &&
+    rawV3Validation.canonical &&
+    resolved.validForPlanning &&
+    invalidReasons.length === 0
+  ) {
+    freezeCanonicalResolvedConfig(resolved);
+    marketBaseResourceCanonicalResolvedConfigs.add(resolved);
+  }
   return resolved;
 }
 
