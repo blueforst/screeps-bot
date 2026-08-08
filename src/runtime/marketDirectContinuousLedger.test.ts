@@ -3,12 +3,15 @@ import {
   CONTINUOUS_CONFIRMED_CANARY_CHECKPOINT_GENESIS,
   CONTINUOUS_OUTCOME_RING_LIMIT,
   CONTINUOUS_PLANNED_AMOUNT,
+  CONTINUOUS_QUOTA_BATCH_LIMIT,
   CONTINUOUS_RECEIPT_GENESIS,
   CONTINUOUS_RECEIPT_RING_LIMIT,
+  CONTINUOUS_ROLLING_WINDOW_TICKS,
   LEGACY_X_PROCESSED_EVIDENCE_KEY,
   advanceContinuousWal,
   canonicalStableHashV1,
   computeContinuousQuota,
+  computeContinuousQuotaBatch,
   computeOpportunityAdmissions,
   migrateLegacyXSeedLedger,
   prepareContinuousAttempt,
@@ -849,6 +852,225 @@ describe("Continuous Direct receipt retention and quota", () => {
     expect(quota.resourceConfirmedActual).toBe(400);
     expect(quota.globalConfirmedActual).toBe(1_400);
     expect(quota.confirmedCooldownNotBefore).toBe(tick + 1_000);
+  });
+
+  it("quota batch 对 confirmed/pending/remaining/cooldown/retry 与单资源逐字段一致", () => {
+    const confirmedTick = LEGACY_TRANSACTION_TICK + 1_000;
+    const confirmed = executeConfirmed(
+      genesis(),
+      confirmedTick,
+      "H",
+      400,
+    );
+    const pendingTick = confirmedTick + 1_000;
+    const prepared = prepareContinuousAttempt(
+      confirmed,
+      prepareInput(confirmed, pendingTick, "Z"),
+    ).state;
+    expect(prepared.pending?.resource).toBe("Z");
+
+    const requests = [
+      { resource: "Z", resourceLimit: 5_000 },
+      { resource: "X", resourceLimit: 8_000 },
+      { resource: "H", resourceLimit: 8_000 },
+    ];
+    const batch = computeContinuousQuotaBatch(
+      prepared,
+      pendingTick,
+      requests,
+      12_000,
+    )!;
+    expect(batch.map((snapshot) => snapshot.resource)).toEqual([
+      "Z",
+      "X",
+      "H",
+    ]);
+    const common = {
+      tick: pendingTick,
+      windowStartTick:
+        pendingTick - CONTINUOUS_ROLLING_WINDOW_TICKS + 1,
+      globalLimit: 12_000,
+      globalConfirmedActual: 1_400,
+      globalUnmatchedPlanned: 1_000,
+      globalRemaining: 9_600,
+      lastGlobalConfirmedAt: confirmedTick,
+      confirmedCooldownNotBefore: pendingTick,
+      retryNotBefore: 0,
+    };
+    expect(batch).toEqual([
+      {
+        ...common,
+        resource: "Z",
+        resourceLimit: 5_000,
+        resourceConfirmedActual: 0,
+        resourceUnmatchedPlanned: 1_000,
+        resourceRemaining: 4_000,
+        lastResourceConfirmedAt: undefined,
+      },
+      {
+        ...common,
+        resource: "X",
+        resourceLimit: 8_000,
+        resourceConfirmedActual: 1_000,
+        resourceUnmatchedPlanned: 0,
+        resourceRemaining: 7_000,
+        lastResourceConfirmedAt: LEGACY_TRANSACTION_TICK,
+      },
+      {
+        ...common,
+        resource: "H",
+        resourceLimit: 8_000,
+        resourceConfirmedActual: 400,
+        resourceUnmatchedPlanned: 0,
+        resourceRemaining: 7_600,
+        lastResourceConfirmedAt: confirmedTick,
+      },
+    ]);
+    expect(
+      requests.map((request) =>
+        computeContinuousQuota(
+          prepared,
+          pendingTick,
+          request.resource,
+          request.resourceLimit,
+          12_000,
+        ),
+      ),
+    ).toEqual(batch);
+
+    const failed = executeFailed(genesis(), confirmedTick);
+    const retryBatch = computeContinuousQuotaBatch(
+      failed,
+      confirmedTick + 1,
+      [{ resource: "H", resourceLimit: 8_000 }],
+      12_000,
+    )!;
+    expect(retryBatch[0].retryNotBefore).toBe(
+      confirmedTick + CONTINUOUS_FAILED_RETRY_TICKS,
+    );
+  });
+
+  it("三资源 admission 只遍历 receipt ring 两次：一次验证、一次聚合", () => {
+    const state = genesis();
+    const originalIterator =
+      state.receipts[Symbol.iterator].bind(state.receipts);
+    const iterateReceipts = jest.fn(() => originalIterator());
+    Object.defineProperty(state.receipts, Symbol.iterator, {
+      configurable: true,
+      value: iterateReceipts,
+    });
+
+    expect(
+      computeOpportunityAdmissions(
+        state,
+        LEGACY_TRANSACTION_TICK + 1_000,
+        SAFE_RESOURCES,
+        12_000,
+      ),
+    ).toBeDefined();
+    expect(iterateReceipts).toHaveBeenCalledTimes(2);
+  });
+
+  it("admission 在排序前拒绝 malformed resource，整批 fail-closed", () => {
+    const state = genesis();
+    const before = JSON.stringify(state);
+    expect(
+      computeOpportunityAdmissions(
+        state,
+        LEGACY_TRANSACTION_TICK + 1_000,
+        [
+          {
+            resource: undefined,
+            resourceLimit: 8_000,
+          } as unknown as ContinuousSafeOpportunity,
+        ],
+        12_000,
+      ),
+    ).toBeUndefined();
+    expect(JSON.stringify(state)).toBe(before);
+  });
+
+  it("quota batch 任一输入非法时整体 unavailable 且不改写 ledger", () => {
+    const state = genesis();
+    const before = JSON.stringify(state);
+    const valid = [{ resource: "X", resourceLimit: 8_000 }];
+    const oversized = Array.from(
+      { length: CONTINUOUS_QUOTA_BATCH_LIMIT + 1 },
+      (_, index) => ({
+        resource: `resource-${index}`,
+        resourceLimit: 1_000,
+      }),
+    );
+    const invalidBatches = [
+      () =>
+        computeContinuousQuotaBatch(
+          state,
+          -1,
+          valid,
+          12_000,
+        ),
+      () =>
+        computeContinuousQuotaBatch(
+          state,
+          LEGACY_TRANSACTION_TICK + 1,
+          valid,
+          -1,
+        ),
+      () =>
+        computeContinuousQuotaBatch(
+          state,
+          LEGACY_TRANSACTION_TICK + 1,
+          [{ resource: "", resourceLimit: 8_000 }],
+          12_000,
+        ),
+      () =>
+        computeContinuousQuotaBatch(
+          state,
+          LEGACY_TRANSACTION_TICK + 1,
+          [{ resource: "X", resourceLimit: -1 }],
+          12_000,
+        ),
+      () =>
+        computeContinuousQuotaBatch(
+          state,
+          LEGACY_TRANSACTION_TICK + 1,
+          [
+            { resource: "X", resourceLimit: 8_000 },
+            { resource: "X", resourceLimit: 9_000 },
+          ],
+          12_000,
+        ),
+      () =>
+        computeContinuousQuotaBatch(
+          state,
+          LEGACY_TRANSACTION_TICK + 1,
+          oversized,
+          12_000,
+        ),
+    ];
+    invalidBatches.forEach((read) => expect(read()).toBeUndefined());
+
+    const corrupt = JSON.parse(
+      JSON.stringify(state),
+    ) as MarketDirectContinuousLedger;
+    corrupt.receipts[0].headHash = "corrupt";
+    expect(
+      computeContinuousQuotaBatch(
+        corrupt,
+        LEGACY_TRANSACTION_TICK + 1,
+        valid,
+        12_000,
+      ),
+    ).toBeUndefined();
+    expect(
+      computeContinuousQuotaBatch(
+        state,
+        LEGACY_TRANSACTION_TICK + 1,
+        [],
+        12_000,
+      ),
+    ).toEqual([]);
+    expect(JSON.stringify(state)).toBe(before);
   });
 
   it("rolling 窗口左边界包含，下一 tick 严格移出", () => {

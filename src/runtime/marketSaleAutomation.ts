@@ -128,7 +128,7 @@ import {
   type MarketBaseResourceQuotaReceipt,
 } from "@/runtime/marketBaseResourceLedger";
 import {
-  computeContinuousQuota,
+  computeContinuousQuotaBatch,
   validateContinuousLedger,
 } from "@/runtime/marketDirectContinuousLedger";
 import {
@@ -5880,6 +5880,21 @@ function projectContinuousDirectRuntimeStatus(
     };
   }
   const pending = state.ledger.pending;
+  const quotaBatch = computeContinuousQuotaBatch(
+    state.ledger,
+    Game.time,
+    MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map((entry) => ({
+      resource: entry.resourceType,
+      resourceLimit: entry.rollingMaxAmount,
+    })),
+    MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.rollingMaxAmount,
+  );
+  const quotaByResource = new Map(
+    (quotaBatch || []).map((snapshot) => [
+      snapshot.resource,
+      snapshot,
+    ]),
+  );
   const entries = MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.map((entry) => ({
     entryId: entry.entryId,
     resourceType: entry.resourceType,
@@ -5891,13 +5906,7 @@ function projectContinuousDirectRuntimeStatus(
     rollingMaxAmount: entry.rollingMaxAmount,
     opportunityReserveAmount: entry.rollingOpportunityReserveAmount,
     lifecycle: lifecycleByEntry[entry.entryId],
-    quota: computeContinuousQuota(
-      state.ledger,
-      Game.time,
-      entry.resourceType,
-      entry.rollingMaxAmount,
-      MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY.rollingMaxAmount,
-    ),
+    quota: quotaByResource.get(entry.resourceType),
   }));
   return {
     strategyActive,

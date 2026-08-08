@@ -43,7 +43,6 @@ import {
 import type { MarketOrderSnapshot } from "@/runtime/marketSalePricing";
 import {
   directSafetyFingerprint,
-  marketBaseResourceV3ConfigMismatchReasons,
   type ResolvedMarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
 import {
@@ -190,9 +189,17 @@ interface MarketBaseResourceCpuTraceRecorder {
 export function marketBaseResourceOperatorAuthorizationFingerprint(
   config: ResolvedMarketSaleAutomationConfig,
 ): string {
+  return marketBaseResourceOperatorAuthorizationFingerprintFromDirectSafety(
+    directSafetyFingerprint(config),
+  );
+}
+
+function marketBaseResourceOperatorAuthorizationFingerprintFromDirectSafety(
+  fingerprint: string | undefined,
+): string {
   return canonicalStableHashV1({
     domain: "market-base-resource:operator-authorization-v1",
-    directSafetyFingerprint: directSafetyFingerprint(config),
+    directSafetyFingerprint: fingerprint,
   });
 }
 
@@ -7066,11 +7073,237 @@ function candidatePricingComplete(
   );
 }
 
+interface MarketBaseResourceStaticReadAttestation {
+  readonly configSource: ResolvedMarketSaleAutomationConfig;
+  readonly scopeSource: MarketBaseResourceScopeState;
+  readonly scope: MarketBaseResourceScopeState;
+  readonly permitChainSource: MarketBaseResourcePermitChainState;
+  readonly ledgerSource: MarketBaseResourceLedger;
+  readonly permit: MarketBaseResourcePermit;
+  readonly currentPricingRatchet: MarketBaseResourcePricingRatchetState;
+  readonly currentRatchetByResource: ReadonlyMap<
+    MarketBaseResource,
+    MarketBaseResourcePricingRatchetState["entries"][number]
+  >;
+  readonly signedRatchetByResource: ReadonlyMap<
+    MarketBaseResource,
+    MarketBaseResourcePermit["ratchetHighWater"][number]
+  >;
+  readonly accountIdentity: string;
+  readonly executorShard: "shard1";
+  readonly mode: "direct";
+  readonly planningSnapshotMaxAgeTicks: number;
+}
+
+type MarketBaseResourceStaticReadAttestationResult =
+  | {
+      readonly ok: true;
+      readonly attestation: MarketBaseResourceStaticReadAttestation;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+function createMarketBaseResourceStaticReadAttestation(
+  state: MarketBaseResourceV3RuntimeState,
+  input: MarketBaseResourceAutomationInput,
+  dependencies: MarketBaseResourceRuntimeDependencies,
+  session: MarketBaseResourceRuntimeSession,
+): MarketBaseResourceStaticReadAttestationResult {
+  try {
+    const directFingerprint = directSafetyFingerprint(input.config);
+    const directFingerprintPayload =
+      typeof directFingerprint === "string"
+        ? (JSON.parse(directFingerprint) as unknown)
+        : undefined;
+    const configReasons =
+      isPlainRecord(directFingerprintPayload) &&
+      Array.isArray(directFingerprintPayload.mismatchReasons) &&
+      directFingerprintPayload.mismatchReasons.every(
+        (reason) => typeof reason === "string",
+      )
+        ? (directFingerprintPayload.mismatchReasons as string[])
+        : ["market_base_v3_config_invalid"];
+    if (!input.config.validForPlanning || configReasons.length > 0) {
+      return {
+        ok: false,
+        reason: configReasons[0] || "market_base_v3_config_invalid",
+      };
+    }
+    if (input.config.mode !== "direct" || !session.scopeContext) {
+      return {
+        ok: false,
+        reason: "market_base_v3_runtime_context_mismatch",
+      };
+    }
+    const permitChain = session.permitContext.state;
+    const ledger = session.ledgerContext.state;
+    if (
+      permitChain.blocker ||
+      ledger.blocker ||
+      !permitChain.v2EventCutoverCheckpoint ||
+      permitChain.legacyV2GrantSuspended !== true
+    ) {
+      return {
+        ok: false,
+        reason:
+          permitChain.blocker?.code ||
+          ledger.blocker?.code ||
+          "market_base_v3_chain_incomplete",
+      };
+    }
+    const accountIdentity = dependencies.readAccountIdentity();
+    const executorShard = dependencies.readExecutorShard();
+    const permit = currentV3Permit(permitChain);
+    const currentPricingRatchet = state.pricingRatchet;
+    if (
+      !accountIdentity ||
+      executorShard !== "shard1" ||
+      !permit ||
+      permit.accountIdentity !== accountIdentity ||
+      permit.executorShard !== executorShard ||
+      permit.operatorAuthorizationFingerprint !==
+        marketBaseResourceOperatorAuthorizationFingerprintFromDirectSafety(
+          directFingerprint,
+        ) ||
+      permit.sharedPolicy.fingerprint !==
+        session.scopeContext.snapshot.sharedPolicyFingerprint ||
+      !validateMarketBaseResourcePricingRatchetState(
+        currentPricingRatchet,
+        permit,
+      )
+    ) {
+      return { ok: false, reason: "market_base_v3_permit_identity_mismatch" };
+    }
+    const currentRatchetByResource = new Map(
+      currentPricingRatchet.entries.map((entry) => [entry.resource, entry]),
+    );
+    const signedRatchetByResource = new Map(
+      permit.ratchetHighWater.map((entry) => [entry.resource, entry]),
+    );
+    if (
+      currentRatchetByResource.size !== MARKET_BASE_RESOURCE_CATALOG.length ||
+      signedRatchetByResource.size !== MARKET_BASE_RESOURCE_CATALOG.length
+    ) {
+      return { ok: false, reason: "market_base_v3_permit_identity_mismatch" };
+    }
+    // Resolved config 是本次调用的 detached normalized snapshot。把 exact
+    // source 递归冻结并登记私有 provenance，随后两读可用 identity 证明
+    // candidate/book callback 没有原位改写 config，无需重复整棵 canonical
+    // hash；任何写入尝试都会抛错并由 live read fail closed。
+    const configSource = freezeMarketBaseResourceRuntimeSnapshot(input.config);
+    return {
+      ok: true,
+      attestation: Object.freeze({
+        configSource,
+        scopeSource: session.scopeContext.source,
+        scope: session.scopeContext.snapshot,
+        permitChainSource: session.permitSource,
+        ledgerSource: session.ledgerContext.state,
+        permit,
+        currentPricingRatchet,
+        currentRatchetByResource,
+        signedRatchetByResource,
+        accountIdentity,
+        executorShard,
+        mode: input.config.mode,
+        planningSnapshotMaxAgeTicks: input.config.planningSnapshotMaxAgeTicks,
+      }),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason:
+        boundedReason(error instanceof Error ? error.message : error) ||
+        "market_base_v3_static_read_attestation_failed",
+    };
+  }
+}
+
+function marketBaseResourceStaticReadAttestationMismatch(
+  state: MarketBaseResourceV3RuntimeState,
+  input: MarketBaseResourceAutomationInput,
+  session: MarketBaseResourceRuntimeSession,
+  attestation: MarketBaseResourceStaticReadAttestation,
+): string | undefined {
+  return input.config !== attestation.configSource ||
+    !marketBaseResourceRuntimeDeepFrozenValues.has(attestation.configSource) ||
+    state.scope !== attestation.scopeSource ||
+    session.scopeContext?.source !== attestation.scopeSource ||
+    session.scopeContext.snapshot !== attestation.scope ||
+    state.permitChain !== attestation.permitChainSource ||
+    session.permitSource !== attestation.permitChainSource ||
+    state.ledger !== attestation.ledgerSource ||
+    session.ledgerContext.state !== attestation.ledgerSource ||
+    state.pricingRatchet !== attestation.currentPricingRatchet
+    ? "market_base_v3_static_read_attestation_mismatch"
+    : undefined;
+}
+
+function authenticatedStableMarketBaseResourceScope(
+  scope: MarketBaseResourceScopeState,
+  tick: number,
+  accountIdentity: string,
+  observations: readonly MarketBaseRoomObservation[],
+): MarketBaseResourceScopeState | undefined {
+  if (
+    scope.updatedAt !== tick ||
+    !marketBaseResourceRuntimeDeepFrozenValues.has(scope)
+  ) {
+    return undefined;
+  }
+  const admissionPolicy = createMarketBaseRoomAdmissionPolicy(accountIdentity);
+  const names = new Set<string>();
+  const admitted: MarketBaseRoomObservation[] = [];
+  for (const observation of observations) {
+    if (
+      !isPlainRecord(observation) ||
+      typeof observation.roomName !== "string" ||
+      observation.roomName.length === 0 ||
+      typeof observation.visible !== "boolean" ||
+      typeof observation.controllerMy !== "boolean" ||
+      (observation.controllerOwner !== undefined &&
+        (typeof observation.controllerOwner !== "string" ||
+          observation.controllerOwner.length === 0)) ||
+      (observation.terminalId !== undefined &&
+        (typeof observation.terminalId !== "string" ||
+          observation.terminalId.length === 0)) ||
+      typeof observation.terminalOwned !== "boolean" ||
+      (observation.roomClass !== "normal" && observation.roomClass !== "hub") ||
+      names.has(observation.roomName)
+    ) {
+      return undefined;
+    }
+    names.add(observation.roomName);
+    if (marketBaseRoomObservationIsAdmitted(observation, admissionPolicy)) {
+      admitted.push(observation);
+    }
+  }
+  admitted.sort((left, right) => stableCompare(left.roomName, right.roomName));
+  if (
+    admitted.length !== scope.sellerRooms.length ||
+    admitted.some((observation, index) => {
+      const room = scope.sellerRooms[index];
+      return (
+        !room ||
+        observation.roomName !== room.roomName ||
+        observation.controllerOwner !== room.controllerOwner ||
+        observation.terminalId !== room.terminalId ||
+        observation.roomClass !== room.roomClass ||
+        room.admissionRevision !== admissionPolicy.revision ||
+        room.status !== "admitted"
+      );
+    })
+  ) {
+    return undefined;
+  }
+  return scope;
+}
+
 function liveScopeForRead(
   state: MarketBaseResourceV3RuntimeState,
   input: MarketBaseResourceAutomationInput,
   dependencies: MarketBaseResourceRuntimeDependencies,
   session: MarketBaseResourceRuntimeSession,
+  staticAttestationResult: MarketBaseResourceStaticReadAttestationResult,
   cpuTraceRecorder?: MarketBaseResourceCpuTraceRecorder,
   readIndex: 1 | 2 = 1,
 ): MarketBaseResourcePlanningScopeSnapshot {
@@ -7119,50 +7352,24 @@ function liveScopeForRead(
     if (runtimeMismatch) {
       return incomplete(runtimeMismatch);
     }
-    const configReasons = marketBaseResourceV3ConfigMismatchReasons(
-      input.config,
+    if ("reason" in staticAttestationResult) {
+      return incomplete(staticAttestationResult.reason);
+    }
+    const staticAttestation = staticAttestationResult.attestation;
+    const staticMismatch = marketBaseResourceStaticReadAttestationMismatch(
+      state,
+      input,
+      session,
+      staticAttestation,
     );
-    if (!input.config.validForPlanning || configReasons.length > 0) {
-      return incomplete(configReasons[0] || "market_base_v3_config_invalid");
+    if (staticMismatch) {
+      return incomplete(staticMismatch);
     }
-    if (!session.scopeContext) {
-      return incomplete("market_base_v3_runtime_context_mismatch");
-    }
-    const canonicalScope = session.scopeContext.snapshot;
-    const canonicalPermitChain = session.permitContext.state;
+    const canonicalScope = staticAttestation.scope;
     const canonicalLedger = session.ledgerContext.state;
-    if (
-      canonicalPermitChain.blocker ||
-      canonicalLedger.blocker ||
-      !canonicalPermitChain.v2EventCutoverCheckpoint ||
-      canonicalPermitChain.legacyV2GrantSuspended !== true
-    ) {
-      return incomplete(
-        canonicalPermitChain.blocker?.code ||
-          canonicalLedger.blocker?.code ||
-          "market_base_v3_chain_incomplete",
-      );
-    }
-    const accountIdentity = dependencies.readAccountIdentity();
-    const executorShard = dependencies.readExecutorShard();
-    const permit = currentV3Permit(session.permitContext.state);
-    if (
-      !accountIdentity ||
-      executorShard !== "shard1" ||
-      !permit ||
-      permit.accountIdentity !== accountIdentity ||
-      permit.executorShard !== executorShard ||
-      permit.operatorAuthorizationFingerprint !==
-        marketBaseResourceOperatorAuthorizationFingerprint(input.config) ||
-      permit.sharedPolicy.fingerprint !==
-        canonicalScope.sharedPolicyFingerprint ||
-      !validateMarketBaseResourcePricingRatchetState(
-        state.pricingRatchet,
-        permit,
-      )
-    ) {
-      return incomplete("market_base_v3_permit_identity_mismatch");
-    }
+    const accountIdentity = staticAttestation.accountIdentity;
+    const executorShard = staticAttestation.executorShard;
+    const permit = staticAttestation.permit;
     let trustedFloors:
       | Partial<
           Record<
@@ -7189,7 +7396,7 @@ function liveScopeForRead(
     ) {
       return incomplete("market_base_v3_energy_trusted_floor_invalid");
     }
-    const currentPricingRatchet = state.pricingRatchet!;
+    const currentPricingRatchet = staticAttestation.currentPricingRatchet;
     const nextPricingEntries: Array<{
       resource: MarketBaseResource;
       value: number;
@@ -7197,12 +7404,8 @@ function liveScopeForRead(
     }> = [];
     for (const resource of MARKET_BASE_RESOURCE_CATALOG) {
       const trusted = trustedFloors?.[resource];
-      const current = currentPricingRatchet.entries.find(
-        (entry) => entry.resource === resource,
-      );
-      const signed = permit.ratchetHighWater.find(
-        (entry) => entry.resource === resource,
-      );
+      const current = staticAttestation.currentRatchetByResource.get(resource);
+      const signed = staticAttestation.signedRatchetByResource.get(resource);
       const changed = Boolean(
         trusted &&
         current &&
@@ -7244,24 +7447,34 @@ function liveScopeForRead(
     } catch {
       return incomplete("market_base_v3_pricing_ratchet_candidate_invalid");
     }
-    const reconciled = reconcileLiveMarketBaseResourceScopeCore(
-      {
-        tick: input.tick,
-        accountIdentity,
-        observations: collectLiveMarketBaseRoomObservations(accountIdentity),
-        previous: canonicalScope,
-        // Tombstone discharge/compaction belongs to the outer preflight.
-        // Planning 的两次 live read 只重建当 tick roster/lanes，不能再次
-        // 消费 permit 历史或把 full-chain 校验成本带进 25 CPU 窗口。
-      },
-      true,
+    const observations = collectLiveMarketBaseRoomObservations(accountIdentity);
+    const stableScope = authenticatedStableMarketBaseResourceScope(
+      canonicalScope,
+      input.tick,
+      accountIdentity,
+      observations,
     );
-    if ("blockers" in reconciled) {
-      return incomplete(
-        reconciled.blockers[0] || "market_base_v3_scope_incomplete",
+    let scope = stableScope;
+    if (!scope) {
+      const reconciled = reconcileLiveMarketBaseResourceScopeCore(
+        {
+          tick: input.tick,
+          accountIdentity,
+          observations,
+          previous: canonicalScope,
+          // Tombstone discharge/compaction belongs to the outer preflight.
+          // Planning 的两次 live read 只重建当 tick roster/lanes，不能再次
+          // 消费 permit 历史或把 full-chain 校验成本带进 25 CPU 窗口。
+        },
+        true,
       );
+      if ("blockers" in reconciled) {
+        return incomplete(
+          reconciled.blockers[0] || "market_base_v3_scope_incomplete",
+        );
+      }
+      scope = reconciled.state;
     }
-    const scope = reconciled.state;
     if (
       cpuTraceRecorder &&
       observeMarketBaseResourceCpuTrace(
@@ -7342,7 +7555,7 @@ function liveScopeForRead(
       arbiter.blocked ||
       input.makerExposurePresent ||
       input.emergencyStop ||
-      input.config.mode !== "direct";
+      staticAttestation.mode !== "direct";
     const outgoingWindow = dependencies.readOutgoingWindow(input.tick);
     if (
       !outgoingWindow ||
@@ -7495,7 +7708,7 @@ function liveScopeForRead(
           !candidateEnergyEvidence(
             candidate,
             input.tick,
-            input.config.planningSnapshotMaxAgeTicks,
+            staticAttestation.planningSnapshotMaxAgeTicks,
             trustedEnergyFloor,
           )
         ) {
@@ -8604,15 +8817,26 @@ export function runMarketBaseResourceAutomation(
     );
   };
   let liveScopeReadCount = 0;
+  let staticReadAttestationResult:
+    | MarketBaseResourceStaticReadAttestationResult
+    | undefined;
   const plan = planMarketBaseResourceTwoRead(
     {
       readScope: () => {
         liveScopeReadCount += 1;
+        staticReadAttestationResult ??=
+          createMarketBaseResourceStaticReadAttestation(
+            state,
+            input,
+            dependencies,
+            runtimeSession,
+          );
         return liveScopeForRead(
           state,
           input,
           dependencies,
           runtimeSession,
+          staticReadAttestationResult,
           cpuTraceRecorder,
           liveScopeReadCount >= 2 ? 2 : 1,
         );

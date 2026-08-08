@@ -29,6 +29,7 @@ export const CONTINUOUS_FAILED_RETRY_TICKS = 100;
 export const CONTINUOUS_RECEIPT_RING_LIMIT = 512;
 export const CONTINUOUS_OUTCOME_RING_LIMIT = 50;
 export const CONTINUOUS_PROCESSED_KEY_RING_LIMIT = 512;
+export const CONTINUOUS_QUOTA_BATCH_LIMIT = 32;
 
 export function continuousConfirmedCanaryCheckpointCommitment(
   input: {
@@ -98,6 +99,11 @@ export interface ContinuousQuotaSnapshot {
   lastGlobalConfirmedAt?: number;
   confirmedCooldownNotBefore: number;
   retryNotBefore: number;
+}
+
+export interface ContinuousQuotaBatchRequest {
+  resource: string;
+  resourceLimit: number;
 }
 
 /**
@@ -1520,19 +1526,150 @@ export function migrateLegacyXSeedLedger(
   return { state: base, ok: true, action: "migrated" };
 }
 
-function retainedConfirmedReceipts(
+interface ContinuousRetainedQuotaAggregate {
+  confirmedActual: number;
+  lastConfirmedAt?: number;
+}
+
+function validContinuousQuotaBatchRequests(
+  requests: readonly ContinuousQuotaBatchRequest[],
+): boolean {
+  if (
+    !Array.isArray(requests) ||
+    requests.length > CONTINUOUS_QUOTA_BATCH_LIMIT
+  ) {
+    return false;
+  }
+  const resources = new Set<string>();
+  for (const request of requests) {
+    if (
+      !isPlainObject(request) ||
+      typeof request.resource !== "string" ||
+      !request.resource ||
+      !isNonNegativeSafeInteger(request.resourceLimit) ||
+      resources.has(request.resource)
+    ) {
+      return false;
+    }
+    resources.add(request.resource);
+  }
+  return true;
+}
+
+/**
+ * 同一 ledger 的 bounded quota 只读投影。输入先整体校验，再对 ledger
+ * 完整验真一次，并单遍聚合 rolling-window receipts；任一输入非法时不返回
+ * 部分结果。该 helper 不参与 prepare/commit，也不铸造任何写 capability。
+ */
+export function computeContinuousQuotaBatch(
   state: MarketDirectContinuousLedger,
   tick: number,
-): ContinuousReceipt[] {
-  const windowStart =
+  requests: readonly ContinuousQuotaBatchRequest[],
+  globalLimit: number,
+): ContinuousQuotaSnapshot[] | undefined {
+  if (
+    !isNonNegativeSafeInteger(tick) ||
+    !isNonNegativeSafeInteger(globalLimit) ||
+    !validContinuousQuotaBatchRequests(requests)
+  ) {
+    return undefined;
+  }
+  const validation = validateContinuousLedger(state, tick);
+  if (!validation.ok) {
+    return undefined;
+  }
+
+  const windowStartTick =
     tick - CONTINUOUS_ROLLING_WINDOW_TICKS + 1;
-  return state.receipts.filter(
-    (receipt) =>
-      receipt.status === "confirmed" &&
-      receipt.transactionTime !== undefined &&
-      receipt.transactionTime >= windowStart &&
-      receipt.transactionTime <= tick,
+  const requestedResources = new Set(
+    requests.map((request) => request.resource),
   );
+  const byResource = new Map<
+    string,
+    ContinuousRetainedQuotaAggregate
+  >();
+  let globalConfirmedActual = 0;
+  let lastGlobalConfirmedAt: number | undefined;
+  for (const receipt of state.receipts) {
+    const transactionTime = receipt.transactionTime;
+    if (
+      receipt.status !== "confirmed" ||
+      transactionTime === undefined ||
+      transactionTime < windowStartTick ||
+      transactionTime > tick
+    ) {
+      continue;
+    }
+    globalConfirmedActual += receipt.actualAmount;
+    lastGlobalConfirmedAt =
+      lastGlobalConfirmedAt === undefined
+        ? transactionTime
+        : Math.max(lastGlobalConfirmedAt, transactionTime);
+    if (!requestedResources.has(receipt.resource)) {
+      continue;
+    }
+    const aggregate = byResource.get(receipt.resource) || {
+      confirmedActual: 0,
+    };
+    aggregate.confirmedActual += receipt.actualAmount;
+    aggregate.lastConfirmedAt =
+      aggregate.lastConfirmedAt === undefined
+        ? transactionTime
+        : Math.max(aggregate.lastConfirmedAt, transactionTime);
+    byResource.set(receipt.resource, aggregate);
+  }
+
+  const unmatchedPending =
+    state.pending &&
+    state.pending.attemptSeq === state.finalizedAttemptSeq + 1
+      ? state.pending
+      : undefined;
+  const globalUnmatchedPlanned = unmatchedPending
+    ? unmatchedPending.plannedAmount
+    : 0;
+  return requests.map((request) => {
+    const aggregate = byResource.get(request.resource);
+    const resourceConfirmedActual =
+      aggregate?.confirmedActual ?? 0;
+    const resourceUnmatchedPlanned =
+      unmatchedPending?.resource === request.resource
+        ? unmatchedPending.plannedAmount
+        : 0;
+    const lastResourceConfirmedAt = aggregate?.lastConfirmedAt;
+    const confirmedCooldownNotBefore = Math.max(
+      lastResourceConfirmedAt === undefined
+        ? 0
+        : lastResourceConfirmedAt +
+            CONTINUOUS_CONFIRMED_COOLDOWN_TICKS,
+      lastGlobalConfirmedAt === undefined
+        ? 0
+        : lastGlobalConfirmedAt +
+            CONTINUOUS_CONFIRMED_COOLDOWN_TICKS,
+    );
+    return {
+      tick,
+      windowStartTick,
+      resource: request.resource,
+      resourceLimit: request.resourceLimit,
+      globalLimit,
+      resourceConfirmedActual,
+      resourceUnmatchedPlanned,
+      resourceRemaining:
+        request.resourceLimit -
+        resourceConfirmedActual -
+        resourceUnmatchedPlanned,
+      globalConfirmedActual,
+      globalUnmatchedPlanned,
+      globalRemaining:
+        globalLimit -
+        globalConfirmedActual -
+        globalUnmatchedPlanned,
+      lastResourceConfirmedAt,
+      lastGlobalConfirmedAt,
+      confirmedCooldownNotBefore,
+      retryNotBefore: state.retryNotBefore,
+    };
+  });
 }
 
 /**
@@ -1546,89 +1683,12 @@ export function computeContinuousQuota(
   resourceLimit: number,
   globalLimit: number,
 ): ContinuousQuotaSnapshot | undefined {
-  const validation = validateContinuousLedger(state, tick);
-  if (
-    !validation.ok ||
-    !isNonNegativeSafeInteger(resourceLimit) ||
-    !isNonNegativeSafeInteger(globalLimit) ||
-    !resource
-  ) {
-    return undefined;
-  }
-  const receipts = retainedConfirmedReceipts(state, tick);
-  const resourceReceipts = receipts.filter(
-    (receipt) => receipt.resource === resource,
-  );
-  const resourceConfirmedActual = resourceReceipts.reduce(
-    (sum, receipt) => sum + receipt.actualAmount,
-    0,
-  );
-  const globalConfirmedActual = receipts.reduce(
-    (sum, receipt) => sum + receipt.actualAmount,
-    0,
-  );
-  const unmatchedPending =
-    state.pending &&
-    state.pending.attemptSeq === state.finalizedAttemptSeq + 1
-      ? state.pending
-      : undefined;
-  const globalUnmatchedPlanned = unmatchedPending
-    ? unmatchedPending.plannedAmount
-    : 0;
-  const resourceUnmatchedPlanned =
-    unmatchedPending?.resource === resource
-      ? unmatchedPending.plannedAmount
-      : 0;
-  const lastResourceConfirmedAt = resourceReceipts.reduce<
-    number | undefined
-  >(
-    (latest, receipt) =>
-      latest === undefined
-        ? receipt.transactionTime
-        : Math.max(latest, receipt.transactionTime!),
-    undefined,
-  );
-  const lastGlobalConfirmedAt = receipts.reduce<number | undefined>(
-    (latest, receipt) =>
-      latest === undefined
-        ? receipt.transactionTime
-        : Math.max(latest, receipt.transactionTime!),
-    undefined,
-  );
-  const confirmedCooldownNotBefore = Math.max(
-    lastResourceConfirmedAt === undefined
-      ? 0
-      : lastResourceConfirmedAt +
-          CONTINUOUS_CONFIRMED_COOLDOWN_TICKS,
-    lastGlobalConfirmedAt === undefined
-      ? 0
-      : lastGlobalConfirmedAt +
-          CONTINUOUS_CONFIRMED_COOLDOWN_TICKS,
-  );
-  return {
+  return computeContinuousQuotaBatch(
+    state,
     tick,
-    windowStartTick:
-      tick - CONTINUOUS_ROLLING_WINDOW_TICKS + 1,
-    resource,
-    resourceLimit,
+    [{ resource, resourceLimit }],
     globalLimit,
-    resourceConfirmedActual,
-    resourceUnmatchedPlanned,
-    resourceRemaining:
-      resourceLimit -
-      resourceConfirmedActual -
-      resourceUnmatchedPlanned,
-    globalConfirmedActual,
-    globalUnmatchedPlanned,
-    globalRemaining:
-      globalLimit -
-      globalConfirmedActual -
-      globalUnmatchedPlanned,
-    lastResourceConfirmedAt,
-    lastGlobalConfirmedAt,
-    confirmedCooldownNotBefore,
-    retryNotBefore: state.retryNotBefore,
-  };
+  )?.[0];
 }
 
 export function computeOpportunityAdmissions(
@@ -1638,34 +1698,35 @@ export function computeOpportunityAdmissions(
   globalLimit: number,
 ): ContinuousOpportunityAdmission[] | undefined {
   if (
-    !isNonNegativeSafeInteger(globalLimit) ||
-    new Set(safeOpportunities.map((entry) => entry.resource)).size !==
-      safeOpportunities.length
+    !Array.isArray(safeOpportunities) ||
+    safeOpportunities.some(
+      (entry) =>
+        !isPlainObject(entry) ||
+        typeof entry.resource !== "string" ||
+        (entry.reserveAmount ?? CONTINUOUS_PLANNED_AMOUNT) !==
+          CONTINUOUS_PLANNED_AMOUNT,
+    )
   ) {
     return undefined;
   }
   const sorted = [...safeOpportunities].sort((left, right) =>
     left.resource.localeCompare(right.resource),
   );
-  const snapshots = new Map<string, ContinuousQuotaSnapshot>();
-  for (const opportunity of sorted) {
-    const snapshot = computeContinuousQuota(
-      state,
-      tick,
-      opportunity.resource,
-      opportunity.resourceLimit,
-      globalLimit,
-    );
-    const reserve =
-      opportunity.reserveAmount ?? CONTINUOUS_PLANNED_AMOUNT;
-    if (
-      !snapshot ||
-      reserve !== CONTINUOUS_PLANNED_AMOUNT
-    ) {
-      return undefined;
-    }
-    snapshots.set(opportunity.resource, snapshot);
+  const batch = computeContinuousQuotaBatch(
+    state,
+    tick,
+    sorted.map((opportunity) => ({
+      resource: opportunity.resource,
+      resourceLimit: opportunity.resourceLimit,
+    })),
+    globalLimit,
+  );
+  if (!batch) {
+    return undefined;
   }
+  const snapshots = new Map(
+    batch.map((snapshot) => [snapshot.resource, snapshot]),
+  );
   return sorted.map((opportunity) => {
     const snapshot = snapshots.get(opportunity.resource)!;
     const unmetOtherReserves: Record<string, number> = {};

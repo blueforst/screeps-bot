@@ -2891,6 +2891,203 @@ describe("Market Base Resource scope tombstone discharge", () => {
 });
 
 describe("Market Base Resource V3 live WAL glue", () => {
+  it("同一 invocation 静态身份只认证一次，动态事实与房间仍独立双读", () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    const runtimeInput = input();
+    const readCandidates = jest.fn(runtimeInput.readCandidates);
+    runtimeInput.readCandidates = readCandidates;
+    let catalystBookReads = 0;
+    deps.readCurrentBuyOrders.mockImplementation(
+      (resource: ResourceConstant) => {
+        if (resource !== RESOURCE_CATALYST) return [];
+        catalystBookReads += 1;
+        return [
+          order(
+            "x-buy",
+            resource,
+            catalystBookReads === 1 ? 700 : 701,
+            1_000,
+            "E1S1",
+          ),
+        ];
+      },
+    );
+
+    const result = runMarketBaseResourceAutomation(state, runtimeInput, deps);
+
+    expect(result.planComplete).toBe(false);
+    expect(result.writes).toBe(0);
+    expect(deps.readAccountIdentity).toHaveBeenCalledTimes(1);
+    expect(deps.readExecutorShard).toHaveBeenCalledTimes(1);
+    expect(deps.readTrustedFloors).toHaveBeenCalledTimes(2);
+    expect(readCandidates).toHaveBeenCalledTimes(2);
+    expect(deps.readCredits).toHaveBeenCalledTimes(2);
+    expect(deps.readArbiterSnapshot).toHaveBeenCalledTimes(2);
+    expect(deps.readOutgoingWindow).toHaveBeenCalledTimes(2);
+    expect(deps.readOwnOrders).toHaveBeenCalledTimes(2);
+  });
+
+  it("第二读 callback 不能原位改写已认证 config，失败时零写", () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    const runtimeInput = input();
+    const originalReadCandidates = runtimeInput.readCandidates;
+    let candidateReads = 0;
+    runtimeInput.readCandidates = () => {
+      candidateReads += 1;
+      if (candidateReads === 2) {
+        Object.defineProperty(runtimeInput.config, "validForPlanning", {
+          configurable: true,
+          value: false,
+        });
+      }
+      return originalReadCandidates();
+    };
+
+    const result = runMarketBaseResourceAutomation(state, runtimeInput, deps);
+
+    expect(candidateReads).toBe(2);
+    expect(Object.isFrozen(runtimeInput.config)).toBe(true);
+    expect(Object.isFrozen(runtimeInput.config.sellResources)).toBe(true);
+    expect(runtimeInput.config.validForPlanning).toBe(true);
+    expect(result.planComplete).toBe(false);
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toHaveProperty(
+      "market_base_v3_candidate_read_failed",
+    );
+    expect(state.ledger?.pending).toBeUndefined();
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "owner",
+    "terminal",
+    "hub",
+    "room_added",
+    "room_removed",
+  ] as const)(
+    "第二读 room basis 的 %s 变化使 stable-scope 快路失配且零写",
+    (mutation) => {
+      const { state, deps, input } = v3RuntimeFixture();
+      const runtimeInput = input();
+      const originalReadCandidates = runtimeInput.readCandidates;
+      const previousHub = Memory.cfg?.hub
+        ? { ...Memory.cfg.hub }
+        : undefined;
+      let candidateReads = 0;
+      runtimeInput.readCandidates = () => {
+        candidateReads += 1;
+        if (candidateReads === 1) {
+          if (mutation === "owner") {
+            (
+              Game.rooms[V3_TEST_ROOM].controller!.owner as {
+                username: string;
+              }
+            ).username = "unexpected-owner";
+          } else if (mutation === "terminal") {
+            (Game.rooms[V3_TEST_ROOM].terminal as { id: string }).id =
+              "terminal:changed";
+          } else if (mutation === "hub") {
+            Memory.cfg ??= {};
+            Memory.cfg.hub = {
+              ...(Memory.cfg.hub || {}),
+              enabled: true,
+              hubRoomName: V3_TEST_ROOM,
+            };
+          } else if (mutation === "room_added") {
+            Game.rooms.E8S8 = {
+              name: "E8S8",
+              controller: {
+                my: true,
+                owner: { username: V3_TEST_ACCOUNT },
+              },
+              terminal: {
+                id: "terminal:E8S8",
+                my: true,
+                owner: { username: V3_TEST_ACCOUNT },
+              },
+            } as Room;
+          } else {
+            delete Game.rooms[V3_TEST_ROOM];
+          }
+        }
+        return originalReadCandidates();
+      };
+
+      try {
+        const result = runMarketBaseResourceAutomation(
+          state,
+          runtimeInput,
+          deps,
+        );
+
+        expect(candidateReads).toBe(2);
+        expect(result.planComplete).toBe(false);
+        expect(result.writes).toBe(0);
+        expect(state.lastPlanningSnapshot?.selected).toBeUndefined();
+        expect(state.ledger?.pending).toBeUndefined();
+        expect(deps.commitPreparedState).not.toHaveBeenCalled();
+        expect(deps.claimPrepared).not.toHaveBeenCalled();
+        expect(deps.executePrepared).not.toHaveBeenCalled();
+      } finally {
+        Memory.cfg ??= {};
+        if (previousHub) {
+          Memory.cfg.hub = previousHub;
+        } else {
+          delete Memory.cfg.hub;
+        }
+      }
+    },
+  );
+
+  it("第二读仅 protection contribution 变化时拒绝 evidence 且零 pending/commit/claim/deal", () => {
+    const { state, harness, deps, input } = v3RuntimeFixture();
+    const runtimeInput = input();
+    const originalReadCandidates = runtimeInput.readCandidates;
+    let candidateReads = 0;
+    runtimeInput.readCandidates = () => {
+      candidateReads += 1;
+      return originalReadCandidates().map((candidate) =>
+        candidateReads === 2 &&
+        candidate.resourceType === RESOURCE_CATALYST
+          ? {
+              ...candidate,
+              protectionEntry: {
+                ...candidate.protectionEntry,
+                sourceContributions: [
+                  {
+                    dedupeKey: "second-read-protection-only",
+                    stableKey: "second-read-protection-only",
+                    anonymous: false,
+                    bucket: "hardReserve" as const,
+                    amount: 0,
+                    sourceKinds: ["floor" as const],
+                    observedAt: harness.tick,
+                    expiresAt: harness.tick + 10,
+                  },
+                ],
+              },
+            }
+          : candidate,
+      );
+    };
+
+    const result = runMarketBaseResourceAutomation(state, runtimeInput, deps);
+
+    expect(candidateReads).toBe(2);
+    expect(result.planComplete).toBe(false);
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toHaveProperty(
+      "market_base_second_read_scope_changed",
+    );
+    expect(state.lastPlanningSnapshot?.selected).toBeUndefined();
+    expect(state.ledger?.pending).toBeUndefined();
+    expect(deps.commitPreparedState).not.toHaveBeenCalled();
+    expect(deps.claimPrepared).not.toHaveBeenCalled();
+    expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
   it("全 Shadow 候选批规划不进入 WAL、claim 或 deal", () => {
     const { state, deps, input } = v3RuntimeFixture(false);
     const utriumLane = state.scope!.laneLifecycles.find(
@@ -3265,9 +3462,10 @@ describe("Market Base Resource V3 live WAL glue", () => {
       return firstCandidates();
     };
     let scopeReads = 0;
-    deps.readAccountIdentity = jest.fn(() => {
+    const readTrustedFloors = deps.readTrustedFloors.getMockImplementation()!;
+    deps.readTrustedFloors.mockImplementation(() => {
       scopeReads += 1;
-      return V3_TEST_ACCOUNT;
+      return readTrustedFloors();
     });
     deps.cpuUsed.mockImplementation(() => (scopeReads >= 2 ? 20 : 1));
 
@@ -3887,7 +4085,7 @@ describe("Market Base Resource V3 live WAL glue", () => {
     const readExecutorShard = deps.readExecutorShard as jest.Mock;
     let attacked = false;
     deps.cpuUsed.mockImplementation(() => {
-      if (!attacked && readExecutorShard.mock.calls.length >= 3) {
+      if (!attacked && readExecutorShard.mock.calls.length >= 2) {
         attacked = true;
         const forged = JSON.parse(
           JSON.stringify(state.scope),
