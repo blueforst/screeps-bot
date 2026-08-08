@@ -3,7 +3,6 @@ import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
 import { getMemoryService } from "@/runtime/runtimeServices";
 import {
   RCL8_UPGRADER_MAINTENANCE_BODY,
-  RCL8_UPGRADER_RECOVERY_STOP_TICKS,
   shouldMaintainDedicatedUpgrader,
 } from "@/runtime/upgraderPolicy";
 import type { CreepConfig } from "@/types/system";
@@ -213,9 +212,10 @@ export function startUpgrader(roomName: string): ManualUpgraderResult | string {
   if (!controller?.my) {
     return `ERR_UPGRADER_REQUIRES_OWNED_ROOM:${roomName}`;
   }
+  const hasExistingTask = !!Memory.data?.manualUpgraders?.[roomName];
   if (
     controller.level === 8 &&
-    (controller.ticksToDowngrade ?? RCL8_UPGRADER_RECOVERY_STOP_TICKS) >= RCL8_UPGRADER_RECOVERY_STOP_TICKS
+    !shouldMaintainDedicatedUpgrader(controller, hasExistingTask)
   ) {
     return `ERR_UPGRADER_NOT_REQUIRED_AT_RCL8:${roomName}`;
   }

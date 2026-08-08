@@ -493,12 +493,45 @@ function queueConfig(spawn: StructureSpawn, configName: string, options?: { toFr
   }
 }
 
+function suppressRcl8MaintenanceReplacement(
+  spawns: StructureSpawn[],
+  configName: string,
+  config: CreepConfig,
+  context: SpawnPlanningContext,
+): boolean {
+  if (
+    !isRcl8MaintenanceUpgraderConfig(configName, config) ||
+    getConfigCreeps(configName, context).length === 0
+  ) {
+    return false;
+  }
+
+  for (const spawn of spawns) {
+    if (spawn.memory.spawnList?.includes(configName)) {
+      spawn.memory.spawnList = spawn.memory.spawnList.filter((item) => item !== configName);
+    }
+
+    if (
+      spawn.spawning &&
+      Memory.creeps?.[spawn.spawning.name]?.configName === configName
+    ) {
+      spawn.spawning.cancel();
+    }
+  }
+
+  return true;
+}
+
 function queueMissingConfig(
   spawns: StructureSpawn[],
   configName: string,
   config: CreepConfig,
   context: SpawnPlanningContext,
 ): void {
+  if (suppressRcl8MaintenanceReplacement(spawns, configName, config, context)) {
+    return;
+  }
+
   const emergencySpawn = config.role === "carrier" && config.roomName
     ? findQueuedEmergencyCarrierSpawn(spawns, config.roomName)
     : undefined;

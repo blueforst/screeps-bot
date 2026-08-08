@@ -7,7 +7,15 @@ jest.mock("@/runtime/safeZone", () => ({
 }));
 
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
-import { assignWorkerTask, clearWorkerTaskBoardForTest, getWorkerTasksByRoom, refreshWorkerTasks, releaseWorkerTask } from "@/runtime/workerTaskPool";
+import {
+  assignWorkerTask,
+  clearWorkerTaskBoardForTest,
+  completeWorkerTaskIfDone,
+  getWorkerTasksByRoom,
+  getWorkerTaskTarget,
+  refreshWorkerTasks,
+  releaseWorkerTask,
+} from "@/runtime/workerTaskPool";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { getSafeZone } from "@/runtime/safeZone";
@@ -38,6 +46,22 @@ function createPos(roomName: string, x = 25, y = 25): RoomPosition {
   } as unknown as RoomPosition;
 }
 
+function createControllerTarget(
+  id: string,
+  level: number,
+  roomName = "W1N1",
+  x = 25,
+  y = 25,
+): StructureController {
+  return {
+    id: id as Id<StructureController>,
+    my: true,
+    level,
+    pos: createPos(roomName, x, y),
+    room: { name: roomName } as Room,
+  } as StructureController;
+}
+
 function createSource(id: string, x: number, y: number, roomName = "W1N1"): Source {
   return {
     id: id as Id<Source>,
@@ -61,20 +85,24 @@ function createCreep(name: string, roomName: string, configName?: string): Creep
 
 function createRoomForRefresh(
   structures: Structure<StructureConstant>[],
-  towers: StructureTower[] = [],
+  myStructures: Structure<StructureConstant>[] = [],
   sources: Source[] = [],
+  constructionSites: ConstructionSite[] = [],
+  controllerLevel = 3,
+  ticksToDowngrade = 20_000,
 ): Room {
   return {
     name: "W1N1",
     controller: {
       id: "controller1" as Id<StructureController>,
       my: true,
-      level: 3,
+      level: controllerLevel,
+      ticksToDowngrade,
       pos: createPos("W1N1"),
     } as StructureController,
     find: jest.fn((type: FindConstant) => {
       if (type === FIND_MY_STRUCTURES) {
-        return towers;
+        return myStructures;
       }
       if (type === FIND_STRUCTURES) {
         return structures;
@@ -82,7 +110,10 @@ function createRoomForRefresh(
       if (type === FIND_SOURCES) {
         return sources;
       }
-      if (type === FIND_CONSTRUCTION_SITES || type === FIND_MY_CREEPS) {
+      if (type === FIND_CONSTRUCTION_SITES) {
+        return constructionSites;
+      }
+      if (type === FIND_MY_CREEPS) {
         return [];
       }
       return [];
@@ -146,6 +177,150 @@ describe("workerTaskPool", () => {
       ?.illegalStructureCleanup;
   }
 
+  it.each([1, 2, 3, 4, 5, 6, 7])("keeps the generic upgrade task at RCL%i", (controllerLevel) => {
+    Game.time = controllerLevel * 3;
+    const room = createRoomForRefresh([], [], [], [], controllerLevel);
+    Game.rooms.W1N1 = room;
+
+    refreshWorkerTasks();
+
+    expect(getWorkerTasksByRoom(room.name)["upgrade:controller1"]).toMatchObject({
+      type: "upgrade",
+      targetId: "controller1",
+      priority: 300,
+      status: "active",
+    });
+  });
+
+  it.each([
+    { label: "healthy", ticksToDowngrade: 200_000, tick: 24 },
+    { label: "maintenance recovery", ticksToDowngrade: 175_000, tick: 27 },
+  ])("omits the generic upgrade task for a $label RCL8 controller", ({ ticksToDowngrade, tick }) => {
+    Game.time = tick;
+    const room = createRoomForRefresh([], [], [], [], 8, ticksToDowngrade);
+    Game.rooms.W1N1 = room;
+
+    refreshWorkerTasks();
+
+    expect(getWorkerTasksByRoom(room.name)["upgrade:controller1"]).toBeUndefined();
+  });
+
+  it("keeps RCL8 build and normal repair task generation while omitting upgrade", () => {
+    Game.time = 30;
+    const constructionSites: ConstructionSite[] = [];
+    const rampart = createStructure("rampart1", STRUCTURE_RAMPART, 20, 20, {
+      my: true,
+      hits: 7_000,
+      hitsMax: 10_000,
+    }) as StructureRampart;
+    const room = createRoomForRefresh([rampart], [rampart], [], constructionSites, 8, 175_000);
+    const site = {
+      id: "site1" as Id<ConstructionSite>,
+      room,
+      pos: createPos(room.name, 21, 20),
+      structureType: STRUCTURE_EXTENSION,
+      progress: 0,
+      progressTotal: 3_000,
+    } as ConstructionSite;
+    constructionSites.push(site);
+    Game.rooms.W1N1 = room;
+
+    refreshWorkerTasks();
+
+    const tasks = getWorkerTasksByRoom(room.name);
+    expect(tasks["build:site1"]).toMatchObject({ type: "build", targetId: "site1", priority: 850 });
+    expect(tasks["repair:rampart1"]).toMatchObject({
+      type: "repair",
+      targetId: "rampart1",
+      priority: 320,
+      repairMode: "normal",
+    });
+    expect(tasks["upgrade:controller1"]).toBeUndefined();
+  });
+
+  it("keeps build, repair, and dismantle tasks assignable in an RCL8 room", () => {
+    const controller = createControllerTarget("controller1", 8);
+    Game.rooms.W1N1 = { name: "W1N1", controller } as Room;
+    objects.controller1 = controller;
+    objects.site1 = { pos: createPos("W1N1", 10, 10) };
+    objects.rampart1 = { pos: createPos("W1N1", 11, 10) };
+    objects.wall1 = { pos: createPos("W1N1", 12, 10) };
+
+    const tasks = getWorkerTasksByRoom("W1N1");
+    tasks["upgrade:controller1"] = createTask({
+      id: "upgrade:controller1",
+      type: "upgrade",
+      targetId: "controller1",
+      roomName: "W1N1",
+      priority: 1_000,
+    });
+    tasks["build:site1"] = createTask({
+      id: "build:site1",
+      type: "build",
+      targetId: "site1",
+      roomName: "W1N1",
+      priority: 900,
+    });
+    tasks["dismantle:wall1"] = createTask({
+      id: "dismantle:wall1",
+      type: "dismantle",
+      targetId: "wall1",
+      roomName: "W1N1",
+      priority: 500,
+    });
+    tasks["repair:rampart1"] = createTask({
+      id: "repair:rampart1",
+      type: "repair",
+      targetId: "rampart1",
+      roomName: "W1N1",
+      priority: 320,
+      repairMode: "normal",
+    });
+
+    const workers = ["Worker1", "Worker2", "Worker3"].map((name) => createCreep(name, "W1N1"));
+    for (const creep of workers) {
+      Game.creeps[creep.name] = creep;
+    }
+
+    expect(workers.map((creep) => assignWorkerTask(creep)?.id)).toEqual([
+      "build:site1",
+      "dismantle:wall1",
+      "repair:rampart1",
+    ]);
+    expect(tasks["upgrade:controller1"].assignedCreeps).toEqual([]);
+  });
+
+  it("fails closed immediately when an assigned upgrade controller reaches RCL8, then removes the stale task on refresh", () => {
+    Game.time = 33;
+    const room = createRoomForRefresh([], [], [], [], 7);
+    Game.rooms.W1N1 = room;
+    const controller = room.controller!;
+    objects.controller1 = controller;
+
+    refreshWorkerTasks();
+
+    const task = getWorkerTasksByRoom(room.name)["upgrade:controller1"];
+    const creep = createCreep("Worker1", room.name);
+    Game.creeps[creep.name] = creep;
+    task.assignedCreeps = [creep.name];
+    ensureCreepAssignmentState(creep.name).taskId = task.id;
+    expect(getWorkerTaskTarget(task)).toBe(controller);
+    expect(completeWorkerTaskIfDone(task)).toBe(false);
+
+    (controller as StructureController & { level: number }).level = 8;
+
+    expect(getWorkerTaskTarget(task)).toBeNull();
+    expect(completeWorkerTaskIfDone(task)).toBe(true);
+    expect(assignWorkerTask(creep)).toBeNull();
+    expect(getCreepAssignmentState(creep.name)?.taskId).toBeUndefined();
+    expect(task.assignedCreeps).toEqual([]);
+
+    Game.time = 36;
+    refreshWorkerTasks();
+
+    expect(getWorkerTasksByRoom(room.name)[task.id]).toBeUndefined();
+  });
+
   it("releases the previous task from its actual task store even after the creep changes rooms", () => {
     const repairTask = createTask({
       id: "repair:r1",
@@ -199,7 +374,7 @@ describe("workerTaskPool", () => {
     Game.creeps[availableWorker.name] = availableWorker;
 
     objects.r1 = { pos: createPos("W1N1") };
-    objects.u1 = { pos: createPos("W1N1") };
+    objects.u1 = createControllerTarget("u1", 3);
 
     const assignedTask = assignWorkerTask(availableWorker);
 
@@ -238,7 +413,7 @@ describe("workerTaskPool", () => {
     Game.creeps[availableWorker.name] = availableWorker;
 
     objects.r1 = { pos: createPos("W1N1") };
-    objects.u1 = { pos: createPos("W1N1") };
+    objects.u1 = createControllerTarget("u1", 3);
 
     const assignedTask = assignWorkerTask(availableWorker);
 
@@ -274,7 +449,7 @@ describe("workerTaskPool", () => {
     Game.creeps[creep.name] = creep;
 
     objects.r1 = { pos: createPos("W1N1") };
-    objects.u2 = { pos: createPos("W1N2") };
+    objects.u2 = createControllerTarget("u2", 3, "W1N2");
 
     const assignedTask = assignWorkerTask(creep);
 
@@ -310,7 +485,7 @@ describe("workerTaskPool", () => {
     Game.creeps[creep.name] = creep;
 
     objects["source-target"] = { pos: createPos("W1N1") };
-    objects["target-controller"] = { pos: createPos("W1N2") };
+    objects["target-controller"] = createControllerTarget("target-controller", 3, "W1N2");
 
     const assignedTask = assignWorkerTask(creep);
 
@@ -346,7 +521,7 @@ describe("workerTaskPool", () => {
     Game.creeps[creep.name] = creep;
 
     objects["safe-target"] = { pos: { x: 10, y: 10, roomName: "W1N1", getRangeTo: () => 1 } as unknown as RoomPosition };
-    objects["unsafe-target"] = { pos: { x: 40, y: 40, roomName: "W1N1", getRangeTo: () => 1 } as unknown as RoomPosition };
+    objects["unsafe-target"] = createControllerTarget("unsafe-target", 3, "W1N1", 40, 40);
     (isDefenseMode as jest.Mock).mockReturnValue(true);
     (getSafeZone as jest.Mock).mockReturnValue(new Set([10 * 50 + 10]));
 

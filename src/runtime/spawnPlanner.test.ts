@@ -709,6 +709,7 @@ describe("spawnPlanner strategic priority", () => {
 
   it("pre-spawns the maintained upgrader before the current one expires", () => {
     const room = createRoom("E4N58");
+    room.controller!.level = 7;
     room.energyCapacityAvailable = 2300;
     const spawn = createSpawn(room);
     const carrierConfig = "E4N58:carrier:0";
@@ -739,6 +740,160 @@ describe("spawnPlanner strategic priority", () => {
     scheduleSpawnTasks();
 
     expect(spawn.memory.spawnList).toContain(upgraderConfig);
+  });
+
+  it("removes queued RCL8 maintenance replacements while a live maintenance creep exists", () => {
+    const room = createRoom("E4N58");
+    room.controller!.level = 8;
+    room.controller!.ticksToDowngrade = RCL8_UPGRADER_RECOVERY_START_TICKS;
+    const primarySpawn = createSpawn(room, 2, "E4N58-spawn-a");
+    const secondarySpawn = createSpawn(room, 2, "E4N58-spawn-b");
+    const maintenance = "E4N58:upgrader:0";
+    const worker = "E4N58:worker:0";
+    const war = "E4N58:war:E5N58:g1:healer:0";
+    primarySpawn.memory.spawnList = [maintenance, worker];
+    secondarySpawn.memory.spawnList = [war, maintenance];
+    Game.rooms[room.name] = room;
+    Game.spawns[primarySpawn.name] = primarySpawn;
+    Game.spawns[secondarySpawn.name] = secondarySpawn;
+    Game.creeps = {
+      carrier: {
+        name: "carrier",
+        room,
+        memory: { role: "carrier" },
+      } as Creep,
+      maintenance: {
+        name: "maintenance",
+        room,
+        ticksToLive: 1,
+        memory: { role: "upgrader", configName: maintenance },
+      } as Creep,
+    };
+    Memory.data = {
+      manualUpgraders: {
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time },
+      },
+      creepConfigs: {
+        [maintenance]: {
+          role: "upgrader",
+          args: [room.name],
+          roomName: room.name,
+          body: [...RCL8_UPGRADER_MAINTENANCE_BODY],
+        },
+        [worker]: { role: "worker", args: [], roomName: room.name, body: [WORK, CARRY, MOVE] },
+        [war]: { role: "healer", args: [], roomName: room.name, body: [HEAL, MOVE] },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(primarySpawn.memory.spawnList).not.toContain(maintenance);
+    expect(secondarySpawn.memory.spawnList).not.toContain(maintenance);
+    expect(primarySpawn.memory.spawnList).toContain(worker);
+    expect(secondarySpawn.memory.spawnList).toContain(war);
+
+    const cancelReplacement = jest.fn(() => OK);
+    secondarySpawn.spawning = {
+      name: "maintenance-replacement-spawning",
+      cancel: cancelReplacement,
+    } as unknown as Spawning;
+    Memory.creeps[secondarySpawn.spawning.name] = {
+      role: "upgrader",
+      configName: maintenance,
+    } as CreepMemory;
+    primarySpawn.memory.spawnList = [maintenance, ...(primarySpawn.memory.spawnList ?? [])];
+    secondarySpawn.memory.spawnList = [...(secondarySpawn.memory.spawnList ?? []), maintenance];
+    Game.time += 1;
+    resetRuntimeServices();
+
+    scheduleSpawnTasks();
+
+    expect(primarySpawn.memory.spawnList).not.toContain(maintenance);
+    expect(secondarySpawn.memory.spawnList).not.toContain(maintenance);
+    expect(cancelReplacement).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues one RCL8 maintenance upgrader after the previous creep dies", () => {
+    const room = createRoom("E4N58");
+    room.controller!.level = 8;
+    room.controller!.ticksToDowngrade = RCL8_UPGRADER_RECOVERY_START_TICKS;
+    const primarySpawn = createSpawn(room, 2, "E4N58-spawn-a");
+    const secondarySpawn = createSpawn(room, 2, "E4N58-spawn-b");
+    const maintenance = "E4N58:upgrader:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[primarySpawn.name] = primarySpawn;
+    Game.spawns[secondarySpawn.name] = secondarySpawn;
+    Game.creeps = {
+      carrier: {
+        name: "carrier",
+        room,
+        memory: { role: "carrier" },
+      } as Creep,
+    };
+    Memory.data = {
+      manualUpgraders: {
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time },
+      },
+      creepConfigs: {
+        [maintenance]: {
+          role: "upgrader",
+          args: [room.name],
+          roomName: room.name,
+          body: [...RCL8_UPGRADER_MAINTENANCE_BODY],
+        },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    const queued = [
+      ...(primarySpawn.memory.spawnList ?? []),
+      ...(secondarySpawn.memory.spawnList ?? []),
+    ];
+    expect(queued.filter((configName) => configName === maintenance)).toHaveLength(1);
+  });
+
+  it("does not queue a duplicate RCL8 maintenance upgrader while one is spawning", () => {
+    const room = createRoom("E4N58");
+    room.controller!.level = 8;
+    room.controller!.ticksToDowngrade = RCL8_UPGRADER_RECOVERY_START_TICKS;
+    const primarySpawn = createSpawn(room, 2, "E4N58-spawn-a");
+    const secondarySpawn = createSpawn(room, 2, "E4N58-spawn-b");
+    const maintenance = "E4N58:upgrader:0";
+    secondarySpawn.spawning = { name: "maintenance-spawning" } as Spawning;
+    Game.rooms[room.name] = room;
+    Game.spawns[primarySpawn.name] = primarySpawn;
+    Game.spawns[secondarySpawn.name] = secondarySpawn;
+    Game.creeps = {
+      carrier: {
+        name: "carrier",
+        room,
+        memory: { role: "carrier" },
+      } as Creep,
+    };
+    Memory.creeps[secondarySpawn.spawning.name] = {
+      role: "upgrader",
+      configName: maintenance,
+    } as CreepMemory;
+    Memory.data = {
+      manualUpgraders: {
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time },
+      },
+      creepConfigs: {
+        [maintenance]: {
+          role: "upgrader",
+          args: [room.name],
+          roomName: room.name,
+          body: [...RCL8_UPGRADER_MAINTENANCE_BODY],
+        },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(primarySpawn.memory.spawnList).not.toContain(maintenance);
+    expect(secondarySpawn.memory.spawnList).not.toContain(maintenance);
+    expect(secondarySpawn.spawning?.name).toBe("maintenance-spawning");
   });
 
   it("places an authenticated RCL8 maintenance upgrader ahead of emergency, war, and managed configs", () => {

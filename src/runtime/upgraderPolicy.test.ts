@@ -39,6 +39,13 @@ describe("RCL8 upgrader maintenance authentication", () => {
     } as Room;
   });
 
+  it("locks the recovery hysteresis to 175000/195000 ticks", () => {
+    expect(RCL8_UPGRADER_RECOVERY_START_TICKS).toBe(175_000);
+    expect(RCL8_UPGRADER_RECOVERY_STOP_TICKS).toBe(195_000);
+    expect(RCL8_UPGRADER_MAINTENANCE_BODY).toEqual([WORK, CARRY, MOVE]);
+    expect(RCL8_UPGRADER_MAINTENANCE_BODY.reduce((sum, part) => sum + BODYPART_COST[part], 0)).toBe(200);
+  });
+
   it("accepts only the exact active minimal maintenance config", () => {
     expect(isRcl8MaintenanceUpgraderConfig("E4N58:upgrader:0", createConfig())).toBe(true);
   });

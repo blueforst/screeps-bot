@@ -135,7 +135,7 @@ function createBuildTask(site: ConstructionSite): WorkerTask {
 
 function createUpgradeTask(room: Room): WorkerTask | null {
   const controller = room.controller;
-  if (!controller || !controller.my) {
+  if (!controller || !controller.my || controller.level >= 8) {
     return null;
   }
 
@@ -372,7 +372,8 @@ function getTaskTarget(task: WorkerTask): RoomObject | null {
   }
 
   if (task.type === "upgrade") {
-    return Game.getObjectById(task.targetId as Id<StructureController>);
+    const controller = Game.getObjectById(task.targetId as Id<StructureController>);
+    return controller && controller.level < 8 ? controller : null;
   }
 
   if (task.type === "repair") {
@@ -529,7 +530,7 @@ export function completeWorkerTaskIfDone(task: WorkerTask): boolean {
 
   if (task.type === "upgrade") {
     const controller = Game.getObjectById(task.targetId as Id<StructureController>);
-    return !controller || !controller.my;
+    return !controller || !controller.my || controller.level >= 8;
   }
 
   if (task.type === "repair") {

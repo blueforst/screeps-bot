@@ -148,6 +148,35 @@ describe("runHubUpgradeControl", () => {
     expect(startUpgrader("E4N58")).toBe("ERR_UPGRADER_NOT_REQUIRED_AT_RCL8:E4N58");
   });
 
+  it("does not let a fresh manual task bypass the RCL8 recovery start threshold", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(
+      8,
+      true,
+      "E4N58",
+      {},
+      5600,
+      RCL8_UPGRADER_RECOVERY_START_TICKS + 1,
+    );
+
+    expect(startUpgrader("E4N58")).toBe("ERR_UPGRADER_NOT_REQUIRED_AT_RCL8:E4N58");
+    expect(Memory.data?.manualUpgraders?.E4N58).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]).toBeUndefined();
+  });
+
+  it("allows a fresh manual RCL8 maintenance task exactly at the recovery start threshold", () => {
+    Game.rooms.E4N58 = createUpgraderRoom(
+      8,
+      true,
+      "E4N58",
+      {},
+      5600,
+      RCL8_UPGRADER_RECOVERY_START_TICKS,
+    );
+
+    expect(startUpgrader("E4N58")).toMatchObject({ ok: true, active: true, boosted: false });
+    expect(Memory.data?.creepConfigs?.["E4N58:upgrader:0"]?.body).toEqual(RCL8_UPGRADER_MAINTENANCE_BODY);
+  });
+
   it("starts a minimal unboosted RCL8 maintenance upgrader at the recovery threshold", () => {
     Game.rooms.E4N58 = createUpgraderRoom(
       8,
