@@ -230,6 +230,25 @@ describe("powerCreepControl", () => {
     });
   });
 
+  it("有寿命但当前 shard 尚无位置时跳过任务执行", () => {
+    const { room, powerSpawn } = createRoom({ name: "E6N59" });
+    const powerCreep = createPowerCreep({
+      name: "E6N59",
+      ticksToLive: 1_000,
+      powers: {
+        [PWR_GENERATE_OPS]: { level: 1, cooldown: 0 },
+      },
+    });
+    powerCreep.memory.homeRoom = room.name;
+    (powerCreep as PowerCreep & { pos?: RoomPosition }).pos = undefined;
+    installPowerCreeps(powerCreep);
+    installGameObjects([powerSpawn]);
+
+    expect(() => runPowerCreepControl()).not.toThrow();
+    expect(powerCreep.memory.lastControlTick).toBeUndefined();
+    expect(powerCreep.usePower).not.toHaveBeenCalled();
+  });
+
   it("寿命低于 200 时 renew 抢占已就绪的 GENERATE_OPS", () => {
     const { room, powerSpawn } = createRoom();
     const powerCreep = createPowerCreep({

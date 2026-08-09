@@ -604,6 +604,13 @@ function runPowerCreep(powerCreep: PowerCreep): void {
     return;
   }
 
+  // Power Creep 在跨 shard 或出生/消失的边界 tick 里，可能仍报告寿命，
+  // 但尚未暴露当前 shard 的 room/pos。此时不能执行本地任务，否则任何
+  // 距离判断都会中断整个主循环。
+  if (!powerCreep.room || !powerCreep.pos) {
+    return;
+  }
+
   powerCreep.memory.lastControlTick = Game.time;
   const powerSpawn = getOwnedPowerSpawn(room);
   pruneObsoleteTasks(powerCreep, room);
