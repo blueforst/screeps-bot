@@ -1,10 +1,16 @@
-import { getSafeZone } from "@/runtime/safeZone";
+import { getSafeZone, getSafeZonePlanRevision } from "@/runtime/safeZone";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 
 const DANGEROUS_BODY_PARTS: BodyPartConstant[] = [ATTACK, RANGED_ATTACK, WORK, HEAL];
 
-let defenseModeCacheTick = -1;
-const defenseModeCache = new Map<string, boolean>();
+interface DefenseModeSnapshot {
+  game: Game;
+  tick: number;
+  planRevisions: ReadonlyMap<string, number | null>;
+  states: ReadonlyMap<string, boolean>;
+}
+
+let defenseModeSnapshot: DefenseModeSnapshot | undefined;
 
 export function getPlayerHostiles(room: Room): Creep[] {
   const tickContext = getTickContextService();
@@ -25,22 +31,51 @@ function computeDefenseState(room: Room): boolean {
   return hostiles.length > 0;
 }
 
-export function runDefenseMode(): void {
-  if (defenseModeCacheTick !== Game.time) {
-    defenseModeCache.clear();
-    defenseModeCacheTick = Game.time;
+function haveSafeZonePlanRevisionsChanged(snapshot: DefenseModeSnapshot): boolean {
+  for (const [roomName, revision] of snapshot.planRevisions) {
+    if (getSafeZonePlanRevision(roomName) !== revision) return true;
   }
+  return false;
+}
 
-  const tickContext = getTickContextService();
-  for (const room of tickContext.getMyRooms()) {
-    if (!defenseModeCache.has(room.name)) {
-      defenseModeCache.set(room.name, computeDefenseState(room));
+function ensureCurrentDefenseSnapshot(checkPlanRevisions = false): DefenseModeSnapshot {
+  try {
+    const currentGame = Game;
+    const currentTick = currentGame.time;
+    if (defenseModeSnapshot?.game === currentGame && defenseModeSnapshot.tick === currentTick) {
+      if (!checkPlanRevisions || !haveSafeZonePlanRevisionsChanged(defenseModeSnapshot)) {
+        return defenseModeSnapshot;
+      }
     }
+
+    const planRevisions = new Map<string, number | null>();
+    const states = new Map<string, boolean>();
+    const tickContext = getTickContextService();
+    for (const room of tickContext.getMyRooms()) {
+      planRevisions.set(room.name, getSafeZonePlanRevision(room.name));
+      states.set(room.name, computeDefenseState(room));
+    }
+
+    const nextSnapshot: DefenseModeSnapshot = {
+      game: currentGame,
+      tick: currentTick,
+      planRevisions,
+      states,
+    };
+    defenseModeSnapshot = nextSnapshot;
+    return nextSnapshot;
+  } catch (error) {
+    defenseModeSnapshot = undefined;
+    throw error;
   }
 }
 
+export function runDefenseMode(): void {
+  ensureCurrentDefenseSnapshot(true);
+}
+
 export function isDefenseMode(roomName: string): boolean {
-  return defenseModeCache.get(roomName) ?? false;
+  return ensureCurrentDefenseSnapshot().states.get(roomName) ?? false;
 }
 
 export function isOffensiveWarCreep(creep: Creep): boolean {
@@ -54,6 +89,5 @@ export function isOffensiveWarCreep(creep: Creep): boolean {
 }
 
 export function clearDefenseModeCacheForTest(): void {
-  defenseModeCache.clear();
-  defenseModeCacheTick = -1;
+  defenseModeSnapshot = undefined;
 }

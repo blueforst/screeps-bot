@@ -58,6 +58,11 @@ function computeSafeZone(
   return safeZone;
 }
 
+/** Planner revision used to invalidate snapshots that depend on a room's safe zone. */
+export function getSafeZonePlanRevision(roomName: string): number | null {
+  return Memory.data?.roomPlanner?.[roomName]?.savedAt ?? null;
+}
+
 export function getSafeZone(roomName: string): Set<number> {
   const plannerData = Memory.data?.roomPlanner?.[roomName];
   if (!plannerData) return new Set();
