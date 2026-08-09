@@ -154,6 +154,7 @@ function createPowerCreep(options: {
   capacity?: number;
   powers?: Partial<Record<PowerConstant, { level: number; cooldown: number }>>;
   usePowerResult?: ScreepsReturnCode;
+  enableRoomResult?: ScreepsReturnCode;
   renewResult?: ScreepsReturnCode;
   transferResult?: ScreepsReturnCode;
   rangeToTarget?: number;
@@ -177,7 +178,7 @@ function createPowerCreep(options: {
       options.capacity || 100,
     ),
     spawn: jest.fn(() => OK),
-    enableRoom: jest.fn(() => OK),
+    enableRoom: jest.fn(() => options.enableRoomResult ?? OK),
     renew: jest.fn(() => options.renewResult ?? OK),
     transfer: jest.fn(() => options.transferResult ?? OK),
     usePower,
@@ -228,6 +229,69 @@ describe("powerCreepControl", () => {
       suppressExtensionSupply: false,
       managePowerSpawnSupply: true,
     });
+  });
+
+  it("同名己方房间没有 PowerSpawn 时不回退到 PC 当前房间", () => {
+    const { room: fallbackRoom, powerSpawn } = createRoom({ name: "E4N58" });
+    Game.rooms.W1N57 = {
+      name: "W1N57",
+      controller: { my: true, isPowerEnabled: false },
+      find: jest.fn(() => []),
+    } as unknown as Room;
+    const powerCreep = createPowerCreep({
+      name: "W1N57",
+      room: fallbackRoom,
+      ticksToLive: null,
+      powers: {
+        [PWR_OPERATE_EXTENSION]: { level: 4, cooldown: 0 },
+      },
+    });
+    installPowerCreeps(powerCreep);
+    installGameObjects([powerSpawn]);
+
+    runPowerCreepControl();
+
+    expect(powerCreep.memory.homeRoom).toBeUndefined();
+    expect(powerCreep.spawn).not.toHaveBeenCalled();
+    expect(powerCreep.enableRoom).not.toHaveBeenCalled();
+    expect(getPowerCreepRoomEnergyPolicy("W1N57")).toEqual({
+      suppressSpawnSupply: false,
+      suppressExtensionSupply: false,
+      managePowerSpawnSupply: false,
+    });
+  });
+
+  it("已出生同名 PC 为未启用 Controller 去重保留并执行 enable_room", () => {
+    const { room, controller, powerSpawn } = createRoom({
+      name: "E6N59",
+      controllerPowerEnabled: false,
+    });
+    const powerCreep = createPowerCreep({
+      name: room.name,
+      room,
+      ticksToLive: 1_000,
+      enableRoomResult: ERR_NOT_IN_RANGE,
+      rangeToTarget: 5,
+    });
+    installPowerCreeps(powerCreep);
+    installGameObjects([controller, powerSpawn]);
+
+    runPowerCreepControl();
+
+    expect(powerCreep.enableRoom).toHaveBeenCalledWith(controller);
+    expect(powerCreep.moveTo).toHaveBeenCalledWith(controller, { reusePath: 5, range: 1 });
+    expect(listPowerCreepTasks(powerCreep)).toEqual([
+      expect.objectContaining({ type: "enable_room", targetId: controller.id }),
+    ]);
+
+    Game.time += 1;
+    runPowerCreepControl();
+    expect(listPowerCreepTasks(powerCreep)).toHaveLength(1);
+
+    (controller as StructureController & { isPowerEnabled: boolean }).isPowerEnabled = true;
+    Game.time += 1;
+    runPowerCreepControl();
+    expect(listPowerCreepTasks(powerCreep)).toHaveLength(0);
   });
 
   it("有寿命但当前 shard 尚无位置时跳过任务执行", () => {

@@ -122,7 +122,7 @@ describe("mountSpawn war energy reservation", () => {
     const emergency = `E4N58:manual:maxcarrier:${Game.time}`;
     Memory.data = {
       manualUpgraders: {
-        [room.name]: { createdAt: Game.time, updatedAt: Game.time },
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time, maintenance: true },
       },
       creepConfigs: {
         [maintenance]: {

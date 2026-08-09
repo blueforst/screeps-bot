@@ -7,6 +7,8 @@ const SOURCE_KEEPER_USERNAME = "Source Keeper";
 const INVADER_USERNAME = "Invader";
 const FLEE_DIRECTIONS: DirectionConstant[] = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
 
+type RemoteDefenseTarget = Creep | StructureInvaderCore;
+
 function getTargetRoomFromConfig(creep: Creep): string | null {
   const parts = creep.memory.configName?.split(":");
   if (!parts || parts.length < 3) return null;
@@ -101,6 +103,24 @@ function pickTarget(creep: Creep, eligible: Creep[]): Creep | null {
     }
   }
   return best;
+}
+
+function pickInvaderCoreTarget(
+  creep: Creep,
+  defenseReason: RemoteDefenseReason | null,
+): StructureInvaderCore | null {
+  if (defenseReason !== "npc_invader_core") {
+    return null;
+  }
+
+  const cores = creep.room.find(FIND_HOSTILE_STRUCTURES, {
+    filter: structure => structure.structureType === STRUCTURE_INVADER_CORE,
+  }) as StructureInvaderCore[];
+  return creep.pos.findClosestByRange(cores);
+}
+
+function isInvaderCoreTarget(target: RemoteDefenseTarget): target is StructureInvaderCore {
+  return "structureType" in target && target.structureType === STRUCTURE_INVADER_CORE;
 }
 
 function isFriendlyRemoteCreep(creep: Creep, sourceRoom: string, targetRoom: string): boolean {
@@ -225,16 +245,15 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
 
       const hostiles: Creep[] = creep.room.find(FIND_HOSTILE_CREEPS);
       const eligible = getEligibleTargets(creep, hostiles, defenseReason);
+      const hostileTarget = pickTarget(creep, eligible);
+      const target: RemoteDefenseTarget | null = hostileTarget ?? pickInvaderCoreTarget(creep, defenseReason);
 
-      if (eligible.length === 0) {
+      if (!target) {
         if (!defending) {
           retireTowardSource(creep, sourceRoom);
         }
         return false;
       }
-
-      const target = pickTarget(creep, eligible);
-      if (!target) return false;
 
       if (creep.hits < creep.hitsMax * 0.5) {
         creep.heal(creep);
@@ -274,9 +293,24 @@ export const remoteDefenderRole: RoleFactory = (...args: string[]) => {
 
       const targetRange = creep.pos.getRangeTo(target.pos);
 
+      if (isInvaderCoreTarget(target)) {
+        if (targetRange <= 3) {
+          // Never use rangedMassAttack for structure clearance: a single-target
+          // intent guarantees unrelated player structures are not damaged.
+          creep.rangedAttack(target);
+        } else {
+          moveToTarget(creep, target, 3, { reusePath: 5, avoidExitTiles: true });
+        }
+        return false;
+      }
+
       if (targetRange <= 3) {
         const eligibleInRange3 = eligible.filter((h) => creep.pos.getRangeTo(h.pos) <= 3);
-        if (eligibleInRange3.length >= 3) {
+        if (defenseReason === "npc_invader_core") {
+          // Core clearance is always single-target, even while clearing an
+          // Invader escort. Mass attack could damage unrelated player structures.
+          creep.rangedAttack(target);
+        } else if (eligibleInRange3.length >= 3) {
           creep.rangedMassAttack();
         } else {
           creep.rangedAttack(target);

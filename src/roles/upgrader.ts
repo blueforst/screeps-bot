@@ -15,7 +15,7 @@ function getActiveController(roomName: string | undefined, creep: Creep): Struct
   const task = Memory.data?.manualUpgraders?.[roomName];
   const config = Memory.data?.creepConfigs?.[configName];
   if (
-    !task ||
+    task?.maintenance !== true ||
     creep.memory.configName !== configName ||
     config?.role !== "upgrader" ||
     config.roomName !== roomName

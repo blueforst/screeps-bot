@@ -94,6 +94,23 @@ describe("spawnProfiles", () => {
     });
   });
 
+  describe("remoteDefender", () => {
+    it("builds a single RCL7 defender with enough damage budget for a level 0 Invader Core", () => {
+      const body = spawnProfiles.remoteDefender(makeRoom(5_300));
+      const rangedParts = body.filter(part => part === RANGED_ATTACK).length;
+      const healParts = body.filter(part => part === HEAL).length;
+      const moveParts = body.filter(part => part === MOVE).length;
+      const ticksToClear = Math.ceil(100_000 / (rangedParts * RANGED_ATTACK_POWER));
+
+      expect(bodyCost(body)).toBe(5_300);
+      expect(rangedParts).toBe(16);
+      expect(healParts).toBe(7);
+      expect(moveParts).toBe(23);
+      expect(ticksToClear).toBe(625);
+      expect(ticksToClear).toBeLessThan(CREEP_LIFE_TIME - 250);
+    });
+  });
+
   describe("remoteWorker", () => {
 
     it("at low energy (200) returns minimum fallback [WORK, CARRY, MOVE]", () => {

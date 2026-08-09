@@ -10,7 +10,7 @@ import { spawnMaxCarrierRaw } from "@/runtime/consoleCommands";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getSafeZone } from "@/runtime/safeZone";
-import { getLinkMinerBodyForRegenSourceLevel } from "@/config/spawnProfiles";
+import { HUB_UPGRADER_BODY, getLinkMinerBodyForRegenSourceLevel } from "@/config/spawnProfiles";
 import { resetPowerCreepControlCacheForTest } from "@/runtime/powerCreepControl";
 import {
   RCL8_UPGRADER_MAINTENANCE_BODY,
@@ -213,14 +213,48 @@ describe("spawnPlanner strategic priority", () => {
     Game.time += 1;
   });
 
-  it("does not queue a duplicate RCL8 maintenance upgrader while one is spawning", () => {
+  it("does not queue an ordinary upgrader in an owned RCL1-7 room", () => {
+    const room = createRoom("E4N58");
+    room.controller!.level = 7;
+    const spawn = createSpawn(room, 2, "E4N58-spawn-a");
+    const ordinary = "E4N58:upgrader:0";
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps = {
+      carrier: {
+        name: "carrier",
+        room,
+        memory: { role: "carrier" },
+      } as Creep,
+    };
+    Memory.data = {
+      manualUpgraders: {
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time },
+      },
+      creepConfigs: {
+        [ordinary]: {
+          role: "upgrader",
+          args: [room.name],
+          roomName: room.name,
+          body: [...HUB_UPGRADER_BODY],
+        },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(ordinary);
+  });
+
+  it("does not cancel or requeue the only RCL8 maintenance creep while it is spawning across ticks", () => {
     const room = createRoom("E4N58");
     room.controller!.level = 8;
     room.controller!.ticksToDowngrade = RCL8_UPGRADER_RECOVERY_START_TICKS;
     const primarySpawn = createSpawn(room, 2, "E4N58-spawn-a");
     const secondarySpawn = createSpawn(room, 2, "E4N58-spawn-b");
     const maintenance = "E4N58:upgrader:0";
-    secondarySpawn.spawning = { name: "maintenance-spawning" } as Spawning;
+    const cancel = jest.fn(() => OK);
+    secondarySpawn.spawning = { name: "maintenance-spawning", cancel } as unknown as Spawning;
     Game.rooms[room.name] = room;
     Game.spawns[primarySpawn.name] = primarySpawn;
     Game.spawns[secondarySpawn.name] = secondarySpawn;
@@ -230,6 +264,12 @@ describe("spawnPlanner strategic priority", () => {
         room,
         memory: { role: "carrier" },
       } as Creep,
+      "maintenance-spawning": {
+        name: "maintenance-spawning",
+        room,
+        spawning: true,
+        memory: { role: "upgrader", configName: maintenance },
+      } as Creep,
     };
     Memory.creeps[secondarySpawn.spawning.name] = {
       role: "upgrader",
@@ -237,7 +277,67 @@ describe("spawnPlanner strategic priority", () => {
     } as CreepMemory;
     Memory.data = {
       manualUpgraders: {
-        [room.name]: { createdAt: Game.time, updatedAt: Game.time },
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time, maintenance: true },
+      },
+      creepConfigs: {
+        [maintenance]: {
+          role: "upgrader",
+          args: [room.name],
+          roomName: room.name,
+          body: [...RCL8_UPGRADER_MAINTENANCE_BODY],
+        },
+      },
+    } as Memory["data"];
+
+    scheduleSpawnTasks();
+    Game.time += 1;
+    scheduleSpawnTasks();
+
+    expect(cancel).not.toHaveBeenCalled();
+    expect(primarySpawn.memory.spawnList).not.toContain(maintenance);
+    expect(secondarySpawn.memory.spawnList).not.toContain(maintenance);
+    expect(secondarySpawn.spawning?.name).toBe("maintenance-spawning");
+  });
+
+  it("cancels a queued and spawning replacement when a finished live maintenance creep exists", () => {
+    const room = createRoom("E4N58");
+    room.controller!.level = 8;
+    room.controller!.ticksToDowngrade = RCL8_UPGRADER_RECOVERY_START_TICKS;
+    const maintenance = "E4N58:upgrader:0";
+    const primarySpawn = createSpawn(room, 2, "E4N58-spawn-a");
+    const secondarySpawn = createSpawn(room, 2, "E4N58-spawn-b");
+    const cancel = jest.fn(() => OK);
+    primarySpawn.memory.spawnList = [maintenance];
+    secondarySpawn.spawning = { name: "replacement-spawning", cancel } as unknown as Spawning;
+    Game.rooms[room.name] = room;
+    Game.spawns[primarySpawn.name] = primarySpawn;
+    Game.spawns[secondarySpawn.name] = secondarySpawn;
+    Game.creeps = {
+      carrier: {
+        name: "carrier",
+        room,
+        memory: { role: "carrier" },
+      } as Creep,
+      "maintenance-live": {
+        name: "maintenance-live",
+        room,
+        spawning: false,
+        memory: { role: "upgrader", configName: maintenance },
+      } as Creep,
+      "replacement-spawning": {
+        name: "replacement-spawning",
+        room,
+        spawning: true,
+        memory: { role: "upgrader", configName: maintenance },
+      } as Creep,
+    };
+    Memory.creeps["replacement-spawning"] = {
+      role: "upgrader",
+      configName: maintenance,
+    } as CreepMemory;
+    Memory.data = {
+      manualUpgraders: {
+        [room.name]: { createdAt: Game.time, updatedAt: Game.time, maintenance: true },
       },
       creepConfigs: {
         [maintenance]: {
@@ -252,8 +352,7 @@ describe("spawnPlanner strategic priority", () => {
     scheduleSpawnTasks();
 
     expect(primarySpawn.memory.spawnList).not.toContain(maintenance);
-    expect(secondarySpawn.memory.spawnList).not.toContain(maintenance);
-    expect(secondarySpawn.spawning?.name).toBe("maintenance-spawning");
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
 

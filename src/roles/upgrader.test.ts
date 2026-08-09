@@ -69,37 +69,41 @@ describe("upgraderRole", () => {
     };
   });
 
-  it("prepares T3 only when the active manual config requests it", () => {
-    const room = createRoom();
+  it("lets an ordinary low-level upgrader retire without preparing, sourcing, moving, or upgrading", () => {
+    const room = createRoom([], 7);
     Game.rooms.E4N58 = room;
-    const creep = createCreep(room);
+    const creep = createCreep(room, 100);
 
-    expect(upgraderRole("E4N58", "upgrader:E4N58").prepare?.(creep)).toBe(false);
-    expect(mockedPrepareBoost).toHaveBeenCalledWith(
-      creep,
-      "upgrader:E4N58",
-      RESOURCE_CATALYZED_GHODIUM_ACID,
-    );
-  });
-
-  it("uses the shared room energy fallback when a low-level room has no controller source or storage", () => {
-    const room = createRoom([], 5);
-    Game.rooms.E4N58 = room;
-    const creep = createCreep(room);
-    mockedPickupEnergy.mockReturnValue({ picked: false, outOfRange: true });
-
-    upgraderRole("E4N58").source?.(creep);
-
-    expect(mockedPickupEnergy).toHaveBeenCalledWith(creep, { swampCost: 8 });
+    expect(upgraderRole("E4N58", "upgrader:E4N58").prepare?.(creep)).toBe(true);
+    expect(upgraderRole("E4N58", "upgrader:E4N58").source?.(creep)).toBe(false);
+    expect(upgraderRole("E4N58", "upgrader:E4N58").target(creep)).toBe(false);
+    expect(mockedPrepareBoost).not.toHaveBeenCalled();
+    expect(mockedPickupEnergy).not.toHaveBeenCalled();
+    expect(mockedMoveToTarget).not.toHaveBeenCalled();
+    expect(creep.withdraw).not.toHaveBeenCalled();
+    expect(creep.upgradeController).not.toHaveBeenCalled();
   });
 
   it("works at RCL8 while an authenticated maintenance task is inside the recovery window", () => {
     const room = createRoom([], 8, true, "E4N58", RCL8_UPGRADER_RECOVERY_START_TICKS);
     Game.rooms.E4N58 = room;
+    Memory.data!.manualUpgraders!.E4N58.maintenance = true;
     Memory.data!.creepConfigs!["E4N58:upgrader:0"].args = ["E4N58"];
     const creep = createCreep(room, 100);
 
     expect(upgraderRole("E4N58").target(creep)).toBe(false);
     expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
+  });
+
+  it("stops an RCL8 maintenance creep at the recovery stop threshold", () => {
+    const room = createRoom([], 8, true, "E4N58", 195_000);
+    Game.rooms.E4N58 = room;
+    Memory.data!.manualUpgraders!.E4N58.maintenance = true;
+    Memory.data!.creepConfigs!["E4N58:upgrader:0"].args = ["E4N58"];
+    const creep = createCreep(room, 100);
+
+    expect(upgraderRole("E4N58").prepare?.(creep)).toBe(true);
+    expect(upgraderRole("E4N58").target(creep)).toBe(false);
+    expect(creep.upgradeController).not.toHaveBeenCalled();
   });
 });

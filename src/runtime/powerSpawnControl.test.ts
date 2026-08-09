@@ -57,13 +57,13 @@ function installCapability(roomName: string, level = 4): void {
   };
 }
 
-function createScenario(options: { power?: number; energy?: number } = {}): {
+function createScenario(options: { roomName?: string; power?: number; energy?: number } = {}): {
   room: Room;
   powerSpawn: StructurePowerSpawn;
   powerSpawnStore: MutableStore;
   storage: StructureStorage;
 } {
-  const roomName = "E4N58";
+  const roomName = options.roomName || "E4N58";
   const powerSpawnStore = createMutableStore({
     [RESOURCE_POWER]: options.power || 0,
     [RESOURCE_ENERGY]: options.energy || 0,
@@ -166,6 +166,20 @@ describe("powerSpawnControl", () => {
 
   it("没有相应技能 PC 时既不发任务也不自动运行 PowerSpawn", () => {
     const { room, powerSpawn } = createScenario({ power: 100, energy: 5_000 });
+
+    runPowerSpawnControl();
+
+    expect(listCarrierTasksByRoom(room.name)).toHaveLength(0);
+    expect(powerSpawn.processPower).not.toHaveBeenCalled();
+  });
+
+  it("非 E4N58 房间即使具备 PC 能力和资源也不补给或运行 PowerSpawn", () => {
+    const { room, powerSpawn } = createScenario({
+      roomName: "E6N59",
+      power: 100,
+      energy: 5_000,
+    });
+    installCapability(room.name);
 
     runPowerSpawnControl();
 

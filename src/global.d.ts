@@ -1348,6 +1348,7 @@ declare global {
         {
           createdAt: number;
           updatedAt: number;
+          maintenance?: true;
         }
       >;
       marketSaleAutomation?: {

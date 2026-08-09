@@ -2,8 +2,10 @@ import type { RoleFactory } from "@/types/system";
 import { isExitTile } from "@/movement/common";
 import { getCurrentScoutRoute, moveToTargetRoom } from "@/roles/shared";
 
-function shouldKeepScoutAliveForSuspendedRemote(targetRoom: string): boolean {
-  return Memory.data?.remoteMining?.[targetRoom]?.status === "suspended";
+function shouldKeepScoutAliveForRemoteObservation(targetRoom: string): boolean {
+  const task = Memory.data?.remoteMining?.[targetRoom];
+  return task?.status === "suspended" ||
+    (task?.status === "defending" && task.defenseReason === "npc_invader_core");
 }
 
 function recordVisitedRoom(creep: Creep): void {
@@ -41,7 +43,7 @@ export const scoutRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: 
     recordVisitedRoom(creep);
 
     if (creep.room.name === targetRoom && !isExitTile(creep.pos)) {
-      if (!shouldKeepScoutAliveForSuspendedRemote(targetRoom)) {
+      if (!shouldKeepScoutAliveForRemoteObservation(targetRoom)) {
         creep.suicide();
       }
       return false;

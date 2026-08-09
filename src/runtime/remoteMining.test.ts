@@ -1,4 +1,8 @@
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
+jest.mock("@/runtime/defenseMode", () => ({
+  isDefenseMode: jest.fn(() => false),
+}));
+
 import {
   ensureRemoteMiningStore,
   getRemoteMiningConfig,
@@ -13,7 +17,9 @@ import {
   processRemoteConstruction,
   processRemoteConfigLifecycle,
   getActiveDefenseReason,
+  REMOTE_INVADER_CORE_MIN_SOURCE_CAPACITY,
 } from "@/runtime/remoteMining";
+import { isDefenseMode } from "@/runtime/defenseMode";
 
 beforeEach(() => {
   registerRuntimeServices(undefined);
@@ -46,6 +52,7 @@ function createRclRoom(name: string, level: number): Room {
       my: true,
       level,
     } as unknown as StructureController,
+    energyCapacityAvailable: level >= 7 ? REMOTE_INVADER_CORE_MIN_SOURCE_CAPACITY : 2300,
     find: jest.fn(() => []),
   } as unknown as Room;
 }
@@ -142,6 +149,277 @@ describe("runRemoteMining first come assignment", () => {
     expect(store["W1N0"].sourceIds).toEqual(["src1", "src2"]);
     expect(store["W1N0"].assignedAt).toBe(100);
     expect(store["W1N0"].lastVerifiedAt).toBe(100);
+  });
+});
+
+// ─── Remote Invader Core clearance ────────────────────────────────
+
+function createRemoteInvaderCore(
+  level = 0,
+  effects: NaturalEffect[] = [],
+): StructureInvaderCore {
+  return {
+    id: `core-${level}` as Id<StructureInvaderCore>,
+    structureType: STRUCTURE_INVADER_CORE,
+    level,
+    hits: 100_000,
+    hitsMax: 100_000,
+    effects,
+    pos: { x: 25, y: 25, roomName: "W1N0" } as RoomPosition,
+  } as unknown as StructureInvaderCore;
+}
+
+function createRemoteInvader(id = "invader-core-escort"): Creep {
+  return {
+    id: id as Id<Creep>,
+    owner: { username: "Invader" },
+    body: [{ type: ATTACK, hits: 100 }],
+    hits: 100,
+    hitsMax: 100,
+    getActiveBodyparts: jest.fn((part: BodyPartConstant) => part === ATTACK ? 1 : 0),
+  } as unknown as Creep;
+}
+
+describe("remote Invader Core clearance", () => {
+  let store: Record<string, import("@/runtime/remoteMining").RemoteMiningTask>;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (isDefenseMode as jest.Mock).mockReturnValue(false);
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    Game.time = 100;
+    Game.rooms = {};
+    Game.spawns = {};
+    Game.creeps = {};
+    Memory.runtime = {};
+    Memory.data = {};
+    ensureConfigStore();
+    store = ensureRemoteMiningStore();
+  });
+
+  function setupSourceRoom(capacity = REMOTE_INVADER_CORE_MIN_SOURCE_CAPACITY): StructureSpawn {
+    const sourceRoom = createRclRoom("W1N1", 7);
+    sourceRoom.energyCapacityAvailable = capacity;
+    Game.rooms[sourceRoom.name] = sourceRoom;
+    const spawn = createSpawn(sourceRoom);
+    Game.spawns[spawn.name] = spawn;
+    return spawn;
+  }
+
+  function setupTask(
+    status: import("@/runtime/remoteMining").RemoteMiningStatus = "active",
+  ): import("@/runtime/remoteMining").RemoteMiningTask {
+    const task: import("@/runtime/remoteMining").RemoteMiningTask = {
+      sourceRoom: "W1N1",
+      targetRoom: "W1N0",
+      status,
+      sourceIds: ["src1", "src2"],
+      assignedAt: 50,
+      updatedAt: 50,
+    };
+    store[task.targetRoom] = task;
+    return task;
+  }
+
+  function setupTarget(core?: StructureInvaderCore, hostileCreeps: Creep[] = []): Room {
+    const target = createVisibleTargetRoom("W1N0", {
+      sources: [createSource("src1"), createSource("src2")],
+      hostileCreeps,
+      hostileStructures: core ? [core] : [],
+      reservationUsername: core ? "Invader" : undefined,
+    });
+    Game.rooms[target.name] = target;
+    return target;
+  }
+
+  it("enters Core defense with one stable defender config and keeps scout vision", () => {
+    setupSourceRoom();
+    const core = createRemoteInvaderCore();
+    const target = setupTarget(core);
+    const task = setupTask();
+
+    expect(getActiveDefenseReason(target, task)).toBe("npc_invader_core");
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    Game.time += 1;
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
+    expect(task.status).toBe("defending");
+    expect(task.defenseReason).toBe("npc_invader_core");
+    expect(Memory.data!.creepConfigs![defenderName]).toEqual({
+      role: "remoteDefender", args: ["W1N0"], roomName: "W1N1",
+    });
+    expect(Memory.data!.creepConfigs![scoutName]).toEqual({
+      role: "scout", args: ["W1N0"], roomName: "W1N1",
+    });
+    expect(Object.keys(Memory.data!.creepConfigs!).filter(name => name === defenderName)).toHaveLength(1);
+  });
+
+  it("migrates legacy hostile_structures suspension directly into Core defense", () => {
+    setupSourceRoom();
+    setupTarget(createRemoteInvaderCore());
+    const task = setupTask("suspended");
+    task.suspendReason = "hostile_structures";
+    task.suspendedAt = 80;
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(task.status).toBe("defending");
+    expect(task.defenseReason).toBe("npc_invader_core");
+    expect(task.suspendReason).toBeUndefined();
+    expect(Memory.data!.creepConfigs![getRemoteDefenderConfigName("W1N1", "W1N0")]).toBeDefined();
+  });
+
+  it("keeps scouting but does not spawn a defender while the Core is invulnerable", () => {
+    setupSourceRoom();
+    const core = createRemoteInvaderCore(0, [{
+      effect: EFFECT_INVULNERABILITY,
+      ticksRemaining: 5,
+    }]);
+    setupTarget(core);
+    const task = setupTask();
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(task.status).toBe("defending");
+    expect(Memory.data!.creepConfigs![getRemoteDefenderConfigName("W1N1", "W1N0")]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![getRemoteMiningScoutConfigName("W1N1", "W1N0")]).toBeDefined();
+
+    (core.effects![0] as NaturalEffect).ticksRemaining = 0;
+    Game.time += 1;
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    expect(Memory.data!.creepConfigs![getRemoteDefenderConfigName("W1N1", "W1N0")]).toBeDefined();
+  });
+
+  it("does not mark completion or retain defender spawn eligibility without vision", () => {
+    const spawn = setupSourceRoom();
+    const task = setupTask("defending");
+    task.defenseReason = "npc_invader_core";
+    task.defendingSince = 80;
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = {
+      role: "remoteDefender", args: ["W1N0"], roomName: "W1N1",
+    };
+    spawn.memory.spawnList = [defenderName, defenderName, "W1N1:worker:0"];
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(task.status).toBe("defending");
+    expect(task.defenseReason).toBe("npc_invader_core");
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![scoutName]).toBeDefined();
+    expect(spawn.memory.spawnList).toEqual(["W1N1:worker:0"]);
+  });
+
+  it("suspends high-level Strongholds and insufficient source capacity", () => {
+    setupSourceRoom();
+    setupTarget(createRemoteInvaderCore(1));
+    const highLevelTask = setupTask();
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(highLevelTask.status).toBe("suspended");
+    expect(["hostile_structures", "hostile_reservation"]).toContain(highLevelTask.suspendReason);
+    expect(Memory.data!.creepConfigs![getRemoteDefenderConfigName("W1N1", "W1N0")]).toBeUndefined();
+
+    Game.rooms = {};
+    Game.spawns = {};
+    delete (global as any).__runtimeServices;
+    registerRuntimeServices(undefined);
+    setupSourceRoom(REMOTE_INVADER_CORE_MIN_SOURCE_CAPACITY - 1);
+    setupTarget(createRemoteInvaderCore());
+    highLevelTask.status = "active";
+    delete highLevelTask.suspendReason;
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(highLevelTask.status).toBe("suspended");
+    expect(highLevelTask.suspendReason).toBe("invader_core_insufficient_capacity");
+    expect(Memory.data!.creepConfigs![getRemoteDefenderConfigName("W1N1", "W1N0")]).toBeUndefined();
+  });
+
+  it("suppresses all Core clearance spawning in source-room defense mode", () => {
+    const spawn = setupSourceRoom();
+    setupTarget(createRemoteInvaderCore());
+    setupTask();
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = {
+      role: "remoteDefender", args: ["W1N0"], roomName: "W1N1",
+    };
+    spawn.memory.spawnList = [defenderName, defenderName];
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual([]);
+  });
+
+  it("resumes immediately after visible Core disappearance and removes every queued duplicate", () => {
+    const spawn = setupSourceRoom();
+    setupTarget();
+    const task = setupTask("defending");
+    task.defenseReason = "npc_invader_core";
+    task.defendingSince = 80;
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = {
+      role: "remoteDefender", args: ["W1N0"], roomName: "W1N1",
+    };
+    Memory.data!.creepConfigs![scoutName] = {
+      role: "scout", args: ["W1N0"], roomName: "W1N1",
+    };
+    spawn.memory.spawnList = [defenderName, scoutName, defenderName, scoutName, "W1N1:worker:0"];
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    Game.time += 1;
+    expect(() => processRemoteConfigLifecycle(store, getRemoteMiningConfig())).not.toThrow();
+
+    expect(task.status).toBe("active");
+    expect(task.defenseReason).toBeUndefined();
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![scoutName]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual(["W1N1:worker:0"]);
+  });
+
+  it("switches to ordinary NPC defense when an Invader creep remains after Core removal", () => {
+    setupSourceRoom();
+    setupTarget(undefined, [createRemoteInvader()]);
+    const task = setupTask("defending");
+    task.defenseReason = "npc_invader_core";
+    task.defendingSince = 80;
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(task.status).toBe("defending");
+    expect(task.defenseReason).toBe("npc_invader");
+    expect(Memory.data!.creepConfigs![getRemoteDefenderConfigName("W1N1", "W1N0")]).toBeDefined();
+  });
+
+  it("cleans abandoned invisible Core configs and queues idempotently", () => {
+    const spawn = setupSourceRoom();
+    setupTask("abandoned");
+    const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
+    const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
+    Memory.data!.creepConfigs![defenderName] = {
+      role: "remoteDefender", args: ["W1N0"], roomName: "W1N1",
+    };
+    Memory.data!.creepConfigs![scoutName] = {
+      role: "scout", args: ["W1N0"], roomName: "W1N1",
+    };
+    spawn.memory.spawnList = [defenderName, scoutName, defenderName, scoutName];
+
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    Game.time += 1;
+    processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+
+    expect(Memory.data!.creepConfigs![defenderName]).toBeUndefined();
+    expect(Memory.data!.creepConfigs![scoutName]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual([]);
   });
 });
 
@@ -393,7 +671,7 @@ describe("stale config prefix cleanup", () => {
     const config = getRemoteMiningConfig();
     processRemoteConfigLifecycle(store, config);
 
-    expect(spawn.memory.spawnList).toEqual([scoutName, "W1N1:worker:0"]);
+    expect(spawn.memory.spawnList).toEqual(["W1N1:worker:0"]);
   });
 });
 

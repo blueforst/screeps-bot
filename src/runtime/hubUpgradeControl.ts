@@ -1,8 +1,9 @@
 import { HUB_UPGRADER_BODY } from "@/config/spawnProfiles";
-import { prepareBoosts, releaseBoostLabs } from "@/runtime/powerBankBoost";
+import { releaseBoostLabs } from "@/runtime/powerBankBoost";
 import { getMemoryService } from "@/runtime/runtimeServices";
 import {
   RCL8_UPGRADER_MAINTENANCE_BODY,
+  isDedicatedUpgraderControllerRunnable,
   shouldMaintainDedicatedUpgrader,
 } from "@/runtime/upgraderPolicy";
 import type { CreepConfig } from "@/types/system";
@@ -74,7 +75,32 @@ function cleanupSpawnedAndQueuedUpgraders(keptConfigNames: ReadonlySet<string>):
   }
 }
 
-function cleanupManagedUpgraders(keptConfigNames: ReadonlySet<string>): void {
+function isRcl8MaintenanceBody(body: readonly BodyPartConstant[] | undefined): boolean {
+  return body?.length === RCL8_UPGRADER_MAINTENANCE_BODY.length &&
+    body.every((part, index) => part === RCL8_UPGRADER_MAINTENANCE_BODY[index]);
+}
+
+function getRetiringRcl8MaintenanceConfigNames(): Set<string> {
+  const configNames = new Set<string>();
+  for (const [configName, config] of getManagedConfigEntries()) {
+    const roomName = getConfigRoomName(config);
+    if (
+      roomName &&
+      configName === getConfigName(roomName) &&
+      config.role === "upgrader" &&
+      Memory.data?.manualUpgraders?.[roomName]?.maintenance === true &&
+      isRcl8MaintenanceBody(config.body)
+    ) {
+      configNames.add(configName);
+    }
+  }
+  return configNames;
+}
+
+function cleanupManagedUpgraders(
+  keptConfigNames: ReadonlySet<string>,
+  retiringRcl8MaintenanceConfigNames: ReadonlySet<string>,
+): void {
   const configs = getMemoryService().getCreepConfigStore();
   const entries = getManagedConfigEntries().filter(([configName]) => !keptConfigNames.has(configName));
   const roomNames = new Set(
@@ -97,9 +123,13 @@ function cleanupManagedUpgraders(keptConfigNames: ReadonlySet<string>): void {
   cleanupSpawnedAndQueuedUpgraders(keptConfigNames);
   for (const creep of Object.values(Game.creeps)) {
     const configName = creep.memory.configName;
+    const isKept = !!configName && keptConfigNames.has(configName);
+    const isRetiringRcl8Maintenance = !!configName &&
+      retiringRcl8MaintenanceConfigNames.has(configName);
     if (
       (creep.memory.role === "upgrader" || creep.memory.role === "hubUpgrader" || (configName && isManagedUpgraderConfigName(configName))) &&
-      (!configName || !keptConfigNames.has(configName))
+      !isKept &&
+      isRetiringRcl8Maintenance
     ) {
       creep.suicide();
     }
@@ -113,60 +143,6 @@ function cleanupManagedUpgraders(keptConfigNames: ReadonlySet<string>): void {
   }
 }
 
-function getUpgraderBody(room: Room): BodyPartConstant[] {
-  if (room.controller?.level === 8) {
-    return [...RCL8_UPGRADER_MAINTENANCE_BODY];
-  }
-
-  const fixedBodyCost = HUB_UPGRADER_BODY.reduce((sum, part) => sum + BODYPART_COST[part], 0);
-  if (room.energyCapacityAvailable >= fixedBodyCost) {
-    return [...HUB_UPGRADER_BODY];
-  }
-
-  const body: BodyPartConstant[] = [];
-  let remainingCapacity = room.energyCapacityAvailable;
-  const workPairCost = BODYPART_COST[WORK] * 2 + BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
-  while (remainingCapacity >= workPairCost && body.length + 4 <= MAX_CREEP_SIZE) {
-    body.push(WORK, WORK, CARRY, MOVE);
-    remainingCapacity -= workPairCost;
-  }
-
-  const fallbackCost = BODYPART_COST[WORK] + BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
-  if (remainingCapacity >= fallbackCost && body.length + 3 <= MAX_CREEP_SIZE) {
-    body.push(WORK, CARRY, MOVE);
-  }
-
-  return body.length > 0 ? body : [WORK, CARRY, MOVE];
-}
-
-function countRemainingWorkParts(configName: string, body: readonly BodyPartConstant[]): number {
-  const creeps = Object.values(Game.creeps).filter((creep) => creep.memory.configName === configName);
-  if (creeps.length === 0) return body.filter((part) => part === WORK).length;
-
-  return creeps.reduce((sum, creep) => sum + creep.body.filter((part) =>
-    part.type === WORK &&
-    part.hits > 0 &&
-    part.boost !== RESOURCE_CATALYZED_GHODIUM_ACID
-  ).length, 0);
-}
-
-function getLocalUpgraderBoostInventory(room: Room): { amount: number; labCount: number } {
-  let total = room.storage?.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID) || 0;
-  total += room.terminal?.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID) || 0;
-
-  const labs = room.find(FIND_MY_STRUCTURES, {
-    filter: (structure): structure is StructureLab =>
-      structure.structureType === STRUCTURE_LAB && structure.isActive(),
-  });
-  for (const lab of labs) {
-    total += lab.store.getUsedCapacity(RESOURCE_CATALYZED_GHODIUM_ACID);
-  }
-  return {
-    amount: total,
-    labCount: labs.length,
-  };
-}
-
 function isEligibleUpgraderRoom(roomName: string): boolean {
   const controller = Game.rooms[roomName]?.controller;
   if (!controller) return false;
@@ -178,6 +154,7 @@ function isEligibleUpgraderRoom(roomName: string): boolean {
 
 function ensureEligibleRoomUpgraderTasks(): string[] {
   const tasks = getManualUpgraderStore();
+  const configs = getMemoryService().getCreepConfigStore();
   const eligibleRoomNames: string[] = [];
 
   for (const room of Object.values(Game.rooms)) {
@@ -193,7 +170,21 @@ function ensureEligibleRoomUpgraderTasks(): string[] {
       tasks[roomName] = {
         createdAt: Game.time,
         updatedAt: Game.time,
+        maintenance: true,
       };
+    } else if (
+      existing.maintenance !== true &&
+      isDedicatedUpgraderControllerRunnable(controller)
+    ) {
+      const config = configs[getConfigName(roomName)];
+      if (
+        config?.role === "upgrader" &&
+        config.roomName === roomName &&
+        isRcl8MaintenanceBody(config.body)
+      ) {
+        existing.maintenance = true;
+        existing.updatedAt = Game.time;
+      }
     }
   }
 
@@ -212,11 +203,11 @@ export function startUpgrader(roomName: string): ManualUpgraderResult | string {
   if (!controller?.my) {
     return `ERR_UPGRADER_REQUIRES_OWNED_ROOM:${roomName}`;
   }
+  if (controller.level !== 8) {
+    return `ERR_UPGRADER_MAINTENANCE_ONLY_AT_RCL8:${roomName}`;
+  }
   const hasExistingTask = !!Memory.data?.manualUpgraders?.[roomName];
-  if (
-    controller.level === 8 &&
-    !shouldMaintainDedicatedUpgrader(controller, hasExistingTask)
-  ) {
+  if (!shouldMaintainDedicatedUpgrader(controller, hasExistingTask)) {
     return `ERR_UPGRADER_NOT_REQUIRED_AT_RCL8:${roomName}`;
   }
 
@@ -225,6 +216,7 @@ export function startUpgrader(roomName: string): ManualUpgraderResult | string {
   tasks[roomName] = {
     createdAt: existing?.createdAt ?? Game.time,
     updatedAt: Game.time,
+    maintenance: true,
   };
   runHubUpgradeControl();
   return getUpgraderStatus(roomName) as ManualUpgraderResult;
@@ -268,49 +260,24 @@ export function getUpgraderStatus(roomName?: string): ManualUpgraderResult[] | M
 }
 
 export function runHubUpgradeControl(): void {
+  const retiringRcl8MaintenanceConfigNames = getRetiringRcl8MaintenanceConfigNames();
   const activeRoomNames = ensureEligibleRoomUpgraderTasks();
   const keptConfigNames = new Set(activeRoomNames.map((roomName) => getConfigName(roomName)));
-  cleanupManagedUpgraders(keptConfigNames);
+  cleanupManagedUpgraders(keptConfigNames, retiringRcl8MaintenanceConfigNames);
 
   const configs = getMemoryService().getCreepConfigStore();
   for (const roomName of activeRoomNames) {
-    const room = Game.rooms[roomName]!;
     const configName = getConfigName(roomName);
     const boostTaskId = getBoostTaskId(roomName);
-    const body = getUpgraderBody(room);
-    const isRcl8Maintenance = room.controller?.level === 8;
-    let requiredBoostAmount = 0;
-    let canBoostLocally = false;
-    if (!isRcl8Maintenance) {
-      const remainingWorkParts = countRemainingWorkParts(configName, body);
-      requiredBoostAmount = remainingWorkParts * LAB_BOOST_MINERAL;
-      const boostInventory = getLocalUpgraderBoostInventory(room);
-      canBoostLocally = requiredBoostAmount > 0 &&
-        boostInventory.labCount > 0 &&
-        boostInventory.amount >= requiredBoostAmount;
-    }
 
     configs[configName] = {
       role: "upgrader",
-      args: canBoostLocally ? [roomName, boostTaskId] : [roomName],
+      args: [roomName],
       roomName,
-      body,
+      body: [...RCL8_UPGRADER_MAINTENANCE_BODY],
     };
 
-    if (!canBoostLocally) {
-      releaseBoostLabs(boostTaskId, roomName);
-      if (isRcl8Maintenance) {
-        releaseBoostLabs(`hubUpgrade:${roomName}`, roomName);
-      }
-      continue;
-    }
-
-    prepareBoosts(
-      boostTaskId,
-      roomName,
-      0,
-      new Map([[RESOURCE_CATALYZED_GHODIUM_ACID, requiredBoostAmount]]),
-      { requireLabEnergy: true },
-    );
+    releaseBoostLabs(boostTaskId, roomName);
+    releaseBoostLabs(`hubUpgrade:${roomName}`, roomName);
   }
 }

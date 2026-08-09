@@ -9,9 +9,10 @@ export type RemoteSuspendReason =
   | "hostile_reservation"
   | "hostile_owner"
   | "hostile_structures"
+  | "invader_core_insufficient_capacity"
   | "source_keeper";
 
-export type RemoteDefenseReason = "npc_invader" | "player_aggression";
+export type RemoteDefenseReason = "npc_invader" | "npc_invader_core" | "player_aggression";
 
 export interface DamageSnapshot {
   tick: number;
@@ -72,6 +73,14 @@ export const REMOTE_MINING_DEFAULTS: RemoteMiningConfig = {
   remoteSafeTicksToResume: 100,
   remoteReservationRenewAt: 3000,
 };
+
+/**
+ * RCL7 满扩展容量。当前 remoteDefender profile 在该容量下生成
+ * 16 RANGED_ATTACK / 7 HEAL / 23 MOVE，足以在生命周期内单兵清理
+ * 100,000 hits 的 level 0 Invader Core。
+ */
+export const REMOTE_INVADER_CORE_MIN_SOURCE_CAPACITY = 5300;
+const INVADER_USERNAME = "Invader";
 
 // Only cardinal neighbours (1/3/5/7) are candidates — diagonal rooms require multi-hop
 // logistics and are excluded to keep CPU and carrier travel time bounded.
@@ -161,22 +170,25 @@ function isRoomStatusNormal(roomName: string): boolean {
 }
 export function getRemoteThreatReason(room: Room): RemoteSuspendReason | null {
   const controller = room.controller;
+  const invaderCores = getInvaderCores(room);
+  const hasSupportedCore = invaderCores.some(core => core.level === 0);
 
   if (controller?.owner && !controller.my) {
     return "hostile_owner";
   }
 
-  if (controller?.reservation && controller.reservation.username !== getMyUsername()) {
+  if (
+    controller?.reservation &&
+    controller.reservation.username !== getMyUsername() &&
+    !(hasSupportedCore && controller.reservation.username === INVADER_USERNAME)
+  ) {
     return "hostile_reservation";
   }
 
-  // Only treat active NPC infrastructure as hostile. Abandoned player structures
-  // (extensions, spawns, towers, etc.) in unowned rooms are harmless leftovers
-  // and must not block remote mining. Invader cores indicate active NPC control.
-  const hostileStructures = room.find(FIND_HOSTILE_STRUCTURES, {
-    filter: (structure) => structure.structureType === STRUCTURE_INVADER_CORE,
-  });
-  if (hostileStructures.length > 0) {
+  // Level 0 Core is handled by the active remote-defense lifecycle. Higher-level
+  // Strongholds remain a passive threat because a single remoteDefender is not a
+  // sufficient or safe clearance force. Abandoned player structures stay ignored.
+  if (invaderCores.some(core => core.level > 0)) {
     return "hostile_structures";
   }
 
@@ -190,16 +202,37 @@ export function getRemoteThreatReason(room: Room): RemoteSuspendReason | null {
   return null;
 }
 
+function getInvaderCores(room: Room): StructureInvaderCore[] {
+  return room.find(FIND_HOSTILE_STRUCTURES, {
+    filter: (structure) => structure.structureType === STRUCTURE_INVADER_CORE,
+  }) as StructureInvaderCore[];
+}
+
+function getSupportedInvaderCore(room: Room): StructureInvaderCore | null {
+  return getInvaderCores(room).find(core => core.level === 0) ?? null;
+}
+
+function hasActiveInvaderCoreInvulnerability(core: StructureInvaderCore): boolean {
+  return (core.effects ?? []).some(
+    effect => effect.effect === EFFECT_INVULNERABILITY && effect.ticksRemaining > 0,
+  );
+}
+
+function hasInvaderCoreClearanceCapacity(task: RemoteMiningTask): boolean {
+  const sourceRoom = Game.rooms[task.sourceRoom];
+  return !!sourceRoom && sourceRoom.energyCapacityAvailable >= REMOTE_INVADER_CORE_MIN_SOURCE_CAPACITY;
+}
+
 function hasNpcInvaderCreep(room: Room): boolean {
   const hostiles = room.find(FIND_HOSTILE_CREEPS);
-  return hostiles.some(c => (c.owner as { username: string } | undefined)?.username === "Invader");
+  return hostiles.some(c => (c.owner as { username: string } | undefined)?.username === INVADER_USERNAME);
 }
 
 function hasPlayerHostileCreeps(room: Room): boolean {
   const hostiles = room.find(FIND_HOSTILE_CREEPS);
   return hostiles.some(c => {
     const username = (c.owner as { username: string } | undefined)?.username;
-    return username && username !== "Invader";
+    return username && username !== INVADER_USERNAME;
   });
 }
 
@@ -382,11 +415,13 @@ export function getActiveDefenseReason(room: Room, task: RemoteMiningTask): Remo
     snapshotContainerHits(task, room);
   }
 
-  return null;
+  return getSupportedInvaderCore(room) ? "npc_invader_core" : null;
 }
 
 function isRemoteRoomSafe(room: Room): boolean {
-  return getRemoteThreatReason(room) === null;
+  // Candidate discovery must not turn an unproven room into a combat mission.
+  // Core clearance is only available to an already-established remote task.
+  return getRemoteThreatReason(room) === null && getInvaderCores(room).length === 0;
 }
 
 export function getMyUsername(): string | null {
@@ -432,8 +467,7 @@ function removeScoutConfig(sourceRoom: string, targetRoom: string): void {
   }
 }
 
-function removeScoutIfVisible(sourceRoom: string, targetRoom: string): void {
-  if (!Game.rooms[targetRoom]) return;
+function removeScoutConfigAndSpawnQueues(sourceRoom: string, targetRoom: string): void {
   removeScoutConfig(sourceRoom, targetRoom);
   removeScoutFromSpawnQueues(sourceRoom, targetRoom);
 }
@@ -446,10 +480,7 @@ function removeScoutFromSpawnQueues(sourceRoom: string, targetRoom: string): voi
     if (!queue || queue.length === 0) {
       continue;
     }
-    const idx = queue.indexOf(configName);
-    if (idx >= 0) {
-      queue.splice(idx, 1);
-    }
+    spawn.memory.spawnList = queue.filter(name => name !== configName);
   }
 }
 
@@ -1214,11 +1245,65 @@ function removeRemoteDefenderConfig(sourceRoom: string, targetRoom: string): voi
   for (const spawn of tickContext.getSpawnsByRoom(sourceRoom)) {
     const queue = spawn.memory.spawnList;
     if (!queue || queue.length === 0) continue;
-    const idx = queue.indexOf(configName);
-    if (idx >= 0) {
-      queue.splice(idx, 1);
-    }
+    spawn.memory.spawnList = queue.filter(name => name !== configName);
   }
+}
+
+function clearRemoteDefenseState(task: RemoteMiningTask): void {
+  delete task.defendingSince;
+  delete task.lastDefenseThreatAt;
+  delete task.defenseReason;
+  delete task.lastDefenseSafeAt;
+  delete task.damageSnapshots;
+}
+
+function enterRemoteDefense(task: RemoteMiningTask, reason: RemoteDefenseReason): void {
+  task.status = "defending";
+  task.defendingSince = task.defendingSince ?? Game.time;
+  task.lastDefenseThreatAt = Game.time;
+  task.defenseReason = reason;
+  delete task.lastDefenseSafeAt;
+  delete task.suspendReason;
+  delete task.suspendedAt;
+  delete task.lastThreatAt;
+  delete task.safeSince;
+  task.updatedAt = Game.time;
+}
+
+function suspendRemoteTask(task: RemoteMiningTask, reason: RemoteSuspendReason | string): void {
+  task.status = "suspended";
+  task.suspendReason = reason;
+  task.suspendedAt = Game.time;
+  task.lastThreatAt = Game.time;
+  delete task.safeSince;
+  clearRemoteDefenseState(task);
+  task.updatedAt = Game.time;
+}
+
+function maintainInvaderCoreClearance(
+  task: RemoteMiningTask,
+  core: StructureInvaderCore,
+): void {
+  enterRemoteDefense(task, "npc_invader_core");
+  cleanupRemoteConfigs(task);
+  removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+
+  // A scout remains alive for the entire clearance so a source room without an
+  // Observer never mistakes lost visibility for completion.
+  upsertScoutConfig(task.sourceRoom, task.targetRoom);
+
+  if (hasActiveInvaderCoreInvulnerability(core)) {
+    removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+  } else {
+    upsertRemoteDefenderConfig(task);
+  }
+}
+
+function suspendInvaderCoreForInsufficientCapacity(task: RemoteMiningTask): void {
+  suspendRemoteTask(task, "invader_core_insufficient_capacity");
+  cleanupAllRemoteConfigs(task);
+  removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+  removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
 }
 
 export function processRemoteConfigLifecycle(
@@ -1232,7 +1317,7 @@ export function processRemoteConfigLifecycle(
 
     if (task.status === "abandoned") {
       cleanupAllRemoteConfigs(task);
-      removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+      removeScoutConfigAndSpawnQueues(task.sourceRoom, task.targetRoom);
       continue;
     }
 
@@ -1256,7 +1341,7 @@ export function processRemoteConfigLifecycle(
       cleanupAllRemoteConfigs(task);
       removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
       removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
-      removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+      removeScoutConfigAndSpawnQueues(task.sourceRoom, task.targetRoom);
       continue;
     }
 
@@ -1272,6 +1357,21 @@ export function processRemoteConfigLifecycle(
       let resumed = false;
       const visibleTarget = Game.rooms[task.targetRoom];
       if (visibleTarget) {
+        const supportedCore = getSupportedInvaderCore(visibleTarget);
+        if (
+          supportedCore &&
+          isSourceRoomValidForRemote(task.sourceRoom) &&
+          !isDefenseMode(task.sourceRoom)
+        ) {
+          if (!hasInvaderCoreClearanceCapacity(task)) {
+            suspendInvaderCoreForInsufficientCapacity(task);
+            upsertScoutConfig(task.sourceRoom, task.targetRoom);
+          } else {
+            maintainInvaderCoreClearance(task, supportedCore);
+          }
+          continue;
+        }
+
         const threatReason = getRemoteThreatReason(visibleTarget);
         if (threatReason !== null) {
           task.lastThreatAt = Game.time;
@@ -1302,7 +1402,7 @@ export function processRemoteConfigLifecycle(
             removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
           }
         } else {
-          removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+          removeScoutConfigAndSpawnQueues(task.sourceRoom, task.targetRoom);
         }
         continue;
       }
@@ -1326,7 +1426,7 @@ export function processRemoteConfigLifecycle(
         cleanupRemoteConfigs(task);
         removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
         removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
-        removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+        removeScoutConfigAndSpawnQueues(task.sourceRoom, task.targetRoom);
         continue;
       }
 
@@ -1345,7 +1445,60 @@ export function processRemoteConfigLifecycle(
         cleanupRemoteConfigs(task);
         removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
         removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
-        removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+        removeScoutConfigAndSpawnQueues(task.sourceRoom, task.targetRoom);
+        continue;
+      }
+
+      if (task.defenseReason === "npc_invader_core") {
+        if (!visibleTarget) {
+          cleanupRemoteConfigs(task);
+          removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+          removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+          upsertScoutConfig(task.sourceRoom, task.targetRoom);
+          continue;
+        }
+
+        const passiveThreat = getRemoteThreatReason(visibleTarget);
+        if (passiveThreat !== null) {
+          suspendRemoteTask(task, passiveThreat);
+          cleanupAllRemoteConfigs(task);
+          removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+          removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+          removeScoutConfig(task.sourceRoom, task.targetRoom);
+          removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+          continue;
+        }
+
+        const supportedCore = getSupportedInvaderCore(visibleTarget);
+        if (supportedCore) {
+          if (!hasInvaderCoreClearanceCapacity(task)) {
+            suspendInvaderCoreForInsufficientCapacity(task);
+            upsertScoutConfig(task.sourceRoom, task.targetRoom);
+          } else {
+            maintainInvaderCoreClearance(task, supportedCore);
+          }
+          continue;
+        }
+
+        // Core absence is completion only because the target room is visible.
+        // Re-check ordinary defense causes before resuming remote production.
+        const nextDefenseReason = getActiveDefenseReason(visibleTarget, task);
+        if (nextDefenseReason !== null) {
+          enterRemoteDefense(task, nextDefenseReason);
+          cleanupRemoteConfigs(task);
+          removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
+          upsertRemoteDefenderConfig(task);
+          removeScoutConfig(task.sourceRoom, task.targetRoom);
+          removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
+          continue;
+        }
+
+        task.status = "active";
+        clearRemoteDefenseState(task);
+        task.updatedAt = Game.time;
+        removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
+        removeScoutConfig(task.sourceRoom, task.targetRoom);
+        removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
         continue;
       }
 
@@ -1393,9 +1546,20 @@ export function processRemoteConfigLifecycle(
             continue;
           }
 
-          task.lastDefenseThreatAt = Game.time;
-          task.updatedAt = Game.time;
-          delete task.lastDefenseSafeAt;
+          if (defenseReason === "npc_invader_core") {
+            if (!hasInvaderCoreClearanceCapacity(task)) {
+              suspendInvaderCoreForInsufficientCapacity(task);
+              upsertScoutConfig(task.sourceRoom, task.targetRoom);
+            } else {
+              const supportedCore = getSupportedInvaderCore(visibleTarget);
+              if (supportedCore) {
+                maintainInvaderCoreClearance(task, supportedCore);
+              }
+            }
+            continue;
+          }
+
+          enterRemoteDefense(task, defenseReason);
           cleanupRemoteConfigs(task);
           removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
           upsertRemoteDefenderConfig(task);
@@ -1436,13 +1600,13 @@ export function processRemoteConfigLifecycle(
 
     if (!isSourceRoomValidForRemote(task.sourceRoom)) {
       cleanupAllRemoteConfigs(task);
-      removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+      removeScoutConfigAndSpawnQueues(task.sourceRoom, task.targetRoom);
       continue;
     }
 
     if (isDefenseMode(task.sourceRoom)) {
       cleanupAllRemoteConfigs(task);
-      removeScoutIfVisible(task.sourceRoom, task.targetRoom);
+      removeScoutConfigAndSpawnQueues(task.sourceRoom, task.targetRoom);
       continue;
     }
 
@@ -1465,12 +1629,20 @@ export function processRemoteConfigLifecycle(
       // No passive threat; check for active defense
       const defenseReason = getActiveDefenseReason(visibleTarget, task);
       if (defenseReason !== null) {
-        task.status = "defending";
-        task.defendingSince = task.defendingSince ?? Game.time;
-        task.lastDefenseThreatAt = Game.time;
-        task.defenseReason = defenseReason;
-        delete task.lastDefenseSafeAt;
-        task.updatedAt = Game.time;
+        if (defenseReason === "npc_invader_core") {
+          if (!hasInvaderCoreClearanceCapacity(task)) {
+            suspendInvaderCoreForInsufficientCapacity(task);
+            upsertScoutConfig(task.sourceRoom, task.targetRoom);
+          } else {
+            const supportedCore = getSupportedInvaderCore(visibleTarget);
+            if (supportedCore) {
+              maintainInvaderCoreClearance(task, supportedCore);
+            }
+          }
+          continue;
+        }
+
+        enterRemoteDefense(task, defenseReason);
         cleanupRemoteConfigs(task);
         removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
         upsertRemoteDefenderConfig(task);
@@ -1485,6 +1657,10 @@ export function processRemoteConfigLifecycle(
       removeScoutConfig(task.sourceRoom, task.targetRoom);
       removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
     }
+
+    // Defense configs with live creeps are first orphaned so the role can
+    // retire safely; later active ticks remove the config after the creep dies.
+    removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
 
     upsertHarvesterConfigs(task);
     upsertCarrierConfigs(task);

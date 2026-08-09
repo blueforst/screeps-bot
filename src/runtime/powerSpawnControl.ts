@@ -15,6 +15,7 @@ export const POWER_SPAWN_CARRIER_TASK_PRODUCER = "powerSpawnControl";
 export const POWER_SPAWN_SUPPLY_PRIORITY = 150;
 export const POWER_SPAWN_LOW_WATER_RATIO = 0.2;
 export const POWER_SPAWN_HIGH_WATER_RATIO = 0.9;
+export const POWER_SPAWN_PROCESS_ROOM_NAME = "E4N58";
 
 type SupplySource = StructureStorage | StructureTerminal;
 
@@ -161,6 +162,9 @@ function runRoomPowerSpawnControl(room: Room): void {
 export function runPowerSpawnControl(): void {
   const validRoomNames = new Set<string>();
   for (const capability of listOperateExtensionRoomCapabilities()) {
+    if (capability.roomName !== POWER_SPAWN_PROCESS_ROOM_NAME) {
+      continue;
+    }
     validRoomNames.add(capability.roomName);
     const room = Game.rooms[capability.roomName];
     if (room?.controller?.my) {

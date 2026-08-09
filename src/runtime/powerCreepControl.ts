@@ -57,12 +57,6 @@ export function resolvePowerCreepHomeRoomName(powerCreep: PowerCreep): string | 
     return roomMatchingName.name;
   }
 
-  if (isPowerCreepHostRoom(powerCreep.room)) {
-    powerCreep.memory.homeRoom = powerCreep.room.name;
-    capabilityCacheTick = -1;
-    return powerCreep.room.name;
-  }
-
   return null;
 }
 

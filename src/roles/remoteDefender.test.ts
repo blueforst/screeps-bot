@@ -111,6 +111,27 @@ function makeFriendly(overrides: {
   } as unknown as Creep;
 }
 
+function makeHostileStructure(overrides: {
+  id?: string;
+  type?: StructureConstant;
+  x?: number;
+  y?: number;
+  username?: string;
+  level?: number;
+} = {}): Structure {
+  const structureType = overrides.type ?? STRUCTURE_INVADER_CORE;
+  return {
+    id: (overrides.id ?? `structure-${structureType}`) as Id<Structure>,
+    structureType,
+    pos: new MockPos(overrides.x ?? 27, overrides.y ?? 25, TARGET_ROOM) as unknown as RoomPosition,
+    room: { name: TARGET_ROOM } as Room,
+    owner: { username: overrides.username ?? (structureType === STRUCTURE_INVADER_CORE ? "Invader" : "Player1") },
+    hits: 100_000,
+    hitsMax: 100_000,
+    level: overrides.level ?? 0,
+  } as unknown as Structure;
+}
+
 function setupTask(defenseReason?: RemoteDefenseReason): RemoteMiningTask {
   return {
     sourceRoom: SOURCE_ROOM,
@@ -177,6 +198,114 @@ describe("remoteDefenderRole", () => {
 
       expect(creep.rangedAttack).toHaveBeenCalledWith(hostile);
       expect(creep.rangedMassAttack).not.toHaveBeenCalled();
+    });
+
+    it("uses single-target ranged attack on the Invader Core and ignores player structures", () => {
+      setupMemory(setupTask("npc_invader_core"));
+      const core = makeHostileStructure({ id: "core-0", x: 27, y: 25 }) as StructureInvaderCore;
+      const playerTower = makeHostileStructure({
+        id: "player-tower", type: STRUCTURE_TOWER, x: 26, y: 25, username: "Player1",
+      });
+      const structures = [playerTower, core];
+      const creep = makeCreep();
+      (creep.room as any).find = jest.fn((type: number, opts?: { filter?: (target: any) => boolean }) => {
+        if (type === FIND_HOSTILE_CREEPS) return [];
+        if (type === FIND_HOSTILE_STRUCTURES) {
+          return opts?.filter ? structures.filter(opts.filter) : structures;
+        }
+        return [];
+      });
+
+      remoteDefenderRole(TARGET_ROOM).target(creep);
+
+      expect(creep.rangedAttack).toHaveBeenCalledWith(core);
+      expect(creep.rangedAttack).not.toHaveBeenCalledWith(playerTower);
+      expect(creep.rangedMassAttack).not.toHaveBeenCalled();
+    });
+
+    it("moves to range 3 when the Core is outside attack range", () => {
+      setupMemory(setupTask("npc_invader_core"));
+      const core = makeHostileStructure({ id: "core-far", x: 32, y: 25 }) as StructureInvaderCore;
+      const creep = makeCreep();
+      (creep.room as any).find = jest.fn((type: number, opts?: { filter?: (target: any) => boolean }) => {
+        if (type === FIND_HOSTILE_CREEPS) return [];
+        if (type === FIND_HOSTILE_STRUCTURES) return opts?.filter ? [core].filter(opts.filter) : [core];
+        return [];
+      });
+
+      remoteDefenderRole(TARGET_ROOM).target(creep);
+
+      expect(moveToTarget).toHaveBeenCalledWith(creep, core, 3, { reusePath: 5, avoidExitTiles: true });
+      expect(creep.rangedAttack).not.toHaveBeenCalled();
+    });
+
+    it("keeps eligible Invader creeps ahead of the Core", () => {
+      setupMemory(setupTask("npc_invader_core"));
+      const invader = makeHostile({ id: "invader-escort", x: 27, y: 25, username: "Invader" });
+      const core = makeHostileStructure({ id: "core-behind", x: 26, y: 25 }) as StructureInvaderCore;
+      const creep = makeCreep();
+      (creep.room as any).find = jest.fn((type: number, opts?: { filter?: (target: any) => boolean }) => {
+        if (type === FIND_HOSTILE_CREEPS) return [invader];
+        if (type === FIND_HOSTILE_STRUCTURES) return opts?.filter ? [core].filter(opts.filter) : [core];
+        return [];
+      });
+
+      remoteDefenderRole(TARGET_ROOM).target(creep);
+
+      expect(creep.rangedAttack).toHaveBeenCalledWith(invader);
+      expect(creep.rangedAttack).not.toHaveBeenCalledWith(core);
+    });
+
+    it("uses only single-target attacks with 3+ Invaders near player structures during Core clearance", () => {
+      setupMemory(setupTask("npc_invader_core"));
+      const invaders = [
+        makeHostile({ id: "core-escort-0", x: 26, y: 25, username: "Invader" }),
+        makeHostile({ id: "core-escort-1", x: 24, y: 25, username: "Invader" }),
+        makeHostile({ id: "core-escort-2", x: 25, y: 26, username: "Invader" }),
+      ];
+      const core = makeHostileStructure({ id: "core-with-escort", x: 27, y: 25 }) as StructureInvaderCore;
+      const playerTower = makeHostileStructure({
+        id: "player-tower-near-escort", type: STRUCTURE_TOWER, x: 25, y: 24, username: "Player1",
+      });
+      const structures = [core, playerTower];
+      const creep = makeCreep();
+      (creep.room as any).find = jest.fn((type: number, opts?: { filter?: (target: any) => boolean }) => {
+        if (type === FIND_HOSTILE_CREEPS) return invaders;
+        if (type === FIND_HOSTILE_STRUCTURES) {
+          return opts?.filter ? structures.filter(opts.filter) : structures;
+        }
+        return [];
+      });
+
+      remoteDefenderRole(TARGET_ROOM).target(creep);
+
+      expect(creep.rangedAttack).toHaveBeenCalledWith(invaders[0]);
+      expect(creep.rangedMassAttack).not.toHaveBeenCalled();
+      expect(creep.rangedAttack).not.toHaveBeenCalledWith(playerTower);
+    });
+
+    it("never attacks a player structure after the Core task has completed", () => {
+      setupMemory(setupTask(undefined));
+      const playerSpawn = makeHostileStructure({
+        id: "player-spawn", type: STRUCTURE_SPAWN, x: 26, y: 25, username: "Player1",
+      });
+      const creep = makeCreep();
+      (creep.room as any).find = jest.fn((type: number, opts?: { filter?: (target: any) => boolean }) => {
+        if (type === FIND_HOSTILE_CREEPS) return [];
+        if (type === FIND_HOSTILE_STRUCTURES) return opts?.filter ? [playerSpawn].filter(opts.filter) : [playerSpawn];
+        return [];
+      });
+
+      remoteDefenderRole(TARGET_ROOM).target(creep);
+
+      expect(creep.rangedAttack).not.toHaveBeenCalled();
+      expect(creep.rangedMassAttack).not.toHaveBeenCalled();
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        creep,
+        SOURCE_ROOM,
+        undefined,
+        expect.objectContaining({ reusePath: 5 }),
+      );
     });
   });
 

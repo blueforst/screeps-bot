@@ -422,6 +422,9 @@ function shouldQueueConfig(
   }
 
   if (config.role === "upgrader" || config.role === "hubUpgrader") {
+    if (!isRcl8MaintenanceUpgraderConfig(configName, config)) {
+      return false;
+    }
     return shouldPreSpawnUpgrader(estimateSpawn, configName, context);
   }
 
@@ -509,7 +512,7 @@ function suppressRcl8MaintenanceReplacement(
 ): boolean {
   if (
     !isRcl8MaintenanceUpgraderConfig(configName, config) ||
-    getConfigCreeps(configName, context).length === 0
+    !getConfigCreeps(configName, context).some((creep) => creep.spawning !== true)
   ) {
     return false;
   }

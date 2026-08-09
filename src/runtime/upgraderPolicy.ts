@@ -12,9 +12,7 @@ export function shouldMaintainDedicatedUpgrader(
   controller: StructureController,
   hasExistingTask: boolean,
 ): boolean {
-  if (!controller.my) return false;
-  if (controller.level < 8) return true;
-  if (controller.level !== 8) return false;
+  if (!controller.my || controller.level !== 8) return false;
 
   const ticksToDowngrade = getControllerDowngradeTicks(controller);
   return hasExistingTask
@@ -23,9 +21,7 @@ export function shouldMaintainDedicatedUpgrader(
 }
 
 export function isDedicatedUpgraderControllerRunnable(controller: StructureController): boolean {
-  if (!controller.my) return false;
-  if (controller.level < 8) return true;
-  if (controller.level !== 8) return false;
+  if (!controller.my || controller.level !== 8) return false;
   return getControllerDowngradeTicks(controller) < RCL8_UPGRADER_RECOVERY_STOP_TICKS;
 }
 
@@ -37,7 +33,7 @@ export function isRcl8MaintenanceUpgraderConfig(
     !config?.roomName ||
     config.role !== "upgrader" ||
     configName !== `${config.roomName}:upgrader:0` ||
-    !Memory.data?.manualUpgraders?.[config.roomName] ||
+    Memory.data?.manualUpgraders?.[config.roomName]?.maintenance !== true ||
     config.body?.length !== RCL8_UPGRADER_MAINTENANCE_BODY.length ||
     !config.body.every((part, index) => part === RCL8_UPGRADER_MAINTENANCE_BODY[index])
   ) {

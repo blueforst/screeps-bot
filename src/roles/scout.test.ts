@@ -51,6 +51,34 @@ describe("scoutRole", () => {
 
   describe("suspended remote mining keep-alive", () => {
 
+    it("stays alive to preserve vision during Invader Core clearance", () => {
+      const creep = {
+        room: { name: "W2N57" },
+        memory: {},
+        pos: { x: 25, y: 25, roomName: "W2N57" },
+        suicide: jest.fn(),
+      } as unknown as Creep;
+
+      Memory.data = {
+        remoteMining: {
+          "W2N57": {
+            sourceRoom: "W1N57",
+            targetRoom: "W2N57",
+            status: "defending",
+            sourceIds: ["source-0", "source-1"],
+            assignedAt: 50,
+            updatedAt: 100,
+            defenseReason: "npc_invader_core",
+          } satisfies import("@/runtime/remoteMining").RemoteMiningTask,
+        },
+      };
+
+      scoutRole("W2N57").source?.(creep);
+
+      expect(creep.suicide).not.toHaveBeenCalled();
+      expect(moveToTargetRoom).not.toHaveBeenCalled();
+    });
+
     it("suicides when target room remote mining is active", () => {
       const creep = {
         room: { name: "W2N57" },
