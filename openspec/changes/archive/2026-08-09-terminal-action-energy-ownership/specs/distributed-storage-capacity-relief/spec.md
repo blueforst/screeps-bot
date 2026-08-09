@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: 生存与显式 Energy 转运使用受保护的总库存
+### Requirement: 生存 Energy 使用受保护的总库存
 
 系统 SHALL 从 Storage 与 Terminal 的 Energy 总量计算已存在跨房动作的 donor 可用量，同时保留 ordinary Terminal Energy reserve、有效生产预留、其他出站承诺、其他交易费用和市场 exposure。Donor `energyFloor`、`energyTarget` 与 `energyExportStart` 只可用于房间状态、本地高耗能任务、接收恢复需求或无任务自动平衡策略，不得再次否决 manual、Hub、Synthesis、War 或 capacity-relief 的已有任务。生存 Energy 支援 SHALL 先于自动容量缓解运行。
 
