@@ -28,6 +28,8 @@ import { runTowerControl } from "@/runtime/towerControl";
 import { runWarControl } from "@/runtime/warControl";
 import { runPowerBankObserver } from "@/runtime/powerBankObserver";
 import { runPowerBankHarvest } from "@/runtime/powerBankHarvest";
+import { runPowerCreepControl } from "@/runtime/powerCreepControl";
+import { runPowerSpawnControl } from "@/runtime/powerSpawnControl";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 import { createTickCpuProfiler, setActiveTickCpuProfiler } from "@/runtime/cpuPhaseProfiler";
 import { getMemoryService } from "@/runtime/runtimeServices";
@@ -82,6 +84,8 @@ function gameLoop(): void {
   cpuProfiler.measure("warControl", runWarControl);
   cpuProfiler.measure("powerBankObserver", runPowerBankObserver);
   cpuProfiler.measure("powerBankHarvest", runPowerBankHarvest);
+  cpuProfiler.measure("powerCreepControl", runPowerCreepControl);
+  cpuProfiler.measure("powerSpawnControl", runPowerSpawnControl);
   cpuProfiler.measure("roomPlannerConstruction", runRoomPlannerConstruction);
   cpuProfiler.measure("linkControl", runLinkControl);
   cpuProfiler.measure("coreDefense", runCoreDefense);

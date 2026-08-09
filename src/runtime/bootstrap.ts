@@ -1,4 +1,5 @@
 import { upsertConfig } from "@/runtime/creepApi";
+import { getLinkMinerBody } from "@/config/spawnProfiles";
 import { isColonizationBootstrapRoom } from "@/runtime/colonization";
 import { getEligibleMineralIds, getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 import { isRoomInReserveMode } from "@/runtime/roomReserve";
@@ -7,6 +8,7 @@ import { isRescueRoom } from "@/runtime/rescue";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { TickContextService } from "@/runtime/tickContext";
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
+import { retireMismatchedMinersAfterHandoff } from "@/runtime/minerBodyPolicy";
 type SourceWorkerRole = "harvester" | "miner";
 
 function hasLiveCreepForConfig(configName: string, tickContext: TickContextService): boolean {
@@ -35,7 +37,33 @@ function cleanupSourceConfigs(roomName: string, validConfigNames: Set<string>, t
 }
 
 function cleanupWorkerConfigs(roomName: string, validConfigNames: Set<string>, tickContext: TickContextService): void {
-  cleanupConfigsByPrefix(roomName, "worker", validConfigNames, tickContext);
+  const creepConfigs = getCreepConfigService();
+  const configs = creepConfigs.list(`${roomName}:worker:`);
+  for (const configName of Object.keys(configs)) {
+    if (validConfigNames.has(configName)) {
+      continue;
+    }
+
+    const config = creepConfigs.get(configName);
+    if (hasLiveCreepForConfig(configName, tickContext)) {
+      if (config) {
+        delete config.roomName;
+      }
+    } else {
+      creepConfigs.remove(configName);
+    }
+  }
+
+  for (const spawn of tickContext.getSpawnsByRoom(roomName)) {
+    const queue = spawn.memory.spawnList;
+    if (!queue?.some((configName) => configName.startsWith(`${roomName}:worker:`))) {
+      continue;
+    }
+
+    spawn.memory.spawnList = queue.filter((configName) =>
+      !configName.startsWith(`${roomName}:worker:`) || validConfigNames.has(configName),
+    );
+  }
 }
 
 function cleanupCarrierConfigs(roomName: string, validConfigNames: Set<string>): void {
@@ -125,6 +153,13 @@ export function bootstrapRooms(): void {
         expectedConfigNames.delete(configName);
       } else {
         upsertConfig(configName, role, [source.id], room.name);
+        if (role === "miner") {
+          retireMismatchedMinersAfterHandoff(
+            tickContext.getCreepsByConfigName(configName),
+            source,
+            getLinkMinerBody(room),
+          );
+        }
         orphanDeprecatedSourceConfig(deprecatedConfigName);
         retireDeprecatedSourceWorkers(configName, deprecatedConfigName, tickContext);
       }

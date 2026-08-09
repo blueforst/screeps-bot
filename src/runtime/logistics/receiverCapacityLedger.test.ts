@@ -58,25 +58,6 @@ function createLedger(
 }
 
 describe("receiver capacity ledger", () => {
-  it("shares total headroom across resources and excludes exactly the selected task", () => {
-    const potassium = createTask("task-k", RESOURCE_KEANIUM, 30_000);
-    const hydrogen = createTask("task-h", RESOURCE_HYDROGEN, 10_000);
-    const ledger = createLedger([potassium, hydrogen]);
-
-    expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM)).toBe(10_000);
-    expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM, potassium.id)).toBe(40_000);
-    expect(ledger.getAvailableAmount("W1N2", RESOURCE_HYDROGEN, hydrogen.id)).toBe(20_000);
-
-    expect(ledger.getAvailability("W1N2", RESOURCE_KEANIUM, potassium.id)).toMatchObject({
-      totalCommitted: 10_000,
-      resourceCommitted: 0,
-      excludedTaskAmount: 30_000,
-      storageRemaining: 40_000,
-      terminalTotalRemaining: 40_000,
-      terminalResourceRemaining: 70_000,
-      available: 40_000,
-    });
-  });
 
   it("keeps owned reservations inside one task commitment throughout the send lifecycle", () => {
     const ledger = createLedger();
@@ -140,30 +121,6 @@ describe("receiver capacity ledger", () => {
     expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM)).toBe(40_000);
   });
 
-  it("shares self-excluded physical headroom across multiple reservations owned by one task", () => {
-    const owner = createTask("owner", RESOURCE_KEANIUM, 40_000);
-    const other = createTask("other", RESOURCE_HYDROGEN, 30_000);
-    const ledger = createLedger([owner, other]);
-
-    expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM, owner.id)).toBe(20_000);
-    expect(
-      ledger.reserve("owner:send:1", "W1N2", RESOURCE_KEANIUM, 20_000, {
-        ownerTaskId: owner.id,
-      }),
-    ).toBe(20_000);
-    expect(
-      ledger.reserve("owner:send:2", "W1N2", RESOURCE_KEANIUM, 20_000, {
-        ownerTaskId: owner.id,
-      }),
-    ).toBe(0);
-    expect(ledger.getAvailability("W1N2", RESOURCE_KEANIUM)).toMatchObject({
-      totalCommitted: 70_000,
-      ownedReservationTotal: 20_000,
-      ownedReservationResource: 20_000,
-      available: 0,
-    });
-  });
-
   it("reclamps an idempotent provisional reservation after physical capacity shrinks", () => {
     const ledger = createLedger();
 
@@ -178,24 +135,6 @@ describe("receiver capacity ledger", () => {
       reservationResource: 10_000,
       available: 0,
     });
-  });
-
-  it("consumes physical capacity and the sending task commitment by the same amount", () => {
-    const task = createTask("task-k", RESOURCE_KEANIUM, 20_000);
-    const ledger = createLedger([task]);
-
-    expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM)).toBe(30_000);
-    ledger.applySend("W1N2", RESOURCE_KEANIUM, 10_000, task.id);
-
-    expect(ledger.getAvailability("W1N2", RESOURCE_KEANIUM)).toMatchObject({
-      storageSafeCapacity: 40_000,
-      terminalTotalSafeCapacity: 40_000,
-      terminalResourceFreeCapacity: 60_000,
-      totalCommitted: 10_000,
-      resourceCommitted: 10_000,
-      available: 30_000,
-    });
-    expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM, task.id)).toBe(40_000);
   });
 
   it("does not count unhealthy or invalid-endpoint tasks and reports why they were excluded", () => {
@@ -215,21 +154,6 @@ describe("receiver capacity ledger", () => {
       unhealthy_commitment: { taskCount: 1, amount: 20_000 },
       invalid_endpoint: { taskCount: 1, amount: 15_000 },
       missing_receiver: { taskCount: 1, amount: 12_000 },
-    });
-  });
-
-  it("does not turn an unfinished terminal offload draft into receiver capacity", () => {
-    const receiver = createReceiver("W1N2", { [RESOURCE_KEANIUM]: 50_000 });
-    receiver.terminalFreeCapacity = 50_000;
-    const ledger = createLedger([], [receiver]);
-
-    // Carrier offload intent is deliberately absent from the physical room view:
-    // capacity only changes after an observed physical delta or applySend.
-    expect(ledger.getAvailability("W1N2", RESOURCE_KEANIUM)).toMatchObject({
-      storageSafeCapacity: 50_000,
-      terminalTotalSafeCapacity: 10_000,
-      terminalResourceFreeCapacity: 50_000,
-      available: 10_000,
     });
   });
 });

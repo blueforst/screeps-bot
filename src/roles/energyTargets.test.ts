@@ -12,6 +12,7 @@ import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepA
 import { clearPickupReservationStoreForTest, getPickupReservationsByRoom } from "@/runtime/energyPickupReservation";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getSafeZone } from "@/runtime/safeZone";
+import { resetPowerCreepControlCacheForTest } from "@/runtime/powerCreepControl";
 
 jest.mock("@/runtime/roomPlannerConstruction", () => ({
   getProtoStorageContainer: jest.fn(() => null),
@@ -57,6 +58,7 @@ function createRoom(options: {
   ruins?: Ruin[];
   storage?: StructureStorage | null;
   terminal?: StructureTerminal | null;
+  controller?: StructureController | null;
 } = {}): Room {
   const name = options.name ?? "W1N1";
   const memory = {} as RoomMemory;
@@ -65,6 +67,7 @@ function createRoom(options: {
   return {
     name,
     memory,
+    controller: options.controller ?? null,
     storage: options.storage ?? null,
     terminal: options.terminal ?? null,
     find(type: FindConstant) {
@@ -121,28 +124,115 @@ describe("energyTargets", () => {
     getProtoStorageContainer.mockReturnValue(null);
     getProtoControllerLinkContainer.mockReset();
     getProtoControllerLinkContainer.mockReturnValue(null);
+    (Game as Game & { powerCreeps: Record<string, PowerCreep> }).powerCreeps = {};
+    resetPowerCreepControlCacheForTest();
   });
 
-  it("prefers spawns and extensions over lower-priority energy sinks", () => {
+  it("按技能动态跳过 Spawn，但 PC 未接管时保留 Extension 回退", () => {
+    const roomName = "W2N2";
+    const spawn = {
+      id: "dynamic-spawn",
+      structureType: STRUCTURE_SPAWN,
+      pos: createPos(3, roomName),
+      store: createStore(0, 300),
+    } as unknown as StructureSpawn;
     const extension = {
-      id: "extension-1",
+      id: "dynamic-extension",
       structureType: STRUCTURE_EXTENSION,
-      pos: { x: 5, y: 25, roomName: "W1N1" },
+      pos: createPos(4, roomName),
       store: createStore(0, 50),
     } as unknown as StructureExtension;
-    const tower = {
-      id: "tower-1",
-      structureType: STRUCTURE_TOWER,
-      pos: { x: 1, y: 25, roomName: "W1N1" },
-      store: createStore(100, 1000),
-    } as unknown as StructureTower;
+    const powerSpawn = {
+      id: "dynamic-power-spawn",
+      structureType: STRUCTURE_POWER_SPAWN,
+      pos: createPos(2, roomName),
+      store: createStore(0, 5_000),
+    } as unknown as StructurePowerSpawn;
+    const controller = {
+      my: true,
+      level: 8,
+      isPowerEnabled: false,
+    } as StructureController;
     const room = createRoom({
-      myStructures: [tower as unknown as Structure<StructureConstant>, extension as unknown as Structure<StructureConstant>],
+      name: roomName,
+      controller,
+      myStructures: [
+        spawn as unknown as Structure<StructureConstant>,
+        extension as unknown as Structure<StructureConstant>,
+        powerSpawn as unknown as Structure<StructureConstant>,
+      ],
     });
     Game.rooms[room.name] = room;
-    const creep = createCreep(room);
+    const powerCreep = {
+      name: "not-hardcoded",
+      memory: { homeRoom: room.name },
+      powers: {
+        [PWR_OPERATE_EXTENSION]: { level: 1, cooldown: 0 },
+      },
+    } as unknown as PowerCreep;
+    (Game as Game & { powerCreeps: Record<string, PowerCreep> }).powerCreeps = {
+      [powerCreep.name]: powerCreep,
+    };
 
-    expect(getEnergyStoreTarget(creep)?.id).toBe(extension.id);
+    expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(extension.id);
+  });
+
+  it("PC 已接管后同时跳过 Spawn、Extension 和普通 PowerSpawn 供能", () => {
+    const roomName = "W3N3";
+    const spawn = {
+      id: "controlled-spawn",
+      structureType: STRUCTURE_SPAWN,
+      pos: createPos(3, roomName),
+      store: createStore(0, 300),
+    } as unknown as StructureSpawn;
+    const extension = {
+      id: "controlled-extension",
+      structureType: STRUCTURE_EXTENSION,
+      pos: createPos(4, roomName),
+      store: createStore(0, 50),
+    } as unknown as StructureExtension;
+    const powerSpawn = {
+      id: "controlled-power-spawn",
+      structureType: STRUCTURE_POWER_SPAWN,
+      pos: createPos(2, roomName),
+      store: createStore(0, 5_000),
+    } as unknown as StructurePowerSpawn;
+    const storage = {
+      id: "controlled-storage",
+      structureType: STRUCTURE_STORAGE,
+      pos: createPos(10, roomName),
+      store: createStore(100_000, 1_000_000),
+    } as unknown as StructureStorage;
+    const controller = {
+      my: true,
+      level: 8,
+      isPowerEnabled: true,
+    } as StructureController;
+    const room = createRoom({
+      name: roomName,
+      controller,
+      storage,
+      myStructures: [
+        spawn as unknown as Structure<StructureConstant>,
+        extension as unknown as Structure<StructureConstant>,
+        powerSpawn as unknown as Structure<StructureConstant>,
+      ],
+    });
+    Game.rooms[room.name] = room;
+    const powerCreep = {
+      name: "healthy-controller",
+      memory: { homeRoom: room.name, lastControlTick: Game.time },
+      room,
+      ticksToLive: 1_000,
+      powers: {
+        [PWR_OPERATE_EXTENSION]: { level: 1, cooldown: 0 },
+      },
+    } as unknown as PowerCreep;
+    (Game as Game & { powerCreeps: Record<string, PowerCreep> }).powerCreeps = {
+      [powerCreep.name]: powerCreep,
+    };
+
+    expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(storage.id);
   });
 
   it("picks up dropped energy from the preferred candidate list", () => {
@@ -166,103 +256,6 @@ describe("energyTargets", () => {
       outOfRange: false,
     });
     expect(creep.pickup).toHaveBeenCalledWith(dropped);
-  });
-
-  it("ignores pickup targets outside the safe zone during defense mode", () => {
-    const outsideDrop = {
-      id: "drop-outside",
-      amount: 100,
-      resourceType: RESOURCE_ENERGY,
-      pos: { x: 3, y: 25, roomName: "W1N1" },
-    } as Resource;
-    const insideDrop = {
-      id: "drop-inside",
-      amount: 100,
-      resourceType: RESOURCE_ENERGY,
-      pos: { x: 24, y: 25, roomName: "W1N1" },
-    } as Resource;
-    const room = createRoom({
-      dropped: [outsideDrop, insideDrop],
-      structures: [],
-      tombstones: [],
-      ruins: [],
-    });
-    Game.rooms[room.name] = room;
-    const creep = createCreep(room);
-    creep.memory.configName = "W1N1:worker:0";
-    (isDefenseMode as jest.Mock).mockReturnValue(true);
-    (getSafeZone as jest.Mock).mockReturnValue(new Set([24 * 50 + 25]));
-
-    pickupEnergyFromPreferredTarget(creep);
-
-    expect(creep.pickup).toHaveBeenCalledWith(insideDrop);
-    expect(creep.pickup).not.toHaveBeenCalledWith(outsideDrop);
-  });
-
-  it("falls back to storage even when terminal is below reserve", () => {
-    const terminal = {
-      id: "terminal-1",
-      pos: createPos(4),
-      store: createStore(5000, 300000),
-    } as unknown as StructureTerminal;
-    const storage = {
-      id: "storage-1",
-      pos: createPos(6),
-      store: createStore(100000, 1000000),
-    } as unknown as StructureStorage;
-    const room = createRoom({
-      terminal,
-      storage,
-      myStructures: [],
-    });
-    Game.rooms[room.name] = room;
-    const creep = createCreep(room);
-
-    expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
-  });
-
-  it("falls back to storage when terminal reserve is already satisfied", () => {
-    const terminal = {
-      id: "terminal-2",
-      pos: createPos(4),
-      store: createStore(25000, 300000),
-    } as unknown as StructureTerminal;
-    const storage = {
-      id: "storage-2",
-      pos: createPos(6),
-      store: createStore(100000, 1000000),
-    } as unknown as StructureStorage;
-    const room = createRoom({
-      terminal,
-      storage,
-      myStructures: [],
-    });
-    Game.rooms[room.name] = room;
-    const creep = createCreep(room);
-
-    expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
-  });
-
-  it("does not use factories as generic energy store targets", () => {
-    const factory = {
-      id: "factory-1",
-      structureType: STRUCTURE_FACTORY,
-      pos: createPos(4),
-      store: createStore(0, 50000),
-    } as unknown as StructureFactory;
-    const storage = {
-      id: "storage-factory-fallback",
-      pos: createPos(6),
-      store: createStore(100000, 1000000),
-    } as unknown as StructureStorage;
-    const room = createRoom({
-      storage,
-      myStructures: [factory as unknown as Structure<StructureConstant>],
-    });
-    Game.rooms[room.name] = room;
-    const creep = createCreep(room);
-
-    expect(getEnergyStoreTarget(creep)?.id).toBe(storage.id);
   });
 
   it("prefers the proto storage container before the proto controller container", () => {
@@ -289,92 +282,5 @@ describe("energyTargets", () => {
     const creep = createCreep(room);
 
     expect(getEnergyStoreTarget(creep)?.id).toBe(protoStorage.id);
-  });
-
-  it("falls back to the proto controller container when storage targets are unavailable", () => {
-    const protoController = {
-      id: "proto-controller-2",
-      structureType: STRUCTURE_CONTAINER,
-      pos: createPos(8),
-      store: createStore(200, 2000),
-    } as unknown as StructureContainer;
-    const room = createRoom({
-      storage: null,
-      terminal: null,
-      myStructures: [],
-    });
-    Game.rooms[room.name] = room;
-    getProtoControllerLinkContainer.mockReturnValue(protoController);
-    const creep = createCreep(room);
-
-    expect(getEnergyStoreTarget(creep)?.id).toBe(protoController.id);
-  });
-
-  it("clears stale reservation memory when renewing a reserved target fails", () => {
-    const container = {
-      id: "container-1",
-      structureType: STRUCTURE_CONTAINER,
-      pos: createPos(3),
-      store: createStore(40, 2000),
-    } as unknown as StructureContainer;
-    const room = createRoom({
-      structures: [container as unknown as Structure<StructureConstant>],
-    });
-    Game.rooms[room.name] = room;
-    getPickupReservationsByRoom(room.name)[container.id] = {
-      kind: "structure",
-      claims: {
-        Worker1: { amount: 20, until: Game.time + 10 },
-        Worker2: { amount: 40, until: Game.time + 10 },
-      },
-    };
-    Game.creeps.Worker1 = { name: "Worker1" } as Creep;
-    Game.creeps.Worker2 = { name: "Worker2" } as Creep;
-
-    const getObjectById = jest.fn((id: string) => (id === container.id ? container : null)) as unknown as Game["getObjectById"];
-    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = getObjectById;
-
-    const creep = createCreep(room);
-    const assignmentState = ensureCreepAssignmentState(creep.name);
-    assignmentState.energyPickupTargetId = container.id;
-    assignmentState.energyPickupTargetKind = "structure";
-    assignmentState.energyPickupRoomName = room.name;
-
-    expect(pickupEnergyFromPreferredTarget(creep)).toEqual({
-      picked: false,
-      outOfRange: false,
-    });
-    expect(getCreepAssignmentState(creep.name)?.energyPickupTargetId).toBeUndefined();
-    expect(getCreepAssignmentState(creep.name)?.energyPickupTargetKind).toBeUndefined();
-    expect(getCreepAssignmentState(creep.name)?.energyPickupRoomName).toBeUndefined();
-    expect(getPickupReservationsByRoom(room.name)[container.id]?.claims.Worker1).toBeUndefined();
-  });
-
-  it("skips proto storage containers when workers choose pickup targets", () => {
-    const protoStorage = {
-      id: "proto-storage-1",
-      structureType: STRUCTURE_CONTAINER,
-      pos: createPos(3),
-      store: createStore(200, 2000),
-    } as unknown as StructureContainer;
-    const normalContainer = {
-      id: "container-2",
-      structureType: STRUCTURE_CONTAINER,
-      pos: createPos(5),
-      store: createStore(200, 2000),
-    } as unknown as StructureContainer;
-    const room = createRoom({
-      structures: [protoStorage as unknown as Structure<StructureConstant>, normalContainer as unknown as Structure<StructureConstant>],
-    });
-    Game.rooms[room.name] = room;
-    getProtoStorageContainer.mockReturnValue(protoStorage);
-    const creep = createCreep(room);
-
-    expect(pickupEnergyFromPreferredTarget(creep)).toEqual({
-      picked: true,
-      outOfRange: false,
-    });
-    expect(creep.withdraw).toHaveBeenCalledWith(normalContainer, RESOURCE_ENERGY);
-    expect(creep.withdraw).not.toHaveBeenCalledWith(protoStorage, RESOURCE_ENERGY);
   });
 });

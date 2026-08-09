@@ -1,5 +1,6 @@
 import { isSpawnActive } from "@/runtime/tickContext";
 import { spawnProfiles } from "@/config/spawnProfiles";
+import { hasMatchingCreepBody } from "@/runtime/minerBodyPolicy";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { spawnMaxCarrierRaw } from "@/runtime/emergencySpawning";
 import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction";
@@ -332,6 +333,13 @@ function shouldPreSpawnSourceWorker(
   const creeps = getConfigCreeps(configName, context);
   if (creeps.length === 0) {
     return true;
+  }
+
+  if (config.role === "miner") {
+    const expectedBody = getSpawnBody(spawn, configName);
+    if (!hasMatchingCreepBody(creeps, expectedBody)) {
+      return true;
+    }
   }
 
   if (creeps.length >= 2) {

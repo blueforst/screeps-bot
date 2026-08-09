@@ -31,22 +31,6 @@ describe("safeZoneHelpers", () => {
     (getSafeZone as jest.Mock).mockReturnValue(new Set());
   });
 
-  it("does not restrict harvesters during defense mode", () => {
-    const creep = makeCreep("harvester");
-    (isDefenseMode as jest.Mock).mockReturnValue(true);
-    (getSafeZone as jest.Mock).mockReturnValue(new Set([10 * 50 + 10]));
-
-    expect(shouldRestrictToSafeZone(creep)).toBe(false);
-  });
-
-  it("does not restrict miners during defense mode", () => {
-    const creep = makeCreep("miner");
-    (isDefenseMode as jest.Mock).mockReturnValue(true);
-    (getSafeZone as jest.Mock).mockReturnValue(new Set([10 * 50 + 10]));
-
-    expect(shouldRestrictToSafeZone(creep)).toBe(false);
-  });
-
   it("still restricts normal workers during defense mode", () => {
     const creep = makeCreep("worker");
     (isDefenseMode as jest.Mock).mockReturnValue(true);

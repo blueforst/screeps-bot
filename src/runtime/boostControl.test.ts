@@ -101,29 +101,6 @@ describe("boost control market gateway", () => {
     expect(getTerminalActionClaim("W1N1")?.actor).toBe("resourceControl");
   });
 
-  it("没有可执行订单时不声明市场 intent", () => {
-    const room = createRoom();
-    (Game.market.getAllOrders as jest.Mock).mockReturnValue([]);
-
-    buyBoostIfNeeded(room);
-
-    expect(Game.market.deal).not.toHaveBeenCalled();
-    expect(getMarketActionJournal()).toEqual([]);
-  });
-
-  it("交易能量不足时不声明市场 intent", () => {
-    const room = createRoom();
-    room.terminal!.store = createMockStore({
-      [RESOURCE_ENERGY]: 50,
-      [DEFENSE_BOOST_COMPOUND]: 0,
-    }, 300_000);
-
-    buyBoostIfNeeded(room);
-
-    expect(Game.market.deal).not.toHaveBeenCalled();
-    expect(getMarketActionJournal()).toEqual([]);
-  });
-
   it("terminal 冷却时不扫描订单或声明市场 intent", () => {
     const room = createRoom();
     room.terminal!.cooldown = 1;

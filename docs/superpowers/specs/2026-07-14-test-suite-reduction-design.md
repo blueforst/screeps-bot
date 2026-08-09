@@ -1,53 +1,48 @@
-# Test Suite Reduction Design
+# 测试套件精简设计
 
-## Goal
+## 目标
 
-Reduce the Jest test suite from 2,275 test cases across 78 files to exactly
-500 cases. Retain representative regression coverage in every current test
-file while making the suite substantially faster and easier to maintain.
+将当前 Jest 套件从 120 个测试文件、3380 个实际测试用例精简到恰好
+500 个，同时让每个测试文件继续保留直接回归覆盖。
 
-## Scope
+“测试数量”以 Jest 最终摘要中的 `Tests: 500 total` 为准，不再使用
+简单文本正则计数。后者会把 `RegExp.test()` 误判为测试，也不会正确计算
+`it.each` 展开的用例数量。
 
-- Edit only `*.test.*` files.
-- Do not change production code, Jest configuration, build scripts, or runtime
-  behavior.
-- Preserve every test file that currently contains a test case.
+## 范围
 
-## Allocation
+- 精简操作只修改 `*.test.*` 文件和本设计/实施文档。
+- 不通过 `skip`、Jest 配置过滤或伪造计数达成目标。
+- 不删除任何测试文件；120 个文件均至少保留一个可执行测试。
+- 不改动生产代码的运行行为。
 
-Start each file with a baseline of `min(currentCaseCount, 6)` retained cases.
-The baseline consumes 426 cases. Distribute the 74 remaining cases to the
-largest, most behavior-dense files:
+## 配额
 
-| Current rank by case count | File count | Per-file budget | Added cases |
+配额按模块规模、运行风险和当前未提交功能的回归需求分配：
+
+| 分组 | 文件数 | 每文件保留数 | 小计 |
 | --- | ---: | ---: | ---: |
-| 1–10 | 10 | 10 | 40 |
-| 11–26 | 16 | 8 | 32 |
-| 27–28 | 2 | 7 | 2 |
-| 29–78 | 50 | baseline | 0 |
+| 最大、行为最密集套件 | 10 | 10 | 100 |
+| 次大套件 | 20 | 6 | 120 |
+| 新增 Power Creep 控制套件 | 1 | 7 | 7 |
+| 关键或近期改动套件 | 18 | 4 | 72 |
+| 其余套件 | 71 | 最多 3 | 201 |
+| 合计 | 120 | — | 500 |
 
-This produces exactly 500 retained cases. Files with six or fewer cases remain
-unchanged; no module loses all direct regression coverage.
+近期新增的 Power Creep、PowerSpawn、矿工交接、交通互推、能量目标、
+RCL8 劳动力、Spawn 规划和终端容量回归优先保留。大型套件则在正常路径、
+边界、失败/回退、生命周期和跨模块行为之间保留代表性用例。
 
-## Case Selection
+## 参数化测试
 
-For each reduced file, retain tests in this order until its budget is filled:
+原套件包含 `it.each` / `test.each`，一条声明会在 Jest 中展开为多个
+测试。为保证源码口径与 Jest 实际口径一致，本次精简移除参数化声明，并从
+独立用例中保留对应模块最重要的正常、边界和失败路径。
 
-1. Nominal successful behavior.
-2. Public boundary or threshold behavior.
-3. Failure, fallback, cleanup, or recovery behavior.
-4. Cross-module integration behavior.
-5. A regression specific to the module's highest operational risk.
+## 验收
 
-Delete duplicate parameter variations, repeated formatting assertions, and
-minor variants that exercise the same branch and outcome. Where a retained
-test has a generic name, rename it only when needed to state the behavior it
-now uniquely protects.
-
-## Validation
-
-1. Count `it(` and `test(` declarations after the change and require a total
-   of exactly 500.
-2. Run the full Jest suite successfully.
-3. Run `npx tsc --noEmit` successfully.
-4. Confirm the diff contains only test files plus this design/plan documentation.
+1. 120 个测试文件均包含至少一个可执行测试。
+2. 完整 Jest 运行成功，摘要为 `Tests: 500 passed, 500 total`。
+3. `npx tsc --noEmit` 成功。
+4. `npm run build` 成功。
+5. `git diff --check` 无空白错误。

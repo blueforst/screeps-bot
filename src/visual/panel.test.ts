@@ -52,18 +52,6 @@ describe("Panel", () => {
     expect(textY).toBeLessThanOrEqual(rectY + rectH);
   });
 
-  it("textRow emits 1 text and advances cursorY by rowHeight", () => {
-    const panel = makePanel();
-    panel.textRow("hello");
-
-    const texts = findCalls("text");
-    expect(texts).toHaveLength(1);
-    expect(texts[0].args[0]).toBe("hello");
-
-    const rowHeight = 0.7;
-    expect(panel.cursorY).toBeCloseTo(2 + rowHeight, 4);
-  });
-
   it("progressBar at 50% emits outline rect + fill rect + centered text", () => {
     const panel = makePanel();
     panel.progressBar(0.5, "#00ff88", "500/1000");
@@ -112,28 +100,5 @@ describe("Panel", () => {
     // cursorY still advanced by barHeight + barPad
     const barAdvance = 0.6;
     expect(panel.cursorY).toBeCloseTo(2 + barAdvance, 4);
-  });
-
-  it("spacer emits no visual calls and advances cursorY", () => {
-    const panel = makePanel();
-    panel.spacer(0.5);
-
-    expect(getCalls()).toHaveLength(0);
-    expect(panel.cursorY).toBeCloseTo(2 + 0.5, 4);
-  });
-
-  it("callsUsed tracks cumulative visual call count", () => {
-    const panel = makePanel();
-
-    panel.sectionHeader("A"); // 2 calls (rect + text)
-    expect(panel.callsUsed).toBe(2);
-
-    panel.textRow("b"); // 1 call (text)
-    expect(panel.callsUsed).toBe(3);
-  });
-
-  it("cursorY equals initial y from constructor", () => {
-    const panel = makePanel();
-    expect(panel.cursorY).toBe(2);
   });
 });

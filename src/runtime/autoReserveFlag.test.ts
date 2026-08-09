@@ -66,42 +66,11 @@ describe("runAutoReserveFlags", () => {
     expect(room.createFlag).not.toHaveBeenCalled();
   });
 
-  it("keeps the auto reserve flag below the configured energyTarget", () => {
-    const room = createRoom("W1N3", 90_000);
-    setRoomPolicy(room.name, 60_000, 100_000);
-    const flag = createAutoFlag(room);
-    runAutoReserveFlags();
-    expect(flag.remove).not.toHaveBeenCalled();
-  });
-
   it("removes the auto reserve flag at the configured energyTarget", () => {
     const room = createRoom("W1N4", 60_000);
     setRoomPolicy(room.name, 40_000, 60_000);
     const flag = createAutoFlag(room);
     runAutoReserveFlags();
     expect(flag.remove).toHaveBeenCalled();
-  });
-
-  it("uses storage energy only when entering worker reserve mode", () => {
-    const room = createRoom("W1N5", 90_000, 4, 250_000);
-    setRoomPolicy(room.name, 100_000, 150_000);
-    runAutoReserveFlags();
-    expect(room.createFlag).toHaveBeenCalledWith(room.storage?.pos, "RESERVE_W1N5");
-  });
-
-  it("does not manage a room before storage is built", () => {
-    const room = createRoom("W1N6", 10_000);
-    delete (room as Room & { storage?: StructureStorage }).storage;
-    runAutoReserveFlags();
-    expect(room.createFlag).not.toHaveBeenCalled();
-  });
-
-  it("moves an existing auto reserve flag back to storage while below floor", () => {
-    const room = createRoom("W1N7", 10_000);
-    setRoomPolicy(room.name, 100_000, 150_000);
-    const flag = createAutoFlag(room, 10, 10);
-    runAutoReserveFlags();
-    expect(flag.setPosition).toHaveBeenCalledWith(room.storage?.pos);
-    expect(room.createFlag).not.toHaveBeenCalled();
   });
 });

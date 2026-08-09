@@ -16,6 +16,7 @@
 ### Goals
 
 - 让 pressure/emergency 房间在 storage 有安全空间时能从约 50,000 terminal 空闲继续恢复到配置的恢复水位。
+- 让 normal 房间默认保留 60,000 terminal 空闲，在 40,000 接收账本安全保留之上提供 20,000 可承诺接收窗口。
 - 让 ResourceControl 与 Hub 使用同一份容量策略和同一套 receiver 可接收容量计算。
 - 保证 receiver 的已承诺入站量和同 tick 预留不会超过真实安全容量。
 - 只让健康且近期可执行的跨房任务占用 terminal staging 空间，并在条件失效时释放 staging。
@@ -49,7 +50,9 @@ Hub 不再维护独立的 distribution receiver 常量，而是调用共享策�
 terminal offload 的目标从固定 `TERMINAL_TOTAL_STORAGE_CAP` 改为由当前容量状态决定：
 
 - `pressure` 或 `emergency` 房间以 `terminalReliefTargetFreeCapacity` 为目标；
-- `normal` 房间保留现有日常 overflow 上限，避免无必要地反复搬运工作库存；
+- 启用恢复功能时，`normal` 房间默认以 60,000 terminal 空闲为日常目标；若配置的 `receiverTerminalMinFreeCapacity` 更高，则使用更高水位，确保房间达到日常卸货目标后仍有资格接收；
+- 默认接收账本安全保留继续使用 `terminalPressureFreeCapacity=40,000`，因此 60,000 日常水位提供 20,000 可承诺窗口；pressure/emergency 的 80,000 恢复水位不变；
+- 关闭 `terminalHeadroomRecoveryEnabled` 时继续使用旧的 250,000 使用量卸货阈值，保证可回滚；
 - 只有实际 storage 安全空闲允许时才生成 offload，预测中的 offload 不提前增加 receiver 可发送额度。
 
 排空顺序保持非 energy 优先、energy 最后。下列库存不得被排空：当前发送窗口内已获 admission 的 staging、terminal energy reserve、已规划发送所需的交易费预算，以及现有生产/资源保护规则要求保留的库存。每个房间每轮仍使用有界的 carrier draft 和批次上限，避免 terminal 与 storage 间形成大规模抖动。
@@ -118,7 +121,7 @@ capacity index、pending commitment index 和 admitted staging window 在一次 
 1. 先加入共享策略、规范化测试和只读 capacity index，不改变执行路径。
 2. 将 ResourceControl 与 Hub receiver 判断切换到共享 index，验证同 tick reservation 不超配。
 3. 启用 pressure/emergency 动态 offload 和 staging admission，默认通过 `capacityBalancing.terminalHeadroomRecoveryEnabled` 开启，并保留关闭开关。
-4. 更新 runtime/monitor 投影，在 live-like fixture 中验证 full→50k→80k→normal 的闭环和多周期无振荡。
+4. 更新 runtime/monitor 投影，在 live-like fixture 中验证 full→50k→80k→normal、normal→60k 日常卸货的闭环和多周期无振荡。
 5. 完成 TypeScript、单元/集成测试和构建后再部署；线上观察 receiver 数、阻塞年龄、恢复 gap、carrier backlog 与 ResourceControl CPU。
 6. 若出现异常，关闭 feature flag 即回到旧 offload/staging 行为；共享策略与观测字段可保留。
 
@@ -126,4 +129,4 @@ capacity index、pending commitment index 和 admitted staging window 在一次 
 
 ## Open Questions
 
-无。默认水位沿用现有配置，P0 的作用是消除不一致和不可达状态；长期调度模型与优先级策略由后续变更决定。
+无。pressure/emergency 恢复水位与接收账本安全保留沿用现有配置；normal 日常卸货默认保留 60,000 空闲。长期调度模型与优先级策略由后续变更决定。

@@ -1,6 +1,6 @@
-export type CarrierTaskType = "lab_supply" | "lab_cleanup" | "lab_product_unload" | "mineral_haul" | "terminal_feed" | "terminal_offload" | "factory_supply" | "factory_unload";
+export type CarrierTaskType = "lab_supply" | "lab_cleanup" | "lab_product_unload" | "mineral_haul" | "terminal_feed" | "terminal_offload" | "factory_supply" | "factory_unload" | "power_spawn_supply";
 
-export type CarrierStructureKind = "lab" | "terminal" | "storage" | "container" | "factory";
+export type CarrierStructureKind = "lab" | "terminal" | "storage" | "container" | "factory" | "power_spawn";
 
 export interface CarrierTaskStep {
   id: string;

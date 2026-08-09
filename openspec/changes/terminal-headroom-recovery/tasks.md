@@ -17,6 +17,7 @@
 - [x] 3.2 将 pressure/emergency 房间的 terminal offload 目标改为 `terminalReliefTargetFreeCapacity`，保留 normal 房间现有日常 overflow 行为
 - [x] 3.3 实现非 energy 优先、energy 最后且保护 admitted staging、energy reserve、交易费预算和生产库存的 offload 选择
 - [x] 3.4 验证 carrier 尚未完成 offload 时容量状态和 receiver admission 不会提前恢复，并覆盖多周期无 feed/offload 振荡
+- [x] 3.5 将 normal terminal 日常卸货目标调整为默认 60,000 空闲，保留 40,000 receiver 账本安全线与关闭 feature flag 后的 250,000 legacy 行为，并增加 E4N58 同形回归测试
 
 ## 4. Staging admission
 
@@ -37,5 +38,5 @@
 - [x] 6.1 运行聚焦的 ResourceControl、Hub、carrier task 和 monitor 测试并修复回归
 - [x] 6.2 运行 `npx tsc --noEmit`、`npm run test` 和 `npm run build`，记录通过结果及 ResourceControl 基准 CPU 对比
 - [x] 6.3 复查变更未修改主循环阶段顺序、energy export、矿物/T3/生产保护、market 与手工 transfer 语义
-- [ ] 6.4 部署前记录 receiver/blocker/CPU 基线；部署后观察至少两个恢复周期，确认 receiver 数回升、50k 粘滞消失、安全容量越界为零且 CPU 无显著回退
+- [ ] 6.4 部署前记录 receiver/blocker/CPU 基线；部署后观察至少两个恢复周期，确认 receiver 数回升、50k 粘滞与 normal 60k 日常水位符合预期、安全容量越界为零且 CPU 无显著回退
 - [x] 6.5 验证关闭 `terminalHeadroomRecoveryEnabled` 可回滚新 offload/staging 行为，且无需清理现有 transfer tasks

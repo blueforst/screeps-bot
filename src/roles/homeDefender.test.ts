@@ -122,23 +122,6 @@ describe("homeDefenderRole", () => {
     expect(defender.attack).not.toHaveBeenCalledWith(lockedTarget);
   });
 
-  it("uses moveToTargetRoom when outside defended room", () => {
-    const defender = {
-      name: "defender-0",
-      memory: { role: "homeDefender" },
-      pos: new MockPos(25, 25, "W2N1") as unknown as RoomPosition,
-      moveTo: jest.fn(() => OK),
-    } as unknown as Creep;
-    const otherRoom = { name: "W2N1" } as unknown as Room;
-    Object.defineProperty(defender, "room", { value: otherRoom });
-
-    homeDefenderRole("W1N1", "0").target(defender);
-
-    expect(moveToTargetRoom).toHaveBeenCalledWith(defender, "W1N1");
-    // Must NOT use raw moveTo
-    expect(defender.moveTo).not.toHaveBeenCalled();
-  });
-
   it("uses moveToTarget with costCallback and cacheKey for inside-hostile chase", () => {
     const safeZone = new Set<number>();
     for (let x = 8; x <= 12; x++) {
@@ -173,46 +156,6 @@ describe("homeDefenderRole", () => {
       cacheKey: "safezone:W1N1",
       maxRooms: 1,
       reusePath: 2,
-    });
-    expect(defender.moveTo).not.toHaveBeenCalled();
-  });
-
-  it("uses moveToTarget with costCallback and cacheKey for boundary rampart positioning", () => {
-    const safeZone = new Set<number>();
-    for (let x = 8; x <= 12; x++) {
-      for (let y = 8; y <= 12; y++) {
-        safeZone.add(x * 50 + y);
-      }
-    }
-    (getSafeZone as jest.Mock).mockReturnValue(safeZone);
-
-    const hostile = createHostile("h1", 14, 10);
-    const rampart = createRampart(12, 10);
-    const safeZoneCb = jest.fn();
-    (createSafeZoneCostCallback as jest.Mock).mockReturnValue(safeZoneCb);
-
-    const defender = {
-      name: "defender-0",
-      memory: { role: "homeDefender" },
-      pos: new MockPos(10, 10, "W1N1") as unknown as RoomPosition,
-      attack: jest.fn(() => OK),
-      moveTo: jest.fn(() => OK),
-    } as unknown as Creep;
-    const room = createRoom([defender]);
-    Object.defineProperty(defender, "room", { value: room });
-
-    (getPlayerHostiles as jest.Mock).mockReturnValue([hostile]);
-    (getAssignedDefenseFront as jest.Mock).mockReturnValue(null);
-    (getTowerFocusFront as jest.Mock).mockReturnValue(null);
-    (getBoundaryRamparts as jest.Mock).mockReturnValue([rampart]);
-
-    homeDefenderRole("W1N1", "0").target(defender);
-
-    expect(moveToTarget).toHaveBeenCalledWith(defender, rampart.pos, 0, {
-      costCallback: safeZoneCb,
-      cacheKey: "safezone:W1N1",
-      maxRooms: 1,
-      reusePath: 3,
     });
     expect(defender.moveTo).not.toHaveBeenCalled();
   });

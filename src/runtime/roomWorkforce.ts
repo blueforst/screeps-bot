@@ -86,6 +86,11 @@ export function getWorkerCap(): number {
 export function getDesiredWorkerCount(room: Room): number {
   const cap = getWorkerCap();
   const rcl = room.controller?.level ?? 1;
+  if (rcl >= 8) {
+    room.memory.workerConstructionTier = 0;
+    return 1;
+  }
+
   let desired = rcl < 4 ? 6 - rcl : DEFAULT_WORKER_BASE;
 
   const constructionCount = room.find(FIND_CONSTRUCTION_SITES).length;

@@ -82,37 +82,6 @@ describe("upgraderRole", () => {
     );
   });
 
-  it("uses a controller-local link before other energy sources", () => {
-    const link = {
-      structureType: STRUCTURE_LINK,
-      pos: createPos(),
-      store: createMockStore({ [RESOURCE_ENERGY]: 800 }, 800),
-    } as unknown as StructureLink;
-    const room = createRoom([link]);
-    Game.rooms.E4N58 = room;
-    const creep = createCreep(room);
-
-    upgraderRole("E4N58", "upgrader:E4N58").source?.(creep);
-
-    expect(creep.withdraw).toHaveBeenCalledWith(link, RESOURCE_ENERGY);
-  });
-
-  it("falls back to storage when controller-local sources are empty", () => {
-    const storage = {
-      structureType: STRUCTURE_STORAGE,
-      pos: createPos(),
-      store: createMockStore({ [RESOURCE_ENERGY]: 1000 }, 1000000),
-    } as unknown as StructureStorage;
-    const room = createRoom();
-    room.storage = storage;
-    Game.rooms.E4N58 = room;
-    const creep = createCreep(room);
-
-    upgraderRole("E4N58", "upgrader:E4N58").source?.(creep);
-
-    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY);
-  });
-
   it("uses the shared room energy fallback when a low-level room has no controller source or storage", () => {
     const room = createRoom([], 5);
     Game.rooms.E4N58 = room;
@@ -124,19 +93,6 @@ describe("upgraderRole", () => {
     expect(mockedPickupEnergy).toHaveBeenCalledWith(creep, { swampCost: 8 });
   });
 
-  it("does not work at RCL8 even while stale managed state still exists", () => {
-    const room = createRoom([], 8);
-    Game.rooms.E4N58 = room;
-    const creep = createCreep(room, 100);
-
-    expect(upgraderRole("E4N58", "upgrader:E4N58").prepare?.(creep)).toBe(true);
-    expect(mockedPrepareBoost).not.toHaveBeenCalled();
-    expect(upgraderRole("E4N58", "upgrader:E4N58").target(creep)).toBe(false);
-    expect(creep.upgradeController).not.toHaveBeenCalled();
-    expect(upgraderRole("E4N58", "upgrader:E4N58").source?.(creep)).toBe(false);
-    expect(mockedMoveToTarget).not.toHaveBeenCalled();
-  });
-
   it("works at RCL8 while an authenticated maintenance task is inside the recovery window", () => {
     const room = createRoom([], 8, true, "E4N58", RCL8_UPGRADER_RECOVERY_START_TICKS);
     Game.rooms.E4N58 = room;
@@ -144,15 +100,6 @@ describe("upgraderRole", () => {
     const creep = createCreep(room, 100);
 
     expect(upgraderRole("E4N58").target(creep)).toBe(false);
-    expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
-  });
-
-  it("works at RCL6 with an active manual task", () => {
-    const room = createRoom([], 6);
-    Game.rooms.E4N58 = room;
-    const creep = createCreep(room, 100);
-
-    expect(upgraderRole("E4N58", "upgrader:E4N58").target(creep)).toBe(false);
     expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
   });
 });

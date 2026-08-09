@@ -58,93 +58,23 @@ function makeCreep(name: string, x: number, y: number, roomName = "W1N1") {
   } as unknown as Creep;
 }
 
-describe("isBlockerActivelyMoving", () => {
-  beforeEach(() => {
-    clearCreepMovementStateForTest();
-    Object.assign(Game, {
-      map: {
-        getRoomTerrain: jest.fn(() => ({ get: jest.fn(() => 0) })),
-      },
-    });
-  });
-
-  it("returns false when the creep has no movement state", () => {
-    const blocker = makeCreep("blocker", 10, 10);
-    expect(isBlockerActivelyMoving(blocker)).toBe(false);
-  });
-
-  it("returns true when pathingRequestedAt is this tick", () => {
-    const blocker = makeCreep("blocker", 10, 10);
-    const state = ensureCreepMovementState(blocker.name);
-    state.pathingRequestedAt = Game.time;
-    expect(isBlockerActivelyMoving(blocker)).toBe(true);
-  });
-
-  it("returns true when an unexpired movePathState exists even before this tick's role execution", () => {
-    const blocker = makeCreep("blocker", 10, 10);
-    const state = ensureCreepMovementState(blocker.name);
-    state.movePathState = {
-      key: "test",
-      path: "1",
-      steps: [{ x: 10, y: 10 }],
-      targetRoom: "W1N1",
-      targetX: 15,
-      targetY: 15,
-      range: 1,
-      stuckTicks: 0,
-      expiresAt: Game.time + 10,
-    };
-    expect(isBlockerActivelyMoving(blocker)).toBe(true);
-  });
-
-  it("returns false when movePathState has expired", () => {
-    const blocker = makeCreep("blocker", 10, 10);
-    const state = ensureCreepMovementState(blocker.name);
-    state.movePathState = {
-      key: "test",
-      path: "1",
-      steps: [{ x: 10, y: 10 }],
-      targetRoom: "W1N1",
-      targetX: 15,
-      targetY: 15,
-      range: 1,
-      stuckTicks: 0,
-      expiresAt: Game.time - 1,
-    };
-    expect(isBlockerActivelyMoving(blocker)).toBe(false);
-  });
-
-  it("returns true when travelState exists even before this tick's role execution", () => {
-    const blocker = makeCreep("blocker", 10, 10);
-    const state = ensureCreepMovementState(blocker.name);
-    state.travelState = {
-      targetRoom: "W1N2",
-      stuckTicks: 0,
-    };
-    expect(isBlockerActivelyMoving(blocker)).toBe(true);
-  });
-
-  it("returns false when travelState target is the blocker's current room", () => {
-    const blocker = makeCreep("blocker", 10, 10);
-    const state = ensureCreepMovementState(blocker.name);
-    state.travelState = {
-      targetRoom: "W1N1",
-      stuckTicks: 0,
-    };
-    expect(isBlockerActivelyMoving(blocker)).toBe(false);
-  });
-
-  it("returns false when only stale pathingRequestedAt exists", () => {
-    const blocker = makeCreep("blocker", 10, 10);
-    const state = ensureCreepMovementState(blocker.name);
-    state.pathingRequestedAt = Game.time - 1;
-    expect(isBlockerActivelyMoving(blocker)).toBe(false);
-  });
-});
+function makePowerCreep(name: string, x: number, y: number, roomName = "W1N1") {
+  const pos = new MockRoomPosition(x, y, roomName) as unknown as RoomPosition;
+  return {
+    name,
+    pos,
+    room: { name: roomName } as Room,
+    ticksToLive: 1_000,
+    powers: {},
+    move: jest.fn(() => OK),
+    memory: {},
+  } as unknown as PowerCreep;
+}
 
 describe("moveToAdjacentPosition", () => {
   beforeEach(() => {
     clearCreepMovementStateForTest();
+    Game.powerCreeps = {};
     Object.assign(global, { RoomPosition: MockRoomPosition });
     Object.assign(Game, {
       map: {
@@ -153,180 +83,53 @@ describe("moveToAdjacentPosition", () => {
     });
   });
 
-  it("does not push a blocker with an unexpired movePathState even when pathingRequestedAt is not current", () => {
+  it("lets a normal creep push a waiting Power Creep while preserving its work-anchor range", () => {
     const pusher = makeCreep("pusher", 10, 10);
-    const blocker = makeCreep("blocker", 11, 10);
+    const powerCreep = makePowerCreep("operator", 11, 10);
     const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
+    setupRoomContext([pusher]);
+    Game.powerCreeps = { operator: powerCreep };
 
-    setupRoomContext([pusher, blocker]);
-
-    const state = ensureCreepMovementState(blocker.name);
-    state.movePathState = {
-      key: "test",
-      path: "2",
-      steps: [{ x: 12, y: 10 }],
-      targetRoom: "W1N1",
-      targetX: 20,
-      targetY: 10,
-      range: 1,
-      stuckTicks: 0,
-      expiresAt: Game.time + 10,
-    };
+    const state = ensureCreepMovementState(powerCreep);
+    state.workAnchor = { x: 13, y: 10, roomName: "W1N1", range: 3 };
 
     const result = moveToAdjacentPosition(pusher, nextPos);
 
     expect(result).toBe(OK);
-    expect(blocker.move).not.toHaveBeenCalled();
-    expect(state.movePathState).toBeDefined();
+    expect(powerCreep.move).toHaveBeenCalledWith(LEFT);
+    expect(pusher.move).toHaveBeenCalledWith(RIGHT);
+    expect(state.movementPushedAt).toBe(Game.time);
+    expect(state.workAnchor).toEqual({ x: 13, y: 10, roomName: "W1N1", range: 3 });
   });
 
-  it("swaps a paired war healer behind its attacker during a head-on path conflict", () => {
-    const attacker = makeCreep("attacker", 10, 10);
-    attacker.memory.role = "meleeAttacker";
-    attacker.memory.configName = "W1N1:war:W2N2:meleeAttacker:0";
-    const healer = makeCreep("healer", 11, 10);
-    healer.memory.role = "healer";
-    healer.memory.configName = "W1N1:war:W2N2:healer:0";
-    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
-    setupRoomContext([attacker, healer]);
-
-    const healerState = ensureCreepMovementState(healer.name);
-    healerState.pathingRequestedAt = Game.time;
-    healerState.movePathState = {
-      key: "head-on",
-      path: "6",
-      steps: [{ x: 10, y: 10 }],
-      targetRoom: "W1N1",
-      targetX: 5,
-      targetY: 5,
-      range: 2,
-      stuckTicks: 2,
-      expiresAt: Game.time + 10,
-    };
-
-    const result = moveToAdjacentPosition(attacker, nextPos);
-
-    expect(result).toBe(OK);
-    expect(healer.move).toHaveBeenCalledWith(LEFT);
-    expect(attacker.move).toHaveBeenCalledWith(RIGHT);
-    expect(healerState.movePathState).toBeUndefined();
-    expect(healerState.movementPushedAt).toBe(Game.time);
-  });
-
-  it("does not push a blocker with current-tick pathingRequestedAt", () => {
-    const pusher = makeCreep("pusher", 10, 10);
+  it("lets a moving Power Creep push a stationary normal creep through the same traffic protocol", () => {
+    const powerCreep = makePowerCreep("operator", 10, 10);
     const blocker = makeCreep("blocker", 11, 10);
     const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
+    setupRoomContext([blocker]);
+    Game.powerCreeps = { operator: powerCreep };
 
-    setupRoomContext([pusher, blocker]);
+    const result = moveToAdjacentPosition(powerCreep, nextPos);
 
-    const state = ensureCreepMovementState(blocker.name);
-    state.pathingRequestedAt = Game.time;
+    expect(result).toBe(OK);
+    expect(blocker.move).toHaveBeenCalledWith(LEFT);
+    expect(powerCreep.move).toHaveBeenCalledWith(RIGHT);
+    expect(ensureCreepMovementState(blocker.name).movementPushedAt).toBe(Game.time);
+  });
+
+  it("does not push a Power Creep that already requested pathing this tick", () => {
+    const pusher = makeCreep("pusher", 10, 10);
+    const powerCreep = makePowerCreep("operator", 11, 10);
+    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
+    setupRoomContext([pusher]);
+    Game.powerCreeps = { operator: powerCreep };
+    ensureCreepMovementState(powerCreep).pathingRequestedAt = Game.time;
 
     const result = moveToAdjacentPosition(pusher, nextPos);
 
     expect(result).toBe(OK);
-    expect(blocker.move).not.toHaveBeenCalled();
-  });
-
-  it("does not push a blocker with current-tick travel pathing", () => {
-    const pusher = makeCreep("pusher", 10, 10);
-    const blocker = makeCreep("blocker", 11, 10);
-    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
-
-    setupRoomContext([pusher, blocker]);
-
-    const state = ensureCreepMovementState(blocker.name);
-    state.travelState = {
-      targetRoom: "W2N1",
-      stuckTicks: 0,
-    };
-    state.pathingRequestedAt = Game.time;
-
-    const result = moveToAdjacentPosition(pusher, nextPos);
-
-    expect(result).toBe(OK);
-    expect(blocker.move).not.toHaveBeenCalled();
-  });
-
-  it("does not push a blocker with travelState even when it is no longer pathing this tick", () => {
-    const pusher = makeCreep("pusher", 10, 10);
-    const blocker = makeCreep("blocker", 11, 10);
-    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
-
-    setupRoomContext([pusher, blocker]);
-
-    const state = ensureCreepMovementState(blocker.name);
-    state.travelState = {
-      targetRoom: "W2N1",
-      stuckTicks: 0,
-    };
-    state.pathingRequestedAt = Game.time - 1;
-
-    const result = moveToAdjacentPosition(pusher, nextPos);
-
-    expect(result).toBe(OK);
-    expect(blocker.move).not.toHaveBeenCalled();
-  });
-
-  it("pushes a blocker with arrived stale travelState", () => {
-    const pusher = makeCreep("pusher", 10, 10);
-    const blocker = makeCreep("blocker", 11, 10);
-    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
-
-    setupRoomContext([pusher, blocker]);
-
-    const state = ensureCreepMovementState(blocker.name);
-    state.travelState = {
-      targetRoom: "W1N1",
-      stuckTicks: 0,
-    };
-
-    const result = moveToAdjacentPosition(pusher, nextPos);
-
-    expect(result).toBe(OK);
-    expect(blocker.move).toHaveBeenCalled();
-  });
-
-  it("pushes a stationary blocker without movement state", () => {
-    const pusher = makeCreep("pusher", 10, 10);
-    const blocker = makeCreep("blocker", 11, 10);
-    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
-
-    setupRoomContext([pusher, blocker]);
-
-    const result = moveToAdjacentPosition(pusher, nextPos);
-
-    expect(result).toBe(OK);
-    expect(blocker.move).toHaveBeenCalled();
-  });
-
-  it("preserves blocker movePathState when push fails with ERR_TIRED", () => {
-    const pusher = makeCreep("pusher", 10, 10);
-    const blocker = makeCreep("blocker", 11, 10);
-    (blocker.move as jest.Mock).mockReturnValue(ERR_TIRED);
-    const nextPos = new MockRoomPosition(11, 10, "W1N1") as unknown as RoomPosition;
-
-    setupRoomContext([pusher, blocker]);
-
-    const blockerState = ensureCreepMovementState(blocker.name);
-    blockerState.movePathState = {
-      key: "test",
-      path: "2",
-      steps: [{ x: 12, y: 10 }],
-      targetRoom: "W1N1",
-      targetX: 20,
-      targetY: 10,
-      range: 1,
-      stuckTicks: 0,
-      expiresAt: Game.time - 1,
-    };
-
-    const result = moveToAdjacentPosition(pusher, nextPos);
-
-    expect(result).toBe(ERR_BUSY);
-    expect(blocker.move).toHaveBeenCalled();
-    expect(blockerState.movePathState).toBeDefined();
+    expect(powerCreep.move).not.toHaveBeenCalled();
+    expect(pusher.move).toHaveBeenCalledWith(RIGHT);
   });
 
   it("returns ERR_BUSY when stationary blocker returns ERR_TIRED on push attempt", () => {

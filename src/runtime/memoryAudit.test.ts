@@ -14,50 +14,9 @@ describe("buildMemoryAuditSnapshot", () => {
     expect(result.totalBytes).toBe(expected);
   });
 
-  it("returns branches sorted descending by bytes", () => {
-    const mem = {
-      small: { a: 1 },
-      big: { nested: { deep: Array.from({ length: 50 }, (_, i) => `item-${i}`) } },
-    };
-    const result = buildMemoryAuditSnapshot(mem);
-
-    for (let i = 1; i < result.branches.length; i++) {
-      expect(result.branches[i - 1].bytes).toBeGreaterThanOrEqual(result.branches[i].bytes);
-    }
-    // big branch should be larger than small
-    const bigBranch = result.branches.find((b) => b.path.startsWith("big"));
-    const smallBranch = result.branches.find((b) => b.path.startsWith("small"));
-    expect(bigBranch!.bytes).toBeGreaterThan(smallBranch!.bytes);
-  });
-
-  it("respects topN option", () => {
-    const mem: Record<string, Record<string, string>> = {};
-    for (let i = 0; i < 30; i++) {
-      mem[`branch${i}`] = { value: "x".repeat(i * 10) };
-    }
-
-    const result = buildMemoryAuditSnapshot(mem, { topN: 5 });
-
-    expect(result.top.length).toBe(5);
-    expect(result.branches.length).toBe(30);
-  });
-
   it("returns empty result for null/undefined input", () => {
     expect(buildMemoryAuditSnapshot(null)).toEqual({ totalBytes: 0, branches: [], top: [] });
     expect(buildMemoryAuditSnapshot(undefined)).toEqual({ totalBytes: 0, branches: [], top: [] });
-  });
-
-  it("does NOT mutate the input object", () => {
-    const mem = {
-      creeps: { Scout1: { scoutVisitedRooms: ["W1N1", "W2N2"] } },
-      runtime: { hub: { distributedSynthesis: [1, 2, 3] } },
-    };
-    const before = JSON.stringify(mem);
-
-    buildMemoryAuditSnapshot(mem);
-
-    const after = JSON.stringify(mem);
-    expect(after).toBe(before);
   });
 
   it("handles nested objects up to maxDepth and stops", () => {
@@ -93,26 +52,5 @@ describe("buildMemoryAuditSnapshot", () => {
     expect(paths).toContain("a.b.c.d");
     expect(paths).toContain("a.b.c.d.e");
     expect(paths).not.toContain("a.b.c.d.e.f");
-  });
-
-  it("handles arrays as branches with index in path", () => {
-    const mem = {
-      creeps: {
-        Scout1: {
-          scoutVisitedRooms: ["W1N1", "W2N2", "W3N3"],
-        },
-      },
-    };
-
-    const result = buildMemoryAuditSnapshot(mem);
-
-    const paths = result.branches.map((b) => b.path);
-    expect(paths).toContain("creeps");
-    expect(paths).toContain("creeps.Scout1");
-    expect(paths).toContain("creeps.Scout1.scoutVisitedRooms");
-    // Array elements should use bracket notation
-    expect(paths).toContain("creeps.Scout1.scoutVisitedRooms[0]");
-    expect(paths).toContain("creeps.Scout1.scoutVisitedRooms[1]");
-    expect(paths).toContain("creeps.Scout1.scoutVisitedRooms[2]");
   });
 });

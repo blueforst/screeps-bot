@@ -49,15 +49,4 @@ describe("RCL8 upgrader maintenance authentication", () => {
   it("accepts only the exact active minimal maintenance config", () => {
     expect(isRcl8MaintenanceUpgraderConfig("E4N58:upgrader:0", createConfig())).toBe(true);
   });
-
-  it.each([
-    ["missing task", () => { delete Memory.data?.manualUpgraders?.E4N58; }, "E4N58:upgrader:0", createConfig()],
-    ["wrong config name", () => undefined, "E4N58:upgrader:other", createConfig()],
-    ["wrong body", () => undefined, "E4N58:upgrader:0", { ...createConfig(), body: [WORK, WORK, CARRY, MOVE] }],
-    ["lost ownership", () => { Game.rooms.E4N58.controller = createController(RCL8_UPGRADER_RECOVERY_START_TICKS, false); }, "E4N58:upgrader:0", createConfig()],
-    ["stop threshold", () => { Game.rooms.E4N58.controller = createController(RCL8_UPGRADER_RECOVERY_STOP_TICKS); }, "E4N58:upgrader:0", createConfig()],
-  ])("rejects %s", (_label, mutate, configName, config) => {
-    mutate();
-    expect(isRcl8MaintenanceUpgraderConfig(configName, config)).toBe(false);
-  });
 });

@@ -33,6 +33,20 @@
 - **WHEN** terminal 低于恢复水位但 storage 没有安全空闲，且没有其他可搬资源
 - **THEN** 系统不得增加即时 receiver 容量，房间必须保持 pressure/emergency，并报告 `storage_full` 或等价恢复阻塞原因
 
+### Requirement: normal terminal 必须保留日常接收窗口
+
+启用 `terminalHeadroomRecoveryEnabled` 时，normal 房间必须（MUST）通过有界 offload 默认保留 60,000 terminal 空闲，且不得（MUST NOT）改变接收账本的 `terminalPressureFreeCapacity` 安全保留。若配置的 `receiverTerminalMinFreeCapacity` 高于 60,000，则日常卸货目标必须至少达到该水位。关闭该功能时，系统必须恢复旧的 250,000 terminal 使用量卸货阈值。
+
+#### Scenario: E4N58 同形水位提供 20k 接收窗口
+
+- **WHEN** normal 房间 terminal 已用 249,051、storage 有安全空闲、接收账本安全保留为 40,000 且恢复功能开启
+- **THEN** 系统必须生成 9,051 的有界 terminal offload，使目标空闲达到 60,000，并在安全保留之上形成 20,000 可承诺接收窗口
+
+#### Scenario: 功能关闭时保留旧阈值
+
+- **WHEN** `terminalHeadroomRecoveryEnabled=false` 且 terminal 已用恰好 250,000
+- **THEN** 系统不得仅因 normal 60,000 日常水位生成 offload
+
 ### Requirement: 容量状态必须形成无振荡滞回闭环
 
 系统必须（MUST）仅在 storage 与 terminal 同时达到各自恢复水位后把既有 pressure/emergency 房间切换为 `normal`；normal 房间只有触及压力水位时才进入 pressure。未完成的 offload 计划不得（MUST NOT）被视作已经恢复的物理空闲。

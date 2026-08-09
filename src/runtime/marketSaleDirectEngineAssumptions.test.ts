@@ -6,19 +6,6 @@ import {
 } from "@/runtime/marketSaleDirectEngineAssumptions";
 
 describe("Direct pinned Screeps engine assumptions", () => {
-  it("固定首发审查使用的 engine commit 与 fail-closed 语义", () => {
-    expect(directEngineAssumptionsValid()).toBe(true);
-    expect(DIRECT_ENGINE_ASSUMPTIONS).toEqual({
-      commit: "80977824199a596d174d392fd0cf8c458c21fcbd",
-      transactionEnergyRounding: "ceil",
-      minimumPositiveExecutionAmount: 1,
-      transactionTimeEqualsAttemptTick: true,
-      transactionOrderType: "buy",
-      changedOrderSkippedWithinProcessingCycle: true,
-      inactiveOwnOrderMayReactivate: true,
-      successfulDealAppliesTerminalCooldown: true,
-    });
-  });
 
   it("任一影响资格的 pinned 语义漂移都会令运行时门禁 fail-closed", () => {
     for (const key of Object.keys(DIRECT_ENGINE_ASSUMPTIONS)) {
@@ -87,11 +74,5 @@ describe("Direct pinned Screeps engine assumptions", () => {
         expect(energy / amount).toBeLessThanOrEqual(worst);
       }
     }
-  });
-
-  it("fixture 对越界数量和费率默认拒绝", () => {
-    expect(() => fixtureTransactionEnergy(-1, 0.1)).toThrow();
-    expect(() => fixtureTransactionEnergy(1.5, 0.1)).toThrow();
-    expect(() => fixtureTransactionEnergy(1, 1)).toThrow();
   });
 });

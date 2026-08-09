@@ -8,6 +8,7 @@ import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProf
 import { isReceiverLink } from "@/runtime/linkControl";
 import { getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getTickContextService } from "@/runtime/runtimeServices";
+import { getPowerCreepRoomEnergyPolicy } from "@/runtime/powerCreepControl";
 import { moveToTarget } from "@/roles/shared";
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 
@@ -58,6 +59,7 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
     const roomContext = getTickContextService().getRoomContext(roomName);
     const targetRoom = Game.rooms[roomName] || (creep.room.name === roomName ? creep.room : null);
     const myStructures = roomContext?.getMyStructures() || [];
+    const powerCreepPolicy = getPowerCreepRoomEnergyPolicy(roomName);
 
     let bestSpawnOrExtension: AnyStoreStructure | null = null;
     let bestTower: AnyStoreStructure | null = null;
@@ -74,6 +76,12 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       }
 
       if (structure.structureType === STRUCTURE_SPAWN || structure.structureType === STRUCTURE_EXTENSION) {
+        if (structure.structureType === STRUCTURE_SPAWN && powerCreepPolicy.suppressSpawnSupply) {
+          continue;
+        }
+        if (structure.structureType === STRUCTURE_EXTENSION && powerCreepPolicy.suppressExtensionSupply) {
+          continue;
+        }
         const target = structure as StructureSpawn | StructureExtension;
         if (target.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
           bestSpawnOrExtension = updateClosestTarget(creep, bestSpawnOrExtension, target);
@@ -92,6 +100,9 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       }
 
       if (structure.structureType === STRUCTURE_POWER_SPAWN) {
+        if (powerCreepPolicy.managePowerSpawnSupply) {
+          continue;
+        }
         const powerSpawn = structure as StructurePowerSpawn;
         if (powerSpawn.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
           bestPowerSpawn = updateClosestTarget(creep, bestPowerSpawn, powerSpawn);

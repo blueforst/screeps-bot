@@ -4,6 +4,7 @@ import {
   POWER_BANK_BODY_RCL7,
   POWER_BANK_BODY_RCL8,
 } from "@/runtime/powerBankConstants";
+import { getRegenSourceLevelForRoom } from "@/runtime/powerCreepControl";
 
 type SpawnBodyGenerator = (room: Room) => BodyPartConstant[];
 
@@ -59,23 +60,9 @@ function twoToOneWorkMoveBody(room: Room): BodyPartConstant[] {
 }
 
 const FIXED_MINER_BODY: BodyPartConstant[] = [WORK, WORK, WORK, WORK, WORK, MOVE, MOVE, MOVE];
-const LINK_MINER_BODY: BodyPartConstant[] = [
-  WORK,
-  WORK,
-  WORK,
-  WORK,
-  WORK,
-  WORK,
-  CARRY,
-  CARRY,
-  CARRY,
-  CARRY,
-  CARRY,
-  CARRY,
-  MOVE,
-  MOVE,
-  MOVE,
-];
+const BASE_LINK_MINER_WORK_PARTS = 6;
+const LINK_MINER_CARRY_PARTS = 6;
+const LINK_MINER_NON_MOVE_PARTS_PER_MOVE = 4;
 const COLONIZER_HARVESTER_BODY: BodyPartConstant[] = [
   WORK,
   WORK,
@@ -96,6 +83,41 @@ export function getHarvesterBody(room: Room): BodyPartConstant[] {
   }
 
   return twoToOneWorkMoveBody(room);
+}
+
+export function getLinkMinerWorkPartsForRegenSourceLevel(level: number): number {
+  const normalizedLevel = Math.max(0, Math.min(
+    POWER_INFO[PWR_REGEN_SOURCE].effect.length,
+    Math.floor(level),
+  ));
+  if (normalizedLevel <= 0) {
+    return BASE_LINK_MINER_WORK_PARTS;
+  }
+
+  const sourceEnergyPerTick = SOURCE_ENERGY_CAPACITY / ENERGY_REGEN_TIME;
+  const regenEnergyPerTick = POWER_INFO[PWR_REGEN_SOURCE].effect[normalizedLevel - 1]
+    / POWER_INFO[PWR_REGEN_SOURCE].period;
+  return Math.max(
+    BASE_LINK_MINER_WORK_PARTS,
+    Math.ceil((sourceEnergyPerTick + regenEnergyPerTick) / HARVEST_POWER),
+  );
+}
+
+export function getLinkMinerBodyForRegenSourceLevel(level: number): BodyPartConstant[] {
+  const workParts = getLinkMinerWorkPartsForRegenSourceLevel(level);
+  const moveParts = Math.ceil(
+    (workParts + LINK_MINER_CARRY_PARTS) / LINK_MINER_NON_MOVE_PARTS_PER_MOVE,
+  );
+
+  return [
+    ...Array<BodyPartConstant>(workParts).fill(WORK),
+    ...Array<BodyPartConstant>(LINK_MINER_CARRY_PARTS).fill(CARRY),
+    ...Array<BodyPartConstant>(moveParts).fill(MOVE),
+  ];
+}
+
+export function getLinkMinerBody(room: Room): BodyPartConstant[] {
+  return getLinkMinerBodyForRegenSourceLevel(getRegenSourceLevelForRoom(room.name));
 }
 
 function carryMoveBody(room: Room): BodyPartConstant[] {
@@ -265,7 +287,7 @@ function remoteMiningReserverBody(room: Room): BodyPartConstant[] {
 export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => getHarvesterBody(room),
   mineralHarvester: twoToOneWorkMoveBody,
-  miner: () => [...LINK_MINER_BODY],
+  miner: getLinkMinerBody,
   carrier: carryMoveBody,
   worker: oneOneOneBody,
   upgrader: () => [...HUB_UPGRADER_BODY],

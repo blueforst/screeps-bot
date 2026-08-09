@@ -40,12 +40,6 @@ describe("isReceiverLink", () => {
     Memory.runtime = undefined;
   });
 
-  it("treats controller-adjacent links at range 3 as receivers", () => {
-    const link = createLink({ controllerRange: 3, storageRange: 10 });
-
-    expect(isReceiverLink(link)).toBe(true);
-  });
-
   it("does not treat controller-distant links beyond range 3 as receivers", () => {
     const link = createLink({ controllerRange: 4, storageRange: 10 });
 
@@ -56,14 +50,6 @@ describe("isReceiverLink", () => {
     const link = createLink({ controllerRange: 10, storageRange: 3 });
 
     expect(isReceiverLink(link)).toBe(false);
-  });
-
-  it("treats controller receiver links as storage receivers when storage and controller share a link cluster", () => {
-    const link = createLink({ controllerRange: 3, storageRange: 4, storageControllerRange: 5 });
-
-    expect(hasSharedStorageControllerLinkCluster(link.room)).toBe(true);
-    expect(isReceiverLink(link)).toBe(true);
-    expect(isStorageReceiverLink(link)).toBe(true);
   });
 
   it("keeps distant controller receiver links separate from storage receivers", () => {

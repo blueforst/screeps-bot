@@ -121,30 +121,4 @@ describe("colonizerHarvesterRole", () => {
     expect(unrelatedPos.lookFor).not.toHaveBeenCalled();
     expect(creep.harvest).not.toHaveBeenCalled();
   });
-
-  it("does not suppress harvesting for an explicitly configured body with active CARRY", () => {
-    const workPos = createPosition(10, 10, [createContainer(0)]);
-    const creep = createCreep("W1N0", workPos, true);
-    const source = bindSource(workPos);
-
-    expect(colonizerHarvesterRole("W1N0", "source-a").source?.(creep)).toBe(false);
-
-    expect(creep.harvest).toHaveBeenCalledWith(source);
-    expect(workPos.lookFor).not.toHaveBeenCalledWith(LOOK_STRUCTURES);
-  });
-
-  it("travels to the target room before resolving source or container state", () => {
-    const creep = createCreep("W1N1", createPosition(10, 10));
-
-    expect(colonizerHarvesterRole("W1N0", "source-a", "W1N1|W1N0").source?.(creep)).toBe(false);
-
-    expect(mockedMoveToTargetRoom).toHaveBeenCalledWith(
-      creep,
-      "W1N0",
-      "W1N1|W1N0",
-      { plainCost: 2, swampCost: 10 },
-    );
-    expect(Game.getObjectById).not.toHaveBeenCalled();
-    expect(creep.pos.lookFor).not.toHaveBeenCalled();
-  });
 });

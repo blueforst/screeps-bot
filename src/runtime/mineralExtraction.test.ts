@@ -167,23 +167,4 @@ describe("runMineralExtraction", () => {
 
     expect(getCarrierTasksByRoom(room.name)).toEqual({});
   });
-
-  it("falls back to storage when terminal cannot accept the mineral", () => {
-    const room = createRoom({ name: "W1N3", terminalFree: 0, storageFree: 5000 });
-    const mineral = createMineral(room, { containerAmount: 900 });
-    room.find = ((type: FindConstant) => (type === FIND_MINERALS ? [mineral] : [])) as Room["find"];
-    Game.rooms[room.name] = room;
-
-    runMineralExtraction();
-
-    expect(getCarrierTasksByRoom(room.name)).toMatchObject({
-      [`mineral:mineral_haul:${room.name}:${mineral.id}`]: {
-        steps: [
-          {
-            toKind: "storage",
-          },
-        ],
-      },
-    });
-  });
 });

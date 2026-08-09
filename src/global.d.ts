@@ -43,6 +43,7 @@ import type {
   MarketBaseResourceContinuousReviewSnapshot,
   MarketBaseResourcePermitRequest,
 } from "@/runtime/marketSaleAutomation";
+import type { PowerCreepTask } from "@/runtime/powerCreepTypes";
 
 declare const _: LoDashStatic;
 
@@ -1776,6 +1777,14 @@ declare global {
       time?: number;
       room?: string;
     };
+  }
+
+  interface PowerCreepMemory {
+    homeRoom?: string;
+    tasks?: PowerCreepTask[];
+    regenSourceIds?: string[];
+    nextRegenSourceIndex?: number;
+    lastControlTick?: number;
   }
 
   interface RoomMemory {

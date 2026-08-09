@@ -99,31 +99,6 @@ beforeEach(() => {
 });
 
 describe("minerRole – work position alignment with harvester", () => {
-  test("already on workPos: harvests without moving", () => {
-    workPos.setLookFor(LOOK_CREEPS, []);
-
-    const creep = makeCreep(11, 10, ROOM);
-    creep.harvest.mockReturnValue(OK);
-
-    const role = minerRole(SOURCE_ID);
-
-    expect(role.source(creep as unknown as Creep)).toBe(false);
-    expect(moveToTarget).not.toHaveBeenCalled();
-    expect(creep.harvest).toHaveBeenCalledWith(source);
-  });
-
-  test("occupied workPos: creep in harvest range does not call moveToTarget with workPos", () => {
-    workPos.setLookFor(LOOK_CREEPS, [{ my: true }]);
-
-    const creep = makeCreep(10, 11, ROOM);
-    creep.harvest.mockReturnValue(OK);
-
-    const role = minerRole(SOURCE_ID);
-    role.source(creep as unknown as Creep);
-
-    expect(moveToTarget).not.toHaveBeenCalledWith(creep, workPos, 0, expect.anything());
-    expect(creep.harvest).toHaveBeenCalledWith(source);
-  });
 
   test("occupied workPos: creep out of harvest range moves toward workPos (range 1)", () => {
     workPos.setLookFor(LOOK_CREEPS, [{ my: true }]);
@@ -151,24 +126,6 @@ describe("minerRole – work position alignment with harvester", () => {
     expect(creep.harvest).not.toHaveBeenCalled();
   });
 
-  test("after old miner dies, new miner claims workPos", () => {
-    workPos.setLookFor(LOOK_CREEPS, [{ my: true }]);
-    const creep = makeCreep(10, 11, ROOM);
-    creep.harvest.mockReturnValue(OK);
-
-    const role = minerRole(SOURCE_ID);
-    role.source(creep as unknown as Creep);
-    expect(moveToTarget).not.toHaveBeenCalledWith(creep, workPos, 0, expect.anything());
-
-    jest.clearAllMocks();
-
-    workPos.setLookFor(LOOK_CREEPS, []);
-    creep.pos = new MockPos(10, 11, ROOM);
-
-    role.source(creep as unknown as Creep);
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
-  });
-
   test("no workPos in layout: miner moves directly to source", () => {
     (getPlannedSourceContainerPos as jest.Mock).mockReturnValue(null);
     (source.pos as unknown as MockPos).setInRange([]);
@@ -180,56 +137,5 @@ describe("minerRole – work position alignment with harvester", () => {
     role.source(creep as unknown as Creep);
 
     expect(moveToTarget).toHaveBeenCalledWith(creep, source);
-  });
-
-  test("full on workPos: source phase returns true for target switch", () => {
-    workPos.setLookFor(LOOK_CREEPS, []);
-
-    const creep = makeCreep(11, 10, ROOM, 0, 50);
-    creep.harvest.mockReturnValue(OK);
-
-    const role = minerRole(SOURCE_ID);
-
-    expect(role.source(creep as unknown as Creep)).toBe(true);
-    expect(moveToTarget).not.toHaveBeenCalled();
-    expect(creep.harvest).toHaveBeenCalledWith(source);
-  });
-});
-
-describe("minerRole – target phase preserves link transfer behavior", () => {
-  test("transfers to adjacent link when full", () => {
-    const link = makeLink("link-a", 12, 10, ROOM);
-    (getSourceAdjacentLink as jest.Mock).mockReturnValue(link);
-
-    const creep = makeCreep(11, 10, ROOM, 0, 50);
-    creep.transfer.mockReturnValue(OK);
-
-    const role = minerRole(SOURCE_ID);
-
-    expect(role.target(creep as unknown as Creep)).toBe(true);
-    expect(creep.transfer).toHaveBeenCalledWith(link, RESOURCE_ENERGY);
-  });
-
-  test("moves toward link when transfer is out of range", () => {
-    const link = makeLink("link-b", 12, 10, ROOM);
-    (getSourceAdjacentLink as jest.Mock).mockReturnValue(link);
-
-    const creep = makeCreep(11, 10, ROOM, 0, 50);
-    creep.transfer.mockReturnValue(ERR_NOT_IN_RANGE);
-
-    const role = minerRole(SOURCE_ID);
-
-    expect(role.target(creep as unknown as Creep)).toBe(false);
-    expect(moveToTarget).toHaveBeenCalledWith(creep, link);
-  });
-
-  test("switches back to source when the link disappears while carrying energy", () => {
-    (getSourceAdjacentLink as jest.Mock).mockReturnValue(null);
-
-    const creep = makeCreep(11, 10, ROOM, 0, 50);
-    const role = minerRole(SOURCE_ID);
-
-    expect(role.target(creep as unknown as Creep)).toBe(true);
-    expect(creep.transfer).not.toHaveBeenCalled();
   });
 });

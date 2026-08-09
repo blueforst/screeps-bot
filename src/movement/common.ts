@@ -5,6 +5,10 @@ export function getTargetPos(target: RoomPosition | { pos: RoomPosition }): Room
   return target as RoomPosition;
 }
 
+export function isStandardCreep(creep: AnyCreep): creep is Creep {
+  return !("powers" in creep);
+}
+
 export function getPosKey(pos: RoomPosition): string {
   return `${pos.roomName}:${pos.x}:${pos.y}`;
 }

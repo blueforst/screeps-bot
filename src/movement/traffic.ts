@@ -1,7 +1,13 @@
 import { ensureCreepMovementState, getCreepMovementState } from "@/movement/creepState";
 import { recordMovementMetric } from "@/movement/metrics";
 import { getTickContextService } from "@/runtime/runtimeServices";
-import { getPositionAtDirection, isExitTile, isWalkableConstructionSite, isWalkableStructure } from "@/movement/common";
+import {
+  getPositionAtDirection,
+  isExitTile,
+  isStandardCreep,
+  isWalkableConstructionSite,
+  isWalkableStructure,
+} from "@/movement/common";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 
 const ALL_DIRECTIONS: DirectionConstant[] = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
@@ -14,10 +20,29 @@ export function findMyCreepAt(pos: RoomPosition, excludeName?: string): Creep | 
   return myCreeps.find((c) => c.name !== excludeName && c.pos.x === pos.x && c.pos.y === pos.y) || null;
 }
 
+export function findMyOwnedUnitAt(pos: RoomPosition, exclude?: AnyCreep): AnyCreep | null {
+  const roomContext = getTickContextService().getRoomContext(pos.roomName);
+  const myCreeps = roomContext?.getMyCreeps() || [];
+  const creep = myCreeps.find(
+    (candidate) => candidate !== exclude && candidate.pos.x === pos.x && candidate.pos.y === pos.y,
+  );
+  if (creep) {
+    return creep;
+  }
+
+  return Object.values(Game.powerCreeps || {}).find(
+    (candidate) => candidate !== exclude &&
+      candidate.ticksToLive != null &&
+      candidate.room?.name === pos.roomName &&
+      candidate.pos.x === pos.x &&
+      candidate.pos.y === pos.y,
+  ) || null;
+}
+
 // ─── Push ─────────────────────────────────────────────────────────────────────
 
-export function isBlockerActivelyMoving(blocker: Creep): boolean {
-  const state = getCreepMovementState(blocker.name);
+export function isBlockerActivelyMoving(blocker: AnyCreep): boolean {
+  const state = getCreepMovementState(blocker);
   if (!state) {
     return false;
   }
@@ -31,7 +56,7 @@ export function isBlockerActivelyMoving(blocker: Creep): boolean {
   if (state.movePathState && state.movePathState.expiresAt > Game.time) {
     return true;
   }
-  if (state.travelState && state.travelState.targetRoom !== blocker.room.name) {
+  if (state.travelState && state.travelState.targetRoom !== blocker.room?.name) {
     return true;
   }
   return false;
@@ -41,10 +66,10 @@ export function isBlockerActivelyMoving(blocker: Creep): boolean {
  * Pushes a stationary blocker to a nearby free tile.
  * Returns true if the blocker was successfully moved.
  */
-export function pushBlockingCreep(pusher: Creep, blocker: Creep): boolean {
+export function pushBlockingCreep(pusher: AnyCreep, blocker: AnyCreep): boolean {
   for (const candidate of getYieldCandidatePositions(pusher, blocker)) {
-    const occupant = findMyCreepAt(candidate, blocker.name);
-    if (occupant && occupant.name !== pusher.name) {
+    const occupant = findMyOwnedUnitAt(candidate, blocker);
+    if (occupant && occupant !== pusher) {
       continue;
     }
     if (moveBlockerToYieldPosition(pusher, blocker, candidate)) {
@@ -54,36 +79,44 @@ export function pushBlockingCreep(pusher: Creep, blocker: Creep): boolean {
   return false;
 }
 
-export function moveToAdjacentPosition(creep: Creep, nextPos: RoomPosition): ScreepsReturnCode {
+export function moveToAdjacentPosition(creep: AnyCreep, nextPos: RoomPosition): ScreepsReturnCode {
   if (creep.pos.getRangeTo(nextPos) > 1) {
     return ERR_NO_PATH;
   }
 
   const direction = creep.pos.getDirectionTo(nextPos);
-  const blockingCreep = findMyCreepAt(nextPos, creep.name);
+  const blockingCreep = findMyOwnedUnitAt(nextPos, creep);
   if (!blockingCreep) {
-    return measureCreepIntent(() => creep.move(direction));
+    return issueMove(creep, direction);
   }
 
   if (isHeadOnWarDuoSwap(creep, blockingCreep)) {
     if (pushBlockingCreep(creep, blockingCreep)) {
-      return measureCreepIntent(() => creep.move(direction));
+      return issueMove(creep, direction);
     }
     return ERR_BUSY;
   }
 
   if (isBlockerActivelyMoving(blockingCreep)) {
-    return measureCreepIntent(() => creep.move(direction));
+    return issueMove(creep, direction);
   }
 
   if (pushBlockingCreep(creep, blockingCreep)) {
-    return measureCreepIntent(() => creep.move(direction));
+    return issueMove(creep, direction);
   }
 
   return ERR_BUSY;
 }
 
-function isHeadOnWarDuoSwap(attacker: Creep, healer: Creep): boolean {
+function issueMove(creep: AnyCreep, direction: DirectionConstant): CreepMoveReturnCode {
+  if (isStandardCreep(creep)) {
+    return measureCreepIntent(() => creep.move(direction));
+  }
+  return creep.move(direction);
+}
+
+function isHeadOnWarDuoSwap(attacker: AnyCreep, healer: AnyCreep): boolean {
+  if (!isStandardCreep(attacker) || !isStandardCreep(healer)) return false;
   if (attacker.memory.role !== "meleeAttacker" || healer.memory.role !== "healer") return false;
 
   const attackerConfig = attacker.memory.configName;
@@ -94,8 +127,8 @@ function isHeadOnWarDuoSwap(attacker: Creep, healer: Creep): boolean {
   return nextStep?.x === attacker.pos.x && nextStep.y === attacker.pos.y;
 }
 
-function getPlannedNextStep(creep: Creep): { x: number; y: number } | null {
-  const steps = getCreepMovementState(creep.name)?.movePathState?.steps;
+function getPlannedNextStep(creep: AnyCreep): { x: number; y: number } | null {
+  const steps = getCreepMovementState(creep)?.movePathState?.steps;
   if (!steps || steps.length === 0) return null;
 
   const exactIndex = steps.findIndex((step) => step.x === creep.pos.x && step.y === creep.pos.y);
@@ -113,22 +146,22 @@ function getPlannedNextStep(creep: Creep): { x: number; y: number } | null {
   return closestRange <= 1 ? closest : null;
 }
 
-function moveBlockerToYieldPosition(pusher: Creep, blocker: Creep, yieldPos: RoomPosition): boolean {
-  const moveCode = measureCreepIntent(() => blocker.move(blocker.pos.getDirectionTo(yieldPos)));
+function moveBlockerToYieldPosition(pusher: AnyCreep, blocker: AnyCreep, yieldPos: RoomPosition): boolean {
+  const moveCode = issueMove(blocker, blocker.pos.getDirectionTo(yieldPos));
   if (moveCode !== OK) {
     return false;
   }
 
-  const blockerState = ensureCreepMovementState(blocker.name);
+  const blockerState = ensureCreepMovementState(blocker);
   delete blockerState.movePathState;
   blockerState.movementPushedAt = Game.time;
-  recordMovementMetric("yieldPushes", pusher.room.name);
+  recordMovementMetric("yieldPushes", pusher.room?.name);
   return true;
 }
 
 // ─── Yield position selection ─────────────────────────────────────────────────
 
-function getYieldCandidatePositions(pusher: Creep, blocker: Creep): RoomPosition[] {
+function getYieldCandidatePositions(pusher: AnyCreep, blocker: AnyCreep): RoomPosition[] {
   const candidates: Array<{ pos: RoomPosition; score: number }> = [];
   const haulerPair = isPowerBankHauler(pusher) && isPowerBankHauler(blocker);
 
@@ -141,8 +174,8 @@ function getYieldCandidatePositions(pusher: Creep, blocker: Creep): RoomPosition
       continue;
     }
     let score = scoreYieldPosition(pos, blocker, pusher);
-    const occupant = findMyCreepAt(pos, blocker.name);
-    if (occupant && occupant.name !== pusher.name) {
+    const occupant = findMyOwnedUnitAt(pos, blocker);
+    if (occupant && occupant !== pusher) {
       score -= 15;
     }
     candidates.push({ pos, score });
@@ -151,11 +184,11 @@ function getYieldCandidatePositions(pusher: Creep, blocker: Creep): RoomPosition
   return candidates.sort((a, b) => b.score - a.score).map((e) => e.pos);
 }
 
-function isPowerBankHauler(creep: Creep): boolean {
-  return creep.memory.role === "powerBankHauler";
+function isPowerBankHauler(creep: AnyCreep): boolean {
+  return isStandardCreep(creep) && creep.memory.role === "powerBankHauler";
 }
 
-function scoreYieldPosition(pos: RoomPosition, blocker: Creep, pusher: Creep): number {
+function scoreYieldPosition(pos: RoomPosition, blocker: AnyCreep, pusher: AnyCreep): number {
   let score = 0;
 
   if (pos.x === pusher.pos.x && pos.y === pusher.pos.y) {
@@ -170,7 +203,7 @@ function scoreYieldPosition(pos: RoomPosition, blocker: Creep, pusher: Creep): n
   score += terrain === TERRAIN_MASK_SWAMP ? -2 : 1;
 
   // Stationary creeps with a work anchor should stay close to it.
-  const workAnchor = getCreepMovementState(blocker.name)?.workAnchor;
+  const workAnchor = getCreepMovementState(blocker)?.workAnchor;
   if (workAnchor && workAnchor.roomName === pos.roomName) {
     const anchorPos = new RoomPosition(workAnchor.x, workAnchor.y, workAnchor.roomName);
     const dist = pos.getRangeTo(anchorPos);
@@ -185,15 +218,16 @@ function scoreYieldPosition(pos: RoomPosition, blocker: Creep, pusher: Creep): n
   return score;
 }
 
-function isYieldTileWalkable(pos: RoomPosition, blocker: Creep): boolean {
-  if (pos.roomName !== blocker.room.name) {
+function isYieldTileWalkable(pos: RoomPosition, blocker: AnyCreep): boolean {
+  const blockerRoom = blocker.room;
+  if (!blockerRoom || pos.roomName !== blockerRoom.name) {
     return false;
   }
   if (Game.map.getRoomTerrain(pos.roomName).get(pos.x, pos.y) === TERRAIN_MASK_WALL) {
     return false;
   }
 
-  const roomContext = getTickContextService().getRoomContext(blocker.room);
+  const roomContext = getTickContextService().getRoomContext(blockerRoom);
   if (!roomContext) {
     return false;
   }
@@ -215,7 +249,7 @@ function isYieldTileWalkable(pos: RoomPosition, blocker: Creep): boolean {
 
 // ─── Exit recovery ────────────────────────────────────────────────────────────
 
-export function moveOffExit(creep: Creep, avoidSwamp = true): ScreepsReturnCode {
+export function moveOffExit(creep: AnyCreep, avoidSwamp = true): ScreepsReturnCode {
   let swampDirection: DirectionConstant | undefined;
 
   for (const direction of [TOP, RIGHT, BOTTOM, LEFT, TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT, TOP_LEFT] as DirectionConstant[]) {
@@ -223,7 +257,7 @@ export function moveOffExit(creep: Creep, avoidSwamp = true): ScreepsReturnCode 
     if (!pos || isExitTile(pos) || !isYieldTileWalkable(pos, creep)) {
       continue;
     }
-    if (findMyCreepAt(pos, creep.name)) {
+    if (findMyOwnedUnitAt(pos, creep)) {
       continue;
     }
 
@@ -233,11 +267,11 @@ export function moveOffExit(creep: Creep, avoidSwamp = true): ScreepsReturnCode 
       continue;
     }
 
-    return measureCreepIntent(() => creep.move(direction));
+    return issueMove(creep, direction);
   }
 
   if (swampDirection) {
-    return measureCreepIntent(() => creep.move(swampDirection));
+    return issueMove(creep, swampDirection);
   }
 
   return ERR_NO_PATH;

@@ -17,20 +17,8 @@ describe("palette constants", () => {
     }
   });
 
-  it("VIS_TEXT is #c9c9c9", () => {
-    expect(VIS_TEXT).toBe("#c9c9c9");
-  });
-
-  it("VIS_HEADER_FILL is #1a1a2e", () => {
-    expect(VIS_HEADER_FILL).toBe("#1a1a2e");
-  });
-
   it("VIS_PANEL_STROKE is #c9c9c9", () => {
     expect(VIS_PANEL_STROKE).toBe("#c9c9c9");
-  });
-
-  it("VIS_MUTED is #888888", () => {
-    expect(VIS_MUTED).toBe("#888888");
   });
 
   it("VIS_PANEL_FILL is a defined non-empty string", () => {

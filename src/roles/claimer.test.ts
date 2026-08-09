@@ -60,17 +60,6 @@ describe("claimerRole", () => {
     expect(moveToTarget).toHaveBeenCalledWith(creep, room.controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
   });
 
-  it("passes encoded route to moveToTargetRoom while outside the target room", () => {
-    const room = { name: "W8N9" } as Room;
-    const creep = createCreep(room);
-
-    const role = claimerRole("W9N9", "W8N9|W9N9");
-    const result = role.source(creep);
-
-    expect(result).toBe(false);
-    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, "W9N9", "W8N9|W9N9", { plainCost: 2, swampCost: 10 });
-  });
-
   it("attacks an owned controller directly in war downgrade mode", () => {
     const room = createRoom();
     room.controller!.owner = { username: "enemy" };

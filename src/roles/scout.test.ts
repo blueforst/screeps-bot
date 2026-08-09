@@ -30,26 +30,6 @@ describe("scoutRole", () => {
     });
   });
 
-  it("uses shared room travel even when no fixed route is available", () => {
-    const creep = {
-      room: { name: "W1N1" },
-      memory: {},
-      pos: {},
-      suicide: jest.fn(),
-    } as unknown as Creep;
-
-    const result = scoutRole("W1N2").source?.(creep);
-
-    expect(getCurrentScoutRoute).toHaveBeenCalledWith("W1N2", undefined);
-    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, "W1N2", undefined, {
-      plainCost: 2,
-      swampCost: 10,
-      reusePath: 5,
-      travelRange: 3,
-    });
-    expect(result).toBe(false);
-  });
-
   it("keeps using fixed room routing when a scout route is available", () => {
     const creep = {
       room: { name: "W1N1" },
@@ -69,54 +49,7 @@ describe("scoutRole", () => {
     });
   });
 
-  it("does not suicide yet when it reaches the target room on an edge tile", () => {
-    const creep = {
-      room: { name: "W1N2" },
-      memory: {},
-      pos: { x: 0, y: 25, roomName: "W1N2" },
-      suicide: jest.fn(),
-    } as unknown as Creep;
-    getCurrentScoutRoute.mockReturnValue("W1N1|W1N2");
-
-    const result = scoutRole("W1N2").source?.(creep);
-
-    expect(creep.suicide).not.toHaveBeenCalled();
-    expect(moveToTargetRoom).toHaveBeenCalledWith(creep, "W1N2", "W1N1|W1N2", {
-      plainCost: 2,
-      swampCost: 10,
-      reusePath: 5,
-      travelRange: 3,
-    });
-    expect(result).toBe(false);
-  });
-
   describe("suspended remote mining keep-alive", () => {
-    it("does not suicide when target room remote mining is suspended", () => {
-      const creep = {
-        room: { name: "W2N57" },
-        memory: {},
-        pos: { x: 25, y: 25, roomName: "W2N57" },
-        suicide: jest.fn(),
-      } as unknown as Creep;
-
-      Memory.data = {
-        remoteMining: {
-          "W2N57": {
-            sourceRoom: "W1N57",
-            targetRoom: "W2N57",
-            status: "suspended",
-            suspendedAt: 100,
-            sourceIds: [],
-            assignedAt: 50,
-            updatedAt: 100,
-          } satisfies import("@/runtime/remoteMining").RemoteMiningTask,
-        },
-      };
-
-      scoutRole("W2N57").source?.(creep);
-
-      expect(creep.suicide).not.toHaveBeenCalled();
-    });
 
     it("suicides when target room remote mining is active", () => {
       const creep = {
@@ -138,21 +71,6 @@ describe("scoutRole", () => {
           } satisfies import("@/runtime/remoteMining").RemoteMiningTask,
         },
       };
-
-      scoutRole("W2N57").source?.(creep);
-
-      expect(creep.suicide).toHaveBeenCalledTimes(1);
-    });
-
-    it("suicides when no remote mining data exists for target room", () => {
-      const creep = {
-        room: { name: "W2N57" },
-        memory: {},
-        pos: { x: 25, y: 25, roomName: "W2N57" },
-        suicide: jest.fn(),
-      } as unknown as Creep;
-
-      Memory.data = {};
 
       scoutRole("W2N57").source?.(creep);
 

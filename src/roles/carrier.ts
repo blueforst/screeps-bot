@@ -29,6 +29,7 @@ type DeadStorePickupAssignment = { target: DeadStorePickupTarget; resource: Reso
 type CarrierTaskFilter = (task: CarrierTask) => boolean;
 
 const POWER_BANK_BOOST_PRODUCER_PREFIX = "powerBankBoost:";
+const MIN_CARRIER_DROPPED_RESOURCE_PICKUP_AMOUNT = 50;
 
 interface CarrierPickupOptions {
   includeStorage?: boolean;
@@ -98,6 +99,15 @@ function isDroppedAtPlannedStoragePos(resource: Resource): boolean {
   return !!plannedPos && resource.pos.isEqualTo(plannedPos);
 }
 
+function shouldCarrierPickUpDroppedResource(creep: Creep, resource: Resource): boolean {
+  if (isDroppedAtPlannedStoragePos(resource)) {
+    return false;
+  }
+
+  return resource.amount >= MIN_CARRIER_DROPPED_RESOURCE_PICKUP_AMOUNT ||
+    creep.pos.getRangeTo(resource.pos) <= 1;
+}
+
 function isProtoStorageContainer(structure: StructureContainer): boolean {
   const plannedPos = getPlannedStoragePos(structure.room);
   return !!plannedPos && structure.pos.isEqualTo(plannedPos);
@@ -135,7 +145,8 @@ function deliverToPlannedStoragePosition(creep: Creep): boolean {
 function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPickupOptions): CarrierPickupTarget[] {
   return measureCreepDecision(() => {
     const roomContext = getTickContextService().getRoomContext(creep.room);
-    const dropped = (roomContext?.getDroppedEnergyResources() || []).filter(r => !isDroppedAtPlannedStoragePos(r));
+    const dropped = (roomContext?.getDroppedEnergyResources() || [])
+      .filter((resource) => shouldCarrierPickUpDroppedResource(creep, resource));
     const allStructures = roomContext?.getStructures() || [];
     const structures = allStructures.filter(
       (structure): structure is StructureContainer | StructureLink =>
@@ -189,11 +200,12 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPicku
 }
 
 function isCarrierPickupTarget(
+  creep: Creep,
   target: Resource | AnyStoreStructure | Tombstone | Ruin,
   options?: CarrierPickupOptions,
 ): target is CarrierPickupTarget {
   if (isDroppedResourceTarget(target)) {
-    return !isDroppedAtPlannedStoragePos(target);
+    return shouldCarrierPickUpDroppedResource(creep, target);
   }
 
   if ((target as Tombstone).deathTime !== undefined) {
@@ -230,7 +242,7 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
   const desiredAmount = creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0;
 
   let sourceTarget = getReservedPickupTarget(creep);
-  if (sourceTarget && !isCarrierPickupTarget(sourceTarget, options)) {
+  if (sourceTarget && !isCarrierPickupTarget(creep, sourceTarget, options)) {
     releasePickupReservation(creep, sourceTarget.id);
     sourceTarget = null;
   }
@@ -358,6 +370,14 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
 
 function isSpawnOrExtensionTarget(target: AnyStoreStructure | null): boolean {
   return !!target && (target.structureType === STRUCTURE_SPAWN || target.structureType === STRUCTURE_EXTENSION);
+}
+
+function isCriticalEnergyDemandTarget(target: AnyStoreStructure | null): boolean {
+  return !!target && (
+    target.structureType === STRUCTURE_SPAWN ||
+    target.structureType === STRUCTURE_EXTENSION ||
+    target.structureType === STRUCTURE_TOWER
+  );
 }
 
 function setPostTransferPlan(
@@ -588,6 +608,45 @@ function hasRunnableUrgentLabCleanupCarrierTask(roomName: string): boolean {
       isUrgentLabCleanupCarrierTask(task) &&
       isCarrierTaskRunnable(task, roomName),
   );
+}
+
+function isPowerSpawnSupplyCarrierTask(task: CarrierTask): boolean {
+  return task.type === "power_spawn_supply";
+}
+
+function hasRunnablePowerSpawnSupplyCarrierTask(roomName: string): boolean {
+  return getSynthesisCarrierTasks(roomName).some(
+    (task) => isPowerSpawnSupplyCarrierTask(task) && isCarrierTaskRunnable(task, roomName),
+  );
+}
+
+function pickupEnergyDemandForCarrier(
+  creep: Creep,
+  target: AnyStoreStructure,
+  assignedRoomName: string,
+): boolean {
+  delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+  const isSupplyingSpawnOrExtension = isSpawnOrExtensionTarget(target);
+
+  if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep) &&
+      (getAssignedCarrierRoom(creep)?.controller?.level ?? 0) > 2) {
+    releasePickupReservation(creep);
+    clearSynthesisCarrierTaskPlan(creep);
+    creep.suicide();
+    return false;
+  }
+
+  pickupEnergyForCarrier(creep, {
+    includeStorage: isSupplyingSpawnOrExtension,
+    includeProtoStorage: isSupplyingSpawnOrExtension,
+    includeTerminal:
+      isSupplyingSpawnOrExtension && isTerminalPickupEnabledForRoom(assignedRoomName),
+  });
+  const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
+  if (hasEnergy) {
+    releasePickupReservation(creep);
+  }
+  return hasEnergy;
 }
 
 function assignSynthesisCarrierTask(
@@ -1019,29 +1078,24 @@ export const carrierRole: RoleFactory = () => ({
       roomName: assignedRoomName,
     });
 
+    if (energyDemandTarget && isCriticalEnergyDemandTarget(energyDemandTarget)) {
+      return pickupEnergyDemandForCarrier(creep, energyDemandTarget, assignedRoomName);
+    }
+
+    if (hasRunnablePowerSpawnSupplyCarrierTask(assignedRoomName)) {
+      const powerSpawnPickup = pickupSynthesisCarrierResource(creep, isPowerSpawnSupplyCarrierTask, false);
+      if (powerSpawnPickup.picked || powerSpawnPickup.outOfRange) {
+        delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+        if (powerSpawnPickup.picked) {
+          releasePickupReservation(creep);
+        }
+        return creep.store.getUsedCapacity() > 0 ||
+          ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time;
+      }
+    }
+
     if (energyDemandTarget) {
-      delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
-      const isSupplyingSpawnOrExtension = isSpawnOrExtensionTarget(energyDemandTarget);
-
-      if (creep.store.getUsedCapacity() === 0 && hasNewerLiveReplacement(creep) &&
-          (getAssignedCarrierRoom(creep)?.controller?.level ?? 0) > 2) {
-        releasePickupReservation(creep);
-        clearSynthesisCarrierTaskPlan(creep);
-        creep.suicide();
-        return false;
-      }
-
-      pickupEnergyForCarrier(creep, {
-        includeStorage: isSupplyingSpawnOrExtension,
-        includeProtoStorage: isSupplyingSpawnOrExtension,
-        includeTerminal:
-          isSupplyingSpawnOrExtension && isTerminalPickupEnabledForRoom(assignedRoomName),
-      });
-      const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
-      if (hasEnergy) {
-        releasePickupReservation(creep);
-      }
-      return hasEnergy;
+      return pickupEnergyDemandForCarrier(creep, energyDemandTarget, assignedRoomName);
     }
 
     const hadExistingTask = !!ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;

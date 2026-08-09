@@ -5,11 +5,12 @@
 ## What Changes
 
 - 让本地 terminal 排空目标与容量状态恢复水位使用同一份配置；受压房在 storage 有安全空间时持续排空到恢复水位，而不是停在固定 250,000 使用量。
+- 将启用恢复功能时 normal 房间的日常卸货目标改为默认保留 60,000 terminal 空闲；接收账本仍保留 40,000 安全容量，从而提供 20,000 的可承诺接收窗口。
 - 统一 ResourceControl 与 Hub 的 receiver storage/terminal 安全容量计算，消除重复硬编码阈值。
 - 用物理空闲、健康入站承诺、同 tick 预留和本地排空能力计算可接收容量，避免将实际可用房间永久排除，也避免重复预留。
 - 仅为接收方仍安全、任务当前可执行或可在下一个发送槽执行的跨房任务生成 terminal feed；释放由长期容量阻塞任务占用的 staging 空间。
 - 细分容量阻塞与 terminal 恢复状态的运行时观测，报告无合格 receiver、粘滞水位、阻塞 staging 和恢复进度。
-- 增加 full → 50k free 粘滞区、protected-only terminal、blocked staging、receiver 恢复和多周期无振荡的回归覆盖。
+- 增加 full → 50k free 粘滞区、normal 60k 日常水位、protected-only terminal、blocked staging、receiver 恢复和多周期无振荡的回归覆盖。
 - 保持当前 energy export、矿物/T3/生产保护、任务优先级、市场规则和主循环阶段顺序不变。
 
 ## Capabilities

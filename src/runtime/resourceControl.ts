@@ -371,6 +371,10 @@ const RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER = "resourceControl:preload";
 const RESOURCE_CONTROL_TERMINAL_FEED_PRIORITY = 80;
 const RESOURCE_CONTROL_TERMINAL_OFFLOAD_PRIORITY = 90;
 const TERMINAL_STORAGE_CAPACITY = 300_000;
+// 新恢复路径为 normal 房间预留默认 20k 的可承诺接收窗口：
+// 60k 日常空闲 - 40k 默认 receiver 账本安全保留。
+const NORMAL_TERMINAL_TARGET_FREE_CAPACITY = 60_000;
+// 关闭 terminalHeadroomRecoveryEnabled 时保留的 legacy 使用量阈值。
 const TERMINAL_TOTAL_STORAGE_CAP = 250_000;
 const MARKET_TERMINAL_ENERGY_SCHEMA_VERSION = 3;
 const MARKET_TERMINAL_ENERGY_MAX_TRANSACTION_ENERGY = 1_000;
@@ -3799,13 +3803,18 @@ function getTerminalLogisticsCapacityPlan(
   const recoveringTerminal =
     capacityConfig.terminalHeadroomRecoveryEnabled &&
     snapshot.capacityState !== "normal";
-  const desiredTerminalUsedCapacity = recoveringTerminal
-    ? Math.max(
+  const desiredTerminalUsedCapacity = !capacityConfig.terminalHeadroomRecoveryEnabled
+    ? TERMINAL_TOTAL_STORAGE_CAP
+    : Math.max(
         0,
         TERMINAL_STORAGE_CAPACITY -
-          capacityConfig.terminalReliefTargetFreeCapacity,
-      )
-    : TERMINAL_TOTAL_STORAGE_CAP;
+          (recoveringTerminal
+            ? capacityConfig.terminalReliefTargetFreeCapacity
+            : Math.max(
+                NORMAL_TERMINAL_TARGET_FREE_CAPACITY,
+                capacityConfig.receiverTerminalMinFreeCapacity,
+              )),
+      );
   return {
     recoveringTerminal,
     desiredTerminalUsedCapacity,

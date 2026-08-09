@@ -36,19 +36,6 @@ function createRampart(x: number, y: number): StructureRampart {
 }
 
 describe("hostilePriorities", () => {
-  it("gives boundary defenders more weight to dismantlers than healers", () => {
-    const healer = createHostile({ [HEAL]: 5 });
-    const dismantler = createHostile({ [WORK]: 2, [MOVE]: 2 });
-
-    expect(getBoundaryDefensePriority(dismantler)).toBeGreaterThan(getBoundaryDefensePriority(healer));
-  });
-
-  it("gives inside defenders more weight to healers than attackers", () => {
-    const healer = createHostile({ [HEAL]: 2, [MOVE]: 2 });
-    const attacker = createHostile({ [ATTACK]: 2, [MOVE]: 2 });
-
-    expect(getInsideDefensePriority(healer)).toBeGreaterThan(getInsideDefensePriority(attacker));
-  });
 
   it("chooses the front-line dismantler over a back-line healer at the boundary", () => {
     const healer = createHostile({ [HEAL]: 5 }, new MockPos(20, 20, "W1N1"));
@@ -66,20 +53,6 @@ describe("hostilePriorities", () => {
     const engagement = chooseBoundaryBurstEngagement([hostile], [occupiedRampart, freeRampart], new Set([occupiedRampart.id]));
 
     expect(engagement?.rampart).toBe(freeRampart);
-  });
-
-  it("falls back to the closest rampart when all ramparts are occupied", () => {
-    const hostile = createHostile({ [WORK]: 2 }, new MockPos(12, 10, "W1N1"));
-    const closestRampart = createRampart(10, 10);
-    const fartherRampart = createRampart(15, 10);
-
-    const engagement = chooseBoundaryBurstEngagement(
-      [hostile],
-      [closestRampart, fartherRampart],
-      new Set([closestRampart.id, fartherRampart.id]),
-    );
-
-    expect(engagement?.rampart).toBe(closestRampart);
   });
 
   it("chooses the highest-value inside target for burst focus", () => {

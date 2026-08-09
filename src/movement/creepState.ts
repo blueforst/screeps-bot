@@ -1,4 +1,5 @@
 import type { MovePathState, TravelState, WorkAnchor } from "@/movement/types";
+import { isStandardCreep } from "@/movement/common";
 
 export interface CreepMovementState {
   movePathState?: MovePathState;
@@ -15,6 +16,16 @@ type RuntimeGlobalWithMovementState = typeof global & {
 };
 
 const runtimeGlobal: RuntimeGlobalWithMovementState = global;
+const POWER_CREEP_STATE_PREFIX = "power-creep:";
+
+type MovementStateOwner = string | AnyCreep;
+
+function getMovementStateKey(owner: MovementStateOwner): string {
+  if (typeof owner === "string") {
+    return owner;
+  }
+  return isStandardCreep(owner) ? owner.name : `${POWER_CREEP_STATE_PREFIX}${owner.name}`;
+}
 
 function ensureMovementStateStore(): MovementStateStore {
   if (!runtimeGlobal.__creepMovementState) {
@@ -24,23 +35,24 @@ function ensureMovementStateStore(): MovementStateStore {
   return runtimeGlobal.__creepMovementState;
 }
 
-export function ensureCreepMovementState(creepName: string): CreepMovementState {
+export function ensureCreepMovementState(owner: MovementStateOwner): CreepMovementState {
   const store = ensureMovementStateStore();
-  const existing = store[creepName];
+  const key = getMovementStateKey(owner);
+  const existing = store[key];
   if (existing) {
     return existing;
   }
 
-  store[creepName] = {};
-  return store[creepName];
+  store[key] = {};
+  return store[key];
 }
 
-export function getCreepMovementState(creepName: string): CreepMovementState | undefined {
-  return runtimeGlobal.__creepMovementState?.[creepName];
+export function getCreepMovementState(owner: MovementStateOwner): CreepMovementState | undefined {
+  return runtimeGlobal.__creepMovementState?.[getMovementStateKey(owner)];
 }
 
-export function clearCreepMovementState(creepName: string): void {
-  delete ensureMovementStateStore()[creepName];
+export function clearCreepMovementState(owner: MovementStateOwner): void {
+  delete ensureMovementStateStore()[getMovementStateKey(owner)];
 }
 
 export function pruneDeadCreepMovementState(): number {
@@ -50,12 +62,18 @@ export function pruneDeadCreepMovementState(): number {
   }
 
   let removed = 0;
-  for (const creepName of Object.keys(store)) {
-    if (Game.creeps[creepName]) {
+  for (const key of Object.keys(store)) {
+    if (key.startsWith(POWER_CREEP_STATE_PREFIX)) {
+      const powerCreepName = key.slice(POWER_CREEP_STATE_PREFIX.length);
+      const powerCreep = Game.powerCreeps?.[powerCreepName];
+      if (powerCreep?.room && powerCreep.ticksToLive != null) {
+        continue;
+      }
+    } else if (Game.creeps[key]) {
       continue;
     }
 
-    delete store[creepName];
+    delete store[key];
     removed += 1;
   }
 

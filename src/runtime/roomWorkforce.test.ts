@@ -86,19 +86,6 @@ describe("roomWorkforce", () => {
     clearWorkerTaskBoardForTest();
   });
 
-  it("clamps worker cap to the supported range", () => {
-    expect(getWorkerCap()).toBe(8);
-
-    Memory.cfg = { worker: { maxPerRoom: 0 } };
-    expect(getWorkerCap()).toBe(1);
-
-    Memory.cfg = { worker: { maxPerRoom: 12 } };
-    expect(getWorkerCap()).toBe(10);
-
-    Memory.cfg = { worker: { maxPerRoom: 6 } };
-    expect(getWorkerCap()).toBe(6);
-  });
-
   it("uses construction hysteresis when deciding worker count", () => {
     const room = createRoom({ level: 5, constructionCount: 6 });
 
@@ -136,16 +123,19 @@ describe("roomWorkforce", () => {
     expect(room.memory.workerConstructionTier).toBe(1);
   });
 
-  it("adds a worker only for active normal repair tasks", () => {
-    const normalRepairRoom = createRoom({
-      level: 5,
+  it("caps RCL8 at one worker regardless of construction and normal repair demand", () => {
+    const room = createRoom({
+      name: "W8N8",
+      level: 8,
+      constructionCount: 20,
+      workerConstructionTier: 3,
     });
-    const normalTasks = getWorkerTasksByRoom(normalRepairRoom.name);
-    normalTasks["repair:r1"] = {
-      id: "repair:r1",
+    const tasks = getWorkerTasksByRoom(room.name);
+    tasks["repair:r8"] = {
+      id: "repair:r8",
       type: "repair",
-      targetId: "r1",
-      roomName: "W1N1",
+      targetId: "r8",
+      roomName: room.name,
       priority: 320,
       assignedCreeps: [],
       maxAssignees: 1,
@@ -153,26 +143,9 @@ describe("roomWorkforce", () => {
       updatedAt: Game.time,
       repairMode: "normal",
     };
-    expect(getDesiredWorkerCount(normalRepairRoom)).toBe(2);
 
-    const emergencyRepairRoom = createRoom({
-      name: "W1N2",
-      level: 5,
-    });
-    const emergencyTasks = getWorkerTasksByRoom(emergencyRepairRoom.name);
-    emergencyTasks["repair:r2"] = {
-      id: "repair:r2",
-      type: "repair",
-      targetId: "r2",
-      roomName: "W1N2",
-      priority: 900,
-      assignedCreeps: [],
-      maxAssignees: 1,
-      status: "active",
-      updatedAt: Game.time,
-      repairMode: "emergency",
-    };
-    expect(getDesiredWorkerCount(emergencyRepairRoom)).toBe(1);
+    expect(getDesiredWorkerCount(room)).toBe(1);
+    expect(room.memory.workerConstructionTier).toBe(0);
   });
 
   it("builds managed config names from source roles, carrier, and workers", () => {

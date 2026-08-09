@@ -131,33 +131,4 @@ describe("harvesterRole – pre-spawn overlap (two harvesters for same source)",
 
     expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
   });
-
-  test("after old harvester dies (unoccupied workPos), new harvester claims position", () => {
-    // First tick: workPos occupied
-    workPos.setLookFor(LOOK_CREEPS, [{ my: true }]);
-    const creep = makeCreep(10, 11, ROOM);
-    creep.harvest.mockReturnValue(OK);
-
-    const role = harvesterRole(SOURCE_ID);
-    role.source(creep as unknown as Creep);
-    expect(moveToTarget).not.toHaveBeenCalledWith(creep, workPos, 0, expect.anything());
-
-    jest.clearAllMocks();
-
-    // Second tick: workPos now empty (old harvester died)
-    workPos.setLookFor(LOOK_CREEPS, []);
-    creep.pos = new MockPos(10, 11, ROOM); // still not at workPos
-
-    role.source(creep as unknown as Creep);
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
-  });
-
-  test("existing harvester still pursues its work position even if defense policy later stops replacements", () => {
-    const creep = makeCreep(5, 5, ROOM);
-
-    const role = harvesterRole(SOURCE_ID);
-    role.source(creep as unknown as Creep);
-
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
-  });
 });

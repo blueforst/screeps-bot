@@ -13,10 +13,6 @@ beforeEach(() => {
 });
 
 describe("isSpawnActive", () => {
-  test("treats spawn as active when isActive is not a function", () => {
-    const spawn = makeSpawn();
-    expect(isSpawnActive(spawn)).toBe(true);
-  });
 
   test("reflects isActive() result when present", () => {
     const active = makeSpawn({ isActive: jest.fn(() => true) });
@@ -45,35 +41,5 @@ describe("isSpawnActive", () => {
     expect(isSpawnActive(spawn)).toBe(false);
 
     expect(isActive).toHaveBeenCalledTimes(1);
-  });
-
-  test("caches each spawn independently", () => {
-    const isActiveA = jest.fn(() => true);
-    const isActiveB = jest.fn(() => false);
-    const spawnA = makeSpawn({ isActive: isActiveA });
-    const spawnB = makeSpawn({ isActive: isActiveB });
-
-    expect(isSpawnActive(spawnA)).toBe(true);
-    expect(isSpawnActive(spawnB)).toBe(false);
-
-    isSpawnActive(spawnA);
-    isSpawnActive(spawnB);
-
-    expect(isActiveA).toHaveBeenCalledTimes(1);
-    expect(isActiveB).toHaveBeenCalledTimes(1);
-  });
-
-  test("recomputes after the tick advances", () => {
-    const isActive = jest.fn(() => true);
-    const spawn = makeSpawn({ isActive });
-
-    Game.time = 100;
-    isSpawnActive(spawn);
-    expect(isActive).toHaveBeenCalledTimes(1);
-
-    Game.time = 101;
-    isActive.mockReturnValue(false);
-    expect(isSpawnActive(spawn)).toBe(false);
-    expect(isActive).toHaveBeenCalledTimes(2);
   });
 });

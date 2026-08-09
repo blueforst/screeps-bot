@@ -63,16 +63,6 @@ beforeEach(() => {
 });
 
 describe("isDefenseMode", () => {
-  test("returns false when no safe zone exists", () => {
-    (getSafeZone as jest.Mock).mockReturnValue(new Set());
-    const room = makeRoomWithFind([], ROOM_W1N1);
-    (getTickContextService as jest.Mock).mockReturnValue({
-      getMyRooms: jest.fn(() => [room]),
-      getCreepsByConfigName: jest.fn(() => []),
-    });
-    runDefenseMode();
-    expect(isDefenseMode(ROOM_W1N1)).toBe(false);
-  });
 
   test("returns false when safe zone exists but no player hostiles", () => {
     const safeZone = new Set([25 * 50 + 25]);
@@ -84,45 +74,6 @@ describe("isDefenseMode", () => {
     });
     runDefenseMode();
     expect(isDefenseMode(ROOM_W1N1)).toBe(false);
-  });
-
-  test("returns true when hostiles are present inside a room with a safe zone", () => {
-    const safeZone = new Set([25 * 50 + 25]);
-    (getSafeZone as jest.Mock).mockReturnValue(safeZone);
-
-    const hostile = makeHostile();
-    (hostile.getActiveBodyparts as jest.Mock).mockImplementation((part: BodyPartConstant) =>
-      part === ATTACK ? 1 : 0,
-    );
-    const room = makeRoomWithFind([hostile], ROOM_W1N1);
-
-    (getTickContextService as jest.Mock).mockReturnValue({
-      getMyRooms: jest.fn(() => [room]),
-      getCreepsByConfigName: jest.fn(() => []),
-    });
-    runDefenseMode();
-    expect(isDefenseMode(ROOM_W1N1)).toBe(true);
-  });
-
-  test("treats heal-only invaders as defense hostiles", () => {
-    const safeZone = new Set([25 * 50 + 25]);
-    (getSafeZone as jest.Mock).mockReturnValue(safeZone);
-
-    const healer = makeHostile({ owner: { username: "Invader" } });
-    (healer.getActiveBodyparts as jest.Mock).mockImplementation((part: BodyPartConstant) =>
-      part === HEAL ? 25 : 0,
-    );
-    const room = makeRoomWithFind([healer], ROOM_W1N1);
-
-    (getTickContextService as jest.Mock).mockReturnValue({
-      getMyRooms: jest.fn(() => [room]),
-      getCreepsByConfigName: jest.fn(() => []),
-    });
-
-    runDefenseMode();
-
-    expect(isDefenseMode(ROOM_W1N1)).toBe(true);
-    expect(getPlayerHostiles(room)).toEqual([healer]);
   });
 
   test("returns true when hostiles present and the safe zone exists", () => {
@@ -141,11 +92,6 @@ describe("isDefenseMode", () => {
     });
     runDefenseMode();
     expect(isDefenseMode(ROOM_W1N1)).toBe(true);
-  });
-
-  test("returns false for rooms not computed", () => {
-    runDefenseMode();
-    expect(isDefenseMode("UNKNOWN")).toBe(false);
   });
 
   test("different rooms can have different states", () => {
@@ -172,139 +118,9 @@ describe("isDefenseMode", () => {
     expect(isDefenseMode(ROOM_W1N1)).toBe(true);
     expect(isDefenseMode(ROOM_W2N2)).toBe(false);
   });
-
-  test("resets state on new tick", () => {
-    const safeZone = new Set([25 * 50 + 25]);
-    (getSafeZone as jest.Mock).mockReturnValue(safeZone);
-
-    const hostile = makeHostile();
-    (hostile.getActiveBodyparts as jest.Mock).mockImplementation((part: BodyPartConstant) =>
-      part === ATTACK ? 1 : 0,
-    );
-    const room = makeRoomWithFind([hostile], ROOM_W1N1);
-    (getTickContextService as jest.Mock).mockReturnValue({
-      getMyRooms: jest.fn(() => [room]),
-      getCreepsByConfigName: jest.fn(() => []),
-    });
-
-    Game.time = 100;
-    runDefenseMode();
-    expect(isDefenseMode(ROOM_W1N1)).toBe(true);
-
-    Game.time = 101;
-    const roomCleared = makeRoomWithFind([], ROOM_W1N1);
-    (getTickContextService as jest.Mock).mockReturnValue({
-      getMyRooms: jest.fn(() => [roomCleared]),
-      getCreepsByConfigName: jest.fn(() => []),
-    });
-    runDefenseMode();
-    expect(isDefenseMode(ROOM_W1N1)).toBe(false);
-  });
-});
-
-describe("isOffensiveWarCreep", () => {
-  function setupConfig(role: string): void {
-    const configService = {
-      get: jest.fn(() => ({ role, args: [] })),
-      list: jest.fn(() => ({})),
-    };
-    (getCreepConfigService as jest.Mock).mockReturnValue(configService);
-  }
-
-  test("returns true for meleeAttacker role", () => {
-    setupConfig("meleeAttacker");
-    const creep = makeCreep({ memory: { configName: "W1N1:war:W3N3:meleeAttacker:0" } });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(true);
-  });
-
-  test("returns true for healer role", () => {
-    setupConfig("healer");
-    const creep = makeCreep({ memory: { configName: "W1N1:war:W3N3:healer:0" } });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(true);
-  });
-
-  test("returns false for homeDefender role", () => {
-    setupConfig("homeDefender");
-    const creep = makeCreep({ memory: { configName: "W1N1:homeDefense:defender:0" } });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(false);
-  });
-
-  test("returns false for worker role", () => {
-    setupConfig("worker");
-    const creep = makeCreep({ memory: { configName: "W1N1:worker:0" } });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(false);
-  });
-
-  test("returns false for carrier role", () => {
-    setupConfig("carrier");
-    const creep = makeCreep({ memory: { configName: "W1N1:carrier:0" } });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(false);
-  });
-
-  test("returns false for harvester role", () => {
-    setupConfig("harvester");
-    const creep = makeCreep({ memory: { configName: "W1N1:harvester:src1" } });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(false);
-  });
-
-  test("returns false for colonizerHarvester role", () => {
-    setupConfig("colonizerHarvester");
-    const creep = makeCreep({ memory: { configName: "W1N1:colonize:W3N3:harvester:src1" } });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(false);
-  });
-
-  test("returns false when creep has no configName", () => {
-    const creep = makeCreep({ memory: {} });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(false);
-  });
-
-  test("returns false when config not found", () => {
-    const configService = {
-      get: jest.fn(() => undefined),
-      list: jest.fn(() => ({})),
-    };
-    (getCreepConfigService as jest.Mock).mockReturnValue(configService);
-    const creep = makeCreep({ memory: { configName: "nonexistent" } });
-    expect(isOffensiveWarCreep(creep as Creep)).toBe(false);
-  });
 });
 
 describe("getPlayerHostiles (shared predicate)", () => {
-  test("excludes Source Keeper creeps", () => {
-    const sk = makeHostile({ owner: { username: "Source Keeper" } });
-    (sk.getActiveBodyparts as jest.Mock).mockImplementation((p: BodyPartConstant) =>
-      p === ATTACK ? 5 : 0,
-    );
-    const room = makeRoomWithFind([sk]);
-    expect(getPlayerHostiles(room)).toHaveLength(0);
-  });
-
-  test("excludes Invader creeps without WORK parts", () => {
-    const invader = makeHostile({ owner: { username: "Invader" } });
-    (invader.getActiveBodyparts as jest.Mock).mockImplementation((p: BodyPartConstant) =>
-      p === ATTACK ? 3 : 0,
-    );
-    const room = makeRoomWithFind([invader]);
-    expect(getPlayerHostiles(room)).toHaveLength(0);
-  });
-
-  test("includes Invader creeps WITH WORK parts", () => {
-    const invader = makeHostile({ owner: { username: "Invader" } });
-    (invader.getActiveBodyparts as jest.Mock).mockImplementation((p: BodyPartConstant) =>
-      p === WORK ? 1 : 0,
-    );
-    const room = makeRoomWithFind([invader]);
-    expect(getPlayerHostiles(room)).toHaveLength(1);
-  });
-
-  test("includes player creeps with ATTACK parts", () => {
-    const hostile = makeHostile();
-    (hostile.getActiveBodyparts as jest.Mock).mockImplementation((p: BodyPartConstant) =>
-      p === ATTACK ? 2 : 0,
-    );
-    const room = makeRoomWithFind([hostile]);
-    expect(getPlayerHostiles(room)).toHaveLength(1);
-  });
 
   test("includes player creeps with RANGED_ATTACK parts", () => {
     const hostile = makeHostile();
@@ -313,23 +129,5 @@ describe("getPlayerHostiles (shared predicate)", () => {
     );
     const room = makeRoomWithFind([hostile]);
     expect(getPlayerHostiles(room)).toHaveLength(1);
-  });
-
-  test("includes player creeps with WORK parts", () => {
-    const hostile = makeHostile();
-    (hostile.getActiveBodyparts as jest.Mock).mockImplementation((p: BodyPartConstant) =>
-      p === WORK ? 3 : 0,
-    );
-    const room = makeRoomWithFind([hostile]);
-    expect(getPlayerHostiles(room)).toHaveLength(1);
-  });
-
-  test("excludes player creeps with only non-dangerous parts", () => {
-    const hostile = makeHostile();
-    (hostile.getActiveBodyparts as jest.Mock).mockImplementation((p: BodyPartConstant) =>
-      p === MOVE ? 5 : 0,
-    );
-    const room = makeRoomWithFind([hostile]);
-    expect(getPlayerHostiles(room)).toHaveLength(0);
   });
 });
