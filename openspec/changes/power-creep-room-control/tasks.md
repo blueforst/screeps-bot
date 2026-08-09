@@ -33,4 +33,4 @@
 - [x] 4.7 添加 REGEN_SOURCE miner 体型、能力隔离、常规换代和单入口矿点交接回归测试；全量 3372 个测试通过，实况边界修正后相关 131 个测试、TypeScript、构建及 OpenSpec 严格校验通过
 - [x] 4.8 部署 `2026.8.9-6`；tick 72868740 验证 E4N58 两个 miner 均完成 `12 WORK + 6 CARRY + 5 MOVE` 换代，单入口矿点正常交接且 Spawn 无重复队列
 - [x] 4.9 添加 REGEN_SOURCE 旧 effect 等待、预定位与到期首 tick 施法回归测试；全量 122 suites / 508 tests、TypeScript、构建、diff 检查及两个 OpenSpec 严格校验通过
-- [ ] 4.10 提交并部署到 shard1，验证 cooldown 归零后任务已提前入队且 PC 向下一 Source 预定位
+- [x] 4.10 提交并部署 `2026.8.9-9+fcbf095` 到 shard1；tick 72880109 验证 cooldown 归零且目标旧 effect 尚余 84 tick 时任务已于 72880106 入队并开始移动，tick 72880127 验证任务保留且 PC 已预定位至范围 3（旧 effect 尚余 66 tick）
