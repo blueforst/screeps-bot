@@ -10,7 +10,10 @@ import {
   ensurePowerBankBoostPrepStore,
 } from "@/runtime/powerBankBoostMemory";
 import { isSynthesisPaused } from "@/runtime/synthesisControl";
-import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import {
+  createAutomaticResourceTransferTask,
+  ensureResourceTransferTaskStore,
+} from "@/runtime/logistics/resourceTransferTasks";
 import { createMockStore, MockPos } from "@mock/powerBank";
 import { clearCarrierTaskBoardForTest, listCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
 
@@ -100,6 +103,34 @@ const SOURCE_ROOM = "W1N1";
 const HUB_ROOM = "W2N2";
 const DONOR_ROOM = "W3N3";
 const TASK_ID = "pb-task-001";
+
+function setActiveSynthesisPlan(roomName: string): void {
+  Memory.runtime = {
+    synthesisControl: {
+      updatedAt: Game.time,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: {
+        [roomName]: {
+          stage: "synthesizing",
+          activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+          reagentA: RESOURCE_UTRIUM,
+          reagentB: RESOURCE_HYDROGEN,
+          targetAmount: 5_000,
+          batchSize: 500,
+          reagentLabIds: [],
+          productLabIds: [],
+          successfulRuns: 10,
+          pendingTasks: 0,
+          lastTransitionAt: Game.time - 10,
+        },
+      },
+    },
+  } as NonNullable<Memory["runtime"]>;
+}
 
 describe("powerBankBoost", () => {
   beforeEach(() => {
@@ -197,6 +228,56 @@ describe("powerBankBoost", () => {
         });
       });
 
+      it("does not count another boost owner's incoming transfer toward this task", () => {
+        const compound = RESOURCE_CATALYZED_UTRIUM_ACID;
+        const taskIdA = "pb-owner-a";
+        const taskIdB = "pb-owner-b";
+        const required = new Map<ResourceConstant, number>([[compound, 60]]);
+        Game.rooms[SOURCE_ROOM] = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          labs: [createLabWithCompound(`${SOURCE_ROOM}-lab-1`, SOURCE_ROOM, null, 0)],
+        });
+
+        const incomingForTaskA = createAutomaticResourceTransferTask(
+          DONOR_ROOM,
+          SOURCE_ROOM,
+          compound,
+          60,
+          `powerBankBoost:${taskIdA}`,
+        );
+        expect(typeof incomingForTaskA).not.toBe("string");
+
+        const result = prepareBoosts(taskIdB, SOURCE_ROOM, 6, required);
+
+        expect(result).toMatchObject({ status: "failed", reason: "insufficient_boost_compound" });
+        expect(ensurePowerBankBoostPrepStore()[taskIdB]).toBeUndefined();
+        expect(
+          Object.values(ensureResourceTransferTaskStore()).find(
+            (task) => task.reason === `powerBankBoost:${taskIdA}`,
+          )?.status,
+        ).toBe("pending");
+      });
+
+      it("deducts pending outgoing transfers from donor availability", () => {
+        const compound = RESOURCE_CATALYZED_UTRIUM_ACID;
+        Game.rooms[DONOR_ROOM] = createRoomWithInfrastructure({
+          name: DONOR_ROOM,
+          terminalResources: { [compound]: 100 },
+        });
+
+        const pendingOutgoing = createAutomaticResourceTransferTask(
+          DONOR_ROOM,
+          HUB_ROOM,
+          compound,
+          60,
+          "powerBankBoost:another-owner",
+        );
+        expect(typeof pendingOutgoing).not.toBe("string");
+
+        expect(findBestDonorRoom(compound, 50, [])).toBeNull();
+        expect(findBestDonorRoom(compound, 40, [])).toBe(DONOR_ROOM);
+      });
+
       it("reuses its own reserved labs on repeated preparation", () => {
         const compounds = [
           RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
@@ -226,6 +307,121 @@ describe("powerBankBoost", () => {
         expect(second.status).toBe("preparing");
         expect(second.reason).toBeUndefined();
         expect(second.labs).toEqual(first.labs);
+      });
+
+      it("rolls back a zero-lab preparation in the same tick and restores synthesis", () => {
+        Game.rooms[SOURCE_ROOM] = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          labs: [],
+        });
+        setActiveSynthesisPlan(SOURCE_ROOM);
+
+        const result = prepareBoosts(TASK_ID, SOURCE_ROOM, 6);
+
+        expect(result).toMatchObject({ status: "failed", reason: "insufficient_labs", labs: [] });
+        expect(isSynthesisPaused(SOURCE_ROOM)).toBe(false);
+        expect(Memory.runtime?.powerBankBoost?.[TASK_ID]).toBeUndefined();
+
+        const synthesisState = Memory.runtime?.synthesisControl?.rooms[SOURCE_ROOM];
+        expect(synthesisState?.boostPause).toBeUndefined();
+        expect(synthesisState?.stage).toBe("synthesizing");
+        expect(synthesisState?.activeProduct).toBe(RESOURCE_UTRIUM_HYDRIDE);
+        expect(synthesisState?.targetAmount).toBe(5_000);
+        expect(synthesisState?.batchSize).toBe(500);
+      });
+
+      it("rolls back only the failed owner while another boost owner remains active", () => {
+        const compounds: ResourceConstant[] = [
+          RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+          RESOURCE_CATALYZED_UTRIUM_ACID,
+          RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+        ];
+        const storageResources = Object.fromEntries(compounds.map((compound) => [compound, 5_000]));
+        const labsA = compounds.map((_compound, index) =>
+          createLabWithCompound(`${SOURCE_ROOM}-lab-a-${index}`, SOURCE_ROOM, null, 0)
+        );
+        const labsB = compounds.map((_compound, index) =>
+          createLabWithCompound(`${SOURCE_ROOM}-lab-b-${index}`, SOURCE_ROOM, null, 0)
+        );
+        const taskIdA = "pb-owner-a";
+        const taskIdB = "pb-owner-b";
+        Game.rooms[SOURCE_ROOM] = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          storageResources,
+          labs: [...labsA, ...labsB],
+        });
+        setActiveSynthesisPlan(SOURCE_ROOM);
+
+        expect(prepareBoosts(taskIdA, SOURCE_ROOM, 6).status).toBe("preparing");
+        expect(prepareBoosts(taskIdB, SOURCE_ROOM, 6).status).toBe("preparing");
+        expect(listCarrierTasksByRoom(SOURCE_ROOM).some((task) => task.producer === `powerBankBoost:${taskIdA}`)).toBe(true);
+        expect(listCarrierTasksByRoom(SOURCE_ROOM).some((task) => task.producer === `powerBankBoost:${taskIdB}`)).toBe(true);
+
+        Game.rooms[SOURCE_ROOM] = createRoomWithInfrastructure({
+          name: SOURCE_ROOM,
+          storageResources,
+          labs: labsA,
+        });
+        const failed = prepareBoosts(taskIdB, SOURCE_ROOM, 6);
+
+        expect(failed).toMatchObject({ status: "failed", reason: "insufficient_labs" });
+        expect(ensurePowerBankBoostPrepStore()[taskIdA]).toBeDefined();
+        expect(ensurePowerBankBoostPrepStore()[taskIdB]).toBeUndefined();
+        expect(getActivePowerBankBoostLabIds(SOURCE_ROOM)).toEqual(new Set(labsA.map((lab) => lab.id)));
+        expect(listCarrierTasksByRoom(SOURCE_ROOM).some((task) => task.producer === `powerBankBoost:${taskIdA}`)).toBe(true);
+        expect(listCarrierTasksByRoom(SOURCE_ROOM).some((task) => task.producer === `powerBankBoost:${taskIdB}`)).toBe(false);
+        expect(isSynthesisPaused(SOURCE_ROOM)).toBe(true);
+        expect(Memory.runtime?.synthesisControl?.rooms[SOURCE_ROOM].boostPause?.taskIds).toEqual([taskIdA]);
+        expect(Memory.runtime?.synthesisControl?.rooms[SOURCE_ROOM].activeProduct).toBeUndefined();
+
+        releaseBoostLabs(taskIdA, SOURCE_ROOM);
+        expect(isSynthesisPaused(SOURCE_ROOM)).toBe(false);
+        expect(Memory.runtime?.synthesisControl?.rooms[SOURCE_ROOM].activeProduct).toBe(RESOURCE_UTRIUM_HYDRIDE);
+      });
+
+      it("does not commit partial donor transfers and cancels only failed-owner pending supply", () => {
+        const firstCompound = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
+        const missingCompound = RESOURCE_CATALYZED_UTRIUM_ACID;
+        const unrelatedResource = RESOURCE_ZYNTHIUM;
+        const required = new Map<ResourceConstant, number>([
+          [firstCompound, 30],
+          [missingCompound, 30],
+        ]);
+        const labs = [
+          createLabWithCompound(`${SOURCE_ROOM}-lab-1`, SOURCE_ROOM, null, 0),
+          createLabWithCompound(`${SOURCE_ROOM}-lab-2`, SOURCE_ROOM, null, 0),
+        ];
+        Game.rooms[SOURCE_ROOM] = createRoomWithInfrastructure({ name: SOURCE_ROOM, labs });
+        Game.rooms[DONOR_ROOM] = createRoomWithInfrastructure({
+          name: DONOR_ROOM,
+          terminalResources: { [firstCompound]: 30 },
+        });
+
+        const failedOwnerTransfer = createAutomaticResourceTransferTask(
+          DONOR_ROOM,
+          SOURCE_ROOM,
+          unrelatedResource,
+          10,
+          `powerBankBoost:${TASK_ID}`,
+        );
+        const otherOwnerTransfer = createAutomaticResourceTransferTask(
+          DONOR_ROOM,
+          SOURCE_ROOM,
+          unrelatedResource,
+          10,
+          "powerBankBoost:other-owner",
+        );
+        expect(typeof failedOwnerTransfer).not.toBe("string");
+        expect(typeof otherOwnerTransfer).not.toBe("string");
+
+        const result = prepareBoosts(TASK_ID, SOURCE_ROOM, 6, required);
+
+        expect(result).toMatchObject({ status: "failed", reason: "insufficient_boost_compound" });
+        const transfers = Object.values(ensureResourceTransferTaskStore());
+        expect(transfers.filter((task) => task.reason === `powerBankBoost:${TASK_ID}` && task.status === "pending")).toHaveLength(0);
+        expect(transfers.find((task) => task.reason === `powerBankBoost:${TASK_ID}` && task.resource === firstCompound)).toBeUndefined();
+        expect(transfers.find((task) => task.reason === "powerBankBoost:other-owner")?.status).toBe("pending");
+        expect(isSynthesisPaused(SOURCE_ROOM)).toBe(false);
       });
     });
   });

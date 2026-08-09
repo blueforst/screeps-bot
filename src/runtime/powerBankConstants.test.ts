@@ -6,6 +6,7 @@ import {
   POWER_BANK_STATUS,
   POWER_BANK_BOOST_REQUIREMENTS,
   getPowerBankConfigName,
+  getPowerBankTaskToken,
 } from "@/runtime/powerBankConstants";
 
 function bodyCost(parts: BodyPartConstant[]): number {
@@ -23,6 +24,33 @@ describe("powerBankConstants", () => {
       expect(getPowerBankConfigName("W1N1", "E3N60", "attacker", 0)).toBe(
         "W1N1:powerbank:E3N60:attacker:0",
       );
+    });
+
+    it("adds a stable task owner and generation when supplied", () => {
+      const ownerToken = getPowerBankTaskToken("bank-task-a");
+
+      expect(getPowerBankConfigName("W1N1", "E3N60", "attacker", 0, "bank-task-a", 2)).toBe(
+        `W1N1:powerbank:E3N60:attacker:0:owner:${ownerToken}:g2`,
+      );
+      expect(getPowerBankConfigName("W1N1", "E3N60", "attacker", 0, "bank-task-a", 2)).toBe(
+        getPowerBankConfigName("W1N1", "E3N60", "attacker", 0, "bank-task-a", 2),
+      );
+    });
+
+    it("does not collide for concurrent tasks or combat generations", () => {
+      const taskA = getPowerBankConfigName("W1N1", "E3N60", "healer", 0, "bank-task-a", 0);
+      const taskB = getPowerBankConfigName("W1N1", "E3N60", "healer", 0, "bank-task-b", 0);
+      const nextGeneration = getPowerBankConfigName("W1N1", "E3N60", "healer", 0, "bank-task-a", 1);
+
+      expect(new Set([taskA, taskB, nextGeneration])).toHaveProperty("size", 3);
+    });
+
+    it("defaults invalid or omitted owner generations to zero", () => {
+      const expected = getPowerBankConfigName("W1N1", "E3N60", "hauler", 3, "bank-task-a", 0);
+
+      expect(getPowerBankConfigName("W1N1", "E3N60", "hauler", 3, "bank-task-a")).toBe(expected);
+      expect(getPowerBankConfigName("W1N1", "E3N60", "hauler", 3, "bank-task-a", -1)).toBe(expected);
+      expect(getPowerBankConfigName("W1N1", "E3N60", "hauler", 3, "bank-task-a", Number.NaN)).toBe(expected);
     });
   });
 

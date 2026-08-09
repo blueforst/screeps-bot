@@ -75,6 +75,7 @@ import {
 import { clearHubSynthesisReactions } from "@/runtime/hubPlanner";
 import { collectHubProgressSnapshot } from "@/runtime/hubProgress";
 import { buildMemoryAuditSnapshot, MemoryAuditSnapshot } from "@/runtime/memoryAudit";
+import { powerBankStatusCommand, powerBankStatusRaw } from "@/runtime/powerBankStatus";
 
 interface SynthesisControlStatusResult {
   ok: true;
@@ -178,6 +179,8 @@ export function registerConsoleCommands(): void {
   global.hubProgressRaw = hubProgressRaw;
   global.memoryAudit = memoryAudit;
   global.memoryAuditRaw = memoryAuditRaw;
+  global.powerBankStatus = powerBankStatusCommand;
+  global.powerBankStatusRaw = powerBankStatusRaw;
   registerResourceTransferConsoleCommands();
   registerFactoryTaskConsoleCommands();
   registerRemoteDefenseConsoleCommands();
@@ -204,6 +207,8 @@ export {
   listResourceTransferTasksRaw,
   remoteDefenseStatusCommand,
   remoteDefenseStatusRaw,
+  powerBankStatusCommand,
+  powerBankStatusRaw,
   spawnMaxCarrier,
   spawnMaxCarrierCommand,
   spawnMaxCarrierRaw,

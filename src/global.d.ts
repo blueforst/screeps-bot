@@ -414,6 +414,8 @@ declare global {
   var listFactoryTasksRaw: (roomName?: string) => FactoryTask[];
   var remoteDefenseStatus: (targetRoom: string) => string;
   var remoteDefenseStatusRaw: (targetRoom: string) => RemoteDefenseStatusSnapshot | string;
+  var powerBankStatus: () => string;
+  var powerBankStatusRaw: () => PowerBankStatusSnapshot;
 
   type PowerBankHarvestStatus =
     | "discovered"
@@ -430,13 +432,30 @@ declare global {
 
   type PowerBankReinforcementStage = "spawning" | "renewing" | "boosting" | "travelling" | "attacking";
 
+  type PowerBankHarvestTier = 6 | 7 | 8;
+
+  type PowerBankHarvestOutcome =
+    | "success"
+    | "partial"
+    | "expired"
+    | "contested"
+    | "zero_yield"
+    | "lost"
+    | "aborted"
+    | "failed";
+
   interface PowerBankReinforcementState {
     index: number;
+    generation?: number;
     stage: PowerBankReinforcementStage;
     attackerId?: string;
     healerId?: string;
     attackerReady?: boolean;
     healerReady?: boolean;
+    combatReady?: boolean;
+    boostOwnerId?: string;
+    boostLabs?: string[];
+    lastMemberChangeAt?: number;
   }
 
   interface PowerBankHarvestTask {
@@ -458,7 +477,7 @@ declare global {
     boostLabs: string[];
     compoundTransferTaskIds: string[];
     /** Body tier (RCL number) selected by viability assessment. */
-    tier?: number;
+    tier?: PowerBankHarvestTier;
     /** Linear distance from source room to target room. */
     routeDistance?: number;
     /** Number of haulers needed to collect the dropped power. */
@@ -477,6 +496,106 @@ declare global {
     haulingEmptySince?: number;
     /** Optional replacement combat pair prepared while the active pair keeps attacking. */
     reinforcement?: PowerBankReinforcementState;
+    /** Absolute tick at which the observed bank is expected to decay. */
+    bankExpiresAt?: number;
+    /** Tick at which the current status was entered. */
+    stageEnteredAt?: number;
+    /** Tick of the most recent state, hits, member, pickup or delivery progress. */
+    lastProgressAt?: number;
+    /** Last observed bank hits used by the attacking watchdog. */
+    lastBankHits?: number;
+    /** Last tick at which bank hits decreased. */
+    lastBankProgressAt?: number;
+    /** Most recent tick on which the target room or bank was visible. */
+    lastVisibleAt?: number;
+    /** Stable machine-readable reason why the task cannot currently advance. */
+    blocker?: string;
+    /** Earliest tick at which a transiently blocked operation may retry. */
+    nextAttemptAt?: number;
+    /** Explicit active pair generation; legacy tasks omit it. */
+    activeGeneration?: number;
+    /** Config index currently owned by the active pair. */
+    activeIndex?: number;
+    /** Manager-owned combat gate for the active pair. */
+    combatReady?: boolean;
+    /** Owner ID used for the active pair's Boost transaction. */
+    primaryBoostOwnerId?: string;
+    /** Active pair Boost lab snapshot, separate from legacy boostLabs. */
+    primaryBoostLabs?: string[];
+    /** Route shared by all task-owned creeps, including source and target. */
+    routeRooms?: string[];
+    /** Danger rooms captured when the route was selected. */
+    avoidRooms?: string[];
+    /** Planned post-boost combat and timing values. */
+    plannedDps?: number;
+    plannedHps?: number;
+    plannedTtk?: number;
+    plannedKillTick?: number;
+    plannedHaulerSpawnStartTick?: number;
+    plannedHaulerArrivalTick?: number;
+    minimumCombatTtl?: number;
+    /** Tick on which the manager first confirmed the bank absent in a visible room. */
+    bankGoneTick?: number;
+    /** Absolute hauling watchdog deadline. */
+    haulingDeadlineAt?: number;
+    /** Result ledger; values are monotonic. */
+    observedPower?: number;
+    pickedUpPower?: number;
+    deliveredPower?: number;
+    lostPower?: number;
+    outcome?: PowerBankHarvestOutcome;
+    /** Ensures terminal cleanup and history append happen once. */
+    terminalCleanupDone?: boolean;
+  }
+
+  interface PowerBankHarvestHistoryEntry {
+    taskId: string;
+    sourceRoom: string;
+    targetRoom: string;
+    power: number;
+    status: PowerBankHarvestStatus;
+    outcome?: PowerBankHarvestOutcome;
+    failReason?: string;
+    discoveredTick: number;
+    terminalTick: number;
+    observedPower: number;
+    pickedUpPower: number;
+    deliveredPower: number;
+    lostPower: number;
+  }
+
+  interface PowerBankStatusTaskSnapshot {
+    taskId: string;
+    status: PowerBankHarvestStatus;
+    sourceRoom: string;
+    targetRoom: string;
+    stageAge: number;
+    expiresIn: number | null;
+    lastProgressAge: number;
+    blocker: string | null;
+    activeGeneration: number | null;
+    combatReady: boolean;
+    attackerId: string | null;
+    healerId: string | null;
+    reinforcementGeneration: number | null;
+    plannedDps: number | null;
+    plannedHps: number | null;
+    plannedTtk: number | null;
+    haulerSpawnIn: number | null;
+    haulerArrivalIn: number | null;
+    haulerCount: number;
+    observedPower: number;
+    pickedUpPower: number;
+    deliveredPower: number;
+    lostPower: number;
+    outcome: PowerBankHarvestOutcome | null;
+  }
+
+  interface PowerBankStatusSnapshot {
+    ok: true;
+    tick: number;
+    tasks: PowerBankStatusTaskSnapshot[];
+    history: PowerBankHarvestHistoryEntry[];
   }
 
   interface PowerBankScoutMemory {
@@ -485,14 +604,18 @@ declare global {
 
   interface PowerBankAttackerMemory {
     taskId: string;
+    pairGeneration?: number;
   }
 
   interface PowerBankHealerMemory {
     taskId: string;
+    pairGeneration?: number;
   }
 
   interface PowerBankHaulerMemory {
     taskId: string;
+    powerBankDeliveryRoom?: string;
+    capacityBlockedSince?: number;
   }
 
   interface Memory {
@@ -1712,6 +1835,7 @@ declare global {
         }
       >;
       powerBankHarvest?: Record<string, PowerBankHarvestTask>;
+      powerBankHarvestHistory?: PowerBankHarvestHistoryEntry[];
       remoteMining?: Record<string, RemoteMiningTask>;
     };
     analytics?: {
@@ -1916,6 +2040,8 @@ declare namespace NodeJS {
     startWarPatrolRaw: (sourceRoom: string, targetRooms: string[] | string, options?: StartWarPatrolOptions) => StartWarPatrolResult | string;
     warStatus: (targetRoom?: string) => string;
     warStatusRaw: (targetRoom?: string) => WarStatusSnapshot;
+    powerBankStatus: () => string;
+    powerBankStatusRaw: () => PowerBankStatusSnapshot;
     startTelemetry: (sampleInterval?: number, segmentId?: number) => string;
     startTelemetryRaw: (sampleInterval?: number, segmentId?: number) =>
       | {

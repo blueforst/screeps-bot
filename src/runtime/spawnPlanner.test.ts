@@ -16,6 +16,7 @@ import {
   RCL8_UPGRADER_MAINTENANCE_BODY,
   RCL8_UPGRADER_RECOVERY_START_TICKS,
 } from "@/runtime/upgraderPolicy";
+import { getPowerBankConfigName } from "@/runtime/powerBankConstants";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -204,6 +205,138 @@ describe("spawnPlanner emergency carrier flow", () => {
       expect.stringMatching(new RegExp(`^${room.name}:manual:maxcarrier:`)),
       managed,
     ]);
+  });
+});
+
+describe("spawnPlanner PowerBank hauler ownership", () => {
+  const sourceRoom = "W4N4";
+  const targetRoom = "E3N60";
+
+  beforeEach(() => {
+    resetRuntimeServices();
+    Game.time += 1;
+  });
+
+  function setupRoom(): StructureSpawn {
+    const room = createRoom(sourceRoom);
+    room.controller = { my: true, level: 8 } as StructureController;
+    const spawn = createSpawn(room);
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    Game.creeps[`carrier-${room.name}`] = {
+      name: `carrier-${room.name}`,
+      room,
+      memory: { role: "carrier" },
+    } as Creep;
+    return spawn;
+  }
+
+  function task(id: string, haulingEmptySince?: number): PowerBankHarvestTask {
+    return {
+      id,
+      sourceRoom,
+      targetRoom,
+      status: "hauling",
+      haulingEmptySince,
+    } as PowerBankHarvestTask;
+  }
+
+  it("does not let an exhausted task suppress a concurrent task with the same rooms", () => {
+    const spawn = setupRoom();
+    const taskA = "bank-task-a";
+    const taskB = "bank-task-b";
+    const configA = getPowerBankConfigName(sourceRoom, targetRoom, "hauler", 0, taskA, 0);
+    const configB = getPowerBankConfigName(sourceRoom, targetRoom, "hauler", 0, taskB, 0);
+
+    Memory.data = {
+      powerBankHarvest: {
+        [taskA]: task(taskA, Game.time - 1),
+        [taskB]: task(taskB),
+      },
+      creepConfigs: {
+        [configA]: {
+          role: "powerBankHauler",
+          args: [targetRoom, ""],
+          roomName: sourceRoom,
+          taskId: taskA,
+          powerBankGeneration: 0,
+        },
+        [configB]: {
+          role: "powerBankHauler",
+          args: [targetRoom, ""],
+          roomName: sourceRoom,
+          taskId: taskB,
+          powerBankGeneration: 0,
+        },
+      },
+    } as unknown as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(configA).not.toBe(configB);
+    expect(spawn.memory.spawnList).not.toContain(configA);
+    expect(spawn.memory.spawnList).toContain(configB);
+  });
+
+  it("uses the owner token when an owned config has not yet persisted task metadata", () => {
+    const spawn = setupRoom();
+    const taskA = "bank-task-token-a";
+    const taskB = "bank-task-token-b";
+    const configA = getPowerBankConfigName(sourceRoom, targetRoom, "hauler", 0, taskA, 0);
+    const configB = getPowerBankConfigName(sourceRoom, targetRoom, "hauler", 0, taskB, 0);
+
+    Memory.data = {
+      powerBankHarvest: {
+        [taskA]: task(taskA, Game.time - 1),
+        [taskB]: task(taskB),
+      },
+      creepConfigs: {
+        [configA]: { role: "powerBankHauler", args: [targetRoom, ""], roomName: sourceRoom },
+        [configB]: { role: "powerBankHauler", args: [targetRoom, ""], roomName: sourceRoom },
+      },
+    } as unknown as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(configA);
+    expect(spawn.memory.spawnList).toContain(configB);
+  });
+
+  it("does not guess ownership for an ambiguous legacy config", () => {
+    const spawn = setupRoom();
+    const legacyConfig = getPowerBankConfigName(sourceRoom, targetRoom, "hauler", 0);
+
+    Memory.data = {
+      powerBankHarvest: {
+        "bank-task-legacy-a": task("bank-task-legacy-a", Game.time - 1),
+        "bank-task-legacy-b": task("bank-task-legacy-b"),
+      },
+      creepConfigs: {
+        [legacyConfig]: { role: "powerBankHauler", args: [targetRoom, ""], roomName: sourceRoom },
+      },
+    } as unknown as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(legacyConfig);
+  });
+
+  it("preserves exhausted detection for an unambiguous legacy task", () => {
+    const spawn = setupRoom();
+    const legacyConfig = getPowerBankConfigName(sourceRoom, targetRoom, "hauler", 0);
+
+    Memory.data = {
+      powerBankHarvest: {
+        "bank-task-legacy": task("bank-task-legacy", Game.time - 1),
+      },
+      creepConfigs: {
+        [legacyConfig]: { role: "powerBankHauler", args: [targetRoom, ""], roomName: sourceRoom },
+      },
+    } as unknown as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(legacyConfig);
   });
 });
 

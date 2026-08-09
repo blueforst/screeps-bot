@@ -1,35 +1,24 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import {
+  getPowerBankAvoidRooms,
+  getPowerBankEncodedRouteBetween,
+  getPowerBankNextRouteRoom,
+  getPowerBankTaskForCreep,
+  pairReadyForTravel,
+  resolvePowerBankPair,
+  type PowerBankPairContext,
+} from "@/roles/powerBankCombatPair";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import type { RoleFactory } from "@/types/system";
 
 const TRAVEL_OPTIONS = { plainCost: 2, swampCost: 8 } as const;
 
-type PowerBankHealerRuntimeMemory = CreepMemory & { taskId?: string; powerBankReinforcementStage?: PowerBankReinforcementStage };
-
-const BLOCKED_STATUSES: ReadonlySet<string> = new Set([
-  "preparing_boosts",
-  "spawning",
-  "renewing",
-  "boosting",
-]);
-
 const RETIRE_STATUSES: ReadonlySet<string> = new Set([
   "hauling",
   "complete",
+  "failed",
+  "aborted",
 ]);
-
-const REINFORCEMENT_BLOCKED_STAGES: ReadonlySet<string> = new Set(["spawning", "renewing", "boosting"]);
-
-function getTaskForCreep(creep: Creep): PowerBankHarvestTask | null {
-  const taskId = (creep.memory as PowerBankHealerRuntimeMemory).taskId;
-  if (!taskId) return null;
-  return Memory.data?.powerBankHarvest?.[taskId] ?? null;
-}
-
-function isReinforcementBlocked(creep: Creep): boolean {
-  const stage = (creep.memory as PowerBankHealerRuntimeMemory).powerBankReinforcementStage;
-  return !!stage && REINFORCEMENT_BLOCKED_STAGES.has(stage);
-}
 
 function retireIfOrphanedPowerBankCreep(creep: Creep): boolean {
   if (!creep.memory.configName?.includes(":powerbank:")) return false;
@@ -37,65 +26,15 @@ function retireIfOrphanedPowerBankCreep(creep: Creep): boolean {
   return true;
 }
 
-function findPairedAttacker(creep: Creep): Creep | null {
-  const configPaired = findConfigPairedAttacker(creep);
-  if (configPaired) return configPaired;
-
-  const task = getTaskForCreep(creep);
-  if (!task) return null;
-
-  if (task.attackerId) {
-    const attacker = Game.getObjectById(task.attackerId as Id<Creep>);
-    if (attacker) return attacker;
-  }
-
-  const taskId = (creep.memory as PowerBankHealerRuntimeMemory).taskId;
-  for (const name of Object.keys(Game.creeps)) {
-    const candidate = Game.creeps[name];
-    if (candidate === creep) continue;
-    if (candidate.memory.role !== "powerBankAttacker") continue;
-    if ((candidate.memory as PowerBankHealerRuntimeMemory).taskId !== taskId) continue;
-    return candidate;
-  }
-
-  return null;
+function canHeal(creep: Creep): boolean {
+  return creep.getActiveBodyparts(HEAL) > 0;
 }
 
-function findConfigPairedAttacker(creep: Creep): Creep | null {
-  const configName = creep.memory.configName;
-  if (!configName) return null;
-
-  const attackerConfigName = configName.replace(":healer:", ":attacker:");
-  if (attackerConfigName === configName) return null;
-  const taskId = (creep.memory as PowerBankHealerRuntimeMemory).taskId;
-
-  for (const name of Object.keys(Game.creeps)) {
-    const candidate = Game.creeps[name];
-    if (candidate === creep) continue;
-    if (candidate.memory.role !== "powerBankAttacker") continue;
-    if (candidate.memory.configName !== attackerConfigName) continue;
-    if (taskId && (candidate.memory as PowerBankHealerRuntimeMemory).taskId !== taskId) continue;
-    return candidate;
-  }
-
-  return null;
-}
-
-function supportAttacker(creep: Creep, attacker: Creep): void {
-  const { sameRoom, range } = healPairedAttacker(creep, attacker);
-  if (sameRoom && range > 1) {
-    moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
-  } else if (!sameRoom) {
-    moveToTargetRoom(creep, attacker.room.name, undefined, TRAVEL_OPTIONS);
-  }
-}
-
-function healPairedAttacker(creep: Creep, attacker: Creep): { sameRoom: boolean; attackerDamaged: boolean; range: number } {
+function healPairedAttacker(creep: Creep, attacker: Creep): { sameRoom: boolean; range: number } {
   const sameRoom = attacker.room.name === creep.room.name;
-  const attackerDamaged = attacker.hits < attacker.hitsMax;
   const range = sameRoom ? creep.pos.getRangeTo(attacker.pos) : Infinity;
 
-  if (sameRoom) {
+  if (canHeal(creep) && sameRoom) {
     if (range <= 1) {
       measureCreepIntent(() => creep.heal(attacker));
     } else if (range <= 3) {
@@ -103,41 +42,11 @@ function healPairedAttacker(creep: Creep, attacker: Creep): { sameRoom: boolean;
     }
   }
 
-  if (creep.hits < creep.hitsMax && (!sameRoom || range > 3)) {
+  if (canHeal(creep) && creep.hits < creep.hitsMax && (!sameRoom || range > 3)) {
     measureCreepIntent(() => creep.heal(creep));
   }
 
-  return { sameRoom, attackerDamaged, range };
-}
-
-function isExitTile(pos: RoomPosition): boolean {
-  return pos.x <= 0 || pos.x >= 49 || pos.y <= 0 || pos.y >= 49;
-}
-
-function moveOffTargetRoomExit(creep: Creep): boolean {
-  let horizontal: DirectionConstant | null = null;
-  let vertical: DirectionConstant | null = null;
-
-  if (creep.pos.x <= 0) horizontal = RIGHT;
-  else if (creep.pos.x >= 49) horizontal = LEFT;
-
-  if (creep.pos.y <= 0) vertical = BOTTOM;
-  else if (creep.pos.y >= 49) vertical = TOP;
-
-  let direction: DirectionConstant | null = null;
-  if (horizontal && vertical) {
-    if (horizontal === RIGHT && vertical === BOTTOM) direction = BOTTOM_RIGHT;
-    else if (horizontal === RIGHT && vertical === TOP) direction = TOP_RIGHT;
-    else if (horizontal === LEFT && vertical === BOTTOM) direction = BOTTOM_LEFT;
-    else direction = TOP_LEFT;
-  } else {
-    direction = horizontal ?? vertical;
-  }
-
-  if (!direction) return false;
-  // Tactical directional move — not destination pathfinding
-  measureCreepIntent(() => creep.move(direction));
-  return true;
+  return { sameRoom, range };
 }
 
 function getExitMoveDirection(room: Room, targetRoom: string): DirectionConstant | null {
@@ -156,9 +65,9 @@ function getExitMoveDirection(room: Room, targetRoom: string): DirectionConstant
   }
 }
 
-function isHealerAheadOfAttacker(healer: Creep, attacker: Creep, targetRoom: string): boolean {
+function isHealerAheadOfAttacker(healer: Creep, attacker: Creep, nextRoom: string): boolean {
   if (healer.room.name !== attacker.room.name) return false;
-  const direction = getExitMoveDirection(attacker.room, targetRoom);
+  const direction = getExitMoveDirection(attacker.room, nextRoom);
   if (!direction) return false;
 
   switch (direction) {
@@ -209,132 +118,118 @@ function isWalkableSideStep(creep: Creep, direction: DirectionConstant): boolean
   return true;
 }
 
-function sidestepOutOfAttackerLane(creep: Creep, attacker: Creep, targetRoom: string): boolean {
-  if (!isHealerAheadOfAttacker(creep, attacker, targetRoom)) return false;
-  const exitDirection = getExitMoveDirection(attacker.room, targetRoom);
+function sidestepOutOfAttackerLane(creep: Creep, attacker: Creep, nextRoom: string): boolean {
+  if (!isHealerAheadOfAttacker(creep, attacker, nextRoom)) return false;
+  const exitDirection = getExitMoveDirection(attacker.room, nextRoom);
   if (!exitDirection) return false;
 
   const sidesteps: DirectionConstant[] = exitDirection === LEFT || exitDirection === RIGHT
     ? [TOP, BOTTOM, exitDirection === LEFT ? RIGHT : LEFT]
     : [LEFT, RIGHT, exitDirection === TOP ? BOTTOM : TOP];
-
   const direction = sidesteps.find((candidate) => isWalkableSideStep(creep, candidate));
   if (!direction) return false;
 
-  // Tactical directional move — not destination pathfinding
+  // Tactical directional move — not destination pathfinding.
   measureCreepIntent(() => creep.move(direction));
   return true;
 }
 
-export const powerBankHealerRole: RoleFactory = (targetRoom?: string, encodedRouteRooms?: string) => ({
+/** The healer is the follower; it rejoins the leader instead of routing ahead. */
+function followAttacker(creep: Creep, pair: PowerBankPairContext, fallbackEncodedRoute?: string): void {
+  if (!pairReadyForTravel(pair)) return;
+
+  const attacker = pair.attacker;
+  const { sameRoom, range } = healPairedAttacker(creep, attacker);
+  if (!sameRoom) {
+    moveToTargetRoom(
+      creep,
+      attacker.room.name,
+      getPowerBankEncodedRouteBetween(pair.task, creep.room.name, attacker.room.name, fallbackEncodedRoute),
+      { ...TRAVEL_OPTIONS, avoidRooms: getPowerBankAvoidRooms(pair.task) },
+    );
+    return;
+  }
+
+  const nextRoom = getPowerBankNextRouteRoom(pair.task, attacker.room.name);
+  if (attacker.room.name !== pair.task.targetRoom && sidestepOutOfAttackerLane(creep, attacker, nextRoom)) return;
+  if (range > 1) {
+    moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+  }
+}
+
+function supportAttacker(creep: Creep, pair: PowerBankPairContext, fallbackEncodedRoute?: string): void {
+  const attacker = pair.attacker;
+  const { sameRoom, range } = healPairedAttacker(creep, attacker);
+  if (!sameRoom) {
+    moveToTargetRoom(
+      creep,
+      attacker.room.name,
+      getPowerBankEncodedRouteBetween(pair.task, creep.room.name, attacker.room.name, fallbackEncodedRoute),
+      { ...TRAVEL_OPTIONS, avoidRooms: getPowerBankAvoidRooms(pair.task) },
+    );
+    return;
+  }
+  if (range > 1) {
+    moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+  }
+}
+
+function selfHealIfPossible(creep: Creep): void {
+  if (canHeal(creep) && creep.hits < creep.hitsMax) {
+    measureCreepIntent(() => creep.heal(creep));
+  }
+}
+
+export const powerBankHealerRole: RoleFactory = (_targetRoomArg?: string, encodedRouteRooms?: string) => ({
   source: (creep): boolean => {
-    if (isReinforcementBlocked(creep)) return false;
-
-    const task = getTaskForCreep(creep);
-    if (task?.status && BLOCKED_STATUSES.has(task.status)) return false;
-    if (task?.status && RETIRE_STATUSES.has(task.status)) {
+    const task = getPowerBankTaskForCreep(creep);
+    if (!task) {
+      retireIfOrphanedPowerBankCreep(creep);
+      return false;
+    }
+    if (RETIRE_STATUSES.has(task.status)) {
       creep.suicide();
       return false;
     }
 
-    if (task?.status === "travelling") {
-      const attacker = findPairedAttacker(creep);
-      if (!attacker) return false;
-
-      if (attacker.room.name !== creep.room.name) {
-        moveToTargetRoom(creep, attacker.room.name, "", TRAVEL_OPTIONS);
-        return false;
-      }
-
-      healPairedAttacker(creep, attacker);
-
-      if (attacker.room.name !== task.targetRoom && sidestepOutOfAttackerLane(creep, attacker, task.targetRoom)) {
-        return false;
-      }
-
-      if (creep.pos.getRangeTo(attacker.pos) > 1) {
-        moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
-        return false;
-      }
-    }
-
-    if (!task) {
-      if (retireIfOrphanedPowerBankCreep(creep)) return false;
-      const attacker = findConfigPairedAttacker(creep);
-      if (attacker) supportAttacker(creep, attacker);
+    const pair = resolvePowerBankPair(creep, task);
+    if (!pair) {
+      selfHealIfPossible(creep);
       return false;
     }
 
-    if (targetRoom && creep.room.name !== targetRoom) {
-      moveToTargetRoom(creep, targetRoom, encodedRouteRooms, TRAVEL_OPTIONS);
+    if (pair.stage === "travelling" || (pair.stage === "attacking" && creep.room.name !== task.targetRoom)) {
+      followAttacker(creep, pair, encodedRouteRooms);
       return false;
     }
 
-    return true;
+    return pair.stage === "attacking";
   },
-  target: (creep): boolean => {
-    if (isReinforcementBlocked(creep)) return false;
 
-    const task = getTaskForCreep(creep);
-    if (task?.status && BLOCKED_STATUSES.has(task.status)) return false;
-    if (task?.status && RETIRE_STATUSES.has(task.status)) {
+  target: (creep): boolean => {
+    const task = getPowerBankTaskForCreep(creep);
+    if (!task) {
+      retireIfOrphanedPowerBankCreep(creep);
+      return false;
+    }
+    if (RETIRE_STATUSES.has(task.status)) {
       creep.suicide();
       return false;
     }
 
-    const attacker = findPairedAttacker(creep);
-
-    if (task?.status === "travelling") {
-      if (!attacker) return false;
-
-      const sameRoom = attacker.room.name === creep.room.name;
-      if (sameRoom && attacker.room.name !== task.targetRoom && sidestepOutOfAttackerLane(creep, attacker, task.targetRoom)) {
-        return false;
-      }
-
-      if (sameRoom && creep.pos.getRangeTo(attacker.pos) > 1) {
-        moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
-        return false;
-      }
-      if (!sameRoom) {
-        if (creep.room.name === task.targetRoom && isExitTile(creep.pos)) {
-          moveOffTargetRoomExit(creep);
-          return false;
-        }
-        moveToTargetRoom(creep, attacker.room.name, undefined, TRAVEL_OPTIONS);
-        return false;
-      }
-    }
-
-    if (!task) {
-      if (retireIfOrphanedPowerBankCreep(creep)) return false;
-      if (attacker) supportAttacker(creep, attacker);
+    const pair = resolvePowerBankPair(creep, task);
+    if (!pair) {
+      selfHealIfPossible(creep);
       return false;
     }
 
-    if (!attacker) {
-      if (creep.hits < creep.hitsMax) {
-        measureCreepIntent(() => creep.heal(creep));
-      }
+    if (pair.stage === "travelling" || (pair.stage === "attacking" && creep.room.name !== task.targetRoom)) {
+      followAttacker(creep, pair, encodedRouteRooms);
       return false;
     }
+    if (pair.stage !== "attacking") return false;
 
-    const { sameRoom, attackerDamaged, range } = healPairedAttacker(creep, attacker);
-
-    if (sameRoom && attackerDamaged) {
-      if (range > 1 && range <= 3) {
-        moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
-      } else if (range > 3) {
-        moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
-      }
-    } else if (sameRoom && !attackerDamaged) {
-      if (!creep.pos.isNearTo(attacker.pos)) {
-        moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
-      }
-    } else {
-      moveToTargetRoom(creep, attacker.room.name, undefined, TRAVEL_OPTIONS);
-    }
-
+    supportAttacker(creep, pair, encodedRouteRooms);
     return false;
   },
 });

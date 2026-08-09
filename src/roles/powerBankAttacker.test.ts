@@ -13,6 +13,7 @@ import {
   createMockPowerBankCreep,
   createMockPowerBank,
   setBodyPartHits,
+  type MockCreepConfig,
 } from "@mock/powerBank";
 
 const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
@@ -23,9 +24,22 @@ const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as
 const TARGET_ROOM = "E3N60";
 const TASK_ID = "task-0";
 const BANK_ID = "powerbank-0";
+const ATTACKER_ID = "attacker-0";
+const HEALER_ID = "healer-0";
+const HEALER_BODY = [
+  { type: HEAL as BodyPartConstant, hits: 100 },
+  { type: MOVE as BodyPartConstant, hits: 100 },
+];
 
-function setupTask(overrides: Partial<PowerBankHarvestTask> = {}): PowerBankHarvestTask {
-  const task: PowerBankHarvestTask = {
+type TaskOverrides = Partial<PowerBankHarvestTask> & {
+  activeGeneration?: number;
+  combatReady?: boolean;
+  routeRooms?: string[];
+  avoidRooms?: string[];
+};
+
+function setupTask(overrides: TaskOverrides = {}): PowerBankHarvestTask {
+  const task = {
     id: TASK_ID,
     status: "attacking",
     sourceRoom: "W1N1",
@@ -38,22 +52,68 @@ function setupTask(overrides: Partial<PowerBankHarvestTask> = {}): PowerBankHarv
     freeTiles: 8,
     discoveredTick: 100,
     lastSeenTick: 100,
+    attackerId: ATTACKER_ID,
+    healerId: HEALER_ID,
+    attackerReady: true,
+    healerReady: true,
     haulerIds: [],
     boostLabs: [],
     compoundTransferTaskIds: [],
     ...overrides,
-  };
+  } as PowerBankHarvestTask;
   if (!Memory.data) (Memory as any).data = {};
   if (!Memory.data.powerBankHarvest) Memory.data.powerBankHarvest = {};
-  Memory.data.powerBankHarvest![TASK_ID] = task;
+  Memory.data.powerBankHarvest[TASK_ID] = task;
   return task;
+}
+
+function pairMemory(role: "powerBankAttacker" | "powerBankHealer", generation?: number): Partial<CreepMemory> {
+  return {
+    role,
+    taskId: TASK_ID,
+    ...(generation === undefined ? {} : { pairGeneration: generation }),
+  } as Partial<CreepMemory>;
+}
+
+function setupPair(
+  attackerOverrides: Partial<MockCreepConfig> = {},
+  healerOverrides: Partial<MockCreepConfig> = {},
+  generation?: number,
+): { attacker: Creep; healer: Creep } {
+  const attacker = createMockPowerBankCreep("powerBankAttacker", {
+    id: ATTACKER_ID,
+    name: ATTACKER_ID,
+    roomName: TARGET_ROOM,
+    x: 24,
+    y: 25,
+    ...attackerOverrides,
+    memory: {
+      ...pairMemory("powerBankAttacker", generation),
+      ...(attackerOverrides.memory ?? {}),
+    },
+  });
+  const healer = createMockPowerBankCreep("powerBankHealer", {
+    id: HEALER_ID,
+    name: HEALER_ID,
+    roomName: attacker.room.name,
+    x: attacker.pos.x - 1,
+    y: attacker.pos.y,
+    body: HEALER_BODY,
+    ...healerOverrides,
+    memory: {
+      ...pairMemory("powerBankHealer", generation),
+      ...(healerOverrides.memory ?? {}),
+    },
+  });
+  Game.creeps = { [attacker.name]: attacker, [healer.name]: healer };
+  return { attacker, healer };
 }
 
 function setupBank() {
   const bank = createMockPowerBank({ id: BANK_ID, roomName: TARGET_ROOM });
   (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
     if (id === BANK_ID) return bank;
-    return null;
+    return Object.values(Game.creeps).find((creep) => creep.id === id) ?? null;
   });
   return bank;
 }
@@ -62,135 +122,214 @@ describe("powerBankAttackerRole", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     Game.time = 1000;
+    Game.creeps = {} as Record<string, Creep>;
     (Memory as any).data = {};
+    (Memory as any).runtime = {};
   });
 
-  it("does NOT attack hostile structures or creeps", () => {
+  it("attacks only the task-owned bank when the pair is combat ready", () => {
     setupTask();
+    const bank = setupBank();
+    const { attacker } = setupPair();
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledTimes(1);
+    expect(attacker.attack).toHaveBeenCalledWith(bank);
+  });
+
+  it("stops attacking while every TOUGH part is broken without changing task state", () => {
+    const task = setupTask();
     setupBank();
-    const creep = createMockPowerBankCreep("powerBankAttacker", {
-      roomName: TARGET_ROOM,
-      x: 24,
-      y: 25,
-      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
-    });
-
-    const role = powerBankAttackerRole(TARGET_ROOM);
-    role.target(creep);
-
-    const attackCalls = (creep.attack as jest.Mock).mock.calls;
-    for (const call of attackCalls) {
-      const target = call[0];
-      if (target && target.structureType) {
-        expect(target.structureType).toBe(STRUCTURE_POWER_BANK);
-      }
+    const { attacker } = setupPair();
+    for (let index = 0; index < attacker.body.length; index += 1) {
+      if (attacker.body[index].type === TOUGH) setBodyPartHits(attacker, index, 0);
     }
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
+    expect(task.status).toBe("attacking");
+    expect(task.failReason).toBeUndefined();
   });
 
-  it("stops attacking when TOUGH layer is broken", () => {
+  it("stops attacking when no ATTACK part remains active", () => {
     setupTask();
     setupBank();
-    const creep = createMockPowerBankCreep("powerBankAttacker", {
-      roomName: TARGET_ROOM,
-      x: 24,
-      y: 25,
-      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
-    });
+    const { attacker } = setupPair();
+    for (let index = 0; index < attacker.body.length; index += 1) {
+      if (attacker.body[index].type === ATTACK) setBodyPartHits(attacker, index, 0);
+    }
 
-    const toughIndex = creep.body.findIndex((p: any) => p.type === TOUGH);
-    setBodyPartHits(creep, toughIndex, 0);
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
 
-    const role = powerBankAttackerRole(TARGET_ROOM);
-    role.target(creep);
-
-    expect(creep.attack).not.toHaveBeenCalled();
-    expect(creep.move).not.toHaveBeenCalled();
+    expect(attacker.attack).not.toHaveBeenCalled();
   });
 
-  it("does not abort when TOUGH broken so healer can recover it", () => {
+  it.each([
+    ["healer missing", undefined],
+    ["healer in another room", { roomName: "E2N60" }],
+    ["healer not adjacent", { x: 10, y: 10 }],
+    ["healer has no active HEAL", { body: [{ type: HEAL as BodyPartConstant, hits: 0 }, { type: MOVE as BodyPartConstant, hits: 100 }] }],
+  ])("does not attack when %s", (_label, healerOverrides) => {
     setupTask();
     setupBank();
-    const creep = createMockPowerBankCreep("powerBankAttacker", {
-      roomName: TARGET_ROOM,
-      x: 24,
-      y: 25,
-      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
-    });
+    const { attacker, healer } = setupPair({}, healerOverrides ?? {});
+    if (healerOverrides === undefined) Game.creeps = { [attacker.name]: attacker };
 
-    const toughIndex = creep.body.findIndex((p: any) => p.type === TOUGH);
-    setBodyPartHits(creep, toughIndex, 0);
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
 
-    const role = powerBankAttackerRole(TARGET_ROOM);
-    role.target(creep);
-
-    expect(Memory.data!.powerBankHarvest![TASK_ID].status).toBe("attacking");
-    expect(Memory.data!.powerBankHarvest![TASK_ID].failReason).toBeUndefined();
-    expect(Memory.data!.powerBankHarvest![TASK_ID].terminalTick).toBeUndefined();
+    expect(attacker.attack).not.toHaveBeenCalled();
+    expect(healer.suicide).not.toHaveBeenCalled();
   });
 
-  it("moves to bank when not in range", () => {
+  it("rejects a newly spawned member whose generation does not match the active pair", () => {
+    setupTask({ activeGeneration: 4, combatReady: true });
+    setupBank();
+    const { attacker } = setupPair({ memory: pairMemory("powerBankAttacker", 5) }, {}, 4);
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).not.toHaveBeenCalled();
+  });
+
+  it("requires manager combatReady for generation-owned pairs", () => {
+    setupTask({ activeGeneration: 4, combatReady: false });
+    setupBank();
+    const { attacker } = setupPair({}, {}, 4);
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).not.toHaveBeenCalled();
+  });
+
+  it("attacks with a generation-owned primary pair after manager readiness", () => {
+    setupTask({ activeGeneration: 4, combatReady: true });
+    const bank = setupBank();
+    const { attacker } = setupPair({}, {}, 4);
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(bank);
+  });
+
+  it("resolves a ready reinforcement by its own generation and member IDs", () => {
+    setupTask({
+      activeGeneration: 4,
+      combatReady: true,
+      attackerId: "primary-attacker",
+      healerId: "primary-healer",
+      reinforcement: {
+        index: 1,
+        generation: 5,
+        stage: "attacking",
+        attackerId: ATTACKER_ID,
+        healerId: HEALER_ID,
+        combatReady: true,
+      },
+    });
+    const bank = setupBank();
+    const { attacker } = setupPair({}, {}, 5);
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).toHaveBeenCalledWith(bank);
+  });
+
+  it("does not bind a same-task healer whose member ID is not task-owned", () => {
+    setupTask({ healerId: "expected-healer" });
+    setupBank();
+    const { attacker } = setupPair();
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.attack).not.toHaveBeenCalled();
+  });
+
+  it("moves to the bank only after the full pair gate passes", () => {
     setupTask();
     setupBank();
-    const creep = createMockPowerBankCreep("powerBankAttacker", {
-      roomName: TARGET_ROOM,
-      x: 10,
-      y: 10,
-      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
-    });
-    (creep.attack as jest.Mock).mockReturnValue(ERR_NOT_IN_RANGE);
+    const { attacker } = setupPair({ x: 10, y: 10 }, { x: 11, y: 10 });
+    (attacker.attack as jest.Mock).mockReturnValue(ERR_NOT_IN_RANGE);
 
-    const role = powerBankAttackerRole(TARGET_ROOM);
-    role.target(creep);
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
 
     expect(moveToTarget).toHaveBeenCalledWith(
-      creep,
+      attacker,
       expect.anything(),
       1,
       expect.objectContaining({ plainCost: 2, swampCost: 8 }),
     );
   });
 
-  it("boundary - attacker keeps leading toward target when healer is in previous room (target phase)", () => {
-    setupTask({ status: "travelling" });
-    const healer = createMockPowerBankCreep("powerBankHealer", {
-      name: "healer-0",
-      roomName: "W1N1",
-      x: 24,
-      y: 24,
-      memory: { role: "powerBankHealer", taskId: TASK_ID } as Partial<CreepMemory>,
-    });
-    Game.creeps = { "healer-0": healer };
-
-    // Attacker has crossed into a route room, healer is still in the previous room.
-    const creep = createMockPowerBankCreep("powerBankAttacker", {
-      roomName: "W1N2",
-      x: 25,
-      y: 25,
-      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
-    });
-
-    const role = powerBankAttackerRole(TARGET_ROOM);
-    role.target(creep);
-
-    expect(moveToTargetRoom).toHaveBeenCalledWith(
-      creep,
-      TARGET_ROOM,
-      undefined,
-      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+  it("waits after crossing a room boundary until the healer catches up", () => {
+    setupTask({ status: "travelling", attackerReady: true, healerReady: true });
+    const { attacker } = setupPair(
+      { roomName: "W1N2", x: 0, y: 25 },
+      { roomName: "W1N1", x: 49, y: 25 },
     );
-    expect(creep.attack).not.toHaveBeenCalled();
-    expect(moveToTarget).not.toHaveBeenCalled();
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).toHaveBeenCalledWith(RIGHT);
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+    expect(attacker.attack).not.toHaveBeenCalled();
   });
 
-  it("source phase blocks movement when status is renewing (with resolvable task)", () => {
-    setupTask({ status: "renewing" });
-    const creep = createMockPowerBankCreep("powerBankAttacker", {
-      roomName: "W1N1",
-      memory: { taskId: TASK_ID } as Partial<CreepMemory>,
-    });
+  it("waits on an ordinary tile when the healer is not adjacent", () => {
+    setupTask({ status: "travelling", attackerReady: true, healerReady: true });
+    const { attacker } = setupPair(
+      { roomName: "W1N1", x: 25, y: 25 },
+      { roomName: "W1N1", x: 20, y: 20 },
+    );
 
-    const role = powerBankAttackerRole(TARGET_ROOM);
-    const result = role.source?.(creep);
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(attacker.move).not.toHaveBeenCalled();
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("uses the task route and danger snapshot when the adjacent pair advances", () => {
+    setupTask({
+      status: "travelling",
+      routeRooms: ["W1N1", "W1N2", TARGET_ROOM],
+      avoidRooms: ["W2N2"],
+    });
+    const { attacker } = setupPair(
+      { roomName: "W1N1", x: 25, y: 25 },
+      { roomName: "W1N1", x: 24, y: 25 },
+    );
+
+    powerBankAttackerRole(TARGET_ROOM, "stale|route").target(attacker);
+
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      attacker,
+      TARGET_ROOM,
+      `W1N1|W1N2|${TARGET_ROOM}`,
+      expect.objectContaining({ avoidRooms: ["W2N2"] }),
+    );
+  });
+
+  it("observes a missing bank without changing status or suiciding", () => {
+    const task = setupTask();
+    const { attacker } = setupPair();
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) =>
+      Object.values(Game.creeps).find((creep) => creep.id === id) ?? null
+    );
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(task.status).toBe("attacking");
+    expect(attacker.suicide).not.toHaveBeenCalled();
+    expect(attacker.attack).not.toHaveBeenCalled();
+  });
+
+  it("source phase blocks movement while the manager is renewing", () => {
+    setupTask({ status: "renewing" });
+    const { attacker } = setupPair({ roomName: "W1N1" }, { roomName: "W1N1" });
+
+    const result = powerBankAttackerRole(TARGET_ROOM).source?.(attacker);
 
     expect(result).toBe(false);
     expect(moveToTargetRoom).not.toHaveBeenCalled();

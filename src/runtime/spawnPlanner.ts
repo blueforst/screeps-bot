@@ -8,6 +8,7 @@ import { getCreepConfigService, getMemoryService, getTickContextService } from "
 import { getSafeZone } from "@/runtime/safeZone";
 import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
 import { isRcl8MaintenanceUpgraderConfig } from "@/runtime/upgraderPolicy";
+import { getPowerBankConfigName } from "@/runtime/powerBankConstants";
 import type { CreepConfig } from "@/types/system";
 
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
@@ -596,7 +597,7 @@ function queuePowerBankHaulerConfig(
   context: SpawnPlanningContext,
 ): void {
   if (spawns.length === 0) return;
-  if (isPowerBankHaulingExhausted(configName)) return;
+  if (isPowerBankHaulingExhausted(configName, config)) return;
   if (isConfigQueuedInSpawns(spawns, configName)) return;
   if (isConfigSpawning(configName, context)) return;
   if (config.roomName && shouldSkipConfigInDefenseMode(config)) return;
@@ -608,20 +609,118 @@ function queuePowerBankHaulerConfig(
   }
 }
 
-function isPowerBankHaulingExhausted(configName: string): boolean {
-  const parts = configName.split(":");
-  if (parts.length < 5 || parts[1] !== "powerbank" || parts[3] !== "hauler") return false;
+interface ParsedPowerBankHaulerConfig {
+  sourceRoom: string;
+  targetRoom: string;
+  index: number;
+  ownerToken?: string;
+  generation?: number;
+}
 
-  const [sourceRoom, , targetRoom] = parts;
+type OwnedPowerBankConfig = CreepConfig & {
+  taskId?: string;
+  powerBankGeneration?: number;
+};
+
+function parsePowerBankHaulerConfigName(configName: string): ParsedPowerBankHaulerConfig | null {
+  const parts = configName.split(":");
+  if (parts.length !== 5 && parts.length !== 8) return null;
+  if (parts[1] !== "powerbank" || parts[3] !== "hauler") return null;
+
+  const index = Number(parts[4]);
+  if (!Number.isSafeInteger(index) || index < 0) return null;
+
+  const parsed: ParsedPowerBankHaulerConfig = {
+    sourceRoom: parts[0],
+    targetRoom: parts[2],
+    index,
+  };
+  if (parts.length === 5) return parsed;
+
+  const generationMatch = /^g(\d+)$/.exec(parts[7]);
+  if (parts[5] !== "owner" || !/^[0-9a-z]{7}$/.test(parts[6]) || !generationMatch) return null;
+
+  const generation = Number(generationMatch[1]);
+  if (!Number.isSafeInteger(generation)) return null;
+  parsed.ownerToken = parts[6];
+  parsed.generation = generation;
+  return parsed;
+}
+
+function taskMatchesPowerBankConfigRooms(
+  task: PowerBankHarvestTask,
+  parsed: ParsedPowerBankHaulerConfig,
+): boolean {
+  return task.sourceRoom === parsed.sourceRoom && task.targetRoom === parsed.targetRoom;
+}
+
+function findPowerBankHaulerOwnerTask(
+  configName: string,
+  config: CreepConfig,
+  parsed: ParsedPowerBankHaulerConfig,
+  tasks: Record<string, PowerBankHarvestTask>,
+): PowerBankHarvestTask | undefined {
+  const ownedConfig = config as OwnedPowerBankConfig;
+  if (typeof ownedConfig.taskId === "string") {
+    const task = tasks[ownedConfig.taskId];
+    if (!task || !taskMatchesPowerBankConfigRooms(task, parsed)) return undefined;
+
+    if (
+      parsed.ownerToken !== undefined &&
+      parsed.generation !== undefined &&
+      getPowerBankConfigName(
+        parsed.sourceRoom,
+        parsed.targetRoom,
+        "hauler",
+        parsed.index,
+        ownedConfig.taskId,
+        parsed.generation,
+      ) !== configName
+    ) {
+      return undefined;
+    }
+
+    if (
+      parsed.generation !== undefined &&
+      ownedConfig.powerBankGeneration !== undefined &&
+      ownedConfig.powerBankGeneration !== parsed.generation
+    ) {
+      return undefined;
+    }
+    return task;
+  }
+
+  if (parsed.ownerToken !== undefined && parsed.generation !== undefined) {
+    const ownerMatches = Object.entries(tasks).filter(([taskId, task]) =>
+      taskMatchesPowerBankConfigRooms(task, parsed) &&
+      getPowerBankConfigName(
+        parsed.sourceRoom,
+        parsed.targetRoom,
+        "hauler",
+        parsed.index,
+        taskId,
+        parsed.generation,
+      ) === configName,
+    );
+    return ownerMatches.length === 1 ? ownerMatches[0][1] : undefined;
+  }
+
+  // Legacy configs have no provable owner. Preserve old tasks only when the
+  // source/target pair identifies exactly one task; concurrent tasks must not
+  // suppress each other's hauler requests.
+  const legacyMatches = Object.values(tasks).filter((task) => taskMatchesPowerBankConfigRooms(task, parsed));
+  return legacyMatches.length === 1 ? legacyMatches[0] : undefined;
+}
+
+function isPowerBankHaulingExhausted(configName: string, config: CreepConfig): boolean {
+  const parsed = parsePowerBankHaulerConfigName(configName);
+  if (!parsed) return false;
+
   const tasks = Memory.data?.powerBankHarvest;
   if (!tasks) return false;
 
-  return Object.values(tasks).some((task) =>
-    task.sourceRoom === sourceRoom &&
-    task.targetRoom === targetRoom &&
-    task.status === "hauling" &&
-    task.haulingEmptySince !== undefined,
-  );
+  const ownerTask = findPowerBankHaulerOwnerTask(configName, config, parsed, tasks);
+  return ownerTask?.status === "hauling" && ownerTask.haulingEmptySince !== undefined;
 }
 
 function prioritizeSpawnQueue(spawn: StructureSpawn): void {

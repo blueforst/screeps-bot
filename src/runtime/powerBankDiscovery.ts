@@ -1,4 +1,5 @@
 import { POWER_BANK_STATUS, isPowerBankPatrolRoom } from "@/runtime/powerBankConstants";
+import { updatePowerBankObservation } from "@/runtime/powerBankTaskState";
 
 export function ensureDiscoveryStore(): Record<string, PowerBankHarvestTask> {
   if (!Memory.data) {
@@ -40,10 +41,7 @@ export function recordPowerBankDiscovery(bank: StructurePowerBank): void {
   const existing = store[bank.id];
 
   if (existing) {
-    existing.lastSeenTick = Game.time;
-    existing.hits = bank.hits;
-    existing.power = bank.power;
-    existing.ticksToDecay = bank.ticksToDecay;
+    updatePowerBankObservation(existing, bank);
     return;
   }
 
@@ -60,6 +58,21 @@ export function recordPowerBankDiscovery(bank: StructurePowerBank): void {
     freeTiles: countFreeAdjacentTiles(bank.pos),
     discoveredTick: Game.time,
     lastSeenTick: Game.time,
+    lastVisibleAt: Game.time,
+    bankExpiresAt: Game.time + bank.ticksToDecay,
+    stageEnteredAt: Game.time,
+    lastProgressAt: Game.time,
+    lastBankHits: bank.hits,
+    lastBankProgressAt: Game.time,
+    activeGeneration: 0,
+    activeIndex: 0,
+    combatReady: false,
+    primaryBoostOwnerId: `${bank.id}:primary:g0`,
+    primaryBoostLabs: [],
+    observedPower: 0,
+    pickedUpPower: 0,
+    deliveredPower: 0,
+    lostPower: 0,
     haulerIds: [],
     boostLabs: [],
     compoundTransferTaskIds: [],

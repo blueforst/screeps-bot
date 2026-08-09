@@ -36,6 +36,10 @@ export interface CreepConfig {
   roomName?: string;
   body?: BodyPartConstant[];
   name?: string;
+  /** Stable owner for PowerBank configs; absent on legacy configs. */
+  taskId?: string;
+  /** Combat-pair generation for PowerBank attacker/healer configs. */
+  powerBankGeneration?: number;
   spawnOnce?: {
     queuedAt?: number;
   };

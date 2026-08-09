@@ -111,11 +111,37 @@ export const POWER_BANK_BOOST_REQUIREMENTS: Record<number, {
 
 export type PowerBankRole = "scout" | "attacker" | "healer" | "hauler";
 
+/**
+ * Produce a compact deterministic owner token without persisting the full task
+ * id in every config name.  FNV-1a keeps the implementation available in the
+ * Screeps runtime while the full task id remains the authoritative owner in
+ * config/creep memory.
+ */
+export function getPowerBankTaskToken(taskId: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < taskId.length; index += 1) {
+    hash ^= taskId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return (hash >>> 0).toString(36).padStart(7, "0");
+}
+
 export function getPowerBankConfigName(
   sourceRoom: string,
   targetRoom: string,
   role: PowerBankRole,
   index: number,
+  taskId?: string,
+  generation?: number,
 ): string {
-  return `${sourceRoom}:powerbank:${targetRoom}:${role}:${index}`;
+  const legacyName = `${sourceRoom}:powerbank:${targetRoom}:${role}:${index}`;
+  if (taskId === undefined) {
+    return legacyName;
+  }
+
+  const normalizedGeneration = generation !== undefined && Number.isFinite(generation) && generation >= 0
+    ? Math.floor(generation)
+    : 0;
+  return `${legacyName}:owner:${getPowerBankTaskToken(taskId)}:g${normalizedGeneration}`;
 }

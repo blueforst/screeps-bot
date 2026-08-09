@@ -4,10 +4,14 @@ import {
   resumeSynthesisAfterBoost,
 } from "@/runtime/synthesisControl";
 import {
+  cancelResourceTransferTask,
   createAutomaticResourceTransferTask,
-  getIncomingResourceTransferAmount,
+  ensureResourceTransferTaskStore,
+  getOutgoingResourceTransferAmount,
+  isHealthyReceiverCapacityCommitment,
 } from "@/runtime/logistics/resourceTransferTasks";
 import {
+  pruneCarrierTasksForProducer,
   replaceCarrierTasksForProducerRoom,
   type CarrierTaskDraft,
 } from "@/runtime/carrierTaskBoard";
@@ -38,6 +42,83 @@ export interface BoostPrepResult {
 
 export interface BoostPrepOptions {
   requireLabEnergy?: boolean;
+}
+
+interface BoostTransferRequest {
+  fromRoomName: string;
+  toRoomName: string;
+  resource: ResourceConstant;
+  amount: number;
+}
+
+function getBoostTransferReason(taskId: string): string {
+  return `powerBankBoost:${taskId}`;
+}
+
+function getOwnedIncomingBoostAmount(
+  taskId: string,
+  roomName: string,
+  resource: ResourceConstant,
+): number {
+  const reason = getBoostTransferReason(taskId);
+  let total = 0;
+  for (const task of Object.values(ensureResourceTransferTaskStore())) {
+    if (
+      task.status !== "pending" ||
+      task.toRoomName !== roomName ||
+      task.resource !== resource ||
+      task.reason !== reason ||
+      !isHealthyReceiverCapacityCommitment(task)
+    ) {
+      continue;
+    }
+    total += task.remainingAmount;
+  }
+  return total;
+}
+
+function cancelPendingBoostTransferTasks(taskId: string): void {
+  const reason = getBoostTransferReason(taskId);
+  for (const task of Object.values(ensureResourceTransferTaskStore())) {
+    if (
+      task.status !== "pending" ||
+      task.origin !== "automatic" ||
+      task.reason !== reason
+    ) {
+      continue;
+    }
+    cancelResourceTransferTask(task.id);
+  }
+}
+
+function rollbackBoostPreparation(taskId: string, sourceRoomName: string): void {
+  const producer = `${POWER_BANK_BOOST_PRODUCER}:${taskId}`;
+  pruneCarrierTasksForProducer(producer, new Set());
+
+  const prepStore = ensurePowerBankBoostPrepStore();
+  const prepSourceRoomName = prepStore[taskId]?.sourceRoomName;
+  delete prepStore[taskId];
+
+  cancelPendingBoostTransferTasks(taskId);
+  const pausedRoomNames = new Set([sourceRoomName]);
+  if (prepSourceRoomName) pausedRoomNames.add(prepSourceRoomName);
+  for (const roomName of pausedRoomNames) {
+    resumeSynthesisAfterBoost(roomName, taskId);
+  }
+}
+
+function failBoostPreparation(
+  taskId: string,
+  sourceRoomName: string,
+  reason: string,
+  labs: StructureLab[] = [],
+): BoostPrepResult {
+  rollbackBoostPreparation(taskId, sourceRoomName);
+  return {
+    status: "failed",
+    reason,
+    labs: labs.map((lab) => lab.id),
+  };
 }
 
 function getRequiredLabEnergy(mineralAmount: number): number {
@@ -162,33 +243,28 @@ export function prepareBoosts(
   const compounds = getRequiredCompounds(tier, requiredAmounts);
 
   if (compounds.length === 0) {
-    replaceCarrierTasksForProducerRoom(
-      `${POWER_BANK_BOOST_PRODUCER}:${taskId}`,
-      sourceRoomName,
-      [],
-    );
+    rollbackBoostPreparation(taskId, sourceRoomName);
     return { status: "ready", labs: [] };
   }
 
   const room = Game.rooms[sourceRoomName];
   if (!room) {
-    return { status: "failed", reason: "room_not_visible", labs: [] };
+    return failBoostPreparation(taskId, sourceRoomName, "room_not_visible");
   }
 
-  pauseSynthesisForBoost(sourceRoomName, taskId);
+  if (!pauseSynthesisForBoost(sourceRoomName, taskId)) {
+    return failBoostPreparation(taskId, sourceRoomName, "synthesis_pause_failed");
+  }
 
   const labs = selectAvailableLabs(room, sourceRoomName, compounds, taskId);
   if (labs.length < compounds.length) {
-    return {
-      status: "failed",
-      reason: "insufficient_labs",
-      labs: labs.map((l) => l.id),
-    };
+    return failBoostPreparation(taskId, sourceRoomName, "insufficient_labs", labs);
   }
 
   const prepStore = ensurePowerBankBoostPrepStore();
   const assignments: Record<string, BoostLabAssignment> = {};
   const drafts: CarrierTaskDraft[] = [];
+  const transferRequests: BoostTransferRequest[] = [];
 
   for (let i = 0; i < compounds.length; i++) {
     const compound = compounds[i];
@@ -268,11 +344,7 @@ export function prepareBoosts(
           lab.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0,
         );
         if (!energySource || transferAmount < energyDeficit) {
-          return {
-            status: "failed",
-            reason: "insufficient_lab_energy",
-            labs: labs.map((item) => item.id),
-          };
+          return failBoostPreparation(taskId, sourceRoomName, "insufficient_lab_energy", labs);
         }
         drafts.push({
           id: `powerBankBoost:lab_energy:${taskId}:${lab.id}`,
@@ -294,25 +366,20 @@ export function prepareBoosts(
     }
 
     const remainingDeficit = Math.max(0, deficit - localSupplyAmount);
-    const incoming = getIncomingResourceTransferAmount(sourceRoomName, compound);
+    const incoming = getOwnedIncomingBoostAmount(taskId, sourceRoomName, compound);
     const donorDeficit = Math.max(0, remainingDeficit - incoming);
 
     if (donorDeficit > 0) {
       const donorRoom = findBestDonorRoom(compound, donorDeficit, [sourceRoomName]);
       if (donorRoom) {
-        createAutomaticResourceTransferTask(
-          donorRoom,
-          sourceRoomName,
-          compound,
-          donorDeficit,
-          `powerBankBoost:${taskId}`,
-        );
+        transferRequests.push({
+          fromRoomName: donorRoom,
+          toRoomName: sourceRoomName,
+          resource: compound,
+          amount: donorDeficit,
+        });
       } else {
-        return {
-          status: "failed",
-          reason: "insufficient_boost_compound",
-          labs: labs.map((l) => l.id),
-        };
+        return failBoostPreparation(taskId, sourceRoomName, "insufficient_boost_compound", labs);
       }
     }
   }
@@ -328,6 +395,19 @@ export function prepareBoosts(
     sourceRoomName,
     drafts,
   );
+
+  for (const request of transferRequests) {
+    const result = createAutomaticResourceTransferTask(
+      request.fromRoomName,
+      request.toRoomName,
+      request.resource,
+      request.amount,
+      getBoostTransferReason(taskId),
+    );
+    if (typeof result === "string") {
+      return failBoostPreparation(taskId, sourceRoomName, "boost_transfer_create_failed", labs);
+    }
+  }
 
   if (checkBoostReadiness(taskId, compounds, requiredAmounts, options)) {
     return { status: "ready", labs: labs.map((l) => l.id) };
@@ -376,16 +456,7 @@ export function checkBoostReadiness(
  * Releases boost labs and resumes synthesis production.
  */
 export function releaseBoostLabs(taskId: string, sourceRoomName: string): void {
-  replaceCarrierTasksForProducerRoom(
-    `${POWER_BANK_BOOST_PRODUCER}:${taskId}`,
-    sourceRoomName,
-    [],
-  );
-
-  const prepStore = ensurePowerBankBoostPrepStore();
-  delete prepStore[taskId];
-
-  resumeSynthesisAfterBoost(sourceRoomName, taskId);
+  rollbackBoostPreparation(taskId, sourceRoomName);
 }
 
 /**
@@ -405,7 +476,11 @@ export function findBestDonorRoom(
     if (!room.terminal) continue;
     if (room.terminal.cooldown > 0) continue;
 
-    const surplus = room.terminal.store.getUsedCapacity(resource);
+    const surplus = Math.max(
+      0,
+      room.terminal.store.getUsedCapacity(resource) -
+        getOutgoingResourceTransferAmount(room.name, resource),
+    );
 
     if (surplus < amount) continue;
 

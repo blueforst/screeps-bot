@@ -73,23 +73,39 @@ export interface MockStoreConfig {
 }
 
 export function createMockStore(resources: Record<string, number> = {}, capacity = 3000): StoreDefinition {
-  const used = () =>
-    Object.values(resources).reduce((sum, v) => sum + v, 0);
+  // Keep the indexed resources and the capacity methods on one independent,
+  // mutable backing object. Tests can therefore model a later tick by updating
+  // `store[resource]`, without mutating the object passed by the caller.
+  const backing: Record<string, number> = { ...resources };
+  const used = (): number => Object.values(backing).reduce((sum, amount) => sum + amount, 0);
 
-  return {
-    getCapacity: jest.fn((resource?: ResourceConstant) => {
-      if (resource === undefined) return capacity;
-      return resources[resource] !== undefined ? capacity : 0;
-    }),
-    getFreeCapacity: jest.fn((resource?: ResourceConstant) => {
-      if (resource === undefined) return Math.max(0, capacity - used());
-      return resources[resource] !== undefined ? Math.max(0, capacity - (resources[resource] ?? 0)) : 0;
-    }),
-    getUsedCapacity: jest.fn((resource?: ResourceConstant) => {
-      if (resource === undefined) return used();
-      return resources[resource] ?? 0;
-    }),
-  } as unknown as StoreDefinition;
+  Object.defineProperties(backing, {
+    getCapacity: {
+      value: jest.fn((_resource?: ResourceConstant) => capacity),
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    },
+    getFreeCapacity: {
+      // This helper represents a shared-capacity store: every valid resource
+      // sees the same remaining total capacity, including currently empty ones.
+      value: jest.fn((_resource?: ResourceConstant) => Math.max(0, capacity - used())),
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    },
+    getUsedCapacity: {
+      value: jest.fn((resource?: ResourceConstant) => {
+        if (resource === undefined) return used();
+        return backing[resource] ?? 0;
+      }),
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    },
+  });
+
+  return backing as unknown as StoreDefinition;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +274,7 @@ export interface MockCreepConfig {
   x?: number;
   y?: number;
   roomName?: string;
-  body?: Array<{ type: BodyPartConstant; hits: number }>;
+  body?: Array<{ type: BodyPartConstant; hits: number; boost?: ResourceConstant }>;
   hits?: number;
   hitsMax?: number;
   fatigue?: number;
@@ -270,8 +286,8 @@ export interface MockCreepConfig {
 /**
  * Create a mock creep suitable for power bank combat, hauling, or scouting.
  *
- * Default body: 1 TOUGH + 19 ATTACK + 20 MOVE (healer-style callers can
- * override with HEAL-heavy bodies).
+ * Defaults mirror each PowerBank role's body-part contract. Callers can still
+ * override the complete body, including per-part boost metadata.
  */
 export function createMockPowerBankCreep(role: string, overrides: Partial<MockCreepConfig> = {}): Creep {
   const x = overrides.x ?? 24;
@@ -279,13 +295,22 @@ export function createMockPowerBankCreep(role: string, overrides: Partial<MockCr
   const roomName = overrides.roomName ?? "W1N1";
   const name = overrides.name ?? `${role}-0`;
 
-  const body: Array<{ type: BodyPartConstant; hits: number }> =
-    overrides.body ??
-    [
-      ...Array.from({ length: 1 }, () => ({ type: TOUGH as BodyPartConstant, hits: 100 })),
-      ...Array.from({ length: 19 }, () => ({ type: ATTACK as BodyPartConstant, hits: 100 })),
-      ...Array.from({ length: 20 }, () => ({ type: MOVE as BodyPartConstant, hits: 100 })),
-    ];
+  const makeParts = (type: BodyPartConstant, count: number): Array<{ type: BodyPartConstant; hits: number }> =>
+    Array.from({ length: count }, () => ({ type, hits: 100 }));
+  const normalizedRole = role.toLowerCase();
+  const defaultBody = normalizedRole.includes("healer")
+    ? [...makeParts(HEAL, 25), ...makeParts(MOVE, 25)]
+    : normalizedRole.includes("hauler")
+      ? [...makeParts(CARRY, 25), ...makeParts(MOVE, 25)]
+      : normalizedRole.includes("scout")
+        ? makeParts(MOVE, 1)
+        : [
+          ...makeParts(TOUGH, 1),
+          ...makeParts(ATTACK, 19),
+          ...makeParts(MOVE, 20),
+        ];
+  const body: Array<{ type: BodyPartConstant; hits: number; boost?: ResourceConstant }> =
+    overrides.body ?? defaultBody;
 
   const hits = overrides.hits ?? body.reduce((s, p) => s + p.hits, 0);
   const hitsMax = overrides.hitsMax ?? hits;

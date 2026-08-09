@@ -1,17 +1,43 @@
 import { POWER_BANK_STATUS, POWER_BANK_BODY_TIERS, POWER_BANK_BOOST_REQUIREMENTS, POWER_BANK_PATROL_ROOMS, getPowerBankConfigName, isPowerBankPatrolRoom } from "@/runtime/powerBankConstants";
-import { ATTACK_POWER, POWER_BANK_ROOM_TRAVEL_TICKS, selectBodyTier, assessViability } from "@/runtime/powerBankViability";
-import { prepareBoosts, releaseBoostLabs, type BoostPrepResult } from "@/runtime/powerBankBoost";
-import { getAssignedPowerBankBoostLabId, getPowerBankBoostPrep } from "@/runtime/powerBankBoostMemory";
+import {
+  ATTACK_POWER,
+  POWER_BANK_ROOM_TRAVEL_TICKS,
+  derivePowerBankTierProfile,
+  planPowerBankTimeline,
+  selectBodyTier,
+  assessViability,
+  type PowerBankTierProfile,
+} from "@/runtime/powerBankViability";
+import { findBestDonorRoom, prepareBoosts, releaseBoostLabs, type BoostPrepResult } from "@/runtime/powerBankBoost";
+import {
+  getActivePowerBankBoostLabIds,
+  getAssignedPowerBankBoostLabId,
+  getPowerBankBoostPrep,
+} from "@/runtime/powerBankBoostMemory";
 import { cleanupStaleDiscoveries, ensureDiscoveryStore } from "@/runtime/powerBankDiscovery";
 import { hasPowerBankObserverCoverage } from "@/runtime/powerBankObserver";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { moveToTarget } from "@/roles/shared";
 import type { CreepConfig } from "@/types/system";
+import {
+  ensureResourceTransferTaskStore,
+  isHealthyReceiverCapacityCommitment,
+} from "@/runtime/logistics/resourceTransferTasks";
+import {
+  getPowerBankLifecycleFailure,
+  initializePowerBankTaskRuntime,
+  isTerminalPowerBankStatus,
+  markPowerBankProgress,
+  setPowerBankBlocker,
+  transitionPowerBankTask,
+  updatePowerBankObservation,
+} from "@/runtime/powerBankTaskState";
+import { recordPowerBankHistory } from "@/runtime/powerBankStatus";
+import { spawnProfiles } from "@/config/spawnProfiles";
 
 const PATROL_SCOUT_CONFIG_NAME = "powerbank:patrol:scout:0";
 
-const TERMINAL_STATE_CLEANUP_DELAY = 100;
 const MAX_POWER_BANK_HAULER_PAIRS = 25;
 const POWER_BANK_HAULER_ARRIVAL_BUFFER = 200;
 const HAULING_EMPTY_CONFIRM_TICKS = 100;
@@ -33,7 +59,7 @@ const POWER_BANK_BOOST_PARTS: Partial<Record<ResourceConstant, BodyPartConstant>
   [RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE]: HEAL,
 };
 
-function tierKindToNumber(tierKind: string): number {
+function tierKindToNumber(tierKind: string): PowerBankHarvestTier {
   if (tierKind === "rcl8") return 8;
   if (tierKind === "rcl7") return 7;
   return 6;
@@ -47,14 +73,59 @@ function getConfigStore(): Record<string, CreepConfig> {
   return getMemoryService().getCreepConfigStore();
 }
 
+function isSameLegacyScope(task: PowerBankHarvestTask, other: PowerBankHarvestTask): boolean {
+  return other.sourceRoom === task.sourceRoom && other.targetRoom === task.targetRoom;
+}
+
+function canUseLegacyTaskScope(task: PowerBankHarvestTask): boolean {
+  const activeScopedTasks = Object.values(getTaskStore()).filter((candidate) =>
+    !isTerminalPowerBankStatus(candidate.status) && isSameLegacyScope(task, candidate),
+  );
+  if (isTerminalPowerBankStatus(task.status)) return activeScopedTasks.length === 0;
+  return activeScopedTasks.length === 1 && activeScopedTasks[0].id === task.id;
+}
+
 function getTaskConfigNames(task: PowerBankHarvestTask): string[] {
   const prefix = `${task.sourceRoom}:powerbank:${task.targetRoom}:`;
   const all = getCreepConfigService().list(prefix);
-  return Object.keys(all);
+  const allowLegacy = canUseLegacyTaskScope(task);
+  return Object.entries(all)
+    .filter(([, config]) => config.taskId === task.id || (config.taskId === undefined && allowLegacy))
+    .map(([name]) => name);
+}
+
+function getCombatGeneration(task: PowerBankHarvestTask, index: number): number {
+  if (index === (task.activeIndex ?? 0)) return task.activeGeneration ?? 0;
+  if (task.reinforcement?.index === index) {
+    return task.reinforcement.generation ?? (task.activeGeneration ?? 0) + 1;
+  }
+  return index;
+}
+
+function getActiveCombatIndex(task: PowerBankHarvestTask): number {
+  return task.activeIndex ?? 0;
 }
 
 function getCombatConfigName(task: PowerBankHarvestTask, role: "attacker" | "healer", index: number): string {
-  return getPowerBankConfigName(task.sourceRoom, task.targetRoom, role, index);
+  return getPowerBankConfigName(
+    task.sourceRoom,
+    task.targetRoom,
+    role,
+    index,
+    task.id,
+    getCombatGeneration(task, index),
+  );
+}
+
+function getCombatConfigNames(
+  task: PowerBankHarvestTask,
+  role: "attacker" | "healer",
+  index: number,
+): string[] {
+  const owned = getCombatConfigName(task, role, index);
+  if (!canUseLegacyTaskScope(task)) return [owned];
+  const legacy = getPowerBankConfigName(task.sourceRoom, task.targetRoom, role, index);
+  return legacy === owned ? [owned] : [owned, legacy];
 }
 
 function ensureCombatConfigs(task: PowerBankHarvestTask, index: number): boolean {
@@ -64,13 +135,16 @@ function ensureCombatConfigs(task: PowerBankHarvestTask, index: number): boolean
   if (!tierBodies) return false;
 
   const configStore = getConfigStore();
-  const encodedRoute = "";
+  const encodedRoute = task.routeRooms?.join("|") ?? "";
+  const generation = getCombatGeneration(task, index);
 
   configStore[getCombatConfigName(task, "attacker", index)] = {
     role: "powerBankAttacker",
     args: [task.targetRoom, encodedRoute],
     roomName: task.sourceRoom,
     body: tierBodies.attacker,
+    taskId: task.id,
+    powerBankGeneration: generation,
   };
 
   configStore[getCombatConfigName(task, "healer", index)] = {
@@ -78,13 +152,19 @@ function ensureCombatConfigs(task: PowerBankHarvestTask, index: number): boolean
     args: [task.targetRoom, encodedRoute],
     roomName: task.sourceRoom,
     body: tierBodies.healer,
+    taskId: task.id,
+    powerBankGeneration: generation,
   };
 
   return true;
 }
 
 function getCombatCreep(task: PowerBankHarvestTask, role: "attacker" | "healer", index: number): Creep | undefined {
-  return getAssignableCreepByConfigName(getCombatConfigName(task, role, index), task.id);
+  for (const configName of getCombatConfigNames(task, role, index)) {
+    const creep = getAssignableCreepByConfigName(configName, task.id);
+    if (creep) return creep;
+  }
+  return undefined;
 }
 
 function setReinforcementStage(creep: Creep | undefined, stage?: PowerBankReinforcementStage): void {
@@ -103,6 +183,8 @@ function ensureCombatTaskIds(task: PowerBankHarvestTask, index: number, stage?: 
       const mem = creep.memory as PowerBankReinforcementCreepMemory;
       if (mem.taskId === undefined || mem.taskId === task.id) {
         mem.taskId = task.id;
+        (mem as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration =
+          getCombatGeneration(task, index);
         if (stage) mem.powerBankReinforcementStage = stage;
       }
     }
@@ -110,10 +192,10 @@ function ensureCombatTaskIds(task: PowerBankHarvestTask, index: number, stage?: 
 }
 
 function removeSpawnQueueEntries(task: PowerBankHarvestTask): void {
-  const prefix = `${task.sourceRoom}:powerbank:${task.targetRoom}:`;
+  const ownedNames = new Set(getTaskConfigNames(task));
   for (const spawn of getTickContextService().getSpawnsByRoom(task.sourceRoom)) {
     if (!spawn.memory.spawnList) continue;
-    spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => !name.startsWith(prefix));
+    spawn.memory.spawnList = spawn.memory.spawnList.filter((name) => !ownedNames.has(name));
   }
 }
 
@@ -149,15 +231,36 @@ function cleanupCombatConfig(task: PowerBankHarvestTask, role: "attacker" | "hea
 }
 
 function cleanupReinforcement(task: PowerBankHarvestTask): void {
-  const index = task.reinforcement?.index ?? REINFORCEMENT_INDEX;
+  const reinforcement = task.reinforcement;
+  const index = reinforcement?.index ?? REINFORCEMENT_INDEX;
+  if (reinforcement?.boostOwnerId && task.sourceRoom) {
+    releaseBoostLabs(reinforcement.boostOwnerId, task.sourceRoom);
+  }
   cleanupCombatConfig(task, "attacker", index);
   cleanupCombatConfig(task, "healer", index);
   delete task.reinforcement;
 }
 
 function cleanupPrimaryCombat(task: PowerBankHarvestTask): void {
-  cleanupCombatConfig(task, "attacker", 0);
-  cleanupCombatConfig(task, "healer", 0);
+  const index = getActiveCombatIndex(task);
+  cleanupCombatConfig(task, "attacker", index);
+  cleanupCombatConfig(task, "healer", index);
+}
+
+function retireCombatGeneration(task: PowerBankHarvestTask, index: number): void {
+  for (const role of ["attacker", "healer"] as const) {
+    for (const configName of getCombatConfigNames(task, role, index)) {
+      removeSpawnQueueEntry(configName);
+      for (const creep of getTickContextService().getCreepsByConfigName(configName)) {
+        const memory = creep.memory as PowerBankReinforcementCreepMemory;
+        if (memory.taskId !== undefined && memory.taskId !== task.id) continue;
+        delete memory.taskId;
+        delete memory.powerBankReinforcementStage;
+        creep.suicide();
+      }
+      delete getConfigStore()[configName];
+    }
+  }
 }
 
 function cleanupAllCombatConfigs(task: PowerBankHarvestTask): void {
@@ -192,24 +295,22 @@ function cleanupInactiveCombatConfigs(task: PowerBankHarvestTask): void {
 }
 
 function cleanupOrphanPowerBankConfigs(tasks: PowerBankHarvestTask[]): void {
-  const activePrefixes = new Set(
-    tasks
-      .filter((task) =>
-        task.status !== POWER_BANK_STATUS.FAILED &&
-        task.status !== POWER_BANK_STATUS.ABORTED &&
-        task.status !== POWER_BANK_STATUS.COMPLETE,
-      )
-      .map((task) => `${task.sourceRoom}:powerbank:${task.targetRoom}:`),
-  );
+  const activeTasks = tasks.filter((task) => !isTerminalPowerBankStatus(task.status));
+  const activeTaskIds = new Set(activeTasks.map((task) => task.id));
+  const activePrefixes = new Set(activeTasks.map((task) => `${task.sourceRoom}:powerbank:${task.targetRoom}:`));
 
   const configs = getCreepConfigService().list();
-  for (const configName of Object.keys(configs)) {
+  for (const [configName, config] of Object.entries(configs)) {
     const parts = configName.split(":");
     if (parts[1] !== "powerbank") continue;
     if (configName === PATROL_SCOUT_CONFIG_NAME) continue;
 
-    const prefix = `${parts[0]}:powerbank:${parts[2]}:`;
-    if (activePrefixes.has(prefix)) continue;
+    if (config.taskId) {
+      if (activeTaskIds.has(config.taskId)) continue;
+    } else {
+      const prefix = `${parts[0]}:powerbank:${parts[2]}:`;
+      if (activePrefixes.has(prefix)) continue;
+    }
 
     removeSpawnQueueEntry(configName);
     removeConfigWhenIdle(configName);
@@ -249,46 +350,254 @@ function neutralizeTaskCreeps(task: PowerBankHarvestTask): void {
 }
 
 function transitionToTerminal(task: PowerBankHarvestTask, status: "failed" | "aborted" | "complete", reason?: string): void {
-  task.status = status;
-  task.failReason = reason;
-  task.terminalTick = Game.time;
+  transitionPowerBankTask(task, status, reason);
+}
+
+function transitionTask(task: PowerBankHarvestTask, status: PowerBankHarvestStatus): void {
+  transitionPowerBankTask(task, status);
+}
+
+function getActiveDangerRooms(targetRoom?: string): string[] {
+  const transient = Object.entries(Memory.runtime?.transitDangerRooms ?? {})
+    .filter(([, expiresAt]) => expiresAt > Game.time)
+    .map(([roomName]) => roomName);
+  const permanent = Object.keys(Memory.runtime?.powerBankPermanentDangerRooms ?? {});
+  return [...new Set([...transient, ...permanent])]
+    .filter((roomName) => roomName !== targetRoom);
+}
+
+function findSafeRoute(fromRoom: string, toRoom: string): string[] | null {
+  const avoidRooms = new Set(getActiveDangerRooms(toRoom));
+  const route = Game.map.findRoute(fromRoom, toRoom, {
+    routeCallback: (roomName) => avoidRooms.has(roomName) ? Infinity : 1,
+  });
+  if (route === ERR_NO_PATH) return null;
+
+  const rooms = [fromRoom];
+  for (const step of route) {
+    if (rooms[rooms.length - 1] !== step.room) rooms.push(step.room);
+  }
+  if (rooms[rooms.length - 1] !== toRoom) rooms.push(toRoom);
+  return rooms;
 }
 
 function getRouteDistance(fromRoom: string, toRoom: string): number {
-  const route = Game.map.findRoute(fromRoom, toRoom);
-  if (route === ERR_NO_PATH) return Infinity;
-  return route.length;
+  const route = findSafeRoute(fromRoom, toRoom);
+  return route ? Math.max(0, route.length - 1) : Infinity;
 }
 
-function findNearestEligibleRoom(targetRoom: string): { roomName: string; energyCapacity: number; distance: number; spawnCount: number } | null {
-  let best: { roomName: string; energyCapacity: number; distance: number; spawnCount: number } | null = null;
-  const tickContext = getTickContextService();
-
-  for (const room of tickContext.getMyRooms()) {
-    if (!room.controller || room.controller.level < 6) continue;
-
-    const spawns = tickContext.getSpawnsByRoom(room.name);
-    if (spawns.length === 0) continue;
-
-    if (isDefenseMode(room.name)) continue;
-
-    const energyCapacity = room.energyCapacityAvailable;
-    const distance = getRouteDistance(room.name, targetRoom);
-    const spawnCount = spawns.filter((spawn) => typeof spawn.isActive !== "function" || spawn.isActive()).length;
-
-    if (!best || distance < best.distance) {
-      best = { roomName: room.name, energyCapacity, distance, spawnCount };
-    }
-  }
-
-  return best;
-}
-
-function getLocalCompoundStock(room: Room, resource: ResourceConstant): number {
+function getLocalCompoundStock(
+  room: Room,
+  resource: ResourceConstant,
+  ownerId?: string,
+): number {
   let total = 0;
   if (room.storage) total += room.storage.store.getUsedCapacity(resource);
   if (room.terminal) total += room.terminal.store.getUsedCapacity(resource);
+  const reservedLabIds = getActivePowerBankBoostLabIds(room.name, ownerId);
+  for (const structure of room.find(FIND_MY_STRUCTURES)) {
+    if (structure.structureType !== STRUCTURE_LAB) continue;
+    const lab = structure as StructureLab;
+    if (!reservedLabIds.has(lab.id)) total += lab.store.getUsedCapacity(resource);
+  }
   return total;
+}
+
+function getTrustedIncomingCompound(
+  roomName: string,
+  resource: ResourceConstant,
+  ownerId: string,
+): number {
+  let total = 0;
+  const ownerReason = `powerBankBoost:${ownerId}`;
+  for (const transfer of Object.values(ensureResourceTransferTaskStore())) {
+    if (
+      transfer.status !== "pending" ||
+      transfer.toRoomName !== roomName ||
+      transfer.resource !== resource ||
+      transfer.reason !== ownerReason ||
+      !isHealthyReceiverCapacityCommitment(transfer)
+    ) {
+      continue;
+    }
+    total += transfer.remainingAmount;
+  }
+  return total;
+}
+
+function hasCompoundSupply(
+  room: Room,
+  resource: ResourceConstant,
+  amount: number,
+  ownerId: string,
+): boolean {
+  const available = getLocalCompoundStock(room, resource, ownerId) +
+    getTrustedIncomingCompound(room.name, resource, ownerId);
+  const deficit = Math.max(0, amount - available);
+  if (deficit <= 0) return true;
+  return findBestDonorRoom(resource, deficit, [room.name]) !== null;
+}
+
+function getStructurePowerHeadroom(structure: StructureStorage | StructureTerminal | null): number {
+  if (!structure) return 0;
+  return Math.max(
+    structure.store.getFreeCapacity(RESOURCE_POWER) ?? 0,
+    structure.store.getFreeCapacity() ?? 0,
+  );
+}
+
+function getPowerReceivingHeadroom(room: Room): number {
+  return getStructurePowerHeadroom(room.terminal) + getStructurePowerHeadroom(room.storage);
+}
+
+function getSpawnReadyIn(roomName: string): number[] {
+  const configStore = getConfigStore();
+  return getTickContextService().getSpawnsByRoom(roomName)
+    .filter((spawn) => typeof spawn.isActive !== "function" || spawn.isActive())
+    .map((spawn) => {
+      let readyIn = spawn.spawning?.remainingTime ?? 0;
+      for (const configName of spawn.memory.spawnList ?? []) {
+        const config = configStore[configName];
+        const bodyLength = config?.body?.length ?? (
+          config
+            ? spawnProfiles[config.role](spawn.room).length
+            : 50
+        );
+        readyIn += bodyLength * CREEP_SPAWN_TIME;
+      }
+      return readyIn;
+    });
+}
+
+interface PowerBankSourceCandidate {
+  room: Room;
+  roomName: string;
+  tier: PowerBankHarvestTier;
+  profile: PowerBankTierProfile;
+  energyCapacity: number;
+  distance: number;
+  routeRooms: string[];
+  avoidRooms: string[];
+  spawnReadyIn: number[];
+  receivingHeadroom: number;
+  viability: ReturnType<typeof assessViability>;
+  timeline: ReturnType<typeof planPowerBankTimeline>;
+  slack: number;
+}
+
+function evaluateSourceCandidates(task: PowerBankHarvestTask): {
+  candidates: PowerBankSourceCandidate[];
+  rejectionReasons: string[];
+} {
+  const candidates: PowerBankSourceCandidate[] = [];
+  const rejectionReasons: string[] = [];
+
+  for (const room of getTickContextService().getMyRooms()) {
+    if (!room.controller || room.controller.level < 6) continue;
+    if (isDefenseMode(room.name)) continue;
+
+    const spawnReadyIn = getSpawnReadyIn(room.name);
+    if (spawnReadyIn.length === 0) continue;
+
+    const routeRooms = findSafeRoute(room.name, task.targetRoom);
+    if (!routeRooms) {
+      rejectionReasons.push(`${room.name}:no_safe_route`);
+      continue;
+    }
+
+    const tierResult = selectBodyTier(room.energyCapacityAvailable);
+    if (!tierResult) {
+      rejectionReasons.push(`${room.name}:insufficient_energy_capacity`);
+      continue;
+    }
+    const tier = tierKindToNumber(tierResult.attackerTier);
+    const profile = derivePowerBankTierProfile(tier);
+    if (!profile) continue;
+    const ownerId = `${task.id}:primary:g${task.activeGeneration ?? 0}`;
+    const reservedLabs = getActivePowerBankBoostLabIds(room.name, ownerId);
+    const availableLabCount = room.find(FIND_MY_STRUCTURES, {
+      filter: (structure) => structure.structureType === STRUCTURE_LAB && !reservedLabs.has(structure.id),
+    }).length;
+
+    const compoundAvailability = new Map<ResourceConstant, boolean>();
+    for (const [compound, amount] of profile.requiredCompounds) {
+      compoundAvailability.set(compound, hasCompoundSupply(room, compound, amount, ownerId));
+    }
+
+    const distance = Math.max(0, routeRooms.length - 1);
+    const haulerCapacity = getPowerBankHaulerCapacity(room.energyCapacityAvailable);
+    const viability = assessViability({
+      energyCapacity: room.energyCapacityAvailable,
+      bankHits: task.hits,
+      bankPower: task.power,
+      ticksToDecay: Math.max(0, (task.bankExpiresAt ?? (Game.time + task.ticksToDecay)) - Game.time),
+      freeTiles: task.freeTiles,
+      routeDistance: distance,
+      currentTick: Game.time,
+      hasCompounds: {
+        xgho2: compoundAvailability.get(RESOURCE_CATALYZED_GHODIUM_ALKALIDE) ?? true,
+        xuh2o: compoundAvailability.get(RESOURCE_CATALYZED_UTRIUM_ACID) ?? true,
+        xlho2: compoundAvailability.get(RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE) ?? true,
+      },
+      isDefenseMode: false,
+      haulerCapacity,
+      spawnCount: spawnReadyIn.length,
+      spawnReadyIn,
+    });
+    const timeline = planPowerBankTimeline({
+      profile,
+      currentTick: Game.time,
+      bankHits: task.hits,
+      bankPower: task.power,
+      freeTiles: task.freeTiles,
+      routeDistance: distance,
+      haulerCapacity,
+      spawnReadyIn,
+    });
+    const receivingHeadroom = getPowerReceivingHeadroom(room);
+    const reasons = [...viability.reasons];
+    if (availableLabCount < profile.requiredCompounds.size) reasons.push("insufficient_labs");
+    const requiredLabEnergy = [...profile.requiredCompounds.values()]
+      .reduce((sum, mineralAmount) =>
+        sum + Math.ceil(mineralAmount / LAB_BOOST_MINERAL) * LAB_BOOST_ENERGY, 0);
+    if (getLocalCompoundStock(room, RESOURCE_ENERGY, ownerId) < requiredLabEnergy) {
+      reasons.push("insufficient_lab_energy");
+    }
+    if (receivingHeadroom <= 0) {
+      const empireHeadroom = getTickContextService().getMyRooms()
+        .some((candidate) => getPowerReceivingHeadroom(candidate) > 0);
+      if (!empireHeadroom) reasons.push("insufficient_power_headroom");
+    }
+    if (reasons.length > 0) {
+      rejectionReasons.push(...reasons.map((reason) => `${room.name}:${reason}`));
+      continue;
+    }
+
+    const expiresAt = task.bankExpiresAt ?? (Game.time + task.ticksToDecay);
+    candidates.push({
+      room,
+      roomName: room.name,
+      tier,
+      profile,
+      energyCapacity: room.energyCapacityAvailable,
+      distance,
+      routeRooms,
+      avoidRooms: getActiveDangerRooms(task.targetRoom),
+      spawnReadyIn,
+      receivingHeadroom,
+      viability,
+      timeline,
+      slack: expiresAt - timeline.killTick,
+    });
+  }
+
+  candidates.sort((left, right) =>
+    right.slack - left.slack ||
+    right.receivingHeadroom - left.receivingHeadroom ||
+    left.distance - right.distance ||
+    left.roomName.localeCompare(right.roomName),
+  );
+  return { candidates, rejectionReasons: [...new Set(rejectionReasons)] };
 }
 
 function getPowerBankHaulerCapacity(energyCapacity: number): number {
@@ -303,17 +612,23 @@ function getPowerBankHaulerSpawnTime(energyCapacity: number): number {
   return pairCount * 2 * CREEP_SPAWN_TIME;
 }
 
-function getActiveSpawnCount(roomName: string): number {
-  const spawns = getTickContextService().getSpawnsByRoom(roomName)
-    .filter((spawn) => typeof spawn.isActive !== "function" || spawn.isActive());
-  return Math.max(1, spawns.length);
-}
-
 function estimateHaulerBatchSpawnTicks(task: PowerBankHarvestTask, energyCapacity: number): number {
   const haulerCount = getRequiredHaulerCount(task);
   const singleHaulerSpawnTime = getPowerBankHaulerSpawnTime(energyCapacity);
-  const spawnCount = getActiveSpawnCount(task.sourceRoom);
-  return Math.ceil((haulerCount * singleHaulerSpawnTime) / spawnCount);
+  const spawnReadyIn = getSpawnReadyIn(task.sourceRoom);
+  if (spawnReadyIn.length === 0) return Infinity;
+
+  const lanes = [...spawnReadyIn];
+  const completionTicks: number[] = [];
+  for (let index = 0; index < haulerCount; index += 1) {
+    let laneIndex = 0;
+    for (let candidate = 1; candidate < lanes.length; candidate += 1) {
+      if (lanes[candidate] < lanes[laneIndex]) laneIndex = candidate;
+    }
+    lanes[laneIndex] += singleHaulerSpawnTime;
+    completionTicks.push(lanes[laneIndex]);
+  }
+  return Math.max(0, ...completionTicks);
 }
 
 function estimateOneWayRoomTravelTicks(task: PowerBankHarvestTask): number {
@@ -336,6 +651,13 @@ function estimateRemainingAttackTicks(task: PowerBankHarvestTask, bank: Structur
 }
 
 function shouldSpawnHaulers(task: PowerBankHarvestTask, bank: StructurePowerBank): boolean {
+  if (
+    task.plannedHaulerSpawnStartTick !== undefined &&
+    Game.time >= task.plannedHaulerSpawnStartTick
+  ) {
+    return true;
+  }
+
   const sourceRoom = Game.rooms[task.sourceRoom];
   const energyCapacity = sourceRoom?.energyCapacityAvailable ?? 0;
   const spawnTime = estimateHaulerBatchSpawnTicks(task, energyCapacity);
@@ -372,13 +694,23 @@ function ensureHaulerConfigs(task: PowerBankHarvestTask): void {
   const configStore = getConfigStore();
   const haulerCount = getRequiredHaulerCount(task);
   task.haulerCount = haulerCount;
+  const encodedRoute = task.routeRooms?.join("|") ?? "";
 
   for (let index = 0; index < haulerCount; index += 1) {
-    const configName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "hauler", index);
+    const configName = getPowerBankConfigName(
+      task.sourceRoom,
+      task.targetRoom,
+      "hauler",
+      index,
+      task.id,
+      0,
+    );
     configStore[configName] = {
       role: "powerBankHauler",
-      args: [task.targetRoom, ""],
+      args: [task.targetRoom, encodedRoute],
       roomName: task.sourceRoom,
+      taskId: task.id,
+      powerBankGeneration: 0,
     };
 
     for (const creep of getTickContextService().getCreepsByConfigName(configName)) {
@@ -398,63 +730,76 @@ function getAssignableCreepByConfigName(configName: string, taskId: string): Cre
 }
 
 function processDiscovered(task: PowerBankHarvestTask): void {
-  const nearest = findNearestEligibleRoom(task.targetRoom);
-  if (!nearest) {
-    transitionToTerminal(task, "failed", "no_eligible_source_room");
+  const evaluation = evaluateSourceCandidates(task);
+  const selected = evaluation.candidates[0];
+  if (!selected) {
+    const reasons = evaluation.rejectionReasons.length > 0
+      ? evaluation.rejectionReasons.join(",")
+      : "no_eligible_source_room";
+    transitionToTerminal(task, "failed", reasons);
     return;
   }
 
-  const room = Game.rooms[nearest.roomName];
-  if (!room) {
-    transitionToTerminal(task, "failed", "source_room_not_visible");
-    return;
-  }
+  task.sourceRoom = selected.roomName;
+  task.tier = selected.tier;
+  task.routeDistance = selected.distance;
+  task.routeRooms = selected.routeRooms;
+  task.avoidRooms = selected.avoidRooms;
+  task.haulerCount = selected.timeline.haulerCount;
+  task.plannedDps = selected.profile.dpsPerAttacker;
+  task.plannedHps = selected.profile.healerHPS;
+  task.plannedTtk = selected.timeline.ttk;
+  task.plannedKillTick = selected.timeline.killTick;
+  task.plannedHaulerSpawnStartTick = selected.timeline.haulerSpawnStartTick;
+  task.plannedHaulerArrivalTick = selected.timeline.haulerArrivalTick;
+  task.minimumCombatTtl = Math.min(
+    CREEP_LIFE_TIME - 25,
+    selected.timeline.travelTime + Math.min(selected.timeline.ttk, 900) + 100,
+  );
+  task.activeGeneration = 0;
+  task.activeIndex = 0;
+  task.primaryBoostOwnerId = `${task.id}:primary:g0`;
+  task.primaryBoostLabs = [];
+  task.combatReady = false;
+  transitionTask(task, POWER_BANK_STATUS.PREPARING_BOOSTS);
+}
 
-  const tierResult = selectBodyTier(nearest.energyCapacity);
-  if (!tierResult) {
-    transitionToTerminal(task, "failed", "insufficient_energy_capacity");
-    return;
-  }
+function getPrimaryBoostOwner(task: PowerBankHarvestTask): string {
+  task.primaryBoostOwnerId ??= getPowerBankBoostPrep(task.id) || task.boostLabs.length > 0
+    ? task.id
+    : `${task.id}:primary:g${task.activeGeneration ?? 0}`;
+  return task.primaryBoostOwnerId;
+}
 
-  const haulerCapacity = getPowerBankHaulerCapacity(nearest.energyCapacity);
-
-  const viability = assessViability({
-    energyCapacity: nearest.energyCapacity,
-    bankHits: task.hits,
-    bankPower: task.power,
-    ticksToDecay: task.ticksToDecay,
-    freeTiles: task.freeTiles,
-    routeDistance: nearest.distance,
-    currentTick: Game.time,
-    hasCompounds: {
-      xgho2: getLocalCompoundStock(room, RESOURCE_CATALYZED_GHODIUM_ALKALIDE) > 0,
-      xuh2o: getLocalCompoundStock(room, RESOURCE_CATALYZED_UTRIUM_ACID) > 0,
-      xlho2: getLocalCompoundStock(room, RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE) > 0,
-    },
-    isDefenseMode: false,
-    haulerCapacity,
-    spawnCount: nearest.spawnCount,
-  });
-
-  if (!viability.viable) {
-    transitionToTerminal(task, "failed", viability.reasons.join(","));
-    return;
-  }
-
-  task.sourceRoom = nearest.roomName;
-  task.tier = tierKindToNumber(tierResult.attackerTier);
-  task.routeDistance = nearest.distance;
-  task.haulerCount = viability.estimates.haulerCount;
-  task.status = POWER_BANK_STATUS.PREPARING_BOOSTS;
+function getReinforcementBoostOwner(
+  task: PowerBankHarvestTask,
+  reinforcement: PowerBankReinforcementState,
+): string {
+  reinforcement.generation ??= (task.activeGeneration ?? 0) + 1;
+  reinforcement.boostOwnerId ??=
+    `${task.id}:reinforcement:g${reinforcement.generation}`;
+  return reinforcement.boostOwnerId;
 }
 
 function refreshPowerBankBoostPrep(
   task: PowerBankHarvestTask,
+  ownerId: string,
   requiredAmounts?: ReadonlyMap<ResourceConstant, number>,
 ): BoostPrepResult {
   if (!task.tier) return { status: "ready", labs: [] };
-  const result = prepareBoosts(task.id, task.sourceRoom, task.tier, requiredAmounts);
-  task.boostLabs = result.labs;
+  const result = prepareBoosts(
+    ownerId,
+    task.sourceRoom,
+    task.tier,
+    requiredAmounts,
+    { requireLabEnergy: true },
+  );
+  if (ownerId === getPrimaryBoostOwner(task)) {
+    task.primaryBoostLabs = result.labs;
+    task.boostLabs = result.labs;
+  } else if (task.reinforcement?.boostOwnerId === ownerId) {
+    task.reinforcement.boostLabs = result.labs;
+  }
   return result;
 }
 
@@ -469,11 +814,10 @@ function processPreparingBoosts(task: PowerBankHarvestTask): void {
     return;
   }
 
-  const result = prepareBoosts(task.id, task.sourceRoom, task.tier);
-  task.boostLabs = result.labs;
+  const result = refreshPowerBankBoostPrep(task, getPrimaryBoostOwner(task));
 
   if (result.status === "ready" || (result.status === "preparing" && result.labs.length > 0)) {
-    task.status = POWER_BANK_STATUS.SPAWNING;
+    transitionTask(task, POWER_BANK_STATUS.SPAWNING);
   } else if (result.status === "failed") {
     transitionToTerminal(task, "failed", result.reason ?? "boost_prep_failed");
   }
@@ -490,18 +834,18 @@ function processSpawning(task: PowerBankHarvestTask): void {
     return;
   }
 
-  const boostResult = refreshPowerBankBoostPrep(task);
+  const boostResult = refreshPowerBankBoostPrep(task, getPrimaryBoostOwner(task));
   if (boostResult.status === "failed") {
     transitionToTerminal(task, "failed", boostResult.reason ?? "boost_prep_failed_during_spawning");
     return;
   }
 
-  if (!ensureCombatConfigs(task, 0)) {
+  if (!ensureCombatConfigs(task, getActiveCombatIndex(task))) {
     transitionToTerminal(task, "failed", "invalid_tier");
     return;
   }
 
-  task.status = POWER_BANK_STATUS.RENEWING;
+  transitionTask(task, POWER_BANK_STATUS.RENEWING);
 }
 
 function getRequiredBoostsForRole(tier: number, role: "attacker" | "healer"): ResourceConstant[] {
@@ -571,29 +915,56 @@ function getNextMissingBoost(creep: Creep, requiredCompounds: ResourceConstant[]
 
 function applyNextBoost(
   creep: Creep,
-  taskId: string,
+  ownerId: string,
   requiredCompounds: ResourceConstant[],
-): "boosted" | "moving" | "waiting" | "no_lab" | "no_compound" {
-  if (isBoostSatisfied(creep, requiredCompounds)) return "boosted";
+): { status: "boosted" | "moving" | "waiting" | "no_lab" | "no_resources" | "fatal"; code?: ScreepsReturnCode } {
+  if (isBoostSatisfied(creep, requiredCompounds)) return { status: "boosted" };
 
   const nextCompound = getNextMissingBoost(creep, requiredCompounds);
-  if (!nextCompound) return "boosted";
+  if (!nextCompound) return { status: "boosted" };
 
-  const labId = getAssignedPowerBankBoostLabId(taskId, nextCompound);
-  if (!labId) return "no_lab";
+  const labId = getAssignedPowerBankBoostLabId(ownerId, nextCompound);
+  if (!labId) return { status: "no_lab" };
 
   const lab = Game.getObjectById(labId as Id<StructureLab>);
-  if (!lab) return "no_lab";
+  if (!lab) return { status: "no_lab" };
 
-  if ((lab.store.getUsedCapacity(nextCompound) ?? 0) < LAB_BOOST_MINERAL) return "no_compound";
+  if (
+    (lab.store.getUsedCapacity(nextCompound) ?? 0) < LAB_BOOST_MINERAL ||
+    (lab.store.getUsedCapacity(RESOURCE_ENERGY) ?? 0) < LAB_BOOST_ENERGY
+  ) {
+    return { status: "no_resources" };
+  }
 
   if (creep.pos.isNearTo(lab)) {
-    lab.boostCreep(creep);
-    return "boosted";
-  } else {
-    moveToTarget(creep, lab, 1, { reusePath: 3, maxRooms: 1 });
-    return "moving";
+    const code = lab.boostCreep(creep);
+    if (code === OK) return { status: "boosted", code };
+    if (code === ERR_TIRED || code === ERR_BUSY || code === ERR_NOT_ENOUGH_RESOURCES) {
+      return {
+        status: code === ERR_NOT_ENOUGH_RESOURCES ? "no_resources" : "waiting",
+        code,
+      };
+    }
+    if (code !== ERR_NOT_IN_RANGE) return { status: "fatal", code };
   }
+
+  moveToTarget(creep, lab, 1, { reusePath: 3, maxRooms: 1 });
+  return { status: "moving", code: ERR_NOT_IN_RANGE };
+}
+
+function handleBoostApplyResult(
+  task: PowerBankHarvestTask,
+  role: "attacker" | "healer",
+  result: ReturnType<typeof applyNextBoost>,
+): boolean {
+  if (result.status === "fatal") {
+    transitionToTerminal(task, "aborted", `boost_${role}_error:${result.code ?? "unknown"}`);
+    return false;
+  }
+  if (result.status === "no_lab" || result.status === "no_resources" || result.status === "waiting") {
+    setPowerBankBlocker(task, `boost_${role}_${result.status}`, 3);
+  }
+  return true;
 }
 
 function processBoosting(task: PowerBankHarvestTask): void {
@@ -602,14 +973,17 @@ function processBoosting(task: PowerBankHarvestTask): void {
     return;
   }
 
-  const attackerConfigName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "attacker", 0);
-  const healerConfigName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "healer", 0);
-
-  const attacker = getAssignableCreepByConfigName(attackerConfigName, task.id);
-  const healer = getAssignableCreepByConfigName(healerConfigName, task.id);
+  const activeIndex = getActiveCombatIndex(task);
+  const attacker = getCombatCreep(task, "attacker", activeIndex);
+  const healer = getCombatCreep(task, "healer", activeIndex);
 
   const tier = task.tier ?? 8;
-  const boostResult = refreshPowerBankBoostPrep(task, getRemainingBoostAmounts(tier, attacker ?? null, healer ?? null));
+  const ownerId = getPrimaryBoostOwner(task);
+  const boostResult = refreshPowerBankBoostPrep(
+    task,
+    ownerId,
+    getRemainingBoostAmounts(tier, attacker ?? null, healer ?? null),
+  );
   if (boostResult.status === "failed") {
     transitionToTerminal(task, "failed", boostResult.reason ?? "boost_prep_failed_during_boosting");
     return;
@@ -620,10 +994,10 @@ function processBoosting(task: PowerBankHarvestTask): void {
   const healerCompounds = getRequiredBoostsForRole(tier, "healer");
 
   if (attacker) {
-    applyNextBoost(attacker, task.id, attackerCompounds);
+    if (!handleBoostApplyResult(task, "attacker", applyNextBoost(attacker, ownerId, attackerCompounds))) return;
   }
   if (healer) {
-    applyNextBoost(healer, task.id, healerCompounds);
+    if (!handleBoostApplyResult(task, "healer", applyNextBoost(healer, ownerId, healerCompounds))) return;
   }
 
   const attackerReady = !!attacker && isBoostSatisfied(attacker, attackerCompounds);
@@ -635,23 +1009,86 @@ function processBoosting(task: PowerBankHarvestTask): void {
   if (attacker && healer && attackerReady && healerReady) {
     task.attackerId = attacker.id as string;
     task.healerId = healer.id as string;
-    (attacker.memory as any).taskId = task.id;
-    (healer.memory as any).taskId = task.id;
-    releaseFinishedBoostLabs(task);
-    task.status = POWER_BANK_STATUS.TRAVELLING;
+    task.combatReady = true;
+    const generation = task.activeGeneration ?? 0;
+    const attackerMemory = attacker.memory as PowerBankCreepMemory & { pairGeneration?: number };
+    const healerMemory = healer.memory as PowerBankCreepMemory & { pairGeneration?: number };
+    attackerMemory.taskId = task.id;
+    attackerMemory.pairGeneration = generation;
+    healerMemory.taskId = task.id;
+    healerMemory.pairGeneration = generation;
+    releaseFinishedBoostLabs(task, ownerId, true);
+    transitionTask(task, POWER_BANK_STATUS.TRAVELLING);
   }
 }
 
-function releaseFinishedBoostLabs(task: PowerBankHarvestTask): void {
+function releaseFinishedBoostLabs(
+  task: PowerBankHarvestTask,
+  ownerId = getPrimaryBoostOwner(task),
+  primary = ownerId === getPrimaryBoostOwner(task),
+): void {
   if (!task.sourceRoom) return;
-  if (task.boostLabs.length === 0 && !getPowerBankBoostPrep(task.id)) return;
+  const labs = primary
+    ? task.primaryBoostLabs ?? task.boostLabs
+    : task.reinforcement?.boostLabs ?? [];
+  if (labs.length === 0 && !getPowerBankBoostPrep(ownerId)) return;
 
-  releaseBoostLabs(task.id, task.sourceRoom);
-  task.boostLabs = [];
+  releaseBoostLabs(ownerId, task.sourceRoom);
+  if (primary) {
+    task.primaryBoostLabs = [];
+    task.boostLabs = [];
+  } else if (task.reinforcement?.boostOwnerId === ownerId) {
+    task.reinforcement.boostLabs = [];
+  }
 }
 
 function isCreepBoosted(creep: Creep): boolean {
   return creep.body.some((part) => !!part.boost);
+}
+
+function getMinimumCombatTtl(task: PowerBankHarvestTask): number {
+  if (task.minimumCombatTtl !== undefined) return task.minimumCombatTtl;
+  const travel = Math.ceil((task.routeDistance ?? 5) * POWER_BANK_ROOM_TRAVEL_TICKS);
+  return Math.min(CREEP_LIFE_TIME - 25, travel + 100);
+}
+
+function attemptRenewCreep(
+  task: PowerBankHarvestTask,
+  creep: Creep,
+  role: "attacker" | "healer",
+  minimumTtl: number,
+): "ready" | "waiting" | "fatal" {
+  if ((creep.ticksToLive ?? CREEP_LIFE_TIME) >= minimumTtl) return "ready";
+  if (isCreepBoosted(creep)) {
+    transitionToTerminal(task, "aborted", `boosted_${role}_ttl_insufficient`);
+    return "fatal";
+  }
+
+  const spawns = getTickContextService().getSpawnsByRoom(task.sourceRoom)
+    .filter((spawn) => typeof spawn.isActive !== "function" || spawn.isActive());
+  const spawn = spawns.find((candidate) => creep.pos.isNearTo(candidate)) ?? spawns[0];
+  if (!spawn) {
+    setPowerBankBlocker(task, "renew_spawn_unavailable", 5);
+    return "waiting";
+  }
+
+  const code = spawn.renewCreep(creep);
+  if (code === OK) {
+    markPowerBankProgress(task);
+    return "waiting";
+  }
+  if (code === ERR_NOT_IN_RANGE) {
+    moveToTarget(creep, spawn, 1, { reusePath: 3, maxRooms: 1 });
+    setPowerBankBlocker(task, `renew_${role}_not_in_range`, 1);
+    return "waiting";
+  }
+  if (code === ERR_BUSY || code === ERR_NOT_ENOUGH_ENERGY || code === ERR_FULL) {
+    setPowerBankBlocker(task, `renew_${role}_blocked:${code}`, 3);
+    return code === ERR_FULL ? "ready" : "waiting";
+  }
+
+  transitionToTerminal(task, "aborted", `renew_${role}_error:${code}`);
+  return "fatal";
 }
 
 function processRenewing(task: PowerBankHarvestTask): void {
@@ -660,59 +1097,44 @@ function processRenewing(task: PowerBankHarvestTask): void {
     return;
   }
 
-  const boostResult = refreshPowerBankBoostPrep(task);
+  const boostResult = refreshPowerBankBoostPrep(task, getPrimaryBoostOwner(task));
   if (boostResult.status === "failed") {
     transitionToTerminal(task, "failed", boostResult.reason ?? "boost_prep_failed_during_renewing");
     return;
   }
 
-  const attackerConfigName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "attacker", 0);
-  const healerConfigName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "healer", 0);
+  const activeIndex = getActiveCombatIndex(task);
+  const attacker = getCombatCreep(task, "attacker", activeIndex);
+  const healer = getCombatCreep(task, "healer", activeIndex);
 
-  const attacker = getAssignableCreepByConfigName(attackerConfigName, task.id);
-  const healer = getAssignableCreepByConfigName(healerConfigName, task.id);
-
-  // Wait patiently if neither creep exists yet (may still be queued/spawning).
-  if (!attacker && !healer) return;
-
-  // Regression guard: creeps should not be boosted at this stage
-  if ((attacker && isCreepBoosted(attacker)) || (healer && isCreepBoosted(healer))) {
-    transitionToTerminal(task, "aborted", "invalid_lifecycle_already_boosted");
+  if (!attacker || !healer) {
+    task.combatReady = false;
+    task.attackerReady = !!attacker;
+    task.healerReady = !!healer;
+    setPowerBankBlocker(task, !attacker && !healer
+      ? "combat_pair_not_spawned"
+      : !attacker
+        ? "attacker_not_spawned"
+        : "healer_not_spawned", 3);
     return;
   }
 
-  const distance = task.routeDistance ?? 5;
-  const MIN_TTL = distance * 2 + 50;
+  const generation = task.activeGeneration ?? 0;
+  (attacker.memory as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration = generation;
+  (healer.memory as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration = generation;
+  const minimumTtl = getMinimumCombatTtl(task);
+  const attackerRenew = attemptRenewCreep(task, attacker, "attacker", minimumTtl);
+  if (attackerRenew === "fatal") return;
+  const healerRenew = attemptRenewCreep(task, healer, "healer", minimumTtl);
+  if (healerRenew === "fatal") return;
 
-  const spawn = getTickContextService().getPrimarySpawnByRoom(task.sourceRoom);
-  if (!spawn) return;
-
-  let needsRenew = false;
-
-  if (attacker && (attacker.ticksToLive ?? 1500) < MIN_TTL) {
-    spawn.renewCreep(attacker);
-    task.attackerReady = false;
-    needsRenew = true;
-  } else if (attacker) {
-    task.attackerReady = true;
-  } else {
-    task.attackerReady = false;
-  }
-
-  if (healer && (healer.ticksToLive ?? 1500) < MIN_TTL) {
-    spawn.renewCreep(healer);
-    task.healerReady = false;
-    needsRenew = true;
-  } else if (healer) {
-    task.healerReady = true;
-  } else {
-    task.healerReady = false;
-  }
-
-  if (!needsRenew) {
+  task.attackerReady = attackerRenew === "ready";
+  task.healerReady = healerRenew === "ready";
+  if (attackerRenew === "ready" && healerRenew === "ready") {
     task.attackerReady = false;
     task.healerReady = false;
-    task.status = POWER_BANK_STATUS.BOOSTING;
+    task.combatReady = false;
+    transitionTask(task, POWER_BANK_STATUS.BOOSTING);
   }
 }
 
@@ -723,7 +1145,9 @@ function processTravelling(task: PowerBankHarvestTask): void {
   }
 
   if (!task.attackerId || !task.healerId) {
-    transitionToTerminal(task, "aborted", "missing_creep_ids");
+    task.combatReady = false;
+    transitionTask(task, POWER_BANK_STATUS.RENEWING);
+    setPowerBankBlocker(task, "missing_creep_ids", 1);
     return;
   }
 
@@ -731,15 +1155,42 @@ function processTravelling(task: PowerBankHarvestTask): void {
   const healer = Game.getObjectById(task.healerId as Id<Creep>);
 
   if (!attacker || !healer) {
-    transitionToTerminal(task, "aborted", "creep_died_in_transit");
+    task.attackerId = undefined;
+    task.healerId = undefined;
+    task.combatReady = false;
+    transitionTask(task, POWER_BANK_STATUS.RENEWING);
+    setPowerBankBlocker(task, "combat_member_changed_in_transit", 1);
     return;
   }
 
   clearBoostMovementState(attacker, task.id);
   clearBoostMovementState(healer, task.id);
 
-  if (attacker.room.name === task.targetRoom && healer.room.name === task.targetRoom) {
-    task.status = POWER_BANK_STATUS.ATTACKING;
+  const generation = task.activeGeneration ?? 0;
+  const attackerGeneration = (attacker.memory as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration;
+  const healerGeneration = (healer.memory as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration;
+  const pairReady = task.combatReady === true &&
+    attackerGeneration === generation &&
+    healerGeneration === generation &&
+    attacker.getActiveBodyparts(ATTACK) > 0 &&
+    attacker.getActiveBodyparts(TOUGH) > 0 &&
+    healer.getActiveBodyparts(HEAL) > 0;
+
+  if (!pairReady) {
+    task.combatReady = false;
+    transitionTask(task, POWER_BANK_STATUS.RENEWING);
+    setPowerBankBlocker(task, "combat_pair_not_ready_in_transit", 1);
+    return;
+  }
+
+  if (
+    attacker.room.name === task.targetRoom &&
+    healer.room.name === task.targetRoom &&
+    attacker.pos.isNearTo(healer)
+  ) {
+    transitionTask(task, POWER_BANK_STATUS.ATTACKING);
+    task.lastBankProgressAt = Game.time;
+    task.lastBankHits = undefined;
   }
 }
 
@@ -751,20 +1202,102 @@ function clearBoostMovementState(creep: Creep, taskId: string): void {
   memory.powerBankTravelTaskId = taskId;
 }
 
-function processAttacking(task: PowerBankHarvestTask): void {
-  if (!task.reinforcement) {
-    cleanupInactiveCombatConfigs(task);
+interface ActivePowerBankPair {
+  attacker: Creep;
+  healer: Creep;
+}
+
+function getActiveCombatPair(task: PowerBankHarvestTask): ActivePowerBankPair | null {
+  if (!task.attackerId || !task.healerId) return null;
+  const attacker = Game.getObjectById(task.attackerId as Id<Creep>);
+  const healer = Game.getObjectById(task.healerId as Id<Creep>);
+  if (!attacker || !healer) return null;
+  const generation = task.activeGeneration ?? 0;
+  const attackerMemory = attacker.memory as PowerBankCreepMemory & { pairGeneration?: number };
+  const healerMemory = healer.memory as PowerBankCreepMemory & { pairGeneration?: number };
+  if (attackerMemory.pairGeneration === undefined) attackerMemory.pairGeneration = generation;
+  if (healerMemory.pairGeneration === undefined) healerMemory.pairGeneration = generation;
+  if (
+    attackerMemory.pairGeneration !== generation ||
+    healerMemory.pairGeneration !== generation
+  ) {
+    return null;
+  }
+  return { attacker, healer };
+}
+
+function isPairCombatCapable(pair: ActivePowerBankPair): boolean {
+  return pair.attacker.getActiveBodyparts(ATTACK) > 0 &&
+    pair.attacker.getActiveBodyparts(TOUGH) > 0 &&
+    pair.healer.getActiveBodyparts(HEAL) > 0;
+}
+
+function promoteReinforcement(task: PowerBankHarvestTask): ActivePowerBankPair | null {
+  const reinforcement = task.reinforcement;
+  if (
+    !reinforcement?.combatReady ||
+    reinforcement.stage !== "attacking" ||
+    !reinforcement.attackerId ||
+    !reinforcement.healerId
+  ) {
+    return null;
   }
 
-  const bank = Game.getObjectById(task.bankId as Id<StructurePowerBank>);
+  const attacker = Game.getObjectById(reinforcement.attackerId as Id<Creep>);
+  const healer = Game.getObjectById(reinforcement.healerId as Id<Creep>);
+  if (!attacker || !healer) return null;
 
+  const oldIndex = getActiveCombatIndex(task);
+  retireCombatGeneration(task, oldIndex);
+
+  task.activeGeneration = reinforcement.generation ?? (task.activeGeneration ?? 0) + 1;
+  task.activeIndex = reinforcement.index;
+  task.attackerId = reinforcement.attackerId;
+  task.healerId = reinforcement.healerId;
+  task.combatReady = true;
+  task.primaryBoostOwnerId = reinforcement.boostOwnerId;
+  task.primaryBoostLabs = [];
+  setReinforcementStage(attacker);
+  setReinforcementStage(healer);
+  delete task.reinforcement;
+  markPowerBankProgress(task);
+  return { attacker, healer };
+}
+
+function resetChangedActivePair(task: PowerBankHarvestTask): void {
+  task.attackerId = undefined;
+  task.healerId = undefined;
+  task.attackerReady = false;
+  task.healerReady = false;
+  task.combatReady = false;
+  task.primaryBoostOwnerId = `${task.id}:primary:g${task.activeGeneration ?? 0}`;
+  transitionTask(task, POWER_BANK_STATUS.RENEWING);
+  setPowerBankBlocker(task, "active_pair_member_changed", 1);
+}
+
+function processAttacking(task: PowerBankHarvestTask): void {
+  if (!task.reinforcement) cleanupInactiveCombatConfigs(task);
+
+  const bank = Game.getObjectById(task.bankId as Id<StructurePowerBank>);
   if (!bank) {
     if (!Game.rooms[task.targetRoom]) {
+      if (!getActiveCombatPair(task) && !task.reinforcement?.attackerId) {
+        task.attackerId = undefined;
+        task.healerId = undefined;
+        task.combatReady = false;
+        setPowerBankBlocker(task, "target_not_visible_and_pair_missing", 3);
+      }
       return;
     }
 
+    task.lastVisibleAt = Game.time;
+    task.bankGoneTick ??= Game.time;
     task.haulingStartedTick ??= Game.time;
-    task.status = POWER_BANK_STATUS.HAULING;
+    task.haulingDeadlineAt ??= Game.time + 1200;
+    if (task.bankExpiresAt !== undefined && Game.time >= task.bankExpiresAt) {
+      task.outcome = "expired";
+    }
+    transitionTask(task, POWER_BANK_STATUS.HAULING);
     cleanupAllCombatConfigs(task);
     cleanupReinforcement(task);
     ensureHaulerConfigs(task);
@@ -772,96 +1305,175 @@ function processAttacking(task: PowerBankHarvestTask): void {
     return;
   }
 
-  const attacker = getActiveAttacker(task);
-  if (!attacker) {
-    cleanupReinforcement(task);
-    transitionToTerminal(task, "aborted", "attacker_died");
+  updatePowerBankObservation(task, bank);
+  processReinforcement(task);
+
+  let pair = getActiveCombatPair(task);
+  if (
+    pair &&
+    (!isPairCombatCapable(pair) || task.blocker === "attack_no_progress")
+  ) {
+    pair = promoteReinforcement(task) ?? pair;
+  }
+  if (!pair) pair = promoteReinforcement(task);
+  if (!pair) {
+    if (task.reinforcement) {
+      setPowerBankBlocker(task, "active_pair_missing_waiting_reinforcement", 1);
+      return;
+    }
+    resetChangedActivePair(task);
     return;
   }
 
-  maybeRequestReinforcement(task, attacker, bank);
+  const combatCapable = isPairCombatCapable(pair);
+  if (!combatCapable) {
+    task.combatReady = false;
+    setPowerBankBlocker(task, "active_pair_missing_effective_parts", 1);
+  } else if (pair.attacker.room.name !== pair.healer.room.name || !pair.attacker.pos.isNearTo(pair.healer)) {
+    setPowerBankBlocker(task, "active_pair_not_adjacent", 1);
+  }
+
+  maybeRequestReinforcement(
+    task,
+    pair,
+    bank,
+    !combatCapable || task.blocker === "attack_no_progress",
+  );
   processReinforcement(task);
-  if (!task.reinforcement) {
-    cleanupInactiveCombatConfigs(task);
-  }
-
-  if (shouldSpawnHaulers(task, bank)) {
-    ensureHaulerConfigs(task);
-  }
-
+  if (!task.reinforcement) cleanupInactiveCombatConfigs(task);
+  if (shouldSpawnHaulers(task, bank)) ensureHaulerConfigs(task);
 }
 
-function getActiveAttacker(task: PowerBankHarvestTask): Creep | null {
-  if (task.attackerId) {
-    const attacker = Game.getObjectById(task.attackerId as Id<Creep>);
-    if (attacker) return attacker;
-  }
-
-  const reinforcement = task.reinforcement;
-  if (!reinforcement?.attackerId) return null;
-
-  const replacement = Game.getObjectById(reinforcement.attackerId as Id<Creep>);
-  if (!replacement) return null;
-
-  task.attackerId = reinforcement.attackerId;
-  if (reinforcement.healerId) task.healerId = reinforcement.healerId;
-  task.reinforcement = undefined;
-  setReinforcementStage(replacement);
-  cleanupPrimaryCombat(task);
-  return replacement;
+function estimateReinforcementLeadTicks(task: PowerBankHarvestTask): number {
+  if (!task.tier) return Infinity;
+  const profile = derivePowerBankTierProfile(task.tier);
+  if (!profile) return Infinity;
+  const spawnReadyIn = getSpawnReadyIn(task.sourceRoom);
+  const sourceRoom = Game.rooms[task.sourceRoom];
+  if (spawnReadyIn.length === 0 || !sourceRoom) return Infinity;
+  const timeline = planPowerBankTimeline({
+    profile,
+    currentTick: Game.time,
+    bankHits: 0,
+    bankPower: 0,
+    freeTiles: Math.max(1, task.freeTiles),
+    routeDistance: task.routeDistance ?? 5,
+    haulerCapacity: getPowerBankHaulerCapacity(sourceRoom.energyCapacityAvailable),
+    spawnReadyIn,
+  });
+  return timeline.combatArrivalTick - Game.time;
 }
 
-function maybeRequestReinforcement(task: PowerBankHarvestTask, attacker: Creep, bank: StructurePowerBank): void {
+function maybeRequestReinforcement(
+  task: PowerBankHarvestTask,
+  pair: ActivePowerBankPair,
+  bank: StructurePowerBank,
+  force = false,
+): void {
   if (task.reinforcement) return;
-  if (attacker.ticksToLive === undefined) return;
-
+  const pairTtl = Math.min(
+    pair.attacker.ticksToLive ?? CREEP_LIFE_TIME,
+    pair.healer.ticksToLive ?? CREEP_LIFE_TIME,
+  );
   const remainingAttackTicks = estimateRemainingAttackTicks(task, bank);
-  if (!Number.isFinite(remainingAttackTicks)) return;
+  const leadTicks = estimateReinforcementLeadTicks(task);
+  if (!Number.isFinite(remainingAttackTicks) || !Number.isFinite(leadTicks)) return;
+  if (!force && pairTtl > remainingAttackTicks + leadTicks + REINFORCEMENT_TTL_BUFFER) return;
 
-  if (attacker.ticksToLive > remainingAttackTicks + REINFORCEMENT_TTL_BUFFER) return;
-
+  const generation = (task.activeGeneration ?? 0) + 1;
   task.reinforcement = {
-    index: REINFORCEMENT_INDEX,
+    index: generation,
+    generation,
     stage: "spawning",
     attackerReady: false,
     healerReady: false,
+    combatReady: false,
+    boostOwnerId: `${task.id}:reinforcement:g${generation}`,
+    boostLabs: [],
   };
+  markPowerBankProgress(task);
+}
+
+function resetReinforcementForMemberChange(
+  task: PowerBankHarvestTask,
+  reinforcement: PowerBankReinforcementState,
+  attacker?: Creep,
+  healer?: Creep,
+): void {
+  const attackerChanged = !!reinforcement.attackerId && reinforcement.attackerId !== attacker?.id;
+  const healerChanged = !!reinforcement.healerId && reinforcement.healerId !== healer?.id;
+  if (!attackerChanged && !healerChanged) return;
+
+  if (reinforcement.boostOwnerId) {
+    releaseBoostLabs(reinforcement.boostOwnerId, task.sourceRoom);
+  }
+  reinforcement.attackerId = attacker?.id as string | undefined;
+  reinforcement.healerId = healer?.id as string | undefined;
+  reinforcement.attackerReady = false;
+  reinforcement.healerReady = false;
+  reinforcement.combatReady = false;
+  reinforcement.boostLabs = [];
+  reinforcement.stage = attacker && healer ? "renewing" : "spawning";
+  reinforcement.lastMemberChangeAt = Game.time;
+  markPowerBankProgress(task);
 }
 
 function processReinforcement(task: PowerBankHarvestTask): void {
   const reinforcement = task.reinforcement;
   if (!reinforcement) return;
+  getReinforcementBoostOwner(task, reinforcement);
 
   if (!ensureCombatConfigs(task, reinforcement.index)) {
-    delete task.reinforcement;
+    cleanupReinforcement(task);
+    setPowerBankBlocker(task, "reinforcement_invalid_tier", 5);
     return;
   }
 
   ensureCombatTaskIds(task, reinforcement.index, reinforcement.stage);
   const attacker = getCombatCreep(task, "attacker", reinforcement.index);
   const healer = getCombatCreep(task, "healer", reinforcement.index);
+  resetReinforcementForMemberChange(task, reinforcement, attacker, healer);
 
   if (reinforcement.stage === "spawning") {
-    if (attacker && healer) reinforcement.stage = "renewing";
-    return;
+    if (!attacker || !healer) {
+      setPowerBankBlocker(task, "reinforcement_spawning", 3);
+      return;
+    }
+    reinforcement.attackerId = attacker.id as string;
+    reinforcement.healerId = healer.id as string;
+    reinforcement.lastMemberChangeAt = Game.time;
+    reinforcement.stage = "renewing";
+    setReinforcementStage(attacker, "renewing");
+    setReinforcementStage(healer, "renewing");
+    markPowerBankProgress(task);
   }
 
   if (reinforcement.stage === "renewing") {
     processReinforcementRenewing(task, reinforcement, attacker, healer);
     return;
   }
-
   if (reinforcement.stage === "boosting") {
     processReinforcementBoosting(task, reinforcement, attacker, healer);
     return;
   }
-
   if (reinforcement.stage === "travelling") {
-    if (!attacker || !healer) return;
-    setReinforcementStage(attacker);
-    setReinforcementStage(healer);
-    if (attacker.room.name === task.targetRoom && healer.room.name === task.targetRoom) {
+    if (!attacker || !healer) {
+      cleanupReinforcement(task);
+      setPowerBankBlocker(task, "reinforcement_died_in_transit", 3);
+      return;
+    }
+    setReinforcementStage(attacker, "travelling");
+    setReinforcementStage(healer, "travelling");
+    if (
+      reinforcement.combatReady === true &&
+      attacker.room.name === task.targetRoom &&
+      healer.room.name === task.targetRoom &&
+      attacker.pos.isNearTo(healer)
+    ) {
       reinforcement.stage = "attacking";
+      setReinforcementStage(attacker, "attacking");
+      setReinforcementStage(healer, "attacking");
+      markPowerBankProgress(task);
     }
   }
 }
@@ -872,39 +1484,34 @@ function processReinforcementRenewing(
   attacker?: Creep,
   healer?: Creep,
 ): void {
-  if (!attacker && !healer) return;
-
-  const boostResult = refreshPowerBankBoostPrep(task);
-  if (boostResult.status === "failed") return;
-
-  const distance = task.routeDistance ?? 5;
-  const minTtl = distance * 2 + 50;
-  const spawn = getTickContextService().getPrimarySpawnByRoom(task.sourceRoom);
-  if (!spawn) return;
-
-  let needsRenew = false;
-  if (attacker && (attacker.ticksToLive ?? 1500) < minTtl) {
-    spawn.renewCreep(attacker);
-    reinforcement.attackerReady = false;
-    needsRenew = true;
-  } else if (attacker) {
-    reinforcement.attackerReady = true;
+  if (!attacker || !healer) return;
+  const ownerId = getReinforcementBoostOwner(task, reinforcement);
+  const boostResult = refreshPowerBankBoostPrep(task, ownerId);
+  if (boostResult.status === "failed") {
+    cleanupReinforcement(task);
+    setPowerBankBlocker(task, boostResult.reason ?? "reinforcement_boost_prep_failed", 5);
+    return;
   }
 
-  if (healer && (healer.ticksToLive ?? 1500) < minTtl) {
-    spawn.renewCreep(healer);
-    reinforcement.healerReady = false;
-    needsRenew = true;
-  } else if (healer) {
-    reinforcement.healerReady = true;
-  }
+  const generation = reinforcement.generation ?? 1;
+  (attacker.memory as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration = generation;
+  (healer.memory as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration = generation;
+  const minTtl = getMinimumCombatTtl(task);
+  const attackerRenew = attemptRenewCreep(task, attacker, "attacker", minTtl);
+  if (attackerRenew === "fatal") return;
+  const healerRenew = attemptRenewCreep(task, healer, "healer", minTtl);
+  if (healerRenew === "fatal") return;
+  reinforcement.attackerReady = attackerRenew === "ready";
+  reinforcement.healerReady = healerRenew === "ready";
 
-  if (!needsRenew && attacker && healer) {
+  if (attackerRenew === "ready" && healerRenew === "ready") {
     reinforcement.attackerReady = false;
     reinforcement.healerReady = false;
+    reinforcement.combatReady = false;
     reinforcement.stage = "boosting";
     setReinforcementStage(attacker, "boosting");
     setReinforcementStage(healer, "boosting");
+    markPowerBankProgress(task);
   }
 }
 
@@ -914,32 +1521,41 @@ function processReinforcementBoosting(
   attacker?: Creep,
   healer?: Creep,
 ): void {
-  if (!attacker && !healer) return;
-
+  if (!attacker || !healer) return;
   const tier = task.tier ?? 8;
-  const boostResult = refreshPowerBankBoostPrep(task, getRemainingBoostAmounts(tier, attacker ?? null, healer ?? null));
-  if (boostResult.status === "failed") return;
+  const ownerId = getReinforcementBoostOwner(task, reinforcement);
+  const boostResult = refreshPowerBankBoostPrep(
+    task,
+    ownerId,
+    getRemainingBoostAmounts(tier, attacker, healer),
+  );
+  if (boostResult.status === "failed") {
+    cleanupReinforcement(task);
+    setPowerBankBlocker(task, boostResult.reason ?? "reinforcement_boost_failed", 5);
+    return;
+  }
 
   const attackerCompounds = getRequiredBoostsForRole(tier, "attacker");
   const healerCompounds = getRequiredBoostsForRole(tier, "healer");
+  if (!handleBoostApplyResult(task, "attacker", applyNextBoost(attacker, ownerId, attackerCompounds))) return;
+  if (!handleBoostApplyResult(task, "healer", applyNextBoost(healer, ownerId, healerCompounds))) return;
 
-  if (attacker) applyNextBoost(attacker, task.id, attackerCompounds);
-  if (healer) applyNextBoost(healer, task.id, healerCompounds);
-
-  const attackerReady = !!attacker && isBoostSatisfied(attacker, attackerCompounds);
-  const healerReady = !!healer && isBoostSatisfied(healer, healerCompounds);
+  const attackerReady = isBoostSatisfied(attacker, attackerCompounds);
+  const healerReady = isBoostSatisfied(healer, healerCompounds);
   reinforcement.attackerReady = attackerReady;
   reinforcement.healerReady = healerReady;
 
-  if (attacker && healer && attackerReady && healerReady) {
+  if (attackerReady && healerReady) {
     reinforcement.attackerId = attacker.id as string;
     reinforcement.healerId = healer.id as string;
-    setReinforcementStage(attacker);
-    setReinforcementStage(healer);
+    reinforcement.combatReady = true;
+    setReinforcementStage(attacker, "travelling");
+    setReinforcementStage(healer, "travelling");
     clearBoostMovementState(attacker, task.id);
     clearBoostMovementState(healer, task.id);
-    releaseFinishedBoostLabs(task);
+    releaseFinishedBoostLabs(task, ownerId, false);
     reinforcement.stage = "travelling";
+    markPowerBankProgress(task);
   }
 }
 
@@ -953,46 +1569,90 @@ function retireCombatCreeps(task: PowerBankHarvestTask): void {
 
 function processHauling(task: PowerBankHarvestTask): void {
   task.haulingStartedTick ??= Game.time;
+  task.haulingDeadlineAt ??= task.haulingStartedTick + 1200;
   cleanupAllCombatConfigs(task);
 
   const targetRoom = Game.rooms[task.targetRoom];
   if (!targetRoom) {
+    setPowerBankBlocker(task, "hauling_target_not_visible", 3);
     ensureHaulerConfigs(task);
     return;
   }
+  task.lastVisibleAt = Game.time;
 
   const droppedPower = targetRoom.find(FIND_DROPPED_RESOURCES, {
     filter: (r) => r.resourceType === RESOURCE_POWER,
   });
 
   const totalDropped = droppedPower.reduce((sum, r) => sum + r.amount, 0);
+  const haulers = getTaskHaulers(task);
+  const carriedPower = haulers.reduce(
+    (sum, creep) => sum + creep.store.getUsedCapacity(RESOURCE_POWER),
+    0,
+  );
+  task.pickedUpPower = Math.max(
+    task.pickedUpPower ?? 0,
+    (task.deliveredPower ?? 0) + carriedPower,
+  );
+  task.observedPower = Math.max(
+    task.observedPower ?? 0,
+    totalDropped + carriedPower + (task.deliveredPower ?? 0),
+  );
+
   if (totalDropped > 0) {
     delete task.haulingEmptySince;
+    markPowerBankProgress(task);
     ensureHaulerConfigs(task);
     return;
   }
 
   task.haulingEmptySince ??= Game.time;
 
-  const carriedPower = getTaskHaulers(task).reduce(
-    (sum, creep) => sum + creep.store.getUsedCapacity(RESOURCE_POWER),
-    0,
-  );
-
   const emptyConfirmed = Game.time - task.haulingEmptySince >= HAULING_EMPTY_CONFIRM_TICKS;
   if (carriedPower <= 0 && emptyConfirmed) {
-    transitionToTerminal(task, "complete");
+    const delivered = task.deliveredPower ?? 0;
+    const accountedPower = Math.max(task.power, task.observedPower ?? 0, task.pickedUpPower ?? 0);
+    task.lostPower = Math.max(0, accountedPower - delivered);
+    if (delivered >= task.power && task.power > 0) {
+      task.outcome = "success";
+      transitionToTerminal(task, "complete");
+    } else if (delivered > 0) {
+      task.outcome = "partial";
+      transitionToTerminal(task, "complete");
+    } else if (task.outcome === "expired" || (task.bankExpiresAt !== undefined && task.bankGoneTick !== undefined && task.bankGoneTick >= task.bankExpiresAt)) {
+      task.outcome = "expired";
+      transitionToTerminal(task, "failed", "bank_expired_without_power");
+    } else if (task.power > 0) {
+      task.outcome = "contested";
+      transitionToTerminal(task, "failed", "power_not_observed_or_stolen");
+    } else {
+      task.outcome = "zero_yield";
+      transitionToTerminal(task, "failed", "zero_power_yield");
+    }
   }
 }
 
 function processTerminalCleanup(task: PowerBankHarvestTask): void {
-  if (task.sourceRoom && (task.boostLabs.length > 0 || !!getPowerBankBoostPrep(task.id))) {
-    releaseBoostLabs(task.id, task.sourceRoom);
+  if (task.terminalCleanupDone) return;
+  if (task.sourceRoom) {
+    const primaryOwner = getPrimaryBoostOwner(task);
+    if (
+      (task.primaryBoostLabs ?? task.boostLabs).length > 0 ||
+      !!getPowerBankBoostPrep(primaryOwner)
+    ) {
+      releaseBoostLabs(primaryOwner, task.sourceRoom);
+    }
+    if (task.reinforcement?.boostOwnerId) {
+      releaseBoostLabs(task.reinforcement.boostOwnerId, task.sourceRoom);
+    }
+    task.primaryBoostLabs = [];
     task.boostLabs = [];
   }
 
   neutralizeTaskCreeps(task);
   cleanupTaskConfigs(task);
+  recordPowerBankHistory(task);
+  task.terminalCleanupDone = true;
 }
 
 /**
@@ -1002,33 +1662,67 @@ function processTerminalCleanup(task: PowerBankHarvestTask): void {
  * overwrites a different existing taskId.
  */
 function ensureCreepTaskIds(task: PowerBankHarvestTask): void {
-  const attackerConfigName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "attacker", 0);
-  const healerConfigName = getPowerBankConfigName(task.sourceRoom, task.targetRoom, "healer", 0);
-
-  for (const creep of getTickContextService().getCreepsByConfigName(attackerConfigName)) {
-    const mem = creep.memory as PowerBankCreepMemory;
-    if (mem.taskId === undefined || mem.taskId === task.id) {
-      mem.taskId = task.id;
+  const activeIndex = getActiveCombatIndex(task);
+  const generation = task.activeGeneration ?? 0;
+  for (const attackerConfigName of getCombatConfigNames(task, "attacker", activeIndex)) {
+    for (const creep of getTickContextService().getCreepsByConfigName(attackerConfigName)) {
+      const mem = creep.memory as PowerBankCreepMemory;
+      if (mem.taskId === undefined || mem.taskId === task.id) {
+        mem.taskId = task.id;
+        (mem as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration = generation;
+      }
     }
   }
 
-  for (const creep of getTickContextService().getCreepsByConfigName(healerConfigName)) {
-    const mem = creep.memory as PowerBankCreepMemory;
-    if (mem.taskId === undefined || mem.taskId === task.id) {
-      mem.taskId = task.id;
+  for (const healerConfigName of getCombatConfigNames(task, "healer", activeIndex)) {
+    for (const creep of getTickContextService().getCreepsByConfigName(healerConfigName)) {
+      const mem = creep.memory as PowerBankCreepMemory;
+      if (mem.taskId === undefined || mem.taskId === task.id) {
+        mem.taskId = task.id;
+        (mem as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration = generation;
+      }
     }
   }
 }
 
 function processTask(task: PowerBankHarvestTask): void {
+  initializePowerBankTaskRuntime(task);
+  if (isTerminalPowerBankStatus(task.status)) return;
+
   if (!isPowerBankPatrolRoom(task.targetRoom)) {
-    if (
-      task.status !== POWER_BANK_STATUS.FAILED &&
-      task.status !== POWER_BANK_STATUS.ABORTED &&
-      task.status !== POWER_BANK_STATUS.COMPLETE
-    ) {
-      transitionToTerminal(task, "aborted", "outside_powerbank_patrol_rooms");
+    transitionToTerminal(task, "aborted", "outside_powerbank_patrol_rooms");
+    return;
+  }
+
+  const lifecycleFailure = getPowerBankLifecycleFailure(task);
+  if (lifecycleFailure) {
+    if (lifecycleFailure === "attack_no_progress") {
+      const progressAge = Game.time - (task.lastBankProgressAt ?? Game.time);
+      task.blocker = lifecycleFailure;
+      delete task.nextAttemptAt;
+      if (progressAge > 250) {
+        transitionToTerminal(task, "failed", lifecycleFailure);
+        return;
+      }
+    } else if (lifecycleFailure === "hauling_timeout") {
+      const delivered = task.deliveredPower ?? 0;
+      task.lostPower = Math.max(0, Math.max(task.power, task.observedPower ?? 0) - delivered);
+      if (delivered > 0) {
+        task.outcome = "partial";
+        transitionToTerminal(task, "complete");
+      } else {
+        task.outcome = "lost";
+        transitionToTerminal(task, "failed", lifecycleFailure);
+      }
+      return;
+    } else {
+      if (lifecycleFailure === "bank_expired") task.outcome = "expired";
+      transitionToTerminal(task, "failed", lifecycleFailure);
+      return;
     }
+  }
+
+  if (task.nextAttemptAt !== undefined && Game.time < task.nextAttemptAt) {
     return;
   }
 
@@ -1141,34 +1835,10 @@ export function runPowerBankHarvest(): void {
   }
 
   for (const task of tasks) {
-    const isTerminal =
-      task.status === POWER_BANK_STATUS.FAILED ||
-      task.status === POWER_BANK_STATUS.ABORTED ||
-      task.status === POWER_BANK_STATUS.COMPLETE;
-
-    if (isTerminal) {
+    if (isTerminalPowerBankStatus(task.status)) {
       processTerminalCleanup(task);
+      delete store[task.id];
     }
-  }
-
-  const toDelete: string[] = [];
-  for (const id of Object.keys(store)) {
-    const task = store[id];
-    if (!task) continue;
-    const isTerminal =
-      task.status === POWER_BANK_STATUS.FAILED ||
-      task.status === POWER_BANK_STATUS.ABORTED ||
-      task.status === POWER_BANK_STATUS.COMPLETE;
-    if (!isTerminal) continue;
-    if (task.terminalTick === undefined) continue;
-
-    if (Game.time - task.terminalTick > TERMINAL_STATE_CLEANUP_DELAY) {
-      toDelete.push(id);
-    }
-  }
-
-  for (const id of toDelete) {
-    delete store[id];
   }
 
   cleanupOrphanPowerBankConfigs(Object.values(store));

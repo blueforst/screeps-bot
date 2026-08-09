@@ -67,14 +67,51 @@ function createHauler(overrides: {
   });
 }
 
+function createDeliveryRoom(
+  roomName: string,
+  options: {
+    terminalFree?: number;
+    storageFree?: number;
+    hostile?: boolean;
+  } = {},
+): Room {
+  const capacity = 10_000;
+  const makeStructure = (
+    kind: typeof STRUCTURE_TERMINAL | typeof STRUCTURE_STORAGE,
+    free: number | undefined,
+  ): StructureTerminal | StructureStorage | undefined => {
+    if (free === undefined) return undefined;
+    return {
+      id: `${roomName}-${kind}` as Id<StructureTerminal | StructureStorage>,
+      structureType: kind,
+      pos: new MockPos(20, 20, roomName) as unknown as RoomPosition,
+      store: createMockStore({ [RESOURCE_POWER]: capacity - free }, capacity),
+    } as unknown as StructureTerminal | StructureStorage;
+  };
+
+  const hostile = { id: `${roomName}-hostile` } as Creep;
+  return {
+    name: roomName,
+    controller: { my: true } as StructureController,
+    terminal: makeStructure(STRUCTURE_TERMINAL, options.terminalFree) as StructureTerminal | undefined,
+    storage: makeStructure(STRUCTURE_STORAGE, options.storageFree) as StructureStorage | undefined,
+    find: jest.fn((constant: FindConstant) => {
+      if (constant === FIND_HOSTILE_CREEPS) return options.hostile ? [hostile] : [];
+      return [];
+    }),
+  } as unknown as Room;
+}
+
 describe("powerBankHaulerRole", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (Memory as any).data = {};
     Game.creeps = {} as Record<string, Creep>;
+    Game.rooms = {} as Record<string, Room>;
     (Game.getObjectById as jest.Mock) = jest.fn(() => null);
     Game.map = {
       getRoomTerrain: jest.fn(() => ({ get: jest.fn(() => 0) } as unknown as RoomTerrain)),
+      findRoute: jest.fn(() => [{ exit: RIGHT, room: SOURCE_ROOM }]),
     } as unknown as GameMap;
     (global as typeof global & { RoomPosition: typeof MockPos }).RoomPosition = MockPos;
     delete (global as any).__runtimeServices;
@@ -122,6 +159,238 @@ describe("powerBankHaulerRole", () => {
       const result = role.target(hauler);
 
       expect(result).toBe(false);
+    });
+
+    it("source 与 target 往返消费任务路线和危险房快照", () => {
+      setupTask("hauling", {
+        routeRooms: [SOURCE_ROOM, "W2N1", TARGET_ROOM],
+        avoidRooms: ["W9N9"],
+      });
+      const hauler = createHauler({ roomName: SOURCE_ROOM });
+
+      const role = powerBankHaulerRole(TARGET_ROOM, "legacy-route");
+      expect(role.target(hauler)).toBe(false);
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        hauler,
+        TARGET_ROOM,
+        `${SOURCE_ROOM}|W2N1|${TARGET_ROOM}`,
+        expect.objectContaining({ avoidRooms: ["W9N9"] }),
+      );
+
+      moveToTargetRoom.mockClear();
+      Game.rooms[SOURCE_ROOM] = createDeliveryRoom(SOURCE_ROOM, { terminalFree: 1000 });
+      const inbound = createHauler({
+        roomName: TARGET_ROOM,
+        store: { [RESOURCE_POWER]: 500 },
+        carryCapacity: 1000,
+      });
+      (inbound as Creep & { ticksToLive: number }).ticksToLive = 500;
+      expect(role.target(inbound)).toBe(false);
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        inbound,
+        SOURCE_ROOM,
+        `${SOURCE_ROOM}|W2N1|${TARGET_ROOM}`,
+        expect.objectContaining({ avoidRooms: ["W9N9"] }),
+      );
+    });
+  });
+
+  describe("Power 专用容量与领取", () => {
+    it("调用真实 pickup intent，并在部分装载且掉落消失后切换为投递", () => {
+      setupTask("hauling");
+      const dropped = createMockDroppedPower({ roomName: TARGET_ROOM, amount: 400 });
+      const hauler = createHauler({
+        roomName: TARGET_ROOM,
+        store: { [RESOURCE_POWER]: 0 },
+        carryCapacity: 1000,
+      });
+      hauler.room.find = jest.fn((constant: FindConstant) =>
+        constant === FIND_DROPPED_RESOURCES ? [dropped] : [],
+      ) as Room["find"];
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      expect(role.source(hauler)).toBe(false);
+      expect(hauler.pickup).toHaveBeenCalledWith(dropped);
+
+      hauler.store = createMockStore({ [RESOURCE_POWER]: 400 }, 1000) as Store<ResourceConstant, false>;
+      hauler.room.find = jest.fn(() => []) as Room["find"];
+      expect(role.source(hauler)).toBe(true);
+    });
+
+    it("忽略非 Power 载荷，不会把携带 energy 误判为待投递 Power", () => {
+      setupTask("hauling");
+      const hauler = createHauler({
+        roomName: SOURCE_ROOM,
+        store: { [RESOURCE_ENERGY]: 500 },
+        carryCapacity: 1000,
+      });
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      expect(role.target(hauler)).toBe(false);
+      expect(hauler.transfer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("安全备用投递房", () => {
+    it("原来源 terminal 和 storage 满载时前往 TTL 内可达的安全己方备用房", () => {
+      const task = setupTask("hauling");
+      Game.rooms[SOURCE_ROOM] = createDeliveryRoom(SOURCE_ROOM, { terminalFree: 0, storageFree: 0 });
+      const alternateRoom = createDeliveryRoom("W2N1", { terminalFree: 5000 });
+      Game.rooms[alternateRoom.name] = alternateRoom;
+      const hauler = createHauler({
+        roomName: TARGET_ROOM,
+        store: { [RESOURCE_POWER]: 600 },
+        carryCapacity: 1000,
+      });
+      (hauler as Creep & { ticksToLive: number }).ticksToLive = 500;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      expect(role.target(hauler)).toBe(false);
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        hauler,
+        alternateRoom.name,
+        undefined,
+        expect.objectContaining({ travelRange: 3, reusePath: 10 }),
+      );
+
+      hauler.room = alternateRoom;
+      hauler.pos = new MockPos(20, 19, alternateRoom.name) as unknown as RoomPosition;
+      expect(role.target(hauler)).toBe(false);
+      expect(hauler.transfer).toHaveBeenCalledWith(alternateRoom.terminal, RESOURCE_POWER, 600);
+      expect((task as any).deliveredPower).toBe(600);
+      expect((task as any).lastProgressAt).toBe(Game.time);
+      expect((hauler.memory as any).powerBankDeliveryRoom).toBe(alternateRoom.name);
+    });
+
+    it("来源 terminal 满载时优先回退到同房 storage", () => {
+      const task = setupTask("hauling");
+      const sourceRoom = createDeliveryRoom(SOURCE_ROOM, { terminalFree: 0, storageFree: 1000 });
+      Game.rooms[SOURCE_ROOM] = sourceRoom;
+      const hauler = createHauler({
+        roomName: SOURCE_ROOM,
+        store: { [RESOURCE_POWER]: 500 },
+        carryCapacity: 1000,
+      });
+      hauler.room = sourceRoom;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      expect(role.target(hauler)).toBe(false);
+      expect(hauler.transfer).toHaveBeenCalledWith(sourceRoom.storage, RESOURCE_POWER, 500);
+      expect((task as any).deliveredPower).toBe(500);
+    });
+
+    it("按有效 headroom 限制部分投递并累计真实计划交付量", () => {
+      const task = setupTask("hauling");
+      const sourceRoom = createDeliveryRoom(SOURCE_ROOM, { terminalFree: 200, storageFree: 0 });
+      Game.rooms[SOURCE_ROOM] = sourceRoom;
+      const hauler = createHauler({
+        roomName: SOURCE_ROOM,
+        store: { [RESOURCE_POWER]: 500 },
+        carryCapacity: 1000,
+      });
+      hauler.room = sourceRoom;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      expect(role.target(hauler)).toBe(false);
+      expect(hauler.transfer).toHaveBeenCalledWith(sourceRoom.terminal, RESOURCE_POWER, 200);
+      expect((task as any).deliveredPower).toBe(200);
+    });
+
+    it("同 tick 多车竞争时预留 headroom，投递 intent 总量不会超过目标容量", () => {
+      const task = setupTask("hauling");
+      const sourceRoom = createDeliveryRoom(SOURCE_ROOM, { terminalFree: 400, storageFree: 0 });
+      Game.rooms[SOURCE_ROOM] = sourceRoom;
+      const first = createHauler({
+        roomName: SOURCE_ROOM,
+        store: { [RESOURCE_POWER]: 300 },
+        carryCapacity: 1000,
+      });
+      const second = createMockPowerBankCreep("powerBankHauler", {
+        name: "powerBankHauler-1",
+        roomName: SOURCE_ROOM,
+        store: { [RESOURCE_POWER]: 300 },
+        carryCapacity: 1000,
+        memory: {
+          role: "powerBankHauler",
+          taskId: TASK_ID,
+          configName: `${SOURCE_ROOM}:powerbank:${TARGET_ROOM}:hauler:1`,
+        } as Partial<CreepMemory>,
+      });
+      first.room = sourceRoom;
+      second.room = sourceRoom;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      role.target(first);
+      role.target(second);
+
+      expect(first.transfer).toHaveBeenCalledWith(sourceRoom.terminal, RESOURCE_POWER, 300);
+      expect(second.transfer).toHaveBeenCalledWith(sourceRoom.terminal, RESOURCE_POWER, 100);
+      expect((task as any).deliveredPower).toBe(400);
+    });
+
+    it("跳过危险或 TTL 不足的备用房并报告准确 blocker", () => {
+      const task = setupTask("hauling");
+      Game.rooms[SOURCE_ROOM] = createDeliveryRoom(SOURCE_ROOM, { terminalFree: 0, storageFree: 0 });
+      Game.rooms.W2N1 = createDeliveryRoom("W2N1", { terminalFree: 5000, hostile: true });
+      Game.rooms.W3N1 = createDeliveryRoom("W3N1", { terminalFree: 5000 });
+      (Game.map.findRoute as jest.Mock).mockReturnValue([
+        { exit: RIGHT, room: "W2N1" },
+        { exit: RIGHT, room: "W3N1" },
+      ]);
+      const hauler = createHauler({
+        roomName: TARGET_ROOM,
+        store: { [RESOURCE_POWER]: 500 },
+        carryCapacity: 1000,
+      });
+      (hauler as Creep & { ticksToLive: number }).ticksToLive = 100;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      expect(role.target(hauler)).toBe(false);
+      expect(moveToTargetRoom).not.toHaveBeenCalled();
+      expect((task as any).blocker).toBe("hauler_delivery_ttl_insufficient");
+      expect((task as any).nextAttemptAt).toBe(Game.time + 5);
+    });
+
+    it("没有任何接收容量时将等待升级为有界 timeout blocker", () => {
+      const task = setupTask("hauling");
+      Game.rooms[SOURCE_ROOM] = createDeliveryRoom(SOURCE_ROOM, { terminalFree: 0, storageFree: 0 });
+      const hauler = createHauler({
+        roomName: TARGET_ROOM,
+        store: { [RESOURCE_POWER]: 500 },
+        carryCapacity: 1000,
+      });
+      (hauler as Creep & { ticksToLive: number }).ticksToLive = 500;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      expect(role.target(hauler)).toBe(false);
+      expect((task as any).blocker).toBe("hauler_delivery_capacity");
+
+      Game.time += 25;
+      expect(role.target(hauler)).toBe(false);
+      expect((task as any).blocker).toBe("hauler_delivery_capacity_timeout");
+    });
+
+    it("任务已终止但仍携带 Power 时继续改投备用房", () => {
+      setupTask("failed");
+      Game.rooms[SOURCE_ROOM] = createDeliveryRoom(SOURCE_ROOM, { terminalFree: 0, storageFree: 0 });
+      Game.rooms.W2N1 = createDeliveryRoom("W2N1", { storageFree: 5000 });
+      const hauler = createHauler({
+        roomName: TARGET_ROOM,
+        store: { [RESOURCE_POWER]: 500 },
+        carryCapacity: 1000,
+      });
+      (hauler as Creep & { ticksToLive: number }).ticksToLive = 500;
+
+      const role = powerBankHaulerRole(TARGET_ROOM);
+      expect(role.prepare!(hauler)).toBe(true);
+      expect(role.source(hauler)).toBe(false);
+      expect(moveToTargetRoom).toHaveBeenCalledWith(
+        hauler,
+        "W2N1",
+        undefined,
+        expect.objectContaining({ travelRange: 3 }),
+      );
+      expect(hauler.suicide).not.toHaveBeenCalled();
     });
   });
 
