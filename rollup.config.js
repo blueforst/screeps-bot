@@ -123,7 +123,7 @@ export default {
   plugins: [
     clear({ targets: ["dist"] }),
     resolve(),
-    typescript({ tsconfig: "./tsconfig.json" }),
+    typescript({ tsconfig: "./tsconfig.build.json" }),
     replace({
       preventAssignment: true,
       values: {
