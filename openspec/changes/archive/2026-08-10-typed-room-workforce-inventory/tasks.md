@@ -24,6 +24,6 @@
 
 ## 5. 部署与收口
 
-- [ ] 5.1 提交已验证切片并部署同一 commit，保留父提交作为直接回滚点
-- [ ] 5.2 连续观察至少 51 tick，比较 29 个 managed configs、queue 唯一性、tier/role count、source 生产与 bootstrap CPU
-- [ ] 5.3 同步主规格并归档 change；记录后续 GC ownership 解耦和 source correctness changes
+- [x] 5.1 已提交并部署同一 commit `6328e0f`，保留父提交 `1dc3f70` 与上一运行时 `4cb1bc8` 作为回滚点
+- [x] 5.2 已观察 tick 72893415–72893480（65 tick）：29 configs、无重复/悬挂 queue、8 房 tier=0、16 Source Miner 全部在役、bootstrap CPU 1.10
+- [x] 5.3 已同步主规格并归档 change；后续 GC ownership 解耦和 source correctness changes 保留为独立切片
