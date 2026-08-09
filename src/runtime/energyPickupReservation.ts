@@ -1,10 +1,17 @@
-import { ensureCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import {
+  ensureCreepAssignmentState,
+  getCreepAssignmentState,
+} from "@/runtime/creepAssignmentState";
 
 const RESERVATION_TTL = 12;
 export const TERMINAL_ENERGY_PICKUP_RESERVE = 50_000;
 
 type PickupTargetKind = "resource" | "structure";
 type PickupTarget = Resource | AnyStoreStructure | Tombstone | Ruin;
+
+export interface PickupAvailabilityOptions {
+  terminalEnergyReserve?: number;
+}
 
 interface PickupReservationClaim {
   amount: number;
@@ -36,7 +43,18 @@ function ensurePickupReservationStore(): PickupReservationStore {
   return runtimeGlobal.__pickupReservations;
 }
 
-export function getPickupTargetEnergyAmount(target: PickupTarget): number {
+function getTerminalEnergyReserve(options?: PickupAvailabilityOptions): number {
+  const configured = options?.terminalEnergyReserve;
+  if (configured === undefined || !Number.isFinite(configured)) {
+    return TERMINAL_ENERGY_PICKUP_RESERVE;
+  }
+  return Math.max(0, Math.floor(configured));
+}
+
+export function getPickupTargetEnergyAmount(
+  target: PickupTarget,
+  options?: PickupAvailabilityOptions,
+): number {
   if ((target as Resource).amount !== undefined) {
     return (target as Resource).amount;
   }
@@ -44,7 +62,7 @@ export function getPickupTargetEnergyAmount(target: PickupTarget): number {
   if ("store" in target) {
     const amount = target.store.getUsedCapacity(RESOURCE_ENERGY);
     if ((target as Structure).structureType === STRUCTURE_TERMINAL) {
-      return Math.max(0, amount - TERMINAL_ENERGY_PICKUP_RESERVE);
+      return Math.max(0, amount - getTerminalEnergyReserve(options));
     }
     return amount;
   }
@@ -145,8 +163,13 @@ function setReservedTargetMemory(creep: Creep, target: PickupTarget): void {
   assignmentState.energyPickupRoomName = target.pos.roomName;
 }
 
-export function reservePickupTarget(creep: Creep, target: PickupTarget, desiredAmount: number): boolean {
-  const available = getPickupTargetEnergyAmount(target);
+export function reservePickupTarget(
+  creep: Creep,
+  target: PickupTarget,
+  desiredAmount: number,
+  options?: PickupAvailabilityOptions,
+): boolean {
+  const available = getPickupTargetEnergyAmount(target, options);
   if (available <= 0) {
     return false;
   }
@@ -181,7 +204,49 @@ export function reservePickupTarget(creep: Creep, target: PickupTarget, desiredA
   return true;
 }
 
-export function getReservedPickupTarget(creep: Creep): PickupTarget | null {
+/**
+ * 返回本 creep 当前 pickup reservation 实际持有的数量。
+ *
+ * 本函数不会创建或放大 claim；读取前会清理过期/死亡 creep claim，供执行层
+ * 将最终 intent 严格限制在 reservePickupTarget() 已授予的数量内。
+ */
+export function getPickupReservationClaimAmount(
+  creep: Creep,
+  targetId?: string,
+): number {
+  const assignmentState = getCreepAssignmentState(creep.name);
+  const reservedTargetId = assignmentState?.energyPickupTargetId;
+  const requestedTargetId = targetId || reservedTargetId;
+  if (
+    !requestedTargetId ||
+    !reservedTargetId ||
+    requestedTargetId !== reservedTargetId
+  ) {
+    return 0;
+  }
+
+  const roomName = assignmentState.energyPickupRoomName || creep.room.name;
+  const entry = runtimeGlobal.__pickupReservations?.[roomName]?.[requestedTargetId];
+  if (!entry) {
+    return 0;
+  }
+
+  cleanupClaims(entry);
+  const claim = entry.claims[creep.name];
+  if (!claim) {
+    clearTargetEntryIfEmpty(roomName, requestedTargetId);
+    return 0;
+  }
+
+  return Number.isSafeInteger(claim.amount) && claim.amount > 0
+    ? claim.amount
+    : 0;
+}
+
+export function getReservedPickupTarget(
+  creep: Creep,
+  options?: PickupAvailabilityOptions,
+): PickupTarget | null {
   const assignmentState = ensureCreepAssignmentState(creep.name);
   const targetId = assignmentState.energyPickupTargetId;
   const targetKind = assignmentState.energyPickupTargetKind;
@@ -196,7 +261,7 @@ export function getReservedPickupTarget(creep: Creep): PickupTarget | null {
     target = Game.getObjectById(targetId as Id<AnyStoreStructure | Tombstone | Ruin>);
   }
 
-  if (!target || getPickupTargetEnergyAmount(target) <= 0) {
+  if (!target || getPickupTargetEnergyAmount(target, options) <= 0) {
     releasePickupReservation(creep, targetId);
     return null;
   }

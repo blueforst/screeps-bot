@@ -1143,6 +1143,7 @@ function summarizeResourceControl(runtimeResourceControl, transferTaskStore) {
         storageFreeCapacity: finiteNumberOrNull(room.storageFreeCapacity),
         terminalUsedCapacity: finiteNumberOrNull(room.terminalUsedCapacity),
         terminalFreeCapacity: finiteNumberOrNull(room.terminalFreeCapacity),
+        localOffloadCapacityCommitment: finiteNumberOrNull(room.localOffloadCapacityCommitment),
         storageEnergy: finiteNumberOrNull(room.storageEnergy),
         terminalEnergy: finiteNumberOrNull(room.terminalEnergy),
         energyFloor: finiteNumberOrNull(room.energyFloor),

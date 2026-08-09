@@ -513,6 +513,8 @@ declare global {
         preferredMin?: number;
         /** Room names where carriers may withdraw ENERGY from terminal as a generic pickup source. */
         terminalPickupRooms?: Record<string, boolean>;
+        /** Explicit, temporary room grants for Spawn/Extension Terminal bootstrap recovery. */
+        terminalBootstrapRecoveryRooms?: Record<string, boolean>;
       };
       pixelGenerator?: {
         enabled?: boolean;
@@ -769,6 +771,16 @@ declare global {
     };
     runtime?: {
       lastDeployTag?: string;
+      energyPickup?: {
+        terminalBootstrapRecovery?: Record<
+          string,
+          {
+            healthySince?: number;
+            lastObservedAt?: number;
+            lastRecoveryPickupAt?: number;
+          }
+        >;
+      };
       spawnPlanner?: {
         sourceWorkerCommutes: Record<
           string,
@@ -901,6 +913,7 @@ declare global {
             storageFreeCapacity?: number;
             terminalUsedCapacity?: number;
             terminalFreeCapacity?: number;
+            localOffloadCapacityCommitment?: number;
             desiredTerminalFreeCapacity?: number;
             terminalRecoveryGap?: number;
             recoverableOffloadAmount?: number;

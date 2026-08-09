@@ -5,14 +5,24 @@ import {
 } from "@/roles/energyTargets";
 import { moveToTarget } from "@/roles/shared";
 import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
-import { ensureCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import {
+  ensureCreepAssignmentState,
+  type CreepAssignmentState,
+} from "@/runtime/creepAssignmentState";
+import {
+  getPickupReservationClaimAmount,
   getPickupTargetEnergyAmount,
   getReservedPickupTarget,
   releasePickupReservation,
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
-import { listCarrierTasksByRoom, type CarrierTask, type CarrierTaskStep } from "@/runtime/carrierTaskBoard";
+import {
+  claimCarrierTaskStepAmount,
+  listCarrierTasksByRoom,
+  type CarrierTask,
+  type CarrierTaskStep,
+  type CarrierTaskStepAmountClaim,
+} from "@/runtime/carrierTaskBoard";
 import { hasSharedStorageControllerLinkCluster, isStorageReceiverLink } from "@/runtime/linkControl";
 import { getPlannedStoragePos, getPlannedControllerLinkPos, getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
@@ -22,6 +32,15 @@ import {
   claimTerminalAmountOutsideMarketSaleExposure,
   getTerminalAmountOutsideMarketSaleExposure,
 } from "@/runtime/marketSaleExposure";
+import {
+  noteTerminalBootstrapRecoveryPickup,
+  observeTerminalBootstrapRecovery,
+} from "@/runtime/terminalBootstrapRecovery";
+import {
+  claimLocalCarrierDestinationCapacity,
+  getLocalCarrierDestinationAvailableAmount,
+  type LocalCarrierDestinationCapacityClaim,
+} from "@/runtime/localCarrierDestinationCapacity";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | StructureTerminal | Tombstone | Ruin;
 type DeadStorePickupTarget = Tombstone | Ruin;
@@ -35,6 +54,8 @@ interface CarrierPickupOptions {
   includeStorage?: boolean;
   includeProtoStorage?: boolean;
   includeTerminal?: boolean;
+  terminalEnergyReserve?: number;
+  terminalBootstrapRoomName?: string;
 }
 
 function isTerminalPickupEnabledForRoom(roomName: string): boolean {
@@ -48,8 +69,12 @@ function isTerminalPickupEnabledForRoom(roomName: string): boolean {
 function getCarrierPickupAmount(
   target: CarrierPickupTarget,
   fallbackRoomName?: string,
+  options?: CarrierPickupOptions,
 ): number {
-  const amount = getPickupTargetEnergyAmount(target);
+  const availability = options?.terminalEnergyReserve === undefined
+    ? undefined
+    : { terminalEnergyReserve: options.terminalEnergyReserve };
+  const amount = getPickupTargetEnergyAmount(target, availability);
   if (
     "structureType" in target &&
     target.structureType === STRUCTURE_TERMINAL
@@ -64,6 +89,31 @@ function getCarrierPickupAmount(
     );
   }
   return amount;
+}
+
+function getReservedCarrierPickupTarget(
+  creep: Creep,
+  terminalEnergyReserve?: number,
+): ReturnType<typeof getReservedPickupTarget> {
+  return terminalEnergyReserve === undefined
+    ? getReservedPickupTarget(creep)
+    : getReservedPickupTarget(creep, { terminalEnergyReserve });
+}
+
+function reserveCarrierPickupTarget(
+  creep: Creep,
+  target: Resource | AnyStoreStructure | Tombstone | Ruin,
+  desiredAmount: number,
+  terminalEnergyReserve?: number,
+): boolean {
+  return terminalEnergyReserve === undefined
+    ? reservePickupTarget(creep, target, desiredAmount)
+    : reservePickupTarget(
+        creep,
+        target,
+        desiredAmount,
+        { terminalEnergyReserve },
+      );
 }
 
 function getStoredResources(store: StoreDefinition): ResourceConstant[] {
@@ -166,7 +216,11 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPicku
         : [];
     const terminal =
       options?.includeTerminal && creep.room.terminal &&
-        getCarrierPickupAmount(creep.room.terminal, creep.room.name) > 0
+        getCarrierPickupAmount(
+          creep.room.terminal,
+          creep.room.name,
+          options,
+        ) > 0
         ? [creep.room.terminal]
         : [];
 
@@ -185,7 +239,11 @@ function getWeightedCarrierPickupCandidates(creep: Creep, options?: CarrierPicku
 
     return filteredCandidates
       .map((candidate) => {
-        const amount = getCarrierPickupAmount(candidate, creep.room.name);
+        const amount = getCarrierPickupAmount(
+          candidate,
+          creep.room.name,
+          options,
+        );
         const distance = Math.max(1, creep.pos.getRangeTo(candidate.pos));
         return {
           candidate,
@@ -222,7 +280,11 @@ function isCarrierPickupTarget(
   }
 
   if (options?.includeTerminal && structureType === STRUCTURE_TERMINAL) {
-    return getCarrierPickupAmount(target as StructureTerminal) > 0;
+    return getCarrierPickupAmount(
+      target as StructureTerminal,
+      creep.room.name,
+      options,
+    ) > 0;
   }
 
   if (structureType === STRUCTURE_CONTAINER) {
@@ -241,7 +303,10 @@ function isCarrierPickupTarget(
 function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): { picked: boolean; outOfRange: boolean } {
   const desiredAmount = creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0;
 
-  let sourceTarget = getReservedPickupTarget(creep);
+  let sourceTarget = getReservedCarrierPickupTarget(
+    creep,
+    options?.terminalEnergyReserve,
+  );
   if (sourceTarget && !isCarrierPickupTarget(creep, sourceTarget, options)) {
     releasePickupReservation(creep, sourceTarget.id);
     sourceTarget = null;
@@ -258,10 +323,22 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
         getCarrierPickupAmount(
           sourceTarget as CarrierPickupTarget,
           creep.room.name,
+          options,
         ),
       )
     : 0;
-  if (sourceTarget && (reservedAmount <= 0 || !reservePickupTarget(creep, sourceTarget, reservedAmount))) {
+  if (
+    sourceTarget &&
+    (
+      reservedAmount <= 0 ||
+      !reserveCarrierPickupTarget(
+        creep,
+        sourceTarget,
+        reservedAmount,
+        options?.terminalEnergyReserve,
+      )
+    )
+  ) {
     releasePickupReservation(creep, sourceTarget.id);
     sourceTarget = null;
   }
@@ -271,9 +348,17 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
     for (const candidate of candidates) {
       const candidateAmount = Math.min(
         desiredAmount,
-        getCarrierPickupAmount(candidate, creep.room.name),
+        getCarrierPickupAmount(candidate, creep.room.name, options),
       );
-      if (candidateAmount > 0 && reservePickupTarget(creep, candidate, candidateAmount)) {
+      if (
+        candidateAmount > 0 &&
+        reserveCarrierPickupTarget(
+          creep,
+          candidate,
+          candidateAmount,
+          options?.terminalEnergyReserve,
+        )
+      ) {
         sourceTarget = candidate;
         break;
       }
@@ -323,9 +408,14 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
       if ("structureType" in sourceTarget && sourceTarget.structureType === STRUCTURE_TERMINAL) {
         const roomName = sourceTarget.room?.name || creep.room.name;
         if (hasTerminalActionClaim(roomName)) return ERR_BUSY;
+        const claimAmount = getPickupReservationClaimAmount(
+          creep,
+          sourceTarget.id,
+        );
         const amount = Math.min(
           creep.store.getFreeCapacity(RESOURCE_ENERGY) ?? 0,
-          getCarrierPickupAmount(sourceTarget, roomName),
+          getCarrierPickupAmount(sourceTarget, roomName, options),
+          claimAmount,
         );
         if (amount <= 0) return ERR_NOT_ENOUGH_RESOURCES;
         exposureClaim = claimTerminalAmountOutsideMarketSaleExposure(
@@ -363,6 +453,17 @@ function pickupEnergyForCarrier(creep: Creep, options?: CarrierPickupOptions): {
   ) {
     releasePickupReservation(creep, sourceTarget.id);
     return { picked: false, outOfRange: false };
+  }
+
+  if (
+    withdrawCode === OK &&
+    options?.terminalBootstrapRoomName &&
+    "structureType" in sourceTarget &&
+    sourceTarget.structureType === STRUCTURE_TERMINAL
+  ) {
+    noteTerminalBootstrapRecoveryPickup(
+      options.terminalBootstrapRoomName,
+    );
   }
 
   return { picked: withdrawCode === OK, outOfRange: false };
@@ -470,15 +571,22 @@ function getSynthesisCarrierTasks(roomName: string): CarrierTask[] {
   return listCarrierTasksByRoom(roomName);
 }
 
+function clearSynthesisCarrierPendingSnapshot(
+  state: CreepAssignmentState,
+): void {
+  delete state.synthesisCarrierPendingFromId;
+  delete state.synthesisCarrierPendingToId;
+  delete state.synthesisCarrierPendingResource;
+  delete state.synthesisCarrierPendingTaskType;
+}
+
 function clearSynthesisCarrierTaskPlan(creep: Creep): void {
   const state = ensureCreepAssignmentState(creep.name);
   delete state.synthesisCarrierTaskId;
   delete state.synthesisCarrierPendingPickupTick;
   delete state.synthesisCarrierPendingStepId;
   delete state.synthesisCarrierPendingDeliveryTick;
-  delete state.synthesisCarrierPendingFromId;
-  delete state.synthesisCarrierPendingToId;
-  delete state.synthesisCarrierPendingResource;
+  clearSynthesisCarrierPendingSnapshot(state);
 }
 
 function getAssignedSynthesisCarrierTask(creep: Creep): CarrierTask | null {
@@ -529,6 +637,7 @@ function getCarrierTaskStepSourceAmount(
 function isCarrierTaskStepRunnable(
   step: CarrierTaskStep,
   fallbackRoomName?: string,
+  taskType?: CarrierTask["type"],
 ): boolean {
   const from = resolveTaskStructure(step.fromId);
   const to = resolveTaskStructure(step.toId);
@@ -538,7 +647,10 @@ function isCarrierTaskStepRunnable(
   if (getCarrierTaskStepSourceAmount(step, fallbackRoomName) <= 0) {
     return false;
   }
-  if (to.store.getFreeCapacity(step.resource) <= 0) {
+  const targetFree = taskType === "terminal_offload"
+    ? getLocalCarrierDestinationAvailableAmount(to, step.resource)
+    : to.store.getFreeCapacity(step.resource);
+  if (targetFree <= 0) {
     return false;
   }
   return true;
@@ -548,7 +660,7 @@ function selectPickupStep(task: CarrierTask, creep: Creep): CarrierTaskStep | nu
   const assignedRoomName = getAssignedCarrierRoomName(creep);
   const candidates = task.steps
     .filter((step) =>
-      isCarrierTaskStepRunnable(step, assignedRoomName),
+      isCarrierTaskStepRunnable(step, assignedRoomName, task.type),
     )
     .sort((left, right) => {
       const leftFrom = resolveTaskStructure(left.fromId);
@@ -582,7 +694,7 @@ function isCarrierTaskRunnable(
   roomName?: string,
 ): boolean {
   return task.steps.some((step) =>
-    isCarrierTaskStepRunnable(step, roomName),
+    isCarrierTaskStepRunnable(step, roomName, task.type),
   );
 }
 
@@ -640,6 +752,21 @@ function isNukerEnergySupplyCarrierTask(task: CarrierTask): boolean {
   );
 }
 
+function isNonNukerEnergyCarrierTask(task: CarrierTask): boolean {
+  return !isNukerEnergySupplyCarrierTask(task);
+}
+
+function clearNukerEnergyTaskAssignment(creep: Creep): void {
+  const assigned = getAssignedSynthesisCarrierTask(creep);
+  if (!assigned || !isNukerEnergySupplyCarrierTask(assigned)) {
+    return;
+  }
+
+  // Clear only the uncommitted board binding. Pending pickup snapshot fields
+  // must survive task refresh so already accepted cargo still reaches Nuker.
+  delete ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
+}
+
 function deliverCarriedEnergyToNukerTask(creep: Creep): boolean {
   const carriedEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
   if (carriedEnergy <= 0) return false;
@@ -648,36 +775,70 @@ function deliverCarriedEnergyToNukerTask(creep: Creep): boolean {
     getAssignedCarrierRoomName(creep),
   )
     .filter(isNukerEnergySupplyCarrierTask)
-    .flatMap((task) => task.steps)
-    .filter((step) => step.resource === RESOURCE_ENERGY)
-    .map((step) => ({ step, target: resolveTaskStructure(step.toId) }))
+    .flatMap((task) => task.steps.map((step) => ({ task, step })))
+    .filter(({ step }) => step.resource === RESOURCE_ENERGY)
+    .map(({ task, step }) => ({
+      task,
+      step,
+      target: resolveTaskStructure(step.toId),
+    }))
     .filter(
-      (entry): entry is { step: CarrierTaskStep; target: AnyStoreStructure } =>
+      (entry): entry is {
+        task: CarrierTask;
+        step: CarrierTaskStep;
+        target: AnyStoreStructure;
+      } =>
         !!entry.target &&
+        entry.target.structureType === STRUCTURE_NUKER &&
         entry.target.store.getFreeCapacity(RESOURCE_ENERGY) > 0,
     )
     .sort((left, right) =>
       creep.pos.getRangeTo(left.target.pos) -
       creep.pos.getRangeTo(right.target.pos),
     );
-  const selected = candidates[0];
-  if (!selected) return false;
+  let selected: (typeof candidates)[number] | undefined;
+  let amountClaim: CarrierTaskStepAmountClaim | null = null;
+  for (const candidate of candidates) {
+    const requestedAmount = Math.min(
+      carriedEnergy,
+      candidate.step.amount,
+      candidate.target.store.getFreeCapacity(RESOURCE_ENERGY),
+    );
+    amountClaim = claimCarrierTaskStepAmount(
+      candidate.task,
+      candidate.step,
+      creep.name,
+      requestedAmount,
+    );
+    if (amountClaim) {
+      selected = candidate;
+      break;
+    }
+  }
+  if (!selected || !amountClaim) return false;
 
-  const amount = Math.min(
-    carriedEnergy,
-    selected.step.amount,
-    selected.target.store.getFreeCapacity(RESOURCE_ENERGY),
-  );
-  if (amount <= 0) return false;
-
-  const code = measureCreepIntent(() =>
-    creep.transfer(selected.target, RESOURCE_ENERGY, amount),
-  );
+  let code: ScreepsReturnCode;
+  try {
+    code = transferCarrierResource(
+      creep,
+      selected!.target,
+      RESOURCE_ENERGY,
+      amountClaim!.amount,
+    ).code;
+  } catch (error) {
+    amountClaim.release();
+    throw error;
+  }
   if (code === ERR_NOT_IN_RANGE) {
+    amountClaim.release();
     moveToTarget(creep, selected.target);
     return true;
   }
-  if (code !== OK) return false;
+  if (code !== OK) {
+    amountClaim.release();
+    return false;
+  }
+  amountClaim.commit();
 
   delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
   clearPostTransferPlan(creep);
@@ -688,6 +849,7 @@ function pickupEnergyDemandForCarrier(
   creep: Creep,
   target: AnyStoreStructure,
   assignedRoomName: string,
+  terminalBootstrapReserve?: number,
 ): boolean {
   delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
   const isSupplyingSpawnOrExtension = isSpawnOrExtensionTarget(target);
@@ -704,7 +866,18 @@ function pickupEnergyDemandForCarrier(
     includeStorage: isSupplyingSpawnOrExtension,
     includeProtoStorage: isSupplyingSpawnOrExtension,
     includeTerminal:
-      isSupplyingSpawnOrExtension && isTerminalPickupEnabledForRoom(assignedRoomName),
+      isSupplyingSpawnOrExtension &&
+      (
+        terminalBootstrapReserve !== undefined ||
+        isTerminalPickupEnabledForRoom(assignedRoomName)
+      ),
+    terminalEnergyReserve: isSupplyingSpawnOrExtension
+      ? terminalBootstrapReserve
+      : undefined,
+    terminalBootstrapRoomName:
+      isSupplyingSpawnOrExtension && terminalBootstrapReserve !== undefined
+        ? assignedRoomName
+        : undefined,
   });
   const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
   if (hasEnergy) {
@@ -809,6 +982,85 @@ function pickupSynthesisCarrierResource(
     return { picked: false, outOfRange: false };
   }
 
+  let destinationCapacityClaim:
+    | LocalCarrierDestinationCapacityClaim
+    | null = null;
+  let taskAmountClaim: CarrierTaskStepAmountClaim | null = null;
+  const isTerminalOffload = assignment.task.type === "terminal_offload";
+  const requiresTaskAmountClaim = isTerminalOffload || (
+    isNukerEnergySupplyCarrierTask(assignment.task) &&
+    assignment.step.resource === RESOURCE_ENERGY
+  );
+  let claimRequestedAmount = withdrawAmount;
+  let destinationTarget: AnyStoreStructure | null = null;
+  if (isTerminalOffload) {
+    destinationTarget = resolveTaskStructure(assignment.step.toId);
+    if (!destinationTarget) {
+      exposureClaim?.release();
+      clearSynthesisCarrierTaskPlan(creep);
+      return { picked: false, outOfRange: false };
+    }
+    claimRequestedAmount = Math.min(
+      claimRequestedAmount,
+      getLocalCarrierDestinationAvailableAmount(
+        destinationTarget,
+        assignment.step.resource,
+      ),
+    );
+  }
+
+  if (requiresTaskAmountClaim) {
+    taskAmountClaim = claimCarrierTaskStepAmount(
+      assignment.task,
+      assignment.step,
+      creep.name,
+      claimRequestedAmount,
+    );
+    if (!taskAmountClaim) {
+      exposureClaim?.release();
+      clearSynthesisCarrierTaskPlan(creep);
+      return { picked: false, outOfRange: false };
+    }
+    withdrawAmount = taskAmountClaim.amount;
+  }
+
+  if (destinationTarget) {
+    destinationCapacityClaim = claimLocalCarrierDestinationCapacity({
+      claimantId: creep.name,
+      target: destinationTarget,
+      resource: assignment.step.resource,
+      requestedAmount: withdrawAmount,
+    });
+    if (
+      !destinationCapacityClaim ||
+      destinationCapacityClaim.amount !== withdrawAmount
+    ) {
+      destinationCapacityClaim?.release();
+      taskAmountClaim?.release();
+      exposureClaim?.release();
+      clearSynthesisCarrierTaskPlan(creep);
+      return { picked: false, outOfRange: false };
+    }
+  }
+
+  if (exposureClaim && exposureClaim.amount !== withdrawAmount) {
+      exposureClaim.release();
+      const roomName = from.room?.name || creep.room.name;
+      exposureClaim = claimTerminalAmountOutsideMarketSaleExposure(
+        from as StructureTerminal,
+        assignment.step.resource,
+        withdrawAmount,
+        roomName,
+      ) || undefined;
+      if (!exposureClaim || exposureClaim.amount !== withdrawAmount) {
+        exposureClaim?.release();
+        taskAmountClaim?.release();
+        destinationCapacityClaim?.release();
+        clearSynthesisCarrierTaskPlan(creep);
+        return { picked: false, outOfRange: false };
+      }
+  }
+
   let code: ScreepsReturnCode;
   try {
     code = measureCreepIntent(() =>
@@ -816,18 +1068,26 @@ function pickupSynthesisCarrierResource(
     );
   } catch (error) {
     exposureClaim?.release();
+    taskAmountClaim?.release();
+    destinationCapacityClaim?.release();
     throw error;
   }
   if (code === ERR_NOT_IN_RANGE) {
     exposureClaim?.release();
+    taskAmountClaim?.release();
+    destinationCapacityClaim?.release();
     moveToTarget(creep, from);
     return { picked: false, outOfRange: true };
   }
   if (code !== OK) {
     exposureClaim?.release();
+    taskAmountClaim?.release();
+    destinationCapacityClaim?.release();
     clearSynthesisCarrierTaskPlan(creep);
     return { picked: false, outOfRange: false };
   }
+  taskAmountClaim?.commit();
+  destinationCapacityClaim?.commit();
 
   // Record the accepted intent — store mutation happens next tick in live Screeps
   const state = ensureCreepAssignmentState(creep.name);
@@ -836,6 +1096,7 @@ function pickupSynthesisCarrierResource(
   state.synthesisCarrierPendingFromId = assignment.step.fromId;
   state.synthesisCarrierPendingToId = assignment.step.toId;
   state.synthesisCarrierPendingResource = assignment.step.resource;
+  state.synthesisCarrierPendingTaskType = assignment.task.type;
   return {
     picked: true,
     outOfRange: false,
@@ -902,6 +1163,83 @@ function getSynthesisCleanupDeliveryTarget(creep: Creep, resource: ResourceConst
   return null;
 }
 
+interface CarrierTransferResult {
+  code: ScreepsReturnCode;
+  requestedAmount: number;
+  acceptedAmount: number;
+}
+
+function transferToStorageWithCapacityClaim(
+  creep: Creep,
+  target: StructureStorage,
+  resource: ResourceConstant,
+  amount?: number,
+): CarrierTransferResult {
+  const carriedAmount = creep.store.getUsedCapacity(resource);
+  const requestedAmount = Math.min(carriedAmount, amount ?? carriedAmount);
+  const capacityClaim = claimLocalCarrierDestinationCapacity({
+    claimantId: creep.name,
+    target,
+    resource,
+    requestedAmount,
+  });
+  if (!capacityClaim) {
+    return { code: ERR_FULL, requestedAmount, acceptedAmount: 0 };
+  }
+
+  let code: ScreepsReturnCode;
+  try {
+    code = measureCreepIntent(() =>
+      amount === undefined && capacityClaim.amount === requestedAmount
+        ? creep.transfer(target, resource)
+        : creep.transfer(target, resource, capacityClaim.amount),
+    );
+  } catch (error) {
+    capacityClaim.release();
+    throw error;
+  }
+
+  if (code === OK) {
+    capacityClaim.commit();
+  } else {
+    capacityClaim.release();
+  }
+  return {
+    code,
+    requestedAmount,
+    acceptedAmount: code === OK ? capacityClaim.amount : 0,
+  };
+}
+
+function transferCarrierResource(
+  creep: Creep,
+  target: AnyStoreStructure,
+  resource: ResourceConstant,
+  amount?: number,
+): CarrierTransferResult {
+  if (target.structureType === STRUCTURE_STORAGE) {
+    return transferToStorageWithCapacityClaim(
+      creep,
+      target as StructureStorage,
+      resource,
+      amount,
+    );
+  }
+
+  const carriedAmount = creep.store.getUsedCapacity(resource);
+  const requestedAmount = Math.min(carriedAmount, amount ?? carriedAmount);
+  const code = measureCreepIntent(() =>
+    amount === undefined && requestedAmount === carriedAmount
+      ? creep.transfer(target, resource)
+      : creep.transfer(target, resource, requestedAmount),
+  );
+  return {
+    code,
+    requestedAmount,
+    acceptedAmount: code === OK ? requestedAmount : 0,
+  };
+}
+
 function deliverSynthesisCarrierResource(creep: Creep): boolean {
   const assigned = getAssignedSynthesisCarrierTask(creep);
   const state = ensureCreepAssignmentState(creep.name);
@@ -909,16 +1247,42 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
   // committed-delivery guard: snapshot delivery before pendingStepId expiry gates
   const _cdToId = state.synthesisCarrierPendingToId;
   const _cdResource = state.synthesisCarrierPendingResource;
+  if (
+    _cdToId &&
+    _cdResource &&
+    creep.store.getUsedCapacity(_cdResource) <= 0 &&
+    state.synthesisCarrierPendingPickupTick !== Game.time
+  ) {
+    clearSynthesisCarrierPendingSnapshot(state);
+  }
   if (_cdToId && _cdResource && creep.store.getUsedCapacity(_cdResource) > 0) {
     const _cdTarget = resolveTaskStructure(_cdToId);
+    const _cdFrom = state.synthesisCarrierPendingFromId
+      ? resolveTaskStructure(state.synthesisCarrierPendingFromId)
+      : null;
+    const isTerminalOffloadSnapshot =
+      _cdTarget?.structureType === STRUCTURE_STORAGE &&
+      (
+        state.synthesisCarrierPendingTaskType === "terminal_offload" ||
+        _cdFrom?.structureType === STRUCTURE_TERMINAL
+      );
     if (_cdTarget && _cdTarget.store.getFreeCapacity(_cdResource) > 0) {
-      const _cdCode = measureCreepIntent(() => creep.transfer(_cdTarget, _cdResource));
+      const _cdTransfer = transferCarrierResource(
+        creep,
+        _cdTarget,
+        _cdResource,
+      );
+      const _cdCode = _cdTransfer.code;
       if (_cdCode === ERR_NOT_IN_RANGE) {
         moveToTarget(creep, _cdTarget);
         return true;
       }
       if (_cdCode === OK) {
-        clearSynthesisCarrierTaskPlan(creep);
+        if (_cdTransfer.acceptedAmount >= _cdTransfer.requestedAmount) {
+          clearSynthesisCarrierTaskPlan(creep);
+        } else {
+          state.synthesisCarrierPendingDeliveryTick = Game.time;
+        }
         return true;
       }
       if (_cdCode === ERR_NOT_ENOUGH_RESOURCES) {
@@ -926,9 +1290,13 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
         return true;
       }
     }
-    delete state.synthesisCarrierPendingFromId;
-    delete state.synthesisCarrierPendingToId;
-    delete state.synthesisCarrierPendingResource;
+    if (_cdTarget && isTerminalOffloadSnapshot) {
+      // Accepted offload cargo remains committed to its original Storage even
+      // when the board refreshes or the target becomes full. New pickups are
+      // blocked by the destination-capacity ledger; this carrier retries.
+      return true;
+    }
+    clearSynthesisCarrierPendingSnapshot(state);
   }
 
   const explicitPendingStepId = (state.synthesisCarrierPendingPickupTick != null &&
@@ -948,12 +1316,17 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
         state.synthesisCarrierPendingDeliveryTick = Game.time;
         return true;
       }
-      const code = measureCreepIntent(() => creep.transfer(target, step.resource));
+      const transfer = transferCarrierResource(creep, target, step.resource);
+      const code = transfer.code;
       if (code === ERR_NOT_IN_RANGE) {
         moveToTarget(creep, target);
         return true;
       }
       if (code === OK) {
+        if (transfer.acceptedAmount < transfer.requestedAmount) {
+          state.synthesisCarrierPendingDeliveryTick = Game.time;
+          return true;
+        }
         delete state.synthesisCarrierPendingPickupTick;
         delete state.synthesisCarrierPendingStepId;
         if (creep.store.getUsedCapacity() === 0) {
@@ -977,20 +1350,26 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
       if (snapshotToId && snapshotResource) {
         const snapshotTarget = resolveTaskStructure(snapshotToId);
         if (!snapshotTarget) {
-          delete state.synthesisCarrierPendingToId;
-          delete state.synthesisCarrierPendingResource;
+          clearSynthesisCarrierPendingSnapshot(state);
         } else if (creep.store.getUsedCapacity(snapshotResource) > 0) {
-          const code = measureCreepIntent(() => creep.transfer(snapshotTarget, snapshotResource));
+          const transfer = transferCarrierResource(
+            creep,
+            snapshotTarget,
+            snapshotResource,
+          );
+          const code = transfer.code;
           if (code === ERR_NOT_IN_RANGE) {
             moveToTarget(creep, snapshotTarget);
             return true;
           }
           if (code === OK) {
+            if (transfer.acceptedAmount < transfer.requestedAmount) {
+              state.synthesisCarrierPendingDeliveryTick = Game.time;
+              return true;
+            }
             delete state.synthesisCarrierPendingPickupTick;
             delete state.synthesisCarrierPendingStepId;
-            delete state.synthesisCarrierPendingFromId;
-            delete state.synthesisCarrierPendingToId;
-            delete state.synthesisCarrierPendingResource;
+            clearSynthesisCarrierPendingSnapshot(state);
             if (creep.store.getUsedCapacity() === 0) {
               clearSynthesisCarrierTaskPlan(creep);
             } else {
@@ -1020,16 +1399,21 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
     if (offloadStep) {
       const offloadTarget = resolveTaskStructure(offloadStep.toId);
       if (offloadTarget) {
-        const code = measureCreepIntent(() =>
-          creep.transfer(offloadTarget, offloadStep.resource),
+        const transfer = transferCarrierResource(
+          creep,
+          offloadTarget,
+          offloadStep.resource,
         );
+        const code = transfer.code;
         if (code === ERR_NOT_IN_RANGE) {
           moveToTarget(creep, offloadTarget);
           return true;
         }
         if (code === OK) {
           const dState = ensureCreepAssignmentState(creep.name);
-          if (creep.store.getUsedCapacity() === 0) {
+          if (transfer.acceptedAmount < transfer.requestedAmount) {
+            dState.synthesisCarrierPendingDeliveryTick = Game.time;
+          } else if (creep.store.getUsedCapacity() === 0) {
             clearSynthesisCarrierTaskPlan(creep);
           } else {
             dState.synthesisCarrierPendingDeliveryTick = Game.time;
@@ -1076,7 +1460,8 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
     return false;
   }
 
-  const code = measureCreepIntent(() => creep.transfer(target, resource));
+  const transfer = transferCarrierResource(creep, target, resource);
+  const code = transfer.code;
   if (code === ERR_NOT_IN_RANGE) {
     moveToTarget(creep, target);
     return true;
@@ -1086,7 +1471,9 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
   }
 
   const dState = ensureCreepAssignmentState(creep.name);
-  if (creep.store.getUsedCapacity() === 0) {
+  if (transfer.acceptedAmount < transfer.requestedAmount) {
+    dState.synthesisCarrierPendingDeliveryTick = Game.time;
+  } else if (creep.store.getUsedCapacity() === 0) {
     clearSynthesisCarrierTaskPlan(creep);
   } else {
     dState.synthesisCarrierPendingDeliveryTick = Game.time;
@@ -1097,6 +1484,11 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
 export const carrierRole: RoleFactory = () => ({
   source: (creep): boolean => {
     clearPostTransferPlan(creep);
+
+    const assignedRoomName = getAssignedCarrierRoomName(creep);
+    const terminalBootstrapReserve = creep.room.name === assignedRoomName
+      ? observeTerminalBootstrapRecovery(assignedRoomName)
+      : undefined;
 
     const deliveryState = ensureCreepAssignmentState(creep.name);
     if (deliveryState.synthesisCarrierPendingDeliveryTick === Game.time - 1) {
@@ -1111,7 +1503,6 @@ export const carrierRole: RoleFactory = () => ({
       return true;
     }
 
-    const assignedRoomName = getAssignedCarrierRoomName(creep);
     if (hasRunnablePowerBankBoostCarrierTask(assignedRoomName)) {
       const powerBankBoostPickup = pickupSynthesisCarrierResource(creep, isPowerBankBoostCarrierTask, false);
       if (powerBankBoostPickup.picked || powerBankBoostPickup.outOfRange) {
@@ -1143,7 +1534,13 @@ export const carrierRole: RoleFactory = () => ({
     });
 
     if (energyDemandTarget && isCriticalEnergyDemandTarget(energyDemandTarget)) {
-      return pickupEnergyDemandForCarrier(creep, energyDemandTarget, assignedRoomName);
+      clearNukerEnergyTaskAssignment(creep);
+      return pickupEnergyDemandForCarrier(
+        creep,
+        energyDemandTarget,
+        assignedRoomName,
+        terminalBootstrapReserve,
+      );
     }
 
     if (hasRunnablePowerSpawnSupplyCarrierTask(assignedRoomName)) {
@@ -1175,7 +1572,13 @@ export const carrierRole: RoleFactory = () => ({
     }
 
     if (energyDemandTarget) {
-      return pickupEnergyDemandForCarrier(creep, energyDemandTarget, assignedRoomName);
+      clearNukerEnergyTaskAssignment(creep);
+      return pickupEnergyDemandForCarrier(
+        creep,
+        energyDemandTarget,
+        assignedRoomName,
+        terminalBootstrapReserve,
+      );
     }
 
     const hadExistingTask = !!ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
@@ -1186,12 +1589,15 @@ export const carrierRole: RoleFactory = () => ({
       const state = ensureCreepAssignmentState(creep.name);
       if (state.synthesisCarrierPendingResource &&
           creep.store.getUsedCapacity(state.synthesisCarrierPendingResource) === 0) {
-        delete state.synthesisCarrierPendingToId;
-        delete state.synthesisCarrierPendingResource;
+        clearSynthesisCarrierPendingSnapshot(state);
       }
     }
 
-    const carrierTaskPickup = pickupSynthesisCarrierResource(creep);
+    const carrierTaskPickup = pickupSynthesisCarrierResource(
+      creep,
+      isNonNukerEnergyCarrierTask,
+      false,
+    );
     if (carrierTaskPickup.picked || carrierTaskPickup.outOfRange) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
       if (carrierTaskPickup.picked) {
@@ -1210,6 +1616,7 @@ export const carrierRole: RoleFactory = () => ({
       return true;
     }
 
+    clearNukerEnergyTaskAssignment(creep);
     const ownedRoomDeadStorePickup = pickupOwnedRoomDeadStoreResource(creep);
     if (ownedRoomDeadStorePickup.picked || ownedRoomDeadStorePickup.outOfRange) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
@@ -1224,6 +1631,19 @@ export const carrierRole: RoleFactory = () => ({
       releasePickupReservation(creep);
       creep.suicide();
       return false;
+    }
+
+    const nukerEnergyPickup = pickupSynthesisCarrierResource(
+      creep,
+      isNukerEnergySupplyCarrierTask,
+    );
+    if (nukerEnergyPickup.picked || nukerEnergyPickup.outOfRange) {
+      delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+      if (nukerEnergyPickup.picked) {
+        releasePickupReservation(creep);
+      }
+      return creep.store.getUsedCapacity() > 0 ||
+        ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time;
     }
 
     const carrierState = ensureCreepAssignmentState(creep.name);
@@ -1247,6 +1667,11 @@ export const carrierRole: RoleFactory = () => ({
     return hasEnergy;
   },
   target: (creep): boolean => {
+    const assignedRoomName = getAssignedCarrierRoomName(creep);
+    if (creep.room.name === assignedRoomName) {
+      observeTerminalBootstrapRecovery(assignedRoomName);
+    }
+
     if (deliverSynthesisCarrierResource(creep)) {
       if (ensureCreepAssignmentState(creep.name).synthesisCarrierPendingDeliveryTick === Game.time) {
         return false;
@@ -1261,21 +1686,28 @@ export const carrierRole: RoleFactory = () => ({
       if (tSnapshotResource && tSnapshotToId && creep.store.getUsedCapacity(tSnapshotResource) > 0) {
         const tSnapshotTarget = resolveTaskStructure(tSnapshotToId);
         if (tSnapshotTarget) {
-          const tCode = measureCreepIntent(() => creep.transfer(tSnapshotTarget, tSnapshotResource));
+          const tTransfer = transferCarrierResource(
+            creep,
+            tSnapshotTarget,
+            tSnapshotResource,
+          );
+          const tCode = tTransfer.code;
           if (tCode === ERR_NOT_IN_RANGE) {
             moveToTarget(creep, tSnapshotTarget);
             return false;
           }
           if (tCode === OK) {
-            delete tState.synthesisCarrierPendingToId;
-            delete tState.synthesisCarrierPendingResource;
+            if (tTransfer.acceptedAmount < tTransfer.requestedAmount) {
+              tState.synthesisCarrierPendingDeliveryTick = Game.time;
+              return false;
+            }
+            clearSynthesisCarrierPendingSnapshot(tState);
             clearPostTransferPlan(creep);
             return true;
           }
           return false;
         }
-        delete tState.synthesisCarrierPendingToId;
-        delete tState.synthesisCarrierPendingResource;
+        clearSynthesisCarrierPendingSnapshot(tState);
       }
       clearPostTransferPlan(creep);
       return creep.store.getUsedCapacity() === 0;
@@ -1299,12 +1731,23 @@ export const carrierRole: RoleFactory = () => ({
         delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
         clearPostTransferPlan(creep);
       } else {
-        const code = measureCreepIntent(() => creep.transfer(storageTarget, RESOURCE_ENERGY));
+        const transfer = transferCarrierResource(
+          creep,
+          storageTarget,
+          RESOURCE_ENERGY,
+        );
+        const code = transfer.code;
         if (code === ERR_NOT_IN_RANGE) {
           moveToTarget(creep, storageTarget);
           return false;
         }
         if (code !== OK) {
+          return false;
+        }
+
+        if (transfer.acceptedAmount < transfer.requestedAmount) {
+          ensureCreepAssignmentState(creep.name).synthesisCarrierPendingDeliveryTick =
+            Game.time;
           return false;
         }
 
@@ -1347,7 +1790,12 @@ export const carrierRole: RoleFactory = () => ({
       return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
     }
 
-    const transferCode = measureCreepIntent(() => creep.transfer(target, RESOURCE_ENERGY));
+    const transfer = transferCarrierResource(
+      creep,
+      target,
+      RESOURCE_ENERGY,
+    );
+    const transferCode = transfer.code;
     if (transferCode === ERR_NOT_IN_RANGE) {
       moveToTarget(creep, target);
       return false;
@@ -1360,6 +1808,12 @@ export const carrierRole: RoleFactory = () => ({
 
     if (transferCode !== OK) {
       clearPostTransferPlan(creep);
+      return false;
+    }
+
+    if (transfer.acceptedAmount < transfer.requestedAmount) {
+      ensureCreepAssignmentState(creep.name).synthesisCarrierPendingDeliveryTick =
+        Game.time;
       return false;
     }
 

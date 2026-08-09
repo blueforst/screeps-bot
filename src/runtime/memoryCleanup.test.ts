@@ -51,6 +51,7 @@ describe("runMemoryCleanup", () => {
       },
     };
     Memory.creeps = {};
+    Memory.cfg = undefined;
     Memory.runtime = undefined;
     Memory.data = undefined;
   });
@@ -73,6 +74,51 @@ describe("runMemoryCleanup", () => {
     const remaining = listProductionReservations();
     expect(remaining).toHaveLength(1);
     expect(remaining[0].holderId).toBe("activeCarrier");
+  });
+
+  it("removes recovery runtime entries whose room flag is false or missing", () => {
+    Memory.cfg = {
+      energyPickup: {
+        terminalBootstrapRecoveryRooms: {
+          W1N1: true,
+          W2N2: false,
+        },
+      },
+    };
+    Memory.runtime = {
+      energyPickup: {
+        terminalBootstrapRecovery: {
+          W1N1: { healthySince: 10, lastObservedAt: 16 },
+          W2N2: { healthySince: 11, lastObservedAt: 16 },
+          W3N3: { healthySince: 12, lastObservedAt: 16 },
+        },
+      },
+    };
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.energyPickup?.terminalBootstrapRecovery).toEqual({
+      W1N1: { healthySince: 10, lastObservedAt: 16 },
+    });
+  });
+
+  it("removes empty recovery runtime containers during periodic cleanup", () => {
+    Memory.cfg = {
+      energyPickup: {
+        terminalBootstrapRecoveryRooms: {},
+      },
+    };
+    Memory.runtime = {
+      energyPickup: {
+        terminalBootstrapRecovery: {
+          W2N2: { lastObservedAt: 16 },
+        },
+      },
+    };
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.energyPickup).toBeUndefined();
   });
 
   it("keeps supported non-legacy creep configs for active specialized roles", () => {

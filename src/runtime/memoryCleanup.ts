@@ -7,6 +7,7 @@ import { cleanupPickupReservationStore } from "@/runtime/energyPickupReservation
 import { cleanupResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { cleanupWorkerTaskBoard } from "@/runtime/workerTaskPool";
 import { gcProductionReservations } from "@/runtime/resourceReservation";
+import { cleanupTerminalBootstrapRecoveryRuntime } from "@/runtime/terminalBootstrapRecovery";
 
 const CLEANUP_INTERVAL = 17;
 const VALID_ROLES = new Set([
@@ -680,6 +681,7 @@ export function runMemoryCleanup(): void {
   cleanupSynthesisControlMemory(ownedRooms);
   cleanupPowerBankBoostMemory();
   cleanupPickupReservationStore(ownedRooms);
+  cleanupTerminalBootstrapRecoveryRuntime();
   gcProductionReservations();
   cleanupWarMemory(ownedRooms);
   cleanupInterShardPortalMemory();

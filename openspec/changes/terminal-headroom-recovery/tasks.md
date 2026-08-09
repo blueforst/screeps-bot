@@ -40,3 +40,25 @@
 - [x] 6.3 复查变更未修改主循环阶段顺序、energy export、矿物/T3/生产保护、market 与手工 transfer 语义
 - [ ] 6.4 部署前记录 receiver/blocker/CPU 基线；部署后观察至少两个恢复周期，确认 receiver 数回升、50k 粘滞与 normal 60k 日常水位符合预期、安全容量越界为零且 CPU 无显著回退
 - [x] 6.5 验证关闭 `terminalHeadroomRecoveryEnabled` 可回滚新 offload/staging 行为，且无需清理现有 transfer tasks
+
+## 7. 本地 offload 目标容量承诺
+
+- [x] 7.1 为 planner 扣除 in-flight cargo、pickup 前缩量、同 step 多 carrier 竞争、失败/死亡/成功释放及 target full snapshot 语义编写失败测试
+- [x] 7.2 实现可从 live creep 状态重建的 tick-scoped destination capacity ledger，并让同目标不同资源共享总容量
+- [x] 7.3 将 ledger 接入 ResourceControl offload 安全额度与 carrier withdraw 前原子重验；目标变满时禁止新 pickup、保留已取 cargo 的 committed-delivery 语义与现有 blocker 观测
+- [x] 7.4 运行聚焦测试、`npx tsc --noEmit` 与 `npm run build`，确认未改变主循环、market exposure、energy/T3/生产保护与手工 transfer 语义
+
+## 8. 目标容量闭环修复
+
+- [x] 8.1 为 Storage-only Energy 回存、无 task 非 Energy cleanup、多个已 seed 普通投递与 terminal offload 的同 tick/跨资源竞争及失败释放编写失败测试
+- [x] 8.2 将两条普通 Storage 直接投递接入目标容量 claim，按可用量缩量并完整处理异常、失败与 `OK` 生命周期
+- [x] 8.3 为 accepted snapshot 增加 terminal offload provenance，覆盖源 Terminal 消失、task refresh 与目标 full 后仍保持绑定及完整清理
+- [x] 8.4 让恢复观测使用扣除本地在途承诺后的 effective safe capacity，并覆盖容量 blocker 回归
+- [x] 8.5 运行相关与全量 Jest、`npx tsc --noEmit`、`npm run build`、OpenSpec strict validate 和 `git diff --check`
+
+## 9. Storage 交付执行额度闭环
+
+- [x] 9.1 为多个 accepted terminal offload snapshot 的 600+400+0 原子缩量及失败释放编写角色级回归测试
+- [x] 9.2 以结构类型 wrapper 统一 committed/pending/refresh/assigned/late/planned 等所有可达 Storage transfer 入口
+- [x] 9.3 让 transfer 返回实际 accepted amount，缩量时保留 snapshot provenance/assignment 供后续 tick 继续交付
+- [x] 9.4 运行相关与全量 Jest、`npx tsc --noEmit`、`npm run build`、OpenSpec strict validate 和 `git diff --check`

@@ -51,14 +51,36 @@ describe("spawnProfiles", () => {
   });
 
   describe("mineralHarvester (twoToOneWorkMoveBody)", () => {
-    it("at high energy capacity (5600) produces a valid body within 50 parts and energy budget", () => {
-      const room = makeRoom(5600);
+    it.each([
+      [3_999, 15, 3_750],
+      [4_000, 16, 4_000],
+    ])(
+      "at %i energy only adds affordable complete WORK+WORK+MOVE units",
+      (energyCapacity, unitCount, expectedCost) => {
+        const body = spawnProfiles.mineralHarvester(makeRoom(energyCapacity));
 
-      const body = spawnProfiles.mineralHarvester(room);
+        expect(body).toEqual(
+          Array.from({ length: unitCount }, () => [WORK, WORK, MOVE]).flat(),
+        );
+        expect(bodyCost(body)).toBe(expectedCost);
+        expect(bodyCost(body)).toBeLessThanOrEqual(energyCapacity);
+      },
+    );
 
-      expect(body.length).toBeLessThanOrEqual(50);
-      expect(bodyCost(body)).toBeLessThanOrEqual(5600);
-    });
+    it.each([4_250, 5_600])(
+      "at %i energy keeps the complete 48-part body instead of filling 50 parts",
+      (energyCapacity) => {
+        const body = spawnProfiles.mineralHarvester(makeRoom(energyCapacity));
+
+        expect(body).toEqual(
+          Array.from({ length: 16 }, () => [WORK, WORK, MOVE]).flat(),
+        );
+        expect(body).toHaveLength(48);
+        expect(body.filter((part) => part === WORK)).toHaveLength(32);
+        expect(body.filter((part) => part === MOVE)).toHaveLength(16);
+        expect(bodyCost(body)).toBe(4_000);
+      },
+    );
   });
 
   describe("miner (REGEN_SOURCE throughput)", () => {

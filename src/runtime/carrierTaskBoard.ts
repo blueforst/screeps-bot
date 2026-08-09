@@ -30,10 +30,34 @@ export interface CarrierTaskDraft {
   steps: CarrierTaskStep[];
 }
 
+export interface CarrierTaskStepAmountClaim {
+  readonly amount: number;
+  commit(): void;
+  release(): void;
+}
+
 type CarrierTaskBoardStore = Record<string, Record<string, CarrierTask>>;
+
+interface CarrierTaskClaimRecord {
+  stepId: string;
+  amount: number;
+  committed: boolean;
+  claimantWasLiveAtClaim: boolean;
+}
+
+interface CarrierTaskClaimBudget {
+  claims: Map<string, CarrierTaskClaimRecord>;
+}
+
+interface CarrierTaskClaimRuntime {
+  tick: number;
+  game: Game;
+  budgets: Map<string, CarrierTaskClaimBudget>;
+}
 
 type RuntimeGlobalWithCarrierTasks = typeof global & {
   __carrierTaskBoard?: CarrierTaskBoardStore;
+  __carrierTaskClaims?: CarrierTaskClaimRuntime;
 };
 
 const runtimeGlobal: RuntimeGlobalWithCarrierTasks = global;
@@ -44,6 +68,153 @@ function ensureCarrierTaskBoard(): CarrierTaskBoardStore {
   }
 
   return runtimeGlobal.__carrierTaskBoard;
+}
+
+function normalizeClaimAmount(amount: number): number {
+  if (!Number.isFinite(amount) || amount <= 0) return 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(amount));
+}
+
+function addClaimAmount(total: number, amount: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, total + amount);
+}
+
+function getCarrierTaskClaimKey(task: CarrierTask): string {
+  return `${task.roomName}\u0000${task.producer}\u0000${task.id}`;
+}
+
+function ensureCarrierTaskClaimRuntime(): CarrierTaskClaimRuntime {
+  const existing = runtimeGlobal.__carrierTaskClaims;
+  if (
+    existing &&
+    existing.tick === Game.time &&
+    existing.game === Game
+  ) {
+    return existing;
+  }
+
+  const created: CarrierTaskClaimRuntime = {
+    tick: Game.time,
+    game: Game,
+    budgets: new Map(),
+  };
+  runtimeGlobal.__carrierTaskClaims = created;
+  return created;
+}
+
+function pruneDeadCarrierTaskClaims(
+  budget: CarrierTaskClaimBudget,
+): void {
+  for (const [claimantId, claim] of budget.claims) {
+    if (!claim.claimantWasLiveAtClaim || Game.creeps[claimantId]) {
+      continue;
+    }
+    budget.claims.delete(claimantId);
+  }
+}
+
+function releaseActiveCarrierTaskClaims(task: CarrierTask): void {
+  const runtime = runtimeGlobal.__carrierTaskClaims;
+  if (
+    !runtime ||
+    runtime.tick !== Game.time ||
+    runtime.game !== Game
+  ) {
+    return;
+  }
+
+  const key = getCarrierTaskClaimKey(task);
+  const budget = runtime.budgets.get(key);
+  if (!budget) return;
+
+  for (const [claimantId, claim] of budget.claims) {
+    if (!claim.committed) {
+      budget.claims.delete(claimantId);
+    }
+  }
+  if (budget.claims.size === 0) {
+    runtime.budgets.delete(key);
+  }
+}
+
+/**
+ * Atomically claims a same-tick execution slice from both the whole task and
+ * one step. Successful intents commit the slice until tick rollover; failed
+ * intents release it immediately. This runtime-only ledger never enters
+ * Memory and therefore cannot leave a cross-tick stale lock.
+ */
+export function claimCarrierTaskStepAmount(
+  task: CarrierTask,
+  step: CarrierTaskStep,
+  claimantId: string,
+  requestedAmount: number,
+): CarrierTaskStepAmountClaim | null {
+  const normalizedRequest = normalizeClaimAmount(requestedAmount);
+  if (!claimantId || normalizedRequest <= 0) return null;
+
+  const currentStep = task.steps.find((candidate) => candidate.id === step.id);
+  if (!currentStep) return null;
+  const stepLimit = normalizeClaimAmount(currentStep.amount);
+  let taskLimit = 0;
+  for (const taskStep of task.steps) {
+    taskLimit = addClaimAmount(
+      taskLimit,
+      normalizeClaimAmount(taskStep.amount),
+    );
+  }
+  if (stepLimit <= 0 || taskLimit <= 0) return null;
+
+  const runtime = ensureCarrierTaskClaimRuntime();
+  const key = getCarrierTaskClaimKey(task);
+  const budget = runtime.budgets.get(key) || { claims: new Map() };
+  runtime.budgets.set(key, budget);
+  pruneDeadCarrierTaskClaims(budget);
+  if (budget.claims.has(claimantId)) return null;
+
+  let taskClaimed = 0;
+  let stepClaimed = 0;
+  for (const claim of budget.claims.values()) {
+    taskClaimed = addClaimAmount(taskClaimed, claim.amount);
+    if (claim.stepId === currentStep.id) {
+      stepClaimed = addClaimAmount(stepClaimed, claim.amount);
+    }
+  }
+  const amount = Math.min(
+    normalizedRequest,
+    Math.max(0, taskLimit - taskClaimed),
+    Math.max(0, stepLimit - stepClaimed),
+  );
+  if (amount <= 0) return null;
+
+  const record: CarrierTaskClaimRecord = {
+    stepId: currentStep.id,
+    amount,
+    committed: false,
+    claimantWasLiveAtClaim: !!Game.creeps[claimantId],
+  };
+  budget.claims.set(claimantId, record);
+
+  const isCurrentRecord = (): boolean =>
+    runtimeGlobal.__carrierTaskClaims === runtime &&
+    runtime.tick === Game.time &&
+    runtime.game === Game &&
+    runtime.budgets.get(key) === budget &&
+    budget.claims.get(claimantId) === record;
+
+  return {
+    amount,
+    commit(): void {
+      if (!isCurrentRecord()) return;
+      record.committed = true;
+    },
+    release(): void {
+      if (!isCurrentRecord() || record.committed) return;
+      budget.claims.delete(claimantId);
+      if (budget.claims.size === 0) {
+        runtime.budgets.delete(key);
+      }
+    },
+  };
 }
 
 function ensureRoomTaskStore(roomName: string): Record<string, CarrierTask> {
@@ -141,6 +312,7 @@ export function replaceCarrierTasksForProducerRoom(
     if (nextIds.has(taskId)) {
       continue;
     }
+    releaseActiveCarrierTaskClaims(task);
     delete store[taskId];
   }
 
@@ -160,6 +332,7 @@ export function pruneCarrierTasksForProducer(producer: string, validRoomNames: S
         continue;
       }
 
+      releaseActiveCarrierTaskClaims(task);
       delete tasks[taskId];
       removed += 1;
     }
@@ -182,6 +355,7 @@ export function cleanupCarrierTaskBoard(ownedRooms: Set<string>, ttl: number): n
         continue;
       }
 
+      releaseActiveCarrierTaskClaims(task);
       delete tasks[taskId];
       removed += 1;
     }
@@ -194,4 +368,5 @@ export function cleanupCarrierTaskBoard(ownedRooms: Set<string>, ttl: number): n
 
 export function clearCarrierTaskBoardForTest(): void {
   delete runtimeGlobal.__carrierTaskBoard;
+  delete runtimeGlobal.__carrierTaskClaims;
 }

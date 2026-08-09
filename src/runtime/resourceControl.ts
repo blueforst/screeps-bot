@@ -54,6 +54,7 @@ import {
 } from "@/runtime/marketActionArbiter";
 import { canTerminalSendPreserveMarketSaleExposure } from "@/runtime/marketSaleExposure";
 import { deriveMarketBaseResourceCanonicalReadinessAuthorization } from "@/runtime/marketBaseResourceAutomation";
+import { getLocalCarrierDestinationCommittedAmount } from "@/runtime/localCarrierDestinationCapacity";
 
 type ResourceControlState = "survival" | "balanced" | "export";
 type ResourceCapacityState = CapacityState;
@@ -3698,8 +3699,13 @@ function syncLegacyTerminalFeedTasks(
     }
 
     const roomPending = pendingByRoom.get(snapshot.roomName);
-    const storageOffloadCapacity =
-      snapshot.storage?.store.getFreeCapacity() || 0;
+    const storageOffloadCapacity = snapshot.storage
+      ? Math.max(
+          0,
+          snapshot.storage.store.getFreeCapacity() -
+            getLocalCarrierDestinationCommittedAmount(snapshot.storage.id),
+        )
+      : 0;
     const overflowDiagnostics = appendTerminalOverflowDrafts(
       snapshot,
       snapshots,
@@ -4374,13 +4380,15 @@ function syncTerminalFeedTasks(
     // Terminal overflow: offload surplus above cap to storage
     // Compute offload drafts first so we can suppress conflicting feed drafts
     const offloadedResources = new Set<ResourceConstant>();
-    let storageOffloadCapacity = snapshot.storage
+    const effectiveStorageOffloadCapacity = snapshot.storage
       ? Math.max(
           0,
           snapshot.storage.store.getFreeCapacity() -
-            capacityConfig.storageReliefTargetFreeCapacity,
+            capacityConfig.storageReliefTargetFreeCapacity -
+            getLocalCarrierDestinationCommittedAmount(snapshot.storage.id),
         )
       : 0;
+    let storageOffloadCapacity = effectiveStorageOffloadCapacity;
     if (!recoveringTerminal && energyDraft?.type === "terminal_offload") {
       const limitedEnergyOffload = limitCarrierTaskDraftAmount(
         energyDraft,
@@ -4485,13 +4493,7 @@ function syncTerminalFeedTasks(
       snapshot,
       context,
       desiredTerminalUsedCapacity,
-      snapshot.storage
-        ? Math.max(
-            0,
-            snapshot.storage.store.getFreeCapacity() -
-              capacityConfig.storageReliefTargetFreeCapacity,
-          )
-        : 0,
+      effectiveStorageOffloadCapacity,
       drafts,
       overflowDiagnostics,
     );
@@ -5305,6 +5307,9 @@ function persistResourceControlState(
           storageFreeCapacity: snapshot.storageFreeCapacity,
           terminalUsedCapacity: snapshot.terminalUsedCapacity,
           terminalFreeCapacity: snapshot.terminalFreeCapacity,
+          localOffloadCapacityCommitment: snapshot.storage
+            ? getLocalCarrierDestinationCommittedAmount(snapshot.storage.id)
+            : 0,
           ...(context.terminalRecoveryObservationByRoom.get(
             snapshot.roomName,
           ) || {
@@ -5348,6 +5353,7 @@ function persistResourceControlState(
           storageFreeCapacity: number;
           terminalUsedCapacity: number;
           terminalFreeCapacity: number;
+          localOffloadCapacityCommitment: number;
           desiredTerminalFreeCapacity: number;
           terminalRecoveryGap: number;
           recoverableOffloadAmount: number;

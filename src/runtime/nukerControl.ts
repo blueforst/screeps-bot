@@ -8,6 +8,7 @@ import {
   type CarrierTaskStep,
 } from "@/runtime/carrierTaskBoard";
 import { createCarrierTaskStep } from "@/runtime/carrierTaskHelpers";
+import { STANDARD_CARRIER_MAX_CAPACITY } from "@/runtime/carrierBodyPolicy";
 import { getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import {
   createAutomaticResourceTransferTask,
@@ -31,7 +32,7 @@ import { getMemoryService, getTickContextService } from "@/runtime/runtimeServic
 
 export const NUKER_CARRIER_TASK_PRODUCER = "nukerControl";
 export const NUKER_GHODIUM_SUPPLY_PRIORITY = 140;
-export const NUKER_ENERGY_SUPPLY_PRIORITY = 40;
+export const NUKER_ENERGY_SUPPLY_PRIORITY = 0;
 
 const NUKER_RESERVATION_PREFIX = "nuker:";
 const NUKER_RESERVATION_TTL = 3;
@@ -293,12 +294,12 @@ function buildEnergyDraft(
         room.name,
       )
     : 0;
-  // ResourceControl treats the Storage target and Terminal reserve as separate
-  // safety pools. Do not let a full Terminal mask a Storage deficit: Nuker
-  // filling starts only after Storage itself reaches the room target, then may
-  // consume the excess above both boundaries.
-  const energyAboveSafetyBoundaries = storageEnergy >= policy.energyTarget
-    ? storageEnergy - policy.energyTarget +
+  // ResourceControl treats the Storage floor and Terminal reserve as separate
+  // safety pools. Do not let a full Terminal mask a survival-floor deficit:
+  // Nuker filling starts only after Storage itself reaches the room floor, then
+  // may consume the excess above both boundaries.
+  const energyAboveSafetyBoundaries = storageEnergy >= policy.energyFloor
+    ? storageEnergy - policy.energyFloor +
       Math.max(0, terminalEnergy - policy.terminalEnergyReserve)
     : 0;
   const safeEnergy = Math.max(
@@ -316,7 +317,7 @@ function buildEnergyDraft(
       Math.max(
         0,
         storageEnergy -
-          policy.energyTarget -
+          policy.energyFloor -
           (commitments.bySourceId.get(room.storage.id) || 0),
       ),
     );
@@ -336,6 +337,7 @@ function buildEnergyDraft(
   const plannedAmount = Math.min(
     Math.max(0, energyDeficit - carriedEnergy),
     safeEnergy,
+    STANDARD_CARRIER_MAX_CAPACITY,
   );
   const steps = allocateSupplySteps({
     room,

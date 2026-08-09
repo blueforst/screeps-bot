@@ -1,4 +1,5 @@
 import {
+  claimCarrierTaskStepAmount,
   clearCarrierTaskBoardForTest,
   getCarrierTasksByRoom,
   listCarrierTasksByRoom,
@@ -35,6 +36,7 @@ describe("carrierTaskBoard", () => {
   beforeEach(() => {
     clearCarrierTaskBoardForTest();
     Game.time = 1000;
+    Game.creeps = {};
   });
 
   it("cleanup removes tasks in rooms not owned and stale tasks", () => {
@@ -56,6 +58,143 @@ describe("carrierTaskBoard", () => {
     expect(getCarrierTasksByRoom("W1N1")["stale:owned"]).toBeUndefined();
     // W4N4 room entry should be cleaned up entirely
     expect(getCarrierTasksByRoom("W4N4")["keep:unowned"]).toBeUndefined();
+  });
+
+  it("lists higher numeric priority first and preserves creation order for ties", () => {
+    replaceCarrierTasksForProducerRoom(
+      "older-high",
+      "W1N1",
+      [makeDraft({ id: "older-high", priority: 10 })],
+    );
+    Game.time += 1;
+    replaceCarrierTasksForProducerRoom(
+      "newer-high",
+      "W1N1",
+      [makeDraft({ id: "newer-high", priority: 10 })],
+    );
+    replaceCarrierTasksForProducerRoom(
+      "low",
+      "W1N1",
+      [makeDraft({ id: "low", priority: 0 })],
+    );
+
+    expect(listCarrierTasksByRoom("W1N1").map((task) => task.id)).toEqual([
+      "older-high",
+      "newer-high",
+      "low",
+    ]);
+  });
+
+  it("atomically caps claims by both task and step across same-tick refresh", () => {
+    const draft = makeDraft({
+      id: "claimed-task",
+      steps: [
+        makeStep({ id: "storage-step", amount: 600 }),
+        makeStep({ id: "terminal-step", fromId: "term789", amount: 400 }),
+      ],
+    });
+    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
+    let task = getCarrierTasksByRoom("W1N1")[draft.id];
+
+    const first = claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "carrier-a",
+      800,
+    );
+    expect(first?.amount).toBe(600);
+    first?.commit();
+    expect(claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "carrier-b",
+      800,
+    )).toBeNull();
+
+    const second = claimCarrierTaskStepAmount(
+      task,
+      task.steps[1],
+      "carrier-c",
+      800,
+    );
+    expect(second?.amount).toBe(400);
+    second?.commit();
+
+    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
+    task = getCarrierTasksByRoom("W1N1")[draft.id];
+    expect(claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "carrier-d",
+      800,
+    )).toBeNull();
+
+    Game.time += 1;
+    expect(claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "carrier-d",
+      800,
+    )?.amount).toBe(600);
+  });
+
+  it("releases active claims on failure and task cleanup", () => {
+    const draft = makeDraft({ id: "released-task", steps: [makeStep({ amount: 1_000 })] });
+    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
+    let task = getCarrierTasksByRoom("W1N1")[draft.id];
+
+    const failed = claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "failed-carrier",
+      1_000,
+    );
+    expect(failed?.amount).toBe(1_000);
+    failed?.release();
+    expect(claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "retry-carrier",
+      1_000,
+    )?.amount).toBe(1_000);
+
+    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", []);
+    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
+    task = getCarrierTasksByRoom("W1N1")[draft.id];
+    expect(claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "after-cleanup",
+      1_000,
+    )?.amount).toBe(1_000);
+  });
+
+  it("reclaims a committed slice when its live claimant disappears", () => {
+    const draft = makeDraft({ id: "dead-claimant-task", steps: [makeStep({ amount: 1_000 })] });
+    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
+    const task = getCarrierTasksByRoom("W1N1")[draft.id];
+    Game.creeps["live-carrier"] = { name: "live-carrier" } as Creep;
+    const accepted = claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "live-carrier",
+      1_000,
+    );
+    accepted?.commit();
+    expect(claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "blocked-carrier",
+      1_000,
+    )).toBeNull();
+
+    delete Game.creeps["live-carrier"];
+    expect(claimCarrierTaskStepAmount(
+      task,
+      task.steps[0],
+      "replacement-carrier",
+      1_000,
+    )?.amount).toBe(1_000);
   });
 });
 

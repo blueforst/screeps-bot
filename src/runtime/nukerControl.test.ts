@@ -9,6 +9,7 @@ import {
 import { getResourceTransferTaskListSorted } from "@/runtime/logistics/resourceTransferTasks";
 import {
   NUKER_CARRIER_TASK_PRODUCER,
+  NUKER_ENERGY_SUPPLY_PRIORITY,
   runNukerControl,
 } from "@/runtime/nukerControl";
 import { listProductionReservations } from "@/runtime/resourceReservation";
@@ -181,11 +182,11 @@ describe("nukerControl", () => {
     Memory.data = {};
   });
 
-  it("发布本房 Ghodium 与安全 Energy 草案，并记录运行态和预留", () => {
+  it("E6N59 水位略低于 target 时按 floor 发布单 Carrier 批次", () => {
     const scenario = createRoomScenario({
-      roomName: "W1N1",
-      storageEnergy: 220_000,
-      terminalEnergy: 25_000,
+      roomName: "E6N59",
+      storageEnergy: 196_795,
+      terminalEnergy: 21_376,
       storageGhodium: 5_000,
     });
 
@@ -207,19 +208,20 @@ describe("nukerControl", () => {
         amount: 5_000,
       }),
     ]);
+    expect(energyTask?.priority).toBe(NUKER_ENERGY_SUPPLY_PRIORITY);
+    expect(NUKER_ENERGY_SUPPLY_PRIORITY).toBe(0);
     expect(energyTask?.steps.reduce((sum, step) => sum + step.amount, 0))
-      .toBe(25_000);
+      .toBe(1_000);
     expect(energyTask?.steps).toEqual([
-      expect.objectContaining({ fromKind: "storage", amount: 20_000 }),
-      expect.objectContaining({ fromKind: "terminal", amount: 5_000 }),
+      expect.objectContaining({ fromKind: "storage", amount: 1_000 }),
     ]);
     expect(Memory.runtime?.nukerControl?.ghodiumProductionDemand).toBe(5_000);
-    expect(Memory.runtime?.nukerControl?.rooms.W1N1).toEqual(
+    expect(Memory.runtime?.nukerControl?.rooms.E6N59).toEqual(
       expect.objectContaining({
         reserveMode: false,
         ghodiumDeficit: 5_000,
         energyDeficit: 300_000,
-        safeEnergy: 25_000,
+        safeEnergy: 78_171,
         carrierTaskCount: 2,
       }),
     );
@@ -227,6 +229,10 @@ describe("nukerControl", () => {
     expect(listProductionReservations().filter((reservation) =>
       reservation.holderId.startsWith("nuker:"),
     )).toHaveLength(2);
+    expect(listProductionReservations().find((reservation) =>
+      reservation.holderId.startsWith("nuker:") &&
+      reservation.resource === RESOURCE_ENERGY,
+    )?.amount).toBe(1_000);
   });
 
   it("扣除已由 Carrier 携带到该 Nuker 的 Ghodium", () => {
@@ -279,10 +285,41 @@ describe("nukerControl", () => {
     );
   });
 
-  it("Storage 低于 target 时不让 Terminal 余量掩盖缺口", () => {
+  it("进入 RESERVE 后清理既有 Energy task 和 reservation", () => {
+    const scenario = createRoomScenario({
+      roomName: "W1N3A",
+      storageEnergy: 500_000,
+      nukerGhodium: 5_000,
+    });
+    runNukerControl();
+    expect(getNukerTasks(scenario.room.name).some((task) =>
+      task.steps.some((step) => step.resource === RESOURCE_ENERGY),
+    )).toBe(true);
+    expect(listProductionReservations().some((reservation) =>
+      reservation.resource === RESOURCE_ENERGY &&
+      reservation.holderId.startsWith("nuker:"),
+    )).toBe(true);
+
+    Game.flags.RESERVE_W1N3A = {
+      name: "RESERVE_W1N3A",
+      pos: { roomName: scenario.room.name },
+    } as unknown as Flag;
+    Game.time += 1;
+    runNukerControl();
+
+    expect(getNukerTasks(scenario.room.name).some((task) =>
+      task.steps.some((step) => step.resource === RESOURCE_ENERGY),
+    )).toBe(false);
+    expect(listProductionReservations().some((reservation) =>
+      reservation.resource === RESOURCE_ENERGY &&
+      reservation.holderId.startsWith("nuker:"),
+    )).toBe(false);
+  });
+
+  it("Storage 低于 floor 时不让 Terminal 余量掩盖缺口", () => {
     const scenario = createRoomScenario({
       roomName: "W1N4",
-      storageEnergy: 190_000,
+      storageEnergy: 119_999,
       terminalEnergy: 100_000,
       nukerGhodium: 5_000,
     });
@@ -359,7 +396,7 @@ describe("nukerControl", () => {
       storageGhodium: 5_000,
     });
     runNukerControl();
-    expect(getNukerTasks(scenario.room.name)).toHaveLength(1);
+    expect(getNukerTasks(scenario.room.name)).toHaveLength(2);
 
     scenario.removeNuker();
     Game.time += 1;

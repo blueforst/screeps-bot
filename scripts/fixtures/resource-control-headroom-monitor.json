@@ -35,6 +35,7 @@
           "storageFreeCapacity": 130000,
           "terminalUsedCapacity": 270000,
           "terminalFreeCapacity": 30000,
+          "localOffloadCapacityCommitment": 6000,
           "storageEnergy": 300000,
           "terminalEnergy": 50000,
           "energyFloor": 120000,

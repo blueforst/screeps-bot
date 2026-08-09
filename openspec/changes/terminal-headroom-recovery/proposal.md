@@ -8,6 +8,7 @@
 - 将启用恢复功能时 normal 房间的日常卸货目标改为默认保留 60,000 terminal 空闲；接收账本仍保留 40,000 安全容量，从而提供 20,000 的可承诺接收窗口。
 - 统一 ResourceControl 与 Hub 的 receiver storage/terminal 安全容量计算，消除重复硬编码阈值。
 - 用物理空闲、健康入站承诺、同 tick 预留和本地排空能力计算可接收容量，避免将实际可用房间永久排除，也避免重复预留。
+- 为 terminal→storage 本地排空增加目标容量承诺：规划时扣除已接货/在途 cargo，carrier 取货前按目标实时余量与同 tick claim 原子缩量，避免多 carrier 把同一份 Storage 空闲重复消费。
 - 仅为接收方仍安全、任务当前可执行或可在下一个发送槽执行的跨房任务生成 terminal feed；释放由长期容量阻塞任务占用的 staging 空间。
 - 细分容量阻塞与 terminal 恢复状态的运行时观测，报告无合格 receiver、粘滞水位、阻塞 staging 和恢复进度。
 - 增加 full → 50k free 粘滞区、normal 60k 日常水位、protected-only terminal、blocked staging、receiver 恢复和多周期无振荡的回归覆盖。
@@ -27,7 +28,7 @@
 ## Impact
 
 - 主要运行时代码：`src/runtime/resourceControl.ts`、`src/runtime/hubPlanner.ts` 和共享容量策略模块。
-- 房内物流：`src/runtime/carrierTaskBoard.ts` 及 resource-control terminal feed/offload producer，但不新增 creep role。
+- 房内物流：`src/runtime/carrierTaskBoard.ts`、本地目标容量 claim helper 及 resource-control terminal feed/offload producer，但不新增 creep role。
 - 类型与观测：`src/global.d.ts`、`Memory.runtime.resourceControl`、`scripts/monitor-service.mjs`。
 - 测试：resource-control 水位/容量回归、Hub receiver 容量一致性、blocked staging 与 live-like 多房间恢复场景。
 - 不新增外部依赖，不改变 console transfer API，不执行市场清仓。

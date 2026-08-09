@@ -3,6 +3,11 @@ import {
   getCarrierTasksByRoom,
   replaceCarrierTasksForProducerRoom,
 } from "@/runtime/carrierTaskBoard";
+import {
+  clearCreepAssignmentStateForTest,
+  ensureCreepAssignmentState,
+} from "@/runtime/creepAssignmentState";
+import { clearLocalCarrierDestinationCapacityForTest } from "@/runtime/localCarrierDestinationCapacity";
 import * as carrierTaskBoard from "@/runtime/carrierTaskBoard";
 import {
   createAutomaticResourceTransferTask,
@@ -406,6 +411,8 @@ describe("runResourceControl terminal feed tasks", () => {
 describe("terminal headroom offload", () => {
   beforeEach(() => {
     clearCarrierTaskBoardForTest();
+    clearCreepAssignmentStateForTest();
+    clearLocalCarrierDestinationCapacityForTest();
     resetRuntimeServices();
     Game.time = 10;
     Memory.cfg = {
@@ -472,6 +479,85 @@ describe("terminal headroom offload", () => {
       capacityState: "normal",
       desiredTerminalFreeCapacity: 60_000,
       terminalRecoveryGap: 9_051,
+    });
+  });
+
+  it("subtracts accepted/in-flight carrier cargo from safe Storage offload capacity", () => {
+    const room = createRoom({
+      name: "W25N2",
+      terminalResources: { [RESOURCE_HYDROGEN]: 249_051 },
+      storageFreeCapacity: 210_000,
+    });
+    Game.rooms[room.name] = room;
+    const carrier = {
+      name: "carrier-inflight-offload",
+      room,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_HYDROGEN
+            ? 6_000
+            : 0,
+        getFreeCapacity: () => 0,
+      },
+    } as unknown as Creep;
+    Game.creeps[carrier.name] = carrier;
+    Object.assign(ensureCreepAssignmentState(carrier.name), {
+      synthesisCarrierPendingToId: room.storage!.id,
+      synthesisCarrierPendingResource: RESOURCE_HYDROGEN,
+    });
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`
+      ],
+    ).toMatchObject({
+      type: "terminal_offload",
+      steps: [{ resource: RESOURCE_HYDROGEN, amount: 4_000 }],
+    });
+    expect(Memory.runtime?.resourceControl?.rooms[room.name]).toMatchObject({
+      localOffloadCapacityCommitment: 6_000,
+      recoverableOffloadAmount: 4_000,
+    });
+  });
+
+  it("reports storage_full when in-flight cargo exhausts effective safe capacity", () => {
+    const room = createRoom({
+      name: "W25N3",
+      terminalResources: { [RESOURCE_HYDROGEN]: 249_051 },
+      storageFreeCapacity: 206_000,
+    });
+    Game.rooms[room.name] = room;
+    const carrier = {
+      name: "carrier-inflight-exhausts-safe-capacity",
+      room,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_HYDROGEN
+            ? 6_000
+            : 0,
+        getFreeCapacity: () => 0,
+      },
+    } as unknown as Creep;
+    Game.creeps[carrier.name] = carrier;
+    Object.assign(ensureCreepAssignmentState(carrier.name), {
+      synthesisCarrierPendingToId: room.storage!.id,
+      synthesisCarrierPendingResource: RESOURCE_HYDROGEN,
+    });
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_offload:${room.name}:${RESOURCE_HYDROGEN}`
+      ],
+    ).toBeUndefined();
+    expect(Memory.runtime?.resourceControl?.rooms[room.name]).toMatchObject({
+      localOffloadCapacityCommitment: 6_000,
+      recoverableOffloadAmount: 0,
+      stickyHeadroom: true,
+      stickyHeadroomReason: "storage_full",
     });
   });
 

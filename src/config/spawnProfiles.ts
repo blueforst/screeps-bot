@@ -50,7 +50,14 @@ function oneOneOneBody(room: Room): BodyPartConstant[] {
 
 function twoToOneWorkMoveBody(room: Room): BodyPartConstant[] {
   const unitCost = BODYPART_COST[WORK] * 2 + BODYPART_COST[MOVE];
-  const unitCount = Math.max(1, Math.floor(room.energyCapacityAvailable / unitCost));
+  const maxUnitsByBodySize = Math.floor(MAX_BODY_SIZE / 3);
+  const unitCount = Math.max(
+    1,
+    Math.min(
+      maxUnitsByBodySize,
+      Math.floor(room.energyCapacityAvailable / unitCost),
+    ),
+  );
   const parts: BodyPartConstant[] = [];
 
   for (let i = 0; i < unitCount; i++) {

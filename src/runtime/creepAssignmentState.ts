@@ -1,3 +1,5 @@
+import type { CarrierTaskType } from "@/runtime/carrierTaskBoard";
+
 type CarrierPlanTargetKind = "resource" | "structure";
 type CarrierPlanMode = "pickup" | "deliver";
 type PickupTargetKind = "resource" | "structure";
@@ -18,6 +20,7 @@ export interface CreepAssignmentState {
   synthesisCarrierPendingFromId?: string;
   synthesisCarrierPendingToId?: string;
   synthesisCarrierPendingResource?: ResourceConstant;
+  synthesisCarrierPendingTaskType?: CarrierTaskType;
 }
 
 type AssignmentStateStore = Record<string, CreepAssignmentState>;

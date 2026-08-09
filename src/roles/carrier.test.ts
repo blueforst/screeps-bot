@@ -9,6 +9,7 @@ import {
   executeTerminalSend,
 } from "@/runtime/marketActionArbiter";
 import { clearMarketSaleExposureReservationsForTest } from "@/runtime/marketSaleExposure";
+import { clearLocalCarrierDestinationCapacityForTest } from "@/runtime/localCarrierDestinationCapacity";
 
 jest.mock("@/roles/energyTargets", () => ({
   getEnergyStoreTarget: jest.fn(),
@@ -16,6 +17,7 @@ jest.mock("@/roles/energyTargets", () => ({
 }));
 
 jest.mock("@/runtime/energyPickupReservation", () => ({
+  getPickupReservationClaimAmount: jest.fn(() => 800),
   getPickupTargetEnergyAmount: jest.fn(() => 0),
   getReservedPickupTarget: jest.fn(() => null),
   releasePickupReservation: jest.fn(),
@@ -42,16 +44,41 @@ const { isDroppedResourceTarget } = jest.requireMock("@/roles/energyTargets") as
 };
 
 const {
+  getPickupReservationClaimAmount,
   getPickupTargetEnergyAmount,
   getReservedPickupTarget,
   releasePickupReservation,
   reservePickupTarget,
 } = jest.requireMock("@/runtime/energyPickupReservation") as {
+  getPickupReservationClaimAmount: jest.Mock;
   getPickupTargetEnergyAmount: jest.Mock;
   getReservedPickupTarget: jest.Mock;
   releasePickupReservation: jest.Mock;
   reservePickupTarget: jest.Mock;
 };
+
+const actualEnergyPickupReservation = jest.requireActual(
+  "@/runtime/energyPickupReservation",
+) as typeof import("@/runtime/energyPickupReservation");
+
+function useActualEnergyPickupReservationsForTest(): void {
+  actualEnergyPickupReservation.clearPickupReservationStoreForTest();
+  getPickupTargetEnergyAmount.mockImplementation(
+    actualEnergyPickupReservation.getPickupTargetEnergyAmount,
+  );
+  getReservedPickupTarget.mockImplementation(
+    actualEnergyPickupReservation.getReservedPickupTarget,
+  );
+  reservePickupTarget.mockImplementation(
+    actualEnergyPickupReservation.reservePickupTarget,
+  );
+  releasePickupReservation.mockImplementation(
+    actualEnergyPickupReservation.releasePickupReservation,
+  );
+  getPickupReservationClaimAmount.mockImplementation(
+    actualEnergyPickupReservation.getPickupReservationClaimAmount,
+  );
+}
 
 const {
   moveToTarget,
@@ -125,6 +152,144 @@ function createRoom(name = "W1N1", options: { level?: number; storage?: Structur
 
   Game.rooms[name] = room;
   return room;
+}
+
+function installTerminalBootstrapEnergyScenario(
+  roomName: string,
+  options: {
+    flag?: boolean;
+    terminalEnergy?: number;
+    terminalReserve?: number;
+  } = {},
+): {
+  room: Room;
+  terminal: StructureTerminal;
+  spawn: StructureSpawn;
+  creep: Creep;
+} {
+  clearMarketActionArbiterForTest();
+  clearMarketSaleExposureReservationsForTest();
+  const room = createRoom(roomName);
+  Object.assign(room, {
+    energyAvailable: 300,
+    energyCapacityAvailable: 5_600,
+  });
+  const terminalEnergy = options.terminalEnergy ?? 42_209;
+  const terminal = room.terminal as StructureTerminal;
+  Object.assign(terminal, {
+    room,
+    pos: { x: 15, y: 28, roomName },
+    send: jest.fn(() => OK),
+    store: {
+      getUsedCapacity: (resource?: ResourceConstant) =>
+        resource === undefined || resource === RESOURCE_ENERGY
+          ? terminalEnergy
+          : 0,
+      getFreeCapacity: () => 300_000 - terminalEnergy,
+    },
+  });
+  const spawn = {
+    id: `${roomName}-bootstrap-spawn`,
+    structureType: STRUCTURE_SPAWN,
+    room,
+    pos: { x: 16, y: 28, roomName },
+    store: {
+      getUsedCapacity: () => 0,
+      getFreeCapacity: () => 300,
+    },
+  } as unknown as StructureSpawn;
+  const creep = createCreep(room);
+  Game.creeps[creep.name] = creep;
+  Memory.cfg = {
+    energyPickup: {
+      terminalBootstrapRecoveryRooms: options.flag === false
+        ? {}
+        : { [roomName]: true },
+    },
+    resourceControl: {
+      rooms: {
+        [roomName]: {
+          terminalEnergyReserve: options.terminalReserve ?? 20_000,
+        },
+      },
+    },
+  };
+  Memory.runtime = {};
+  getEnergyStoreTarget.mockReturnValue(spawn);
+  getPickupTargetEnergyAmount.mockImplementation(
+    (target: AnyStoreStructure, availability?: { terminalEnergyReserve?: number }) => {
+      if (target !== terminal) return 0;
+      return Math.max(
+        0,
+        terminalEnergy - (availability?.terminalEnergyReserve ?? 50_000),
+      );
+    },
+  );
+  getReservedPickupTarget.mockReturnValue(null);
+  reservePickupTarget.mockReturnValue(true);
+  (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn(
+    (id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === spawn.id) return spawn;
+      return null;
+    },
+  ) as Game["getObjectById"];
+
+  return { room, terminal, spawn, creep };
+}
+
+function installNukerEnergyClaimScenario(
+  roomName: string,
+  taskAmount = 1_000,
+): {
+  room: Room;
+  storage: StructureStorage;
+  nuker: StructureNuker;
+  taskId: string;
+} {
+  const room = createRoom(roomName);
+  const storage = room.storage as StructureStorage;
+  Object.assign(storage, {
+    room,
+    pos: { x: 10, y: 10, roomName },
+    store: {
+      getUsedCapacity: (resource?: ResourceConstant) =>
+        resource === RESOURCE_ENERGY ? 5_000 : 0,
+      getFreeCapacity: () => 100_000,
+    },
+  });
+  const nuker = {
+    id: `${roomName}-claim-nuker`,
+    structureType: STRUCTURE_NUKER,
+    pos: { x: 11, y: 10, roomName },
+    store: {
+      getUsedCapacity: () => 0,
+      getFreeCapacity: (resource?: ResourceConstant) =>
+        resource === RESOURCE_ENERGY ? 300_000 : 0,
+    },
+  } as unknown as StructureNuker;
+  const taskId = `${roomName}-nuker-energy-claim`;
+  (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+    if (id === storage.id) return storage;
+    if (id === nuker.id) return nuker;
+    return null;
+  }) as unknown as Game["getObjectById"];
+  replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+    id: taskId,
+    type: "nuker_supply",
+    priority: 0,
+    steps: [{
+      id: `${roomName}-energy:storage->nuker`,
+      resource: RESOURCE_ENERGY,
+      fromKind: "storage",
+      toKind: "nuker",
+      fromId: storage.id,
+      toId: nuker.id,
+      amount: taskAmount,
+    }],
+  }]);
+  getEnergyStoreTarget.mockReturnValue(null);
+  return { room, storage, nuker, taskId };
 }
 
 function installTerminalKeaniumPickupScenario(
@@ -202,6 +367,7 @@ describe("carrierRole mineral hauling", () => {
   beforeEach(() => {
     clearCarrierTaskBoardForTest();
     clearCreepAssignmentStateForTest();
+    clearLocalCarrierDestinationCapacityForTest();
     resetRuntimeServices();
     Game.time += 1;
     Memory.rooms = {};
@@ -211,6 +377,8 @@ describe("carrierRole mineral hauling", () => {
     isDroppedResourceTarget.mockReturnValue(false);
     getPickupTargetEnergyAmount.mockReset();
     getPickupTargetEnergyAmount.mockReturnValue(0);
+    getPickupReservationClaimAmount.mockReset();
+    getPickupReservationClaimAmount.mockReturnValue(800);
     getReservedPickupTarget.mockReset();
     getReservedPickupTarget.mockReturnValue(null);
     releasePickupReservation.mockReset();
@@ -223,6 +391,202 @@ describe("carrierRole mineral hauling", () => {
     getProtoStorageContainer.mockReturnValue(null);
     getProtoControllerLinkContainer.mockReset();
     getProtoControllerLinkContainer.mockReturnValue(null);
+  });
+
+  it("keeps the 50k Terminal pickup reserve when bootstrap recovery is not flagged", () => {
+    const { creep, terminal } = installTerminalBootstrapEnergyScenario(
+      "W1N1",
+      { flag: false },
+    );
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_ENERGY,
+      expect.any(Number),
+    );
+    expect(getPickupTargetEnergyAmount).not.toHaveBeenCalledWith(
+      terminal,
+      { terminalEnergyReserve: 20_000 },
+    );
+  });
+
+  it("keeps the legacy three-argument reservation and 50k claim cap on an unflagged Terminal", () => {
+    const { creep, terminal } = installTerminalBootstrapEnergyScenario(
+      "W1N1",
+      { flag: false, terminalEnergy: 50_600 },
+    );
+    useActualEnergyPickupReservationsForTest();
+
+    carrierRole().source?.(creep);
+
+    expect(reservePickupTarget).toHaveBeenCalledWith(
+      creep,
+      terminal,
+      600,
+    );
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_ENERGY,
+      600,
+    );
+  });
+
+  it("lets a manual emergency carrier whose config was deleted fall back to its physical flagged room", () => {
+    const { creep, terminal } = installTerminalBootstrapEnergyScenario("W1N1");
+    creep.memory.configName = "W1N1:manual:maxcarrier:expired";
+
+    expect(Memory.data?.creepConfigs?.[creep.memory.configName]).toBeUndefined();
+
+    carrierRole().source?.(creep);
+
+    expect(reservePickupTarget).toHaveBeenCalledWith(
+      creep,
+      terminal,
+      800,
+      { terminalEnergyReserve: 20_000 },
+    );
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_ENERGY,
+      800,
+    );
+    expect(Memory.runtime?.energyPickup?.terminalBootstrapRecovery?.W1N1)
+      .toEqual(expect.objectContaining({ lastRecoveryPickupAt: Game.time }));
+  });
+
+  it("caps a flagged Terminal pickup exactly at the ResourceControl reserve floor", () => {
+    const { creep, terminal } = installTerminalBootstrapEnergyScenario(
+      "W1N1",
+      { terminalEnergy: 20_500 },
+    );
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_ENERGY,
+      500,
+    );
+  });
+
+  it("caps two same-tick recovery withdraw intents to their actual 800/200 claims without market exposure", () => {
+    const {
+      room,
+      terminal,
+      creep: first,
+    } = installTerminalBootstrapEnergyScenario("W1N1", {
+      terminalEnergy: 21_000,
+      terminalReserve: 20_000,
+    });
+    first.name = "carrier-1";
+    first.memory.configName = "W1N1:manual:maxcarrier:1";
+    const second = createCreep(room);
+    second.name = "carrier-2";
+    second.memory.configName = "W1N1:manual:maxcarrier:2";
+    Game.creeps = {
+      [first.name]: first,
+      [second.name]: second,
+    };
+    useActualEnergyPickupReservationsForTest();
+
+    carrierRole().source?.(first);
+    carrierRole().source?.(second);
+
+    const firstAmount = (first.withdraw as jest.Mock).mock.calls[0]?.[2];
+    const secondAmount = (second.withdraw as jest.Mock).mock.calls[0]?.[2];
+    expect([firstAmount, secondAmount]).toEqual([800, 200]);
+    expect(firstAmount + secondAmount).toBeLessThanOrEqual(1_000);
+    expect(Memory.data?.marketSaleAutomation).toBeUndefined();
+  });
+
+  it("does not use flagged bootstrap Energy protected by market exposure", () => {
+    const { room, creep, terminal } = installTerminalBootstrapEnergyScenario("W1N1");
+    Memory.data = {
+      marketSaleAutomation: {
+        managedOrders: {
+          protectedEnergy: {
+            roomName: room.name,
+            resourceType: RESOURCE_ENERGY,
+            remainingExposure: 42_209,
+          },
+        },
+      },
+    } as unknown as Memory["data"];
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_ENERGY,
+      expect.any(Number),
+    );
+  });
+
+  it("does not withdraw flagged bootstrap Energy after a same-tick Terminal action", () => {
+    const { creep, terminal } = installTerminalBootstrapEnergyScenario("W1N1");
+    expect(executeTerminalSend({
+      terminal,
+      resourceType: RESOURCE_ENERGY,
+      amount: 1,
+      transactionCost: 0,
+      destinationRoomName: "W1N2",
+      actor: "bootstrap-action-claim-test",
+    })).toBe(OK);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_ENERGY,
+      expect.any(Number),
+    );
+  });
+
+  it("does not leak one room recovery reserve to a carrier physically in another room", () => {
+    const assigned = createRoom("W1N1");
+    const physical = installTerminalBootstrapEnergyScenario("W2N2", {
+      flag: false,
+    });
+    Memory.cfg!.energyPickup!.terminalBootstrapRecoveryRooms = {
+      [assigned.name]: true,
+    };
+    Memory.cfg!.resourceControl!.rooms = {
+      [assigned.name]: { terminalEnergyReserve: 20_000 },
+    };
+    const configName = `${assigned.name}:carrier:0`;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "carrier",
+          args: [],
+          roomName: assigned.name,
+        },
+      },
+    };
+    physical.creep.memory.configName = configName;
+    const assignedSpawn = {
+      ...physical.spawn,
+      id: `${assigned.name}-spawn`,
+      room: assigned,
+      pos: { x: 10, y: 10, roomName: assigned.name },
+    } as unknown as StructureSpawn;
+    getEnergyStoreTarget.mockReturnValue(assignedSpawn);
+
+    carrierRole().source?.(physical.creep);
+
+    expect(physical.creep.withdraw).not.toHaveBeenCalledWith(
+      physical.terminal,
+      RESOURCE_ENERGY,
+      expect.any(Number),
+    );
+    expect(reservePickupTarget).not.toHaveBeenCalledWith(
+      physical.creep,
+      physical.terminal,
+      expect.any(Number),
+      { terminalEnergyReserve: 20_000 },
+    );
   });
 
   it("picks PowerSpawn supply before non-critical generic energy demand", () => {
@@ -477,6 +841,585 @@ describe("carrierRole mineral hauling", () => {
     );
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
       .toBe("power-spawn-before-nuker-task");
+  });
+
+  it.each([1, -1])(
+    "keeps a normal board task at priority %i ahead of Nuker Energy and replaces its stale assignment",
+    (normalPriority) => {
+      const room = createRoom(`W1N2N${normalPriority}`);
+      const storage = room.storage as StructureStorage;
+      Object.assign(storage, {
+        pos: { x: 10, y: 10, roomName: room.name },
+        store: {
+          getUsedCapacity: (resource?: ResourceConstant) => {
+            if (resource === RESOURCE_ENERGY) return 5_000;
+            if (resource === RESOURCE_UTRIUM) return 500;
+            return 0;
+          },
+          getFreeCapacity: () => 100_000,
+        },
+      });
+      const factory = {
+        id: `normal-factory-${normalPriority}`,
+        structureType: STRUCTURE_FACTORY,
+        pos: { x: 11, y: 10, roomName: room.name },
+        store: {
+          getUsedCapacity: () => 0,
+          getFreeCapacity: () => 50_000,
+        },
+      } as unknown as StructureFactory;
+      const nuker = {
+        id: `background-nuker-${normalPriority}`,
+        structureType: STRUCTURE_NUKER,
+        pos: { x: 12, y: 10, roomName: room.name },
+        store: {
+          getUsedCapacity: () => 0,
+          getFreeCapacity: (resource?: ResourceConstant) =>
+            resource === RESOURCE_ENERGY ? 300_000 : 0,
+        },
+      } as unknown as StructureNuker;
+      const creep = createCreep(room);
+      getEnergyStoreTarget.mockReturnValue(null);
+      (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+        if (id === storage.id) return storage;
+        if (id === factory.id) return factory;
+        if (id === nuker.id) return nuker;
+        return null;
+      }) as unknown as Game["getObjectById"];
+      replaceCarrierTasksForProducerRoom("normal-test", room.name, [{
+        id: `normal-task-${normalPriority}`,
+        type: "factory_supply",
+        priority: normalPriority,
+        steps: [{
+          id: `U:storage->factory-${normalPriority}`,
+          resource: RESOURCE_UTRIUM,
+          fromKind: "storage",
+          toKind: "factory",
+          fromId: storage.id,
+          toId: factory.id,
+          amount: 500,
+        }],
+      }]);
+      replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+        id: `nuker-energy-task-${normalPriority}`,
+        type: "nuker_supply",
+        priority: 0,
+        steps: [{
+          id: `energy:storage->nuker-${normalPriority}`,
+          resource: RESOURCE_ENERGY,
+          fromKind: "storage",
+          toKind: "nuker",
+          fromId: storage.id,
+          toId: nuker.id,
+          amount: 1_000,
+        }],
+      }]);
+      ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId =
+        `nuker-energy-task-${normalPriority}`;
+
+      carrierRole().source?.(creep);
+
+      expect(creep.withdraw).toHaveBeenCalledWith(
+        storage,
+        RESOURCE_UTRIUM,
+        500,
+      );
+      expect(creep.withdraw).not.toHaveBeenCalledWith(
+        storage,
+        RESOURCE_ENERGY,
+        expect.any(Number),
+      );
+      expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+        .toBe(`normal-task-${normalPriority}`);
+    },
+  );
+
+  it.each([
+    ["critical Spawn", STRUCTURE_SPAWN],
+    ["ordinary Lab", STRUCTURE_LAB],
+  ] as const)(
+    "clears stale Nuker assignment when %s Energy demand preempts it",
+    (_label, structureType) => {
+      const room = createRoom("W1N2NEnergyDemand");
+      const storage = room.storage as StructureStorage;
+      Object.assign(storage, {
+        pos: { x: 10, y: 10, roomName: room.name },
+        store: {
+          getUsedCapacity: (resource?: ResourceConstant) =>
+            resource === RESOURCE_ENERGY ? 5_000 : 0,
+          getFreeCapacity: () => 100_000,
+        },
+      });
+      const container = {
+        id: `normal-energy-source-${structureType}`,
+        structureType: STRUCTURE_CONTAINER,
+        room,
+        pos: { x: 11, y: 10, roomName: room.name },
+        store: {
+          getUsedCapacity: (resource?: ResourceConstant) =>
+            resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+          getFreeCapacity: () => 2_000,
+        },
+      } as unknown as StructureContainer;
+      const energyTarget = {
+        id: `normal-energy-target-${structureType}`,
+        structureType,
+        pos: { x: 12, y: 10, roomName: room.name },
+        store: {
+          getUsedCapacity: () => 0,
+          getFreeCapacity: () => 1_000,
+        },
+      } as unknown as AnyStoreStructure;
+      const nuker = {
+        id: `background-nuker-energy-demand-${structureType}`,
+        structureType: STRUCTURE_NUKER,
+        pos: { x: 13, y: 10, roomName: room.name },
+        store: {
+          getUsedCapacity: () => 0,
+          getFreeCapacity: (resource?: ResourceConstant) =>
+            resource === RESOURCE_ENERGY ? 300_000 : 0,
+        },
+      } as unknown as StructureNuker;
+      let carriedEnergy = 0;
+      const creep = {
+        ...createCreep(room),
+        store: {
+          getUsedCapacity: (resource?: ResourceConstant) =>
+            resource === undefined || resource === RESOURCE_ENERGY
+              ? carriedEnergy
+              : 0,
+          getFreeCapacity: () => 800 - carriedEnergy,
+        },
+        withdraw: jest.fn((target: AnyStoreStructure, resource: ResourceConstant) => {
+          if (target === container && resource === RESOURCE_ENERGY) {
+            carriedEnergy = 500;
+          }
+          return OK;
+        }),
+        transfer: jest.fn(() => {
+          carriedEnergy = 0;
+          return OK;
+        }),
+      } as unknown as Creep;
+      getEnergyStoreTarget.mockReturnValue(energyTarget);
+      getReservedPickupTarget.mockReturnValue(container);
+      getPickupTargetEnergyAmount.mockImplementation((target: unknown) =>
+        target === container ? 500 : 0,
+      );
+      reservePickupTarget.mockReturnValue(true);
+      (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+        if (id === storage.id) return storage;
+        if (id === container.id) return container;
+        if (id === energyTarget.id) return energyTarget;
+        if (id === nuker.id) return nuker;
+        return null;
+      }) as unknown as Game["getObjectById"];
+      const nukerTaskId = `stale-nuker-before-${structureType}`;
+      replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+        id: nukerTaskId,
+        type: "nuker_supply",
+        priority: 0,
+        steps: [{
+          id: `energy:storage->nuker-demand-${structureType}`,
+          resource: RESOURCE_ENERGY,
+          fromKind: "storage",
+          toKind: "nuker",
+          fromId: storage.id,
+          toId: nuker.id,
+          amount: 1_000,
+        }],
+      }]);
+      ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = nukerTaskId;
+
+      expect(carrierRole().source?.(creep)).toBe(true);
+
+      expect(creep.withdraw).toHaveBeenCalledWith(container, RESOURCE_ENERGY);
+      expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+        .toBeUndefined();
+
+      Game.time += 1;
+      carrierRole().target(creep);
+
+      expect(creep.transfer).toHaveBeenCalledWith(energyTarget, RESOURCE_ENERGY);
+      expect(creep.transfer).not.toHaveBeenCalledWith(nuker, RESOURCE_ENERGY);
+    },
+  );
+
+  it("clears stale Nuker assignment before dead-store work so carried Energy follows normal delivery", () => {
+    const room = createRoom("W1N2NDead");
+    const storage = room.storage as StructureStorage;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5_000 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const nuker = {
+      id: "background-nuker-dead-store",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 300_000 : 0,
+      },
+    } as unknown as StructureNuker;
+    const tower = {
+      id: "normal-tower-after-dead-store",
+      structureType: STRUCTURE_TOWER,
+      pos: { x: 13, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureTower;
+    const tombstone = {
+      id: "energy-tombstone-before-nuker",
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        [RESOURCE_ENERGY]: 500,
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+      },
+    } as unknown as Tombstone;
+    let carriedEnergy = 0;
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY
+            ? carriedEnergy
+            : 0,
+        getFreeCapacity: () => 800 - carriedEnergy,
+      },
+      withdraw: jest.fn((target: Tombstone | AnyStoreStructure, resource: ResourceConstant) => {
+        if (target === tombstone && resource === RESOURCE_ENERGY) {
+          carriedEnergy = 500;
+        }
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        carriedEnergy = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    room.find = jest.fn((type: FindConstant) =>
+      type === FIND_TOMBSTONES ? [tombstone] : [],
+    ) as unknown as Room["find"];
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === nuker.id) return nuker;
+      if (id === tower.id) return tower;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "stale-nuker-energy-before-dead-store",
+      type: "nuker_supply",
+      priority: 0,
+      steps: [{
+        id: "energy:storage->nuker-dead-store",
+        resource: RESOURCE_ENERGY,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 1_000,
+      }],
+    }]);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId =
+      "stale-nuker-energy-before-dead-store";
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(tombstone, RESOURCE_ENERGY);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+
+    getEnergyStoreTarget.mockReturnValue(tower);
+    Game.time += 1;
+    carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(tower, RESOURCE_ENERGY);
+    expect(creep.transfer).not.toHaveBeenCalledWith(
+      nuker,
+      RESOURCE_ENERGY,
+    );
+  });
+
+  it("picks Nuker Energy when all higher logistics stages are idle", () => {
+    const room = createRoom("W1N2NIdle");
+    const storage = room.storage as StructureStorage;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5_000 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const nuker = {
+      id: "idle-nuker-energy-target",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 300_000 : 0,
+      },
+    } as unknown as StructureNuker;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === nuker.id) return nuker;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "idle-nuker-energy-task",
+      type: "nuker_supply",
+      priority: 0,
+      steps: [{
+        id: "energy:storage->idle-nuker",
+        resource: RESOURCE_ENERGY,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 1_000,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY, 800);
+    expect(switched).toBe(true);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe("idle-nuker-energy-task");
+  });
+
+  it("caps multiple same-tick Nuker Energy pickups after task refresh", () => {
+    const { room, storage, taskId } = installNukerEnergyClaimScenario(
+      "W1N2NMultiPickup",
+    );
+    const first = {
+      ...createCreep(room),
+      name: "nuker-pickup-first",
+    } as unknown as Creep;
+    const second = {
+      ...createCreep(room),
+      name: "nuker-pickup-second",
+    } as unknown as Creep;
+    Game.creeps = {
+      [first.name]: first,
+      [second.name]: second,
+    };
+
+    carrierRole().source?.(first);
+    const currentTask = getCarrierTasksByRoom(room.name)[taskId];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: currentTask.id,
+      type: currentTask.type,
+      priority: currentTask.priority,
+      steps: currentTask.steps,
+    }]);
+    carrierRole().source?.(second);
+
+    expect(first.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_ENERGY,
+      800,
+    );
+    expect(second.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_ENERGY,
+      200,
+    );
+  });
+
+  it("releases a failed Nuker Energy pickup claim for the next Carrier", () => {
+    const { room, storage } = installNukerEnergyClaimScenario(
+      "W1N2NFailedPickup",
+    );
+    const fullCapacityStore = {
+      getUsedCapacity: () => 0,
+      getFreeCapacity: () => 1_000,
+    };
+    const failed = {
+      ...createCreep(room),
+      name: "nuker-pickup-failed",
+      store: fullCapacityStore,
+      withdraw: jest.fn(() => ERR_NOT_IN_RANGE),
+    } as unknown as Creep;
+    const retry = {
+      ...createCreep(room),
+      name: "nuker-pickup-retry",
+      store: fullCapacityStore,
+    } as unknown as Creep;
+    Game.creeps = {
+      [failed.name]: failed,
+      [retry.name]: retry,
+    };
+
+    carrierRole().source?.(failed);
+    carrierRole().source?.(retry);
+
+    expect(retry.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_ENERGY,
+      1_000,
+    );
+  });
+
+  it("shares one task budget between pickup and carried-Energy fallback", () => {
+    const { room, storage, nuker } = installNukerEnergyClaimScenario(
+      "W1N2NSharedBudget",
+    );
+    const pickupCarrier = {
+      ...createCreep(room),
+      name: "nuker-shared-pickup",
+    } as unknown as Creep;
+    const fallbackCarrier = {
+      ...createCreep(room),
+      name: "nuker-shared-fallback",
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 800 : 0,
+        getFreeCapacity: () => 0,
+      },
+    } as unknown as Creep;
+    Game.creeps = {
+      [pickupCarrier.name]: pickupCarrier,
+      [fallbackCarrier.name]: fallbackCarrier,
+    };
+
+    carrierRole().source?.(pickupCarrier);
+    carrierRole().target(fallbackCarrier);
+
+    expect(pickupCarrier.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_ENERGY,
+      800,
+    );
+    expect(fallbackCarrier.transfer).toHaveBeenCalledWith(
+      nuker,
+      RESOURCE_ENERGY,
+      200,
+    );
+  });
+
+  it("releases a failed carried-Energy fallback claim", () => {
+    const { room, nuker } = installNukerEnergyClaimScenario(
+      "W1N2NFailedFallback",
+    );
+    const carriedStore = {
+      getUsedCapacity: (resource?: ResourceConstant) =>
+        resource === undefined || resource === RESOURCE_ENERGY ? 1_000 : 0,
+      getFreeCapacity: () => 0,
+    };
+    const failed = {
+      ...createCreep(room),
+      name: "nuker-fallback-failed",
+      store: carriedStore,
+      transfer: jest.fn(() => ERR_NOT_IN_RANGE),
+    } as unknown as Creep;
+    const retry = {
+      ...createCreep(room),
+      name: "nuker-fallback-retry",
+      store: carriedStore,
+    } as unknown as Creep;
+    Game.creeps = {
+      [failed.name]: failed,
+      [retry.name]: retry,
+    };
+
+    carrierRole().target(failed);
+    carrierRole().target(retry);
+
+    expect(retry.transfer).toHaveBeenCalledWith(
+      nuker,
+      RESOURCE_ENERGY,
+      1_000,
+    );
+  });
+
+  it("delivers accepted Nuker Energy from its pickup snapshot after task prune", () => {
+    const room = createRoom("W1N2NSnapshot");
+    const storage = room.storage as StructureStorage;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5_000 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const nuker = {
+      id: "snapshot-nuker-energy-target",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 300_000 : 0,
+      },
+    } as unknown as StructureNuker;
+    let carriedEnergy = 0;
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY
+            ? carriedEnergy
+            : 0,
+        getFreeCapacity: () => 800 - carriedEnergy,
+      },
+      withdraw: jest.fn(() => {
+        carriedEnergy = 800;
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        carriedEnergy = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === nuker.id) return nuker;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "snapshot-nuker-energy-task",
+      type: "nuker_supply",
+      priority: 0,
+      steps: [{
+        id: "energy:storage->snapshot-nuker",
+        resource: RESOURCE_ENERGY,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 1_000,
+      }],
+    }]);
+
+    carrierRole().source?.(creep);
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, []);
+    Game.time += 1;
+    carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(
+      nuker,
+      RESOURCE_ENERGY,
+    );
+    expect(getCreepAssignmentState(creep.name)).not.toEqual(
+      expect.objectContaining({
+        synthesisCarrierPendingTaskType: expect.any(String),
+      }),
+    );
   });
 
   it("delivers accepted Nuker cargo from the pickup snapshot after task refresh", () => {
@@ -909,6 +1852,608 @@ describe("carrierRole mineral hauling", () => {
     carrierRole().target(creep);
 
     expect(moveToTarget).toHaveBeenCalledWith(creep, storage);
+    expect(getEnergyStoreTarget).not.toHaveBeenCalled();
+  });
+
+  it("caps terminal_offload pickup by shared Storage capacity and step claims across carriers", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const room = createRoom("W4N7");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    Object.assign(terminal, {
+      room,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_HYDROGEN ? 2_000 : 0,
+        getFreeCapacity: () => 10_000,
+      },
+    });
+    Object.assign(storage, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 999_500,
+        getFreeCapacity: () => 500,
+      },
+    });
+    const first = {
+      ...createCreep(room),
+      name: "carrier-offload-first",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    const second = {
+      ...createCreep(room),
+      name: "carrier-offload-second",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    Game.creeps[first.name] = first;
+    Game.creeps[second.name] = second;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("test-offload-capacity", room.name, [{
+      id: "terminal-offload-capacity-test",
+      type: "terminal_offload",
+      priority: 90,
+      steps: [{
+        id: "H:terminal->storage-capacity",
+        resource: RESOURCE_HYDROGEN,
+        fromKind: "terminal",
+        toKind: "storage",
+        fromId: terminal.id,
+        toId: storage.id,
+        amount: 800,
+      }],
+    }]);
+
+    carrierRole().source?.(first);
+    carrierRole().source?.(second);
+
+    expect(first.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_HYDROGEN,
+      500,
+    );
+    expect(second.withdraw).not.toHaveBeenCalled();
+    expect(getCreepAssignmentState(first.name)).toMatchObject({
+      synthesisCarrierPendingToId: storage.id,
+      synthesisCarrierPendingResource: RESOURCE_HYDROGEN,
+    });
+  });
+
+  it("atomically shrinks accepted offload snapshot transfers to 600 + 400 + 0", () => {
+    const room = createRoom("W4N13");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    Object.assign(terminal, {
+      pos: { x: 10, y: 10, roomName: room.name },
+    });
+    Object.assign(storage, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 999_000,
+        getFreeCapacity: () => 1_000,
+      },
+    });
+    const createSnapshotCarrier = (name: string): Creep => ({
+      ...createCreep(room),
+      name,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_HYDROGEN ? 600 : 0,
+        getFreeCapacity: () => 200,
+      },
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep);
+    const first = createSnapshotCarrier("carrier-offload-snapshot-first");
+    const second = createSnapshotCarrier("carrier-offload-snapshot-second");
+    const third = createSnapshotCarrier("carrier-offload-snapshot-third");
+    Game.creeps = {
+      [first.name]: first,
+      [second.name]: second,
+      [third.name]: third,
+    };
+    for (const carrier of [first, second, third]) {
+      Object.assign(ensureCreepAssignmentState(carrier.name), {
+        synthesisCarrierPendingFromId: terminal.id,
+        synthesisCarrierPendingToId: storage.id,
+        synthesisCarrierPendingResource: RESOURCE_HYDROGEN,
+        synthesisCarrierPendingTaskType: "terminal_offload",
+      });
+    }
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn(
+      (id: string) => {
+        if (id === terminal.id) return terminal;
+        if (id === storage.id) return storage;
+        return null;
+      },
+    ) as unknown as Game["getObjectById"];
+
+    carrierRole().target(first);
+    carrierRole().target(second);
+    carrierRole().target(third);
+
+    expect(first.transfer).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_HYDROGEN,
+    );
+    expect(second.transfer).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_HYDROGEN,
+      400,
+    );
+    expect(third.transfer).not.toHaveBeenCalled();
+    expect(getCreepAssignmentState(second.name)).toEqual(
+      expect.objectContaining({
+        synthesisCarrierPendingToId: storage.id,
+        synthesisCarrierPendingResource: RESOURCE_HYDROGEN,
+        synthesisCarrierPendingTaskType: "terminal_offload",
+      }),
+    );
+    expect(getCreepAssignmentState(third.name)).toEqual(
+      expect.objectContaining({
+        synthesisCarrierPendingToId: storage.id,
+        synthesisCarrierPendingTaskType: "terminal_offload",
+      }),
+    );
+  });
+
+  it("releases a failed accepted offload snapshot transfer slice", () => {
+    const room = createRoom("W4N14");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    Object.assign(terminal, {
+      pos: { x: 10, y: 10, roomName: room.name },
+    });
+    Object.assign(storage, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 999_400,
+        getFreeCapacity: () => 600,
+      },
+    });
+    const createSnapshotCarrier = (
+      name: string,
+      transferCode: ScreepsReturnCode,
+    ): Creep => ({
+      ...createCreep(room),
+      name,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_HYDROGEN ? 600 : 0,
+        getFreeCapacity: () => 200,
+      },
+      transfer: jest.fn(() => transferCode),
+    } as unknown as Creep);
+    const failed = createSnapshotCarrier(
+      "carrier-offload-snapshot-failed",
+      ERR_NOT_IN_RANGE,
+    );
+    const next = createSnapshotCarrier(
+      "carrier-offload-snapshot-after-failure",
+      OK,
+    );
+    Game.creeps = { [failed.name]: failed, [next.name]: next };
+    for (const carrier of [failed, next]) {
+      Object.assign(ensureCreepAssignmentState(carrier.name), {
+        synthesisCarrierPendingFromId: terminal.id,
+        synthesisCarrierPendingToId: storage.id,
+        synthesisCarrierPendingResource: RESOURCE_HYDROGEN,
+        synthesisCarrierPendingTaskType: "terminal_offload",
+      });
+    }
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn(
+      (id: string) => {
+        if (id === terminal.id) return terminal;
+        if (id === storage.id) return storage;
+        return null;
+      },
+    ) as unknown as Game["getObjectById"];
+
+    carrierRole().target(failed);
+    carrierRole().target(next);
+
+    expect(moveToTarget).toHaveBeenCalledWith(failed, storage);
+    expect(next.transfer).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_HYDROGEN,
+    );
+  });
+
+  it("keeps accepted offload cargo bound to a full Storage after board refresh", () => {
+    const room = createRoom("W4N8");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    Object.assign(terminal, {
+      pos: { x: 10, y: 10, roomName: room.name },
+    });
+    Object.assign(storage, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 1_000_000,
+        getFreeCapacity: () => 0,
+      },
+    });
+    const carrier = {
+      ...createCreep(room),
+      name: "carrier-offload-committed",
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_HYDROGEN
+            ? 500
+            : 0,
+        getFreeCapacity: () => 300,
+      },
+      transfer: jest.fn(() => ERR_FULL),
+    } as unknown as Creep;
+    Object.assign(ensureCreepAssignmentState(carrier.name), {
+      synthesisCarrierPendingFromId: terminal.id,
+      synthesisCarrierPendingToId: storage.id,
+      synthesisCarrierPendingResource: RESOURCE_HYDROGEN,
+    });
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    getEnergyStoreTarget.mockReturnValue({
+      id: "unrelated-energy-target",
+    } as unknown as AnyStoreStructure);
+
+    expect(carrierRole().target(carrier)).toBe(false);
+
+    expect(carrier.transfer).not.toHaveBeenCalled();
+    expect(getCreepAssignmentState(carrier.name)).toMatchObject({
+      synthesisCarrierPendingFromId: terminal.id,
+      synthesisCarrierPendingToId: storage.id,
+      synthesisCarrierPendingResource: RESOURCE_HYDROGEN,
+    });
+    expect(getEnergyStoreTarget).not.toHaveBeenCalled();
+  });
+
+  it("shares Storage capacity between storage-only Energy return and terminal offload pickup", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const room = createRoom("W4N9");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    Object.assign(terminal, {
+      room,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_HYDROGEN ? 1_000 : 0,
+        getFreeCapacity: () => 10_000,
+      },
+    });
+    Object.assign(storage, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 999_500,
+        getFreeCapacity: () => 500,
+      },
+    });
+    const storageOnlyCarrier = {
+      ...createCreep(room),
+      name: "carrier-storage-only-capacity",
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 300 : 0,
+        getFreeCapacity: () => 500,
+      },
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep;
+    const offloadCarrier = {
+      ...createCreep(room),
+      name: "carrier-offload-after-storage-only",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    Game.creeps = {
+      [storageOnlyCarrier.name]: storageOnlyCarrier,
+      [offloadCarrier.name]: offloadCarrier,
+    };
+    Object.assign(ensureCreepAssignmentState(storageOnlyCarrier.name), {
+      carrierStorageOnlyMode: true,
+      carrierPlanMode: "deliver",
+      carrierPlanTargetKind: "structure",
+      carrierPlanTargetId: storage.id,
+    });
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("test-storage-only-capacity", room.name, [{
+      id: "terminal-offload-after-storage-only",
+      type: "terminal_offload",
+      priority: 90,
+      steps: [{
+        id: "H:terminal->storage-after-energy",
+        resource: RESOURCE_HYDROGEN,
+        fromKind: "terminal",
+        toKind: "storage",
+        fromId: terminal.id,
+        toId: storage.id,
+        amount: 500,
+      }],
+    }]);
+
+    carrierRole().target(storageOnlyCarrier);
+    carrierRole().source?.(offloadCarrier);
+
+    expect(storageOnlyCarrier.transfer).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_ENERGY,
+    );
+    expect(offloadCarrier.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_HYDROGEN,
+      200,
+    );
+  });
+
+  it("shares Storage capacity across terminal offload and no-task non-Energy cleanup", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const room = createRoom("W4N10");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    Object.assign(terminal, {
+      room,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_HYDROGEN ? 1_000 : 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_UTRIUM ? 0 : 10_000,
+      },
+    });
+    Object.assign(storage, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 999_500,
+        getFreeCapacity: () => 500,
+      },
+    });
+    const offloadCarrier = {
+      ...createCreep(room),
+      name: "carrier-offload-before-cleanup",
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300,
+      },
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    const cleanupCarrier = {
+      ...createCreep(room),
+      name: "carrier-no-task-cleanup-capacity",
+      store: {
+        [RESOURCE_UTRIUM]: 400,
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_UTRIUM ? 400 : 0,
+        getFreeCapacity: () => 400,
+      },
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep;
+    Game.creeps = {
+      [offloadCarrier.name]: offloadCarrier,
+      [cleanupCarrier.name]: cleanupCarrier,
+    };
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("test-cleanup-capacity", room.name, [{
+      id: "terminal-offload-before-cleanup",
+      type: "terminal_offload",
+      priority: 90,
+      steps: [{
+        id: "H:terminal->storage-before-U",
+        resource: RESOURCE_HYDROGEN,
+        fromKind: "terminal",
+        toKind: "storage",
+        fromId: terminal.id,
+        toId: storage.id,
+        amount: 300,
+      }],
+    }]);
+
+    carrierRole().source?.(offloadCarrier);
+    carrierRole().target(cleanupCarrier);
+
+    expect(offloadCarrier.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_HYDROGEN,
+      300,
+    );
+    expect(cleanupCarrier.transfer).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_UTRIUM,
+      200,
+    );
+  });
+
+  it("releases a failed storage-only destination claim for terminal offload", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const room = createRoom("W4N11");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    Object.assign(terminal, {
+      room,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_HYDROGEN ? 1_000 : 0,
+        getFreeCapacity: () => 10_000,
+      },
+    });
+    Object.assign(storage, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 999_500,
+        getFreeCapacity: () => 500,
+      },
+    });
+    const failedCarrier = {
+      ...createCreep(room),
+      name: "carrier-storage-only-failed-claim",
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+        getFreeCapacity: () => 300,
+      },
+      transfer: jest.fn(() => ERR_NOT_IN_RANGE),
+    } as unknown as Creep;
+    const offloadCarrier = {
+      ...createCreep(room),
+      name: "carrier-offload-after-failed-claim",
+      withdraw: jest.fn(() => OK),
+    } as unknown as Creep;
+    const throwingCarrier = {
+      ...createCreep(room),
+      name: "carrier-storage-only-throwing-claim",
+      store: failedCarrier.store,
+      transfer: jest.fn(() => {
+        throw new Error("storage transfer failed");
+      }),
+    } as unknown as Creep;
+    Game.creeps = {
+      [failedCarrier.name]: failedCarrier,
+      [throwingCarrier.name]: throwingCarrier,
+      [offloadCarrier.name]: offloadCarrier,
+    };
+    ensureCreepAssignmentState(failedCarrier.name).carrierStorageOnlyMode = true;
+    ensureCreepAssignmentState(throwingCarrier.name).carrierStorageOnlyMode = true;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return terminal;
+      if (id === storage.id) return storage;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("test-failed-direct-capacity", room.name, [{
+      id: "terminal-offload-after-failed-direct",
+      type: "terminal_offload",
+      priority: 90,
+      steps: [{
+        id: "H:terminal->storage-after-failed-direct",
+        resource: RESOURCE_HYDROGEN,
+        fromKind: "terminal",
+        toKind: "storage",
+        fromId: terminal.id,
+        toId: storage.id,
+        amount: 500,
+      }],
+    }]);
+
+    carrierRole().target(failedCarrier);
+    expect(() => carrierRole().target(throwingCarrier)).toThrow(
+      "storage transfer failed",
+    );
+    carrierRole().source?.(offloadCarrier);
+
+    expect(moveToTarget).toHaveBeenCalledWith(failedCarrier, storage);
+    expect(offloadCarrier.withdraw).toHaveBeenCalledWith(
+      terminal,
+      RESOURCE_HYDROGEN,
+      500,
+    );
+  });
+
+  it("keeps accepted offload Energy bound when the source Terminal disappears", () => {
+    clearMarketActionArbiterForTest();
+    clearMarketSaleExposureReservationsForTest();
+    const room = createRoom("W4N12");
+    const terminal = room.terminal as StructureTerminal;
+    const storage = room.storage as StructureStorage;
+    let carriedEnergy = 0;
+    let storageFree = 500;
+    let sourceVisible = true;
+    Object.assign(terminal, {
+      room,
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 1_000 : 0,
+        getFreeCapacity: () => 10_000,
+      },
+    });
+    Object.assign(storage, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 1_000_000 - storageFree,
+        getFreeCapacity: () => storageFree,
+      },
+    });
+    const carrier = {
+      ...createCreep(room),
+      name: "carrier-offload-source-disappeared",
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY
+            ? carriedEnergy
+            : 0,
+        getFreeCapacity: () => 500 - carriedEnergy,
+      },
+      withdraw: jest.fn(() => {
+        carriedEnergy = 500;
+        return OK;
+      }),
+      transfer: jest.fn(() => ERR_FULL),
+    } as unknown as Creep;
+    Game.creeps = { [carrier.name]: carrier };
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === terminal.id) return sourceVisible ? terminal : null;
+      if (id === storage.id) return storage;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("test-offload-provenance", room.name, [{
+      id: "terminal-offload-source-disappeared",
+      type: "terminal_offload",
+      priority: 90,
+      steps: [{
+        id: "energy:terminal->storage-source-disappeared",
+        resource: RESOURCE_ENERGY,
+        fromKind: "terminal",
+        toKind: "storage",
+        fromId: terminal.id,
+        toId: storage.id,
+        amount: 500,
+      }],
+    }]);
+
+    carrierRole().source?.(carrier);
+    expect(getCreepAssignmentState(carrier.name)).toEqual(
+      expect.objectContaining({
+        synthesisCarrierPendingTaskType: "terminal_offload",
+      }),
+    );
+
+    replaceCarrierTasksForProducerRoom("test-offload-provenance", room.name, []);
+    sourceVisible = false;
+    storageFree = 0;
+    getEnergyStoreTarget.mockClear();
+    getEnergyStoreTarget.mockReturnValue({
+      id: "unrelated-energy-target-after-source-loss",
+    } as unknown as AnyStoreStructure);
+
+    expect(carrierRole().target(carrier)).toBe(false);
+    expect(carrier.transfer).not.toHaveBeenCalled();
+    expect(getCreepAssignmentState(carrier.name)).toEqual(
+      expect.objectContaining({
+        synthesisCarrierPendingTaskType: "terminal_offload",
+        synthesisCarrierPendingToId: storage.id,
+        synthesisCarrierPendingResource: RESOURCE_ENERGY,
+      }),
+    );
     expect(getEnergyStoreTarget).not.toHaveBeenCalled();
   });
 

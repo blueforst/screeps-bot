@@ -82,6 +82,7 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
           roomName: "W1N1",
           storageUsedCapacity: 870000,
           storageFreeCapacity: 130000,
+          localOffloadCapacityCommitment: 6000,
           desiredTerminalFreeCapacity: 60000,
           terminalRecoveryGap: 30000,
           recoverableOffloadAmount: 10000,
