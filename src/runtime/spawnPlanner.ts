@@ -9,6 +9,7 @@ import { getSafeZone } from "@/runtime/safeZone";
 import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
 import { isRcl8MaintenanceUpgraderConfig } from "@/runtime/upgraderPolicy";
 import { getPowerBankConfigName } from "@/runtime/powerBankConstants";
+import { reconcileSpawnQueueOwnership } from "@/runtime/spawnQueueOwnership";
 import type { CreepConfig } from "@/types/system";
 
 const CARRIER_PRESPAWN_BUFFER_TICKS = 30;
@@ -952,6 +953,14 @@ export function scheduleSpawnTasks(): void {
     }
 
     queueMissingConfig(spawnsByRoom.get(config.roomName) ?? [], configName, config, planningContext);
+  }
+
+  const knownConfigNames = new Set(Object.keys(getCreepConfigService().list()));
+  for (const spawns of spawnsByRoom.values()) {
+    reconcileSpawnQueueOwnership(spawns, {
+      knownConfigNames,
+      spawningConfigNames: planningContext.spawningConfigNames,
+    });
   }
 
   for (const spawn of Array.from(spawnsByRoom.values()).flat()) {

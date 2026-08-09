@@ -867,7 +867,74 @@ describe("inactive spawn filtering", () => {
 
     scheduleSpawnTasks();
 
-    // Active spawn should receive the config despite stale entry on inactive spawn
     expect(activeSpawn.memory.spawnList).toContain(configName);
+    expect(inactiveSpawn.memory.spawnList).not.toContain(configName);
+    expect([
+      ...(inactiveSpawn.memory.spawnList ?? []),
+      ...(activeSpawn.memory.spawnList ?? []),
+    ].filter((queued) => queued === configName)).toHaveLength(1);
+  });
+
+  it("moves an existing spawnOnce request without rewriting queuedAt", () => {
+    const room = createRoom("E4N63");
+    room.controller = { my: true, level: 6 } as StructureController;
+    const inactiveSpawn = createSpawnWithActive(room, "E4N63-Spawn1", false);
+    const activeSpawn = createSpawnWithActive(room, "E4N63-Spawn2", true);
+    Game.rooms[room.name] = room;
+    Game.spawns[inactiveSpawn.name] = inactiveSpawn;
+    Game.spawns[activeSpawn.name] = activeSpawn;
+
+    const configName = `${room.name}:war:once`;
+    const queuedAt = Game.time - 25;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: {
+          role: "claimer",
+          args: [],
+          roomName: room.name,
+          spawnOnce: { queuedAt },
+        },
+      },
+    } as Memory["data"];
+    inactiveSpawn.memory.spawnList = [configName];
+
+    scheduleSpawnTasks();
+
+    expect(inactiveSpawn.memory.spawnList).not.toContain(configName);
+    expect(activeSpawn.memory.spawnList).toContain(configName);
+    expect(Memory.data.creepConfigs![configName].spawnOnce?.queuedAt).toBe(queuedAt);
+  });
+
+  it("removes every queued copy when the config is already spawning", () => {
+    const room = createRoom("E4N64");
+    room.controller = { my: true, level: 6 } as StructureController;
+    const spawnA = createSpawnWithActive(room, "E4N64-Spawn1", true);
+    const spawnB = createSpawnWithActive(room, "E4N64-Spawn2", true);
+    Game.rooms[room.name] = room;
+    Game.spawns[spawnA.name] = spawnA;
+    Game.spawns[spawnB.name] = spawnB;
+
+    const configName = `${room.name}:worker:0`;
+    Memory.data = {
+      creepConfigs: {
+        [configName]: { role: "worker", args: [], roomName: room.name },
+      },
+    } as Memory["data"];
+    Memory.creeps = {
+      "worker-spawning": { configName } as CreepMemory,
+    };
+    spawnA.spawning = {
+      name: "worker-spawning",
+      remainingTime: 3,
+      needTime: 9,
+    } as Spawning;
+    spawnA.memory.spawnList = [configName];
+    spawnB.memory.spawnList = [configName];
+
+    scheduleSpawnTasks();
+
+    expect(spawnA.memory.spawnList).not.toContain(configName);
+    expect(spawnB.memory.spawnList).not.toContain(configName);
+    expect(spawnA.spawning?.name).toBe("worker-spawning");
   });
 });
