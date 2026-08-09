@@ -1,40 +1,263 @@
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import { addNumbers } from "./main";
+import * as ts from "typescript";
 
 describe("main loop phase ordering", () => {
   const mainSrc = readFileSync(resolve(__dirname, "main.ts"), "utf-8");
+  const mainAst = ts.createSourceFile(
+    "main.ts",
+    mainSrc,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const canonicalTickPhases = [
+    ["announceDeploy", "announceDeploy"],
+    ["marketSalePreflight", "runMarketSalePreflight"],
+    ["pixelGenerator", "runPixelGenerator"],
+    ["productionMonitor", "runProductionMonitor"],
+    ["nukerControl", "runNukerControl"],
+    ["hubPlanner", "runHubPlanner"],
+    ["hubUpgradeControl", "runHubUpgradeControl"],
+    ["synthesisControl", "runSynthesisControl"],
+    ["factoryControl", "runFactoryControl"],
+    ["mineralExtraction", "runMineralExtraction"],
+    ["resourceControl", "runResourceControl"],
+    ["marketSaleAutomation", "runLiveMarketSaleAutomation"],
+    ["hubProgressAnalytics", "runHubProgressAnalytics"],
+    ["hubProgressOverlay", "renderHubProgressOverlays"],
+    ["externalTelemetryExport", "runExternalTelemetryExport"],
+    ["memoryCleanup", "runMemoryCleanup"],
+    ["portalDiscovery", "runPortalDiscovery"],
+    ["flagControl", "runFlagControl"],
+    ["crossShardSignals", "runCrossShardSignals"],
+    ["interShardControl", "runInterShardControl"],
+    ["warControl", "runWarControl"],
+    ["powerBankObserver", "runPowerBankObserver"],
+    ["powerBankHarvest", "runPowerBankHarvest"],
+    ["powerCreepControl", "runPowerCreepControl"],
+    ["powerSpawnControl", "runPowerSpawnControl"],
+    ["roomPlannerConstruction", "runRoomPlannerConstruction"],
+    ["linkControl", "runLinkControl"],
+    ["coreDefense", "runCoreDefense"],
+    ["defenseMode", "runDefenseMode"],
+    ["homeDefense", "runHomeDefense"],
+    ["towerControl", "runTowerControl"],
+    ["refreshWorkerTasks", "refreshWorkerTasks"],
+    ["bootstrapRooms", "bootstrapRooms"],
+    ["remoteMining", "runRemoteMining"],
+    ["scheduleSpawnTasks", "scheduleSpawnTasks"],
+    ["spawnWork", "<inline>"],
+    ["creepWork", "<inline>"],
+  ] as const;
 
-  /** Extract the label from each cpuProfiler.measure("label", ...) call in order. */
-  function extractMeasureOrder(src: string): string[] {
-    const re = /cpuProfiler\.measure\(\s*"([^"]+)"/g;
-    const order: string[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(src)) !== null) {
-      order.push(m[1]);
+  function getGameLoopDeclaration(): ts.FunctionDeclaration {
+    const declaration = mainAst.statements.find(
+      (statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === "gameLoop",
+    );
+    if (!declaration?.body) {
+      throw new Error("gameLoop declaration not found");
     }
-    return order;
+    return declaration;
   }
 
-  it("runs the market safety preflight before production and final planning after ResourceControl", () => {
-    const order = extractMeasureOrder(mainSrc);
-    const announceIdx = order.indexOf("announceDeploy");
-    const preflightIdx = order.indexOf("marketSalePreflight");
-    const productionMonitorIdx = order.indexOf("productionMonitor");
-    const nukerIdx = order.indexOf("nukerControl");
-    const hubIdx = order.indexOf("hubPlanner");
-    const synthesisIdx = order.indexOf("synthesisControl");
-    const factoryIdx = order.indexOf("factoryControl");
-    const resourceIdx = order.indexOf("resourceControl");
-    const marketIdx = order.indexOf("marketSaleAutomation");
+  /** Extract direct top-level cpuProfiler.measure(...) calls from gameLoop in order. */
+  function extractMeasureCalls(): Array<{
+    phase: string;
+    callback: string;
+    call: ts.CallExpression;
+  }> {
+    const calls: Array<{
+      phase: string;
+      callback: string;
+      call: ts.CallExpression;
+    }> = [];
+    for (const statement of getGameLoopDeclaration().body!.statements) {
+      if (!ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression)) {
+        continue;
+      }
+      const callee = statement.expression.expression;
+      if (
+        !ts.isPropertyAccessExpression(callee) ||
+        !ts.isIdentifier(callee.expression) ||
+        callee.expression.text !== "cpuProfiler" ||
+        callee.name.text !== "measure"
+      ) {
+        continue;
+      }
+      const phaseArgument = statement.expression.arguments[0];
+      const callbackArgument = statement.expression.arguments[1];
+      calls.push({
+        phase:
+          phaseArgument && ts.isStringLiteralLike(phaseArgument)
+            ? phaseArgument.text
+            : "<non-literal-phase>",
+        callback: ts.isIdentifier(callbackArgument)
+          ? callbackArgument.text
+          : ts.isArrowFunction(callbackArgument)
+            ? "<inline>"
+            : "<unsupported-callback>",
+        call: statement.expression,
+      });
+    }
+    return calls;
+  }
 
-    expect(preflightIdx).toBeGreaterThan(announceIdx);
-    expect(preflightIdx).toBeLessThan(hubIdx);
-    expect(nukerIdx).toBeGreaterThan(productionMonitorIdx);
-    expect(nukerIdx).toBeLessThan(hubIdx);
-    expect(preflightIdx).toBeLessThan(synthesisIdx);
-    expect(preflightIdx).toBeLessThan(factoryIdx);
-    expect(marketIdx).toBeGreaterThan(resourceIdx);
+  function containsTryStatement(node: ts.Node): boolean {
+    if (ts.isTryStatement(node)) {
+      return true;
+    }
+    let found = false;
+    node.forEachChild((child) => {
+      found ||= containsTryStatement(child);
+    });
+    return found;
+  }
+
+  function countCalls(node: ts.Node, calleeText: string): number {
+    let count = 0;
+    if (ts.isCallExpression(node) && node.expression.getText(mainAst) === calleeText) {
+      count += 1;
+    }
+    node.forEachChild((child) => {
+      count += countCalls(child, calleeText);
+    });
+    return count;
+  }
+
+  function getInlinePhaseCallback(phase: "spawnWork" | "creepWork"): ts.ArrowFunction {
+    const phaseCall = extractMeasureCalls().find((entry) => entry.phase === phase)?.call;
+    const callback = phaseCall?.arguments[1];
+    if (!callback || !ts.isArrowFunction(callback)) {
+      throw new Error(`${phase} inline callback not found`);
+    }
+    return callback;
+  }
+
+  function expectWrappedForEach(options: {
+    phase: "spawnWork" | "creepWork";
+    collection: "spawns" | "creeps";
+    entity: "spawn" | "creep";
+    wrapper: "measureRoomPhase" | "measureCreep";
+    wrapperPrefixArguments: string[];
+  }): void {
+    const callback = getInlinePhaseCallback(options.phase);
+    expect(ts.isBlock(callback.body)).toBe(true);
+    if (!ts.isBlock(callback.body)) {
+      return;
+    }
+    expect(callback.body.statements).toHaveLength(1);
+    const forEachStatement = callback.body.statements[0];
+    expect(ts.isExpressionStatement(forEachStatement)).toBe(true);
+    if (!ts.isExpressionStatement(forEachStatement)) {
+      return;
+    }
+    expect(ts.isCallExpression(forEachStatement.expression)).toBe(true);
+    if (!ts.isCallExpression(forEachStatement.expression)) {
+      return;
+    }
+    const forEachCall = forEachStatement.expression;
+    expect(forEachCall.expression.getText(mainAst)).toBe(
+      `Object.values(Game.${options.collection}).forEach`,
+    );
+    expect(forEachCall.arguments).toHaveLength(1);
+    const entityCallback = forEachCall.arguments[0];
+    expect(ts.isArrowFunction(entityCallback)).toBe(true);
+    if (!ts.isArrowFunction(entityCallback)) {
+      return;
+    }
+    expect(entityCallback.parameters.map((parameter) => parameter.name.getText(mainAst))).toEqual([
+      options.entity,
+    ]);
+    expect(ts.isBlock(entityCallback.body)).toBe(true);
+    if (!ts.isBlock(entityCallback.body)) {
+      return;
+    }
+    expect(entityCallback.body.statements).toHaveLength(1);
+    const wrapperStatement = entityCallback.body.statements[0];
+    expect(ts.isExpressionStatement(wrapperStatement)).toBe(true);
+    if (!ts.isExpressionStatement(wrapperStatement)) {
+      return;
+    }
+    expect(ts.isCallExpression(wrapperStatement.expression)).toBe(true);
+    if (!ts.isCallExpression(wrapperStatement.expression)) {
+      return;
+    }
+    const wrapperCall = wrapperStatement.expression;
+    expect(wrapperCall.expression.getText(mainAst)).toBe(`cpuProfiler.${options.wrapper}`);
+    const workCallback = wrapperCall.arguments[wrapperCall.arguments.length - 1];
+    expect(
+      wrapperCall.arguments
+        .slice(0, -1)
+        .map((argument) => argument.getText(mainAst)),
+    ).toEqual(options.wrapperPrefixArguments);
+    expect(ts.isArrowFunction(workCallback)).toBe(true);
+    if (!ts.isArrowFunction(workCallback)) {
+      return;
+    }
+    expect(workCallback.body.getText(mainAst)).toBe(`${options.entity}.work()`);
+  }
+
+  it("keeps the complete canonical phase order", () => {
+    const calls = extractMeasureCalls();
+    const phaseContract = calls.map(({ phase, callback }) => [phase, callback]);
+    const order = calls.map(({ phase }) => phase);
+
+    expect(phaseContract).toEqual(canonicalTickPhases);
+    expect(new Set(order).size).toBe(order.length);
+    expect(order).toHaveLength(37);
+  });
+
+  it("keeps one-time registrations outside and before gameLoop", () => {
+    const gameLoopIndex = mainAst.statements.indexOf(getGameLoopDeclaration());
+    const registrations = [
+      "mountAll",
+      "registerGlobalApi",
+      "registerConsoleCommands",
+      "registerProductionApi",
+    ];
+    const topLevelCalls = mainAst.statements.flatMap((statement, index) => {
+      if (
+        !ts.isExpressionStatement(statement) ||
+        !ts.isCallExpression(statement.expression) ||
+        !ts.isIdentifier(statement.expression.expression)
+      ) {
+        return [];
+      }
+      return [{ name: statement.expression.expression.text, index }];
+    });
+    const registrationCalls = topLevelCalls.filter(({ name }) =>
+      registrations.includes(name),
+    );
+
+    expect(registrationCalls.map(({ name }) => name)).toEqual(registrations);
+    expect(registrationCalls.every(({ index }) => index < gameLoopIndex)).toBe(true);
+  });
+
+  it("keeps fail-fast propagation and flush on the complete success path", () => {
+    const gameLoop = getGameLoopDeclaration();
+    const statements = gameLoop.body!.statements;
+    const lastStatement = statements[statements.length - 1];
+
+    expect(containsTryStatement(gameLoop)).toBe(false);
+    expect(countCalls(gameLoop, "cpuProfiler.flush")).toBe(1);
+    expect(ts.isExpressionStatement(lastStatement)).toBe(true);
+    if (!ts.isExpressionStatement(lastStatement)) {
+      return;
+    }
+    expect(ts.isCallExpression(lastStatement.expression)).toBe(true);
+    if (!ts.isCallExpression(lastStatement.expression)) {
+      return;
+    }
+    const flushCallee = lastStatement.expression.expression;
+    expect(ts.isPropertyAccessExpression(flushCallee)).toBe(true);
+    if (!ts.isPropertyAccessExpression(flushCallee)) {
+      return;
+    }
+    expect(flushCallee.expression.getText(mainAst)).toBe("cpuProfiler");
+    expect(flushCallee.name.text).toBe("flush");
+    expect(mainSrc).toContain("export const loop = errorMapper(gameLoop);");
   });
 
   it("keeps the Pixel phase while the module owns the permanent disabled latch", () => {
@@ -50,14 +273,24 @@ describe("main loop phase ordering", () => {
     );
     expect(pixelSrc).not.toContain("Game.cpu.generatePixel(");
   });
-});
-
-describe("spawn/creep inner wrapper regression", () => {
-  const mainSrc = readFileSync(resolve(__dirname, "main.ts"), "utf-8");
 
   it("spawnWork wraps each spawn.work() with measureRoomPhase", () => {
-    expect(mainSrc).toMatch(
-      /cpuProfiler\.measure\("spawnWork"[^)]*\)[\s\S]*?cpuProfiler\.measureRoomPhase\(\s*"spawnWork"\s*,\s*spawn\.room\.name\s*,\s*\(\)\s*=>\s*spawn\.work\(\)\s*\)/,
-    );
+    expectWrappedForEach({
+      phase: "spawnWork",
+      collection: "spawns",
+      entity: "spawn",
+      wrapper: "measureRoomPhase",
+      wrapperPrefixArguments: ['"spawnWork"', "spawn.room.name"],
+    });
+  });
+
+  it("creepWork wraps each creep.work() with measureCreep", () => {
+    expectWrappedForEach({
+      phase: "creepWork",
+      collection: "creeps",
+      entity: "creep",
+      wrapper: "measureCreep",
+      wrapperPrefixArguments: ["creep"],
+    });
   });
 });

@@ -103,8 +103,8 @@ ResourceControl SHALL 为已授权 Direct seller terminal 准备 current effecti
 - **THEN** readiness target 必须在该 reserve 上再加最大市场手续费，实际 deal 不得只保留固定 25,000
 
 ### Requirement: 生产保护修复不得改变主循环阶段
-系统 MUST 保持 `marketSalePreflight → pixelGenerator(disabled) → productionMonitor → hubPlanner → hubUpgradeControl → synthesisControl → factoryControl → mineralExtraction → resourceControl → marketSaleAutomation` 的完整行为顺序，并且每 tick 最多运行一次完整 Hub planner。Hub committed snapshot 与 replan request 的修复不得通过重排、跳过中间 producer 或增加第二次完整 Hub plan 实现。
+系统 MUST 保持 `marketSalePreflight → pixelGenerator(disabled) → productionMonitor → nukerControl → hubPlanner → hubUpgradeControl → synthesisControl → factoryControl → mineralExtraction → resourceControl → marketSaleAutomation` 的完整行为顺序，并且每 tick 最多运行一次完整 Hub planner。Hub committed snapshot 与 replan request 的修复不得通过重排、跳过中间 producer 或增加第二次完整 Hub plan 实现。
 
 #### Scenario: Main Phase Order 回归
-- **WHEN** 执行一个包含 Hub replan、Synthesis 更新、ResourceControl readiness 和 live market planning 的 tick
-- **THEN** 观测顺序必须精确保持 marketSalePreflight、disabled pixelGenerator、productionMonitor、hubPlanner、hubUpgradeControl、synthesisControl、factoryControl、mineralExtraction、resourceControl、marketSaleAutomation，且 Hub full planner 调用次数不超过一次
+- **WHEN** 执行一个包含 Nuker 需求、Hub replan、Synthesis 更新、ResourceControl readiness 和 live market planning 的 tick
+- **THEN** 观测顺序必须精确保持 marketSalePreflight、disabled pixelGenerator、productionMonitor、nukerControl、hubPlanner、hubUpgradeControl、synthesisControl、factoryControl、mineralExtraction、resourceControl、marketSaleAutomation，且 Hub full planner 调用次数不超过一次
