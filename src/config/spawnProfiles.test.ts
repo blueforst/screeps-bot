@@ -3,6 +3,7 @@ import {
   getLinkMinerWorkPartsForRegenSourceLevel,
   spawnProfiles,
 } from "@/config/spawnProfiles";
+import { buildStandardCarrierBody } from "@/runtime/carrierBodyPolicy";
 
 function bodyCost(body: BodyPartConstant[]): number {
   return body.reduce((sum, part) => sum + BODYPART_COST[part], 0);
@@ -37,6 +38,18 @@ describe("spawnProfiles", () => {
     });
   });
 
+  describe("carrier", () => {
+    it("uses the shared 1000-capacity body for carrier and remoteCarrier", () => {
+      const room = makeRoom(5_600);
+      const expected = buildStandardCarrierBody(room.energyCapacityAvailable);
+
+      expect(spawnProfiles.carrier(room)).toEqual(expected);
+      expect(spawnProfiles.remoteCarrier(room)).toEqual(expected);
+      expect(expected.filter((part) => part === CARRY)).toHaveLength(20);
+      expect(expected.filter((part) => part === MOVE)).toHaveLength(20);
+    });
+  });
+
   describe("mineralHarvester (twoToOneWorkMoveBody)", () => {
     it("at high energy capacity (5600) produces a valid body within 50 parts and energy budget", () => {
       const room = makeRoom(5600);
@@ -49,15 +62,25 @@ describe("spawnProfiles", () => {
   });
 
   describe("miner (REGEN_SOURCE throughput)", () => {
+    it("builds the base body as 6 WORK, 8 CARRY, and 7 MOVE", () => {
+      const body = getLinkMinerBodyForRegenSourceLevel(0);
 
-    it("builds the level-4 body as 12 WORK, 6 CARRY, and 5 MOVE", () => {
+      expect(body.filter((part) => part === WORK)).toHaveLength(6);
+      expect(body.filter((part) => part === CARRY)).toHaveLength(8);
+      expect(body.filter((part) => part === MOVE)).toHaveLength(7);
+      expect(body).toHaveLength(21);
+      expect(bodyCost(body)).toBe(1_350);
+    });
+
+    it("builds the level-4 body as 12 WORK, 8 CARRY, and 10 MOVE", () => {
       const body = getLinkMinerBodyForRegenSourceLevel(4);
 
+      expect(getLinkMinerWorkPartsForRegenSourceLevel(4)).toBe(12);
       expect(body.filter((part) => part === WORK)).toHaveLength(12);
-      expect(body.filter((part) => part === CARRY)).toHaveLength(6);
-      expect(body.filter((part) => part === MOVE)).toHaveLength(5);
-      expect(body).toHaveLength(23);
-      expect(bodyCost(body)).toBe(1750);
+      expect(body.filter((part) => part === CARRY)).toHaveLength(8);
+      expect(body.filter((part) => part === MOVE)).toHaveLength(10);
+      expect(body).toHaveLength(30);
+      expect(bodyCost(body)).toBe(2_100);
     });
   });
 

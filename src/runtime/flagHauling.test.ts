@@ -132,6 +132,19 @@ describe("runFlagHaulingByFlag", () => {
     expect(getCreepConfigService().list()).toEqual({});
   });
 
+  it("creates HAUL configs with the shared 1000-capacity carrier body", () => {
+    const home = createRoom("W1N1");
+    home.energyCapacityAvailable = 5_600;
+    createSpawn(home);
+    Game.flags.HAUL = createFlag("HAUL", "W5N5");
+
+    runFlagHaulingByFlag();
+
+    const body = getCreepConfigService().get("W1N1:haul:W5N5:carrier:HAUL")?.body;
+    expect(body?.filter((part) => part === CARRY)).toHaveLength(20);
+    expect(body?.filter((part) => part === MOVE)).toHaveLength(20);
+  });
+
   it("keeps cancelled configs while loaded carriers still need to return home", () => {
     const home = createRoom("W1N1");
     createSpawn(home);

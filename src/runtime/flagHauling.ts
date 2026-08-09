@@ -1,4 +1,5 @@
 import { isDefenseMode } from "@/runtime/defenseMode";
+import { buildStandardCarrierBody } from "@/runtime/carrierBodyPolicy";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
@@ -22,18 +23,6 @@ const REMOTE_CARRIER_COUNT = 3;
 
 function getBodyCost(body: BodyPartConstant[]): number {
   return body.reduce((sum, part) => sum + BODYPART_COST[part], 0);
-}
-
-function buildMaxCarrierBody(room: Room): BodyPartConstant[] {
-  const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
-  const pairCount = Math.max(1, Math.min(16, Math.floor(room.energyCapacityAvailable / pairCost)));
-  const body: BodyPartConstant[] = [];
-
-  for (let i = 0; i < pairCount; i++) {
-    body.push(CARRY, MOVE);
-  }
-
-  return body;
 }
 
 function getBodyCarryCapacity(body: BodyPartConstant[]): number {
@@ -109,7 +98,7 @@ function shouldCancelForSmallEnergyOnly(summary: HaulableResourceSummary, source
     return false;
   }
 
-  return summary.energyAmount < getBodyCarryCapacity(buildMaxCarrierBody(sourceRoom));
+  return summary.energyAmount < getBodyCarryCapacity(buildStandardCarrierBody(sourceRoom.energyCapacityAvailable));
 }
 
 function getPreferredSourceFromFlagName(flagName: string): string | undefined {
@@ -260,7 +249,7 @@ function upsertFlagHaulConfig(task: FlagHaulTask, configName: string): void {
   }
 
   const store = getMemoryService().getCreepConfigStore();
-  const body = buildMaxCarrierBody(room);
+  const body = buildStandardCarrierBody(room.energyCapacityAvailable);
   const nextConfig: CreepConfig = {
     role: "remoteCarrier",
     args: [task.targetRoom, String(task.targetX), String(task.targetY)],

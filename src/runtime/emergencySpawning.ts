@@ -1,4 +1,5 @@
 import { isSpawnActive } from "@/runtime/tickContext";
+import { buildStandardCarrierBody } from "@/runtime/carrierBodyPolicy";
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import type { CreepConfig } from "@/types/system";
 
@@ -15,17 +16,6 @@ export interface SpawnMaxCarrierResult {
 
 function ensureConfigStore(): Record<string, CreepConfig> {
   return getMemoryService().getCreepConfigStore();
-}
-
-function buildCarrierBodyByEnergy(energyAvailable: number): BodyPartConstant[] {
-  const pairCount = Math.max(1, Math.min(16, Math.floor(energyAvailable / (BODYPART_COST[CARRY] + BODYPART_COST[MOVE]))));
-  const body: BodyPartConstant[] = [];
-
-  for (let i = 0; i < pairCount; i++) {
-    body.push(CARRY, MOVE);
-  }
-
-  return body;
 }
 
 function resolveSpawnByRoom(roomName: string): StructureSpawn | null {
@@ -69,7 +59,7 @@ export function spawnMaxCarrier(roomName: string): SpawnMaxCarrierResult | strin
     return `ERR_NOT_ENOUGH_ENERGY:${energyAvailable}`;
   }
 
-  const body = buildCarrierBodyByEnergy(energyAvailable);
+  const body = buildStandardCarrierBody(energyAvailable);
   const pairCount = body.length / 2;
   const configName = `${roomName}:manual:maxcarrier:${Game.time}`;
 

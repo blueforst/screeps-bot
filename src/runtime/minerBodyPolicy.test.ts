@@ -2,6 +2,7 @@ import {
   doesCreepBodyMatch,
   retireMismatchedMinersAfterHandoff,
 } from "@/runtime/minerBodyPolicy";
+import { getLinkMinerBodyForRegenSourceLevel } from "@/config/spawnProfiles";
 
 function createMiner(
   name: string,
@@ -26,15 +27,11 @@ function createMiner(
 
 describe("minerBodyPolicy", () => {
   const oldBody = [
-    ...Array<BodyPartConstant>(6).fill(WORK),
-    ...Array<BodyPartConstant>(6).fill(CARRY),
-    ...Array<BodyPartConstant>(3).fill(MOVE),
-  ];
-  const newBody = [
     ...Array<BodyPartConstant>(12).fill(WORK),
     ...Array<BodyPartConstant>(6).fill(CARRY),
     ...Array<BodyPartConstant>(5).fill(MOVE),
   ];
+  const newBody = getLinkMinerBodyForRegenSourceLevel(4);
   const source = { id: "source-a" } as Source;
 
   it("does not retire the old miner before the matching replacement reaches the Source", () => {

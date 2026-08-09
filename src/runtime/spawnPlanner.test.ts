@@ -381,7 +381,7 @@ describe("spawnPlanner source-role cutover queueing", () => {
     Game.time += 1;
   });
 
-  it("queues a replacement when REGEN_SOURCE makes the live miner body obsolete", () => {
+  it("queues a replacement when the expanded miner capacity makes the live body obsolete", () => {
     const room = createRoom("W1N5");
     room.controller.level = 8;
     room.energyCapacityAvailable = 5600;
@@ -394,7 +394,11 @@ describe("spawnPlanner source-role cutover queueing", () => {
       name: "oldMiner",
       room,
       ticksToLive: 1_400,
-      body: getLinkMinerBodyForRegenSourceLevel(0).map((type) => ({ type, hits: 100 })),
+      body: [
+        ...Array<BodyPartConstant>(12).fill(WORK),
+        ...Array<BodyPartConstant>(6).fill(CARRY),
+        ...Array<BodyPartConstant>(5).fill(MOVE),
+      ].map((type) => ({ type, hits: 100 })),
       memory: { role: "miner", configName },
     } as Creep;
     (Game as Game & { powerCreeps: Record<string, PowerCreep> }).powerCreeps = {

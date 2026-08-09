@@ -4,6 +4,7 @@ import {
   POWER_BANK_BODY_RCL7,
   POWER_BANK_BODY_RCL8,
 } from "@/runtime/powerBankConstants";
+import { buildStandardCarrierBody } from "@/runtime/carrierBodyPolicy";
 import { getRegenSourceLevelForRoom } from "@/runtime/powerCreepControl";
 
 type SpawnBodyGenerator = (room: Room) => BodyPartConstant[];
@@ -61,8 +62,8 @@ function twoToOneWorkMoveBody(room: Room): BodyPartConstant[] {
 
 const FIXED_MINER_BODY: BodyPartConstant[] = [WORK, WORK, WORK, WORK, WORK, MOVE, MOVE, MOVE];
 const BASE_LINK_MINER_WORK_PARTS = 6;
-const LINK_MINER_CARRY_PARTS = 6;
-const LINK_MINER_NON_MOVE_PARTS_PER_MOVE = 4;
+const LINK_MINER_CARRY_PARTS = 8;
+const LINK_MINER_NON_MOVE_PARTS_PER_MOVE = 2;
 const COLONIZER_HARVESTER_BODY: BodyPartConstant[] = [
   WORK,
   WORK,
@@ -118,18 +119,6 @@ export function getLinkMinerBodyForRegenSourceLevel(level: number): BodyPartCons
 
 export function getLinkMinerBody(room: Room): BodyPartConstant[] {
   return getLinkMinerBodyForRegenSourceLevel(getRegenSourceLevelForRoom(room.name));
-}
-
-function carryMoveBody(room: Room): BodyPartConstant[] {
-  const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
-  const pairCount = Math.max(1, Math.min(16, Math.floor(room.energyCapacityAvailable / pairCost)));
-  const parts: BodyPartConstant[] = [];
-
-  for (let i = 0; i < pairCount; i++) {
-    parts.push(CARRY, MOVE);
-  }
-
-  return clampByCapacity(parts, room);
 }
 
 function homeDefenderBody(room: Room): BodyPartConstant[] {
@@ -288,7 +277,7 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   harvester: (room) => getHarvesterBody(room),
   mineralHarvester: twoToOneWorkMoveBody,
   miner: getLinkMinerBody,
-  carrier: carryMoveBody,
+  carrier: (room) => buildStandardCarrierBody(room.energyCapacityAvailable),
   worker: oneOneOneBody,
   upgrader: () => [...HUB_UPGRADER_BODY],
   hubUpgrader: () => [...HUB_UPGRADER_BODY],
@@ -303,7 +292,7 @@ export const spawnProfiles: Record<RoleName, SpawnBodyGenerator> = {
   crossShardColonizerHarvester: () => [...COLONIZER_HARVESTER_BODY],
   crossShardColonizerWorker: oneOneOneBody,
   flagScout: () => [MOVE],
-  remoteCarrier: carryMoveBody,
+  remoteCarrier: (room) => buildStandardCarrierBody(room.energyCapacityAvailable),
   remoteMiningCarrier: remoteMiningCarrierBody,
   remoteMiningReserver: remoteMiningReserverBody,
   powerBankScout: powerBankScoutBody,
