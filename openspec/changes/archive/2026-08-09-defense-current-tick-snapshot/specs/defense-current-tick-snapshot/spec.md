@@ -30,7 +30,7 @@
 
 #### Scenario: 相同 tick 替换 Game 对象
 - **WHEN** 测试或运行容器在相同 `Game.time` 下替换 Game 对象，并同时提供该 Game 对应的 current TickContext
-- **THEN** Defense snapshot 必须把它视为新 epoch并重新请求 TickContext，不得复用自身旧 snapshot
+- **THEN** Defense snapshot 必须把它视为新 epoch 并重新请求 TickContext，不得复用自身旧 snapshot
 
 ### Requirement: 现有 Defense 判定必须保持兼容
 系统 MUST 只为可见己方房间计算 Defense Mode；无规划安全区、未知房间或非己方房间 MUST 返回 `false`。Source Keeper MUST 排除；Invader 只有存在有效 WORK 或 HEAL 时才纳入；其他玩家 creep 只有存在有效 ATTACK、RANGED_ATTACK、WORK 或 HEAL 时才纳入。

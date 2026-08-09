@@ -19,5 +19,5 @@
 ## 4. 部署与线上观测
 
 - [x] 4.1 提交运行时代码，以父 commit `9592a3d` 和线上 `e647683` 记录回滚边界
-- [ ] 4.2 部署同一已验证 commit，并确认 shard1 deploy tag 已更新
-- [ ] 4.3 跨多个采样 tick 观察完整 phase、总 CPU、bucket、Spawn/Creep 执行和错误输出
+- [x] 4.2 部署同一已验证 commit，并确认 shard1 deploy tag 已更新
+- [x] 4.3 跨多个采样 tick 观察完整 phase、总 CPU、bucket、Spawn/Creep 执行和错误输出
