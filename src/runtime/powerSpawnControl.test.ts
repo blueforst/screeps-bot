@@ -144,6 +144,29 @@ describe("powerSpawnControl", () => {
     expect(powerSpawn.processPower).toHaveBeenCalledTimes(1);
   });
 
+  it("房间开关关闭后停止处理 power 并清理已有补给任务", () => {
+    const { room, powerSpawn } = createScenario({ power: 1, energy: 50 });
+    installCapability(room.name);
+
+    runPowerSpawnControl();
+    expect(powerSpawn.processPower).toHaveBeenCalledTimes(1);
+    expect(listCarrierTasksByRoom(room.name)).toHaveLength(1);
+
+    Memory.cfg = {
+      powerSpawnControl: {
+        rooms: {
+          [room.name]: { enabled: false },
+        },
+      },
+    };
+    Game.time += 1;
+
+    runPowerSpawnControl();
+
+    expect(powerSpawn.processPower).toHaveBeenCalledTimes(1);
+    expect(listCarrierTasksByRoom(room.name)).toHaveLength(0);
+  });
+
   it("补给使用 20%/90% 滞回，避免任务在临界值反复出现", () => {
     const { room, powerSpawnStore } = createScenario();
     installCapability(room.name);

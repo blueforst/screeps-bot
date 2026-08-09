@@ -159,10 +159,17 @@ function runRoomPowerSpawnControl(room: Room): void {
   );
 }
 
+function isPowerSpawnControlEnabled(roomName: string): boolean {
+  return Memory.cfg?.powerSpawnControl?.rooms?.[roomName]?.enabled !== false;
+}
+
 export function runPowerSpawnControl(): void {
   const validRoomNames = new Set<string>();
   for (const capability of listOperateExtensionRoomCapabilities()) {
-    if (capability.roomName !== POWER_SPAWN_PROCESS_ROOM_NAME) {
+    if (
+      capability.roomName !== POWER_SPAWN_PROCESS_ROOM_NAME ||
+      !isPowerSpawnControlEnabled(capability.roomName)
+    ) {
       continue;
     }
     validRoomNames.add(capability.roomName);

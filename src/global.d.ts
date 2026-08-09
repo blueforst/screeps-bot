@@ -649,6 +649,9 @@ declare global {
       productionMonitor?: {
         enabled?: boolean;
       };
+      powerSpawnControl?: {
+        rooms?: Record<string, { enabled?: boolean }>;
+      };
       crossShard?: {
         enabled?: boolean;
       };
