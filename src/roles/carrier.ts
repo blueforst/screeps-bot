@@ -634,6 +634,56 @@ function hasRunnableNukerGhodiumSupplyCarrierTask(roomName: string): boolean {
   );
 }
 
+function isNukerEnergySupplyCarrierTask(task: CarrierTask): boolean {
+  return task.type === "nuker_supply" && task.steps.some(
+    (step) => step.resource === RESOURCE_ENERGY,
+  );
+}
+
+function deliverCarriedEnergyToNukerTask(creep: Creep): boolean {
+  const carriedEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
+  if (carriedEnergy <= 0) return false;
+
+  const candidates = getSynthesisCarrierTasks(
+    getAssignedCarrierRoomName(creep),
+  )
+    .filter(isNukerEnergySupplyCarrierTask)
+    .flatMap((task) => task.steps)
+    .filter((step) => step.resource === RESOURCE_ENERGY)
+    .map((step) => ({ step, target: resolveTaskStructure(step.toId) }))
+    .filter(
+      (entry): entry is { step: CarrierTaskStep; target: AnyStoreStructure } =>
+        !!entry.target &&
+        entry.target.store.getFreeCapacity(RESOURCE_ENERGY) > 0,
+    )
+    .sort((left, right) =>
+      creep.pos.getRangeTo(left.target.pos) -
+      creep.pos.getRangeTo(right.target.pos),
+    );
+  const selected = candidates[0];
+  if (!selected) return false;
+
+  const amount = Math.min(
+    carriedEnergy,
+    selected.step.amount,
+    selected.target.store.getFreeCapacity(RESOURCE_ENERGY),
+  );
+  if (amount <= 0) return false;
+
+  const code = measureCreepIntent(() =>
+    creep.transfer(selected.target, RESOURCE_ENERGY, amount),
+  );
+  if (code === ERR_NOT_IN_RANGE) {
+    moveToTarget(creep, selected.target);
+    return true;
+  }
+  if (code !== OK) return false;
+
+  delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+  clearPostTransferPlan(creep);
+  return true;
+}
+
 function pickupEnergyDemandForCarrier(
   creep: Creep,
   target: AnyStoreStructure,
@@ -1278,6 +1328,9 @@ export const carrierRole: RoleFactory = () => ({
 
     if (!target) {
       clearPostTransferPlan(creep);
+      if (deliverCarriedEnergyToNukerTask(creep)) {
+        return false;
+      }
       if (creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0 && deliverToPlannedStoragePosition(creep)) {
         return creep.store.getUsedCapacity(RESOURCE_ENERGY) === 0;
       }

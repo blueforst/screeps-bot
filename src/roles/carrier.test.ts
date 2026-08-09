@@ -554,6 +554,133 @@ describe("carrierRole mineral hauling", () => {
     );
   });
 
+  it("routes stranded carried Energy to a live Nuker task when no normal target or storage space exists", () => {
+    const room = createRoom("W1N2E");
+    const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 250_000 : 0,
+        getFreeCapacity: () => 0,
+      },
+    });
+    Object.assign(terminal, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 20_000 : 0,
+        getFreeCapacity: () => 0,
+      },
+    });
+    const nuker = {
+      id: "nuker-stranded-energy-target",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 300_000 : 0,
+      },
+    } as unknown as StructureNuker;
+    const creep = createCreep(room);
+    (creep.store as unknown as { getUsedCapacity: jest.Mock })
+      .getUsedCapacity = jest.fn((resource?: ResourceConstant) =>
+        resource === undefined || resource === RESOURCE_ENERGY ? 600 : 0,
+      );
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
+      if (id === nuker.id) return nuker;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "nuker-stranded-energy-task",
+      type: "nuker_supply",
+      priority: 40,
+      steps: [{
+        id: "energy:storage->nuker-stranded",
+        resource: RESOURCE_ENERGY,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 18_000,
+      }],
+    }]);
+    ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode = true;
+
+    carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(
+      nuker,
+      RESOURCE_ENERGY,
+      600,
+    );
+    expect(getCreepAssignmentState(creep.name)?.carrierStorageOnlyMode)
+      .toBeUndefined();
+  });
+
+  it("keeps an ordinary Energy target ahead of carried-energy Nuker fallback", () => {
+    const room = createRoom("W1N2F");
+    const storage = room.storage as StructureStorage;
+    const nuker = {
+      id: "nuker-behind-normal-energy-target",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300_000,
+      },
+    } as unknown as StructureNuker;
+    const tower = {
+      id: "ordinary-energy-target-before-nuker",
+      structureType: STRUCTURE_TOWER,
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureTower;
+    const creep = createCreep(room);
+    (creep.store as unknown as { getUsedCapacity: jest.Mock })
+      .getUsedCapacity = jest.fn((resource?: ResourceConstant) =>
+        resource === undefined || resource === RESOURCE_ENERGY ? 600 : 0,
+      );
+    getEnergyStoreTarget.mockReturnValue(tower);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === nuker.id) return nuker;
+      if (id === tower.id) return tower;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "nuker-behind-normal-energy-task",
+      type: "nuker_supply",
+      priority: 40,
+      steps: [{
+        id: "energy:storage->nuker-behind-normal",
+        resource: RESOURCE_ENERGY,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 18_000,
+      }],
+    }]);
+
+    carrierRole().target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(tower, RESOURCE_ENERGY);
+    expect(creep.transfer).not.toHaveBeenCalledWith(
+      nuker,
+      RESOURCE_ENERGY,
+      expect.any(Number),
+    );
+  });
+
   it("does not travel to pick up a dropped resource below 50", () => {
     const room = createRoom("W1N0AG");
     const dropped = {

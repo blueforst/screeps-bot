@@ -86,6 +86,10 @@
 - **WHEN** Carrier 已成功接受 Nuker 资源 withdraw，下一 tick producer 不再发布原步骤
 - **THEN** Carrier 仍按 pickup 快照把所携资源送入原 Nuker
 
+#### Scenario: 满仓房间的 Carrier 已携带普通 Energy
+- **WHEN** Carrier 已携带 Energy、没有普通供能目标、Storage/Terminal 无法接收，且存在有效的 Nuker Energy 步骤
+- **THEN** Carrier 将不超过该步骤额度的 Energy 送入 Nuker；普通供能目标一旦存在仍优先于该兜底
+
 ### Requirement: Nuker 补给可观测
 系统 SHALL 在 `Memory.runtime.nukerControl` 中记录总 Ghodium 生产需求和每房 Nuker 的结构 ID、两种资源容量/库存/缺口、Reserve 状态、安全 Energy 余量、pending incoming、Carrier task 数及有界最近动作。需求首次出现、归零或变化达到一个 Nuker Ghodium 容量时 MUST 请求 Hub 提前重规划。
 

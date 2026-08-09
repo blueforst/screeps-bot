@@ -57,7 +57,7 @@ Storage 必须先达到 `energyTarget`；随后分别只计算 Storage 超出 ta
 
 ### 5. 复用 Carrier 任务板并显式保护库存
 
-任务板新增 `nuker_supply` 类型和 `nuker` 结构类型。Ghodium 步骤在 Spawn/Extension/Tower 紧急能量及 Power Spawn 补给之后、普通能量需求之前获得专门选择机会；Nuker Energy 使用低优先级普通任务，避免压制 Lab、Terminal 和房间能量需求。
+任务板新增 `nuker_supply` 类型和 `nuker` 结构类型。Ghodium 步骤在 Spawn/Extension/Tower 紧急能量及 Power Spawn 补给之后、普通能量需求之前获得专门选择机会；Nuker Energy 使用低优先级普通任务，避免压制 Lab、Terminal 和房间能量需求。若 Carrier 已携带普通 Energy、没有任何普通供能目标且 Storage/Terminal 无法接收，允许它把不超过当前有效 Nuker Energy 步骤的数量直接交给 Nuker，避免满仓房间中的携带态死锁。
 
 每个本地步骤为对应资源建立短 TTL production reservation，并在任务消失、结构丢失或房间不再可见时释放。Carrier 已接受的 pickup 继续依靠现有快照交付，避免任务刷新导致资源送错位置。
 
