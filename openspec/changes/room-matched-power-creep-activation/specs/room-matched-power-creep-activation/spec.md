@@ -22,6 +22,14 @@
 - **WHEN** 同名 PC 已建立合格归属、当前未出生、位于当前 shard 或未绑定 shard，且不在孵化冷却中
 - **THEN** 系统在归属房间的己方 PowerSpawn 调用一次 `spawn()`
 
+#### Scenario: 未出生 PC 的 TTL 为 NaN
+- **WHEN** 运行时为未出生 PC 暴露非有限 `ticksToLive`，且 PC 没有 `room` 和 `pos`
+- **THEN** 系统将其视为未出生，并在通过 shard 与孵化冷却检查后尝试 `spawn()`
+
+#### Scenario: 有限 TTL 边界
+- **WHEN** PC 的 `ticksToLive` 为有限的 0 或正数
+- **THEN** 系统不得仅因 TTL 值进入孵化分支；若 `room` 或 `pos` 尚未暴露，则安全等待下一 tick
+
 #### Scenario: Controller 尚未启用 Power
 - **WHEN** 同名 PC 已出生且归属房间 Controller 的 `isPowerEnabled` 为 false
 - **THEN** 系统保留唯一 `enable_room` 任务并调用 `enableRoom()`，不在范围内时向 Controller 寻路

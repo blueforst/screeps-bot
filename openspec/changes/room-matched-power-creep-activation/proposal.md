@@ -7,6 +7,7 @@
 - 将“PC 名称等于房间名”设为未归属 PC 的唯一自动发现规则；仅当同名房间可见、属于己方且拥有己方 PowerSpawn 时建立归属并尝试孵化，同时保留既有显式 `homeRoom` 兼容入口。
 - 已孵化的同名 PC 在归属房间 Controller 尚未启用 Power 时，自动去重入队并执行 `enable_room`。
 - 未归属 PC 缺少同名己方房间或己方 PowerSpawn 时保持 fail-closed，不回退到 PC 当前所在房间进行自动归属。
+- 将运行时暴露的非有限 `ticksToLive`（线上实况为 `NaN`）视为未出生状态，避免 PC 永久停在无 `room`/`pos` 的边界。
 - 将 PowerSpawn 的 `processPower()` 和相应资源补给限定为 E4N58；其他房间的 PowerSpawn 仅供 PC 孵化和续命。
 
 ## Capabilities

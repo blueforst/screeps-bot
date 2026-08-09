@@ -231,6 +231,54 @@ describe("powerCreepControl", () => {
     });
   });
 
+  it("未出生 PC 的 ticksToLive 为 NaN 时仍从同名 PowerSpawn 出生", () => {
+    const { powerSpawn } = createRoom({ name: "E6N59" });
+    const powerCreep = createPowerCreep({
+      name: "E6N59",
+      ticksToLive: Number.NaN,
+    });
+    Object.assign(powerCreep, {
+      shard: null,
+      spawnCooldownTime: null,
+      room: null,
+      pos: undefined,
+    });
+    installPowerCreeps(powerCreep);
+    installGameObjects([powerSpawn]);
+
+    runPowerCreepControl();
+
+    expect(typeof powerCreep.ticksToLive).toBe("number");
+    expect(JSON.stringify(powerCreep.ticksToLive)).toBe("null");
+    expect(powerCreep.memory.homeRoom).toBe("E6N59");
+    expect(powerCreep.spawn).toHaveBeenCalledWith(powerSpawn);
+    expect(powerCreep.memory.lastControlTick).toBeUndefined();
+  });
+
+  it.each([0, 1_000])(
+    "有限 ticksToLive=%s 且无 room/pos 时安全等待而不重复孵化",
+    (ticksToLive) => {
+      const { powerSpawn } = createRoom({ name: "E6N59" });
+      const powerCreep = createPowerCreep({
+        name: "E6N59",
+        ticksToLive,
+      });
+      Object.assign(powerCreep, {
+        shard: null,
+        spawnCooldownTime: null,
+        room: null,
+        pos: undefined,
+      });
+      installPowerCreeps(powerCreep);
+      installGameObjects([powerSpawn]);
+
+      runPowerCreepControl();
+
+      expect(powerCreep.spawn).not.toHaveBeenCalled();
+      expect(powerCreep.memory.lastControlTick).toBeUndefined();
+    },
+  );
+
   it("同名己方房间没有 PowerSpawn 时不回退到 PC 当前房间", () => {
     const { room: fallbackRoom, powerSpawn } = createRoom({ name: "E4N58" });
     Game.rooms.W1N57 = {

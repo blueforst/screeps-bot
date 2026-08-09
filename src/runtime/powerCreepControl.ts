@@ -591,9 +591,11 @@ function runPowerCreep(powerCreep: PowerCreep): void {
     return;
   }
 
-  // Live Screeps exposes null for an unspawned Power Creep even though the
-  // community type currently models only undefined.
-  if (powerCreep.ticksToLive == null) {
+  // Live Screeps may expose null or NaN for an unspawned Power Creep even
+  // though the community type currently models only undefined. This check
+  // must stay ahead of room/pos guards because unspawned PCs expose neither.
+  const ticksToLive = powerCreep.ticksToLive;
+  if (ticksToLive == null || !Number.isFinite(ticksToLive)) {
     trySpawnPowerCreep(powerCreep, room);
     return;
   }

@@ -2,7 +2,7 @@
 
 现有 `powerCreepControl` 已能从未设置 `homeRoom` 的 PC 名称引导归属，也已具备孵化、`enable_room` 和续命任务；但名称匹配失败后仍会回退到 PC 当前房间，可能让新建 PC 被错误房间接管。现有 `powerSpawnControl` 则会对所有具备 `OPERATE_EXTENSION` 能力的房间补给并运行 PowerSpawn。
 
-线上 shard1 的只读数据表明：E4N58 有己方 PowerSpawn、同名 PC 且 Controller 已启用 Power；E6N59 有己方 PowerSpawn但 Controller 未启用 Power；W1N57 有同名 PC Memory，但房间没有 PowerSpawn。实现必须保留后者的 fail-closed 行为。
+线上 shard1 的只读数据表明：E4N58 有己方 PowerSpawn、同名 PC 且 Controller 已启用 Power；E6N59 有己方 PowerSpawn但 Controller 未启用 Power；W1N57 有同名 PC Memory，但房间没有 PowerSpawn。实现必须保留后者的 fail-closed 行为。部署后在 tick 72882087 进一步捕获到 E6N59 的 `shard=null`、`spawnCooldownTime=null`、`room=null`，而 `ticksToLive` 的运行时类型为 number、JSON 序列化为 null，确认实际值为 `NaN`；原有仅判断 null/undefined 的逻辑会越过孵化分支，再因无 `room`/`pos` 永久返回。
 
 ## Goals / Non-Goals
 
@@ -31,6 +31,8 @@
 
 未出生 PC 继续通过同名房间的己方 PowerSpawn 调用 `spawn()`；出生后继续由 `scheduleLifecycleTasks` 以稳定 ID `enable_room` 去重入队。执行器先尝试 `enableRoom()`，返回 `ERR_NOT_IN_RANGE` 时使用现有寻路到 Controller 范围 1。无需新增 Memory 结构。
 
+未出生判定同时接受 null、undefined 和所有非有限 number。使用 `Number.isFinite(ticksToLive)` 区分运行时异常哨兵：`NaN`、正负 Infinity 进入孵化分支；有限的 0 和正数仍保持已出生/边界 tick 语义，不会仅因 TTL 值触发重复 `spawn()`。判定必须位于 `room`/`pos` 守卫之前，因为真实未出生对象正好不暴露这两个字段。
+
 ### PowerSpawn 加工采用显式临时范围
 
 定义当前加工房间集合，仅包含 E4N58。`runPowerSpawnControl` 仍从能力缓存发现房间，但只有允许加工的房间才进入补给和 `processPower()` 路径；其他房间的旧 `powerSpawnControl` carrier 任务被现有 prune 机制清除。
@@ -43,6 +45,7 @@
 - [同名房间暂时不可见时 PC 暂停控制] → 下一次房间可见且有己方 PowerSpawn时会自动恢复，避免向未经验证的目标执行生命周期动作。
 - [E4N58 硬编码是临时策略] → 以单一导出常量集中表达，后续可改成显式配置或受控房间集合。
 - [其他房间残留旧补给任务] → `pruneCarrierTasksForProducer` 以本 tick 有效房间集合清理。
+- [Screeps 类型定义与线上未出生哨兵不一致] → 用非有限数判定覆盖 `NaN`，并以有限 TTL=0、正数回归防止误孵化。
 
 ## Migration Plan
 

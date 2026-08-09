@@ -17,3 +17,10 @@
 
 - [x] 4.1 运行相关 Jest、TypeScript 类型检查、构建和 `git diff --check`
 - [x] 4.2 运行 `openspec validate room-matched-power-creep-activation --strict`
+
+## 5. 未出生 TTL 边界修复
+
+- [x] 5.1 记录 shard1 tick 72882087 的 E6N59 `ticksToLive=NaN`、无 `room`/`pos` 线上证据
+- [x] 5.2 将 null、undefined 和非有限 TTL 统一视为未出生，同时保留有限 TTL=0/正数语义
+- [x] 5.3 补充 NaN 自动孵化及有限 TTL 边界回归测试
+- [x] 5.4 运行相关 Jest、TypeScript、构建、diff check 和 OpenSpec strict validate
