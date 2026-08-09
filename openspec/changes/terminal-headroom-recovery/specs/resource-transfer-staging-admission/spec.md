@@ -21,7 +21,7 @@
 
 ### Requirement: staging 数量必须受完整安全上限约束
 
-terminal feed 数量必须（MUST）不大于任务剩余量、房间 transfer batch、receiver reservation、terminal 安全可用空闲、来源安全可用库存五者的最小值。非 energy 发送还必须预留足够的 terminal energy reserve 与预计交易费；系统不得（MUST NOT）通过 staging 绕过现有矿物、T3、生产或 energy 保护规则。
+terminal feed 数量必须（MUST）不大于任务剩余量、房间 transfer batch、receiver reservation、terminal 安全可用空闲、来源安全可用库存五者的最小值。非 energy 发送还必须满足动作 Energy ownership：扣除 ordinary Terminal reserve、生产、其他任务 payload/fee 与 market exposure 后仍可支付完整预计交易费；该预算不得读取 `energyFloor`、`energyTarget` 或 `energyExportStart`。系统不得（MUST NOT）通过 staging 绕过矿物、T3、生产或其他显式所有权。
 
 #### Scenario: 小尾数只装载实际剩余量
 
@@ -30,7 +30,7 @@ terminal feed 数量必须（MUST）不大于任务剩余量、房间 transfer b
 
 #### Scenario: fee 不足时不错误装载资源
 
-- **WHEN** storage 中有发送资源，但 terminal 与安全可用 energy 无法支付预计交易费
+- **WHEN** storage 中有发送资源，但物理 Terminal Energy 与动作 ownership budget 无法支付完整预计交易费
 - **THEN** 系统不得生成该资源的 feed，并必须报告 fee 不足而不是笼统地将其视为可 staging
 
 #### Scenario: receiver reservation 限制 staging

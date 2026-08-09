@@ -64,7 +64,7 @@ flowchart LR
 - 只有新的业务需求周期才更换 `demandKey`，从而避免把已交付量重新写回 remaining；
 - 过期或撤销 intent 不再产生新合同，但不会抹掉已完成合同审计信息。
 
-Room agent 的 offer 必须由当前库存减去 energy/mineral/T3/生产保护和所有 active source commitments 得到。Headroom intent 只报告 P0 oracle 的物理事实、同 tick projection、terminal cooldown/ready tick 和 energy fee budget；尚未完成的 offload 不得被发布成即时容量。
+Room agent 生成新的 automatic offer 时可以使用 energy/mineral/T3 等业务水位；offer 可用量还必须扣除生产保护和所有 active source commitments。合同一旦存在，其 staging/send 的 Energy fee budget 只使用动作 ownership（ordinary Terminal reserve、生产、其他合同 payload/fee 与 market exposure），不得再次读取 room watermarks。Headroom intent 只报告 P0 oracle 的物理事实、同 tick projection、terminal cooldown/ready tick 和该动作 fee budget；尚未完成的 offload 不得被发布成即时容量。
 
 不采用 event sourcing：本项目只需要当前调度事实，bounded contract history 足以审计，追加 intent 日志会无上限扩大 Memory。
 
@@ -110,7 +110,7 @@ receiver capacity 使用独立 `CapacityLease`：`id`、`contractId`、`receiver
 
 ### 5. Matcher 使用硬约束、确定性排序和条件式公平
 
-matcher 仅在 active demand 的资源索引中检查 active offers。硬约束先过滤 same-room、过期 intent、保护库存不足、receiver 非法/无 headroom、fee budget 不足、固定端点不匹配和无 terminal readiness 的候选；然后按以下显式 priority class 排序：
+matcher 仅在 active demand 的资源索引中检查 active offers。硬约束先过滤 same-room、过期 intent、automatic offer 业务保护不足、receiver 非法/无 headroom、动作 ownership fee budget 不足、固定端点不匹配和无 terminal readiness 的候选；然后按以下显式 priority class 排序：
 
 1. `deadline`：有明确截止时间的 boost/合成补给；
 2. `capacity_emergency`；

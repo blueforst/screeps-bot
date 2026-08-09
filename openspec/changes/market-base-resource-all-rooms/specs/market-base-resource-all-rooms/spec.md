@@ -216,7 +216,7 @@ ResourceControl MUST 每 tick 发布 current `effectivePostDealEnergyReserve=max
 - **THEN** 系统必须生成精确 2,347 Energy 的 readiness carrier task
 
 #### Scenario: 补给会侵占安全量
-- **WHEN** 合并普通 staging/feed 与 readiness 后 terminal free 低于 40,000、storage energy 低于 floor+生产承诺、room 为 emergency、terminal 无容量或已有冲突 claim
+- **WHEN** 合并普通 staging/feed 与 readiness 后 terminal free 低于 40,000、storage energy 扣除补给后低于生产承诺、room 为 emergency、terminal 无容量或已有冲突 claim
 - **THEN** readiness feed 必须拒绝，市场 lane 等待且不得降低 current effective post-deal reserve
 
 #### Scenario: Existing Feed 与 Readiness 合并

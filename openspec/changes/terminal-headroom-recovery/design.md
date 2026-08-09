@@ -36,13 +36,13 @@
 
 ### 1. 建立共享的容量水位策略
 
-从 `Memory.cfg.resourceControl.capacityBalancing` 规范化出一份纯数据 `CapacityHeadroomPolicy`，由 ResourceControl、Hub distribution 和运行时投影共同使用。默认值保持现状，但规范化后必须满足：
+从 `Memory.cfg.resourceControl.capacityBalancing` 规范化出一份纯数据 `CapacityHeadroomPolicy`，由 ResourceControl、Hub distribution 和运行时投影共同使用。规范化后必须满足：
 
 - terminal：`pressureFree <= receiverMinFree <= reliefTargetFree`；
-- storage：`pressureFree <= reliefTargetFree <= receiverMinFree`；
+- storage：分别满足 `pressureFree <= receiverMinFree` 与 `pressureFree <= reliefTargetFree`，receiver 与 relief 彼此独立；
 - 所有值均限制在对应建筑容量范围内。
 
-若用户配置不满足单调关系，按安全方向抬高后续水位并在 runtime 中记录 normalized 值，避免一个模块认为房间已恢复、另一个模块仍拒绝接收。
+若用户配置不满足各自关系，按安全方向抬到 pressure 下界并在 runtime 中记录 normalized 值；storage receiver 不得因 relief target 更高而被连带抬高。
 
 Hub 不再维护独立的 distribution receiver 常量，而是调用共享策略。现有配置字段继续有效，不引入破坏性迁移。
 

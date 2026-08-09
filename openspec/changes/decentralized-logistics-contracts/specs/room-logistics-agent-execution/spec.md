@@ -26,7 +26,7 @@
 
 ### Requirement: Staging window 必须绑定合同且复用 P0 安全规则
 
-source Agent 只能（MUST）为持有有效 CapacityLease、位于当前或下一 send window 且通过 source/fee 重验的合同创建 `StageWork(contractId, resource, amount)`。amount 必须受合同 remaining、lease amount、transfer batch、source 安全库存和 terminal headroom 上限约束；同房同资源同轮不得（MUST NOT）同时生成冲突 feed/offload。
+source Agent 只能（MUST）为持有有效 CapacityLease、位于当前或下一 send window 且通过 source/fee 重验的合同创建 `StageWork(contractId, resource, amount)`。amount 必须受合同 remaining、lease amount、transfer batch、source commitment、动作 Energy ownership 和 terminal headroom 上限约束；已有合同的 fee 重验不得读取 room energy watermarks。同房同资源同轮不得（MUST NOT）同时生成冲突 feed/offload。
 
 #### Scenario: 无 lease 不生成 StageWork
 
@@ -83,7 +83,7 @@ source Agent 只能（MUST）为持有有效 CapacityLease、位于当前或下�
 
 ### Requirement: Send 必须经过最终重验并原子记录结果
 
-调用 `terminal.send` 前，source Agent 必须（MUST）重验 contract active state、lease/epoch、receiver P0 headroom、source commitment/实际库存、staged amount、fee 和 cooldown。返回 OK 时必须在同一 tick 更新 delivered/remaining、staged allocation、lease consumption、source/receiver projection 和 action 观测；返回非 OK 时不得改变 delivered/remaining。
+调用 `terminal.send` 前，source Agent 必须（MUST）重验 contract active state、lease/epoch、receiver P0 headroom、source commitment/实际库存、动作 Energy ownership、staged amount、fee 和 cooldown；不得把 room `energyFloor/energyTarget/energyExportStart` 作为已有合同的最终门禁。返回 OK 时必须在同一 tick 更新 delivered/remaining、staged allocation、lease consumption、source/receiver projection 和 action 观测；返回非 OK 时不得改变 delivered/remaining。
 
 #### Scenario: 最终重验失败不发送
 

@@ -10,7 +10,7 @@
 - 新资源、新发现房间、terminal/ownership 实例变化，或改变 Hub/native/floor/reserve 条件时都必须使用新的不可变 policy/lane ID，并从 `Shadow + suspended` 开始；不得用既有 X/E6N59 outcome 或旧 policy fingerprint 直接授权新 lane。
 - 每个资源只读取一次可信历史和完整 BUY book，再为各房间计算独立 transaction-energy-adjusted 单位净价；最终仍按最高安全单位净价全局排序，订单剩余量、库存量或容量压力不得覆盖价格优先级。
 - 允许 capacity pressure/emergency 房间以及 Hub 在“本 lane 保护账本完整、确有显式可售余量、terminal 可执行”的前提下出售基础矿物；容量状态只能决定能否执行和释放空间，永远不能降低净底价、底仓或生产保护。
-- 为 seller terminal 引入 current effective post-deal energy reserve；它同时保护 25,000 基线、普通 terminal reserve、生产承诺、pending Energy send 数量及全部内部发送手续费，并在其上再准备最大市场交易费。它只生成内部 Carrier 补给任务，不购买 Energy，也不侵占房间 energy floor、生产承诺或已有 terminal action。
+- 为 seller terminal 引入 current effective post-deal energy reserve；它同时保护 25,000 基线、普通 terminal reserve、生产承诺、pending Energy send 数量及全部内部发送手续费，并在其上再准备最大市场交易费。它只生成内部 Carrier 补给任务，不购买 Energy；补给不读取 room energy floor，但不得侵占生产承诺或已有 terminal action。
 - 修复 Hub/合成保护证据的时序：早期 preflight 继续只负责 WAL 收敛，出售规划只使用 Hub、Synthesis、Factory、ResourceControl 全部运行后的 current planning snapshot；任何未知作用域或过期证据仍全局零写。
 - 对七个资源和全部授权房间设置固定上界、去重缓存、仅 Shadow 使用的稳定轮转、可验证 prefix checkpoint 与有界观测；全部 writable lane 始终完整扫描。保持全局单 pending、固定 1,000、每周期最多一笔、global/resource/room/lane rolling quota、account-global 1,000 tick cooldown、写前双读和 append-only receipt/permit chain。
 - 部署时先进入兼容迁移态：既有 v2 WAL/receipt/quota 继续按历史 permit 收敛，新 v3 lane 先零写；仅在测试、独立复审、对应 Shadow/Canary 证据和 successor permit 均通过后逐 lane 启用。Pixel generator、legacy ResourceControl seller 与 Factory seller 继续关闭。

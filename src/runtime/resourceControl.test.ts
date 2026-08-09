@@ -406,6 +406,120 @@ describe("runResourceControl terminal feed tasks", () => {
       status: "feed_planned",
     });
   });
+
+  it("ignores the room floor while retaining production ownership for Direct readiness", () => {
+    const room = createRoom({
+      name: "E6N58",
+      storageResources: {
+        [RESOURCE_ENERGY]: 30_000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 23_653,
+        [RESOURCE_KEANIUM]: 231_449,
+      },
+    });
+    Game.rooms[room.name] = room;
+    reserveProductionResource(
+      room.name,
+      RESOURCE_ENERGY,
+      5_000,
+      "direct-readiness-production",
+    );
+    authorizeMarketTerminalEnergyReadiness(room, 2);
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toMatchObject({
+      steps: [expect.objectContaining({ amount: 2_347 })],
+    });
+    expect(getMarketEnergyReadinessObservation(room.name)).toMatchObject({
+      terminalScopedProductionEnergyCommitments: 5_000,
+      plannedFeedAmount: 2_347,
+      status: "feed_planned",
+    });
+  });
+
+  it("blocks Direct readiness when the feed would consume production ownership", () => {
+    const room = createRoom({
+      name: "E6N57",
+      storageResources: {
+        [RESOURCE_ENERGY]: 6_000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 23_653,
+        [RESOURCE_KEANIUM]: 231_449,
+      },
+    });
+    Game.rooms[room.name] = room;
+    reserveProductionResource(
+      room.name,
+      RESOURCE_ENERGY,
+      5_000,
+      "direct-readiness-production",
+    );
+    authorizeMarketTerminalEnergyReadiness(room, 2);
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toBeUndefined();
+    expect(getMarketEnergyReadinessObservation(room.name)).toMatchObject({
+      blocker: "production_energy_ownership",
+      plannedFeedAmount: 0,
+      status: "blocked",
+    });
+  });
+
+  it("fails Direct readiness closed when production ownership is non-finite", () => {
+    const room = createRoom({
+      name: "E6N56",
+      storageResources: {
+        [RESOURCE_ENERGY]: 300_000,
+      },
+      terminalResources: {
+        [RESOURCE_ENERGY]: 23_653,
+        [RESOURCE_KEANIUM]: 231_449,
+      },
+    });
+    Game.rooms[room.name] = room;
+    authorizeMarketTerminalEnergyReadiness(room, 2);
+
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toBeDefined();
+
+    reserveProductionResource(
+      room.name,
+      RESOURCE_ENERGY,
+      Number.NaN,
+      "corrupt-production-ownership",
+    );
+    Game.time = 20;
+    resetRuntimeServices();
+    runResourceControl();
+
+    expect(
+      getCarrierTasksByRoom(room.name)[
+        `resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`
+      ],
+    ).toBeUndefined();
+    expect(getMarketEnergyReadinessObservation(room.name)).toMatchObject({
+      blocker: "production_energy_ownership",
+      plannedFeedAmount: 0,
+      status: "blocked",
+    });
+  });
 });
 
 describe("terminal headroom offload", () => {
@@ -882,7 +996,7 @@ describe("capacity-relief planning", () => {
         [RESOURCE_ENERGY]: 30_000,
         [RESOURCE_KEANIUM]: 10_000,
       },
-      storageFreeCapacity: 250_000,
+      storageFreeCapacity: 100_000,
     });
     blockedDonor.terminal!.cooldown = 1;
     const pressureSource = createRoom({
@@ -890,7 +1004,7 @@ describe("capacity-relief planning", () => {
       storageResources: { [RESOURCE_ENERGY]: 200_000 },
       terminalResources: {
         [RESOURCE_ENERGY]: 30_000,
-        [RESOURCE_HYDROGEN]: 230_000,
+        [RESOURCE_HYDROGEN]: 230_001,
       },
       storageFreeCapacity: 500_000,
     });
@@ -923,6 +1037,6 @@ describe("capacity-relief planning", () => {
           task.toRoomName === receiver.name &&
           task.reason === `capacity:relief:${RESOURCE_HYDROGEN}`,
       ),
-    ).toMatchObject({ remainingAmount: 9_999 });
+    ).toMatchObject({ remainingAmount: 10_000 });
   });
 });

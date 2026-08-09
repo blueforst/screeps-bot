@@ -84,10 +84,10 @@ Direct v3 raw validator MUST 精确验证基础矿物 allowlist 和全部 thresh
 - **THEN** 配置必须整体无效并记录具体额外 key，不能规范化成看似合法的七资源配置
 
 ### Requirement: 市场 Seller Energy Readiness 不得侵占生产
-ResourceControl SHALL 为已授权 Direct seller terminal 准备 current effective post-deal reserve 与最大交易费所需的 Energy。effective reserve MUST 至少为 25,000，并叠加/保护普通 terminal reserve、pending Energy send、其他内部发送手续费和 terminal-scoped production commitments；Direct 两次 full read MUST 保证实际成交后仍满足该 current reserve。补给 MUST 保持 room energy floor、合并全部当 tick drafts 后的 terminal headroom 和统一 action claim。
+ResourceControl SHALL 为已授权 Direct seller terminal 准备 current effective post-deal reserve 与最大交易费所需的 Energy。effective reserve MUST 至少为 25,000，并叠加/保护普通 terminal reserve、pending Energy send、其他内部发送手续费和 terminal-scoped production commitments；Direct 两次 full read MUST 保证实际成交后仍满足该 current reserve。补给 MUST 不读取 room `energyFloor/energyTarget`，同时保留 production ownership、合并全部当 tick drafts 后的 terminal headroom 和统一 action claim。
 
 #### Scenario: 安全补给
-- **WHEN** seller terminal 低于 readiness target 且本房 storage 有生产保护后的安全 Energy 与足够 terminal headroom
+- **WHEN** seller terminal 低于 readiness target 且本房 storage 扣除生产承诺后有足够 Energy 与 terminal headroom，即使 Storage 低于 room energyFloor
 - **THEN** 系统只创建精确缺口的本地 Carrier feed，不购买 Energy
 
 #### Scenario: Readiness 使用 Canonical State

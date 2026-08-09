@@ -2,17 +2,17 @@
 
 ### Requirement: 共享且单调的容量水位策略
 
-系统必须（MUST）从 `Memory.cfg.resourceControl.capacityBalancing` 生成一份由 ResourceControl、Hub distribution 和运行时投影共同使用的容量水位策略。terminal 水位必须满足 `pressureFree <= receiverMinFree <= reliefTargetFree`，storage 水位必须满足 `pressureFree <= reliefTargetFree <= receiverMinFree`，且所有水位必须限制在对应建筑的容量范围内。
+系统必须（MUST）从 `Memory.cfg.resourceControl.capacityBalancing` 生成一份由 ResourceControl、Hub distribution 和运行时投影共同使用的容量水位策略。terminal 水位必须满足 `pressureFree <= receiverMinFree <= reliefTargetFree`；storage 水位必须分别满足 `pressureFree <= receiverMinFree` 与 `pressureFree <= reliefTargetFree`，receiver minimum 与 relief target 之间不得存在隐式大小约束。所有水位必须限制在对应建筑的容量范围内。
 
 #### Scenario: 默认水位被所有 producer 共用
 
 - **WHEN** 用户未提供容量水位覆盖值，ResourceControl 与 Hub 在同一 tick 判断一个候选 receiver
 - **THEN** 两者必须使用同一组规范化默认值，并对该房间得出一致的 admission 结果
 
-#### Scenario: 非单调配置被安全规范化
+#### Scenario: 非法下界被安全规范化
 
-- **WHEN** 用户提供的 terminal receiver 最小空闲高于恢复水位，或 storage 恢复水位高于 receiver 最小空闲
-- **THEN** 系统必须按安全方向规范化为单调水位，并在 runtime 中报告实际生效值
+- **WHEN** 用户提供的 terminal receiver 最小空闲高于恢复水位，或 storage receiver/relief 任一值低于 pressure 水位
+- **THEN** 系统必须按各自安全关系规范化，并在 runtime 中报告实际生效值；storage receiver 不得被 relief target 抬高
 
 ### Requirement: 受压 terminal 必须能够到达恢复水位
 
@@ -123,7 +123,7 @@
 
 ### Requirement: 容量状态必须形成无振荡滞回闭环
 
-系统必须（MUST）仅在 storage 与 terminal 同时达到各自恢复水位后把既有 pressure/emergency 房间切换为 `normal`；normal 房间只有触及压力水位时才进入 pressure。未完成的 offload 计划不得（MUST NOT）被视作已经恢复的物理空闲。
+系统必须（MUST）仅在 storage 与 terminal 同时达到各自恢复水位后把既有 pressure/emergency 房间切换为 `normal`；previous normal/缺失的房间只有严格低于任一压力水位时才进入 pressure，恰好等于压力水位时保持 normal 但安全可接收量为零。未完成的 offload 计划不得（MUST NOT）被视作已经恢复的物理空闲。
 
 #### Scenario: 计划 offload 不提前改变状态
 
@@ -138,7 +138,7 @@
 #### Scenario: 恢复后不在边界反复切换
 
 - **WHEN** 已恢复为 normal 的房间空闲量位于压力水位与恢复水位之间
-- **THEN** 系统必须保持 normal，直到任一物理空闲触及对应压力水位
+- **THEN** 系统必须保持 normal，直到任一物理空闲严格低于对应压力水位
 
 ### Requirement: receiver 容量必须由共享投影账本安全扣减
 

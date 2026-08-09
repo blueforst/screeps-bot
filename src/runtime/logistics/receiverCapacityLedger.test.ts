@@ -137,6 +137,26 @@ describe("receiver capacity ledger", () => {
     });
   });
 
+  it("limits new reservations to the 20000 left after a healthy 30000 commitment", () => {
+    const committed = createTask("committed", RESOURCE_KEANIUM, 30_000);
+    const ledger = createLedger([committed]);
+
+    expect(
+      ledger.reserve("draft-a", "W1N2", RESOURCE_HYDROGEN, 15_000),
+    ).toBe(15_000);
+    expect(
+      ledger.reserve("draft-b", "W1N2", RESOURCE_HYDROGEN, 15_000),
+    ).toBe(5_000);
+    expect(
+      ledger.reserve("draft-c", "W1N2", RESOURCE_HYDROGEN, 1),
+    ).toBe(0);
+    expect(ledger.getAvailability("W1N2", RESOURCE_HYDROGEN)).toMatchObject({
+      totalCommitted: 30_000,
+      reservationTotal: 20_000,
+      available: 0,
+    });
+  });
+
   it("does not count unhealthy or invalid-endpoint tasks and reports why they were excluded", () => {
     const blocked = createTask("blocked", RESOURCE_KEANIUM, 20_000, {
       blockedReason: "receiver_capacity",

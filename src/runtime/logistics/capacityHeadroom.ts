@@ -18,7 +18,7 @@ export const DEFAULT_CAPACITY_HEADROOM_POLICY: CapacityHeadroomPolicy = {
   terminalHeadroomRecoveryEnabled: true,
   storagePressureFreeCapacity: 100_000,
   storageReliefTargetFreeCapacity: 200_000,
-  receiverStorageMinFreeCapacity: 300_000,
+  receiverStorageMinFreeCapacity: 100_000,
   terminalPressureFreeCapacity: 40_000,
   terminalReliefTargetFreeCapacity: 80_000,
   receiverTerminalMinFreeCapacity: 50_000,
@@ -44,7 +44,7 @@ export function normalizeCapacityHeadroomPolicy(value: unknown): CapacityHeadroo
     ),
   );
   const receiverStorageMinFreeCapacity = Math.max(
-    storageReliefTargetFreeCapacity,
+    storagePressureFreeCapacity,
     normalizeNumber(
       raw.receiverStorageMinFreeCapacity,
       DEFAULT_CAPACITY_HEADROOM_POLICY.receiverStorageMinFreeCapacity,
@@ -112,8 +112,8 @@ export function resolveCapacityState(
   }
 
   if (
-    storageFreeCapacity <= policy.storagePressureFreeCapacity ||
-    terminalFreeCapacity <= policy.terminalPressureFreeCapacity
+    storageFreeCapacity < policy.storagePressureFreeCapacity ||
+    terminalFreeCapacity < policy.terminalPressureFreeCapacity
   ) {
     return "pressure";
   }

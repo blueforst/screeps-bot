@@ -45,7 +45,7 @@
 
 ### Requirement: Matcher 必须进行安全且确定性的直接匹配
 
-matcher 必须（MUST）只在 active intents 与当轮共享索引中匹配供需，并先过滤过期端点、same-room、automatic 保护库存不足、receiver 无安全 headroom、交易费预算不足和 terminal 不可达候选。普通物流必须优先 source→target 直接路线；只有 intent 明确固定 Hub 时才能把 Hub 作为中转目标。相同输入必须（MUST）产生相同合同与排序结果。
+matcher 必须（MUST）只在 active intents 与当轮共享索引中匹配供需，并先过滤过期端点、same-room、automatic offer 业务保护库存不足、receiver 无安全 headroom、动作 ownership 交易费预算不足和 terminal 不可达候选。新 automatic intent 可以使用业务水位决定是否生成；已有合同的 staging/send 不得再次使用 room energy watermarks 否决。普通物流必须优先 source→target 直接路线；只有 intent 明确固定 Hub 时才能把 Hub 作为中转目标。相同输入必须（MUST）产生相同合同与排序结果。
 
 #### Scenario: 同等安全候选选择低成本直达路线
 

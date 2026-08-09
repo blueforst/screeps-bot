@@ -160,7 +160,7 @@ ResourceControl 必须先在同一个 per-room planning pass 中合并普通 Ene
 - room 非 capacity emergency；
 - 只补到精确目标，不预装额外能量；
 - 补后 terminal free capacity 在计入本 tick 所有普通 staging/feed draft 与 market readiness draft 后仍至少为 `terminalPressureFreeCapacity=40,000`；
-- storage energy 在扣除补给后仍不低于 room energy floor 加 current production commitments；
+- storage energy 在扣除补给后仍不低于 current production commitments；room `energyFloor/energyTarget` 不参与 readiness admission；
 - terminal 有真实物理容量，且没有冲突 terminal/market claim。
 
 市场 off/emergencyStop、房间不在 permit/derived lifecycle、证据无效或任一条件失败时不创建额外任务。该任务只从本房 storage 搬 Energy，不购买 Energy。E6N59 在没有更高生产/发送 reserve 的 live 夹具应生成精确 2,347 energy feed；E1/E4/E7N58/W1N57 等 emergency 房间不使用该例外，只能在自身 terminal 已满足 current effective post-deal reserve 与实际手续费时直售。
