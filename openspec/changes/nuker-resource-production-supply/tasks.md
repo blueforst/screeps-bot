@@ -24,5 +24,5 @@
 
 ## 5. 提交、部署与实况验证
 
-- [ ] 5.1 更新版本并提交代码，部署到 shard1
-- [ ] 5.2 验证真实 Nuker runtime、Ghodium 转运/合成需求、Carrier 草案及 Energy 安全门控
+- [x] 5.1 更新版本并提交代码，部署到 shard1
+- [x] 5.2 验证真实 Nuker runtime、Ghodium 转运/合成需求、Carrier 草案及 Energy 安全门控
