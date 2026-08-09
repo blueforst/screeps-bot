@@ -393,6 +393,113 @@ describe("carrierRole mineral hauling", () => {
     getProtoControllerLinkContainer.mockReturnValue(null);
   });
 
+  function installSpawnPrefillPreloadScenario(
+    roomName: string,
+    spawnBusyStates: boolean[],
+    withPreload = true,
+  ): {
+    creep: Creep;
+    storage: StructureStorage;
+    terminal: StructureTerminal;
+    energySource: StructureContainer;
+    energyTarget: StructureExtension;
+    spawns: StructureSpawn[];
+  } {
+    const room = createRoom(roomName);
+    const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_LEMERGIUM ? 5_000 : 0,
+        getFreeCapacity: () => 0,
+      },
+    });
+    Object.assign(terminal, {
+      pos: { x: 11, y: 10, roomName },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const energySource = {
+      id: `${roomName}-prefill-energy-source`,
+      structureType: STRUCTURE_CONTAINER,
+      room,
+      pos: { x: 12, y: 10, roomName },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+        getFreeCapacity: () => 1_500,
+      },
+    } as unknown as StructureContainer;
+    const extension = {
+      id: `${roomName}-empty-extension`,
+      structureType: STRUCTURE_EXTENSION,
+      room,
+      pos: { x: 13, y: 10, roomName },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 50,
+      },
+    } as unknown as StructureExtension;
+    const spawns = spawnBusyStates.map((busy, index) => ({
+      id: `${roomName}-spawn-${index}`,
+      name: `${roomName}-Spawn-${index}`,
+      structureType: STRUCTURE_SPAWN,
+      room,
+      pos: { x: 14 + index, y: 10, roomName },
+      spawning: busy ? { name: `queued-${index}` } : null,
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300,
+      },
+    } as unknown as StructureSpawn));
+    Game.spawns = Object.fromEntries(
+      spawns.map((spawn) => [spawn.name, spawn]),
+    );
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(extension);
+    getReservedPickupTarget.mockReturnValue(energySource);
+    getPickupTargetEnergyAmount.mockImplementation((target: unknown) =>
+      target === energySource ? 500 : 0,
+    );
+    reservePickupTarget.mockReturnValue(true);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
+      if (id === energySource.id) return energySource;
+      if (id === extension.id) return extension;
+      return spawns.find((spawn) => spawn.id === id) || null;
+    }) as unknown as Game["getObjectById"];
+    if (withPreload) {
+      replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
+        id: `resourceControl:terminal_feed:${roomName}:L`,
+        type: "terminal_feed",
+        dispatchClass: "capacity_relief",
+        priority: 80,
+        steps: [{
+          id: `${roomName}:L:storage->terminal`,
+          resource: RESOURCE_LEMERGIUM,
+          fromKind: "storage",
+          toKind: "terminal",
+          fromId: storage.id,
+          toId: terminal.id,
+          amount: 3_000,
+        }],
+      }]);
+    }
+    return {
+      creep,
+      storage,
+      terminal,
+      energySource,
+      energyTarget: extension,
+      spawns,
+    };
+  }
+
   it("keeps the 50k Terminal pickup reserve when bootstrap recovery is not flagged", () => {
     const { creep, terminal } = installTerminalBootstrapEnergyScenario(
       "W1N1",
@@ -589,13 +696,18 @@ describe("carrierRole mineral hauling", () => {
     );
   });
 
-  it("picks PowerSpawn supply before non-critical generic energy demand", () => {
+  it("picks PowerSpawn supply before Terminal preload and non-critical Energy demand", () => {
     const room = createRoom("W1N2");
     const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
       pos: { x: 10, y: 10, roomName: room.name },
       store: {
-        getUsedCapacity: (resource?: ResourceConstant) => resource === RESOURCE_POWER ? 80 : 0,
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === RESOURCE_POWER) return 80;
+          if (resource === RESOURCE_LEMERGIUM) return 3_000;
+          return 0;
+        },
         getFreeCapacity: () => 100_000,
       },
     });
@@ -615,6 +727,7 @@ describe("carrierRole mineral hauling", () => {
     } as unknown as StructureLab);
     (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
       if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
       if (id === powerSpawn.id) return powerSpawn;
       return null;
     }) as unknown as Game["getObjectById"];
@@ -632,22 +745,84 @@ describe("carrierRole mineral hauling", () => {
         amount: 80,
       }],
     }]);
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
+      id: "resourceControl:terminal_feed:W1N2:L",
+      type: "terminal_feed",
+      dispatchClass: "capacity_relief",
+      priority: 80,
+      steps: [{
+        id: "L:storage->terminal-behind-power-spawn",
+        resource: RESOURCE_LEMERGIUM,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: storage.id,
+        toId: terminal.id,
+        amount: 3_000,
+      }],
+    }]);
 
     const switched = carrierRole().source?.(creep);
 
     expect(creep.withdraw).toHaveBeenCalledWith(storage, RESOURCE_POWER, 80);
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
+    );
     expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("power-spawn-supply-task");
   });
 
-  it("picks Nuker Ghodium before non-critical generic energy demand", () => {
+  it("keeps direct unmanaged PowerSpawn Energy ahead of capacity-relief preload", () => {
+    const {
+      creep,
+      storage,
+      energySource,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2DirectPowerSpawn",
+      [true],
+    );
+    const powerSpawn = {
+      id: "direct-unmanaged-power-spawn-energy-target",
+      structureType: STRUCTURE_POWER_SPAWN,
+      room: creep.room,
+      pos: { x: 13, y: 11, roomName: creep.room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5_000 : 0,
+      },
+    } as unknown as StructurePowerSpawn;
+    getEnergyStoreTarget.mockReturnValue(powerSpawn);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+  });
+
+  it("picks Nuker Ghodium before Terminal preload and non-critical Energy demand", () => {
     const room = createRoom("W1N2A");
     const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
       pos: { x: 10, y: 10, roomName: room.name },
       store: {
         getUsedCapacity: (resource?: ResourceConstant) =>
-          resource === RESOURCE_GHODIUM ? 500 : 0,
+          resource === RESOURCE_GHODIUM
+            ? 500
+            : resource === RESOURCE_LEMERGIUM
+              ? 3_000
+              : 0,
         getFreeCapacity: () => 100_000,
       },
     });
@@ -668,6 +843,7 @@ describe("carrierRole mineral hauling", () => {
     } as unknown as StructureLab);
     (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
       if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
       if (id === nuker.id) return nuker;
       return null;
     }) as unknown as Game["getObjectById"];
@@ -685,6 +861,21 @@ describe("carrierRole mineral hauling", () => {
         amount: 500,
       }],
     }]);
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
+      id: "resourceControl:terminal_feed:W1N2A:L",
+      type: "terminal_feed",
+      dispatchClass: "capacity_relief",
+      priority: 80,
+      steps: [{
+        id: "L:storage->terminal-behind-nuker-ghodium",
+        resource: RESOURCE_LEMERGIUM,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: storage.id,
+        toId: terminal.id,
+        amount: 3_000,
+      }],
+    }]);
 
     const switched = carrierRole().source?.(creep);
 
@@ -692,6 +883,11 @@ describe("carrierRole mineral hauling", () => {
       storage,
       RESOURCE_GHODIUM,
       500,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
     );
     expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
@@ -755,6 +951,1173 @@ describe("carrierRole mineral hauling", () => {
     expect(creep.withdraw).not.toHaveBeenCalledWith(
       storage,
       RESOURCE_GHODIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+  });
+
+  it("picks accepted ResourceControl Terminal preload before ordinary Energy demand", () => {
+    const room = createRoom("W1N2Preload");
+    const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_LEMERGIUM ? 5_000 : 0,
+        getFreeCapacity: () => 0,
+      },
+    });
+    Object.assign(terminal, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const energySource = {
+      id: "ordinary-energy-source-behind-preload",
+      structureType: STRUCTURE_CONTAINER,
+      room,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+        getFreeCapacity: () => 1_500,
+      },
+    } as unknown as StructureContainer;
+    const lab = {
+      id: "ordinary-lab-energy-behind-preload",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 13, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureLab;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(lab);
+    getReservedPickupTarget.mockReturnValue(energySource);
+    getPickupTargetEnergyAmount.mockImplementation((target: unknown) =>
+      target === energySource ? 500 : 0,
+    );
+    reservePickupTarget.mockReturnValue(true);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
+      if (id === energySource.id) return energySource;
+      if (id === lab.id) return lab;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
+      id: "resourceControl:terminal_feed:W1N2Preload:L",
+      type: "terminal_feed",
+      dispatchClass: "capacity_relief",
+      priority: 80,
+      steps: [{
+        id: "L:storage->terminal-preload",
+        resource: RESOURCE_LEMERGIUM,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: storage.id,
+        toId: terminal.id,
+        amount: 3_000,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      800,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(switched).toBe(true);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe("resourceControl:terminal_feed:W1N2Preload:L");
+  });
+
+  it("gives ordinary Energy one bounded source pass after an accepted capacity-relief pickup", () => {
+    const {
+      creep,
+      storage,
+      terminal,
+      energySource,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2CapacityFairness",
+      [true, true],
+    );
+    let carriedResource: ResourceConstant | null = null;
+    let carriedAmount = 0;
+    const withdraw = jest.fn((
+      target: AnyStoreStructure,
+      resource: ResourceConstant,
+      amount?: number,
+    ) => {
+      carriedResource = resource;
+      carriedAmount = amount ?? target.store.getUsedCapacity(resource);
+      return OK;
+    });
+    const transfer = jest.fn((
+      _target: AnyStoreStructure,
+      _resource: ResourceConstant,
+    ) => {
+      carriedResource = null;
+      carriedAmount = 0;
+      return OK;
+    });
+    Object.assign(creep, {
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === carriedResource
+            ? carriedAmount
+            : 0,
+        getFreeCapacity: () => 800 - carriedAmount,
+      },
+      withdraw,
+      transfer,
+    });
+    Game.creeps = { [creep.name]: creep };
+
+    expect(carrierRole().source?.(creep)).toBe(true);
+    expect(withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      800,
+    );
+    expect(getCreepAssignmentState(creep.name)?.yieldAfterCapacityReliefPickup)
+      .toBe(true);
+
+    Game.time += 1;
+    expect(carrierRole().target(creep)).toBe(true);
+    expect(transfer).toHaveBeenCalledWith(terminal, RESOURCE_LEMERGIUM);
+    expect(carriedAmount).toBe(0);
+
+    withdraw.mockClear();
+    carrierRole().source?.(creep);
+
+    expect(withdraw).toHaveBeenCalledWith(energySource, RESOURCE_ENERGY);
+    expect(withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.yieldAfterCapacityReliefPickup)
+      .toBeUndefined();
+  });
+
+  it("keeps capacity-relief yield through out-of-range ordinary Energy until pickup succeeds", () => {
+    const {
+      creep,
+      storage,
+      terminal,
+      energySource,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2CapacityFairnessRetry",
+      [true, true],
+    );
+    let carriedResource: ResourceConstant | null = null;
+    let carriedAmount = 0;
+    let ordinaryAttempts = 0;
+    const withdraw = jest.fn((
+      target: AnyStoreStructure,
+      resource: ResourceConstant,
+      amount?: number,
+    ) => {
+      if (target === energySource && resource === RESOURCE_ENERGY) {
+        ordinaryAttempts += 1;
+        if (ordinaryAttempts === 1) return ERR_NOT_IN_RANGE;
+      }
+      carriedResource = resource;
+      carriedAmount = amount ?? target.store.getUsedCapacity(resource);
+      return OK;
+    });
+    const transfer = jest.fn(() => {
+      carriedResource = null;
+      carriedAmount = 0;
+      return OK;
+    });
+    Object.assign(creep, {
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === carriedResource
+            ? carriedAmount
+            : 0,
+        getFreeCapacity: () => 800 - carriedAmount,
+      },
+      withdraw,
+      transfer,
+    });
+    Game.creeps = { [creep.name]: creep };
+
+    expect(carrierRole().source?.(creep)).toBe(true);
+    expect(withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      800,
+    );
+
+    Game.time += 1;
+    expect(carrierRole().target(creep)).toBe(true);
+    expect(transfer).toHaveBeenCalledWith(terminal, RESOURCE_LEMERGIUM);
+
+    Game.time += 1;
+    withdraw.mockClear();
+    expect(carrierRole().source?.(creep)).toBe(false);
+    expect(withdraw).toHaveBeenCalledWith(energySource, RESOURCE_ENERGY);
+    expect(withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.yieldAfterCapacityReliefPickup)
+      .toBe(true);
+
+    Game.time += 1;
+    withdraw.mockClear();
+    expect(carrierRole().source?.(creep)).toBe(true);
+    expect(withdraw).toHaveBeenCalledWith(energySource, RESOURCE_ENERGY);
+    expect(withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
+    );
+    expect(ordinaryAttempts).toBe(2);
+    expect(getCreepAssignmentState(creep.name)?.yieldAfterCapacityReliefPickup)
+      .toBeUndefined();
+  });
+
+  it("caps two same-tick capacity-relief withdraws to one task-step amount", () => {
+    const {
+      creep: first,
+      storage,
+      terminal,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2CapacityClaims",
+      [true, true],
+    );
+    const taskId = "resourceControl:terminal_feed:W1N2CapacityClaims:L";
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      first.room.name,
+      [{
+        id: taskId,
+        type: "terminal_feed",
+        dispatchClass: "capacity_relief",
+        priority: 80,
+        steps: [{
+          id: "W1N2CapacityClaims:L:storage->terminal",
+          resource: RESOURCE_LEMERGIUM,
+          fromKind: "storage",
+          toKind: "terminal",
+          fromId: storage.id,
+          toId: terminal.id,
+          amount: 1_000,
+        }],
+      }],
+    );
+    first.name = "capacity-relief-claim-1";
+    const second = createCreep(first.room);
+    second.name = "capacity-relief-claim-2";
+    Game.creeps = {
+      [first.name]: first,
+      [second.name]: second,
+    };
+
+    carrierRole().source?.(first);
+    carrierRole().source?.(second);
+
+    const firstAmount = (first.withdraw as jest.Mock).mock.calls[0]?.[2];
+    const secondAmount = (second.withdraw as jest.Mock).mock.calls[0]?.[2];
+    expect([firstAmount, secondAmount]).toEqual([800, 200]);
+    expect(firstAmount + secondAmount).toBeLessThanOrEqual(1_000);
+    expect(getCreepAssignmentState(first.name)?.synthesisCarrierTaskId)
+      .toBe(taskId);
+    expect(getCreepAssignmentState(second.name)?.synthesisCarrierTaskId)
+      .toBe(taskId);
+  });
+
+  it("caps capacity-relief withdraw to the Terminal destination free capacity", () => {
+    const {
+      creep,
+      storage,
+      terminal,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2CapacityDestination",
+      [true, true],
+    );
+    Object.assign(terminal, {
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_LEMERGIUM ? 275 : 0,
+      },
+    });
+
+    expect(carrierRole().source?.(creep)).toBe(true);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      275,
+    );
+    expect(getCreepAssignmentState(creep.name)).toEqual(
+      expect.objectContaining({
+        synthesisCarrierPendingToId: terminal.id,
+        synthesisCarrierPendingResource: RESOURCE_LEMERGIUM,
+      }),
+    );
+  });
+
+  it("delivers accepted capacity cargo from its snapshot after board deletion", () => {
+    const {
+      creep,
+      storage,
+      terminal,
+      energyTarget,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2CapacitySnapshotPrune",
+      [true, true],
+    );
+    let carriedLemergium = 0;
+    const withdraw = jest.fn((
+      _target: AnyStoreStructure,
+      resource: ResourceConstant,
+      amount?: number,
+    ) => {
+      if (resource === RESOURCE_LEMERGIUM) {
+        carriedLemergium = amount ?? 0;
+      }
+      return OK;
+    });
+    const transfer = jest.fn((
+      target: AnyStoreStructure,
+      resource: ResourceConstant,
+    ) => {
+      expect(getCreepAssignmentState(creep.name)).toEqual(
+        expect.objectContaining({
+          synthesisCarrierPendingToId: terminal.id,
+          synthesisCarrierPendingResource: RESOURCE_LEMERGIUM,
+        }),
+      );
+      expect(target).toBe(terminal);
+      expect(resource).toBe(RESOURCE_LEMERGIUM);
+      carriedLemergium = 0;
+      return OK;
+    });
+    Object.assign(creep, {
+      store: {
+        [RESOURCE_LEMERGIUM]: 0,
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_LEMERGIUM
+            ? carriedLemergium
+            : 0,
+        getFreeCapacity: () => 800 - carriedLemergium,
+      },
+      withdraw,
+      transfer,
+    });
+    const taskId =
+      "resourceControl:terminal_feed:W1N2CapacitySnapshotPrune:L";
+
+    expect(carrierRole().source?.(creep)).toBe(true);
+    expect(withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      800,
+    );
+    expect(getCreepAssignmentState(creep.name)).toEqual(
+      expect.objectContaining({
+        synthesisCarrierTaskId: taskId,
+        synthesisCarrierPendingToId: terminal.id,
+        synthesisCarrierPendingResource: RESOURCE_LEMERGIUM,
+      }),
+    );
+
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      creep.room.name,
+      [],
+    );
+    expect(getCarrierTasksByRoom(creep.room.name)[taskId]).toBeUndefined();
+    getEnergyStoreTarget.mockClear();
+    getEnergyStoreTarget.mockReturnValue(energyTarget);
+
+    Game.time += 1;
+    expect(carrierRole().target(creep)).toBe(true);
+
+    expect(transfer).toHaveBeenCalledTimes(1);
+    expect(transfer).toHaveBeenCalledWith(terminal, RESOURCE_LEMERGIUM);
+    expect(transfer).not.toHaveBeenCalledWith(
+      energyTarget,
+      RESOURCE_LEMERGIUM,
+    );
+    expect(transfer).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+    );
+    expect(getEnergyStoreTarget).not.toHaveBeenCalled();
+    const state = getCreepAssignmentState(creep.name);
+    expect(state?.synthesisCarrierTaskId).toBeUndefined();
+    expect(state?.synthesisCarrierPendingFromId).toBeUndefined();
+    expect(state?.synthesisCarrierPendingToId).toBeUndefined();
+    expect(state?.synthesisCarrierPendingResource).toBeUndefined();
+    expect(state?.synthesisCarrierPendingTaskType).toBeUndefined();
+  });
+
+  it("keeps critical Tower Energy ahead of ResourceControl Terminal preload", () => {
+    const room = createRoom("W1N2CriticalPreload");
+    const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_LEMERGIUM ? 5_000 : 0,
+        getFreeCapacity: () => 0,
+      },
+    });
+    Object.assign(terminal, {
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const energySource = {
+      id: "critical-energy-source-before-preload",
+      structureType: STRUCTURE_CONTAINER,
+      room,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+        getFreeCapacity: () => 1_500,
+      },
+    } as unknown as StructureContainer;
+    const tower = {
+      id: "critical-tower-before-preload",
+      structureType: STRUCTURE_TOWER,
+      pos: { x: 13, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureTower;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(tower);
+    getReservedPickupTarget.mockReturnValue(energySource);
+    getPickupTargetEnergyAmount.mockImplementation((target: unknown) =>
+      target === energySource ? 500 : 0,
+    );
+    reservePickupTarget.mockReturnValue(true);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
+      if (id === energySource.id) return energySource;
+      if (id === tower.id) return tower;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
+      id: "resourceControl:terminal_feed:W1N2CriticalPreload:L",
+      type: "terminal_feed",
+      dispatchClass: "capacity_relief",
+      priority: 80,
+      steps: [{
+        id: "L:storage->terminal-critical-preload",
+        resource: RESOURCE_LEMERGIUM,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: storage.id,
+        toId: terminal.id,
+        amount: 3_000,
+      }],
+    }]);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+  });
+
+  it("treats all-busy Spawn Extension demand as prefill behind Terminal preload", () => {
+    const { creep, storage, energySource } = installSpawnPrefillPreloadScenario(
+      "W1N2BusyPrefill",
+      [true, true],
+    );
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      800,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(switched).toBe(true);
+  });
+
+  it("keeps Extension Energy critical when any room Spawn is idle", () => {
+    const { creep, storage, energySource } = installSpawnPrefillPreloadScenario(
+      "W1N2IdlePrefill",
+      [true, false],
+    );
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+  });
+
+  it("does not treat an inactive idle Spawn as critical Extension capacity", () => {
+    const {
+      creep,
+      storage,
+      energySource,
+      spawns,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2InactiveIdleSpawn",
+      [true, false],
+    );
+    Object.assign(spawns[0], { isActive: jest.fn(() => true) });
+    Object.assign(spawns[1], { isActive: jest.fn(() => false) });
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      800,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+  });
+
+  it("still fills busy-Spawn Extensions when no Terminal preload is runnable", () => {
+    const { creep, energySource } = installSpawnPrefillPreloadScenario(
+      "W1N2BusyNoPreload",
+      [true, true],
+      false,
+    );
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+  });
+
+  it("picks ResourceControl Energy preload before ordinary Energy demand", () => {
+    const room = createRoom("W1N2EnergyPreload");
+    const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5_000 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const energySource = {
+      id: "ordinary-energy-source-behind-energy-preload",
+      structureType: STRUCTURE_CONTAINER,
+      room,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+        getFreeCapacity: () => 1_500,
+      },
+    } as unknown as StructureContainer;
+    const lab = {
+      id: "ordinary-lab-behind-energy-preload",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 13, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureLab;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(lab);
+    getReservedPickupTarget.mockReturnValue(energySource);
+    getPickupTargetEnergyAmount.mockImplementation((target: unknown) =>
+      target === energySource ? 500 : 0,
+    );
+    reservePickupTarget.mockReturnValue(true);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
+      if (id === energySource.id) return energySource;
+      if (id === lab.id) return lab;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
+      id: "resourceControl:terminal_feed:W1N2EnergyPreload:energy",
+      type: "terminal_feed",
+      dispatchClass: "capacity_relief",
+      priority: 80,
+      steps: [{
+        id: "energy:storage->terminal-preload",
+        resource: RESOURCE_ENERGY,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: storage.id,
+        toId: terminal.id,
+        amount: 2_000,
+      }],
+    }]);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_ENERGY,
+      800,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+  });
+
+  it("falls through to ordinary Energy when Terminal preload withdraw fails", () => {
+    const room = createRoom("W1N2FailedPreload");
+    const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_LEMERGIUM ? 5_000 : 0,
+        getFreeCapacity: () => 0,
+      },
+    });
+    const energySource = {
+      id: "ordinary-energy-source-after-failed-preload",
+      structureType: STRUCTURE_CONTAINER,
+      room,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+        getFreeCapacity: () => 1_500,
+      },
+    } as unknown as StructureContainer;
+    const lab = {
+      id: "ordinary-lab-after-failed-preload",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 13, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureLab;
+    const creep = {
+      ...createCreep(room),
+      withdraw: jest.fn((target: AnyStoreStructure) =>
+        target === storage ? ERR_NOT_ENOUGH_RESOURCES : OK,
+      ),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(lab);
+    getReservedPickupTarget.mockReturnValue(energySource);
+    getPickupTargetEnergyAmount.mockImplementation((target: unknown) =>
+      target === energySource ? 500 : 0,
+    );
+    reservePickupTarget.mockReturnValue(true);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
+      if (id === energySource.id) return energySource;
+      if (id === lab.id) return lab;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
+      id: "resourceControl:terminal_feed:W1N2FailedPreload:L",
+      type: "terminal_feed",
+      dispatchClass: "capacity_relief",
+      priority: 80,
+      steps: [{
+        id: "L:storage->terminal-failed-preload",
+        resource: RESOURCE_LEMERGIUM,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: storage.id,
+        toId: terminal.id,
+        amount: 3_000,
+      }],
+    }]);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      800,
+    );
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+  });
+
+  it("clears an unrunnable Energy capacity assignment before ordinary Energy delivery", () => {
+    const {
+      creep,
+      storage,
+      terminal,
+      energySource,
+      energyTarget,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2StaleEnergyCapacity",
+      [true, true],
+      false,
+    );
+    let carriedEnergy = 0;
+    const withdraw = jest.fn((
+      target: AnyStoreStructure,
+      resource: ResourceConstant,
+    ) => {
+      if (target === energySource && resource === RESOURCE_ENERGY) {
+        carriedEnergy = 500;
+      }
+      return OK;
+    });
+    const transfer = jest.fn((
+      _target: AnyStoreStructure,
+      resource: ResourceConstant,
+    ) => {
+      if (resource === RESOURCE_ENERGY) {
+        carriedEnergy = 0;
+      }
+      return OK;
+    });
+    Object.assign(creep, {
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY
+            ? carriedEnergy
+            : 0,
+        getFreeCapacity: () => 800 - carriedEnergy,
+      },
+      withdraw,
+      transfer,
+    });
+    const taskId = "resourceControl:terminal_feed:W1N2StaleEnergyCapacity:energy";
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      creep.room.name,
+      [{
+        id: taskId,
+        type: "terminal_feed",
+        dispatchClass: "capacity_relief",
+        priority: 80,
+        steps: [{
+          id: "W1N2StaleEnergyCapacity:energy:storage->terminal",
+          resource: RESOURCE_ENERGY,
+          fromKind: "storage",
+          toKind: "terminal",
+          fromId: storage.id,
+          toId: terminal.id,
+          amount: 2_000,
+        }],
+      }],
+    );
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = taskId;
+
+    expect(carrierRole().source?.(creep)).toBe(true);
+
+    expect(withdraw).toHaveBeenCalledWith(energySource, RESOURCE_ENERGY);
+    expect(withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_ENERGY,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierPendingToId)
+      .toBeUndefined();
+
+    Game.time += 1;
+    carrierRole().target(creep);
+
+    expect(transfer).toHaveBeenCalledWith(energyTarget, RESOURCE_ENERGY);
+    expect(transfer).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+  });
+
+  it("clears an out-of-range Energy capacity assignment when critical Energy preempts next tick", () => {
+    const {
+      creep,
+      storage,
+      terminal,
+      energySource,
+      energyTarget,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2RangedEnergyCapacity",
+      [true, true],
+      false,
+    );
+    Object.assign(storage, {
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5_000 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const tower = {
+      id: "critical-tower-after-ranged-capacity",
+      structureType: STRUCTURE_TOWER,
+      room: creep.room,
+      pos: { x: 14, y: 11, roomName: creep.room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureTower;
+    let carriedEnergy = 0;
+    const withdraw = jest.fn((
+      target: AnyStoreStructure,
+      resource: ResourceConstant,
+    ) => {
+      if (target === storage && resource === RESOURCE_ENERGY) {
+        return ERR_NOT_IN_RANGE;
+      }
+      if (target === energySource && resource === RESOURCE_ENERGY) {
+        carriedEnergy = 500;
+      }
+      return OK;
+    });
+    const transfer = jest.fn((
+      _target: AnyStoreStructure,
+      resource: ResourceConstant,
+    ) => {
+      if (resource === RESOURCE_ENERGY) carriedEnergy = 0;
+      return OK;
+    });
+    Object.assign(creep, {
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY
+            ? carriedEnergy
+            : 0,
+        getFreeCapacity: () => 800 - carriedEnergy,
+      },
+      withdraw,
+      transfer,
+    });
+    const taskId = "resourceControl:terminal_feed:W1N2RangedEnergyCapacity:energy";
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      creep.room.name,
+      [{
+        id: taskId,
+        type: "terminal_feed",
+        dispatchClass: "capacity_relief",
+        priority: 80,
+        steps: [{
+          id: "W1N2RangedEnergyCapacity:energy:storage->terminal",
+          resource: RESOURCE_ENERGY,
+          fromKind: "storage",
+          toKind: "terminal",
+          fromId: storage.id,
+          toId: terminal.id,
+          amount: 2_000,
+        }],
+      }],
+    );
+
+    getEnergyStoreTarget.mockReturnValue(energyTarget);
+    expect(carrierRole().source?.(creep)).toBe(false);
+    expect(withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY, 800);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe(taskId);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierPendingToId)
+      .toBeUndefined();
+
+    Game.time += 1;
+    getEnergyStoreTarget.mockReturnValue(tower);
+    expect(carrierRole().source?.(creep)).toBe(true);
+    expect(withdraw).toHaveBeenCalledWith(energySource, RESOURCE_ENERGY);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierPendingToId)
+      .toBeUndefined();
+
+    Game.time += 1;
+    carrierRole().target(creep);
+
+    expect(transfer).toHaveBeenCalledWith(tower, RESOURCE_ENERGY);
+    expect(transfer).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+  });
+
+  it("clears a stale same-id Energy binding when capacity relief becomes unclassified", () => {
+    const {
+      creep,
+      storage,
+      terminal,
+      energySource,
+      energyTarget,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2CapacityClassRefresh",
+      [true, true],
+      false,
+    );
+    Object.assign(storage, {
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 5_000 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const tower = {
+      id: "critical-tower-after-capacity-class-refresh",
+      structureType: STRUCTURE_TOWER,
+      room: creep.room,
+      pos: { x: 14, y: 12, roomName: creep.room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureTower;
+    let carriedEnergy = 0;
+    const withdraw = jest.fn((
+      target: AnyStoreStructure,
+      resource: ResourceConstant,
+    ) => {
+      if (target === storage && resource === RESOURCE_ENERGY) {
+        return ERR_NOT_IN_RANGE;
+      }
+      if (target === energySource && resource === RESOURCE_ENERGY) {
+        carriedEnergy = 500;
+      }
+      return OK;
+    });
+    const transfer = jest.fn((
+      _target: AnyStoreStructure,
+      resource: ResourceConstant,
+    ) => {
+      if (resource === RESOURCE_ENERGY) carriedEnergy = 0;
+      return OK;
+    });
+    Object.assign(creep, {
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY
+            ? carriedEnergy
+            : 0,
+        getFreeCapacity: () => 800 - carriedEnergy,
+      },
+      withdraw,
+      transfer,
+    });
+    const taskId = "resourceControl:terminal_feed:W1N2CapacityClassRefresh:energy";
+    const step = {
+      id: "W1N2CapacityClassRefresh:energy:storage->terminal",
+      resource: RESOURCE_ENERGY,
+      fromKind: "storage" as const,
+      toKind: "terminal" as const,
+      fromId: storage.id,
+      toId: terminal.id,
+      amount: 2_000,
+    };
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      creep.room.name,
+      [{
+        id: taskId,
+        type: "terminal_feed",
+        dispatchClass: "capacity_relief",
+        priority: 80,
+        steps: [step],
+      }],
+    );
+
+    getEnergyStoreTarget.mockReturnValue(energyTarget);
+    expect(carrierRole().source?.(creep)).toBe(false);
+    expect(withdraw).toHaveBeenCalledWith(storage, RESOURCE_ENERGY, 800);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe(taskId);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierPendingToId)
+      .toBeUndefined();
+
+    Game.time += 1;
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      creep.room.name,
+      [{
+        id: taskId,
+        type: "terminal_feed",
+        priority: 80,
+        steps: [step],
+      }],
+    );
+    expect(getCarrierTasksByRoom(creep.room.name)[taskId]?.dispatchClass)
+      .toBeUndefined();
+    getEnergyStoreTarget.mockReturnValue(tower);
+    expect(carrierRole().source?.(creep)).toBe(true);
+    expect(withdraw).toHaveBeenCalledWith(energySource, RESOURCE_ENERGY);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierPendingToId)
+      .toBeUndefined();
+
+    Game.time += 1;
+    carrierRole().target(creep);
+
+    expect(transfer).toHaveBeenCalledWith(tower, RESOURCE_ENERGY);
+    expect(transfer).not.toHaveBeenCalledWith(terminal, RESOURCE_ENERGY);
+  });
+
+  it("does not promote a non-ResourceControl terminal feed above ordinary Energy demand", () => {
+    const room = createRoom("W1N2OtherPreload");
+    const storage = room.storage as StructureStorage;
+    const terminal = room.terminal as StructureTerminal;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_LEMERGIUM ? 5_000 : 0,
+        getFreeCapacity: () => 0,
+      },
+    });
+    const energySource = {
+      id: "ordinary-energy-source-before-other-feed",
+      structureType: STRUCTURE_CONTAINER,
+      room,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === undefined || resource === RESOURCE_ENERGY ? 500 : 0,
+        getFreeCapacity: () => 1_500,
+      },
+    } as unknown as StructureContainer;
+    const lab = {
+      id: "ordinary-lab-before-other-feed",
+      structureType: STRUCTURE_LAB,
+      pos: { x: 13, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 1_000,
+      },
+    } as unknown as StructureLab;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(lab);
+    getReservedPickupTarget.mockReturnValue(energySource);
+    getPickupTargetEnergyAmount.mockImplementation((target: unknown) =>
+      target === energySource ? 500 : 0,
+    );
+    reservePickupTarget.mockReturnValue(true);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === terminal.id) return terminal;
+      if (id === energySource.id) return energySource;
+      if (id === lab.id) return lab;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("otherProducer", room.name, [{
+      id: "other:terminal_feed:W1N2OtherPreload:L",
+      type: "terminal_feed",
+      dispatchClass: "capacity_relief",
+      priority: 200,
+      steps: [{
+        id: "L:storage->terminal-other-feed",
+        resource: RESOURCE_LEMERGIUM,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: storage.id,
+        toId: terminal.id,
+        amount: 3_000,
+      }],
+    }]);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+  });
+
+  it("does not promote an unclassified ResourceControl terminal feed above ordinary Energy", () => {
+    const {
+      creep,
+      storage,
+      terminal,
+      energySource,
+    } = installSpawnPrefillPreloadScenario(
+      "W1N2UnclassifiedResourceControl",
+      [true, true],
+      false,
+    );
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      creep.room.name,
+      [{
+        id: "resourceControl:terminal_feed:W1N2UnclassifiedResourceControl:L",
+        type: "terminal_feed",
+        priority: 1_000,
+        steps: [{
+          id: "W1N2UnclassifiedResourceControl:L:storage->terminal",
+          resource: RESOURCE_LEMERGIUM,
+          fromKind: "storage",
+          toKind: "terminal",
+          fromId: storage.id,
+          toId: terminal.id,
+          amount: 3_000,
+        }],
+      }],
+    );
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      energySource,
+      RESOURCE_ENERGY,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_LEMERGIUM,
       expect.any(Number),
     );
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)

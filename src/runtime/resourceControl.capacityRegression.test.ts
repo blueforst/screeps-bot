@@ -8,6 +8,7 @@ import {
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
 } from "@/runtime/logistics/resourceTransferTasks";
+import * as marketBaseResourceAutomationModule from "@/runtime/marketBaseResourceAutomation";
 import { runResourceControl } from "@/runtime/resourceControl";
 
 type RuntimeGlobal = typeof global & { __runtimeServices?: unknown };
@@ -597,10 +598,241 @@ describe("resource control live-like capacity recovery", () => {
     expect(getCarrierTasksByRoom(source.name)).toMatchObject({
       [`resourceControl:terminal_feed:${source.name}:${RESOURCE_LEMERGIUM}`]: {
         type: "terminal_feed",
+        dispatchClass: "capacity_relief",
         steps: [expect.objectContaining({ resource: RESOURCE_LEMERGIUM, amount: 3_463 })],
       },
     });
     expect(created.task.blockedReason).toBe("insufficient_terminal_resource_or_fee");
+  });
+
+  it("limits classified capacity-relief Energy staging to the exact fee instead of the ordinary reserve", () => {
+    const source = createMutableRoom(
+      "E7N57",
+      {
+        [RESOURCE_ENERGY]: 50_000,
+        [RESOURCE_LEMERGIUM]: 950_000,
+      },
+      {},
+    );
+    const receiver = createMutableRoom(
+      "E4N57",
+      { [RESOURCE_ENERGY]: 200_000 },
+      { [RESOURCE_ENERGY]: 20_000 },
+    );
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: true,
+    };
+    Memory.cfg!.resourceControl!.rooms = {
+      [source.name]: { terminalEnergyReserve: 20_000 },
+    };
+    (Game.market.calcTransactionCost as jest.Mock).mockReturnValue(2_000);
+
+    Game.time = 1;
+    const created = createAutomaticResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_LEMERGIUM,
+      3_463,
+      `capacity:relief:${RESOURCE_LEMERGIUM}`,
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    Game.time = 10;
+    resetRuntimeServices();
+    runResourceControl();
+
+    expect(getCarrierTasksByRoom(source.name)).toMatchObject({
+      [`resourceControl:terminal_feed:${source.name}:${RESOURCE_ENERGY}`]: {
+        type: "terminal_feed",
+        dispatchClass: "capacity_relief",
+        steps: [expect.objectContaining({ resource: RESOURCE_ENERGY, amount: 2_000 })],
+      },
+      [`resourceControl:terminal_feed:${source.name}:${RESOURCE_LEMERGIUM}`]: {
+        type: "terminal_feed",
+        dispatchClass: "capacity_relief",
+        steps: [expect.objectContaining({ resource: RESOURCE_LEMERGIUM, amount: 3_463 })],
+      },
+    });
+  });
+
+  it("does not let authorized market readiness expand a classified capacity-relief Energy step", () => {
+    const source = createMutableRoom(
+      "E7N56",
+      {
+        [RESOURCE_ENERGY]: 50_000,
+        [RESOURCE_LEMERGIUM]: 860_000,
+      },
+      {},
+    );
+    const receiver = createMutableRoom(
+      "E4N56",
+      { [RESOURCE_ENERGY]: 200_000 },
+      { [RESOURCE_ENERGY]: 20_000 },
+    );
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: true,
+    };
+    Memory.cfg!.resourceControl!.rooms = {
+      [source.name]: { terminalEnergyReserve: 20_000 },
+    };
+    Memory.cfg = {
+      ...Memory.cfg,
+      marketSaleAutomation: { mode: "direct" },
+    } as Memory["cfg"];
+    Memory.data = {
+      marketSaleAutomation: { directAutomation: {} },
+    } as unknown as Memory["data"];
+    (Game.market.calcTransactionCost as jest.Mock).mockReturnValue(2_000);
+    const readinessSpy = jest
+      .spyOn(
+        marketBaseResourceAutomationModule,
+        "deriveMarketBaseResourceCanonicalReadinessAuthorization",
+      )
+      .mockReturnValue({
+        ok: true,
+        revision: "capacity-relief-readiness-auth",
+        maxTransactionEnergy: 1_000,
+        sourcePermitVersion: 3,
+        rooms: [
+          {
+            roomName: source.name,
+            roomInstanceId: `room:${source.name}:1`,
+            terminalId: source.terminal!.id,
+          },
+        ],
+      });
+
+    try {
+      Game.time = 1;
+      const created = createAutomaticResourceTransferTask(
+        source.name,
+        receiver.name,
+        RESOURCE_LEMERGIUM,
+        3_463,
+        `capacity:relief:${RESOURCE_LEMERGIUM}`,
+      );
+      if (typeof created === "string") throw new Error(created);
+
+      Game.time = 10;
+      resetRuntimeServices();
+      runResourceControl();
+
+      expect(getCarrierTasksByRoom(source.name)).toMatchObject({
+        [`resourceControl:terminal_feed:${source.name}:${RESOURCE_ENERGY}`]: {
+          type: "terminal_feed",
+          dispatchClass: "capacity_relief",
+          steps: [expect.objectContaining({ resource: RESOURCE_ENERGY, amount: 2_000 })],
+        },
+      });
+      expect(
+        Memory.runtime?.resourceControl?.rooms[source.name]
+          ?.marketEnergyReadiness,
+      ).toMatchObject({
+        authorized: true,
+        status: "blocked",
+        blocker: "terminal_claimed",
+        plannedFeedAmount: 0,
+      });
+    } finally {
+      readinessSpy.mockRestore();
+    }
+  });
+
+  it("keeps capacity-relief dispatch classification modern-only in the legacy terminal path", () => {
+    const source = createMutableRoom(
+      "E7N55",
+      {
+        [RESOURCE_ENERGY]: 50_000,
+        [RESOURCE_LEMERGIUM]: 950_000,
+      },
+      {},
+    );
+    const receiver = createMutableRoom(
+      "E4N55",
+      { [RESOURCE_ENERGY]: 200_000 },
+      { [RESOURCE_ENERGY]: 20_000 },
+    );
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: false,
+    };
+    (Game.market.calcTransactionCost as jest.Mock).mockReturnValue(2_000);
+
+    Game.time = 1;
+    const created = createAutomaticResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_LEMERGIUM,
+      3_463,
+      `capacity:relief:${RESOURCE_LEMERGIUM}`,
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    Game.time = 10;
+    resetRuntimeServices();
+    runResourceControl();
+
+    const feedTask = getCarrierTasksByRoom(source.name)[
+      `resourceControl:terminal_feed:${source.name}:${RESOURCE_LEMERGIUM}`
+    ];
+    expect(feedTask).toMatchObject({
+      type: "terminal_feed",
+      steps: [expect.objectContaining({ resource: RESOURCE_LEMERGIUM, amount: 3_463 })],
+    });
+    expect(feedTask).not.toHaveProperty("dispatchClass");
+  });
+
+  it("does not grant capacity-relief dispatch classification to a manual task by reason alone", () => {
+    const source = createMutableRoom(
+      "E7N54",
+      {
+        [RESOURCE_ENERGY]: 50_000,
+        [RESOURCE_LEMERGIUM]: 950_000,
+      },
+      {},
+    );
+    const receiver = createMutableRoom(
+      "E4N54",
+      { [RESOURCE_ENERGY]: 200_000 },
+      { [RESOURCE_ENERGY]: 20_000 },
+    );
+    Game.rooms[source.name] = source;
+    Game.rooms[receiver.name] = receiver;
+    Memory.cfg!.resourceControl!.capacityBalancing = {
+      terminalHeadroomRecoveryEnabled: true,
+    };
+    (Game.market.calcTransactionCost as jest.Mock).mockReturnValue(2_000);
+
+    Game.time = 1;
+    const created = createResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_LEMERGIUM,
+      3_463,
+      `capacity:relief:${RESOURCE_LEMERGIUM}`,
+    );
+    if (typeof created === "string") throw new Error(created);
+
+    Game.time = 10;
+    resetRuntimeServices();
+    runResourceControl();
+
+    const tasks = getCarrierTasksByRoom(source.name);
+    const resourceFeed = tasks[
+      `resourceControl:terminal_feed:${source.name}:${RESOURCE_LEMERGIUM}`
+    ];
+    const energyFeed = tasks[
+      `resourceControl:terminal_feed:${source.name}:${RESOURCE_ENERGY}`
+    ];
+    expect(resourceFeed).toBeDefined();
+    expect(resourceFeed).not.toHaveProperty("dispatchClass");
+    expect(energyFeed).toBeDefined();
+    expect(energyFeed).not.toHaveProperty("dispatchClass");
   });
 
   it("executes an explicit Energy task below donor watermarks even when the receiver reached target", () => {
@@ -732,7 +964,8 @@ describe("resource control live-like capacity recovery", () => {
     expect(getCarrierTasksByRoom(source.name)).toMatchObject({
       [`resourceControl:terminal_feed:${source.name}:${RESOURCE_ENERGY}`]: {
         type: "terminal_feed",
-        steps: [expect.objectContaining({ resource: RESOURCE_ENERGY, amount: 30_000 })],
+        dispatchClass: "capacity_relief",
+        steps: [expect.objectContaining({ resource: RESOURCE_ENERGY, amount: 10_000 })],
       },
     });
   });

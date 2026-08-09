@@ -85,6 +85,51 @@ describe("carrierTaskBoard", () => {
     ]);
   });
 
+  it("preserves a dispatch class on refresh and clears it when the next draft omits it", () => {
+    const classifiedDraft = makeDraft({
+      id: "capacity-relief-task",
+      dispatchClass: "capacity_relief",
+    });
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      "W1N1",
+      [classifiedDraft],
+    );
+
+    expect(getCarrierTasksByRoom("W1N1")[classifiedDraft.id]).toMatchObject({
+      dispatchClass: "capacity_relief",
+      createdAt: 1000,
+      updatedAt: 1000,
+    });
+
+    Game.time = 1001;
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      "W1N1",
+      [{ ...classifiedDraft, priority: 101 }],
+    );
+    expect(getCarrierTasksByRoom("W1N1")[classifiedDraft.id]).toMatchObject({
+      dispatchClass: "capacity_relief",
+      priority: 101,
+      createdAt: 1000,
+      updatedAt: 1001,
+    });
+
+    Game.time = 1002;
+    replaceCarrierTasksForProducerRoom(
+      "resourceControl:preload",
+      "W1N1",
+      [makeDraft({ id: classifiedDraft.id, priority: 102 })],
+    );
+    const unclassifiedTask = getCarrierTasksByRoom("W1N1")[classifiedDraft.id];
+    expect(unclassifiedTask).not.toHaveProperty("dispatchClass");
+    expect(unclassifiedTask).toMatchObject({
+      priority: 102,
+      createdAt: 1000,
+      updatedAt: 1002,
+    });
+  });
+
   it("atomically caps claims by both task and step across same-tick refresh", () => {
     const draft = makeDraft({
       id: "claimed-task",

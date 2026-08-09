@@ -1,4 +1,5 @@
 export type CarrierTaskType = "lab_supply" | "lab_cleanup" | "lab_product_unload" | "mineral_haul" | "terminal_feed" | "terminal_offload" | "factory_supply" | "factory_unload" | "power_spawn_supply" | "nuker_supply";
+export type CarrierTaskDispatchClass = "capacity_relief";
 
 export type CarrierStructureKind = "lab" | "terminal" | "storage" | "container" | "factory" | "power_spawn" | "nuker";
 
@@ -18,6 +19,7 @@ export interface CarrierTask {
   roomName: string;
   type: CarrierTaskType;
   priority: number;
+  dispatchClass?: CarrierTaskDispatchClass;
   steps: CarrierTaskStep[];
   createdAt: number;
   updatedAt: number;
@@ -27,6 +29,7 @@ export interface CarrierTaskDraft {
   id: string;
   type: CarrierTaskType;
   priority: number;
+  dispatchClass?: CarrierTaskDispatchClass;
   steps: CarrierTaskStep[];
 }
 
@@ -299,6 +302,9 @@ export function replaceCarrierTasksForProducerRoom(
       roomName,
       type: draft.type,
       priority: draft.priority,
+      ...(draft.dispatchClass
+        ? { dispatchClass: draft.dispatchClass }
+        : {}),
       steps: filteredSteps,
       createdAt,
       updatedAt: Game.time,

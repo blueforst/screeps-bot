@@ -3,6 +3,7 @@ import {
   listCarrierTasksForProducer,
   pruneCarrierTasksForProducer,
   replaceCarrierTasksForProducerRoom,
+  type CarrierTaskDispatchClass,
   type CarrierTaskDraft,
 } from "@/runtime/carrierTaskBoard";
 import { limitActionLog } from "@/runtime/actionLog";
@@ -254,6 +255,7 @@ interface TerminalStagingBatch {
   resource: ResourceConstant;
   amount: number;
   transactionFee: number;
+  dispatchClass?: CarrierTaskDispatchClass;
 }
 
 interface TerminalEnergyPlanOptions {
@@ -3343,6 +3345,10 @@ function appendTerminalResourceFeedDrafts(
   desiredFeedByResource: Map<ResourceConstant, number>,
   initialFeedCapacity: number,
   limitByAdditionalCapacity = false,
+  dispatchClassByResource?: ReadonlyMap<
+    ResourceConstant,
+    CarrierTaskDispatchClass
+  >,
 ): void {
   // 永久闩：ResourceControl 不再为 native/Hub legacy seller 搬运待售货物。
   // desiredFeedByResource 只能来自已存在的内部 transfer staging。
@@ -3362,7 +3368,8 @@ function appendTerminalResourceFeedDrafts(
     if (!draft) continue;
     const feedAmount = draft.steps.reduce((sum, step) => sum + step.amount, 0);
     feedCapacity -= feedAmount;
-    drafts.push(draft);
+    const dispatchClass = dispatchClassByResource?.get(resource);
+    drafts.push(dispatchClass ? { ...draft, dispatchClass } : draft);
   }
 }
 
@@ -4357,8 +4364,15 @@ function syncTerminalFeedTasks(
       );
       continue;
     }
-    stagingBatchByRoom.set(task.fromRoomName, attempt.batch);
-    recordTerminalStagingAdmission(context, task.fromRoomName, attempt.batch);
+    const batch = task.origin === "automatic" &&
+      task.reason?.startsWith("capacity:relief:")
+      ? {
+          ...attempt.batch,
+          dispatchClass: "capacity_relief" as const,
+        }
+      : attempt.batch;
+    stagingBatchByRoom.set(task.fromRoomName, batch);
+    recordTerminalStagingAdmission(context, task.fromRoomName, batch);
   }
 
   // Persisted/manual/capacity tasks already own an explicit send window. Only
@@ -4480,8 +4494,10 @@ function syncTerminalFeedTasks(
       energyDraft?.type === "terminal_feed" &&
       !offloadedResources.has(RESOURCE_ENERGY)
     ) {
-      const maximumEnergyFeed =
-        stagingBatch?.resource !== RESOURCE_ENERGY && stagingFeedRequirement
+      const maximumEnergyFeed = stagingBatch?.dispatchClass === "capacity_relief" &&
+        stagingFeedRequirement
+        ? stagingFeedRequirement.energy
+        : stagingBatch?.resource !== RESOURCE_ENERGY && stagingFeedRequirement
           ? Math.max(
               stagingFeedRequirement.energy,
               feedCapacity - stagingFeedRequirement.resource,
@@ -4496,7 +4512,12 @@ function syncTerminalFeedTasks(
           (sum, step) => sum + step.amount,
           0,
         );
-        drafts.push(limitedEnergyFeed);
+        drafts.push(stagingBatch?.dispatchClass
+          ? {
+              ...limitedEnergyFeed,
+              dispatchClass: stagingBatch.dispatchClass,
+            }
+          : limitedEnergyFeed);
         feedCapacity -= amount;
       }
     }
@@ -4521,12 +4542,18 @@ function syncTerminalFeedTasks(
       desiredFeedByResource,
       feedCapacity,
       true,
+      stagingBatch?.dispatchClass && stagingBatch.resource !== RESOURCE_ENERGY
+        ? new Map([
+            [stagingBatch.resource, stagingBatch.dispatchClass],
+          ])
+        : undefined,
     );
     const validDraftSet = mergeMarketTerminalEnergyReadinessDraft(
       snapshot,
       drafts,
       capacityConfig,
-      terminalBusy.has(snapshot.roomName),
+      terminalBusy.has(snapshot.roomName) ||
+        stagingBatch?.dispatchClass === "capacity_relief",
       context,
     );
     recordTerminalRecoveryObservation(

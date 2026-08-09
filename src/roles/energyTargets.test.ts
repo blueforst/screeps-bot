@@ -13,6 +13,7 @@ import { clearPickupReservationStoreForTest, getPickupReservationsByRoom } from 
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getSafeZone } from "@/runtime/safeZone";
 import { resetPowerCreepControlCacheForTest } from "@/runtime/powerCreepControl";
+import { clearSpawnActiveCacheForTest } from "@/runtime/tickContext";
 
 jest.mock("@/runtime/roomPlannerConstruction", () => ({
   getProtoStorageContainer: jest.fn(() => null),
@@ -126,6 +127,7 @@ describe("energyTargets", () => {
     getProtoControllerLinkContainer.mockReturnValue(null);
     (Game as Game & { powerCreeps: Record<string, PowerCreep> }).powerCreeps = {};
     resetPowerCreepControlCacheForTest();
+    clearSpawnActiveCacheForTest();
   });
 
   it("按技能动态跳过 Spawn，但 PC 未接管时保留 Extension 回退", () => {
@@ -233,6 +235,182 @@ describe("energyTargets", () => {
     };
 
     expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(storage.id);
+  });
+
+  it("所有 active Spawn 都在生产时，优先补给低于 60% 的 Tower 而不是预填 Extension", () => {
+    const roomName = "W4N4";
+    const myStructures: Structure<StructureConstant>[] = [];
+    const room = createRoom({ name: roomName, myStructures });
+    const busySpawn = {
+      id: "busy-spawn-for-tower",
+      name: "BusySpawnForTower",
+      structureType: STRUCTURE_SPAWN,
+      room,
+      pos: createPos(3, roomName),
+      store: createStore(300, 300),
+      spawning: { name: "next-creep" },
+      isActive: jest.fn(() => true),
+    } as unknown as StructureSpawn;
+    const extension = {
+      id: "empty-extension-before-tower",
+      structureType: STRUCTURE_EXTENSION,
+      pos: createPos(4, roomName),
+      store: createStore(0, 50),
+    } as unknown as StructureExtension;
+    const tower = {
+      id: "critical-tower-behind-extension",
+      structureType: STRUCTURE_TOWER,
+      pos: createPos(8, roomName),
+      store: createStore(600, 1_000),
+    } as unknown as StructureTower;
+    myStructures.push(
+      busySpawn as unknown as Structure<StructureConstant>,
+      extension as unknown as Structure<StructureConstant>,
+      tower as unknown as Structure<StructureConstant>,
+    );
+    Game.rooms[room.name] = room;
+    Game.spawns = { [busySpawn.name]: busySpawn };
+
+    expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(tower.id);
+  });
+
+  it("所有 active Spawn 都在生产且无 Tower 时，优先直接补给未接管的 PowerSpawn", () => {
+    const roomName = "W5N5";
+    const myStructures: Structure<StructureConstant>[] = [];
+    const room = createRoom({ name: roomName, myStructures });
+    const busySpawn = {
+      id: "busy-spawn-for-power-spawn",
+      name: "BusySpawnForPowerSpawn",
+      structureType: STRUCTURE_SPAWN,
+      room,
+      pos: createPos(3, roomName),
+      store: createStore(300, 300),
+      spawning: { name: "next-creep" },
+      isActive: jest.fn(() => true),
+    } as unknown as StructureSpawn;
+    const extension = {
+      id: "empty-extension-before-power-spawn",
+      structureType: STRUCTURE_EXTENSION,
+      pos: createPos(4, roomName),
+      store: createStore(0, 50),
+    } as unknown as StructureExtension;
+    const powerSpawn = {
+      id: "direct-power-spawn",
+      structureType: STRUCTURE_POWER_SPAWN,
+      pos: createPos(8, roomName),
+      store: createStore(0, 5_000),
+    } as unknown as StructurePowerSpawn;
+    myStructures.push(
+      busySpawn as unknown as Structure<StructureConstant>,
+      extension as unknown as Structure<StructureConstant>,
+      powerSpawn as unknown as Structure<StructureConstant>,
+    );
+    Game.rooms[room.name] = room;
+    Game.spawns = { [busySpawn.name]: busySpawn };
+
+    expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(powerSpawn.id);
+  });
+
+  it("至少一个 active Spawn 空闲时，仍优先预填 Spawn 或 Extension", () => {
+    const roomName = "W6N6";
+    const myStructures: Structure<StructureConstant>[] = [];
+    const room = createRoom({ name: roomName, myStructures });
+    const busySpawn = {
+      id: "partly-busy-spawn",
+      name: "PartlyBusySpawn",
+      structureType: STRUCTURE_SPAWN,
+      room,
+      pos: createPos(3, roomName),
+      store: createStore(300, 300),
+      spawning: { name: "next-creep" },
+      isActive: jest.fn(() => true),
+    } as unknown as StructureSpawn;
+    const idleSpawn = {
+      id: "idle-active-spawn",
+      name: "IdleActiveSpawn",
+      structureType: STRUCTURE_SPAWN,
+      room,
+      pos: createPos(5, roomName),
+      store: createStore(300, 300),
+      spawning: null,
+      isActive: jest.fn(() => true),
+    } as unknown as StructureSpawn;
+    const extension = {
+      id: "extension-for-idle-window",
+      structureType: STRUCTURE_EXTENSION,
+      pos: createPos(4, roomName),
+      store: createStore(0, 50),
+    } as unknown as StructureExtension;
+    const tower = {
+      id: "tower-after-idle-window",
+      structureType: STRUCTURE_TOWER,
+      pos: createPos(8, roomName),
+      store: createStore(600, 1_000),
+    } as unknown as StructureTower;
+    myStructures.push(
+      busySpawn as unknown as Structure<StructureConstant>,
+      idleSpawn as unknown as Structure<StructureConstant>,
+      extension as unknown as Structure<StructureConstant>,
+      tower as unknown as Structure<StructureConstant>,
+    );
+    Game.rooms[room.name] = room;
+    Game.spawns = {
+      [busySpawn.name]: busySpawn,
+      [idleSpawn.name]: idleSpawn,
+    };
+
+    expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(extension.id);
+  });
+
+  it("inactive Spawn 不会被当成空闲生产能力，active Spawn 全忙时仍优先 Tower", () => {
+    const roomName = "W7N7";
+    const myStructures: Structure<StructureConstant>[] = [];
+    const room = createRoom({ name: roomName, myStructures });
+    const busySpawn = {
+      id: "only-active-busy-spawn",
+      name: "OnlyActiveBusySpawn",
+      structureType: STRUCTURE_SPAWN,
+      room,
+      pos: createPos(3, roomName),
+      store: createStore(300, 300),
+      spawning: { name: "next-creep" },
+      isActive: jest.fn(() => true),
+    } as unknown as StructureSpawn;
+    const inactiveIdleSpawn = {
+      id: "inactive-idle-spawn",
+      name: "InactiveIdleSpawn",
+      structureType: STRUCTURE_SPAWN,
+      room,
+      pos: createPos(5, roomName),
+      store: createStore(300, 300),
+      spawning: null,
+      isActive: jest.fn(() => false),
+    } as unknown as StructureSpawn;
+    const extension = {
+      id: "extension-behind-inactive-spawn",
+      structureType: STRUCTURE_EXTENSION,
+      pos: createPos(4, roomName),
+      store: createStore(0, 50),
+    } as unknown as StructureExtension;
+    const tower = {
+      id: "tower-with-inactive-idle-spawn",
+      structureType: STRUCTURE_TOWER,
+      pos: createPos(8, roomName),
+      store: createStore(600, 1_000),
+    } as unknown as StructureTower;
+    myStructures.push(
+      busySpawn as unknown as Structure<StructureConstant>,
+      inactiveIdleSpawn as unknown as Structure<StructureConstant>,
+      extension as unknown as Structure<StructureConstant>,
+      tower as unknown as Structure<StructureConstant>,
+    );
+    Game.rooms[room.name] = room;
+    Game.spawns = {
+      [busySpawn.name]: busySpawn,
+      [inactiveIdleSpawn.name]: inactiveIdleSpawn,
+    };
+
+    expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(tower.id);
   });
 
   it("picks up dropped energy from the preferred candidate list", () => {

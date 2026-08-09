@@ -9,6 +9,7 @@ export interface CreepAssignmentState {
   carrierPlanTargetId?: string;
   carrierPlanTargetKind?: CarrierPlanTargetKind;
   carrierStorageOnlyMode?: boolean;
+  yieldAfterCapacityReliefPickup?: boolean;
   energyPickupTargetId?: string;
   energyPickupTargetKind?: PickupTargetKind;
   energyPickupRoomName?: string;

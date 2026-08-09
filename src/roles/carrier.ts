@@ -41,6 +41,7 @@ import {
   getLocalCarrierDestinationAvailableAmount,
   type LocalCarrierDestinationCapacityClaim,
 } from "@/runtime/localCarrierDestinationCapacity";
+import { isSpawnActive } from "@/runtime/tickContext";
 
 type CarrierPickupTarget = Resource | StructureContainer | StructureLink | StructureStorage | StructureTerminal | Tombstone | Ruin;
 type DeadStorePickupTarget = Tombstone | Ruin;
@@ -48,6 +49,7 @@ type DeadStorePickupAssignment = { target: DeadStorePickupTarget; resource: Reso
 type CarrierTaskFilter = (task: CarrierTask) => boolean;
 
 const POWER_BANK_BOOST_PRODUCER_PREFIX = "powerBankBoost:";
+const RESOURCE_CONTROL_TERMINAL_PRELOAD_PRODUCER = "resourceControl:preload";
 const MIN_CARRIER_DROPPED_RESOURCE_PICKUP_AMOUNT = 50;
 
 interface CarrierPickupOptions {
@@ -474,11 +476,34 @@ function isSpawnOrExtensionTarget(target: AnyStoreStructure | null): boolean {
 }
 
 function isCriticalEnergyDemandTarget(target: AnyStoreStructure | null): boolean {
-  return !!target && (
-    target.structureType === STRUCTURE_SPAWN ||
-    target.structureType === STRUCTURE_EXTENSION ||
-    target.structureType === STRUCTURE_TOWER
+  if (!target) return false;
+  if (target.structureType === STRUCTURE_TOWER) return true;
+  if (
+    target.structureType !== STRUCTURE_SPAWN &&
+    target.structureType !== STRUCTURE_EXTENSION
+  ) {
+    return false;
+  }
+
+  const roomSpawns = getTickContextService().getSpawnsByRoom(
+    target.pos.roomName,
   );
+  const activeSpawns = roomSpawns.filter(isSpawnActive);
+  if (activeSpawns.length > 0) {
+    return activeSpawns.some((spawn) => !spawn.spawning);
+  }
+
+  if (roomSpawns.length > 0) {
+    return false;
+  }
+
+  // Production has a complete Spawn index. Keep incomplete test/runtime mocks
+  // fail-safe: a Spawn target can describe its own availability, while an
+  // Extension without any room Spawn evidence remains critical.
+  return target.structureType === STRUCTURE_SPAWN
+    ? isSpawnActive(target as StructureSpawn) &&
+      !(target as StructureSpawn).spawning
+    : true;
 }
 
 function setPostTransferPlan(
@@ -756,6 +781,37 @@ function isNonNukerEnergyCarrierTask(task: CarrierTask): boolean {
   return !isNukerEnergySupplyCarrierTask(task);
 }
 
+function isResourceControlTerminalPreloadTask(task: CarrierTask): boolean {
+  return task.producer === RESOURCE_CONTROL_TERMINAL_PRELOAD_PRODUCER &&
+    task.type === "terminal_feed";
+}
+
+function isCapacityReliefTerminalPreloadTask(task: CarrierTask): boolean {
+  return isResourceControlTerminalPreloadTask(task) &&
+    task.dispatchClass === "capacity_relief";
+}
+
+function isBackgroundNonNukerEnergyCarrierTask(task: CarrierTask): boolean {
+  return isNonNukerEnergyCarrierTask(task) &&
+    !isCapacityReliefTerminalPreloadTask(task);
+}
+
+function clearUnacceptedResourceControlTerminalFeedAssignment(
+  creep: Creep,
+): void {
+  const state = ensureCreepAssignmentState(creep.name);
+  const assigned = getAssignedSynthesisCarrierTask(creep);
+  if (
+    !assigned ||
+    !isResourceControlTerminalPreloadTask(assigned) ||
+    state.synthesisCarrierPendingToId ||
+    state.synthesisCarrierPendingPickupTick === Game.time
+  ) {
+    return;
+  }
+  delete state.synthesisCarrierTaskId;
+}
+
 function clearNukerEnergyTaskAssignment(creep: Creep): void {
   const assigned = getAssignedSynthesisCarrierTask(creep);
   if (!assigned || !isNukerEnergySupplyCarrierTask(assigned)) {
@@ -850,7 +906,7 @@ function pickupEnergyDemandForCarrier(
   target: AnyStoreStructure,
   assignedRoomName: string,
   terminalBootstrapReserve?: number,
-): boolean {
+): { switched: boolean; picked: boolean; outOfRange: boolean } {
   delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
   const isSupplyingSpawnOrExtension = isSpawnOrExtensionTarget(target);
 
@@ -859,10 +915,10 @@ function pickupEnergyDemandForCarrier(
     releasePickupReservation(creep);
     clearSynthesisCarrierTaskPlan(creep);
     creep.suicide();
-    return false;
+    return { switched: false, picked: false, outOfRange: false };
   }
 
-  pickupEnergyForCarrier(creep, {
+  const pickup = pickupEnergyForCarrier(creep, {
     includeStorage: isSupplyingSpawnOrExtension,
     includeProtoStorage: isSupplyingSpawnOrExtension,
     includeTerminal:
@@ -883,7 +939,11 @@ function pickupEnergyDemandForCarrier(
   if (hasEnergy) {
     releasePickupReservation(creep);
   }
-  return hasEnergy;
+  return {
+    switched: hasEnergy,
+    picked: pickup.picked,
+    outOfRange: pickup.outOfRange,
+  };
 }
 
 function assignSynthesisCarrierTask(
@@ -987,13 +1047,19 @@ function pickupSynthesisCarrierResource(
     | null = null;
   let taskAmountClaim: CarrierTaskStepAmountClaim | null = null;
   const isTerminalOffload = assignment.task.type === "terminal_offload";
-  const requiresTaskAmountClaim = isTerminalOffload || (
+  const isCapacityReliefPreload = isCapacityReliefTerminalPreloadTask(
+    assignment.task,
+  );
+  const requiresTaskAmountClaim = isTerminalOffload ||
+    isCapacityReliefPreload || (
     isNukerEnergySupplyCarrierTask(assignment.task) &&
     assignment.step.resource === RESOURCE_ENERGY
   );
+  const requiresDestinationCapacityClaim = isTerminalOffload ||
+    isCapacityReliefPreload;
   let claimRequestedAmount = withdrawAmount;
   let destinationTarget: AnyStoreStructure | null = null;
-  if (isTerminalOffload) {
+  if (requiresDestinationCapacityClaim) {
     destinationTarget = resolveTaskStructure(assignment.step.toId);
     if (!destinationTarget) {
       exposureClaim?.release();
@@ -1534,13 +1600,14 @@ export const carrierRole: RoleFactory = () => ({
     });
 
     if (energyDemandTarget && isCriticalEnergyDemandTarget(energyDemandTarget)) {
+      clearUnacceptedResourceControlTerminalFeedAssignment(creep);
       clearNukerEnergyTaskAssignment(creep);
       return pickupEnergyDemandForCarrier(
         creep,
         energyDemandTarget,
         assignedRoomName,
         terminalBootstrapReserve,
-      );
+      ).switched;
     }
 
     if (hasRunnablePowerSpawnSupplyCarrierTask(assignedRoomName)) {
@@ -1571,14 +1638,56 @@ export const carrierRole: RoleFactory = () => ({
       }
     }
 
-    if (energyDemandTarget) {
+    if (energyDemandTarget?.structureType === STRUCTURE_POWER_SPAWN) {
+      clearUnacceptedResourceControlTerminalFeedAssignment(creep);
       clearNukerEnergyTaskAssignment(creep);
       return pickupEnergyDemandForCarrier(
         creep,
         energyDemandTarget,
         assignedRoomName,
         terminalBootstrapReserve,
+      ).switched;
+    }
+
+    const carrierState = ensureCreepAssignmentState(creep.name);
+    const yieldingCapacityRelief = !!carrierState.yieldAfterCapacityReliefPickup;
+    // One accepted capacity slice yields one accepted attempt (or a complete
+    // no-candidate pass) through the old lower-priority pipeline. Keep the
+    // marker while that lower-priority source is merely out of range.
+    if (!yieldingCapacityRelief) {
+      const capacityReliefPickup = pickupSynthesisCarrierResource(
+        creep,
+        isCapacityReliefTerminalPreloadTask,
+        false,
       );
+      if (capacityReliefPickup.picked || capacityReliefPickup.outOfRange) {
+        delete carrierState.carrierStorageOnlyMode;
+        if (capacityReliefPickup.picked) {
+          carrierState.yieldAfterCapacityReliefPickup = true;
+          releasePickupReservation(creep);
+        }
+        return creep.store.getUsedCapacity() > 0 ||
+          carrierState.synthesisCarrierPendingPickupTick === Game.time;
+      }
+      clearUnacceptedResourceControlTerminalFeedAssignment(creep);
+    }
+
+    if (energyDemandTarget) {
+      clearUnacceptedResourceControlTerminalFeedAssignment(creep);
+      clearNukerEnergyTaskAssignment(creep);
+      const energyPickup = pickupEnergyDemandForCarrier(
+        creep,
+        energyDemandTarget,
+        assignedRoomName,
+        terminalBootstrapReserve,
+      );
+      if (
+        yieldingCapacityRelief &&
+        (energyPickup.picked || !energyPickup.outOfRange)
+      ) {
+        delete carrierState.yieldAfterCapacityReliefPickup;
+      }
+      return energyPickup.switched;
     }
 
     const hadExistingTask = !!ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
@@ -1595,12 +1704,15 @@ export const carrierRole: RoleFactory = () => ({
 
     const carrierTaskPickup = pickupSynthesisCarrierResource(
       creep,
-      isNonNukerEnergyCarrierTask,
+      isBackgroundNonNukerEnergyCarrierTask,
       false,
     );
     if (carrierTaskPickup.picked || carrierTaskPickup.outOfRange) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
       if (carrierTaskPickup.picked) {
+        if (yieldingCapacityRelief) {
+          delete carrierState.yieldAfterCapacityReliefPickup;
+        }
         releasePickupReservation(creep);
       }
       return creep.store.getUsedCapacity() > 0 ||
@@ -1612,6 +1724,9 @@ export const carrierRole: RoleFactory = () => ({
     if (hadExistingTask && !hadPendingPickup &&
         ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+      if (yieldingCapacityRelief) {
+        delete carrierState.yieldAfterCapacityReliefPickup;
+      }
       releasePickupReservation(creep);
       return true;
     }
@@ -1621,6 +1736,9 @@ export const carrierRole: RoleFactory = () => ({
     if (ownedRoomDeadStorePickup.picked || ownedRoomDeadStorePickup.outOfRange) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
       if (ownedRoomDeadStorePickup.picked) {
+        if (yieldingCapacityRelief) {
+          delete carrierState.yieldAfterCapacityReliefPickup;
+        }
         releasePickupReservation(creep);
       }
       return creep.store.getUsedCapacity() > 0;
@@ -1640,25 +1758,34 @@ export const carrierRole: RoleFactory = () => ({
     if (nukerEnergyPickup.picked || nukerEnergyPickup.outOfRange) {
       delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
       if (nukerEnergyPickup.picked) {
+        if (yieldingCapacityRelief) {
+          delete carrierState.yieldAfterCapacityReliefPickup;
+        }
         releasePickupReservation(creep);
       }
       return creep.store.getUsedCapacity() > 0 ||
         ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time;
     }
 
-    const carrierState = ensureCreepAssignmentState(creep.name);
-    const snapshotResource = carrierState.synthesisCarrierPendingResource;
-    const carryingSnapshot = snapshotResource && carrierState.synthesisCarrierPendingToId &&
+    const fallbackState = ensureCreepAssignmentState(creep.name);
+    const snapshotResource = fallbackState.synthesisCarrierPendingResource;
+    const carryingSnapshot = snapshotResource && fallbackState.synthesisCarrierPendingToId &&
       creep.store.getUsedCapacity(snapshotResource) > 0;
 
     if (!carryingSnapshot) {
-      carrierState.carrierStorageOnlyMode = true;
+      fallbackState.carrierStorageOnlyMode = true;
     }
 
-    pickupEnergyForCarrier(creep, {
+    const fallbackPickup = pickupEnergyForCarrier(creep, {
       includeStorage: false,
       includeTerminal: false,
     });
+    if (
+      yieldingCapacityRelief &&
+      (fallbackPickup.picked || !fallbackPickup.outOfRange)
+    ) {
+      delete fallbackState.yieldAfterCapacityReliefPickup;
+    }
     const hasEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY) > 0;
     if (hasEnergy) {
       releasePickupReservation(creep);

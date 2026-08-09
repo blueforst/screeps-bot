@@ -8,6 +8,7 @@ import { measureCreepDecision, measureCreepIntent } from "@/runtime/cpuPhaseProf
 import { isReceiverLink } from "@/runtime/linkControl";
 import { getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getTickContextService } from "@/runtime/runtimeServices";
+import { isSpawnActive } from "@/runtime/tickContext";
 import { getPowerCreepRoomEnergyPolicy } from "@/runtime/powerCreepControl";
 import { moveToTarget } from "@/roles/shared";
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
@@ -116,6 +117,21 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
           bestLab = updateClosestTarget(creep, bestLab, lab);
         }
       }
+    }
+
+    const roomSpawns = getTickContextService().getSpawnsByRoom(roomName);
+    const activeSpawns = roomSpawns.filter(isSpawnActive);
+    const noIdleActiveSpawn = roomSpawns.length > 0 &&
+      activeSpawns.every((spawn) => !!spawn.spawning);
+
+    // With Spawn evidence but no active idle Spawn, empty extensions cannot
+    // enable an immediate spawn action. Do not let that prefill hide a Tower
+    // at its critical threshold or an unmanaged PowerSpawn's direct supply.
+    if (noIdleActiveSpawn && bestTower) {
+      return bestTower;
+    }
+    if (noIdleActiveSpawn && bestPowerSpawn) {
+      return bestPowerSpawn;
     }
 
     if (bestSpawnOrExtension) {
