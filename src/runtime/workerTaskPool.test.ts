@@ -13,6 +13,7 @@ import {
   completeWorkerTaskIfDone,
   getWorkerTasksByRoom,
   getWorkerTaskTarget,
+  peekWorkerTasksByRoom,
   refreshWorkerTasks,
   releaseWorkerTask,
 } from "@/runtime/workerTaskPool";
@@ -23,6 +24,7 @@ import type { WorkerTask } from "@/types/system";
 
 type RuntimeGlobal = typeof global & {
   RoomPosition?: typeof MockRoomPosition;
+  __workerTaskBoard?: Record<string, Record<string, WorkerTask>>;
 };
 
 class MockRoomPosition {
@@ -176,6 +178,16 @@ describe("workerTaskPool", () => {
     return (Memory.runtime as { illegalStructureCleanup?: { rooms?: Record<string, { completedAt: number; layoutSavedAt: number }> } } | undefined)
       ?.illegalStructureCleanup;
   }
+
+  it("peeks an absent room without creating the heap task board", () => {
+    expect((global as RuntimeGlobal).__workerTaskBoard).toBeUndefined();
+
+    expect(peekWorkerTasksByRoom("W9N9")).toEqual({});
+    expect((global as RuntimeGlobal).__workerTaskBoard).toBeUndefined();
+
+    const writableTasks = getWorkerTasksByRoom("W9N9");
+    expect(peekWorkerTasksByRoom("W9N9")).toBe(writableTasks);
+  });
 
   it("keeps RCL8 build and normal repair task generation while omitting upgrade", () => {
     Game.time = 30;

@@ -23,6 +23,7 @@ type RuntimeGlobalWithWorkerTasks = typeof global & {
 };
 
 const runtimeGlobal: RuntimeGlobalWithWorkerTasks = global;
+const EMPTY_WORKER_TASK_STORE = Object.freeze({}) as Record<string, WorkerTask>;
 
 function ensureWorkerTaskBoard(): WorkerTaskBoardStore {
   if (!runtimeGlobal.__workerTaskBoard) {
@@ -45,6 +46,10 @@ function ensureRoomTaskStore(roomName: string): Record<string, WorkerTask> {
 
 export function getWorkerTasksByRoom(roomName: string): Record<string, WorkerTask> {
   return ensureRoomTaskStore(roomName);
+}
+
+export function peekWorkerTasksByRoom(roomName: string): Readonly<Record<string, WorkerTask>> {
+  return runtimeGlobal.__workerTaskBoard?.[roomName] ?? EMPTY_WORKER_TASK_STORE;
 }
 
 function getAssignedWorkerRoomName(creep: Creep): string {

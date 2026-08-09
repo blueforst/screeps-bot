@@ -1,6 +1,12 @@
 import { runMemoryCleanup } from "@/runtime/memoryCleanup";
 import { clearPickupReservationStoreForTest, getPickupReservationsByRoom } from "@/runtime/energyPickupReservation";
 import { reserveProductionResource, listProductionReservations } from "@/runtime/resourceReservation";
+import { bootstrapRooms } from "@/runtime/bootstrap";
+import {
+  clearWorkerTaskBoardForTest,
+  peekWorkerTasksByRoom,
+  refreshWorkerTasks,
+} from "@/runtime/workerTaskPool";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -31,10 +37,77 @@ function createManagedCreep(configName: string, role: CreepMemory["role"]): Cree
   } as unknown as Creep;
 }
 
+function createCrossPhaseRoom(name: string): {
+  room: Room;
+  source: Source;
+  mineral: Mineral;
+} {
+  const memory = { workerConstructionTier: 0 } as RoomMemory;
+  Memory.rooms[name] = memory;
+  const room = {
+    name,
+    memory,
+    controller: {
+      id: `${name}-controller`,
+      my: true,
+      level: 5,
+    } as StructureController,
+  } as Room;
+  const source = {
+    id: `${name}-source`,
+    room,
+    pos: {
+      x: 10,
+      y: 10,
+      roomName: name,
+    } as RoomPosition,
+  } as Source;
+  const mineralStructures = [
+    { structureType: STRUCTURE_EXTRACTOR },
+    { structureType: STRUCTURE_CONTAINER },
+  ] as Structure[];
+  const mineral = {
+    id: `${name}-mineral`,
+    mineralAmount: 10_000,
+    pos: {
+      findInRange: () => mineralStructures,
+    } as unknown as RoomPosition,
+  } as Mineral;
+  const rampart = {
+    id: `${name}-rampart`,
+    room,
+    structureType: STRUCTURE_RAMPART,
+    hits: 6_000,
+    hitsMax: 100_000,
+  } as StructureRampart;
+  room.find = ((type: FindConstant) => {
+    if (type === FIND_SOURCES) return [source];
+    if (type === FIND_MINERALS) return [mineral];
+    if (type === FIND_MY_STRUCTURES || type === FIND_STRUCTURES) return [rampart];
+    return [];
+  }) as Room["find"];
+
+  return { room, source, mineral };
+}
+
+function createCrossPhaseManagedCreep(
+  name: string,
+  room: Room,
+  configName: string,
+  role: CreepMemory["role"],
+): Creep {
+  return {
+    name,
+    room,
+    memory: { configName, role } as CreepMemory,
+  } as Creep;
+}
+
 describe("runMemoryCleanup", () => {
   beforeEach(() => {
     resetRuntimeServices();
     clearPickupReservationStoreForTest();
+    clearWorkerTaskBoardForTest();
     Game.time = 17;
     Game.rooms = {
       W1N1: createOwnedRoom("W1N1"),
@@ -54,6 +127,77 @@ describe("runMemoryCleanup", () => {
     Memory.cfg = undefined;
     Memory.runtime = undefined;
     Memory.data = undefined;
+  });
+
+  it("rebuilds workforce after same-tick normal-repair refresh without reusing cleanup observation", () => {
+    Game.time = 51;
+    const { room, source, mineral } = createCrossPhaseRoom("W5N1");
+    Game.rooms = { [room.name]: room };
+    const expectedWithoutRepair = [
+      `${room.name}:harvester:${source.id}`,
+      `${room.name}:mineralHarvester:${mineral.id}`,
+      `${room.name}:carrier:0`,
+      `${room.name}:worker:0`,
+    ];
+    const bonusWorkerConfigName = `${room.name}:worker:1`;
+    const liveGuardConfigs = {
+      [`${room.name}:harvester:live-legacy`]: "harvester",
+      [`${room.name}:miner:live-legacy`]: "miner",
+      [`${room.name}:mineralHarvester:live-legacy`]: "mineralHarvester",
+      [`${room.name}:carrier:9`]: "carrier",
+      [`${room.name}:worker:9`]: "worker",
+    } as const;
+    Memory.data = {
+      creepConfigs: {
+        [expectedWithoutRepair[0]]: { role: "harvester", args: [source.id], roomName: room.name },
+        [expectedWithoutRepair[1]]: { role: "mineralHarvester", args: [mineral.id], roomName: room.name },
+        [expectedWithoutRepair[2]]: { role: "carrier", args: [], roomName: room.name },
+        [expectedWithoutRepair[3]]: { role: "worker", args: [], roomName: room.name },
+        [bonusWorkerConfigName]: { role: "worker", args: [], roomName: room.name },
+        ...Object.fromEntries(
+          Object.entries(liveGuardConfigs).map(([configName, role]) => [
+            configName,
+            { role, args: [], roomName: room.name },
+          ]),
+        ),
+      },
+    } as Memory["data"];
+    Game.creeps = Object.fromEntries(
+      Object.entries(liveGuardConfigs).map(([configName, role], index) => {
+        const name = `ManagedLive${index}`;
+        return [name, createCrossPhaseManagedCreep(name, room, configName, role)];
+      }),
+    );
+
+    expect(peekWorkerTasksByRoom(room.name)).toEqual({});
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs?.[bonusWorkerConfigName]).toBeUndefined();
+    for (const configName of Object.keys(liveGuardConfigs)) {
+      expect(Memory.data?.creepConfigs?.[configName]).toBeDefined();
+    }
+    expect(peekWorkerTasksByRoom(room.name)).toEqual({});
+
+    refreshWorkerTasks();
+
+    expect(Object.values(peekWorkerTasksByRoom(room.name))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "repair",
+          repairMode: "normal",
+          status: "active",
+        }),
+      ]),
+    );
+
+    bootstrapRooms();
+
+    expect(Memory.data?.creepConfigs?.[bonusWorkerConfigName]).toEqual({
+      role: "worker",
+      args: [],
+      roomName: room.name,
+    });
   });
 
   it("removes foreign room pickup reservation memory after claims expire", () => {

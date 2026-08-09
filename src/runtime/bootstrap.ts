@@ -1,15 +1,15 @@
 import { upsertConfig } from "@/runtime/creepApi";
 import { getLinkMinerBody } from "@/config/spawnProfiles";
 import { isColonizationBootstrapRoom } from "@/runtime/colonization";
-import { getEligibleMineralIds, getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
-import { isRoomInReserveMode } from "@/runtime/roomReserve";
+import {
+  applyRoomWorkforceConstructionTierEffect,
+  buildRoomWorkforceInventory,
+} from "@/runtime/roomWorkforce";
 import { isOwnedManagedRoom } from "@/runtime/roomTypes";
 import { isRescueRoom } from "@/runtime/rescue";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import type { TickContextService } from "@/runtime/tickContext";
-import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 import { retireMismatchedMinersAfterHandoff } from "@/runtime/minerBodyPolicy";
-type SourceWorkerRole = "harvester" | "miner";
 
 function hasLiveCreepForConfig(configName: string, tickContext: TickContextService): boolean {
   return tickContext.getCreepsByConfigName(configName).length > 0;
@@ -139,50 +139,52 @@ export function bootstrapRooms(): void {
       continue;
     }
 
-    const expectedConfigNames = new Set(getExpectedManagedConfigNames(room));
-    const sources = room.find(FIND_SOURCES);
+    const inventory = buildRoomWorkforceInventory(room);
+    applyRoomWorkforceConstructionTierEffect(room, inventory.constructionTierEffect);
+    const expectedConfigNames = new Set(inventory.configs.map((config) => config.configName));
     const isSupportedRoom = isColonizationBootstrapRoom(room.name) || isRescueRoom(room.name);
 
-    for (const source of sources) {
-      const role: SourceWorkerRole = hasSourceAdjacentLink(source) ? "miner" : "harvester";
-      const configName = `${room.name}:${role}:${source.id}`;
-      const deprecatedRole: SourceWorkerRole = role === "miner" ? "harvester" : "miner";
-      const deprecatedConfigName = `${room.name}:${deprecatedRole}:${source.id}`;
+    for (const config of inventory.configs) {
+      if (config.kind !== "source") {
+        continue;
+      }
+
       if (isSupportedRoom) {
         // Mother room is providing harvesters; remove from expected set so stale local configs get cleaned up
-        expectedConfigNames.delete(configName);
+        expectedConfigNames.delete(config.configName);
       } else {
-        upsertConfig(configName, role, [source.id], room.name);
-        if (role === "miner") {
+        upsertConfig(config.configName, config.role, [...config.args], inventory.roomName);
+        if (config.role === "miner") {
           retireMismatchedMinersAfterHandoff(
-            tickContext.getCreepsByConfigName(configName),
-            source,
+            tickContext.getCreepsByConfigName(config.configName),
+            config.source,
             getLinkMinerBody(room),
           );
         }
-        orphanDeprecatedSourceConfig(deprecatedConfigName);
-        retireDeprecatedSourceWorkers(configName, deprecatedConfigName, tickContext);
+        orphanDeprecatedSourceConfig(config.deprecatedConfigName);
+        retireDeprecatedSourceWorkers(config.configName, config.deprecatedConfigName, tickContext);
       }
     }
 
-    for (const mineralId of getEligibleMineralIds(room)) {
-      const configName = `${room.name}:mineralHarvester:${mineralId}`;
-      upsertConfig(configName, "mineralHarvester", [mineralId], room.name);
+    for (const config of inventory.configs) {
+      if (config.kind === "mineral") {
+        upsertConfig(config.configName, config.role, [...config.args], inventory.roomName);
+      }
     }
 
     cleanupSourceRoleQueueEntries(room.name, expectedConfigNames, tickContext);
     cleanupSourceConfigs(room.name, expectedConfigNames, tickContext);
 
-    for (const configName of expectedConfigNames) {
-      if (configName.startsWith(`${room.name}:carrier:`)) {
-        upsertConfig(configName, "carrier", [], room.name);
+    for (const config of inventory.configs) {
+      if (config.kind === "carrier") {
+        upsertConfig(config.configName, config.role, [...config.args], inventory.roomName);
       }
     }
     cleanupCarrierConfigs(room.name, expectedConfigNames);
 
-    for (const configName of expectedConfigNames) {
-      if (configName.startsWith(`${room.name}:worker:`)) {
-        upsertConfig(configName, "worker", [], room.name);
+    for (const config of inventory.configs) {
+      if (config.kind === "worker") {
+        upsertConfig(config.configName, config.role, [...config.args], inventory.roomName);
       }
     }
 
@@ -190,7 +192,7 @@ export function bootstrapRooms(): void {
 
     // In reserve mode, orphan any lingering worker configs that still have live creeps
     // so spawn planner does not prespawn replacements.
-    if (isRoomInReserveMode(room.name)) {
+    if (inventory.reserveMode) {
       const creepConfigs = getCreepConfigService();
       for (const config of Object.values(creepConfigs.list(`${room.name}:worker:`))) {
         if (config.roomName) {
