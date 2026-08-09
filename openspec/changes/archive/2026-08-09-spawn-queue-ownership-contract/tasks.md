@@ -18,5 +18,5 @@
 ## 4. 部署与线上观测
 
 - [x] 4.1 提交运行时代码并记录父 commit 与部署 tag 回滚边界（代码回滚父提交：`ac31d0f`）
-- [ ] 4.2 部署同一已验证 commit，确认 shard1 deploy tag 更新
-- [ ] 4.3 观察 Spawn 失败诊断、队列深度、active spawning config 与完整 tick
+- [x] 4.2 部署同一已验证 commit，确认 shard1 tag 为 `2026.8.10-4+81263dc`
+- [x] 4.3 在 tick `72890097` 观察全部 19 个 active Spawn：队列均已收敛为空、2 个合法 config 正在 spawning、没有部署后新增失败诊断
