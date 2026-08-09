@@ -59,7 +59,7 @@ Storage 维护任务存在时，为 PC 保存以 Storage 为中心、技能实�
 
 Storage effect 持续 1000 tick、技能冷却 800 tick。已有 effect 时，冷却期间正常处理其他任务；冷却归零后立即重新插入维护任务，利用剩余约 200 tick 提前回到 Storage 并等待。有效 effect 尚未结束时不得提前施法；effect 消失后的第一个可执行 tick 立即续上并重新开始周期。
 
-`REGEN_SOURCE` 保存稳定排序的两个 Source ID 和下一目标索引。仅当下一目标没有有效 `REGEN_SOURCE` effect 且技能冷却完成时入队；只有 `usePower()` 返回 `OK` 才切换索引，因此形成 A、B、A、B 的交替序列并避免提前刷新。
+`REGEN_SOURCE` 保存稳定排序的两个 Source ID 和下一目标索引。技能 cooldown 归零后立即为下一目标入队，不再等待旧 effect 消失；旧 effect 存在期间任务保持不可施法但不失效，在没有更高优先级任务阻止时让 PC 提前移动到技能范围并等待。旧 effect 消失后的首个可执行 tick 才调用 `usePower()`，且只有返回 `OK` 才切换索引，因此形成 A、B、A、B 的交替序列并避免提前刷新。
 
 `OPERATE_EXTENSION` 在技能冷却完成且房间 Extension 存在能量缺口时入队，目标依次选择有能量的 storage、terminal、container。
 
@@ -80,6 +80,7 @@ Power Spawn 补给优先于普通 Lab/Factory 补料，但低于防御性 Tower 
 - [PC 名称与房间不匹配且没有持久化归属] → 不自动派遣，避免错误房间副作用；可在 Memory 中设置 `homeRoom` 后接管。
 - [PC 离线时 Extension 能量不足] → 控制心跳失效即恢复 Extension carrier 供能。
 - [Storage effect 结束时 PC 距离过远或 OPS 不足] → 在冷却归零后的重叠窗口提前回到范围内；effect 缺失时暂停其他普通目标技能，仅放行 `GENERATE_OPS` 补足 OPS。
+- [REGEN_SOURCE effect 结束后才开始移动造成续效空窗] → cooldown 归零即持久化下一目标并预定位；旧 effect 仍有效时保持任务但禁止提前施法。
 - [等待中的 PC 占据主干道路] → 将 PC 纳入通用交通占位和推让，并用技能范围工作锚点约束优先让路位置。
 - [Spawn 不再补能导致可用上限降低] → 这是明确接受的策略；仅对具备对应 PC 能力的房间生效。
 - [Power Spawn 小额高频补给浪费 carrier] → 采用 20%/90% 低高水位批量补给，单次任务仍按补至满仓计算搬运量。

@@ -13,6 +13,7 @@
 - [x] 2.5 实现 OPERATE_STORAGE 冷却重叠窗口、范围 3 预定位和缺 OPS 时的队列门控
 - [x] 2.6 将 Power Creep 同房移动接入通用寻路、占位识别和范围锚点推让
 - [x] 2.7 按 REGEN_SOURCE 等级扩展 link miner 体型，并实现先补后退的安全换代
+- [x] 2.8 让 REGEN_SOURCE 在 cooldown 归零时立即入队，保留等待中的任务并提前移动到下一 Source
 
 ## 3. Carrier 与 Power Spawn 联动
 
@@ -31,3 +32,5 @@
 - [x] 4.6 添加 PC 双向交通推让回归测试，部署 `2026.8.9-4`；tick 72868039-72868040 实测 E4N58 与 remoteMiningCarrier 交换位置完成让路
 - [x] 4.7 添加 REGEN_SOURCE miner 体型、能力隔离、常规换代和单入口矿点交接回归测试；全量 3372 个测试通过，实况边界修正后相关 131 个测试、TypeScript、构建及 OpenSpec 严格校验通过
 - [x] 4.8 部署 `2026.8.9-6`；tick 72868740 验证 E4N58 两个 miner 均完成 `12 WORK + 6 CARRY + 5 MOVE` 换代，单入口矿点正常交接且 Spawn 无重复队列
+- [x] 4.9 添加 REGEN_SOURCE 旧 effect 等待、预定位与到期首 tick 施法回归测试；全量 122 suites / 508 tests、TypeScript、构建、diff 检查及两个 OpenSpec 严格校验通过
+- [ ] 4.10 提交并部署到 shard1，验证 cooldown 归零后任务已提前入队且 PC 向下一 Source 预定位

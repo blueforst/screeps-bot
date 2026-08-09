@@ -6,7 +6,7 @@
 
 - 新增 Power Creep 房间归属、能力发现、持久化任务队列和逐 tick 执行控制。
 - 将 Power Creep 的同房移动接入通用寻路与交通推让；等待技能条件时允许普通 creep 将其推到附近空位，并尽量保持在技能影响范围内。
-- 按既定优先级调度 `OPERATE_STORAGE`、交替 `REGEN_SOURCE`、`OPERATE_EXTENSION` 与冷却完成即入队的 `GENERATE_OPS`；拥有 `OPERATE_STORAGE` 时利用 200 tick 冷却重叠窗口提前回到 Storage，持续维持其 effect。
+- 按既定优先级调度 `OPERATE_STORAGE`、交替 `REGEN_SOURCE`、`OPERATE_EXTENSION` 与冷却完成即入队的 `GENERATE_OPS`；`OPERATE_STORAGE` 与 `REGEN_SOURCE` 在 cooldown 归零后提前入队和预定位，等旧 effect 结束后立即续上。
 - 按已归属 Power Creep 的 `REGEN_SOURCE` 实际等级提高本房间 link miner 的 WORK 吞吐，并以先补后退方式平滑替换旧体型。
 - 在 OPS 接近满载时，将其卸载到 storage，并保留 Power Creep 一半容量的 OPS。
 - 在 Power Creep 寿命低于 200 tick 时插入最高优先级 `renew` 任务。

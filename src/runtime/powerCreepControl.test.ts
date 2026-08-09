@@ -322,6 +322,87 @@ describe("powerCreepControl", () => {
     expect(listPowerCreepTasks(powerCreep)).toHaveLength(0);
   });
 
+  it("REGEN_SOURCE cooldown 完成后立即入队并向仍有旧效果的下一 Source 预定位", () => {
+    const roomName = "E4N58";
+    const sourceA = createSource(roomName, "source-a", 10);
+    const sourceB = createSource(roomName, "source-b", 40);
+    (sourceA as Source & { effects: RoomObjectEffect[] }).effects = [{
+      effect: PWR_REGEN_SOURCE,
+      power: PWR_REGEN_SOURCE,
+      level: 4,
+      ticksRemaining: 50,
+    } as RoomObjectEffect];
+    const { room, powerSpawn } = createRoom({ sources: [sourceB, sourceA] });
+    const powerCreep = createPowerCreep({
+      room,
+      ticksToLive: 1_000,
+      ops: 100,
+      capacity: 200,
+      rangeToTarget: 10,
+      powers: {
+        [PWR_REGEN_SOURCE]: { level: 4, cooldown: 0 },
+      },
+    });
+    installPowerCreeps(powerCreep);
+    installGameObjects([sourceA, sourceB, powerSpawn]);
+
+    runPowerCreepControl();
+
+    const firstTask = listPowerCreepTasks(powerCreep)[0];
+    expect(firstTask).toMatchObject({ type: "regen_source", targetId: sourceA.id });
+    expect(powerCreep.usePower).not.toHaveBeenCalled();
+    expect(powerCreep.moveTo).toHaveBeenCalledWith(sourceA, { reusePath: 5, range: 3 });
+    expect(getCreepMovementState(powerCreep)?.workAnchor).toEqual({
+      x: sourceA.pos.x,
+      y: sourceA.pos.y,
+      roomName,
+      range: 3,
+    });
+
+    Game.time += 1;
+    runPowerCreepControl();
+
+    expect(listPowerCreepTasks(powerCreep)[0]?.createdAt).toBe(firstTask.createdAt);
+    expect(powerCreep.usePower).not.toHaveBeenCalled();
+  });
+
+  it("REGEN_SOURCE 在已入队 Source 的旧效果消失后首 tick 施法并轮换", () => {
+    const roomName = "E4N58";
+    const sourceA = createSource(roomName, "source-a", 10);
+    const sourceB = createSource(roomName, "source-b", 40);
+    (sourceA as Source & { effects: RoomObjectEffect[] }).effects = [{
+      effect: PWR_REGEN_SOURCE,
+      power: PWR_REGEN_SOURCE,
+      level: 4,
+      ticksRemaining: 1,
+    } as RoomObjectEffect];
+    const { room, powerSpawn } = createRoom({ sources: [sourceB, sourceA] });
+    const powerCreep = createPowerCreep({
+      room,
+      ticksToLive: 1_000,
+      ops: 100,
+      capacity: 200,
+      powers: {
+        [PWR_REGEN_SOURCE]: { level: 4, cooldown: 0 },
+      },
+    });
+    installPowerCreeps(powerCreep);
+    installGameObjects([sourceA, sourceB, powerSpawn]);
+
+    runPowerCreepControl();
+    expect(listPowerCreepTasks(powerCreep)).toHaveLength(1);
+    expect(powerCreep.usePower).not.toHaveBeenCalled();
+
+    (sourceA as Source & { effects: RoomObjectEffect[] }).effects = [];
+    Game.time += 1;
+    runPowerCreepControl();
+
+    expect(powerCreep.usePower).toHaveBeenCalledWith(PWR_REGEN_SOURCE, sourceA);
+    expect(listPowerCreepTasks(powerCreep)).toHaveLength(0);
+    expect(powerCreep.memory.nextRegenSourceIndex).toBe(1);
+    expect(getCreepMovementState(powerCreep)?.workAnchor).toBeUndefined();
+  });
+
   it("REGEN_SOURCE 只在成功后轮换两个 Source", () => {
     const roomName = "E4N58";
     const sourceA = createSource(roomName, "source-a", 10);

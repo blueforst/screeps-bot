@@ -87,15 +87,19 @@
 - **THEN** 系统在第一个可执行 tick 使用 `PWR_OPERATE_STORAGE` 并完成当前维护任务
 
 ### Requirement: REGEN_SOURCE 交替调度
-系统 SHALL 对归属房间两个 Source 按稳定顺序交替使用 `REGEN_SOURCE`，且仅在成功施法后切换目标。
+系统 SHALL 对归属房间两个 Source 按稳定顺序交替使用 `REGEN_SOURCE`，在 cooldown 完成时立即为下一 Source 入队并提前归位，且仅在成功施法后切换目标。
 
-#### Scenario: 两个 Source 首次轮换
-- **WHEN** 下一 Source 没有有效 `PWR_REGEN_SOURCE` effect 且技能 cooldown 为零
-- **THEN** 系统为该 Source 插入任务，并在 `usePower()` 返回 `OK` 后将下一目标切换到另一个 Source
+#### Scenario: cooldown 完成时下一 Source 仍有旧效果
+- **WHEN** `PWR_REGEN_SOURCE` cooldown 为零且下一 Source 的旧 effect 仍有效
+- **THEN** 系统立即为该 Source 插入唯一任务，并在没有更高优先级任务阻止时移动到技能范围内等待
 
-#### Scenario: 下一 Source 仍有有效效果
-- **WHEN** 技能 cooldown 已完成但下一 Source 的 `REGEN_SOURCE` effect 尚未结束
-- **THEN** 系统等待效果结束，不提前覆盖也不跳过轮换顺序
+#### Scenario: 等待旧效果结束
+- **WHEN** 已入队的目标 Source 仍有有效 `PWR_REGEN_SOURCE` effect
+- **THEN** 系统保留任务且不得提前调用 `usePower()`，不得因为旧 effect 仍存在而删除任务
+
+#### Scenario: 旧效果结束后的首个可执行 tick
+- **WHEN** 已入队目标的旧 effect 消失、技能 cooldown 为零且 PC 拥有足够 OPS
+- **THEN** 系统在首个可执行 tick 调用 `usePower()`，并仅在返回 `OK` 后将下一目标切换到另一个 Source
 
 ### Requirement: REGEN_SOURCE 驱动 miner 体型
 系统 SHALL 按房间已归属 Power Creep 的最高 `REGEN_SOURCE` 等级提高本房间 link miner 的 WORK 数，使其能够覆盖技能提升后的 Source 平均产量，且不得硬编码房间名。

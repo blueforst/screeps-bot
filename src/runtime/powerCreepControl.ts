@@ -285,7 +285,7 @@ function isTaskObsolete(powerCreep: PowerCreep, task: PowerCreepTask, room: Room
         getPowerCooldown(powerCreep, PWR_OPERATE_STORAGE) !== 0;
     }
     case "regen_source":
-      return !powerCreep.powers[PWR_REGEN_SOURCE] || hasActivePowerEffect(getTaskTarget(task), PWR_REGEN_SOURCE);
+      return !powerCreep.powers[PWR_REGEN_SOURCE] || !getTaskTarget(task);
     case "operate_extension": {
       if (!powerCreep.powers[PWR_OPERATE_EXTENSION] || getPowerCooldown(powerCreep, PWR_OPERATE_EXTENSION)! > 0) {
         return true;
@@ -354,9 +354,7 @@ function scheduleRegenSource(powerCreep: PowerCreep, room: Room): void {
   }
   const index = (powerCreep.memory.nextRegenSourceIndex || 0) % sources.length;
   const source = sources[index];
-  if (!hasActivePowerEffect(source, PWR_REGEN_SOURCE)) {
-    enqueuePowerCreepTask(powerCreep, "regen_source", source.id);
-  }
+  enqueuePowerCreepTask(powerCreep, "regen_source", source.id);
 }
 
 function getOperateExtensionTarget(room: Room): StructureStorage | StructureTerminal | StructureContainer | null {
@@ -409,6 +407,9 @@ function isTaskRunnable(powerCreep: PowerCreep, task: PowerCreepTask): boolean {
   }
   const target = getTaskTarget(task);
   if (power === PWR_OPERATE_STORAGE && hasActivePowerEffect(target, PWR_OPERATE_STORAGE)) {
+    return false;
+  }
+  if (power === PWR_REGEN_SOURCE && hasActivePowerEffect(target, PWR_REGEN_SOURCE)) {
     return false;
   }
   return powerCreep.store.getUsedCapacity(RESOURCE_OPS) >= getPowerOpsCost(powerCreep, power) &&
@@ -464,27 +465,27 @@ function moveToTaskTarget(powerCreep: PowerCreep, task: PowerCreepTask, target: 
   movePowerCreepToTarget(powerCreep, target, getTaskRange(task));
 }
 
-function prepositionForOperateStorage(powerCreep: PowerCreep, task: PowerCreepTask): void {
+function prepositionForTask(powerCreep: PowerCreep, task: PowerCreepTask): void {
   const target = getTaskTarget(task);
   if (!target) {
     return;
   }
-  const range = (POWER_INFO[PWR_OPERATE_STORAGE] as { range?: number } | undefined)?.range || 3;
+  const range = getTaskRange(task);
   if (powerCreep.pos.getRangeTo(target.pos) > range) {
-    movePowerCreepToTarget(powerCreep, target, range === 1 || range === 2 ? range : 3);
+    movePowerCreepToTarget(powerCreep, target, range);
   } else {
     delete ensureCreepMovementState(powerCreep).movePathState;
   }
 }
 
-function syncOperateStorageWorkAnchor(powerCreep: PowerCreep, task: PowerCreepTask | undefined): void {
+function syncPowerTaskWorkAnchor(powerCreep: PowerCreep, task: PowerCreepTask | undefined): void {
   const movementState = ensureCreepMovementState(powerCreep);
   const target = task ? getTaskTarget(task) : null;
   if (!target) {
     delete movementState.workAnchor;
     return;
   }
-  const range = (POWER_INFO[PWR_OPERATE_STORAGE] as { range?: number } | undefined)?.range || 3;
+  const range = getTaskRange(task);
   movementState.workAnchor = {
     x: target.pos.x,
     y: target.pos.y,
@@ -502,7 +503,7 @@ function finishSuccessfulTask(powerCreep: PowerCreep, task: PowerCreepTask): voi
   }
   const movementState = ensureCreepMovementState(powerCreep);
   delete movementState.movePathState;
-  if (task.type === "operate_storage") {
+  if (task.type === "operate_storage" || task.type === "regen_source") {
     delete movementState.workAnchor;
   }
   removePowerCreepTask(powerCreep, task.id);
@@ -615,12 +616,22 @@ function runPowerCreep(powerCreep: PowerCreep): void {
   const storageMaintenance = listPowerCreepTasks(powerCreep).find(
     (candidate) => candidate.type === "operate_storage",
   );
-  syncOperateStorageWorkAnchor(powerCreep, storageMaintenance);
+  const regenSourceMaintenance = storageMaintenance
+    ? undefined
+    : listPowerCreepTasks(powerCreep).find(
+      (candidate) => candidate.type === "regen_source" && !isTaskRunnable(powerCreep, candidate),
+    );
   const task = selectRunnableTask(powerCreep);
-  if (storageMaintenance && (!task || task.type === "generate_ops")) {
-    prepositionForOperateStorage(powerCreep, storageMaintenance);
+  const prepositionTask = storageMaintenance && (!task || task.type === "generate_ops")
+    ? storageMaintenance
+    : regenSourceMaintenance && (!task || task.type === "generate_ops")
+      ? regenSourceMaintenance
+      : undefined;
+  syncPowerTaskWorkAnchor(powerCreep, storageMaintenance || prepositionTask);
+  if (prepositionTask) {
+    prepositionForTask(powerCreep, prepositionTask);
   }
-  if (!storageMaintenance && !task) {
+  if (!storageMaintenance && !prepositionTask && !task) {
     delete ensureCreepMovementState(powerCreep).movePathState;
   }
   if (task) {
