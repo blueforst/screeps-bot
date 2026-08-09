@@ -97,6 +97,67 @@ function createHubRoom(options: {
 
 const HUB_ROOM = "W1N1";
 
+describe("planHubChains Nuker Ghodium 附加需求", () => {
+  const reagents = {
+    [RESOURCE_ZYNTHIUM_KEANITE]: 5_000,
+    [RESOURCE_UTRIUM_LEMERGITE]: 5_000,
+  };
+
+  it("普通库存为空时规划完整 Ghodium 缺口", () => {
+    const result = planHubChains(
+      reagents,
+      {},
+      0,
+      [],
+      { [RESOURCE_GHODIUM]: 5_000 },
+    );
+
+    expect(result.blocked).toBe(false);
+    expect(result.steps).toContainEqual(
+      expect.objectContaining({
+        product: RESOURCE_GHODIUM,
+        targetAmount: 5_000,
+      }),
+    );
+  });
+
+  it("现有 Ghodium 库存先抵扣附加需求", () => {
+    const result = planHubChains(
+      {
+        ...reagents,
+        [RESOURCE_GHODIUM]: 3_000,
+      },
+      {},
+      0,
+      [],
+      { [RESOURCE_GHODIUM]: 5_000 },
+    );
+
+    expect(result.steps).toContainEqual(
+      expect.objectContaining({
+        product: RESOURCE_GHODIUM,
+        targetAmount: 2_000,
+      }),
+    );
+  });
+
+  it("现有 Ghodium 足量时不新增反应步骤", () => {
+    const result = planHubChains(
+      { [RESOURCE_GHODIUM]: 5_000 },
+      {},
+      0,
+      [],
+      { [RESOURCE_GHODIUM]: 5_000 },
+    );
+
+    expect(result).toEqual({
+      steps: [],
+      blocked: false,
+      missingResources: [],
+    });
+  });
+});
+
 describe("clearHubSynthesisReactions", () => {
   const OTHER_ROOM = "W2N1";
   const PLAN_INTERVAL = 50;

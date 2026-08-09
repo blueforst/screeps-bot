@@ -39,6 +39,7 @@ import {
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { collectCarrierCargoInventory } from "@/runtime/hubProgress";
 import { getProductReagentMap, roundUpReactionAmount } from "@/runtime/reactionMap";
+import { getNukerGhodiumProductionDemand } from "@/runtime/nukerControl";
 import {
   beginHubProtectionAttempt,
   buildCommittedHubProtectionSnapshot,
@@ -293,6 +294,7 @@ export function planHubChains(
   incomingResources: Record<string, number>,
   targetReserve: number,
   targetCompounds: ResourceConstant[] = T3_TARGETS,
+  additionalDemands: Partial<Record<ResourceConstant, number>> = {},
 ): { steps: ChainStep[]; blocked: boolean; missingResources: ResourceConstant[] } {
   // 1. Merge hub inventory + healthy incoming into available pool
   const available: Record<string, number> = {};
@@ -313,6 +315,13 @@ export function planHubChains(
     if (have < targetReserve) {
       needed[t3] = targetReserve;
     }
+  }
+
+  for (const [resource, rawAmount] of Object.entries(additionalDemands)) {
+    if (typeof rawAmount !== "number" || !Number.isFinite(rawAmount)) continue;
+    const amount = Math.max(0, Math.floor(rawAmount));
+    if (amount <= 0) continue;
+    needed[resource] = (needed[resource] || 0) + amount;
   }
 
   // If all targets are at reserve, nothing to produce
@@ -337,6 +346,14 @@ export function planHubChains(
         }
       }
     }
+  }
+
+  // Additional consumption demands are seeded as absolute demand so the same
+  // inventory ledger can offset them. If inventory fully covers every seeded
+  // product, propagation leaves no product to synthesize; this is a completed
+  // plan, not a blocked one.
+  if (!PROCESS_ORDER.some((product) => (needed[product] || 0) > 0)) {
+    return { steps: [], blocked: false, missingResources: [] };
   }
 
   // 4. Build candidates: products with demand > 0 AND both reagents available
@@ -962,6 +979,7 @@ export function planDistributedSynthesis(
    */
   effectiveTargetReserve?: number,
   transferAmounts: ResourceTransferTaskAmountIndex = createResourceTransferTaskAmountIndex(),
+  additionalDemands: Partial<Record<ResourceConstant, number>> = {},
 ): DistributedSynthesisPlan {
   const targetReserve = effectiveTargetReserve ?? hubReservePerCompound;
   const rooms = getEligibleSynthesisRooms();
@@ -1012,7 +1030,13 @@ export function planDistributedSynthesis(
       ? hubInventory[res] || 0
       : ledger[res]?.totalAmount ?? 0;
   }
-  const chainResult = planHubChains(chainInventory, {}, targetReserve, targetCompounds);
+  const chainResult = planHubChains(
+    chainInventory,
+    {},
+    targetReserve,
+    targetCompounds,
+    additionalDemands,
+  );
 
   // 5. Assign steps to rooms using logistics-cost-aware scoring, decrementing ledger atomically
   const assignments: SynthesisDispatchAssignment[] = [];
@@ -1699,6 +1723,7 @@ export function wireDistributedSynthesis(
   distributedStorage?: boolean,
   effectiveTargetReserve?: number,
   transferAmounts: ResourceTransferTaskAmountIndex = createResourceTransferTaskAmountIndex(),
+  additionalDemands: Partial<Record<ResourceConstant, number>> = {},
 ): boolean {
   const eligibleRooms = getEligibleSynthesisRooms();
   const auxRooms = eligibleRooms.filter(r => r.roomName !== hubRoomName);
@@ -1715,6 +1740,7 @@ export function wireDistributedSynthesis(
     hubInventory,
     effectiveTargetReserve,
     transferAmounts,
+    additionalDemands,
   );
 
   if (!Memory.runtime?.hub) return true;
@@ -2130,8 +2156,19 @@ function runHubPlanningAttempt(
   const targetCompounds = cfg.targetCompounds?.length ? cfg.targetCompounds : HUB_TARGET_COMPOUNDS;
   const satelliteDeficit = computeTotalSatelliteDeficit(cfg, targetCompounds, transferAmountsBeforeImports);
   const chainTarget = hubReservePerCompound + satelliteDeficit;
+  const nukerGhodiumDemand = getNukerGhodiumProductionDemand();
+  const additionalProductionDemands: Partial<Record<ResourceConstant, number>> =
+    nukerGhodiumDemand > 0
+      ? { [RESOURCE_GHODIUM]: nukerGhodiumDemand }
+      : {};
 
-  const result = planHubChains(hubInventory, incomingResources, chainTarget, targetCompounds);
+  const result = planHubChains(
+    hubInventory,
+    incomingResources,
+    chainTarget,
+    targetCompounds,
+    additionalProductionDemands,
+  );
 
   planHubImports(cfg, transferAmountsBeforeImports);
   const transferAmountsAfterImports = createResourceTransferTaskAmountIndex();
@@ -2145,6 +2182,7 @@ function runHubPlanningAttempt(
         hubInventory,
         chainTarget,
         transferAmountsAfterImports,
+        additionalProductionDemands,
       )
     : null;
   const distributedAssignments = distributedPreview?.dispatchAssignments ?? [];
@@ -2190,6 +2228,7 @@ function runHubPlanningAttempt(
       cfg.distributedStorage,
       chainTarget,
       transferAmountsAfterImports,
+      additionalProductionDemands,
     );
 
     if (!distributed) {

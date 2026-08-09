@@ -620,6 +620,20 @@ function hasRunnablePowerSpawnSupplyCarrierTask(roomName: string): boolean {
   );
 }
 
+function isNukerGhodiumSupplyCarrierTask(task: CarrierTask): boolean {
+  return task.type === "nuker_supply" && task.steps.some(
+    (step) => step.resource === RESOURCE_GHODIUM,
+  );
+}
+
+function hasRunnableNukerGhodiumSupplyCarrierTask(roomName: string): boolean {
+  return getSynthesisCarrierTasks(roomName).some(
+    (task) =>
+      isNukerGhodiumSupplyCarrierTask(task) &&
+      isCarrierTaskRunnable(task, roomName),
+  );
+}
+
 function pickupEnergyDemandForCarrier(
   creep: Creep,
   target: AnyStoreStructure,
@@ -1087,6 +1101,22 @@ export const carrierRole: RoleFactory = () => ({
       if (powerSpawnPickup.picked || powerSpawnPickup.outOfRange) {
         delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
         if (powerSpawnPickup.picked) {
+          releasePickupReservation(creep);
+        }
+        return creep.store.getUsedCapacity() > 0 ||
+          ensureCreepAssignmentState(creep.name).synthesisCarrierPendingPickupTick === Game.time;
+      }
+    }
+
+    if (hasRunnableNukerGhodiumSupplyCarrierTask(assignedRoomName)) {
+      const nukerGhodiumPickup = pickupSynthesisCarrierResource(
+        creep,
+        isNukerGhodiumSupplyCarrierTask,
+        false,
+      );
+      if (nukerGhodiumPickup.picked || nukerGhodiumPickup.outOfRange) {
+        delete ensureCreepAssignmentState(creep.name).carrierStorageOnlyMode;
+        if (nukerGhodiumPickup.picked) {
           releasePickupReservation(creep);
         }
         return creep.store.getUsedCapacity() > 0 ||

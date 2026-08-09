@@ -1285,6 +1285,29 @@ declare global {
           progressEdges?: ProgressEdge[];
         };
       };
+      nukerControl?: {
+        updatedAt: number;
+        ghodiumProductionDemand: number;
+        hubPlanDemandBaseline?: number;
+        lastActions: string[];
+        rooms: Record<
+          string,
+          {
+            nukerId: string;
+            reserveMode: boolean;
+            ghodium: number;
+            ghodiumCapacity: number;
+            ghodiumDeficit: number;
+            energy: number;
+            energyCapacity: number;
+            energyDeficit: number;
+            safeEnergy: number;
+            pendingIncomingGhodium: number;
+            carrierTaskCount: number;
+            lastError?: string;
+          }
+        >;
+      };
       resourceReservations?: Record<
         string,
         {

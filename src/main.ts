@@ -30,6 +30,7 @@ import { runPowerBankObserver } from "@/runtime/powerBankObserver";
 import { runPowerBankHarvest } from "@/runtime/powerBankHarvest";
 import { runPowerCreepControl } from "@/runtime/powerCreepControl";
 import { runPowerSpawnControl } from "@/runtime/powerSpawnControl";
+import { runNukerControl } from "@/runtime/nukerControl";
 import { refreshWorkerTasks } from "@/runtime/workerTaskPool";
 import { createTickCpuProfiler, setActiveTickCpuProfiler } from "@/runtime/cpuPhaseProfiler";
 import { getMemoryService } from "@/runtime/runtimeServices";
@@ -66,6 +67,7 @@ function gameLoop(): void {
   // 保留冻结生产顺序中的 phase；模块本身由代码级闩永久关闭。
   cpuProfiler.measure("pixelGenerator", runPixelGenerator);
   cpuProfiler.measure("productionMonitor", runProductionMonitor);
+  cpuProfiler.measure("nukerControl", runNukerControl);
   cpuProfiler.measure("hubPlanner", runHubPlanner);
   cpuProfiler.measure("hubUpgradeControl", runHubUpgradeControl);
   cpuProfiler.measure("synthesisControl", runSynthesisControl);

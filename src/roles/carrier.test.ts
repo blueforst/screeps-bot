@@ -276,6 +276,284 @@ describe("carrierRole mineral hauling", () => {
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("power-spawn-supply-task");
   });
 
+  it("picks Nuker Ghodium before non-critical generic energy demand", () => {
+    const room = createRoom("W1N2A");
+    const storage = room.storage as StructureStorage;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_GHODIUM ? 500 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const nuker = {
+      id: "nuker-ghodium-target",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_GHODIUM ? 5_000 : 0,
+      },
+    } as unknown as StructureNuker;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue({
+      id: "non-critical-lab-energy-demand-with-nuker",
+      structureType: STRUCTURE_LAB,
+    } as unknown as StructureLab);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === nuker.id) return nuker;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "nuker-ghodium-supply-task",
+      type: "nuker_supply",
+      priority: 140,
+      steps: [{
+        id: "G:storage->nuker",
+        resource: RESOURCE_GHODIUM,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 500,
+      }],
+    }]);
+
+    const switched = carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_GHODIUM,
+      500,
+    );
+    expect(switched).toBe(true);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe("nuker-ghodium-supply-task");
+  });
+
+  it("keeps critical Spawn energy ahead of Nuker Ghodium", () => {
+    const room = createRoom("W1N2B");
+    const storage = room.storage as StructureStorage;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_GHODIUM ? 500 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const nuker = {
+      id: "nuker-behind-critical-energy",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 5_000,
+      },
+    } as unknown as StructureNuker;
+    const spawn = {
+      id: "critical-spawn-energy-demand",
+      structureType: STRUCTURE_SPAWN,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: () => 300,
+      },
+    } as unknown as StructureSpawn;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(spawn);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === nuker.id) return nuker;
+      if (id === spawn.id) return spawn;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "nuker-behind-critical-task",
+      type: "nuker_supply",
+      priority: 140,
+      steps: [{
+        id: "G:storage->nuker-critical",
+        resource: RESOURCE_GHODIUM,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 500,
+      }],
+    }]);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      storage,
+      RESOURCE_GHODIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBeUndefined();
+  });
+
+  it("keeps PowerSpawn supply ahead of Nuker Ghodium", () => {
+    const room = createRoom("W1N2C");
+    const storage = room.storage as StructureStorage;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === RESOURCE_POWER) return 80;
+          if (resource === RESOURCE_GHODIUM) return 500;
+          return 0;
+        },
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const powerSpawn = {
+      id: "power-spawn-before-nuker",
+      structureType: STRUCTURE_POWER_SPAWN,
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_POWER ? 100 : 0,
+      },
+    } as unknown as StructurePowerSpawn;
+    const nuker = {
+      id: "nuker-behind-power-spawn",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 12, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_GHODIUM ? 5_000 : 0,
+      },
+    } as unknown as StructureNuker;
+    const creep = createCreep(room);
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === powerSpawn.id) return powerSpawn;
+      if (id === nuker.id) return nuker;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("powerSpawnControl", room.name, [{
+      id: "power-spawn-before-nuker-task",
+      type: "power_spawn_supply",
+      priority: 150,
+      steps: [{
+        id: "power:storage->power-spawn-before-nuker",
+        resource: RESOURCE_POWER,
+        fromKind: "storage",
+        toKind: "power_spawn",
+        fromId: storage.id,
+        toId: powerSpawn.id,
+        amount: 80,
+      }],
+    }]);
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "nuker-behind-power-spawn-task",
+      type: "nuker_supply",
+      priority: 140,
+      steps: [{
+        id: "G:storage->nuker-behind-power-spawn",
+        resource: RESOURCE_GHODIUM,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 500,
+      }],
+    }]);
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      storage,
+      RESOURCE_POWER,
+      80,
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe("power-spawn-before-nuker-task");
+  });
+
+  it("delivers accepted Nuker cargo from the pickup snapshot after task refresh", () => {
+    const room = createRoom("W1N2D");
+    const storage = room.storage as StructureStorage;
+    Object.assign(storage, {
+      pos: { x: 10, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_GHODIUM ? 500 : 0,
+        getFreeCapacity: () => 100_000,
+      },
+    });
+    const nuker = {
+      id: "nuker-snapshot-target",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_GHODIUM ? 5_000 : 0,
+      },
+    } as unknown as StructureNuker;
+    let carried = 0;
+    const creep = {
+      ...createCreep(room),
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined || resource === RESOURCE_GHODIUM) {
+            return carried;
+          }
+          return 0;
+        },
+        getFreeCapacity: () => 800 - carried,
+      },
+      withdraw: jest.fn(() => {
+        carried = 500;
+        return OK;
+      }),
+      transfer: jest.fn(() => {
+        carried = 0;
+        return OK;
+      }),
+    } as unknown as Creep;
+    getEnergyStoreTarget.mockReturnValue(null);
+    (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
+      if (id === storage.id) return storage;
+      if (id === nuker.id) return nuker;
+      return null;
+    }) as unknown as Game["getObjectById"];
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
+      id: "nuker-snapshot-task",
+      type: "nuker_supply",
+      priority: 140,
+      steps: [{
+        id: "G:storage->nuker-snapshot",
+        resource: RESOURCE_GHODIUM,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: nuker.id,
+        amount: 500,
+      }],
+    }]);
+    const role = carrierRole();
+
+    role.source?.(creep);
+    replaceCarrierTasksForProducerRoom("nukerControl", room.name, []);
+    Game.time += 1;
+    role.target(creep);
+
+    expect(creep.transfer).toHaveBeenCalledWith(
+      nuker,
+      RESOURCE_GHODIUM,
+    );
+  });
+
   it("does not travel to pick up a dropped resource below 50", () => {
     const room = createRoom("W1N0AG");
     const dropped = {
