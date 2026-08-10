@@ -1,0 +1,602 @@
+import type {
+  HubCommittedProtectionSnapshot,
+  HubProtectionAttempt,
+} from "@/runtime/hubProtectionSnapshot";
+import type {
+  AllocationLedgerEntry,
+  DirectRouteDecision,
+  ProgressEdge,
+  SynthesisDispatchAssignment,
+  SynthesisRoomCapability,
+} from "@/runtime/hubPlanner";
+import type { MarketTerminalEnergyReadinessObservation } from "@/runtime/resourceControl";
+
+declare global {
+  interface ScreepsMemoryRuntime {
+    lastDeployTag?: string;
+    energyPickup?: {
+      terminalBootstrapRecovery?: Record<
+        string,
+        {
+          healthySince?: number;
+          lastObservedAt?: number;
+          lastRecoveryPickupAt?: number;
+        }
+      >;
+    };
+    spawnPlanner?: {
+      sourceWorkerCommutes: Record<
+        string,
+        {
+          commute: number;
+          updatedAt: number;
+        }
+      >;
+    };
+    roomPlannerBuild?: {
+      rooms: Record<
+        string,
+        {
+          lastRunAt?: number;
+        }
+      >;
+    };
+    linkNetwork?: Record<
+      string,
+      {
+        updatedAt: number;
+        senderIds: string[];
+        receiverIds: string[];
+      }
+    >;
+    towerEmergencyRamparts?: Record<string, Record<string, number>>;
+    towerCombat?: Record<
+      string,
+      {
+        focusTargetId?: string;
+        lastFocusHits?: number;
+        stalledTicks?: number;
+        spreadUntil?: number;
+      }
+    >;
+    illegalStructureCleanup?: {
+      rooms: Record<
+        string,
+        {
+          completedAt: number;
+          layoutSavedAt: number;
+        }
+      >;
+    };
+    defenseCoordination?: Record<
+      string,
+      {
+        fronts: Array<{
+          id: string;
+          hostileIds: string[];
+          centroid: { x: number; y: number };
+          threatScore: number;
+        }>;
+        towerFocusFrontId?: string;
+        defenderAssignments?: Record<string, string>;
+        defenderRoles?: Record<string, "primary" | "secondary">;
+      }
+    >;
+    crossShard?: {
+      remotes?: Record<
+        string,
+        {
+          updatedAt: number;
+          remoteUpdatedAt: number;
+          portalCount: number;
+          colonyCount: number;
+          claimCount: number;
+          roomCount: number;
+        }
+      >;
+      claims?: Record<
+        string,
+        {
+          updatedAt: number;
+          by?: string;
+        }
+      >;
+      rooms?: Record<
+        string,
+        {
+          updatedAt: number;
+          hasSpawn: boolean;
+          hasStorage: boolean;
+        }
+      >;
+    };
+    resourceControl?: {
+      updatedAt: number;
+      capacityIndexBuildCount?: number;
+      taskContributionIndex?: {
+        initialTaskCount: number;
+        syncCount: number;
+        contributionEvaluationCount: number;
+      };
+      capacityPolicy?: {
+        enabled?: boolean;
+        terminalHeadroomRecoveryEnabled: boolean;
+        storagePressureFreeCapacity: number;
+        storageReliefTargetFreeCapacity: number;
+        receiverStorageMinFreeCapacity: number;
+        terminalPressureFreeCapacity: number;
+        receiverTerminalMinFreeCapacity: number;
+        terminalReliefTargetFreeCapacity: number;
+      };
+      eligibleReceiverCount?: number;
+      receiverExcludedByReason?: Partial<
+        Record<
+          "capacity_state" | "storage_headroom" | "terminal_headroom" | "commitment_exhausted",
+          number
+        >
+      >;
+      suppressedStagingCount?: Partial<
+        Record<
+          | "receiver_capacity"
+          | "source_depleted"
+          | "source_inventory"
+          | "fee_budget"
+          | "terminal_headroom"
+          | "window_limit"
+          | "invalid_endpoint",
+          number
+        >
+      >;
+      rooms: Record<
+        string,
+        {
+          state: "survival" | "balanced" | "export";
+          capacityState?: "normal" | "pressure" | "emergency";
+          storageUsedCapacity?: number;
+          storageFreeCapacity?: number;
+          terminalUsedCapacity?: number;
+          terminalFreeCapacity?: number;
+          localOffloadCapacityCommitment?: number;
+          desiredTerminalFreeCapacity?: number;
+          terminalRecoveryGap?: number;
+          recoverableOffloadAmount?: number;
+          stickyHeadroom?: boolean;
+          stickyHeadroomReason?:
+            | "storage_full"
+            | "protected_inventory"
+            | "carrier_backlog"
+            | "no_offloadable_resource";
+          capacityReservation?: {
+            committed: number;
+            remaining: number;
+          };
+          staging?: {
+            admittedAmount: number;
+            admittedTaskCount: number;
+            admittedByResource: Partial<Record<ResourceConstant, number>>;
+            suppressedCount: number;
+            suppressedByReason: Partial<
+              Record<
+                | "receiver_capacity"
+                | "source_depleted"
+                | "source_inventory"
+                | "fee_budget"
+                | "terminal_headroom"
+                | "window_limit"
+                | "invalid_endpoint",
+                number
+              >
+            >;
+          };
+          storageEnergy: number;
+          terminalEnergy: number;
+          energyFloor: number;
+          energyTarget: number;
+          energyExportStart: number;
+          terminalEnergyReserve?: number;
+          nativeMineralType?: MineralConstant;
+          canMineNative: boolean;
+          minerals: Partial<Record<ResourceConstant, number>>;
+          taskHealth?: {
+            pendingIncoming: number;
+            pendingOutgoing: number;
+            blockedIncoming: Partial<
+              Record<
+                "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee",
+                number
+              >
+            >;
+            blockedOutgoing: Partial<
+              Record<
+                "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee",
+                number
+              >
+            >;
+          };
+          marketEnergyReadiness?: MarketTerminalEnergyReadinessObservation;
+        }
+      >;
+      lastActions: string[];
+      lastMarketActions: string[];
+      taskSummary?: {
+        pending: number;
+        manualPending: number;
+        automaticPending: number;
+        blockedByReason: Partial<
+          Record<
+            "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee",
+            number
+          >
+        >;
+      };
+      recentCapacityReliefRoutes?: Array<{
+        tick: number;
+        taskId: string;
+        fromRoomName: string;
+        toRoomName: string;
+        resource: ResourceConstant;
+        amount: number;
+        transferCost: number;
+      }>;
+      synthesisBindings?: Record<
+        string,
+        {
+          fromRoomName: string;
+          updatedAt: number;
+          expiresAt: number;
+        }
+      >;
+    };
+    marketSaleAutomation?: {
+      updatedAt: number;
+      requestedMode: "off" | "shadow" | "maker" | "direct" | "hybrid" | "emergencyStop";
+      phase: "off" | "shadow" | "maker" | "direct" | "hybrid" | "requested" | "draining" | "stopped";
+      configRevision?: string;
+      shadowConfigRevision?: string;
+      shadowConfigSignature?: string;
+      shadowConsecutiveCycles: number;
+      zeroConfirmations: number;
+      lastZeroConfirmationTick?: number;
+      managedOrderCount: number;
+      managedOrders?: Array<{
+        orderId: string;
+        roomName: string;
+        resourceType: ResourceConstant;
+        remainingExposure: number;
+        liveRemainingAmount?: number;
+        policyCancelAtTick: number;
+        backoffUntil?: number;
+        pendingMutationKind?: "cancel" | "extend" | "reprice";
+      }>;
+      managedOrderSummaryTruncated?: boolean;
+      orderSlots?: {
+        total: number;
+        current: number;
+        free: number;
+        /** Pending create serialization slots, not manual-order details. */
+        reserved: number;
+        minFree: number;
+      };
+      backoffSummary?: {
+        activeCount: number;
+        nextUntil?: number;
+      };
+      pendingCreateCount: number;
+      pendingMutationCount: number;
+      stagingAmount?: number;
+      reservationAmount?: number;
+      exposureAmount: number;
+      rollingFeeMilli: number;
+      creditReserve?: number;
+      creditSummary?: {
+        credits?: number;
+        reserve?: number;
+        reservedFeesThisTick?: number;
+        availableAfterReserve?: number;
+      };
+      terminalClaims: string[];
+      rejectedByReason: Record<string, number>;
+      candidates: Record<
+        string,
+        {
+          roomName: string;
+          resource: ResourceConstant;
+          revision: number;
+          observedAt: number;
+          expiresAt: number;
+          stock: number;
+          terminalStock: number;
+          protectedAmount: number;
+          forecastBuffer: number;
+          outgoingProtected: number;
+          carrierOrInFlight: number;
+          managedExposure: number;
+          sellableAmount: number;
+          hardFloor?: number;
+          economicFloor?: number;
+          historyTrusted?: boolean;
+          historyCompleteDayCount?: number;
+          historyAcceptedDayCount?: number;
+          historyFloor?: number;
+          ratchetFloor?: number;
+          effectiveNetFloor?: number;
+          makerPrice?: number;
+          makerNetPrice?: number;
+          bestDirectNetPrice?: number;
+          rejectedReason?: string;
+        }
+      >;
+      canaryLock?: {
+        roomName: string;
+        resourceType: ResourceConstant;
+        lockedAt: number;
+        configRevision: string;
+      };
+      direct?: {
+        strategyActive: boolean;
+        shadowConsecutiveCycles: number;
+        qualifiedAt?: number;
+        activationAuthorized: boolean;
+        canary?: {
+          roomName: string;
+          resourceType: ResourceConstant;
+          lockedAt: number;
+          configRevision: string;
+          safetyFingerprint: string;
+        };
+        pendingCount: number;
+        pendingByStatus: Record<string, number>;
+        confirmedDealCount: number;
+        pausedForReview: boolean;
+        migrationBlockedReason?: string;
+        baseResourceV3CpuTrace?: {
+          observedAt: number;
+          cpuAfterOuterSession: number | null;
+          cpuAfterScopeCore: number | null;
+          cpuAfterMarketFacts: number | null;
+          cpuAfterShadowBatch: number | null;
+          cpuAfterInnerApply: number | null;
+          cpuCutPhase:
+            | "outer_session"
+            | "scope_core_read1"
+            | "scope_core_read2"
+            | "market_facts_read1"
+            | "market_facts_read2"
+            | "shadow_batch_read1"
+            | "shadow_batch_read2"
+            | "inner_apply"
+            | "outer_precommit"
+            | null;
+          marketFactsDisposition:
+            | "not_reached"
+            | "skipped_no_consumer"
+            | "read";
+        };
+        exposure: {
+          pendingCount: number;
+          quarantinedCount: number;
+          resourceAmount: number;
+          transactionEnergy: number;
+          reconcileGapCount: number;
+        };
+        snapshot?: {
+          observedAt: number;
+          age: number;
+          maxAgeTicks: number;
+          fresh: boolean;
+          configRevision: string;
+          safetyFingerprint: string;
+          canary?: {
+            roomName: string;
+            resourceType: ResourceConstant;
+            lockedAt: number;
+            configRevision: string;
+            safetyFingerprint: string;
+          };
+          result:
+            | "safe_opportunity"
+            | "safe_no_opportunity"
+            | "production_priority_wait"
+            | "incomplete";
+          structuralCandidateCount: number;
+          eligibleStructuralCandidateCount: number;
+          buyBook: {
+            rawOrderCount: number;
+            rawOrderLimit: number;
+            eligibleOrderCount: number;
+            eligibleOrderLimit: number;
+            eligibleDepth: number;
+            eligibleDistinctRoomCount: number;
+            pricedOrderCount: number;
+            safeCandidateCount: number;
+            rejectedOrderCount: number;
+            highestGrossPrice?: number;
+            selectedOrderId?: string;
+            cycleRejection?: string;
+            orderRejectionCounts: Record<string, number>;
+          };
+          opportunity?: {
+            orderId: string;
+            orderRoomName: string;
+            price: number;
+            orderAmount: number;
+            dealAmount: number;
+            transactionEnergy: number;
+            netCreditsMilli: number;
+            worstCaseNetCreditsMilli: number;
+            effectiveNetFloorMilli: number;
+          };
+          manualBuyOrderCount: number;
+          manualSellOrderCount: number;
+          zeroRemainingOwnOrderCount: number;
+          effectiveNetFloor?: number;
+          effectiveEnergyShadowPrice?: number;
+          energyShadowObservedAt?: number;
+          energyShadowComponents?: {
+            hardFloor: number;
+            explicit?: number;
+            historyFloor?: number;
+            ratchetFloor?: number;
+          };
+          rejectedByReason: Record<string, number>;
+        };
+      };
+      recentActions: string[];
+      safetyViolationCount: number;
+    };
+    factoryControl?: {
+      updatedAt?: number;
+      rooms: Record<
+        string,
+        {
+          stage: "idle" | "acquiring" | "loading" | "producing" | "unloading" | "blocked" | "sleeping";
+          activeTarget?: ResourceConstant;
+          missing?: Partial<Record<ResourceConstant, number>>;
+          sleepReason?: string;
+          sleepUntilTick?: number;
+          lastError?: string;
+          lastTransitionAt: number;
+          loadingSinceTick?: number;
+        }
+      >;
+      claimedOrders?: Array<{
+        orderId: string;
+        roomName: string;
+        tick: number;
+        purpose: "sell" | "buy";
+      }>;
+    };
+    synthesisControl?: {
+      updatedAt: number;
+      generatedTaskCount: number;
+      failedTaskCount: number;
+      successfulRunCount: number;
+      lastActions: string[];
+      bindings: Record<
+        string,
+        {
+          fromRoomName: string;
+          updatedAt: number;
+          expiresAt: number;
+        }
+      >;
+      rooms: Record<
+        string,
+        {
+          stage: "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
+          activeProduct?: ResourceConstant;
+          reagentA?: ResourceConstant;
+          reagentB?: ResourceConstant;
+          targetAmount?: number;
+          batchSize?: number;
+          reagentLabIds: string[];
+          productLabIds: string[];
+          successfulRuns: number;
+          pendingTasks: number;
+          missing?: Partial<Record<ResourceConstant, number>>;
+          cleanupTasks?: Array<{
+            labId: string;
+            resource: ResourceConstant;
+            amount: number;
+            target: "terminal" | "storage";
+          }>;
+          lastError?: string;
+          lastTransitionAt: number;
+          loadingSinceTick?: number;
+          boostPause?: {
+            reason: "powerBankBoost";
+            taskId: string;
+            taskIds?: string[];
+            createdTick: number;
+            pausedPlan: {
+              product: ResourceConstant;
+              targetAmount: number;
+              batchSize: number;
+              donorRoomNames: string[];
+            } | null;
+            pausedStage: "idle" | "acquiring" | "loading" | "synthesizing" | "unloading" | "blocked";
+          };
+        }
+      >;
+    };
+    hub?: {
+      status?: "idle" | "importing" | "synthesizing" | "distributing" | "blocked";
+      updatedAt?: number;
+      activeProduct?: string;
+      activeStep?: number;
+      missingResources?: string[];
+      lastPlanActions?: string[];
+      needsPlan?: boolean;
+      lastPlanTick?: number;
+      lastError?: string;
+      marketSellSurplus?: Partial<Record<ResourceConstant, number>>;
+      protectionAttemptHighWater?: number;
+      currentProtectionAttempt?: HubProtectionAttempt;
+      committedProtectionSnapshot?: HubCommittedProtectionSnapshot;
+      distributedSynthesis?: {
+        roomCapabilities?: Record<string, SynthesisRoomCapability>;
+        dispatchAssignments?: SynthesisDispatchAssignment[];
+        allocationLedger?: Record<string, AllocationLedgerEntry>;
+        routeDecisions?: DirectRouteDecision[];
+        progressEdges?: ProgressEdge[];
+      };
+    };
+    nukerControl?: {
+      updatedAt: number;
+      ghodiumProductionDemand: number;
+      hubPlanDemandBaseline?: number;
+      lastActions: string[];
+      rooms: Record<
+        string,
+        {
+          nukerId: string;
+          reserveMode: boolean;
+          ghodium: number;
+          ghodiumCapacity: number;
+          ghodiumDeficit: number;
+          energy: number;
+          energyCapacity: number;
+          energyDeficit: number;
+          safeEnergy: number;
+          pendingIncomingGhodium: number;
+          carrierTaskCount: number;
+          lastError?: string;
+        }
+      >;
+    };
+    resourceReservations?: Record<
+      string,
+      {
+        roomName: string;
+        resource: ResourceConstant;
+        holderId: string;
+        amount: number;
+        updatedAt: number;
+        expiresAt: number;
+      }
+    >;
+    powerBankBoost?: Record<
+      string,
+      {
+        labs: Record<string, { labId: string; compound: ResourceConstant }>;
+        taskId: string;
+        sourceRoomName: string;
+      }
+    >;
+    powerBankObserver?: {
+      patrolIndex: number;
+      updatedAt: number;
+      lastObservedRooms: string[];
+      coveredRooms: string[];
+    };
+    remoteMining?: {
+      lastScanAt?: number;
+    };
+    /** Power bank scout transit danger rooms: roomName -> expiresAt tick. */
+    transitDangerRooms?: Record<string, number>;
+    /** Power bank scout hostile-owned or hostile-reserved transit rooms. */
+    powerBankPermanentDangerRooms?: Record<string, true>;
+  }
+}
+
+export {};
