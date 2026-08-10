@@ -21,6 +21,6 @@
 
 ## 4. 部署与归档
 
-- [ ] 4.1 提交实现并部署同一已验证版本，记录 deploy tag 与回滚父提交
-- [ ] 4.2 只读观察 LinkControl phase CPU、成功 fixed-action 计数与 `Memory.runtime.linkNetwork` 原路径/shape；具体 transfer intent 由 characterization 验证
-- [ ] 4.3 同步 capability 到主规格、归档 change，并再次运行 OpenSpec strict validation
+- [x] 4.1 提交实现并部署同一已验证版本，记录 deploy tag 与回滚父提交
+- [x] 4.2 只读观察 LinkControl phase CPU、成功 fixed-action 计数与 `Memory.runtime.linkNetwork` 原路径/shape；具体 transfer intent 由 characterization 验证
+- [x] 4.3 同步 capability 到主规格、归档 change，并再次运行 OpenSpec strict validation
