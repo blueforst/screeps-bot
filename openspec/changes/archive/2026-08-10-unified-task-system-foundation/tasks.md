@@ -56,5 +56,5 @@
 - [x] 7.1 运行build与workspace双TypeScript检查、全量Jest、Rollup build、`openspec validate unified-task-system-foundation --strict`和tracked/untracked diff check
 - [x] 7.2 比较实现前后规范化bundle hash/语义，证明foundation未进入生产入口且main phase、Memory写集合和global ABI不变
 - [x] 7.3 若bundle等价则记录无需部署的证据；若不等价则停止归档并移除意外入口/初始化副作用或另立行为change
-- [ ] 7.4 同步两项新capability到主规格、完成最终review/re-review并归档`unified-task-system-foundation`
+- [x] 7.4 同步两项新capability到主规格、完成最终review/re-review并归档`unified-task-system-foundation`
 - [x] 7.5 记录后续独立change顺序：War生命周期定规约→local dispatch ownership→workflow owned assets→logistics contracts→task observability
