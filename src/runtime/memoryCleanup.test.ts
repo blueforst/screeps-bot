@@ -138,6 +138,121 @@ describe("runMemoryCleanup", () => {
     Memory.data = undefined;
   });
 
+  it("does not prune link network cache outside the 17-tick cleanup cadence", () => {
+    Game.time = 18;
+    Memory.runtime = {
+      linkNetwork: {
+        W1N1: {
+          updatedAt: 10,
+          senderIds: ["owned-sender"],
+          receiverIds: ["owned-receiver"],
+        },
+        W9N9: {
+          updatedAt: 11,
+          senderIds: ["unseen-sender"],
+          receiverIds: ["unseen-receiver"],
+        },
+      },
+    } as Memory["runtime"];
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.linkNetwork).toEqual({
+      W1N1: {
+        updatedAt: 10,
+        senderIds: ["owned-sender"],
+        receiverIds: ["owned-receiver"],
+      },
+      W9N9: {
+        updatedAt: 11,
+        senderIds: ["unseen-sender"],
+        receiverIds: ["unseen-receiver"],
+      },
+    });
+  });
+
+  it("keeps owned link cache and prunes visible-lost and unseen rooms on tick 17", () => {
+    const visibleLostRoom = createOwnedRoom("W2N2");
+    visibleLostRoom.controller!.my = false;
+    Game.rooms = {
+      W1N1: createOwnedRoom("W1N1"),
+      W2N2: visibleLostRoom,
+    };
+    Memory.runtime = {
+      linkNetwork: {
+        W1N1: {
+          updatedAt: 10,
+          senderIds: ["owned-sender"],
+          receiverIds: ["owned-receiver"],
+        },
+        W2N2: {
+          updatedAt: 11,
+          senderIds: ["lost-sender"],
+          receiverIds: ["lost-receiver"],
+        },
+        W9N9: {
+          updatedAt: 12,
+          senderIds: ["unseen-sender"],
+          receiverIds: ["unseen-receiver"],
+        },
+      },
+    } as Memory["runtime"];
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.linkNetwork).toEqual({
+      W1N1: {
+        updatedAt: 10,
+        senderIds: ["owned-sender"],
+        receiverIds: ["owned-receiver"],
+      },
+    });
+  });
+
+  it("preserves an empty link network container after pruning its last stale room", () => {
+    Memory.runtime = {
+      linkNetwork: {
+        W9N9: {
+          updatedAt: 12,
+          senderIds: ["unseen-sender"],
+          receiverIds: ["unseen-receiver"],
+        },
+      },
+    } as Memory["runtime"];
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.linkNetwork).toEqual({});
+  });
+
+  it("does not create link network memory when no cache exists", () => {
+    Memory.runtime = undefined;
+
+    runMemoryCleanup();
+
+    expect(Memory.runtime?.linkNetwork).toBeUndefined();
+  });
+
+  it("continues cleaning dead creep memory while pruning stale link cache", () => {
+    Memory.creeps.DeadWorker = {
+      role: "worker",
+    } as CreepMemory;
+    Memory.runtime = {
+      linkNetwork: {
+        W9N9: {
+          updatedAt: 12,
+          senderIds: ["unseen-sender"],
+          receiverIds: ["unseen-receiver"],
+        },
+      },
+    } as Memory["runtime"];
+
+    runMemoryCleanup();
+
+    expect(Memory.creeps.DeadWorker).toBeUndefined();
+    expect(Memory.runtime?.linkNetwork).toEqual({});
+  });
+
   it("leaves visible managed-room canonical configs to bootstrap without scanning workforce policy", () => {
     Game.time = 51;
     const room = createOwnedRoom("W5N1");

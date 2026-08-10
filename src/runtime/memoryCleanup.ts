@@ -6,6 +6,7 @@ import { isOwnedManagedRoom } from "@/runtime/roomTypes";
 import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
 import { cleanupPickupReservationStore } from "@/runtime/energyPickupReservation";
 import { cleanupResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import { pruneLinkNetworkRuntime } from "@/runtime/linkNetworkMemory";
 import { cleanupWorkerTaskBoard } from "@/runtime/workerTaskPool";
 import { gcProductionReservations } from "@/runtime/resourceReservation";
 import { cleanupTerminalBootstrapRecoveryRuntime } from "@/runtime/terminalBootstrapRecovery";
@@ -222,22 +223,6 @@ function cleanupRoomPlannerMemory(ownedRooms: Set<string>, colonizationTargets: 
 
     if (staleByRoom || staleByTime) {
       delete Memory.data.roomPlanner[roomName];
-      removed += 1;
-    }
-  }
-
-  return removed;
-}
-
-function cleanupLinkNetworkMemory(ownedRooms: Set<string>): number {
-  if (!Memory.runtime?.linkNetwork) {
-    return 0;
-  }
-
-  let removed = 0;
-  for (const roomName of Object.keys(Memory.runtime.linkNetwork)) {
-    if (!ownedRooms.has(roomName)) {
-      delete Memory.runtime.linkNetwork[roomName];
       removed += 1;
     }
   }
@@ -712,7 +697,7 @@ export function runMemoryCleanup(): void {
   cleanupRoomPlannerMemory(ownedRooms, colonizationTargets);
   cleanupRoomPlannerBuildRuntimeMemory(ownedRooms);
   cleanupIllegalStructureCleanupMemory(ownedRooms);
-  cleanupLinkNetworkMemory(ownedRooms);
+  pruneLinkNetworkRuntime(ownedRooms);
   cleanupTowerEmergencyMemory(ownedRooms);
   cleanupResourceControlMemory(ownedRooms);
   cleanupSynthesisControlMemory(ownedRooms);

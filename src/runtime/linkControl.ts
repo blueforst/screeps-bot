@@ -1,6 +1,12 @@
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
-import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import {
+  peekLinkRoomRuntime,
+  writeLinkRoomRuntime,
+  type LinkRoomRuntimeSnapshot,
+  type LinkRoomRuntimeView,
+} from "@/runtime/linkNetworkMemory";
+import { getTickContextService } from "@/runtime/runtimeServices";
 
 const CLASSIFY_INTERVAL = 11;
 const LINKED_SOURCE_CONTAINER_CLEANUP_INTERVAL = 101;
@@ -9,21 +15,9 @@ const STORAGE_RECEIVER_RANGE = 2;
 const CONTROLLER_RECEIVER_RANGE = 3;
 const RECEIVER_FILL_THRESHOLD = 0.5;
 
-interface LinkRoomRuntime {
-  updatedAt: number;
-  senderIds: string[];
-  receiverIds: string[];
-}
-
 const linkedSourceContainerCleanupTicks = new Map<string, number>();
 
-function ensureLinkRuntimeStore(): Record<string, LinkRoomRuntime> {
-  const runtime = getMemoryService().ensureRuntime();
-  runtime.linkNetwork = runtime.linkNetwork || {};
-  return runtime.linkNetwork;
-}
-
-function classifyRoomLinks(room: Room): LinkRoomRuntime {
+function classifyRoomLinks(room: Room): LinkRoomRuntimeSnapshot {
   const roomContext = getTickContextService().getRoomContext(room);
   const links = roomContext?.getLinks() || [];
   const sources = roomContext?.getSources() || [];
@@ -56,12 +50,11 @@ function classifyRoomLinks(room: Room): LinkRoomRuntime {
   };
 }
 
-function getRoomLinkRuntime(room: Room): LinkRoomRuntime {
-  const store = ensureLinkRuntimeStore();
-  const existing = store[room.name];
+function getRoomLinkRuntime(room: Room): LinkRoomRuntimeView {
+  const existing = peekLinkRoomRuntime(room.name);
   if (!existing || Game.time - existing.updatedAt >= CLASSIFY_INTERVAL) {
     const refreshed = classifyRoomLinks(room);
-    store[room.name] = refreshed;
+    writeLinkRoomRuntime(room.name, refreshed);
     return refreshed;
   }
 
@@ -183,7 +176,7 @@ function cleanupLinkedSourceContainers(room: Room): void {
 }
 
 export function isReceiverLink(link: StructureLink): boolean {
-  const roomData = Memory.runtime?.linkNetwork?.[link.room.name];
+  const roomData = peekLinkRoomRuntime(link.room.name);
   if (!roomData) {
     return isReceiverByPosition(link);
   }
@@ -192,7 +185,7 @@ export function isReceiverLink(link: StructureLink): boolean {
 }
 
 export function isStorageReceiverLink(link: StructureLink): boolean {
-  const roomData = Memory.runtime?.linkNetwork?.[link.room.name];
+  const roomData = peekLinkRoomRuntime(link.room.name);
   if (!roomData) {
     return isStorageReceiverByPosition(link);
   }

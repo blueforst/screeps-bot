@@ -8,6 +8,13 @@ export interface RuntimeMemoryService {
   getCreepConfigStore(): Record<string, CreepConfig>;
 }
 
+export function ensureRuntimeMemoryRoot(): NonNullable<Memory["runtime"]> {
+  if (!Memory.runtime) {
+    Memory.runtime = {};
+  }
+  return Memory.runtime;
+}
+
 export function createRuntimeMemoryService(): RuntimeMemoryService {
   return {
     ensureCfg(): NonNullable<Memory["cfg"]> {
@@ -18,10 +25,7 @@ export function createRuntimeMemoryService(): RuntimeMemoryService {
     },
 
     ensureRuntime(): NonNullable<Memory["runtime"]> {
-      if (!Memory.runtime) {
-        Memory.runtime = {};
-      }
-      return Memory.runtime;
+      return ensureRuntimeMemoryRoot();
     },
 
     ensureData(): NonNullable<Memory["data"]> {
