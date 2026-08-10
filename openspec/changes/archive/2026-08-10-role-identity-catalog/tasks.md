@@ -19,6 +19,6 @@
 
 ## 4. 提交、部署与归档
 
-- [ ] 4.1 提交实现并部署同一已验证代码，确认 live deploy tag 与基础 CPU/运行状态
-- [ ] 4.2 只读跨17-tick清理窗口确认合法 role 配置集合、引用与 Spawn 队列无身份误删
-- [ ] 4.3 同步主规格、归档 OpenSpec change、复跑全局 strict 并提交文档
+- [x] 4.1 提交实现并部署同一已验证代码，确认 live deploy tag 与基础 CPU/运行状态
+- [x] 4.2 只读跨17-tick清理窗口确认合法 role 配置集合、引用与 Spawn 队列无身份误删
+- [x] 4.3 同步主规格、归档 OpenSpec change、复跑全局 strict 并提交文档
