@@ -23,5 +23,5 @@
 
 ## 4. 规格同步
 
-- [ ] 4.1 将完成的 delta spec 同步到主规格
-- [ ] 4.2 归档 `ambient-global-abi-contract` 并再次运行 strict 校验
+- [x] 4.1 将完成的 delta spec 同步到主规格
+- [x] 4.2 归档 `ambient-global-abi-contract` 并再次运行 strict 校验

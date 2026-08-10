@@ -20,6 +20,7 @@
 - `npx jest --config jest.config.cjs test/ambientGlobalAbiBoundaries.test.ts --runInBand`：1 suite / 5 tests 通过。
 - `npm test -- --runInBand`：134 suites / 909 tests 通过。
 - `openspec validate ambient-global-abi-contract --strict`：通过。
+- 归档后 `ambient-global-abi-ownership` 主规格 strict：通过；全仓 strict 为 29/30，通过项无新增失败，唯一失败仍是既有未完成 change `fix-power-bank-squad-lifecycle` 的 9 条 MUST/SHALL 文案问题。
 - `git diff --check`：通过。
 - 三路独立审查分别覆盖声明实现、扫描器 mutation/属性测试与最终 gate 复验，最终结论均为 P0=0、P1=0、P2=0。
 
