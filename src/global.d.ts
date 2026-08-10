@@ -1,4 +1,3 @@
-import type { LoDashStatic } from "lodash";
 import type { CreepApi, RoleName } from "@/types/system";
 import type { HubProgressSnapshot } from "@/runtime/hubProgress";
 import type { CpuMonitorHeapSnapshot } from "@/runtime/cpuMonitor";
@@ -9,8 +8,6 @@ import type { MarketDirectContinuousPermitRequest } from "@/runtime/marketDirect
 import type { OperatorDirectPendingEvidence } from "@/runtime/marketSaleDirectPending";
 import type { MarketBaseResourcePermitRequest } from "@/runtime/marketSaleAutomation";
 import type { PowerCreepTask } from "@/runtime/powerCreepTypes";
-
-declare const _: LoDashStatic;
 
 type ResourceTransferTaskConsoleRecord = {
   id: string;
@@ -54,7 +51,10 @@ declare global {
 
   var creepApi: CreepApi;
   var __screepsMounted: boolean | undefined;
-  var RP: (room: string | Room) => { [structureType: string]: { x: number; y: number }[] } | undefined;
+  var RP: (
+    room: string | Room,
+    showPlan?: boolean,
+  ) => { [structureType: string]: { x: number; y: number }[] } | false;
   var runPlan: (room: string | Room) => boolean;
   var visualizePlan: (roomName: string) => boolean;
   var listPlanCache: () => void;
@@ -62,6 +62,18 @@ declare global {
   var savePlanToMemory: (roomName: string) => boolean;
   var reportProduction: (roomName?: string) => void;
   var reportProductionGlobal: () => void;
+  var grantMarketSaleMutationLease:
+    | typeof import("@/runtime/marketSaleAutomation").grantMarketSaleMutationLease
+    | undefined;
+  var revokeMarketSaleMutationLease:
+    | typeof import("@/runtime/marketSaleAutomation").revokeMarketSaleMutationLease
+    | undefined;
+  var attestMarketSalePendingCreate:
+    | typeof import("@/runtime/marketSaleAutomation").attestMarketSalePendingCreate
+    | undefined;
+  var resolveMarketSalePendingCreateAbsence:
+    | typeof import("@/runtime/marketSaleAutomation").resolveMarketSalePendingCreateAbsence
+    | undefined;
   var resolveMarketSaleExternalOrderMutation:
     | ((
         orderId: string,
@@ -83,6 +95,15 @@ declare global {
         refundedFeeDebtMilli?: number;
         carriedFeeDebtMilli?: number;
       })
+    | undefined;
+  var expandMarketSaleCanary:
+    | typeof import("@/runtime/marketSaleAutomation").expandMarketSaleCanary
+    | undefined;
+  var emergencyStopMarketSaleAutomation:
+    | typeof import("@/runtime/marketSaleAutomation").emergencyStopMarketSaleAutomation
+    | undefined;
+  var marketSaleAutomationStatus:
+    | typeof import("@/runtime/marketSaleAutomation").marketSaleAutomationStatus
     | undefined;
   var resolveMarketSaleDirectPending:
     | ((
@@ -137,30 +158,10 @@ declare global {
   var marketBaseResourceStatus:
     | (() => unknown)
     | undefined;
-  var spawnMaxCarrier: (roomName: string) =>
-    | {
-        ok: true;
-        roomName: string;
-        spawnName: string;
-        configName: string;
-        energyAvailable: number;
-        bodyParts: number;
-        pairCount: number;
-        queueTop: string[];
-      }
-    | string;
-  var spawnMaxCarrierRaw: (roomName: string) =>
-    | {
-        ok: true;
-        roomName: string;
-        spawnName: string;
-        configName: string;
-        energyAvailable: number;
-        bodyParts: number;
-        pairCount: number;
-        queueTop: string[];
-      }
-    | string;
+  var spawnMaxCarrier:
+    typeof import("@/runtime/console/operationsCommands").spawnMaxCarrierCommand;
+  var spawnMaxCarrierRaw:
+    typeof import("@/runtime/console/operationsCommands").spawnMaxCarrierRaw;
   var startUpgrader: (roomName: string) => string;
   var startUpgraderRaw: (roomName: string) => unknown;
   var stopUpgrader: (roomName: string) => string;
@@ -327,6 +328,8 @@ declare global {
   var stopHubRaw: () => Record<string, unknown>;
   var hubProgress: () => string;
   var hubProgressRaw: () => HubProgressSnapshot;
+  var memoryAudit: typeof import("@/runtime/consoleCommands").memoryAudit;
+  var memoryAuditRaw: typeof import("@/runtime/consoleCommands").memoryAuditRaw;
   var addResourceTransferTask: (
     fromRoomName: string,
     toRoomName: string,
@@ -674,262 +677,6 @@ declare global {
     work(): void;
     addTask(configName: string): number;
     mainSpawn(configName: string): boolean;
-  }
-}
-
-declare namespace NodeJS {
-  interface Global {
-    Game: Game;
-    Memory: Memory;
-    _: LoDashStatic;
-    creepApi: CreepApi;
-    reportProduction: (roomName?: string) => void;
-    reportProductionGlobal: () => void;
-    spawnMaxCarrier: (roomName: string) =>
-      | {
-          ok: true;
-          roomName: string;
-          spawnName: string;
-          configName: string;
-          energyAvailable: number;
-          bodyParts: number;
-          pairCount: number;
-          queueTop: string[];
-        }
-      | string;
-    spawnMaxCarrierRaw: (roomName: string) =>
-      | {
-          ok: true;
-          roomName: string;
-          spawnName: string;
-          configName: string;
-          energyAvailable: number;
-          bodyParts: number;
-          pairCount: number;
-          queueTop: string[];
-        }
-      | string;
-    startUpgrader: (roomName: string) => string;
-    startUpgraderRaw: (roomName: string) => unknown;
-    stopUpgrader: (roomName: string) => string;
-    stopUpgraderRaw: (roomName: string) => unknown;
-    upgraderStatus: (roomName?: string) => string;
-    upgraderStatusRaw: (roomName?: string) => unknown;
-    stopColonization: (targetRoom?: string) => string;
-    stopColonizationRaw: (targetRoom?: string) =>
-      | {
-          ok: true;
-          scope: "all" | "room";
-          targetRoom?: string;
-          stoppedColonizationRooms: string[];
-          stoppedCrossShardTasks: string[];
-          stoppedWarRooms: string[];
-          removedConfigs: number;
-          removedQueuedTasks: number;
-          cancelledSpawns: number;
-          suicidedCreeps: number;
-        }
-      | string;
-    stopWar: (targetRoom: string, suicide?: boolean) => string;
-    stopWarRaw: (targetRoom: string, options?: StopWarOptions) => StopWarResult | string;
-    startWar: (targetRoom: string, sourceRoom: string, squad?: "standard" | "t3Duo", routeRooms?: string[] | string, oneShot?: boolean) => string;
-    startWarRaw: (targetRoom: string, sourceRoom: string, options?: StartWarOptions) => StartWarResult | string;
-    startWarPatrol: (sourceRoom: string, targetRooms: string[] | string, intervalTicks?: number) => string;
-    startWarPatrolRaw: (sourceRoom: string, targetRooms: string[] | string, options?: StartWarPatrolOptions) => StartWarPatrolResult | string;
-    warStatus: (targetRoom?: string) => string;
-    warStatusRaw: (targetRoom?: string) => WarStatusSnapshot;
-    powerBankStatus: () => string;
-    powerBankStatusRaw: () => PowerBankStatusSnapshot;
-    startTelemetry: (sampleInterval?: number, segmentId?: number) => string;
-    startTelemetryRaw: (sampleInterval?: number, segmentId?: number) =>
-      | {
-          ok: true;
-          enabled: boolean;
-          previousEnabled: boolean;
-          sampleInterval: number;
-          segmentId: number;
-        }
-      | string;
-    stopTelemetry: () => string;
-    stopTelemetryRaw: () => {
-      ok: true;
-      enabled: boolean;
-      previousEnabled: boolean;
-      sampleInterval: number;
-      segmentId: number;
-    };
-    statusTelemetry: () => string;
-    statusTelemetryRaw: () => {
-      ok: true;
-      enabled: boolean;
-      previousEnabled: boolean;
-      sampleInterval: number;
-      segmentId: number;
-    };
-    startCpuProfiler: (sampleInterval?: number, historyLimit?: number) => string;
-    startCpuProfilerRaw: (sampleInterval?: number, historyLimit?: number) =>
-      | {
-          ok: true;
-          enabled: boolean;
-          previousEnabled: boolean;
-          sampleInterval: number;
-          historyLimit: number;
-        }
-      | string;
-    stopCpuProfiler: () => string;
-    stopCpuProfilerRaw: () => {
-      ok: true;
-      enabled: boolean;
-      previousEnabled: boolean;
-      sampleInterval: number;
-      historyLimit: number;
-    };
-    statusCpuProfiler: () => string;
-    statusCpuProfilerRaw: () => {
-      ok: true;
-      enabled: boolean;
-      previousEnabled: boolean;
-      sampleInterval: number;
-      historyLimit: number;
-    };
-    cpuMonitor: () => string;
-    cpuMonitorRaw: () => {
-      ok: true;
-      version: 2;
-      enabled: boolean;
-      sampleInterval: number;
-      historyLimit: number;
-      historySize: number;
-      latest:
-        | {
-            tick: number;
-            shard: string;
-            totalUsed: number;
-            bucket: number;
-            limit: number;
-            tickLimit: number;
-            phases: Record<string, number>;
-            fixedActionCounts: Record<string, number>;
-            untracked: number;
-            emaTotalUsed: number;
-            rooms: Record<
-              string,
-              {
-                totalUsed: number;
-                roles: Record<string, { count: number; used: number }>;
-              }
-            >;
-            heap: CpuMonitorHeapSnapshot | null;
-          }
-        | null;
-      recentHistory: Array<{
-        tick: number;
-        shard: string;
-        totalUsed: number;
-        bucket: number;
-        limit: number;
-        tickLimit: number;
-        phases: Record<string, number>;
-        fixedActionCounts: Record<string, number>;
-        untracked: number;
-        emaTotalUsed: number;
-        rooms: Record<
-          string,
-          {
-            totalUsed: number;
-            roles: Record<string, { count: number; used: number }>;
-          }
-        >;
-        heap: CpuMonitorHeapSnapshot | null;
-      }>;
-      summary:
-        | {
-            ticks: number;
-            avgTotalUsed: number;
-            maxTotalUsed: number;
-            minBucket: number;
-            maxBucket: number;
-            avgBucket: number;
-            avgUntracked: number;
-            avgPhases: Record<string, number>;
-            avgFixedActionCounts: Record<string, number>;
-            emaTotalUsed: number;
-          }
-        | null;
-    };
-    statusSynthesisControl: () => string;
-    statusSynthesisControlRaw: () => {
-      ok: true;
-      enabled: boolean;
-      state:
-        | {
-            updatedAt: number;
-            generatedTaskCount: number;
-            failedTaskCount: number;
-            successfulRunCount: number;
-            lastActions: string[];
-          }
-        | null;
-    };
-    statusHub: () => string;
-    statusHubRaw: () => Record<string, unknown>;
-    stopHub: () => string;
-    stopHubRaw: () => Record<string, unknown>;
-    hubProgress: () => string;
-    hubProgressRaw: () => HubProgressSnapshot;
-    addResourceTransferTask: (
-      fromRoomName: string,
-      toRoomName: string,
-      resource: ResourceConstant,
-      amount: number,
-      reason?: string,
-    ) => string;
-    addResourceTransferTaskRaw: (
-      fromRoomName: string,
-      toRoomName: string,
-      resource: ResourceConstant,
-      amount: number,
-      reason?: string,
-    ) =>
-      | {
-          ok: true;
-          task: ResourceTransferTaskConsoleRecord;
-        }
-      | string;
-    addResourceTransferTasks: (
-      fromRoomName: string,
-      requests: ManualResourceTransferRequest[],
-      reason?: string,
-    ) => string;
-    addResourceTransferTasksRaw: (
-      fromRoomName: string,
-      requests: ManualResourceTransferRequest[],
-      reason?: string,
-    ) => AddResourceTransferTasksResult | string;
-    cancelResourceTransferTask: (taskId: string) => string;
-    cancelResourceTransferTaskRaw: (taskId: string) =>
-      | {
-          ok: true;
-          taskId: string;
-          previousStatus: "pending" | "done" | "cancelled" | "failed";
-        }
-      | string;
-    listResourceTransferTasks: () => string;
-    listResourceTransferTasksRaw: () => {
-      ok: true;
-      tasks: ResourceTransferTaskConsoleRecord[];
-    };
-    addFactoryTask: (roomName: string, type: "decompress_battery", amount: number) => string;
-    addFactoryTaskRaw: (roomName: string, type: "decompress_battery", amount: number) => AddFactoryTaskResult | string;
-    decompressBattery: (roomName: string, amount: number) => string;
-    decompressBatteryRaw: (roomName: string, amount: number) => AddFactoryTaskResult | string;
-    cancelFactoryTask: (taskId: string) => string;
-    cancelFactoryTaskRaw: (taskId: string) => CancelFactoryTaskResult | string;
-    listFactoryTasks: (roomName?: string) => string;
-    listFactoryTasksRaw: (roomName?: string) => FactoryTask[];
-    remoteDefenseStatus: (targetRoom: string) => string;
-    remoteDefenseStatusRaw: (targetRoom: string) => RemoteDefenseStatusSnapshot | string;
-    __screepsMounted?: boolean;
   }
 }
 
