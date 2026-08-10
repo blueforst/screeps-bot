@@ -47,4 +47,4 @@
 - [x] 7.2 让 PowerBank healer 同房会合与 attacker 接近 Bank 使用占用感知的 fresh path，同时清理有意等待/攻击/治疗角色的旧移动状态
 - [x] 7.3 增加阈值边界、原子 generation 交接、无效替补、占路绕行和空闲移动状态回归测试
 - [x] 7.4 为 travelling 替补增加独立进展、blocker、冷却软重寻路与状态投影，并覆盖主力进展不掩盖替补停滞
-- [ ] 7.5 运行 PowerBank 定向测试、双 TypeScript 边界、OpenSpec strict、全量 Jest 与构建，并部署后只读验证现场任务继续推进
+- [x] 7.5 运行 PowerBank 定向测试、双 TypeScript 边界、OpenSpec strict、全量 Jest 与构建，并部署后只读验证现场任务继续推进
