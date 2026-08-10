@@ -17,12 +17,28 @@ import {
   reservePickupTarget,
 } from "@/runtime/energyPickupReservation";
 import {
-  claimCarrierTaskStepAmount,
+  findCarrierTaskByRef,
+  listCarrierDispatchEntriesByRoom,
   listCarrierTasksByRoom,
+  type CarrierDispatchEntry,
   type CarrierTask,
   type CarrierTaskStep,
-  type CarrierTaskStepAmountClaim,
 } from "@/runtime/carrierTaskBoard";
+import {
+  bindCarrierDispatchBinding,
+  clearLegacyCarrierDispatchBinding,
+  promoteLegacyCarrierDispatchBinding,
+  readCarrierDispatchBinding,
+  releaseCarrierDispatchBinding,
+} from "@/runtime/dispatchOwnership/actorBinding";
+import {
+  claimCarrierAmountSlice,
+  type CarrierAmountSliceClaim,
+} from "@/runtime/dispatchOwnership/carrierAmountSlice";
+import {
+  cloneCarrierDispatchRef,
+  type CarrierDispatchRef,
+} from "@/runtime/dispatchOwnership/ref";
 import { hasSharedStorageControllerLinkCluster, isStorageReceiverLink } from "@/runtime/linkControl";
 import { getPlannedStoragePos, getPlannedControllerLinkPos, getProtoStorageContainer, getProtoControllerLinkContainer } from "@/runtime/roomPlannerConstruction";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
@@ -596,6 +612,12 @@ function getSynthesisCarrierTasks(roomName: string): CarrierTask[] {
   return listCarrierTasksByRoom(roomName);
 }
 
+function getSynthesisCarrierTaskEntries(
+  roomName: string,
+): readonly CarrierDispatchEntry[] {
+  return listCarrierDispatchEntriesByRoom(roomName);
+}
+
 function clearSynthesisCarrierPendingSnapshot(
   state: CreepAssignmentState,
 ): void {
@@ -603,24 +625,57 @@ function clearSynthesisCarrierPendingSnapshot(
   delete state.synthesisCarrierPendingToId;
   delete state.synthesisCarrierPendingResource;
   delete state.synthesisCarrierPendingTaskType;
+  delete state.synthesisCarrierPendingTaskRef;
+}
+
+function releaseSynthesisCarrierTaskBinding(creep: Creep): void {
+  const currentRef = readCarrierDispatchBinding(creep.name);
+  if (currentRef) {
+    releaseCarrierDispatchBinding(creep.name, currentRef);
+    return;
+  }
+  clearLegacyCarrierDispatchBinding(creep.name);
 }
 
 function clearSynthesisCarrierTaskPlan(creep: Creep): void {
   const state = ensureCreepAssignmentState(creep.name);
-  delete state.synthesisCarrierTaskId;
+  releaseSynthesisCarrierTaskBinding(creep);
   delete state.synthesisCarrierPendingPickupTick;
   delete state.synthesisCarrierPendingStepId;
   delete state.synthesisCarrierPendingDeliveryTick;
   clearSynthesisCarrierPendingSnapshot(state);
 }
 
-function getAssignedSynthesisCarrierTask(creep: Creep): CarrierTask | null {
-  const taskId = ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
-  if (!taskId) {
+function getAssignedSynthesisCarrierTaskEntry(
+  creep: Creep,
+): CarrierDispatchEntry | null {
+  const assignedRoomName = getAssignedCarrierRoomName(creep);
+  const ref = promoteLegacyCarrierDispatchBinding(
+    creep.name,
+    assignedRoomName,
+    (roomName, localId) => getSynthesisCarrierTaskEntries(roomName)
+      .filter((entry) => entry.ref.localId === localId)
+      .map((entry) => entry.ref),
+  );
+  if (!ref) {
     return null;
   }
 
-  return getSynthesisCarrierTasks(getAssignedCarrierRoomName(creep)).find((item) => item.id === taskId) || null;
+  if (ref.scope.roomName !== assignedRoomName) {
+    releaseCarrierDispatchBinding(creep.name, ref);
+    return null;
+  }
+
+  const task = findCarrierTaskByRef(ref);
+  if (!task) {
+    releaseCarrierDispatchBinding(creep.name, ref);
+    return null;
+  }
+  return { ref, task };
+}
+
+function getAssignedSynthesisCarrierTask(creep: Creep): CarrierTask | null {
+  return getAssignedSynthesisCarrierTaskEntry(creep)?.task ?? null;
 }
 
 // Per-tick memoization: Screeps object IDs resolve against the tick snapshot,
@@ -809,7 +864,7 @@ function clearUnacceptedResourceControlTerminalFeedAssignment(
   ) {
     return;
   }
-  delete state.synthesisCarrierTaskId;
+  releaseSynthesisCarrierTaskBinding(creep);
 }
 
 function clearNukerEnergyTaskAssignment(creep: Creep): void {
@@ -820,26 +875,32 @@ function clearNukerEnergyTaskAssignment(creep: Creep): void {
 
   // Clear only the uncommitted board binding. Pending pickup snapshot fields
   // must survive task refresh so already accepted cargo still reaches Nuker.
-  delete ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId;
+  releaseSynthesisCarrierTaskBinding(creep);
 }
 
 function deliverCarriedEnergyToNukerTask(creep: Creep): boolean {
   const carriedEnergy = creep.store.getUsedCapacity(RESOURCE_ENERGY);
   if (carriedEnergy <= 0) return false;
 
-  const candidates = getSynthesisCarrierTasks(
+  const candidates = getSynthesisCarrierTaskEntries(
     getAssignedCarrierRoomName(creep),
   )
-    .filter(isNukerEnergySupplyCarrierTask)
-    .flatMap((task) => task.steps.map((step) => ({ task, step })))
+    .filter((entry) => isNukerEnergySupplyCarrierTask(entry.task))
+    .flatMap((entry) => entry.task.steps.map((step) => ({
+      ref: entry.ref,
+      task: entry.task,
+      step,
+    })))
     .filter(({ step }) => step.resource === RESOURCE_ENERGY)
-    .map(({ task, step }) => ({
+    .map(({ ref, task, step }) => ({
+      ref,
       task,
       step,
       target: resolveTaskStructure(step.toId),
     }))
     .filter(
       (entry): entry is {
+        ref: CarrierDispatchRef;
         task: CarrierTask;
         step: CarrierTaskStep;
         target: AnyStoreStructure;
@@ -853,19 +914,20 @@ function deliverCarriedEnergyToNukerTask(creep: Creep): boolean {
       creep.pos.getRangeTo(right.target.pos),
     );
   let selected: (typeof candidates)[number] | undefined;
-  let amountClaim: CarrierTaskStepAmountClaim | null = null;
+  let amountClaim: CarrierAmountSliceClaim | null = null;
   for (const candidate of candidates) {
     const requestedAmount = Math.min(
       carriedEnergy,
       candidate.step.amount,
       candidate.target.store.getFreeCapacity(RESOURCE_ENERGY),
     );
-    amountClaim = claimCarrierTaskStepAmount(
-      candidate.task,
-      candidate.step,
-      creep.name,
+    amountClaim = claimCarrierAmountSlice({
+      taskRef: candidate.ref,
+      taskSteps: candidate.task.steps,
+      stepId: candidate.step.id,
+      claimantId: creep.name,
       requestedAmount,
-    );
+    });
     if (amountClaim) {
       selected = candidate;
       break;
@@ -950,27 +1012,41 @@ function assignSynthesisCarrierTask(
   creep: Creep,
   taskFilter?: CarrierTaskFilter,
   clearWhenNoCandidate = true,
-): { task: CarrierTask; step: CarrierTaskStep } | null {
+): {
+  ref: CarrierDispatchRef;
+  task: CarrierTask;
+  step: CarrierTaskStep;
+} | null {
   return measureCreepDecision(() => {
     const assignedRoomName = getAssignedCarrierRoomName(creep);
-    const assigned = getAssignedSynthesisCarrierTask(creep);
-    if (assigned && (!taskFilter || taskFilter(assigned))) {
+    const assignedEntry = getAssignedSynthesisCarrierTaskEntry(creep);
+    const assigned = assignedEntry?.task;
+    if (assignedEntry && assigned && (!taskFilter || taskFilter(assigned))) {
       const assignedStep = selectPickupStep(assigned, creep);
       if (assignedStep) {
-        return { task: assigned, step: assignedStep };
+        return {
+          ref: assignedEntry.ref,
+          task: assigned,
+          step: assignedStep,
+        };
       }
     }
 
-    const candidates = getSynthesisCarrierTasks(assignedRoomName)
-      .filter((task) => !taskFilter || taskFilter(task))
-      .filter((task) =>
-        isCarrierTaskRunnable(task, assignedRoomName),
+    const candidates = getSynthesisCarrierTaskEntries(assignedRoomName)
+      .filter((entry) => !taskFilter || taskFilter(entry.task))
+      .filter((entry) =>
+        isCarrierTaskRunnable(entry.task, assignedRoomName),
       )
-      .map((task) => ({
-        task,
-        step: selectPickupStep(task, creep),
+      .map((entry) => ({
+        ref: entry.ref,
+        task: entry.task,
+        step: selectPickupStep(entry.task, creep),
       }))
-      .filter((entry): entry is { task: CarrierTask; step: CarrierTaskStep } => !!entry.step)
+      .filter((entry): entry is {
+        ref: CarrierDispatchRef;
+        task: CarrierTask;
+        step: CarrierTaskStep;
+      } => !!entry.step)
       .sort((left, right) => {
         if (left.task.priority !== right.task.priority) {
           return right.task.priority - left.task.priority;
@@ -989,8 +1065,12 @@ function assignSynthesisCarrierTask(
       return null;
     }
 
-    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId = candidates[0].task.id;
-    return candidates[0];
+    const candidate = candidates[0];
+    const currentRef = readCarrierDispatchBinding(creep.name);
+    const bound = currentRef
+      ? bindCarrierDispatchBinding(creep.name, candidate.ref, currentRef)
+      : bindCarrierDispatchBinding(creep.name, candidate.ref);
+    return bound ? candidate : null;
   });
 }
 
@@ -1045,7 +1125,7 @@ function pickupSynthesisCarrierResource(
   let destinationCapacityClaim:
     | LocalCarrierDestinationCapacityClaim
     | null = null;
-  let taskAmountClaim: CarrierTaskStepAmountClaim | null = null;
+  let taskAmountClaim: CarrierAmountSliceClaim | null = null;
   const isTerminalOffload = assignment.task.type === "terminal_offload";
   const isCapacityReliefPreload = isCapacityReliefTerminalPreloadTask(
     assignment.task,
@@ -1076,12 +1156,13 @@ function pickupSynthesisCarrierResource(
   }
 
   if (requiresTaskAmountClaim) {
-    taskAmountClaim = claimCarrierTaskStepAmount(
-      assignment.task,
-      assignment.step,
-      creep.name,
-      claimRequestedAmount,
-    );
+    taskAmountClaim = claimCarrierAmountSlice({
+      taskRef: assignment.ref,
+      taskSteps: assignment.task.steps,
+      stepId: assignment.step.id,
+      claimantId: creep.name,
+      requestedAmount: claimRequestedAmount,
+    });
     if (!taskAmountClaim) {
       exposureClaim?.release();
       clearSynthesisCarrierTaskPlan(creep);
@@ -1163,6 +1244,10 @@ function pickupSynthesisCarrierResource(
   state.synthesisCarrierPendingToId = assignment.step.toId;
   state.synthesisCarrierPendingResource = assignment.step.resource;
   state.synthesisCarrierPendingTaskType = assignment.task.type;
+  const pendingTaskRef = cloneCarrierDispatchRef(assignment.ref);
+  if (pendingTaskRef) {
+    state.synthesisCarrierPendingTaskRef = pendingTaskRef;
+  }
   return {
     picked: true,
     outOfRange: false,
@@ -1374,7 +1459,13 @@ function deliverSynthesisCarrierResource(creep: Creep): boolean {
      ? assigned.steps[0]?.id : undefined);
 
   if (pendingStepId) {
-    const step = assigned?.steps.find(s => s.id === pendingStepId);
+    // An accepted pickup owns its original producer ref independently from a
+    // later sticky assignment. If that exact task is gone, snapshot fallback
+    // below is used; a same-name task from another producer is never borrowed.
+    const pendingTask = state.synthesisCarrierPendingTaskRef
+      ? findCarrierTaskByRef(state.synthesisCarrierPendingTaskRef)
+      : assigned;
+    const step = pendingTask?.steps.find(s => s.id === pendingStepId);
     const target = step ? resolveTaskStructure(step.toId) : null;
     if (step && target) {
       if (creep.store.getUsedCapacity() === 0) {

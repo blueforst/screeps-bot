@@ -50,11 +50,25 @@ import {
   type MarketProtectionEntry,
   type MarketSaleProtectionLedger,
 } from "@/runtime/marketSaleProtection";
+import {
+  clearCarrierTaskBoardForTest,
+  replaceCarrierTasksForProducerRoom,
+} from "@/runtime/carrierTaskBoard";
+import {
+  createCarrierDispatchRef,
+  encodeCarrierDispatchStepKey,
+} from "@/runtime/dispatchOwnership/ref";
 
 const MIGRATION_TICK = 72_587_210;
 const RUN_TICK = MIGRATION_TICK + 2_000;
 const ACCOUNT_IDENTITY = "screeps-account:fixture";
 const OPERATOR_AUTHORIZATION = "operator-authorization:fixture";
+const LONG_CARRIER_NAMESPACE =
+  `factory:long-producer:${"owner->".repeat(32)}`;
+const LONG_CARRIER_LOCAL_ID =
+  `factory-supply:${"task:".repeat(32)}`;
+const LONG_CARRIER_STEP_ID =
+  `energy-step:${"step->".repeat(32)}`;
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -206,6 +220,36 @@ function acceptedAllWritableState():
   return accepted.state;
 }
 
+function acceptedXContinuousState():
+  MarketDirectContinuousAutomationState {
+  const state = acceptedXState();
+  const proposal = proposeMarketDirectContinuousPermit(
+    state,
+    MIGRATION_TICK + 3,
+    ACCOUNT_IDENTITY,
+    {
+      operatorAuthorizationFingerprint:
+        "operator-authorization:x-continuous",
+      entryStages: {
+        "base-x-e6n59-v1": "continuous",
+      },
+    },
+  );
+  if (!proposal.ok || !proposal.permit) {
+    throw new Error(`X continuous proposal failed: ${proposal.error}`);
+  }
+  const accepted = acceptMarketDirectContinuousPermit(
+    proposal.state,
+    MIGRATION_TICK + 4,
+    proposal.permit.permitId,
+    MARKET_DIRECT_CONTINUOUS_EXECUTOR_SHARD,
+  );
+  if (!accepted.ok) {
+    throw new Error(`X continuous accept failed: ${accepted.error}`);
+  }
+  return accepted.state;
+}
+
 function seedShadowCycle(
   state: MarketDirectContinuousAutomationState,
   entryId: string,
@@ -321,6 +365,31 @@ function canonicalEnergyContributions(
         ]
       : []),
   ];
+}
+
+function longCarrierEnergyContribution(
+  amount = 5_000,
+): MarketDirectContinuousTerminalEnergyContribution {
+  const ref = createCarrierDispatchRef(
+    LONG_CARRIER_NAMESPACE,
+    "E6N59",
+    LONG_CARRIER_LOCAL_ID,
+  );
+  if (!ref) {
+    throw new Error("long Carrier ref fixture is invalid");
+  }
+  const id = encodeCarrierDispatchStepKey(
+    ref,
+    LONG_CARRIER_STEP_ID,
+  );
+  if (id.length <= 256) {
+    throw new Error("long Carrier key fixture did not cross the legacy limit");
+  }
+  return {
+    id,
+    amount,
+    kind: "terminal_production_commitment",
+  };
 }
 
 function terminalEnergyReadiness(
@@ -778,15 +847,10 @@ function automationInput(
 
 describe("Continuous Direct automation state and permits", () => {
 
-  it("默认 canonical reader 独立重建 pending send、fee、reservation 与 terminal production carrier", () => {
+  it("默认 canonical reader 独立重建 pending send、fee、reservation 与 producer-scoped terminal carriers", () => {
     const previousCfg = Memory.cfg;
     const previousData = Memory.data;
     const previousRuntime = Memory.runtime;
-    const previousCarrierBoard = (
-      global as typeof global & {
-        __carrierTaskBoard?: unknown;
-      }
-    ).__carrierTaskBoard;
     const mutableGame = Game as unknown as {
       market?: Game["market"];
     };
@@ -834,34 +898,55 @@ describe("Continuous Direct automation state and permits", () => {
         },
       },
     } as unknown as Memory["runtime"];
-    (
-      global as typeof global & {
-        __carrierTaskBoard?: unknown;
-      }
-    ).__carrierTaskBoard = {
-      E6N59: {
-        "factory-supply": {
-          id: "factory-supply",
-          producer: "factory:test",
-          roomName: "E6N59",
-          type: "factory_supply",
-          priority: 1,
-          createdAt: RUN_TICK,
-          updatedAt: RUN_TICK,
-          steps: [
-            {
-              id: "energy-step",
-              resource: RESOURCE_ENERGY,
-              fromKind: "terminal",
-              toKind: "factory",
-              fromId: "terminal:E6N59",
-              toId: "factory:E6N59",
-              amount: 2_000,
-            },
-          ],
+    clearCarrierTaskBoardForTest();
+    replaceCarrierTasksForProducerRoom("factory:test", "E6N59", [{
+      id: "factory-supply",
+      type: "factory_supply",
+      priority: 1,
+      steps: [
+        {
+          id: "energy-step",
+          resource: RESOURCE_ENERGY,
+          fromKind: "terminal",
+          toKind: "factory",
+          fromId: "terminal:E6N59",
+          toId: "factory:E6N59",
+          amount: 2_000,
         },
-      },
-    };
+      ],
+    }]);
+    replaceCarrierTasksForProducerRoom("factory:z->secondary", "E6N59", [{
+      id: "factory-supply",
+      type: "factory_supply",
+      priority: 1,
+      steps: [
+        {
+          id: "energy-step",
+          resource: RESOURCE_ENERGY,
+          fromKind: "terminal",
+          toKind: "factory",
+          fromId: "terminal:E6N59",
+          toId: "factory:E6N59",
+          amount: 3_000,
+        },
+      ],
+    }]);
+    replaceCarrierTasksForProducerRoom(LONG_CARRIER_NAMESPACE, "E6N59", [{
+      id: LONG_CARRIER_LOCAL_ID,
+      type: "factory_supply",
+      priority: 1,
+      steps: [
+        {
+          id: LONG_CARRIER_STEP_ID,
+          resource: RESOURCE_ENERGY,
+          fromKind: "terminal",
+          toKind: "factory",
+          fromId: "terminal:E6N59",
+          toId: "factory:E6N59",
+          amount: 4_000,
+        },
+      ],
+    }]);
     mutableGame.market = {
       ...(previousMarket || {}),
       calcTransactionCost: jest.fn(() => 500),
@@ -874,15 +959,21 @@ describe("Continuous Direct automation state and permits", () => {
             "E6N59",
           ),
       ).toEqual([
+        longCarrierEnergyContribution(4_000),
+        {
+          id: "[\"carrier-dispatch-step-v1\",\"carrier-logistics\",\"factory:test\",\"room\",\"E6N59\",\"factory-supply\",\"energy-step\"]",
+          amount: 2_000,
+          kind: "terminal_production_commitment",
+        },
+        {
+          id: "[\"carrier-dispatch-step-v1\",\"carrier-logistics\",\"factory:z->secondary\",\"room\",\"E6N59\",\"factory-supply\",\"energy-step\"]",
+          amount: 3_000,
+          kind: "terminal_production_commitment",
+        },
         {
           id: "ordinary-terminal-target:E6N59",
           amount: 30_000,
           kind: "ordinary_terminal_target",
-        },
-        {
-          id: "production-carrier:factory-supply:energy-step",
-          amount: 2_000,
-          kind: "terminal_production_commitment",
         },
         {
           id: "production-reservation:factory",
@@ -900,17 +991,159 @@ describe("Continuous Direct automation state and permits", () => {
           kind: "pending_internal_send_fee",
         },
       ]);
+      const reservation = (
+        Memory.runtime!.resourceReservations as Record<
+          string,
+          { holderId: string }
+        >
+      )["E6N59:energy:factory"];
+      reservation.holderId = `untrusted:${"x".repeat(300)}`;
+      expect(
+        defaultMarketDirectContinuousDependencies
+          .readCanonicalTerminalEnergyContributions(
+            "E6N59",
+          ),
+      ).toBeUndefined();
     } finally {
       Memory.cfg = previousCfg;
       Memory.data = previousData;
       Memory.runtime = previousRuntime;
-      (
-        global as typeof global & {
-          __carrierTaskBoard?: unknown;
-        }
-      ).__carrierTaskBoard = previousCarrierBoard;
+      clearCarrierTaskBoardForTest();
       mutableGame.market = previousMarket;
     }
+  });
+
+  it("接受超长 canonical Carrier commitment 并保持 Direct claim/execute 仲裁", () => {
+    const state = acceptedXContinuousState();
+    const contributions = [
+      ...canonicalEnergyContributions(),
+      longCarrierEnergyContribution(),
+    ];
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-long-carrier-readiness",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+      },
+      canonicalEnergyContributions: contributions,
+    };
+    const dependencies = dependenciesFor(harness, state);
+
+    const preflight = runMarketDirectContinuousPreflight(
+      state,
+      {
+        tick: RUN_TICK,
+        config: continuousConfig(),
+      },
+      dependencies,
+    );
+    expect(preflight).toMatchObject({
+      planComplete: true,
+      writes: 0,
+    });
+    expect(state.baseResourceV3?.readinessAuthorization).toMatchObject({
+      sourcePermitVersion: 2,
+      status: "authorized",
+    });
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(1);
+    expect(result.rejectedByReason).not.toHaveProperty(
+      "continuous_energy_readiness_invalid:base-x-e6n59-v1",
+    );
+    expect(dependencies.claimPrepared).toHaveBeenCalledTimes(1);
+    expect(dependencies.executePrepared).toHaveBeenCalledTimes(1);
+    expect(dependencies.claimPrepared).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: "marketSaleAutomation:continuous-direct",
+        roomName: "E6N59",
+      }),
+    );
+  });
+
+  it("继续拒绝超长非 canonical commitment 且不触发 Direct 仲裁", () => {
+    const state = acceptedXContinuousState();
+    const forgedContribution = {
+      ...longCarrierEnergyContribution(),
+      id: `${longCarrierEnergyContribution().id} `,
+    };
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [
+          order(
+            "x-forged-carrier-readiness",
+            RESOURCE_CATALYST,
+            700,
+            1_000,
+            "E20S20",
+          ),
+        ],
+      },
+      canonicalEnergyContributions: [
+        ...canonicalEnergyContributions(),
+        forgedContribution,
+      ],
+    };
+    const dependencies = dependenciesFor(harness, state);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toHaveProperty(
+      "continuous_energy_readiness_invalid:base-x-e6n59-v1",
+      1,
+    );
+    expect(dependencies.claimPrepared).not.toHaveBeenCalled();
+    expect(dependencies.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("超长 canonical Carrier key 挂到普通 kind 时仍拒绝且不触发仲裁", () => {
+    const state = acceptedXContinuousState();
+    const longOrdinaryContribution = {
+      ...longCarrierEnergyContribution(20_000),
+      kind: "ordinary_terminal_target" as const,
+    };
+    const harness: RuntimeHarness = {
+      tick: RUN_TICK,
+      ordersByResource: {
+        [RESOURCE_CATALYST]: [],
+      },
+      canonicalEnergyContributions: [
+        longOrdinaryContribution,
+      ],
+    };
+    const dependencies = dependenciesFor(harness, state);
+
+    const result = runMarketDirectContinuousPlanning(
+      state,
+      automationInput(RUN_TICK),
+      dependencies,
+    );
+
+    expect(result.writes).toBe(0);
+    expect(result.rejectedByReason).toHaveProperty(
+      "continuous_energy_readiness_invalid:base-x-e6n59-v1",
+      1,
+    );
+    expect(dependencies.claimPrepared).not.toHaveBeenCalled();
+    expect(dependencies.executePrepared).not.toHaveBeenCalled();
   });
 
   it("仅用完整冻结 v1 证据确定性迁移，并保留 reviewed X 与 genesis 账本", () => {

@@ -1,12 +1,17 @@
 import {
   clearCarrierTaskBoardForTest,
   getCarrierTasksByRoom,
+  listCarrierDispatchEntriesByRoom,
   replaceCarrierTasksForProducerRoom,
 } from "@/runtime/carrierTaskBoard";
 import {
   clearCreepAssignmentStateForTest,
   ensureCreepAssignmentState,
 } from "@/runtime/creepAssignmentState";
+import {
+  createCarrierDispatchRef,
+  encodeCarrierDispatchStepKey,
+} from "@/runtime/dispatchOwnership/ref";
 import { clearLocalCarrierDestinationCapacityForTest } from "@/runtime/localCarrierDestinationCapacity";
 import * as carrierTaskBoard from "@/runtime/carrierTaskBoard";
 import {
@@ -31,6 +36,7 @@ import { runMarketSalePreflight } from "@/runtime/marketSaleAutomation";
 import {
   LEGACY_X_V1_OUTCOME_GOLDEN,
   acceptMarketDirectContinuousPermit,
+  defaultMarketDirectContinuousDependencies,
   migrateLegacyDirectToContinuous,
   proposeMarketDirectContinuousPermit,
   type MarketDirectContinuousAutomationState,
@@ -415,7 +421,7 @@ describe("runResourceControl terminal feed tasks", () => {
       },
       terminalResources: {
         [RESOURCE_ENERGY]: 23_653,
-        [RESOURCE_KEANIUM]: 231_449,
+        [RESOURCE_KEANIUM]: 220_000,
       },
     });
     Game.rooms[room.name] = room;
@@ -425,21 +431,112 @@ describe("runResourceControl terminal feed tasks", () => {
       5_000,
       "direct-readiness-production",
     );
+    const sharedTaskId = `shared:production-task:${"task->".repeat(32)}`;
+    const sharedStepId = `shared->energy:step:${"step:".repeat(32)}`;
+    const publishCarrierCommitment = (producer: string, amount: number): void => {
+      replaceCarrierTasksForProducerRoom(producer, room.name, [{
+        id: sharedTaskId,
+        type: "factory_supply",
+        priority: 100,
+        steps: [{
+          id: sharedStepId,
+          resource: RESOURCE_ENERGY,
+          fromKind: "terminal",
+          toKind: "factory",
+          fromId: room.terminal!.id,
+          toId: `${room.name}:factory`,
+          amount,
+        }],
+      }]);
+    };
+    const producerA = `producer:a:factory:${"owner->".repeat(32)}`;
+    const producerB = `producer->b:factory:${"owner:".repeat(32)}`;
+    publishCarrierCommitment(producerA, 2_000);
+    publishCarrierCommitment(producerB, 3_000);
     authorizeMarketTerminalEnergyReadiness(room, 2);
 
     runResourceControl();
 
-    expect(
-      getCarrierTasksByRoom(room.name)[
-        `resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`
-      ],
-    ).toMatchObject({
-      steps: [expect.objectContaining({ amount: 2_347 })],
-    });
-    expect(getMarketEnergyReadinessObservation(room.name)).toMatchObject({
-      terminalScopedProductionEnergyCommitments: 5_000,
-      plannedFeedAmount: 2_347,
+    const observation = getMarketEnergyReadinessObservation(room.name);
+    expect(observation).toMatchObject({
+      terminalScopedProductionEnergyCommitments: 10_000,
+      plannedFeedAmount: 7_347,
       status: "feed_planned",
+    });
+    const producerARef = createCarrierDispatchRef(
+      producerA,
+      room.name,
+      sharedTaskId,
+    );
+    const producerBRef = createCarrierDispatchRef(
+      producerB,
+      room.name,
+      sharedTaskId,
+    );
+    expect(producerARef).toBeDefined();
+    expect(producerBRef).toBeDefined();
+    if (!producerARef || !producerBRef) return;
+    const producerAKey = encodeCarrierDispatchStepKey(
+      producerARef,
+      sharedStepId,
+    );
+    const producerBKey = encodeCarrierDispatchStepKey(
+      producerBRef,
+      sharedStepId,
+    );
+    expect(producerAKey.length).toBeGreaterThan(256);
+    expect(producerBKey.length).toBeGreaterThan(256);
+    expect(observation?.contributions).toEqual(expect.arrayContaining([
+      {
+        id: producerAKey,
+        amount: 2_000,
+        kind: "terminal_production_commitment",
+      },
+      {
+        id: producerBKey,
+        amount: 3_000,
+        kind: "terminal_production_commitment",
+      },
+    ]));
+    const readTerminalReadiness = (): unknown =>
+      defaultMarketDirectContinuousDependencies.readTerminal(
+        room.name,
+        RESOURCE_KEANIUM,
+      )?.marketEnergyReadiness;
+    expect(
+      (readTerminalReadiness() as { contributions?: unknown })
+        ?.contributions,
+    ).toEqual(observation?.contributions);
+    const malformedReadiness = JSON.parse(
+      JSON.stringify(observation),
+    ) as {
+      contributions: Array<{ id: string }>;
+    };
+    const longContribution = malformedReadiness.contributions.find(
+      ({ id }) => id.length > 256,
+    );
+    expect(longContribution).toBeDefined();
+    if (longContribution) {
+      longContribution.id = `${longContribution.id} `;
+    }
+    const runtimeRoom = (
+      Memory.runtime!.resourceControl as unknown as {
+        rooms: Record<
+          string,
+          { marketEnergyReadiness?: unknown }
+        >;
+      }
+    ).rooms[room.name];
+    const canonicalReadiness = runtimeRoom.marketEnergyReadiness;
+    runtimeRoom.marketEnergyReadiness = malformedReadiness;
+    expect(readTerminalReadiness()).toBeUndefined();
+    runtimeRoom.marketEnergyReadiness = canonicalReadiness;
+    expect(listCarrierDispatchEntriesByRoom(room.name).find(
+      ({ task }) =>
+        task.id ===
+          `resourceControl:terminal_feed:${room.name}:${RESOURCE_ENERGY}`,
+    )?.task).toMatchObject({
+      steps: [expect.objectContaining({ amount: 7_347 })],
     });
   });
 
@@ -676,7 +773,7 @@ describe("terminal headroom offload", () => {
   });
 
   it("protects at most one safe send batch instead of a complete pending backlog", () => {
-    const roomName = "W25R6";
+    const roomName = "W25N6";
     Memory.runtime = {
       resourceControl: {
         updatedAt: 0,
@@ -692,7 +789,7 @@ describe("terminal headroom offload", () => {
       terminalResources: { [RESOURCE_HYDROGEN]: 250_000 },
     });
     room.terminal!.cooldown = 1;
-    const receiver = createRoom({ name: "W25R6B" });
+    const receiver = createRoom({ name: "W26N6" });
     Game.rooms[room.name] = room;
     Game.rooms[receiver.name] = receiver;
     createResourceTransferTask(
@@ -721,7 +818,7 @@ describe("terminal headroom offload", () => {
 
   it("uses headroom for the missing cargo delta when a batch is partly staged", () => {
     const donor = createRoom({
-      name: "W25R8G",
+      name: "W25N8",
       storageResources: {
         [RESOURCE_ENERGY]: 230_000,
         [RESOURCE_KEANIUM]: 5_500,
@@ -733,7 +830,7 @@ describe("terminal headroom offload", () => {
     });
     donor.terminal!.cooldown = 1;
     const receiver = createRoom({
-      name: "W25R8H",
+      name: "W26N8",
       storageFreeCapacity: 500_000,
     });
     Game.rooms[donor.name] = donor;
@@ -763,7 +860,7 @@ describe("terminal headroom offload", () => {
 
   it("keeps the admitted K batch out of reverse offload while recovering energy", () => {
     const donor = createRoom({
-      name: "W25R8E",
+      name: "W25N9",
       storageResources: {
         [RESOURCE_ENERGY]: 220_000,
         [RESOURCE_KEANIUM]: 5_000,
@@ -775,7 +872,7 @@ describe("terminal headroom offload", () => {
     });
     donor.terminal!.cooldown = 1;
     const receiver = createRoom({
-      name: "W25R8F",
+      name: "W26N9",
       storageFreeCapacity: 500_000,
     });
     Game.rooms[donor.name] = donor;

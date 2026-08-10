@@ -7,8 +7,10 @@ import type {
 } from "@/runtime/cpuMonitor";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getCreepMovementState, getMovementAnalytics } from "@/movement";
-import { getAssignedWorkerTaskId } from "@/runtime/workerTaskPool";
-import { getWorkerTasksByRoom } from "@/runtime/workerTaskPool";
+import {
+  getAssignedWorkerTaskId,
+  peekWorkerTasksByRoom,
+} from "@/runtime/workerTaskPool";
 
 const DEFAULT_SAMPLE_INTERVAL = 10;
 const MIN_SAMPLE_INTERVAL = 5;
@@ -336,7 +338,7 @@ function collectTaskTelemetryByRoom(): Record<string, RoomTaskTelemetry> {
   const stats: Record<string, RoomTaskTelemetry> = {};
 
   for (const roomName of Object.keys(Game.rooms)) {
-    const tasks = getWorkerTasksByRoom(roomName);
+    const tasks = peekWorkerTasksByRoom(roomName);
     if (Object.keys(tasks).length === 0) {
       continue;
     }

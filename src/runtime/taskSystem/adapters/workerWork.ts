@@ -22,10 +22,24 @@ interface WorkerTaskCandidate {
 }
 
 interface AssignmentIndex {
-  readonly taskToCreeps: ReadonlyMap<string, readonly string[]>;
+  readonly records: ReadonlyMap<string, IndexedWorkerAssignment>;
+  readonly refToCreeps: ReadonlyMap<string, readonly string[]>;
+  readonly legacyTaskToCreeps: ReadonlyMap<string, readonly string[]>;
   readonly valid: boolean;
   readonly invalidCount: number;
   readonly issues: readonly WorkProjectionIssue[];
+}
+
+interface WorkerAssignmentRef {
+  readonly roomName: string;
+  readonly localId: string;
+}
+
+interface IndexedWorkerAssignment {
+  readonly creepName: string;
+  readonly taskId?: string;
+  readonly ref?: WorkerAssignmentRef;
+  readonly bindingIssue?: WorkProjectionIssue;
 }
 
 const NAMESPACE = TASK_SYSTEM_CATALOG["worker-work"].domainOwner;
@@ -38,6 +52,7 @@ const WORKER_TASK_TYPES: ReadonlySet<string> = new Set([
   "dismantle",
 ]);
 const WORKER_TASK_STATUSES: ReadonlySet<string> = new Set(["active", "done"]);
+const WORKER_ROOM_NAME_PATTERN = /^(?:[WE]\d+[NS]\d+|sim)$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -48,13 +63,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function ownValue(record: Record<string, unknown>, field: string): unknown {
-  return Object.prototype.hasOwnProperty.call(record, field)
-    ? record[field]
-    : undefined;
+  if (!Object.prototype.hasOwnProperty.call(record, field)) {
+    return undefined;
+  }
+
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(record, field);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function isValidWorkerRoomName(value: unknown): value is string {
+  return typeof value === "string" && WORKER_ROOM_NAME_PATTERN.test(value);
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -126,16 +152,6 @@ function collectTaskCandidates(
   let invalidCount = 0;
 
   for (const roomName of Object.keys(board).sort(compareText)) {
-    if (!isNonEmptyString(roomName)) {
-      invalidCount += 1;
-      appendSystemIssue(issues, {
-        code: "worker-room-name-invalid",
-        message: "Worker task board contains an empty room scope.",
-        field: "board",
-      });
-      continue;
-    }
-
     const roomStore = ownValue(board, roomName);
     if (!isRecord(roomStore)) {
       invalidCount += 1;
@@ -143,6 +159,15 @@ function collectTaskCandidates(
         code: "worker-room-store-malformed",
         message: `Worker task room ${roomName} is not a record keyed by task id.`,
         field: roomName,
+      });
+      continue;
+    }
+    if (!isValidWorkerRoomName(roomName)) {
+      invalidCount += 1;
+      appendSystemIssue(issues, {
+        code: "worker-room-name-invalid",
+        message: "Worker task board contains an invalid room scope.",
+        field: "board",
       });
       continue;
     }
@@ -166,10 +191,103 @@ function collectTaskCandidates(
   return { candidates, taskIdCounts, invalidCount, issues };
 }
 
+function workerRefKey(roomName: string, localId: string): string {
+  return JSON.stringify([roomName, localId]);
+}
+
+function parseWorkerAssignmentRef(
+  state: Record<string, unknown>,
+  taskId: string | undefined,
+): { readonly ref?: WorkerAssignmentRef; readonly issue?: WorkProjectionIssue } {
+  const bindings = ownValue(state, "dispatchBindings");
+  if (bindings === undefined) {
+    return taskId === undefined
+      ? {}
+      : {
+        issue: {
+          code: "worker-assignment-canonical-missing",
+          message: "Worker assignment has only the legacy taskId mirror and no canonical dispatch ref.",
+          field: "dispatchBindings.worker",
+        },
+      };
+  }
+  if (!isRecord(bindings)) {
+    return {
+      issue: {
+        code: "worker-assignment-bindings-malformed",
+        message: "Worker assignment dispatchBindings must be a record.",
+        field: "dispatchBindings",
+      },
+    };
+  }
+
+  const binding = ownValue(bindings, "worker");
+  if (binding === undefined) {
+    return taskId === undefined
+      ? {}
+      : {
+        issue: {
+          code: "worker-assignment-canonical-missing",
+          message: "Worker assignment has only the legacy taskId mirror and no canonical Worker ref.",
+          field: "dispatchBindings.worker",
+        },
+      };
+  }
+  if (!isRecord(binding)) {
+    return {
+      issue: {
+        code: "worker-assignment-binding-malformed",
+        message: "Worker canonical dispatch binding must be a record.",
+        field: "dispatchBindings.worker",
+      },
+    };
+  }
+
+  const system = ownValue(binding, "system");
+  const namespace = ownValue(binding, "namespace");
+  const scope = ownValue(binding, "scope");
+  const localId = ownValue(binding, "localId");
+  if (
+    system !== "worker-work"
+    || namespace !== NAMESPACE
+    || !isRecord(scope)
+    || ownValue(scope, "kind") !== "room"
+    || !isValidWorkerRoomName(ownValue(scope, "roomName"))
+    || !isNonEmptyString(localId)
+  ) {
+    return {
+      issue: {
+        code: "worker-assignment-binding-invalid",
+        message: "Worker canonical dispatch binding has an invalid system, namespace, scope, or local id.",
+        field: "dispatchBindings.worker",
+      },
+    };
+  }
+
+  const ref = {
+    roomName: ownValue(scope, "roomName") as string,
+    localId,
+  };
+  if (taskId === undefined || taskId !== localId) {
+    return {
+      ref,
+      issue: {
+        code: "worker-assignment-mirror-drift",
+        message: "Worker legacy taskId mirror does not match the canonical dispatch ref local id.",
+        field: "taskId",
+      },
+    };
+  }
+
+  return { ref };
+}
+
 function indexAssignments(assignments: unknown): AssignmentIndex {
   if (!isRecord(assignments)) {
     return {
-      taskToCreeps: new Map(),
+      records: new Map(),
+      refToCreeps: new Map(),
+      legacyTaskToCreeps: new Map(),
       valid: false,
       invalidCount: 1,
       issues: [{
@@ -180,7 +298,9 @@ function indexAssignments(assignments: unknown): AssignmentIndex {
     };
   }
 
-  const mutableIndex = new Map<string, string[]>();
+  const records = new Map<string, IndexedWorkerAssignment>();
+  const mutableRefIndex = new Map<string, string[]>();
+  const mutableLegacyIndex = new Map<string, string[]>();
   const issues: WorkProjectionIssue[] = [];
   let invalidCount = 0;
 
@@ -206,11 +326,8 @@ function indexAssignments(assignments: unknown): AssignmentIndex {
       continue;
     }
 
-    const taskId = ownValue(state, "taskId");
-    if (taskId === undefined) {
-      continue;
-    }
-    if (!isNonEmptyString(taskId)) {
+    const rawTaskId = ownValue(state, "taskId");
+    if (rawTaskId !== undefined && !isNonEmptyString(rawTaskId)) {
       invalidCount += 1;
       appendSystemIssue(issues, {
         code: "worker-assignment-task-id-invalid",
@@ -219,18 +336,46 @@ function indexAssignments(assignments: unknown): AssignmentIndex {
       });
       continue;
     }
+    const taskId = isNonEmptyString(rawTaskId) ? rawTaskId : undefined;
 
-    const creeps = mutableIndex.get(taskId) || [];
-    creeps.push(creepName);
-    mutableIndex.set(taskId, creeps);
+    const parsed = parseWorkerAssignmentRef(state, taskId);
+    const record: IndexedWorkerAssignment = {
+      creepName,
+      ...(taskId === undefined ? {} : { taskId }),
+      ...(parsed.ref ? { ref: parsed.ref } : {}),
+      ...(parsed.issue ? { bindingIssue: parsed.issue } : {}),
+    };
+    records.set(creepName, record);
+
+    if (parsed.ref) {
+      const key = workerRefKey(parsed.ref.roomName, parsed.ref.localId);
+      const creeps = mutableRefIndex.get(key) || [];
+      creeps.push(creepName);
+      mutableRefIndex.set(key, creeps);
+    } else if (taskId !== undefined) {
+      const creeps = mutableLegacyIndex.get(taskId) || [];
+      creeps.push(creepName);
+      mutableLegacyIndex.set(taskId, creeps);
+    }
   }
 
-  const taskToCreeps = new Map<string, readonly string[]>();
-  for (const [taskId, creepNames] of mutableIndex) {
-    taskToCreeps.set(taskId, [...creepNames].sort());
+  const refToCreeps = new Map<string, readonly string[]>();
+  for (const [refKey, creepNames] of mutableRefIndex) {
+    refToCreeps.set(refKey, [...creepNames].sort());
+  }
+  const legacyTaskToCreeps = new Map<string, readonly string[]>();
+  for (const [taskId, creepNames] of mutableLegacyIndex) {
+    legacyTaskToCreeps.set(taskId, [...creepNames].sort());
   }
 
-  return { taskToCreeps, valid: invalidCount === 0, invalidCount, issues };
+  return {
+    records,
+    refToCreeps,
+    legacyTaskToCreeps,
+    valid: invalidCount === 0,
+    invalidCount,
+    issues,
+  };
 }
 
 function validateRequiredTaskFields(
@@ -259,7 +404,7 @@ function validateRequiredTaskFields(
   }
 
   const sourceRoomName = ownValue(task, "roomName");
-  if (!isNonEmptyString(sourceRoomName)) {
+  if (!isValidWorkerRoomName(sourceRoomName)) {
     invalidate({
       code: "worker-task-room-invalid",
       message: "Worker task is missing its source room name.",
@@ -397,10 +542,9 @@ function readListedAssignees(
   if (Number.isInteger(maxAssignees) && (maxAssignees as number) >= 1 && names.size > (maxAssignees as number)) {
     appendEntryIssue(issues, {
       code: "worker-task-assignee-capacity-conflict",
-      message: "Worker task has more listed assignees than its slot capacity.",
+      message: "Worker task has more listed assignees than its current slot capacity; sticky claims remain valid.",
       field: "assignedCreeps",
     });
-    valid = false;
   }
 
   return { names, valid };
@@ -437,7 +581,8 @@ function projectCandidate(
   const task = candidate.value;
   const taskFieldsValid = validateRequiredTaskFields(task, candidate, issues);
   const listed = readListedAssignees(task, issues);
-  const reverseNames = new Set(assignmentIndex.taskToCreeps.get(candidate.localId) || []);
+  const candidateRefKey = workerRefKey(candidate.roomName, candidate.localId);
+  const reverseNames = new Set(assignmentIndex.refToCreeps.get(candidateRefKey) || []);
   const confirmedAssignees: string[] = [];
   let claimEvidenceComplete = assignmentIndex.valid;
 
@@ -447,28 +592,55 @@ function projectCandidate(
       message: "Worker assignment snapshot contains malformed records, so claim closure cannot be proven.",
       field: "assignments",
     });
-  } else if (taskIdCount > 1 && (listed.names.size > 0 || reverseNames.size > 0)) {
-    appendEntryIssue(issues, {
-      code: "worker-assignment-identity-ambiguous",
-      message: "Worker assignment task id matches more than one room-scoped task.",
-      field: "taskId",
-    });
-    claimEvidenceComplete = false;
   } else {
-    const candidateAssignees = new Set([...listed.names, ...reverseNames]);
+    const legacyNames = assignmentIndex.legacyTaskToCreeps.get(candidate.localId) || [];
+    const legacyIdentityAmbiguous = taskIdCount > 1 && legacyNames.length > 0;
+    if (legacyIdentityAmbiguous) {
+      appendEntryIssue(issues, {
+        code: "worker-assignment-identity-ambiguous",
+        message: `${legacyNames.length} legacy Worker assignment(s) match ${taskIdCount} room-scoped tasks with local id ${candidate.localId}.`,
+        field: "taskId",
+      });
+      claimEvidenceComplete = false;
+    }
+    const candidateAssignees = new Set([
+      ...listed.names,
+      ...reverseNames,
+      ...(legacyIdentityAmbiguous ? [] : legacyNames),
+    ]);
     for (const creepName of [...candidateAssignees].sort()) {
-      if (listed.names.has(creepName) && reverseNames.has(creepName)) {
+      const assignment = assignmentIndex.records.get(creepName);
+      const hasExactBinding = assignment?.ref?.roomName === candidate.roomName
+        && assignment.ref.localId === candidate.localId;
+      const bindingValid = hasExactBinding && assignment?.bindingIssue === undefined;
+
+      if (listed.names.has(creepName) && bindingValid) {
         confirmedAssignees.push(creepName);
         continue;
       }
 
-      appendEntryIssue(issues, {
-        code: "worker-assignment-drift",
-        message: listed.names.has(creepName)
-          ? `Worker task lists ${creepName}, but its reverse assignment does not reference this task.`
-          : `Worker assignment for ${creepName} references this task, but the task does not list that creep.`,
-        field: "assignedCreeps",
-      });
+      if (
+        legacyIdentityAmbiguous
+        && assignment?.taskId === candidate.localId
+        && !assignment.ref
+      ) {
+        continue;
+      }
+
+      if (listed.names.has(creepName) && assignment?.bindingIssue) {
+        appendEntryIssue(issues, {
+          ...assignment.bindingIssue,
+          message: `${assignment.bindingIssue.message} Actor: ${creepName}.`,
+        });
+      } else {
+        appendEntryIssue(issues, {
+          code: "worker-assignment-drift",
+          message: listed.names.has(creepName)
+            ? `Worker task lists ${creepName}, but its canonical reverse assignment does not reference this exact task.`
+            : `Worker canonical assignment for ${creepName} references this task, but the task does not list that creep.`,
+          field: "assignedCreeps",
+        });
+      }
       claimEvidenceComplete = false;
     }
   }
@@ -551,14 +723,35 @@ const workerWorkAdapter: TaskSystemAdapter<WorkerWorkAdapterContext> = {
     for (const issue of collected.issues) appendSystemIssue(issues, issue);
     for (const issue of assignmentIndex.issues) appendSystemIssue(issues, issue);
 
-    for (const taskId of [...assignmentIndex.taskToCreeps.keys()].sort(compareText)) {
+    const candidateRefKeys = new Set(collected.candidates.map((candidate) =>
+      workerRefKey(candidate.roomName, candidate.localId),
+    ));
+    for (const [refKey, creepNames] of [...assignmentIndex.refToCreeps.entries()].sort(
+      ([left], [right]) => compareText(left, right),
+    )) {
+      if (candidateRefKeys.has(refKey)) {
+        continue;
+      }
+      for (const creepName of creepNames) {
+        const assignment = assignmentIndex.records.get(creepName);
+        appendSystemIssue(issues, {
+          code: "worker-assignment-orphan",
+          message: `Worker canonical assignment for ${creepName} references a missing exact task ${assignment?.ref?.localId || "unknown"}.`,
+          field: "dispatchBindings.worker",
+        });
+      }
+    }
+
+    for (const [taskId, creepNames] of [...assignmentIndex.legacyTaskToCreeps.entries()].sort(
+      ([left], [right]) => compareText(left, right),
+    )) {
       if (collected.taskIdCounts.has(taskId)) {
         continue;
       }
-      for (const creepName of assignmentIndex.taskToCreeps.get(taskId) || []) {
+      for (const creepName of creepNames) {
         appendSystemIssue(issues, {
           code: "worker-assignment-orphan",
-          message: `Worker assignment for ${creepName} references missing task ${taskId}.`,
+          message: `Worker legacy assignment for ${creepName} references missing task ${taskId}.`,
           field: "taskId",
         });
       }

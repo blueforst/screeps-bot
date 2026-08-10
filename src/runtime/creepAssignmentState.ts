@@ -1,4 +1,8 @@
 import type { CarrierTaskType } from "@/runtime/carrierTaskBoard";
+import type {
+  CarrierDispatchRef,
+  WorkerDispatchRef,
+} from "@/runtime/dispatchOwnership/ref";
 
 type CarrierPlanTargetKind = "resource" | "structure";
 type CarrierPlanMode = "pickup" | "deliver";
@@ -15,6 +19,10 @@ export interface CreepAssignmentState {
   energyPickupRoomName?: string;
   taskId?: string;
   synthesisCarrierTaskId?: string;
+  dispatchBindings?: {
+    worker?: WorkerDispatchRef;
+    carrier?: CarrierDispatchRef;
+  };
   synthesisCarrierPendingPickupTick?: number;
   synthesisCarrierPendingStepId?: string;
   synthesisCarrierPendingDeliveryTick?: number;
@@ -22,6 +30,8 @@ export interface CreepAssignmentState {
   synthesisCarrierPendingToId?: string;
   synthesisCarrierPendingResource?: ResourceConstant;
   synthesisCarrierPendingTaskType?: CarrierTaskType;
+  /** Accepted-cargo provenance; independent from the actor's current sticky binding. */
+  synthesisCarrierPendingTaskRef?: CarrierDispatchRef;
 }
 
 type AssignmentStateStore = Record<string, CreepAssignmentState>;
@@ -37,25 +47,49 @@ const runtimeGlobal: RuntimeGlobalWithAssignmentState = global;
 
 function ensureAssignmentStateStore(): AssignmentStateStore {
   if (!runtimeGlobal.__creepAssignmentState) {
-    runtimeGlobal.__creepAssignmentState = {};
+    runtimeGlobal.__creepAssignmentState = Object.create(null) as AssignmentStateStore;
   }
 
   return runtimeGlobal.__creepAssignmentState;
 }
 
+function ownDataValue(target: object, key: string): { found: boolean; value?: unknown } {
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(target, key);
+  } catch {
+    return { found: false };
+  }
+  if (!descriptor || !("value" in descriptor)) return { found: false };
+  return { found: true, value: descriptor.value };
+}
+
+function defineOwnDataValue(target: object, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
 export function ensureCreepAssignmentState(creepName: string): CreepAssignmentState {
   const store = ensureAssignmentStateStore();
-  const existing = store[creepName];
-  if (existing) {
-    return existing;
+  const existing = ownDataValue(store, creepName);
+  if (existing.found && existing.value) {
+    return existing.value as CreepAssignmentState;
   }
 
-  store[creepName] = {};
-  return store[creepName];
+  const state: CreepAssignmentState = {};
+  defineOwnDataValue(store, creepName, state);
+  return state;
 }
 
 export function getCreepAssignmentState(creepName: string): CreepAssignmentState | undefined {
-  return runtimeGlobal.__creepAssignmentState?.[creepName];
+  const store = runtimeGlobal.__creepAssignmentState;
+  if (!store) return undefined;
+  const existing = ownDataValue(store, creepName);
+  return existing.found ? existing.value as CreepAssignmentState : undefined;
 }
 
 function defineAssignmentSnapshotProperty(
@@ -140,10 +174,10 @@ function snapshotCreepAssignmentState(state: CreepAssignmentState): CreepAssignm
 /** Returns one isolated assignment snapshot without creating assignment state. */
 export function peekCreepAssignmentState(creepName: string): CreepAssignmentStateSnapshot | undefined {
   const store = runtimeGlobal.__creepAssignmentState;
-  if (!store || !Object.prototype.hasOwnProperty.call(store, creepName)) {
-    return undefined;
-  }
-  return snapshotCreepAssignmentState(store[creepName]);
+  if (!store) return undefined;
+  const existing = ownDataValue(store, creepName);
+  if (!existing.found) return undefined;
+  return snapshotCreepAssignmentState(existing.value as CreepAssignmentState);
 }
 
 /** Returns an isolated assignment-store snapshot without creating the private heap store. */
@@ -157,7 +191,9 @@ export function peekCreepAssignmentStates(): CreepAssignmentStateStoreSnapshot {
 }
 
 export function clearCreepAssignmentState(creepName: string): void {
-  delete ensureAssignmentStateStore()[creepName];
+  const store = runtimeGlobal.__creepAssignmentState;
+  if (!store || !Object.prototype.hasOwnProperty.call(store, creepName)) return;
+  delete store[creepName];
 }
 
 export function pruneDeadCreepAssignmentState(): number {
@@ -168,7 +204,8 @@ export function pruneDeadCreepAssignmentState(): number {
 
   let removed = 0;
   for (const creepName of Object.keys(store)) {
-    if (Game.creeps[creepName]) {
+    const liveCreep = ownDataValue(Game.creeps, creepName);
+    if (liveCreep.found && liveCreep.value) {
       continue;
     }
 

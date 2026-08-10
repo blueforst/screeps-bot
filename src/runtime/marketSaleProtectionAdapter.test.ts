@@ -6,7 +6,14 @@ import {
   clearCarrierTaskBoardForTest,
   replaceCarrierTasksForProducerRoom,
 } from "@/runtime/carrierTaskBoard";
-import { clearCreepAssignmentStateForTest } from "@/runtime/creepAssignmentState";
+import {
+  clearCreepAssignmentStateForTest,
+  ensureCreepAssignmentState,
+} from "@/runtime/creepAssignmentState";
+import {
+  createCarrierDispatchRef,
+  encodeCarrierDispatchStepKey,
+} from "@/runtime/dispatchOwnership/ref";
 import {
   collectLiveMarketSaleProtectionLedger,
   type LiveManagedOrderExposure,
@@ -177,6 +184,151 @@ beforeEach(() => {
 });
 
 describe("collectLiveMarketSaleProtectionLedger", () => {
+
+  it("deduplicates one accepted cargo view with its exact board step by maximum amount", () => {
+    Game.rooms[ROOM] = createRoom(
+      ROOM,
+      { [RESOURCE_KEANIUM]: 5_000 },
+      { [RESOURCE_KEANIUM]: 5_000 },
+    );
+    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
+    const taskId = "factory-supply";
+    const stepId = "keanium-step";
+    const producer = "factory:test";
+    const ref = createCarrierDispatchRef(producer, ROOM, taskId);
+    expect(ref).toBeDefined();
+    if (!ref) return;
+
+    replaceCarrierTasksForProducerRoom(producer, ROOM, [{
+      id: taskId,
+      type: "factory_supply",
+      priority: 100,
+      steps: [{
+        id: stepId,
+        resource: RESOURCE_KEANIUM,
+        fromKind: "terminal",
+        toKind: "factory",
+        fromId: `${ROOM}:terminal`,
+        toId: `${ROOM}:factory`,
+        amount: 500,
+      }],
+    }]);
+    const carrier = {
+      name: "carrier-with-duplicate-observation",
+      room: Game.rooms[ROOM],
+      store: createStore({ [RESOURCE_KEANIUM]: 300 }),
+    } as unknown as Creep;
+    Game.creeps[carrier.name] = carrier;
+    Object.assign(ensureCreepAssignmentState(carrier.name), {
+      synthesisCarrierTaskId: taskId,
+      synthesisCarrierPendingTaskRef: ref,
+      synthesisCarrierPendingStepId: stepId,
+      synthesisCarrierPendingResource: RESOURCE_KEANIUM,
+    });
+
+    const ledger = collectLiveMarketSaleProtectionLedger(
+      config({ [RESOURCE_KEANIUM]: 0 }),
+      undefined,
+      {
+        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
+      },
+    );
+    const entry = ledger.entries[
+      getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)
+    ];
+    const carrierContributions = entry.sourceContributions.filter(
+      (contribution) => contribution.bucket === "carrierOrInFlight",
+    );
+
+    expect(carrierContributions).toEqual([
+      expect.objectContaining({
+        stableKey: encodeCarrierDispatchStepKey(ref, stepId),
+        amount: 500,
+      }),
+    ]);
+    expect(entry.carrierOrInFlight).toBe(500);
+  });
+
+  it("keeps accepted cargo bound to its full producer ref after board deletion", () => {
+    const displacedRoom = "W9N9";
+    Game.rooms[ROOM] = createRoom(
+      ROOM,
+      { [RESOURCE_KEANIUM]: 5_000 },
+      { [RESOURCE_KEANIUM]: 5_000 },
+    );
+    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
+
+    const taskId = "shared:task->id";
+    const stepId = "shared:step\\\"id";
+    const producerA = "producer:a->legacy";
+    const producerB = "producer->b:replacement";
+    const refA = createCarrierDispatchRef(producerA, ROOM, taskId);
+    const refB = createCarrierDispatchRef(producerB, ROOM, taskId);
+    expect(refA).toBeDefined();
+    expect(refB).toBeDefined();
+    if (!refA || !refB) return;
+
+    const draft = (amount: number) => ({
+      id: taskId,
+      type: "factory_supply" as const,
+      priority: 100,
+      steps: [{
+        id: stepId,
+        resource: RESOURCE_KEANIUM,
+        fromKind: "terminal" as const,
+        toKind: "factory" as const,
+        fromId: `${ROOM}:terminal`,
+        toId: `${ROOM}:factory`,
+        amount,
+      }],
+    });
+
+    replaceCarrierTasksForProducerRoom(producerA, ROOM, [draft(300)]);
+    const carrier = {
+      name: "carrier-with-accepted-cargo",
+      room: createRoom(displacedRoom, {}, {}),
+      store: createStore({ [RESOURCE_KEANIUM]: 300 }),
+    } as unknown as Creep;
+    Game.creeps[carrier.name] = carrier;
+    Object.assign(ensureCreepAssignmentState(carrier.name), {
+      // The actor may already be sticky-bound elsewhere; accepted provenance
+      // remains independently authoritative until the carried cargo lands.
+      synthesisCarrierTaskId: "current-b-task",
+      synthesisCarrierPendingTaskRef: refA,
+      synthesisCarrierPendingStepId: stepId,
+      synthesisCarrierPendingResource: RESOURCE_KEANIUM,
+    });
+
+    replaceCarrierTasksForProducerRoom(producerA, ROOM, []);
+    replaceCarrierTasksForProducerRoom(producerB, ROOM, [draft(500)]);
+
+    const ledger = collectLiveMarketSaleProtectionLedger(
+      config({ [RESOURCE_KEANIUM]: 0 }),
+      undefined,
+      {
+        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
+      },
+    );
+    const entry = ledger.entries[
+      getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)
+    ];
+    const carrierContributions = entry.sourceContributions.filter(
+      (contribution) => contribution.bucket === "carrierOrInFlight",
+    );
+
+    expect(carrierContributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stableKey: encodeCarrierDispatchStepKey(refA, stepId),
+        amount: 300,
+      }),
+      expect.objectContaining({
+        stableKey: encodeCarrierDispatchStepKey(refB, stepId),
+        amount: 500,
+      }),
+    ]));
+    expect(carrierContributions).toHaveLength(2);
+    expect(entry.carrierOrInFlight).toBe(800);
+  });
 
   it("deduplicates matching Synthesis and Hub dispatch plans while keeping different products separate", () => {
     const secondRoom = "W2N2";

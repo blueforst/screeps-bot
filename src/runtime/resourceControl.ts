@@ -1,4 +1,5 @@
 import {
+  listCarrierDispatchEntriesByRoom,
   listCarrierTasksByRoom,
   listCarrierTasksForProducer,
   pruneCarrierTasksForProducer,
@@ -6,6 +7,9 @@ import {
   type CarrierTaskDispatchClass,
   type CarrierTaskDraft,
 } from "@/runtime/carrierTaskBoard";
+import {
+  encodeCarrierDispatchStepKey,
+} from "@/runtime/dispatchOwnership/ref";
 import { limitActionLog } from "@/runtime/actionLog";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import {
@@ -1290,6 +1294,7 @@ function collectMarketTerminalEnergyContributions(
   bounded: boolean;
 } {
   const byId = new Map<string, MarketTerminalEnergyReadinessContribution>();
+  let carrierIdentityComplete = true;
   addMarketEnergyContribution(byId, {
     id: `ordinary-terminal-target:${snapshot.roomName}`,
     amount: Math.max(0, Math.floor(snapshot.terminalEnergyReserve)),
@@ -1337,16 +1342,34 @@ function collectMarketTerminalEnergyContributions(
     });
   }
 
-  for (const task of listCarrierTasksByRoom(snapshot.roomName)) {
+  for (const { ref: taskRef, task } of listCarrierDispatchEntriesByRoom(
+    snapshot.roomName,
+  )) {
     if (task.type !== "lab_supply" && task.type !== "factory_supply") {
+      continue;
+    }
+    if (
+      taskRef.namespace !== task.producer ||
+      taskRef.scope.roomName !== snapshot.roomName ||
+      taskRef.scope.roomName !== task.roomName ||
+      taskRef.localId !== task.id
+    ) {
+      carrierIdentityComplete = false;
       continue;
     }
     for (const step of task.steps) {
       if (step.resource !== RESOURCE_ENERGY || step.fromKind !== "terminal") {
         continue;
       }
+      let contributionId: string;
+      try {
+        contributionId = encodeCarrierDispatchStepKey(taskRef, step.id);
+      } catch {
+        carrierIdentityComplete = false;
+        continue;
+      }
       addMarketEnergyContribution(byId, {
-        id: `production-carrier:${task.id}:${step.id}`,
+        id: contributionId,
         amount: Math.floor(step.amount),
         kind: "terminal_production_commitment",
       });
@@ -1375,7 +1398,9 @@ function collectMarketTerminalEnergyContributions(
     terminalScopedProductionEnergyCommitments: sumKind(
       "terminal_production_commitment",
     ),
-    bounded: contributions.length <= MARKET_TERMINAL_ENERGY_MAX_CONTRIBUTIONS,
+    bounded:
+      carrierIdentityComplete &&
+      contributions.length <= MARKET_TERMINAL_ENERGY_MAX_CONTRIBUTIONS,
   };
 }
 

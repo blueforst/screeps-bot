@@ -1,36 +1,53 @@
+import {
+  cloneCarrierDispatchRef,
+  createCarrierDispatchRef,
+  isCarrierDispatchRef,
+  isValidDispatchRoomName,
+  type CarrierDispatchRef,
+} from "@/runtime/dispatchOwnership/ref";
+import {
+  claimCarrierAmountSlice,
+  clearCarrierAmountSlices,
+  releaseUncommittedCarrierAmountSlices,
+} from "@/runtime/dispatchOwnership/carrierAmountSlice";
+
 export type CarrierTaskType = "lab_supply" | "lab_cleanup" | "lab_product_unload" | "mineral_haul" | "terminal_feed" | "terminal_offload" | "factory_supply" | "factory_unload" | "power_spawn_supply" | "nuker_supply";
 export type CarrierTaskDispatchClass = "capacity_relief";
 
 export type CarrierStructureKind = "lab" | "terminal" | "storage" | "container" | "factory" | "power_spawn" | "nuker";
 
 export interface CarrierTaskStep {
-  id: string;
-  resource: ResourceConstant;
-  fromKind: CarrierStructureKind;
-  toKind: CarrierStructureKind;
-  fromId: string;
-  toId: string;
-  amount: number;
+  readonly id: string;
+  readonly resource: ResourceConstant;
+  readonly fromKind: CarrierStructureKind;
+  readonly toKind: CarrierStructureKind;
+  readonly fromId: string;
+  readonly toId: string;
+  readonly amount: number;
 }
 
+/**
+ * Production readers receive this deep-readonly live view. The board remains
+ * the only owner allowed to replace task identity, metadata, or nested steps.
+ */
 export interface CarrierTask {
-  id: string;
-  producer: string;
-  roomName: string;
-  type: CarrierTaskType;
-  priority: number;
-  dispatchClass?: CarrierTaskDispatchClass;
-  steps: CarrierTaskStep[];
-  createdAt: number;
-  updatedAt: number;
+  readonly id: string;
+  readonly producer: string;
+  readonly roomName: string;
+  readonly type: CarrierTaskType;
+  readonly priority: number;
+  readonly dispatchClass?: CarrierTaskDispatchClass;
+  readonly steps: readonly CarrierTaskStep[];
+  readonly createdAt: number;
+  readonly updatedAt: number;
 }
 
 export interface CarrierTaskDraft {
-  id: string;
-  type: CarrierTaskType;
-  priority: number;
-  dispatchClass?: CarrierTaskDispatchClass;
-  steps: CarrierTaskStep[];
+  readonly id: string;
+  readonly type: CarrierTaskType;
+  readonly priority: number;
+  readonly dispatchClass?: CarrierTaskDispatchClass;
+  readonly steps: readonly CarrierTaskStep[];
 }
 
 export interface CarrierTaskStepAmountClaim {
@@ -39,43 +56,121 @@ export interface CarrierTaskStepAmountClaim {
   release(): void;
 }
 
-type CarrierTaskBoardStore = Record<string, Record<string, CarrierTask>>;
+export type MutableCarrierTaskStepForTest = {
+  -readonly [Field in keyof CarrierTaskStep]: CarrierTaskStep[Field];
+};
+
+/** Test-only escape hatch for constructing malformed private heap fixtures. */
+export type MutableCarrierTaskForTest = Omit<{
+  -readonly [Field in keyof CarrierTask]: CarrierTask[Field];
+}, "steps"> & {
+  steps: MutableCarrierTaskStepForTest[];
+};
+
+interface CarrierTaskRecord {
+  task: MutableCarrierTaskForTest;
+  publishOrder: number;
+}
+
+interface CarrierTaskRoomStore {
+  byOwner: Map<string, Map<string, CarrierTaskRecord>>;
+  nextPublishOrder: number;
+}
+
+type CarrierTaskBoardStore = Map<string, CarrierTaskRoomStore>;
 
 export type CarrierTaskSnapshot = Readonly<Omit<CarrierTask, "steps">> & {
   readonly steps: readonly Readonly<CarrierTaskStep>[];
 };
 
-export type CarrierTaskRoomSnapshot = Readonly<
-  Record<string, CarrierTaskSnapshot>
->;
+export interface CarrierDispatchEntry {
+  readonly ref: CarrierDispatchRef;
+  readonly task: CarrierTask;
+}
 
+export interface CarrierTaskReadSnapshotEntry {
+  readonly ref: CarrierDispatchRef;
+  readonly task: CarrierTaskSnapshot;
+}
+
+export type CarrierTaskRoomSnapshot = readonly CarrierTaskReadSnapshotEntry[];
+
+/**
+ * Owner-aware detached DTO. Private Maps and publish metadata never escape.
+ * Rooms are data properties whose values contain full refs, so equal local ids
+ * from different producers remain distinct.
+ */
 export type CarrierTaskBoardSnapshot = Readonly<
   Record<string, CarrierTaskRoomSnapshot>
 >;
 
-interface CarrierTaskClaimRecord {
-  stepId: string;
-  amount: number;
-  committed: boolean;
-  claimantWasLiveAtClaim: boolean;
-}
-
-interface CarrierTaskClaimBudget {
-  claims: Map<string, CarrierTaskClaimRecord>;
-}
-
-interface CarrierTaskClaimRuntime {
-  tick: number;
-  game: Game;
-  budgets: Map<string, CarrierTaskClaimBudget>;
-}
-
 type RuntimeGlobalWithCarrierTasks = typeof global & {
   __carrierTaskBoard?: CarrierTaskBoardStore;
-  __carrierTaskClaims?: CarrierTaskClaimRuntime;
 };
 
 const runtimeGlobal: RuntimeGlobalWithCarrierTasks = global;
+const nativeMapSizeGetter = Object.getOwnPropertyDescriptor(
+  Map.prototype,
+  "size",
+)?.get;
+const nativeMapProbeKey = Object.freeze({ carrierTaskBoardMapProbe: true });
+
+function isNativeMap<Key, Value>(
+  value: unknown,
+): value is Map<Key, Value> {
+  if (value === null || typeof value !== "object") return false;
+  try {
+    Map.prototype.has.call(value, nativeMapProbeKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function nativeMapGet<Key, Value>(
+  map: Map<Key, Value>,
+  key: Key,
+): Value | undefined {
+  return Map.prototype.get.call(map, key) as Value | undefined;
+}
+
+function nativeMapSet<Key, Value>(
+  map: Map<Key, Value>,
+  key: Key,
+  value: Value,
+): void {
+  Map.prototype.set.call(map, key, value);
+}
+
+function nativeMapDelete<Key, Value>(
+  map: Map<Key, Value>,
+  key: Key,
+): boolean {
+  return Map.prototype.delete.call(map, key) as boolean;
+}
+
+function nativeMapSize<Key, Value>(map: Map<Key, Value>): number {
+  if (!nativeMapSizeGetter) return 0;
+  return nativeMapSizeGetter.call(map) as number;
+}
+
+function nativeMapEntries<Key, Value>(
+  map: Map<Key, Value>,
+): IterableIterator<[Key, Value]> {
+  return Map.prototype.entries.call(map) as IterableIterator<[Key, Value]>;
+}
+
+function nativeMapKeys<Key, Value>(
+  map: Map<Key, Value>,
+): IterableIterator<Key> {
+  return Map.prototype.keys.call(map) as IterableIterator<Key>;
+}
+
+function nativeMapValues<Key, Value>(
+  map: Map<Key, Value>,
+): IterableIterator<Value> {
+  return Map.prototype.values.call(map) as IterableIterator<Value>;
+}
 
 function defineCarrierSnapshotProperty(
   target: object,
@@ -115,7 +210,12 @@ function cloneCarrierSnapshotValue(
       return undefined;
     };
   } else {
-    const prototype = Object.getPrototypeOf(source);
+    let prototype: object | null;
+    try {
+      prototype = Object.getPrototypeOf(source);
+    } catch {
+      prototype = Object.freeze({});
+    }
     if (prototype === null) {
       snapshot = Object.create(null) as object;
     } else if (prototype === Object.prototype) {
@@ -126,7 +226,13 @@ function cloneCarrierSnapshotValue(
   }
   seen.set(source, snapshot);
 
-  for (const key of Object.keys(source)) {
+  let keys: string[];
+  try {
+    keys = Object.keys(source);
+  } catch {
+    return snapshot;
+  }
+  for (const key of keys) {
     let descriptor: PropertyDescriptor | undefined;
     try {
       descriptor = Object.getOwnPropertyDescriptor(source, key);
@@ -151,113 +257,206 @@ function cloneCarrierSnapshotValue(
   return snapshot;
 }
 
+function ownDataProperty(value: unknown, key: string): unknown {
+  if (
+    value === null
+    || (typeof value !== "object" && typeof value !== "function")
+  ) {
+    return undefined;
+  }
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && "value" in descriptor ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isCarrierTaskBoardStore(value: unknown): value is CarrierTaskBoardStore {
+  return isNativeMap<string, CarrierTaskRoomStore>(value);
+}
+
+function isCarrierTaskRoomStore(value: unknown): value is CarrierTaskRoomStore {
+  return isNativeMap<string, Map<string, CarrierTaskRecord>>(
+    ownDataProperty(value, "byOwner"),
+  )
+    && typeof ownDataProperty(value, "nextPublishOrder") === "number";
+}
+
+function readCarrierOwnerIndex(
+  roomStore: unknown,
+): Map<string, Map<string, CarrierTaskRecord>> | undefined {
+  const byOwner = ownDataProperty(roomStore, "byOwner");
+  return isNativeMap<string, Map<string, CarrierTaskRecord>>(byOwner)
+    ? byOwner
+    : undefined;
+}
+
+function readCarrierTaskRecordTask(record: unknown): unknown {
+  return ownDataProperty(record, "task");
+}
+
+function readCarrierTaskRecordOrder(record: unknown): number | undefined {
+  const order = ownDataProperty(record, "publishOrder");
+  return Number.isSafeInteger(order) && (order as number) >= 0
+    ? order as number
+    : undefined;
+}
+
+interface IndexedCarrierTaskRecord {
+  readonly ref: CarrierDispatchRef;
+  readonly task: unknown;
+  readonly publishOrder: number;
+}
+
+function listIndexedRecordsInRoom(
+  roomName: string,
+  roomStore: CarrierTaskRoomStore,
+): IndexedCarrierTaskRecord[] {
+  const indexed: IndexedCarrierTaskRecord[] = [];
+  const byOwner = readCarrierOwnerIndex(roomStore);
+  if (!byOwner) return indexed;
+  for (const [producer, ownerTasks] of nativeMapEntries(byOwner)) {
+    if (!isNativeMap<string, CarrierTaskRecord>(ownerTasks)) continue;
+    for (const [localId, record] of nativeMapEntries(ownerTasks)) {
+      const ref = createCarrierDispatchRef(producer, roomName, localId);
+      const publishOrder = readCarrierTaskRecordOrder(record);
+      if (!ref || publishOrder === undefined) continue;
+      indexed.push({
+        ref,
+        task: readCarrierTaskRecordTask(record),
+        publishOrder,
+      });
+    }
+  }
+  return indexed;
+}
+
+function compareCarrierTaskRecords(
+  left: IndexedCarrierTaskRecord,
+  right: IndexedCarrierTaskRecord,
+): number {
+  const leftPriority = ownDataProperty(left.task, "priority");
+  const rightPriority = ownDataProperty(right.task, "priority");
+  if (
+    typeof leftPriority === "number"
+    && typeof rightPriority === "number"
+    && leftPriority !== rightPriority
+  ) {
+    return rightPriority - leftPriority;
+  }
+  const leftCreatedAt = ownDataProperty(left.task, "createdAt");
+  const rightCreatedAt = ownDataProperty(right.task, "createdAt");
+  if (
+    typeof leftCreatedAt === "number"
+    && typeof rightCreatedAt === "number"
+    && leftCreatedAt !== rightCreatedAt
+  ) {
+    return leftCreatedAt - rightCreatedAt;
+  }
+  return left.publishOrder - right.publishOrder;
+}
+
+function compareCarrierPublishOrder(
+  left: IndexedCarrierTaskRecord,
+  right: IndexedCarrierTaskRecord,
+): number {
+  return left.publishOrder - right.publishOrder;
+}
+
 /**
- * Returns an isolated read snapshot without creating the runtime board.
- * Existing domain readers intentionally keep using get/list and their live
- * references; projection callers must use this selector instead.
+ * Returns an isolated, owner-aware read snapshot without creating the board.
+ * Invalid outer room keys and malformed private siblings fail closed. Task
+ * values are descriptor-cloned so debug accessors are never executed.
  */
 export function peekCarrierTaskBoard(): CarrierTaskBoardSnapshot {
   const board = runtimeGlobal.__carrierTaskBoard;
-  if (board === undefined) {
+  if (!isCarrierTaskBoardStore(board)) {
     return {};
   }
-  // Runtime heap state can be malformed after console/debug writes. Preserve
-  // the raw enumerable shape for adapter-level fail-closed handling while
-  // ensuring no mutable source reference escapes.
-  return cloneCarrierSnapshotValue(
-    board,
-  ) as CarrierTaskBoardSnapshot;
+
+  const snapshot: Record<string, CarrierTaskRoomSnapshot> = {};
+  for (const [roomName, rawRoomStore] of nativeMapEntries(board)) {
+    if (
+      !isValidDispatchRoomName(roomName)
+      || !isCarrierTaskRoomStore(rawRoomStore)
+    ) {
+      continue;
+    }
+    const roomEntries = listIndexedRecordsInRoom(roomName, rawRoomStore)
+      .sort(compareCarrierPublishOrder)
+      .map(({ ref, task }): CarrierTaskReadSnapshotEntry => ({
+        ref: cloneCarrierDispatchRef(ref) as CarrierDispatchRef,
+        task: cloneCarrierSnapshotValue(
+          task,
+        ) as CarrierTaskSnapshot,
+      }));
+    defineCarrierSnapshotProperty(snapshot, roomName, roomEntries);
+  }
+  return snapshot;
 }
 
-/**
- * Returns one room's isolated read snapshot without creating either the board
- * or an empty room store.
- */
+/** Returns one room's detached owner-aware DTO without ensure or cleanup. */
 export function peekCarrierTasksByRoom(
   roomName: string,
 ): CarrierTaskRoomSnapshot {
+  if (!isValidDispatchRoomName(roomName)) return [];
   const board = runtimeGlobal.__carrierTaskBoard;
-  if (!board || !Object.prototype.hasOwnProperty.call(board, roomName)) {
-    return {};
-  }
-  return cloneCarrierSnapshotValue(
-    board[roomName],
-  ) as CarrierTaskRoomSnapshot;
+  if (!isCarrierTaskBoardStore(board)) return [];
+  const roomStore = nativeMapGet(board, roomName);
+  if (!isCarrierTaskRoomStore(roomStore)) return [];
+
+  return listIndexedRecordsInRoom(roomName, roomStore)
+    .sort(compareCarrierPublishOrder)
+    .map(({ ref, task }): CarrierTaskReadSnapshotEntry => ({
+      ref: cloneCarrierDispatchRef(ref) as CarrierDispatchRef,
+      task: cloneCarrierSnapshotValue(
+        task,
+      ) as CarrierTaskSnapshot,
+    }));
 }
 
 function ensureCarrierTaskBoard(): CarrierTaskBoardStore {
-  if (!runtimeGlobal.__carrierTaskBoard) {
-    runtimeGlobal.__carrierTaskBoard = {};
-  }
-
-  return runtimeGlobal.__carrierTaskBoard;
-}
-
-function normalizeClaimAmount(amount: number): number {
-  if (!Number.isFinite(amount) || amount <= 0) return 0;
-  return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(amount));
-}
-
-function addClaimAmount(total: number, amount: number): number {
-  return Math.min(Number.MAX_SAFE_INTEGER, total + amount);
-}
-
-function getCarrierTaskClaimKey(task: CarrierTask): string {
-  return `${task.roomName}\u0000${task.producer}\u0000${task.id}`;
-}
-
-function ensureCarrierTaskClaimRuntime(): CarrierTaskClaimRuntime {
-  const existing = runtimeGlobal.__carrierTaskClaims;
-  if (
-    existing &&
-    existing.tick === Game.time &&
-    existing.game === Game
-  ) {
+  const existing = runtimeGlobal.__carrierTaskBoard;
+  if (isCarrierTaskBoardStore(existing)) {
     return existing;
   }
 
-  const created: CarrierTaskClaimRuntime = {
-    tick: Game.time,
-    game: Game,
-    budgets: new Map(),
-  };
-  runtimeGlobal.__carrierTaskClaims = created;
+  const created: CarrierTaskBoardStore = new Map();
+  runtimeGlobal.__carrierTaskBoard = created;
   return created;
 }
 
-function pruneDeadCarrierTaskClaims(
-  budget: CarrierTaskClaimBudget,
-): void {
-  for (const [claimantId, claim] of budget.claims) {
-    if (!claim.claimantWasLiveAtClaim || Game.creeps[claimantId]) {
-      continue;
-    }
-    budget.claims.delete(claimantId);
+function ensureRoomTaskStore(roomName: string): CarrierTaskRoomStore | undefined {
+  if (!isValidDispatchRoomName(roomName)) return undefined;
+  const board = ensureCarrierTaskBoard();
+  const existing = nativeMapGet(board, roomName);
+  if (isCarrierTaskRoomStore(existing)) {
+    return existing;
   }
+
+  const created: CarrierTaskRoomStore = {
+    byOwner: new Map(),
+    nextPublishOrder: 0,
+  };
+  nativeMapSet(board, roomName, created);
+  return created;
 }
 
-function releaseActiveCarrierTaskClaims(task: CarrierTask): void {
-  const runtime = runtimeGlobal.__carrierTaskClaims;
-  if (
-    !runtime ||
-    runtime.tick !== Game.time ||
-    runtime.game !== Game
-  ) {
-    return;
+function cleanupRoomTaskStoreIfEmpty(roomName: string): void {
+  const board = runtimeGlobal.__carrierTaskBoard;
+  if (!isCarrierTaskBoardStore(board)) return;
+  const roomStore = nativeMapGet(board, roomName);
+  if (!isCarrierTaskRoomStore(roomStore)) return;
+  const byOwner = readCarrierOwnerIndex(roomStore);
+  if (!byOwner) return;
+  for (const ownerTasks of nativeMapValues(byOwner)) {
+    if (
+      isNativeMap<string, CarrierTaskRecord>(ownerTasks)
+      && nativeMapSize(ownerTasks) > 0
+    ) return;
   }
-
-  const key = getCarrierTaskClaimKey(task);
-  const budget = runtime.budgets.get(key);
-  if (!budget) return;
-
-  for (const [claimantId, claim] of budget.claims) {
-    if (!claim.committed) {
-      budget.claims.delete(claimantId);
-    }
-  }
-  if (budget.claims.size === 0) {
-    runtime.budgets.delete(key);
-  }
+  nativeMapDelete(board, roomName);
 }
 
 /**
@@ -272,154 +471,209 @@ export function claimCarrierTaskStepAmount(
   claimantId: string,
   requestedAmount: number,
 ): CarrierTaskStepAmountClaim | null {
-  const normalizedRequest = normalizeClaimAmount(requestedAmount);
-  if (!claimantId || normalizedRequest <= 0) return null;
-
-  const currentStep = task.steps.find((candidate) => candidate.id === step.id);
-  if (!currentStep) return null;
-  const stepLimit = normalizeClaimAmount(currentStep.amount);
-  let taskLimit = 0;
-  for (const taskStep of task.steps) {
-    taskLimit = addClaimAmount(
-      taskLimit,
-      normalizeClaimAmount(taskStep.amount),
-    );
-  }
-  if (stepLimit <= 0 || taskLimit <= 0) return null;
-
-  const runtime = ensureCarrierTaskClaimRuntime();
-  const key = getCarrierTaskClaimKey(task);
-  const budget = runtime.budgets.get(key) || { claims: new Map() };
-  runtime.budgets.set(key, budget);
-  pruneDeadCarrierTaskClaims(budget);
-  if (budget.claims.has(claimantId)) return null;
-
-  let taskClaimed = 0;
-  let stepClaimed = 0;
-  for (const claim of budget.claims.values()) {
-    taskClaimed = addClaimAmount(taskClaimed, claim.amount);
-    if (claim.stepId === currentStep.id) {
-      stepClaimed = addClaimAmount(stepClaimed, claim.amount);
-    }
-  }
-  const amount = Math.min(
-    normalizedRequest,
-    Math.max(0, taskLimit - taskClaimed),
-    Math.max(0, stepLimit - stepClaimed),
-  );
-  if (amount <= 0) return null;
-
-  const record: CarrierTaskClaimRecord = {
-    stepId: currentStep.id,
-    amount,
-    committed: false,
-    claimantWasLiveAtClaim: !!Game.creeps[claimantId],
-  };
-  budget.claims.set(claimantId, record);
-
-  const isCurrentRecord = (): boolean =>
-    runtimeGlobal.__carrierTaskClaims === runtime &&
-    runtime.tick === Game.time &&
-    runtime.game === Game &&
-    runtime.budgets.get(key) === budget &&
-    budget.claims.get(claimantId) === record;
-
-  return {
-    amount,
-    commit(): void {
-      if (!isCurrentRecord()) return;
-      record.committed = true;
-    },
-    release(): void {
-      if (!isCurrentRecord() || record.committed) return;
-      budget.claims.delete(claimantId);
-      if (budget.claims.size === 0) {
-        runtime.budgets.delete(key);
-      }
-    },
-  };
+  const ref = createCarrierDispatchRef(task.producer, task.roomName, task.id);
+  if (!ref) return null;
+  return claimCarrierAmountSlice({
+    taskRef: ref,
+    taskSteps: task.steps,
+    stepId: step.id,
+    claimantId,
+    requestedAmount,
+  });
 }
 
-function ensureRoomTaskStore(roomName: string): Record<string, CarrierTask> {
-  const board = ensureCarrierTaskBoard();
-  const existing = board[roomName];
-  if (existing) {
-    return existing;
-  }
-
-  board[roomName] = {};
-  return board[roomName];
+/** Sorted production live entries with complete producer-scoped refs. */
+export function listCarrierDispatchEntriesByRoom(
+  roomName: string,
+): readonly CarrierDispatchEntry[] {
+  const roomStore = ensureRoomTaskStore(roomName);
+  if (!roomStore) return [];
+  return listIndexedRecordsInRoom(roomName, roomStore)
+    .sort(compareCarrierTaskRecords)
+    .map(({ ref, task }): CarrierDispatchEntry => ({
+      ref,
+      task: task as CarrierTask,
+    }));
 }
 
-export function getCarrierTasksByRoom(roomName: string): Record<string, CarrierTask> {
-  return ensureRoomTaskStore(roomName);
-}
-
-function cleanupRoomTaskStoreIfEmpty(roomName: string): void {
-  const tasks = ensureCarrierTaskBoard()[roomName];
-  if (!tasks) {
-    return;
-  }
-
-  if (Object.keys(tasks).length > 0) {
-    return;
-  }
-
-  delete ensureCarrierTaskBoard()[roomName];
-}
-
+/** Compatibility gateway: task values are readonly live board views. */
 export function listCarrierTasksByRoom(roomName: string): CarrierTask[] {
-  const tasks = Object.values(getCarrierTasksByRoom(roomName))
-    .sort((left, right) => {
-      if (left.priority !== right.priority) {
-        return right.priority - left.priority;
-      }
-      return left.createdAt - right.createdAt;
-    });
-  return tasks;
+  return listCarrierDispatchEntriesByRoom(roomName)
+    .map((entry) => entry.task);
 }
 
 export function listCarrierTasksForProducer(producer: string): CarrierTask[] {
+  if (!producer) return [];
+  const board = ensureCarrierTaskBoard();
   const tasks: CarrierTask[] = [];
-  for (const roomTasks of Object.values(ensureCarrierTaskBoard())) {
-    for (const task of Object.values(roomTasks)) {
-      if (task.producer === producer) {
-        tasks.push(task);
+  for (const [roomName, roomStore] of nativeMapEntries(board)) {
+    if (
+      !isValidDispatchRoomName(roomName)
+      || !isCarrierTaskRoomStore(roomStore)
+    ) {
+      continue;
+    }
+    const byOwner = readCarrierOwnerIndex(roomStore);
+    if (!byOwner) continue;
+    const ownerTasks = nativeMapGet(byOwner, producer);
+    if (!isNativeMap<string, CarrierTaskRecord>(ownerTasks)) continue;
+    for (const [localId, record] of nativeMapEntries(ownerTasks)) {
+      if (
+        createCarrierDispatchRef(producer, roomName, localId)
+        && readCarrierTaskRecordOrder(record) !== undefined
+      ) {
+        const task = readCarrierTaskRecordTask(record);
+        if (task !== undefined) {
+          tasks.push(task as CarrierTask);
+        }
       }
     }
   }
   return tasks;
+}
+
+/** Exact production lookup; never ensures a board or guesses an owner. */
+export function findCarrierTaskByRef(
+  ref: CarrierDispatchRef,
+): CarrierTask | undefined {
+  const ownedRef = cloneCarrierDispatchRef(ref);
+  if (!ownedRef || !isCarrierDispatchRef(ownedRef)) return undefined;
+  const board = runtimeGlobal.__carrierTaskBoard;
+  if (!isCarrierTaskBoardStore(board)) return undefined;
+  const roomStore = nativeMapGet(board, ownedRef.scope.roomName);
+  if (!isCarrierTaskRoomStore(roomStore)) return undefined;
+  const byOwner = readCarrierOwnerIndex(roomStore);
+  if (!byOwner) return undefined;
+  const ownerTasks = nativeMapGet(byOwner, ownedRef.namespace);
+  if (!isNativeMap<string, CarrierTaskRecord>(ownerTasks)) return undefined;
+  const record = nativeMapGet(ownerTasks, ownedRef.localId);
+  return readCarrierTaskRecordOrder(record) === undefined
+    ? undefined
+    : readCarrierTaskRecordTask(record) as CarrierTask | undefined;
+}
+
+/**
+ * Test-only mutable lookup used to inject malformed task fields. Production
+ * imports are rejected by the Local Dispatch architecture boundary test.
+ */
+export function getMutableCarrierTaskByRefForTest(
+  ref: CarrierDispatchRef,
+): MutableCarrierTaskForTest | undefined {
+  return findCarrierTaskByRef(ref) as MutableCarrierTaskForTest | undefined;
+}
+
+/**
+ * Test-only legacy local-id view. It deliberately throws on an owner
+ * collision, because a local-id record cannot represent that identity safely.
+ */
+export function getMutableCarrierTasksByRoomForTest(
+  roomName: string,
+): Record<string, MutableCarrierTaskForTest> {
+  const result: Record<string, MutableCarrierTaskForTest> = Object.create(null);
+  for (const entry of listCarrierDispatchEntriesByRoom(roomName)) {
+    if (Object.prototype.hasOwnProperty.call(result, entry.ref.localId)) {
+      throw new Error(
+        `Ambiguous Carrier localId ${entry.ref.localId} in ${roomName}; use exact refs`,
+      );
+    }
+    defineCarrierSnapshotProperty(
+      result,
+      entry.ref.localId,
+      entry.task as MutableCarrierTaskForTest,
+    );
+  }
+  return result;
+}
+
+/**
+ * @deprecated Test-only compatibility alias. Production code must use list or
+ * exact-ref APIs; tests should migrate to getMutableCarrierTasksByRoomForTest.
+ */
+export const getCarrierTasksByRoom = getMutableCarrierTasksByRoomForTest;
+
+function cloneCarrierTaskStep(step: CarrierTaskStep): MutableCarrierTaskStepForTest {
+  return {
+    id: step.id,
+    resource: step.resource,
+    fromKind: step.fromKind,
+    toKind: step.toKind,
+    fromId: step.fromId,
+    toId: step.toId,
+    amount: step.amount,
+  };
+}
+
+function removeCarrierTaskRecord(
+  roomName: string,
+  producer: string,
+  localId: string,
+  roomStore: CarrierTaskRoomStore,
+  ownerTasks: Map<string, CarrierTaskRecord>,
+): boolean {
+  const ref = createCarrierDispatchRef(producer, roomName, localId);
+  if (!ref) return false;
+  if (!isNativeMap<string, CarrierTaskRecord>(ownerTasks)) return false;
+  const record = nativeMapGet(ownerTasks, localId);
+  if (!record) return false;
+  releaseUncommittedCarrierAmountSlices(ref);
+  nativeMapDelete(ownerTasks, localId);
+  if (nativeMapSize(ownerTasks) === 0) {
+    const byOwner = readCarrierOwnerIndex(roomStore);
+    if (byOwner && nativeMapGet(byOwner, producer) === ownerTasks) {
+      nativeMapDelete(byOwner, producer);
+    }
+  }
+  return true;
 }
 
 export function replaceCarrierTasksForProducerRoom(
   producer: string,
   roomName: string,
-  drafts: CarrierTaskDraft[],
+  drafts: readonly CarrierTaskDraft[],
 ): void {
-  const hasExistingForRoom = Object.values(getCarrierTasksByRoom(roomName)).some((task) => task.producer === producer);
-  if (drafts.length === 0 && !hasExistingForRoom) {
+  if (!producer || !isValidDispatchRoomName(roomName)) return;
+  const roomStore = ensureRoomTaskStore(roomName);
+  if (!roomStore) return;
+  const byOwner = readCarrierOwnerIndex(roomStore);
+  if (!byOwner) return;
+
+  let ownerTasks = nativeMapGet(byOwner, producer);
+  if (
+    drafts.length === 0
+    && (
+      !isNativeMap<string, CarrierTaskRecord>(ownerTasks)
+      || nativeMapSize(ownerTasks) === 0
+    )
+  ) {
     return;
   }
-
-  const store = ensureRoomTaskStore(roomName);
+  if (!isNativeMap<string, CarrierTaskRecord>(ownerTasks)) {
+    ownerTasks = new Map();
+    nativeMapSet(byOwner, producer, ownerTasks);
+  }
   const nextIds = new Set<string>();
 
   for (const draft of drafts) {
-    const filteredSteps = draft.steps.filter((step) => step.amount > 0);
-    if (filteredSteps.length === 0) {
-      continue;
-    }
+    const ref = createCarrierDispatchRef(producer, roomName, draft.id);
+    if (!ref) continue;
+    const filteredSteps = draft.steps
+      .filter((step) => step.amount > 0)
+      .map(cloneCarrierTaskStep);
+    if (filteredSteps.length === 0) continue;
 
-    nextIds.add(draft.id);
-    const existing = store[draft.id];
-    const createdAt =
-      existing && existing.producer === producer
-        ? existing.createdAt
-        : Game.time;
-    store[draft.id] = {
-      id: draft.id,
-      producer,
-      roomName,
+    nextIds.add(ref.localId);
+    const existing = nativeMapGet(ownerTasks, ref.localId);
+    const existingPublishOrder = readCarrierTaskRecordOrder(existing);
+    const existingTask = readCarrierTaskRecordTask(existing);
+    const existingCreatedAt = ownDataProperty(existingTask, "createdAt");
+    const publishOrder = existingPublishOrder ?? roomStore.nextPublishOrder++;
+    const createdAt = typeof existingCreatedAt === "number"
+      ? existingCreatedAt
+      : Game.time;
+    const task: MutableCarrierTaskForTest = {
+      id: ref.localId,
+      producer: ref.namespace,
+      roomName: ref.scope.roomName,
       type: draft.type,
       priority: draft.priority,
       ...(draft.dispatchClass
@@ -429,70 +683,105 @@ export function replaceCarrierTasksForProducerRoom(
       createdAt,
       updatedAt: Game.time,
     };
+    nativeMapSet(ownerTasks, ref.localId, { task, publishOrder });
   }
 
-  for (const [taskId, task] of Object.entries(store)) {
-    if (task.producer !== producer) {
-      continue;
-    }
-    if (nextIds.has(taskId)) {
-      continue;
-    }
-    releaseActiveCarrierTaskClaims(task);
-    delete store[taskId];
+  for (const localId of Array.from(nativeMapKeys(ownerTasks))) {
+    if (nextIds.has(localId)) continue;
+    removeCarrierTaskRecord(
+      roomName,
+      producer,
+      localId,
+      roomStore,
+      ownerTasks,
+    );
   }
 
   cleanupRoomTaskStoreIfEmpty(roomName);
 }
 
-export function pruneCarrierTasksForProducer(producer: string, validRoomNames: Set<string>): number {
+export function pruneCarrierTasksForProducer(
+  producer: string,
+  validRoomNames: ReadonlySet<string>,
+): number {
+  if (!producer) return 0;
+  const board = ensureCarrierTaskBoard();
   let removed = 0;
-  for (const [roomName, tasks] of Object.entries(ensureCarrierTaskBoard())) {
-
-    const roomInvalid = !validRoomNames.has(roomName);
-    for (const [taskId, task] of Object.entries(tasks)) {
-      if (task.producer !== producer) {
-        continue;
+  for (const [roomName, roomStore] of Array.from(nativeMapEntries(board))) {
+    if (!isCarrierTaskRoomStore(roomStore)) continue;
+    if (validRoomNames.has(roomName)) continue;
+    const byOwner = readCarrierOwnerIndex(roomStore);
+    if (!byOwner) continue;
+    const ownerTasks = nativeMapGet(byOwner, producer);
+    if (!isNativeMap<string, CarrierTaskRecord>(ownerTasks)) continue;
+    for (const localId of Array.from(nativeMapKeys(ownerTasks))) {
+      if (removeCarrierTaskRecord(
+        roomName,
+        producer,
+        localId,
+        roomStore,
+        ownerTasks,
+      )) {
+        removed += 1;
       }
-      if (!roomInvalid) {
-        continue;
-      }
-
-      releaseActiveCarrierTaskClaims(task);
-      delete tasks[taskId];
-      removed += 1;
     }
-
     cleanupRoomTaskStoreIfEmpty(roomName);
   }
-
   return removed;
 }
 
-export function cleanupCarrierTaskBoard(ownedRooms: Set<string>, ttl: number): number {
+export function cleanupCarrierTaskBoard(
+  ownedRooms: ReadonlySet<string>,
+  ttl: number,
+): number {
+  const board = ensureCarrierTaskBoard();
   let removed = 0;
-  for (const [roomName, tasks] of Object.entries(ensureCarrierTaskBoard())) {
-
-    const roomLost = !ownedRooms.has(roomName);
-    for (const [taskId, task] of Object.entries(tasks)) {
-      const stale = Game.time - task.updatedAt > ttl;
-      const roomMismatch = task.roomName !== roomName;
-      if (!roomLost && !stale && !roomMismatch) {
-        continue;
-      }
-
-      releaseActiveCarrierTaskClaims(task);
-      delete tasks[taskId];
-      removed += 1;
+  for (const [roomName, rawRoomStore] of Array.from(nativeMapEntries(board))) {
+    if (!isValidDispatchRoomName(roomName)) {
+      nativeMapDelete(board, roomName);
+      continue;
+    }
+    if (!isCarrierTaskRoomStore(rawRoomStore)) {
+      nativeMapDelete(board, roomName);
+      continue;
     }
 
+    const roomLost = !ownedRooms.has(roomName);
+    const byOwner = readCarrierOwnerIndex(rawRoomStore);
+    if (!byOwner) {
+      nativeMapDelete(board, roomName);
+      continue;
+    }
+    for (const [producer, ownerTasks] of Array.from(nativeMapEntries(byOwner))) {
+      if (!isNativeMap<string, CarrierTaskRecord>(ownerTasks)) {
+        nativeMapDelete(byOwner, producer);
+        continue;
+      }
+      for (const [localId, record] of Array.from(nativeMapEntries(ownerTasks))) {
+        const task = readCarrierTaskRecordTask(record);
+        const updatedAt = ownDataProperty(task, "updatedAt");
+        const taskRoomName = ownDataProperty(task, "roomName");
+        const stale = typeof updatedAt !== "number"
+          || Game.time - updatedAt > ttl;
+        const roomMismatch = taskRoomName !== roomName;
+        if (!roomLost && !stale && !roomMismatch) continue;
+        if (removeCarrierTaskRecord(
+          roomName,
+          producer,
+          localId,
+          rawRoomStore,
+          ownerTasks,
+        )) {
+          removed += 1;
+        }
+      }
+    }
     cleanupRoomTaskStoreIfEmpty(roomName);
   }
-
   return removed;
 }
 
 export function clearCarrierTaskBoardForTest(): void {
   delete runtimeGlobal.__carrierTaskBoard;
-  delete runtimeGlobal.__carrierTaskClaims;
+  clearCarrierAmountSlices();
 }

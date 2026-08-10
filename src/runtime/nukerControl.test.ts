@@ -287,7 +287,7 @@ describe("nukerControl", () => {
 
   it("进入 RESERVE 后清理既有 Energy task 和 reservation", () => {
     const scenario = createRoomScenario({
-      roomName: "W1N3A",
+      roomName: "W11N3",
       storageEnergy: 500_000,
       nukerGhodium: 5_000,
     });
@@ -300,8 +300,8 @@ describe("nukerControl", () => {
       reservation.holderId.startsWith("nuker:"),
     )).toBe(true);
 
-    Game.flags.RESERVE_W1N3A = {
-      name: "RESERVE_W1N3A",
+    Game.flags.RESERVE_W11N3 = {
+      name: "RESERVE_W11N3",
       pos: { roomName: scenario.room.name },
     } as unknown as Flag;
     Game.time += 1;

@@ -15,6 +15,7 @@ import {
   assignWorkerTask,
   clearWorkerTaskBoardForTest,
   completeWorkerTaskIfDone,
+  getAssignedWorkerTaskRef,
   getWorkerTasksByRoom,
   getWorkerTaskTarget,
   peekWorkerTaskBoard,
@@ -200,6 +201,17 @@ describe("workerTaskPool", () => {
     expect(globalPropertyNames()).toEqual(propertiesBefore);
   });
 
+  it("does not materialize an empty room store while selecting Worker work", () => {
+    const creep = createCreep("Worker1", "W9N9");
+    Game.creeps[creep.name] = creep;
+    expect((global as RuntimeGlobal).__workerTaskBoard).toBeUndefined();
+
+    expect(assignWorkerTask(creep)).toBeNull();
+
+    expect((global as RuntimeGlobal).__workerTaskBoard).toBeUndefined();
+    expect(getCreepAssignmentState(creep.name)).toBeUndefined();
+  });
+
   it("keeps the legacy room peek ABI while safe selectors return isolated snapshots", () => {
     const task = createTask({
       id: "repair:r1",
@@ -339,6 +351,20 @@ describe("workerTaskPool", () => {
     expect(assignWorkerTask(creep)).toBe(task);
     expect(task.assignedCreeps).toEqual([creep.name]);
     expect(getCreepAssignmentState(creep.name)?.taskId).toBe(task.id);
+    expect((getCreepAssignmentState(creep.name) as unknown as {
+      dispatchBindings?: { worker?: unknown };
+    })?.dispatchBindings?.worker).toEqual({
+      system: "worker-work",
+      namespace: "workerTaskPool",
+      scope: { kind: "room", roomName: task.roomName },
+      localId: task.id,
+    });
+    expect(getAssignedWorkerTaskRef(creep.name)).toEqual({
+      system: "worker-work",
+      namespace: "workerTaskPool",
+      scope: { kind: "room", roomName: task.roomName },
+      localId: task.id,
+    });
     expect(peekWorkerTasksByRoom(task.roomName)[task.id]).toBe(task);
     expect(peekWorkerTaskRoomSnapshot(task.roomName)[task.id]).toEqual(task);
     expect(peekWorkerTaskRoomSnapshot(task.roomName)[task.id]).not.toBe(task);
@@ -348,6 +374,95 @@ describe("workerTaskPool", () => {
     expect(writableTasks[task.id]).toBe(task);
     expect(task.assignedCreeps).toEqual([]);
     expect(getCreepAssignmentState(creep.name)?.taskId).toBeUndefined();
+    expect((getCreepAssignmentState(creep.name) as unknown as {
+      dispatchBindings?: { worker?: unknown };
+    })?.dispatchBindings?.worker).toBeUndefined();
+    expect(getAssignedWorkerTaskRef(creep.name)).toBeUndefined();
+  });
+
+  it("treats prototype-looking actor and task ids as exact own data keys", () => {
+    const localId = "__proto__";
+    const actorName = "constructor";
+    const sourceTask = createTask({
+      id: localId,
+      type: "build",
+      targetId: "prototype-target",
+      roomName: "W1N1",
+      maxAssignees: 1,
+    });
+    const roomTasks = getWorkerTasksByRoom("W1N1");
+    Object.defineProperty(roomTasks, localId, {
+      value: sourceTask,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    objects["prototype-target"] = { pos: createPos("W1N1") };
+    const creep = createCreep(actorName, "W1N1");
+    Object.defineProperty(Game.creeps, actorName, {
+      value: creep,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+
+    expect(assignWorkerTask(creep)).toBe(sourceTask);
+    expect(sourceTask.assignedCreeps).toEqual([actorName]);
+    expect(getAssignedWorkerTaskRef(actorName)).toEqual({
+      system: "worker-work",
+      namespace: "workerTaskPool",
+      scope: { kind: "room", roomName: "W1N1" },
+      localId,
+    });
+
+    releaseWorkerTask(creep);
+
+    expect(sourceTask.assignedCreeps).toEqual([]);
+    expect(getAssignedWorkerTaskRef(actorName)).toBeUndefined();
+  });
+
+  it("releases by one exact room and task descriptor without enumerating the board", () => {
+    const sourceTask = createTask({
+      id: "build:exact",
+      type: "build",
+      targetId: "exact-target",
+      roomName: "W1N1",
+    });
+    getWorkerTasksByRoom("W1N1")[sourceTask.id] = sourceTask;
+    objects["exact-target"] = { pos: createPos("W1N1") };
+    const creep = createCreep("Worker", "W1N1");
+    Game.creeps[creep.name] = creep;
+    expect(assignWorkerTask(creep)).toBe(sourceTask);
+
+    const runtimeGlobal = global as RuntimeGlobal;
+    const board = runtimeGlobal.__workerTaskBoard;
+    if (!board) throw new Error("expected Worker task board");
+    let boardEnumerations = 0;
+    let roomDescriptorReads = 0;
+    let taskDescriptorReads = 0;
+    board.W1N1 = new Proxy(board.W1N1, {
+      getOwnPropertyDescriptor(target, property): PropertyDescriptor | undefined {
+        if (property === sourceTask.id) taskDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    runtimeGlobal.__workerTaskBoard = new Proxy(board, {
+      ownKeys(target): ArrayLike<string | symbol> {
+        boardEnumerations += 1;
+        return Reflect.ownKeys(target);
+      },
+      getOwnPropertyDescriptor(target, property): PropertyDescriptor | undefined {
+        if (property === "W1N1") roomDescriptorReads += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+
+    releaseWorkerTask(creep);
+
+    expect(boardEnumerations).toBe(0);
+    expect(roomDescriptorReads).toBe(1);
+    expect(taskDescriptorReads).toBe(1);
+    expect(sourceTask.assignedCreeps).toEqual([]);
   });
 
   it("keeps RCL8 build and normal repair task generation while omitting upgrade", () => {

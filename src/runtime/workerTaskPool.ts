@@ -1,11 +1,21 @@
 import type { WorkerTask } from "@/types/system";
 import { getPlannedControllerLinkPos, getPlannedStoragePos, getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
-import { ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import { getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { measureCreepDecision } from "@/runtime/cpuPhaseProfiler";
 import { getCreepConfigService, getTickContextService } from "@/runtime/runtimeServices";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getSafeZone } from "@/runtime/safeZone";
 import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
+import {
+  promoteLegacyWorkerDispatchBinding,
+  readWorkerDispatchBinding,
+} from "@/runtime/dispatchOwnership/actorBinding";
+import {
+  createWorkerDispatchRef,
+  equalDispatchRefs,
+  type WorkerDispatchRef,
+} from "@/runtime/dispatchOwnership/ref";
+import { workerSlotClaimPort } from "@/runtime/dispatchOwnership/workerSlot";
 
 const TASK_REFRESH_INTERVAL = 3;
 const RAMPART_EMERGENCY_TARGET_HITS = 6000;
@@ -31,6 +41,18 @@ type RuntimeGlobalWithWorkerTasks = typeof global & {
 
 const runtimeGlobal: RuntimeGlobalWithWorkerTasks = global;
 const EMPTY_WORKER_TASK_STORE = Object.freeze({}) as Record<string, WorkerTask>;
+
+function ownDataValue<T>(target: object | undefined, key: string): T | undefined {
+  if (!target) return undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+    return descriptor && "value" in descriptor
+      ? descriptor.value as T
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function ensureWorkerTaskBoard(): WorkerTaskBoardStore {
   if (!runtimeGlobal.__workerTaskBoard) {
@@ -170,6 +192,41 @@ function getAssignedWorkerRoomName(creep: Creep): string {
    return config?.roomName || creep.room.name;
 }
 
+function createTaskRef(task: WorkerTask): WorkerDispatchRef | undefined {
+  return createWorkerDispatchRef(task.roomName, task.id);
+}
+
+function peekWorkerTaskByRef(ref: WorkerDispatchRef): WorkerTask | undefined {
+  const roomTasks = ownDataValue<Record<string, WorkerTask>>(
+    runtimeGlobal.__workerTaskBoard,
+    ref.scope.roomName,
+  );
+  const task = ownDataValue<WorkerTask>(roomTasks, ref.localId);
+  return task && task.id === ref.localId && task.roomName === ref.scope.roomName
+    ? task
+    : undefined;
+}
+
+function promoteLegacyWorkerBinding(
+  creepName: string,
+  assignedRoomName: string,
+): WorkerDispatchRef | undefined {
+  return promoteLegacyWorkerDispatchBinding(
+    creepName,
+    assignedRoomName,
+    (roomName, localId) => {
+      const roomTasks = ownDataValue<Record<string, WorkerTask>>(
+        runtimeGlobal.__workerTaskBoard,
+        roomName,
+      );
+      const task = ownDataValue<WorkerTask>(roomTasks, localId);
+      if (!task || task.id !== localId || task.roomName !== roomName) return [];
+      const ref = createTaskRef(task);
+      return ref ? [ref] : [];
+    },
+  );
+}
+
 function getBuildPriority(structureType: BuildableStructureConstant | StructureConstant): number {
   if (structureType === STRUCTURE_SPAWN) {
     return 900;
@@ -184,23 +241,24 @@ function getBuildPriority(structureType: BuildableStructureConstant | StructureC
 }
 
 function clampAssignees(task: WorkerTask): void {
-  if (!Array.isArray(task.assignedCreeps)) {
-    task.assignedCreeps = [];
-  }
-  task.assignedCreeps = task.assignedCreeps.filter((name) => {
-    const creep = Game.creeps[name];
-    return !!creep && ensureCreepAssignmentState(creep.name).taskId === task.id;
-  });
-}
+  const ref = createTaskRef(task);
+  if (!ref) return;
 
-function findTaskStore(taskId: string): Record<string, WorkerTask> | undefined {
-  for (const tasks of Object.values(ensureWorkerTaskBoard())) {
-    if (tasks?.[taskId]) {
-      return tasks;
+  if (Array.isArray(task.assignedCreeps)) {
+    for (const creepName of task.assignedCreeps) {
+      const creep = ownDataValue<Creep>(Game.creeps, creepName);
+      if (
+        !creep
+        || getAssignedWorkerRoomName(creep) !== task.roomName
+        || readWorkerDispatchBinding(creepName)
+      ) {
+        continue;
+      }
+      promoteLegacyWorkerBinding(creepName, task.roomName);
     }
   }
 
-  return undefined;
+  workerSlotClaimPort.clamp(ref, task);
 }
 
 function upsertTask(roomName: string, task: WorkerTask): void {
@@ -407,6 +465,9 @@ function cleanupStaleTasks(roomName: string): void {
   const tasks = ensureRoomTaskStore(roomName);
   for (const [taskId, task] of Object.entries(tasks)) {
     if (task.updatedAt !== Game.time) {
+      clampAssignees(task);
+      const ref = createTaskRef(task);
+      if (ref) workerSlotClaimPort.releaseTask(ref, task);
       delete tasks[taskId];
       continue;
     }
@@ -429,7 +490,7 @@ export function refreshWorkerTasks(): void {
         task.type === "repair" &&
         task.repairMode === "normal" &&
         task.status === "active" &&
-        task.assignedCreeps.some((name) => !!Game.creeps[name]),
+        task.assignedCreeps.some((name) => !!ownDataValue<Creep>(Game.creeps, name)),
     );
     for (const task of Object.values(tasks)) {
       task.updatedAt = -1;
@@ -496,16 +557,6 @@ function getTaskTarget(task: WorkerTask): RoomObject | null {
   return null;
 }
 
-function releaseTaskInternal(creep: Creep, taskId: string): void {
-  const roomTasks = findTaskStore(taskId);
-  const task = roomTasks?.[taskId];
-  if (task?.assignedCreeps) {
-    task.assignedCreeps = task.assignedCreeps.filter((name) => name !== creep.name);
-  }
-
-  delete ensureCreepAssignmentState(creep.name).taskId;
-}
-
 function scoreTask(creep: Creep, task: WorkerTask): number {
   const target = getTaskTarget(task);
   if (!target) {
@@ -538,18 +589,17 @@ export function isWorkerTaskSafeForCreep(creep: Creep, task: WorkerTask): boolea
 }
 
 export function releaseWorkerTask(creep: Creep): void {
-  const taskId = ensureCreepAssignmentState(creep.name).taskId;
-  if (!taskId) {
-    return;
-  }
-
-  releaseTaskInternal(creep, taskId);
+  const assignedRoomName = getAssignedWorkerRoomName(creep);
+  const ref = readWorkerDispatchBinding(creep.name)
+    ?? promoteLegacyWorkerBinding(creep.name, assignedRoomName);
+  if (!ref) return;
+  workerSlotClaimPort.release(creep.name, ref, peekWorkerTaskByRef(ref));
 }
 
 export function assignWorkerTask(creep: Creep): WorkerTask | null {
   return measureCreepDecision(() => {
     const assignedRoomName = getAssignedWorkerRoomName(creep);
-    const roomTasks = getWorkerTasksByRoom(assignedRoomName);
+    const roomTasks = peekWorkerTasksByRoom(assignedRoomName);
     if (Object.keys(roomTasks).length === 0) {
       releaseWorkerTask(creep);
       return null;
@@ -558,19 +608,34 @@ export function assignWorkerTask(creep: Creep): WorkerTask | null {
     const inDefenseMode = isDefenseMode(assignedRoomName);
     const safeZone = inDefenseMode ? getSafeZone(assignedRoomName) : null;
 
-    const assignmentState = ensureCreepAssignmentState(creep.name);
-    if (assignmentState.taskId) {
-      const current = roomTasks[assignmentState.taskId];
+    let currentRef = readWorkerDispatchBinding(creep.name)
+      ?? promoteLegacyWorkerBinding(creep.name, assignedRoomName);
+    if (currentRef) {
+      if (currentRef.scope.roomName !== assignedRoomName) {
+        workerSlotClaimPort.release(
+          creep.name,
+          currentRef,
+          peekWorkerTaskByRef(currentRef),
+        );
+        currentRef = undefined;
+      }
+    }
+
+    if (currentRef) {
+      const current = ownDataValue<WorkerTask>(roomTasks, currentRef.localId);
       if (current && current.status === "active") {
         const currentTarget = getTaskTarget(current);
         if (inDefenseMode && safeZone && safeZone.size > 0 && currentTarget && !isInsideSafeZone(currentTarget.pos, safeZone)) {
           releaseWorkerTask(creep);
         } else {
           clampAssignees(current);
-          if (!current.assignedCreeps.includes(creep.name)) {
-            current.assignedCreeps.push(creep.name);
-          }
-          if (currentTarget) {
+          const currentTaskRef = createTaskRef(current);
+          if (
+            currentTarget
+            && currentTaskRef
+            && equalDispatchRefs(currentRef, currentTaskRef)
+            && workerSlotClaimPort.reconcile(creep.name, currentRef, current)
+          ) {
             return current;
           }
         }
@@ -620,10 +685,10 @@ export function assignWorkerTask(creep: Creep): WorkerTask | null {
       return null;
     }
 
-    best.assignedCreeps.push(creep.name);
-    assignmentState.taskId = best.id;
-
-    return best;
+    const bestRef = createTaskRef(best);
+    return bestRef && workerSlotClaimPort.acquire(creep.name, bestRef, best)
+      ? best
+      : null;
   });
 }
 
@@ -668,6 +733,11 @@ export function cleanupWorkerTaskBoard(ownedRooms: Set<string>): number {
       continue;
     }
 
+    for (const task of Object.values(board[roomName])) {
+      clampAssignees(task);
+      const ref = createTaskRef(task);
+      if (ref) workerSlotClaimPort.releaseTask(ref, task);
+    }
     delete board[roomName];
     removed += 1;
   }
@@ -680,5 +750,10 @@ export function clearWorkerTaskBoardForTest(): void {
 }
 
 export function getAssignedWorkerTaskId(creepName: string): string | undefined {
-  return getCreepAssignmentState(creepName)?.taskId;
+  const taskId = ownDataValue<unknown>(getCreepAssignmentState(creepName), "taskId");
+  return typeof taskId === "string" ? taskId : undefined;
+}
+
+export function getAssignedWorkerTaskRef(creepName: string): WorkerDispatchRef | undefined {
+  return readWorkerDispatchBinding(creepName);
 }

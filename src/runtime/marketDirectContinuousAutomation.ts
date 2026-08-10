@@ -88,7 +88,11 @@ import type { MarketOrderSnapshot } from "@/runtime/marketSalePricing";
 import {
   priceToMilliDown,
 } from "@/runtime/marketSalePricing";
-import { listCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
+import { listCarrierDispatchEntriesByRoom } from "@/runtime/carrierTaskBoard";
+import {
+  encodeCarrierDispatchStepKey,
+  isCarrierDispatchStepKey,
+} from "@/runtime/dispatchOwnership/ref";
 import { normalizeNumber } from "@/runtime/configNormalize";
 import { listProductionReservations } from "@/runtime/resourceReservation";
 import { resolveRoomEnergyPolicy } from "@/runtime/roomEnergyPolicy";
@@ -1396,6 +1400,26 @@ const MARKET_TERMINAL_ENERGY_CONTRIBUTION_KINDS = new Set<
   "terminal_production_commitment",
 ]);
 const MARKET_TERMINAL_ENERGY_MAX_CONTRIBUTIONS = 64;
+const MARKET_TERMINAL_ENERGY_MAX_LEGACY_CONTRIBUTION_ID_LENGTH = 256;
+
+function isValidMarketTerminalEnergyContributionId(
+  id: unknown,
+  kind: unknown,
+): id is string {
+  if (typeof id !== "string" || id.length === 0) {
+    return false;
+  }
+  if (
+    id.length <=
+    MARKET_TERMINAL_ENERGY_MAX_LEGACY_CONTRIBUTION_ID_LENGTH
+  ) {
+    return true;
+  }
+  return (
+    kind === "terminal_production_commitment" &&
+    isCarrierDispatchStepKey(id)
+  );
+}
 
 function isPlainRecord(
   value: unknown,
@@ -1423,12 +1447,13 @@ function parseMarketTerminalEnergyContribution(
   if (
     !isPlainRecord(raw) ||
     !exactRecordKeys(raw, ["amount", "id", "kind"]) ||
-    typeof raw.id !== "string" ||
-    raw.id.length === 0 ||
-    raw.id.length > 256 ||
     typeof raw.kind !== "string" ||
     !MARKET_TERMINAL_ENERGY_CONTRIBUTION_KINDS.has(
       raw.kind as MarketDirectContinuousTerminalEnergyContribution["kind"],
+    ) ||
+    !isValidMarketTerminalEnergyContributionId(
+      raw.id,
+      raw.kind,
     ) ||
     !Number.isSafeInteger(raw.amount) ||
     (raw.amount as number) <= 0
@@ -1621,8 +1646,10 @@ function collectCanonicalLegacyV2EnergyContributions(
     contribution: MarketDirectContinuousTerminalEnergyContribution,
   ): boolean => {
     if (
-      contribution.id.length === 0 ||
-      contribution.id.length > 256 ||
+      !isValidMarketTerminalEnergyContributionId(
+        contribution.id,
+        contribution.kind,
+      ) ||
       !MARKET_TERMINAL_ENERGY_CONTRIBUTION_KINDS.has(
         contribution.kind,
       ) ||
@@ -1768,11 +1795,11 @@ function collectCanonicalLegacyV2EnergyContributions(
     }
   }
 
-  const carrierTasks = listCarrierTasksByRoom(roomName);
-  if (carrierTasks.length > 1_024) {
+  const carrierEntries = listCarrierDispatchEntriesByRoom(roomName);
+  if (carrierEntries.length > 1_024) {
     return undefined;
   }
-  for (const task of carrierTasks) {
+  for (const { ref: taskRef, task } of carrierEntries) {
     if (
       task.type !== "lab_supply" &&
       task.type !== "factory_supply"
@@ -1786,6 +1813,14 @@ function collectCanonicalLegacyV2EnergyContributions(
     ) {
       return undefined;
     }
+    if (
+      taskRef.namespace !== task.producer ||
+      taskRef.scope.roomName !== roomName ||
+      taskRef.scope.roomName !== task.roomName ||
+      taskRef.localId !== task.id
+    ) {
+      return undefined;
+    }
     for (const step of task.steps) {
       if (
         step.resource !== RESOURCE_ENERGY ||
@@ -1794,13 +1829,19 @@ function collectCanonicalLegacyV2EnergyContributions(
         continue;
       }
       const amount = Math.floor(step.amount);
+      let contributionId: string;
+      try {
+        contributionId = encodeCarrierDispatchStepKey(taskRef, step.id);
+      } catch {
+        return undefined;
+      }
       if (
         typeof step.id !== "string" ||
         step.id.length === 0 ||
         !Number.isSafeInteger(amount) ||
         amount <= 0 ||
         !add({
-          id: `production-carrier:${task.id}:${step.id}`,
+          id: contributionId,
           amount,
           kind: "terminal_production_commitment",
         })
@@ -2370,9 +2411,10 @@ function readLegacyV2DynamicTerminalEnergyReserve(
           "id",
           "kind",
         ]) ||
-        typeof contribution.id !== "string" ||
-        contribution.id.length === 0 ||
-        contribution.id.length > 256 ||
+        !isValidMarketTerminalEnergyContributionId(
+          contribution.id,
+          contribution.kind,
+        ) ||
         contributionIds.has(contribution.id) ||
         !MARKET_TERMINAL_ENERGY_CONTRIBUTION_KINDS.has(
           contribution.kind,

@@ -1,3 +1,4 @@
+import type { CarrierTaskBoardSnapshot } from "@/runtime/carrierTaskBoard";
 import carrierLogisticsAdapter from "@/runtime/taskSystem/adapters/carrierLogistics";
 import colonizationWorkflowAdapter from "@/runtime/taskSystem/adapters/colonizationWorkflow";
 import crossShardColonizationWorkflowAdapter from "@/runtime/taskSystem/adapters/crossShardColonizationWorkflow";
@@ -47,13 +48,15 @@ const EMPTY_RESULT: TaskSystemAdapterResult = {
 
 type AdapterImplementation = (...args: any[]) => TaskSystemAdapterResult;
 
-function createContext(): TaskSystemCollectionContext {
+function createContext(
+  carrierBoard: CarrierTaskBoardSnapshot = {} as CarrierTaskBoardSnapshot,
+): TaskSystemCollectionContext {
   return {
     observedAt: 72901508,
     shard: "shard:1->snapshot",
     sources: {
       "worker-work": { board: {}, assignments: {} },
-      "carrier-logistics": { board: {} },
+      "carrier-logistics": { board: carrierBoard },
       "power-creep-action": { powerCreepMemory: {}, actorNames: [] },
       "factory-command": { tasks: {} },
     },
@@ -387,6 +390,67 @@ describe("collectTaskSystemSnapshot", () => {
       .toMatchObject({ count: 0, invalidCount: 0, issueCount: 1 });
     expect(first.issues).toContainEqual(expect.objectContaining({
       system: "worker-work",
+      code: "task-system-adapter-failure",
+      message: expect.stringContaining("duplicate WorkRef identities"),
+    }));
+  });
+
+  test("rejects duplicate explicit Carrier refs from either owner-aware DTO order", () => {
+    const originalCarrierSnapshot = carrierLogisticsAdapter.snapshot.bind(
+      carrierLogisticsAdapter,
+    );
+    const task = (priority: number) => ({
+      id: "duplicate:local->id",
+      producer: "producer:duplicate->owner",
+      roomName: "W1N1",
+      type: "terminal_feed",
+      priority,
+      steps: [{
+        id: "step",
+        resource: RESOURCE_ENERGY,
+        fromKind: "storage",
+        toKind: "terminal",
+        fromId: "storage-id",
+        toId: "terminal-id",
+        amount: 100,
+      }],
+      createdAt: 10,
+      updatedAt: 20,
+    });
+    const ref = {
+      system: "carrier-logistics",
+      namespace: "producer:duplicate->owner",
+      scope: { kind: "room", roomName: "W1N1" },
+      localId: "duplicate:local->id",
+    };
+    const firstEntry = { ref, task: task(100) };
+    const secondEntry = {
+      ref: { ...ref, scope: { ...ref.scope } },
+      task: task(200),
+    };
+    const board = (entries: readonly unknown[]) => ({
+      W1N1: entries,
+    }) as unknown as CarrierTaskBoardSnapshot;
+
+    mockAdapters({
+      "carrier-logistics": (source) => originalCarrierSnapshot(source),
+    });
+
+    const first = collectTaskSystemSnapshot(createContext(board([
+      firstEntry,
+      secondEntry,
+    ])));
+    const second = collectTaskSystemSnapshot(createContext(board([
+      secondEntry,
+      firstEntry,
+    ])));
+
+    expect(second).toEqual(first);
+    expect(first.entries).toEqual([]);
+    expect(first.summaries.find((summary) => summary.system === "carrier-logistics"))
+      .toMatchObject({ count: 0, invalidCount: 0, issueCount: 1 });
+    expect(first.issues).toContainEqual(expect.objectContaining({
+      system: "carrier-logistics",
       code: "task-system-adapter-failure",
       message: expect.stringContaining("duplicate WorkRef identities"),
     }));

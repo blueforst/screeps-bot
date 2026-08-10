@@ -1,5 +1,10 @@
 import { carrierRole } from "@/roles/carrier";
-import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import {
+  clearCarrierTaskBoardForTest,
+  getCarrierTasksByRoom,
+  replaceCarrierTasksForProducerRoom,
+  type CarrierTaskDraft,
+} from "@/runtime/carrierTaskBoard";
 import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
 import { runSynthesisControl } from "@/runtime/synthesisControl";
@@ -152,6 +157,68 @@ function createRoom(name = "W1N1", options: { level?: number; storage?: Structur
 
   Game.rooms[name] = room;
   return room;
+}
+
+function createCarrierTaskTestContainer(
+  room: Room,
+  id: string,
+  x: number,
+  contents: Partial<Record<ResourceConstant, number>> = {},
+  freeCapacity = 10_000,
+): StructureContainer {
+  return {
+    id,
+    structureType: STRUCTURE_CONTAINER,
+    room,
+    pos: { x, y: 10, roomName: room.name },
+    store: {
+      getUsedCapacity: (resource?: ResourceConstant) => {
+        if (resource !== undefined) {
+          return contents[resource] ?? 0;
+        }
+        return Object.values(contents).reduce(
+          (total, amount) => total + (amount ?? 0),
+          0,
+        );
+      },
+      getFreeCapacity: () => freeCapacity,
+    },
+  } as unknown as StructureContainer;
+}
+
+function createMineralHaulTaskDraft(
+  id: string,
+  priority: number,
+  resource: ResourceConstant,
+  from: StructureContainer,
+  to: StructureContainer,
+  amount = 800,
+): CarrierTaskDraft {
+  return {
+    id,
+    type: "mineral_haul",
+    priority,
+    steps: [{
+      id: `${id}:step`,
+      resource,
+      fromKind: "container",
+      toKind: "container",
+      fromId: from.id,
+      toId: to.id,
+      amount,
+    }],
+  };
+}
+
+function installCarrierTaskTestObjects(
+  objects: AnyStoreStructure[],
+): void {
+  const byId = new Map<string, AnyStoreStructure>(
+    objects.map((object) => [object.id as string, object]),
+  );
+  (
+    Game as Game & { getObjectById: Game["getObjectById"] }
+  ).getObjectById = jest.fn((id: string) => byId.get(id) ?? null) as unknown as Game["getObjectById"];
 }
 
 function installTerminalBootstrapEnergyScenario(
@@ -779,7 +846,7 @@ describe("carrierRole mineral hauling", () => {
       storage,
       energySource,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2DirectPowerSpawn",
+      "W114N2",
       [true],
     );
     const powerSpawn = {
@@ -811,7 +878,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("picks Nuker Ghodium before Terminal preload and non-critical Energy demand", () => {
-    const room = createRoom("W1N2A");
+    const room = createRoom("W101N2");
     const storage = room.storage as StructureStorage;
     const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
@@ -862,7 +929,7 @@ describe("carrierRole mineral hauling", () => {
       }],
     }]);
     replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
-      id: "resourceControl:terminal_feed:W1N2A:L",
+      id: "resourceControl:terminal_feed:W101N2:L",
       type: "terminal_feed",
       dispatchClass: "capacity_relief",
       priority: 80,
@@ -895,7 +962,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("keeps critical Spawn energy ahead of Nuker Ghodium", () => {
-    const room = createRoom("W1N2B");
+    const room = createRoom("W102N2");
     const storage = room.storage as StructureStorage;
     Object.assign(storage, {
       pos: { x: 10, y: 10, roomName: room.name },
@@ -958,7 +1025,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("picks accepted ResourceControl Terminal preload before ordinary Energy demand", () => {
-    const room = createRoom("W1N2Preload");
+    const room = createRoom("W130N2");
     const storage = room.storage as StructureStorage;
     const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
@@ -1011,7 +1078,7 @@ describe("carrierRole mineral hauling", () => {
       return null;
     }) as unknown as Game["getObjectById"];
     replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
-      id: "resourceControl:terminal_feed:W1N2Preload:L",
+      id: "resourceControl:terminal_feed:W130N2:L",
       type: "terminal_feed",
       dispatchClass: "capacity_relief",
       priority: 80,
@@ -1039,7 +1106,7 @@ describe("carrierRole mineral hauling", () => {
     );
     expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
-      .toBe("resourceControl:terminal_feed:W1N2Preload:L");
+      .toBe("resourceControl:terminal_feed:W130N2:L");
   });
 
   it("gives ordinary Energy one bounded source pass after an accepted capacity-relief pickup", () => {
@@ -1049,7 +1116,7 @@ describe("carrierRole mineral hauling", () => {
       terminal,
       energySource,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2CapacityFairness",
+      "W109N2",
       [true, true],
     );
     let carriedResource: ResourceConstant | null = null;
@@ -1118,7 +1185,7 @@ describe("carrierRole mineral hauling", () => {
       terminal,
       energySource,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2CapacityFairnessRetry",
+      "W110N2",
       [true, true],
     );
     let carriedResource: ResourceConstant | null = null;
@@ -1198,10 +1265,10 @@ describe("carrierRole mineral hauling", () => {
       storage,
       terminal,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2CapacityClaims",
+      "W106N2",
       [true, true],
     );
-    const taskId = "resourceControl:terminal_feed:W1N2CapacityClaims:L";
+    const taskId = "resourceControl:terminal_feed:W106N2:L";
     replaceCarrierTasksForProducerRoom(
       "resourceControl:preload",
       first.room.name,
@@ -1211,7 +1278,7 @@ describe("carrierRole mineral hauling", () => {
         dispatchClass: "capacity_relief",
         priority: 80,
         steps: [{
-          id: "W1N2CapacityClaims:L:storage->terminal",
+          id: "W106N2:L:storage->terminal",
           resource: RESOURCE_LEMERGIUM,
           fromKind: "storage",
           toKind: "terminal",
@@ -1248,7 +1315,7 @@ describe("carrierRole mineral hauling", () => {
       storage,
       terminal,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2CapacityDestination",
+      "W108N2",
       [true, true],
     );
     Object.assign(terminal, {
@@ -1281,7 +1348,7 @@ describe("carrierRole mineral hauling", () => {
       terminal,
       energyTarget,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2CapacitySnapshotPrune",
+      "W111N2",
       [true, true],
     );
     let carriedLemergium = 0;
@@ -1323,7 +1390,7 @@ describe("carrierRole mineral hauling", () => {
       transfer,
     });
     const taskId =
-      "resourceControl:terminal_feed:W1N2CapacitySnapshotPrune:L";
+      "resourceControl:terminal_feed:W111N2:L";
 
     expect(carrierRole().source?.(creep)).toBe(true);
     expect(withdraw).toHaveBeenCalledWith(
@@ -1371,7 +1438,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("keeps critical Tower Energy ahead of ResourceControl Terminal preload", () => {
-    const room = createRoom("W1N2CriticalPreload");
+    const room = createRoom("W112N2");
     const storage = room.storage as StructureStorage;
     const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
@@ -1424,7 +1491,7 @@ describe("carrierRole mineral hauling", () => {
       return null;
     }) as unknown as Game["getObjectById"];
     replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
-      id: "resourceControl:terminal_feed:W1N2CriticalPreload:L",
+      id: "resourceControl:terminal_feed:W112N2:L",
       type: "terminal_feed",
       dispatchClass: "capacity_relief",
       priority: 80,
@@ -1456,7 +1523,7 @@ describe("carrierRole mineral hauling", () => {
 
   it("treats all-busy Spawn Extension demand as prefill behind Terminal preload", () => {
     const { creep, storage, energySource } = installSpawnPrefillPreloadScenario(
-      "W1N2BusyPrefill",
+      "W104N2",
       [true, true],
     );
 
@@ -1476,7 +1543,7 @@ describe("carrierRole mineral hauling", () => {
 
   it("keeps Extension Energy critical when any room Spawn is idle", () => {
     const { creep, storage, energySource } = installSpawnPrefillPreloadScenario(
-      "W1N2IdlePrefill",
+      "W119N2",
       [true, false],
     );
 
@@ -1502,7 +1569,7 @@ describe("carrierRole mineral hauling", () => {
       energySource,
       spawns,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2InactiveIdleSpawn",
+      "W120N2",
       [true, false],
     );
     Object.assign(spawns[0], { isActive: jest.fn(() => true) });
@@ -1523,7 +1590,7 @@ describe("carrierRole mineral hauling", () => {
 
   it("still fills busy-Spawn Extensions when no Terminal preload is runnable", () => {
     const { creep, energySource } = installSpawnPrefillPreloadScenario(
-      "W1N2BusyNoPreload",
+      "W103N2",
       [true, true],
       false,
     );
@@ -1539,7 +1606,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("picks ResourceControl Energy preload before ordinary Energy demand", () => {
-    const room = createRoom("W1N2EnergyPreload");
+    const room = createRoom("W116N2");
     const storage = room.storage as StructureStorage;
     const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
@@ -1585,7 +1652,7 @@ describe("carrierRole mineral hauling", () => {
       return null;
     }) as unknown as Game["getObjectById"];
     replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
-      id: "resourceControl:terminal_feed:W1N2EnergyPreload:energy",
+      id: "resourceControl:terminal_feed:W116N2:energy",
       type: "terminal_feed",
       dispatchClass: "capacity_relief",
       priority: 80,
@@ -1614,7 +1681,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("falls through to ordinary Energy when Terminal preload withdraw fails", () => {
-    const room = createRoom("W1N2FailedPreload");
+    const room = createRoom("W118N2");
     const storage = room.storage as StructureStorage;
     const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
@@ -1665,7 +1732,7 @@ describe("carrierRole mineral hauling", () => {
       return null;
     }) as unknown as Game["getObjectById"];
     replaceCarrierTasksForProducerRoom("resourceControl:preload", room.name, [{
-      id: "resourceControl:terminal_feed:W1N2FailedPreload:L",
+      id: "resourceControl:terminal_feed:W118N2:L",
       type: "terminal_feed",
       dispatchClass: "capacity_relief",
       priority: 80,
@@ -1703,7 +1770,7 @@ describe("carrierRole mineral hauling", () => {
       energySource,
       energyTarget,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2StaleEnergyCapacity",
+      "W132N2",
       [true, true],
       false,
     );
@@ -1737,7 +1804,7 @@ describe("carrierRole mineral hauling", () => {
       withdraw,
       transfer,
     });
-    const taskId = "resourceControl:terminal_feed:W1N2StaleEnergyCapacity:energy";
+    const taskId = "resourceControl:terminal_feed:W132N2:energy";
     replaceCarrierTasksForProducerRoom(
       "resourceControl:preload",
       creep.room.name,
@@ -1747,7 +1814,7 @@ describe("carrierRole mineral hauling", () => {
         dispatchClass: "capacity_relief",
         priority: 80,
         steps: [{
-          id: "W1N2StaleEnergyCapacity:energy:storage->terminal",
+          id: "W132N2:energy:storage->terminal",
           resource: RESOURCE_ENERGY,
           fromKind: "storage",
           toKind: "terminal",
@@ -1787,7 +1854,7 @@ describe("carrierRole mineral hauling", () => {
       energySource,
       energyTarget,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2RangedEnergyCapacity",
+      "W131N2",
       [true, true],
       false,
     );
@@ -1839,7 +1906,7 @@ describe("carrierRole mineral hauling", () => {
       withdraw,
       transfer,
     });
-    const taskId = "resourceControl:terminal_feed:W1N2RangedEnergyCapacity:energy";
+    const taskId = "resourceControl:terminal_feed:W131N2:energy";
     replaceCarrierTasksForProducerRoom(
       "resourceControl:preload",
       creep.room.name,
@@ -1849,7 +1916,7 @@ describe("carrierRole mineral hauling", () => {
         dispatchClass: "capacity_relief",
         priority: 80,
         steps: [{
-          id: "W1N2RangedEnergyCapacity:energy:storage->terminal",
+          id: "W131N2:energy:storage->terminal",
           resource: RESOURCE_ENERGY,
           fromKind: "storage",
           toKind: "terminal",
@@ -1892,7 +1959,7 @@ describe("carrierRole mineral hauling", () => {
       energySource,
       energyTarget,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2CapacityClassRefresh",
+      "W107N2",
       [true, true],
       false,
     );
@@ -1944,9 +2011,9 @@ describe("carrierRole mineral hauling", () => {
       withdraw,
       transfer,
     });
-    const taskId = "resourceControl:terminal_feed:W1N2CapacityClassRefresh:energy";
+    const taskId = "resourceControl:terminal_feed:W107N2:energy";
     const step = {
-      id: "W1N2CapacityClassRefresh:energy:storage->terminal",
+      id: "W107N2:energy:storage->terminal",
       resource: RESOURCE_ENERGY,
       fromKind: "storage" as const,
       toKind: "terminal" as const,
@@ -2003,7 +2070,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("does not promote a non-ResourceControl terminal feed above ordinary Energy demand", () => {
-    const room = createRoom("W1N2OtherPreload");
+    const room = createRoom("W129N2");
     const storage = room.storage as StructureStorage;
     const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
@@ -2049,7 +2116,7 @@ describe("carrierRole mineral hauling", () => {
       return null;
     }) as unknown as Game["getObjectById"];
     replaceCarrierTasksForProducerRoom("otherProducer", room.name, [{
-      id: "other:terminal_feed:W1N2OtherPreload:L",
+      id: "other:terminal_feed:W129N2:L",
       type: "terminal_feed",
       dispatchClass: "capacity_relief",
       priority: 200,
@@ -2086,7 +2153,7 @@ describe("carrierRole mineral hauling", () => {
       terminal,
       energySource,
     } = installSpawnPrefillPreloadScenario(
-      "W1N2UnclassifiedResourceControl",
+      "W133N2",
       [true, true],
       false,
     );
@@ -2094,11 +2161,11 @@ describe("carrierRole mineral hauling", () => {
       "resourceControl:preload",
       creep.room.name,
       [{
-        id: "resourceControl:terminal_feed:W1N2UnclassifiedResourceControl:L",
+        id: "resourceControl:terminal_feed:W133N2:L",
         type: "terminal_feed",
         priority: 1_000,
         steps: [{
-          id: "W1N2UnclassifiedResourceControl:L:storage->terminal",
+          id: "W133N2:L:storage->terminal",
           resource: RESOURCE_LEMERGIUM,
           fromKind: "storage",
           toKind: "terminal",
@@ -2125,7 +2192,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("keeps PowerSpawn supply ahead of Nuker Ghodium", () => {
-    const room = createRoom("W1N2C");
+    const room = createRoom("W105N2");
     const storage = room.storage as StructureStorage;
     Object.assign(storage, {
       pos: { x: 10, y: 10, roomName: room.name },
@@ -2209,7 +2276,7 @@ describe("carrierRole mineral hauling", () => {
   it.each([1, -1])(
     "keeps a normal board task at priority %i ahead of Nuker Energy and replaces its stale assignment",
     (normalPriority) => {
-      const room = createRoom(`W1N2N${normalPriority}`);
+      const room = createRoom(normalPriority > 0 ? "W134N2" : "W135N2");
       const storage = room.storage as StructureStorage;
       Object.assign(storage, {
         pos: { x: 10, y: 10, roomName: room.name },
@@ -2303,7 +2370,7 @@ describe("carrierRole mineral hauling", () => {
   ] as const)(
     "clears stale Nuker assignment when %s Energy demand preempts it",
     (_label, structureType) => {
-      const room = createRoom("W1N2NEnergyDemand");
+      const room = createRoom("W122N2");
       const storage = room.storage as StructureStorage;
       Object.assign(storage, {
         pos: { x: 10, y: 10, roomName: room.name },
@@ -2409,7 +2476,7 @@ describe("carrierRole mineral hauling", () => {
   );
 
   it("clears stale Nuker assignment before dead-store work so carried Energy follows normal delivery", () => {
-    const room = createRoom("W1N2NDead");
+    const room = createRoom("W121N2");
     const storage = room.storage as StructureStorage;
     Object.assign(storage, {
       pos: { x: 10, y: 10, roomName: room.name },
@@ -2513,7 +2580,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("picks Nuker Energy when all higher logistics stages are idle", () => {
-    const room = createRoom("W1N2NIdle");
+    const room = createRoom("W125N2");
     const storage = room.storage as StructureStorage;
     Object.assign(storage, {
       pos: { x: 10, y: 10, roomName: room.name },
@@ -2565,7 +2632,7 @@ describe("carrierRole mineral hauling", () => {
 
   it("caps multiple same-tick Nuker Energy pickups after task refresh", () => {
     const { room, storage, taskId } = installNukerEnergyClaimScenario(
-      "W1N2NMultiPickup",
+      "W126N2",
     );
     const first = {
       ...createCreep(room),
@@ -2604,7 +2671,7 @@ describe("carrierRole mineral hauling", () => {
 
   it("releases a failed Nuker Energy pickup claim for the next Carrier", () => {
     const { room, storage } = installNukerEnergyClaimScenario(
-      "W1N2NFailedPickup",
+      "W124N2",
     );
     const fullCapacityStore = {
       getUsedCapacity: () => 0,
@@ -2638,7 +2705,7 @@ describe("carrierRole mineral hauling", () => {
 
   it("shares one task budget between pickup and carried-Energy fallback", () => {
     const { room, storage, nuker } = installNukerEnergyClaimScenario(
-      "W1N2NSharedBudget",
+      "W127N2",
     );
     const pickupCarrier = {
       ...createCreep(room),
@@ -2675,7 +2742,7 @@ describe("carrierRole mineral hauling", () => {
 
   it("releases a failed carried-Energy fallback claim", () => {
     const { room, nuker } = installNukerEnergyClaimScenario(
-      "W1N2NFailedFallback",
+      "W123N2",
     );
     const carriedStore = {
       getUsedCapacity: (resource?: ResourceConstant) =>
@@ -2709,7 +2776,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("delivers accepted Nuker Energy from its pickup snapshot after task prune", () => {
-    const room = createRoom("W1N2NSnapshot");
+    const room = createRoom("W128N2");
     const storage = room.storage as StructureStorage;
     Object.assign(storage, {
       pos: { x: 10, y: 10, roomName: room.name },
@@ -2723,6 +2790,16 @@ describe("carrierRole mineral hauling", () => {
       id: "snapshot-nuker-energy-target",
       structureType: STRUCTURE_NUKER,
       pos: { x: 11, y: 10, roomName: room.name },
+      store: {
+        getUsedCapacity: () => 0,
+        getFreeCapacity: (resource?: ResourceConstant) =>
+          resource === RESOURCE_ENERGY ? 300_000 : 0,
+      },
+    } as unknown as StructureNuker;
+    const decoyNuker = {
+      id: "snapshot-nuker-same-name-other-owner-target",
+      structureType: STRUCTURE_NUKER,
+      pos: { x: 12, y: 10, roomName: room.name },
       store: {
         getUsedCapacity: () => 0,
         getFreeCapacity: (resource?: ResourceConstant) =>
@@ -2752,10 +2829,13 @@ describe("carrierRole mineral hauling", () => {
     (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn((id: string) => {
       if (id === storage.id) return storage;
       if (id === nuker.id) return nuker;
+      if (id === decoyNuker.id) return decoyNuker;
       return null;
     }) as unknown as Game["getObjectById"];
-    replaceCarrierTasksForProducerRoom("nukerControl", room.name, [{
-      id: "snapshot-nuker-energy-task",
+    const taskId = "snapshot-nuker-energy-task";
+    const originalProducer = "nukerControl:original";
+    replaceCarrierTasksForProducerRoom(originalProducer, room.name, [{
+      id: taskId,
       type: "nuker_supply",
       priority: 0,
       steps: [{
@@ -2770,7 +2850,28 @@ describe("carrierRole mineral hauling", () => {
     }]);
 
     carrierRole().source?.(creep);
-    replaceCarrierTasksForProducerRoom("nukerControl", room.name, []);
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierPendingTaskRef)
+      .toEqual({
+        system: "carrier-logistics",
+        namespace: originalProducer,
+        scope: { kind: "room", roomName: room.name },
+        localId: taskId,
+      });
+    replaceCarrierTasksForProducerRoom("nukerControl:other", room.name, [{
+      id: taskId,
+      type: "nuker_supply",
+      priority: 1_000,
+      steps: [{
+        id: "energy:storage->same-name-other-owner-nuker",
+        resource: RESOURCE_ENERGY,
+        fromKind: "storage",
+        toKind: "nuker",
+        fromId: storage.id,
+        toId: decoyNuker.id,
+        amount: 1_000,
+      }],
+    }]);
+    replaceCarrierTasksForProducerRoom(originalProducer, room.name, []);
     Game.time += 1;
     carrierRole().target(creep);
 
@@ -2778,15 +2879,18 @@ describe("carrierRole mineral hauling", () => {
       nuker,
       RESOURCE_ENERGY,
     );
+    expect(creep.transfer).toHaveBeenCalledTimes(1);
     expect(getCreepAssignmentState(creep.name)).not.toEqual(
       expect.objectContaining({
         synthesisCarrierPendingTaskType: expect.any(String),
       }),
     );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierPendingTaskRef)
+      .toBeUndefined();
   });
 
   it("delivers accepted Nuker cargo from the pickup snapshot after task refresh", () => {
-    const room = createRoom("W1N2D");
+    const room = createRoom("W113N2");
     const storage = room.storage as StructureStorage;
     Object.assign(storage, {
       pos: { x: 10, y: 10, roomName: room.name },
@@ -2861,7 +2965,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("routes stranded carried Energy to a live Nuker task when no normal target or storage space exists", () => {
-    const room = createRoom("W1N2E");
+    const room = createRoom("W115N2");
     const storage = room.storage as StructureStorage;
     const terminal = room.terminal as StructureTerminal;
     Object.assign(storage, {
@@ -2930,7 +3034,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("keeps an ordinary Energy target ahead of carried-energy Nuker fallback", () => {
-    const room = createRoom("W1N2F");
+    const room = createRoom("W117N2");
     const storage = room.storage as StructureStorage;
     const nuker = {
       id: "nuker-behind-normal-energy-target",
@@ -2988,7 +3092,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("does not travel to pick up a dropped resource below 50", () => {
-    const room = createRoom("W1N0AG");
+    const room = createRoom("W101N0");
     const dropped = {
       id: "small-dropped-energy",
       amount: 49,
@@ -3017,7 +3121,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("travels to pick up a dropped resource at the exact threshold of 50", () => {
-    const room = createRoom("W1N0AH");
+    const room = createRoom("W102N0");
     const dropped = {
       id: "threshold-dropped-energy",
       amount: 50,
@@ -3046,7 +3150,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("can pick up a dropped resource below 50 when it is already in range", () => {
-    const room = createRoom("W1N0AJ");
+    const room = createRoom("W104N0");
     const dropped = {
       id: "adjacent-small-dropped-energy",
       amount: 49,
@@ -3074,7 +3178,7 @@ describe("carrierRole mineral hauling", () => {
   });
 
   it("releases a distant reserved drop after it falls below 50", () => {
-    const room = createRoom("W1N0AI");
+    const room = createRoom("W103N0");
     const dropped = {
       id: "shrunk-dropped-energy",
       amount: 49,
@@ -3955,6 +4059,627 @@ describe("carrierRole lab logistics", () => {
     expect(switched).toBe(true);
     expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId).toBe("synth:lab_supply:W7N2:OH");
   });
+
+  it("keeps a runnable sticky task ahead of a newly published higher-priority task", () => {
+    const room = createRoom("W201N1");
+    const stickySource = createCarrierTaskTestContainer(
+      room,
+      "carrier-sticky-source",
+      2,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const stickyTarget = createCarrierTaskTestContainer(
+      room,
+      "carrier-sticky-target",
+      3,
+    );
+    const highPrioritySource = createCarrierTaskTestContainer(
+      room,
+      "carrier-high-priority-source",
+      1,
+      { [RESOURCE_KEANIUM]: 2_000 },
+    );
+    const highPriorityTarget = createCarrierTaskTestContainer(
+      room,
+      "carrier-high-priority-target",
+      4,
+    );
+    installCarrierTaskTestObjects([
+      stickySource,
+      stickyTarget,
+      highPrioritySource,
+      highPriorityTarget,
+    ]);
+    replaceCarrierTasksForProducerRoom("carrier-selection-test", room.name, [
+      createMineralHaulTaskDraft(
+        "carrier-sticky-task",
+        10,
+        RESOURCE_UTRIUM,
+        stickySource,
+        stickyTarget,
+      ),
+      createMineralHaulTaskDraft(
+        "carrier-new-high-priority-task",
+        1_000,
+        RESOURCE_KEANIUM,
+        highPrioritySource,
+        highPriorityTarget,
+      ),
+    ]);
+    const creep = createCreep(room);
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId =
+      "carrier-sticky-task";
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      stickySource,
+      RESOURCE_UTRIUM,
+      800,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      highPrioritySource,
+      RESOURCE_KEANIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe("carrier-sticky-task");
+  });
+
+  it("reselects an unrunnable sticky task by priority before source distance", () => {
+    const room = createRoom("W202N2");
+    const destination = createCarrierTaskTestContainer(
+      room,
+      "carrier-reselect-target",
+      5,
+    );
+    const staleSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-stale-source",
+      2,
+    );
+    const lowerPriorityClosestSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-lower-priority-closest-source",
+      1,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const highPriorityFarSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-high-priority-far-source",
+      8,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const highPriorityNearSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-high-priority-near-source",
+      3,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    installCarrierTaskTestObjects([
+      destination,
+      staleSource,
+      lowerPriorityClosestSource,
+      highPriorityFarSource,
+      highPriorityNearSource,
+    ]);
+    replaceCarrierTasksForProducerRoom("carrier-reselection-test", room.name, [
+      createMineralHaulTaskDraft(
+        "carrier-stale-task",
+        10_000,
+        RESOURCE_UTRIUM,
+        staleSource,
+        destination,
+      ),
+      createMineralHaulTaskDraft(
+        "carrier-lower-priority-closest-task",
+        99,
+        RESOURCE_UTRIUM,
+        lowerPriorityClosestSource,
+        destination,
+      ),
+      createMineralHaulTaskDraft(
+        "carrier-high-priority-far-task",
+        100,
+        RESOURCE_UTRIUM,
+        highPriorityFarSource,
+        destination,
+      ),
+      createMineralHaulTaskDraft(
+        "carrier-high-priority-near-task",
+        100,
+        RESOURCE_UTRIUM,
+        highPriorityNearSource,
+        destination,
+      ),
+    ]);
+    const creep = createCreep(room);
+    Object.assign(creep, {
+      pos: {
+        getRangeTo: (pos: RoomPosition) => pos.x,
+      } as unknown as RoomPosition,
+    });
+    ensureCreepAssignmentState(creep.name).synthesisCarrierTaskId =
+      "carrier-stale-task";
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      highPriorityNearSource,
+      RESOURCE_UTRIUM,
+      800,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      lowerPriorityClosestSource,
+      RESOURCE_UTRIUM,
+      expect.any(Number),
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      highPriorityFarSource,
+      RESOURCE_UTRIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe("carrier-high-priority-near-task");
+  });
+
+  it("keeps equal-priority equal-distance task order stable across producer refresh", () => {
+    const room = createRoom("W203N3");
+    const destination = createCarrierTaskTestContainer(
+      room,
+      "carrier-stable-tie-target",
+      5,
+    );
+    const firstSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-stable-tie-first-source",
+      2,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const secondSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-stable-tie-second-source",
+      2,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const firstTask = createMineralHaulTaskDraft(
+      "carrier-stable-tie-first-task",
+      100,
+      RESOURCE_UTRIUM,
+      firstSource,
+      destination,
+    );
+    const secondTask = createMineralHaulTaskDraft(
+      "carrier-stable-tie-second-task",
+      100,
+      RESOURCE_UTRIUM,
+      secondSource,
+      destination,
+    );
+    installCarrierTaskTestObjects([
+      destination,
+      firstSource,
+      secondSource,
+    ]);
+    replaceCarrierTasksForProducerRoom(
+      "carrier-stable-order-test",
+      room.name,
+      [firstTask, secondTask],
+    );
+    Game.time += 1;
+    replaceCarrierTasksForProducerRoom(
+      "carrier-stable-order-test",
+      room.name,
+      [secondTask, firstTask],
+    );
+    const creep = createCreep(room);
+    Object.assign(creep, {
+      pos: {
+        getRangeTo: (pos: RoomPosition) => pos.x,
+      } as unknown as RoomPosition,
+    });
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      firstSource,
+      RESOURCE_UTRIUM,
+      800,
+    );
+    expect(getCreepAssignmentState(creep.name)?.synthesisCarrierTaskId)
+      .toBe("carrier-stable-tie-first-task");
+  });
+
+  it("selects the nearest source and destination independently across parallel task steps", () => {
+    const room = createRoom("W204N4");
+    const farSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-parallel-far-source",
+      8,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const nearDestination = createCarrierTaskTestContainer(
+      room,
+      "carrier-parallel-near-destination",
+      1,
+    );
+    const nearSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-parallel-near-source",
+      2,
+      { [RESOURCE_KEANIUM]: 2_000 },
+    );
+    const farDestination = createCarrierTaskTestContainer(
+      room,
+      "carrier-parallel-far-destination",
+      9,
+    );
+    installCarrierTaskTestObjects([
+      farSource,
+      nearDestination,
+      nearSource,
+      farDestination,
+    ]);
+    const taskId = "carrier-parallel-step-task";
+    replaceCarrierTasksForProducerRoom("carrier-parallel-test", room.name, [{
+      id: taskId,
+      type: "mineral_haul",
+      priority: 100,
+      steps: [
+        {
+          id: "carrier-parallel-far-source-step",
+          resource: RESOURCE_UTRIUM,
+          fromKind: "container",
+          toKind: "container",
+          fromId: farSource.id,
+          toId: nearDestination.id,
+          amount: 400,
+        },
+        {
+          id: "carrier-parallel-near-source-step",
+          resource: RESOURCE_KEANIUM,
+          fromKind: "container",
+          toKind: "container",
+          fromId: nearSource.id,
+          toId: farDestination.id,
+          amount: 400,
+        },
+      ],
+    }]);
+    const pickupCarrier = createCreep(room);
+    pickupCarrier.name = "carrier-parallel-pickup";
+    Object.assign(pickupCarrier, {
+      pos: {
+        getRangeTo: (pos: RoomPosition) => pos.x,
+      } as unknown as RoomPosition,
+    });
+    const deliveryCarrier = {
+      ...createCreep(room),
+      name: "carrier-parallel-delivery",
+      pos: {
+        getRangeTo: (pos: RoomPosition) => pos.x,
+      } as unknown as RoomPosition,
+      store: {
+        getUsedCapacity: (resource?: ResourceConstant) => {
+          if (resource === undefined) return 800;
+          if (resource === RESOURCE_UTRIUM) return 400;
+          if (resource === RESOURCE_KEANIUM) return 400;
+          return 0;
+        },
+        getFreeCapacity: () => 0,
+      },
+      transfer: jest.fn(() => OK),
+    } as unknown as Creep;
+    Game.creeps = {
+      [pickupCarrier.name]: pickupCarrier,
+      [deliveryCarrier.name]: deliveryCarrier,
+    };
+    ensureCreepAssignmentState(deliveryCarrier.name).synthesisCarrierTaskId =
+      taskId;
+
+    carrierRole().source?.(pickupCarrier);
+    carrierRole().target(deliveryCarrier);
+
+    expect(pickupCarrier.withdraw).toHaveBeenCalledWith(
+      nearSource,
+      RESOURCE_KEANIUM,
+      400,
+    );
+    expect(deliveryCarrier.transfer).toHaveBeenCalledWith(
+      nearDestination,
+      RESOURCE_UTRIUM,
+    );
+  });
+
+  it("allows multiple carriers to bind and withdraw from an ordinary task in the same tick", () => {
+    const room = createRoom("W205N5");
+    const source = createCarrierTaskTestContainer(
+      room,
+      "carrier-shared-ordinary-source",
+      2,
+      { [RESOURCE_UTRIUM]: 5_000 },
+    );
+    const destination = createCarrierTaskTestContainer(
+      room,
+      "carrier-shared-ordinary-target",
+      3,
+    );
+    installCarrierTaskTestObjects([source, destination]);
+    const taskId = "carrier-shared-ordinary-task";
+    replaceCarrierTasksForProducerRoom("carrier-shared-task-test", room.name, [
+      createMineralHaulTaskDraft(
+        taskId,
+        100,
+        RESOURCE_UTRIUM,
+        source,
+        destination,
+      ),
+    ]);
+    const first = createCreep(room);
+    first.name = "carrier-shared-ordinary-first";
+    const second = createCreep(room);
+    second.name = "carrier-shared-ordinary-second";
+    Game.creeps = {
+      [first.name]: first,
+      [second.name]: second,
+    };
+
+    carrierRole().source?.(first);
+    carrierRole().source?.(second);
+
+    expect(first.withdraw).toHaveBeenCalledWith(
+      source,
+      RESOURCE_UTRIUM,
+      800,
+    );
+    expect(second.withdraw).toHaveBeenCalledWith(
+      source,
+      RESOURCE_UTRIUM,
+      800,
+    );
+    expect(getCreepAssignmentState(first.name)?.synthesisCarrierTaskId)
+      .toBe(taskId);
+    expect(getCreepAssignmentState(second.name)?.synthesisCarrierTaskId)
+      .toBe(taskId);
+  });
+
+  it("keeps a sticky task bound to its exact producer when another owner publishes the same local id", () => {
+    const room = createRoom("W207N1");
+    const firstSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-owner-a-source",
+      2,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const secondSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-owner-b-source",
+      3,
+      { [RESOURCE_KEANIUM]: 2_000 },
+    );
+    const destination = createCarrierTaskTestContainer(
+      room,
+      "carrier-owner-sticky-target",
+      4,
+    );
+    installCarrierTaskTestObjects([firstSource, secondSource, destination]);
+    const taskId = "shared-carrier-local-id";
+    replaceCarrierTasksForProducerRoom("carrier-owner-a", room.name, [
+      createMineralHaulTaskDraft(
+        taskId,
+        10,
+        RESOURCE_UTRIUM,
+        firstSource,
+        destination,
+      ),
+    ]);
+    const creep = createCreep(room);
+    creep.withdraw = jest.fn(() => ERR_NOT_IN_RANGE);
+
+    carrierRole().source?.(creep);
+    replaceCarrierTasksForProducerRoom("carrier-owner-b", room.name, [
+      createMineralHaulTaskDraft(
+        taskId,
+        1_000,
+        RESOURCE_KEANIUM,
+        secondSource,
+        destination,
+      ),
+    ]);
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledTimes(2);
+    expect(creep.withdraw).toHaveBeenNthCalledWith(
+      2,
+      firstSource,
+      RESOURCE_UTRIUM,
+      800,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      secondSource,
+      RESOURCE_KEANIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)).toMatchObject({
+      synthesisCarrierTaskId: taskId,
+      dispatchBindings: {
+        carrier: {
+          system: "carrier-logistics",
+          namespace: "carrier-owner-a",
+          scope: { kind: "room", roomName: room.name },
+          localId: taskId,
+        },
+      },
+    });
+  });
+
+  it("reselects by the existing priority lane after the bound owner disappears", () => {
+    const room = createRoom("W208N2");
+    const oldSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-removed-owner-source",
+      2,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const sameNameSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-same-name-owner-source",
+      3,
+      { [RESOURCE_KEANIUM]: 2_000 },
+    );
+    const preferredSource = createCarrierTaskTestContainer(
+      room,
+      "carrier-priority-reselection-source",
+      4,
+      { [RESOURCE_ZYNTHIUM]: 2_000 },
+    );
+    const destination = createCarrierTaskTestContainer(
+      room,
+      "carrier-owner-reselection-target",
+      5,
+    );
+    installCarrierTaskTestObjects([
+      oldSource,
+      sameNameSource,
+      preferredSource,
+      destination,
+    ]);
+    const sharedTaskId = "carrier-owner-reselection-shared";
+    replaceCarrierTasksForProducerRoom("removed-owner", room.name, [
+      createMineralHaulTaskDraft(
+        sharedTaskId,
+        10,
+        RESOURCE_UTRIUM,
+        oldSource,
+        destination,
+      ),
+    ]);
+    const creep = createCreep(room);
+    creep.withdraw = jest.fn(() => ERR_NOT_IN_RANGE);
+    carrierRole().source?.(creep);
+
+    replaceCarrierTasksForProducerRoom("same-name-owner", room.name, [
+      createMineralHaulTaskDraft(
+        sharedTaskId,
+        50,
+        RESOURCE_KEANIUM,
+        sameNameSource,
+        destination,
+      ),
+    ]);
+    replaceCarrierTasksForProducerRoom("preferred-owner", room.name, [
+      createMineralHaulTaskDraft(
+        "carrier-owner-reselection-preferred",
+        100,
+        RESOURCE_ZYNTHIUM,
+        preferredSource,
+        destination,
+      ),
+    ]);
+    replaceCarrierTasksForProducerRoom("removed-owner", room.name, []);
+    (creep.withdraw as jest.Mock).mockClear();
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      preferredSource,
+      RESOURCE_ZYNTHIUM,
+      800,
+    );
+    expect(creep.withdraw).not.toHaveBeenCalledWith(
+      sameNameSource,
+      RESOURCE_KEANIUM,
+      expect.any(Number),
+    );
+    expect(getCreepAssignmentState(creep.name)?.dispatchBindings?.carrier)
+      .toMatchObject({
+        namespace: "preferred-owner",
+        scope: { roomName: room.name },
+        localId: "carrier-owner-reselection-preferred",
+      });
+  });
+
+  it("releases a sticky binding whose scope no longer matches the assigned carrier room", () => {
+    const oldRoom = createRoom("W209N3");
+    const newRoom = createRoom("W210N3");
+    const oldSource = createCarrierTaskTestContainer(
+      oldRoom,
+      "carrier-old-room-source",
+      2,
+      { [RESOURCE_UTRIUM]: 2_000 },
+    );
+    const oldTarget = createCarrierTaskTestContainer(
+      oldRoom,
+      "carrier-old-room-target",
+      3,
+    );
+    const newSource = createCarrierTaskTestContainer(
+      newRoom,
+      "carrier-new-room-source",
+      2,
+      { [RESOURCE_KEANIUM]: 2_000 },
+    );
+    const newTarget = createCarrierTaskTestContainer(
+      newRoom,
+      "carrier-new-room-target",
+      3,
+    );
+    installCarrierTaskTestObjects([
+      oldSource,
+      oldTarget,
+      newSource,
+      newTarget,
+    ]);
+    replaceCarrierTasksForProducerRoom("old-room-owner", oldRoom.name, [
+      createMineralHaulTaskDraft(
+        "carrier-old-room-task",
+        100,
+        RESOURCE_UTRIUM,
+        oldSource,
+        oldTarget,
+      ),
+    ]);
+    replaceCarrierTasksForProducerRoom("new-room-owner", newRoom.name, [
+      createMineralHaulTaskDraft(
+        "carrier-new-room-task",
+        100,
+        RESOURCE_KEANIUM,
+        newSource,
+        newTarget,
+      ),
+    ]);
+    const creep = createCreep(oldRoom);
+    creep.memory.configName = "carrier-room-drift-config";
+    creep.withdraw = jest.fn(() => ERR_NOT_IN_RANGE);
+    getCreepConfigService().upsert(
+      creep.memory.configName,
+      "carrier",
+      [],
+      oldRoom.name,
+    );
+    carrierRole().source?.(creep);
+    getCreepConfigService().upsert(
+      creep.memory.configName,
+      "carrier",
+      [],
+      newRoom.name,
+    );
+    (creep.withdraw as jest.Mock).mockClear();
+
+    carrierRole().source?.(creep);
+
+    expect(creep.withdraw).toHaveBeenCalledWith(
+      newSource,
+      RESOURCE_KEANIUM,
+      800,
+    );
+    expect(getCreepAssignmentState(creep.name)?.dispatchBindings?.carrier)
+      .toMatchObject({
+        namespace: "new-room-owner",
+        scope: { roomName: newRoom.name },
+        localId: "carrier-new-room-task",
+      });
+  });
 });
 
 describe("carrierRole resolveTaskStructure per-tick memoization", () => {
@@ -3994,7 +4719,7 @@ describe("carrierRole resolveTaskStructure per-tick memoization", () => {
   }
 
   it("deduplicates Game.getObjectById calls for the same structure id within one tick", () => {
-    const room = createRoom("M1N1");
+    const room = createRoom("W206N1");
     const container = {
       id: "memo-container-1",
       pos: { x: 10, y: 10, roomName: room.name },

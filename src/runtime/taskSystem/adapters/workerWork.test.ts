@@ -27,6 +27,25 @@ function task(overrides: MutableRecord = {}): MutableRecord {
   };
 }
 
+function workerAssignment(
+  roomName: string,
+  localId: string,
+  overrides: MutableRecord = {},
+): MutableRecord {
+  return {
+    taskId: localId,
+    dispatchBindings: {
+      worker: {
+        system: "worker-work",
+        namespace: "workerTaskPool",
+        scope: { kind: "room", roomName },
+        localId,
+      },
+    },
+    ...overrides,
+  };
+}
+
 function context(
   board: unknown,
   assignments: unknown = {},
@@ -59,7 +78,9 @@ describe("workerWorkAdapter", () => {
         "build:site-1": task({ assignedCreeps: ["Worker1"] }),
       },
     };
-    const assignments = { Worker1: { taskId: "build:site-1" } };
+    const assignments = {
+      Worker1: workerAssignment("W1N1", "build:site-1"),
+    };
 
     const result = workerWorkAdapter.snapshot(context(board, assignments));
 
@@ -98,9 +119,9 @@ describe("workerWorkAdapter", () => {
     });
     const board = { W1N1: { "build:site-1": sourceTask } };
     const assignments = {
-      Closed: { taskId: "build:site-1" },
-      WrongReverse: { taskId: "upgrade:other" },
-      ReverseOnly: { taskId: "build:site-1" },
+      Closed: workerAssignment("W1N1", "build:site-1"),
+      WrongReverse: workerAssignment("W1N1", "upgrade:other"),
+      ReverseOnly: workerAssignment("W1N1", "build:site-1"),
     };
     const boardBefore = JSON.stringify(board);
     const assignmentsBefore = JSON.stringify(assignments);
@@ -312,6 +333,201 @@ describe("workerWorkAdapter", () => {
     expect(first.entries.every((entry) => entry.issues.some(
       (issue) => issue.code === "worker-assignment-identity-ambiguous",
     ))).toBe(true);
+  });
+
+  test("closes equal local ids independently with canonical room-scoped bindings", () => {
+    const result = workerWorkAdapter.snapshot(context({
+      W2N2: {
+        shared: task({
+          id: "shared",
+          roomName: "W2N2",
+          assignedCreeps: ["Worker2"],
+        }),
+      },
+      W1N1: {
+        shared: task({ id: "shared", assignedCreeps: ["Worker1"] }),
+      },
+    }, {
+      Worker1: workerAssignment("W1N1", "shared"),
+      Worker2: workerAssignment("W2N2", "shared"),
+    }));
+
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries.map((entry) => [
+      entry.ref.scope,
+      entry.activity,
+      entry.authorities,
+    ])).toEqual([
+      [
+        { kind: "room", roomName: "W1N1" },
+        "claimed",
+        [
+          { role: "producer", id: "workerTaskPool" },
+          { role: "assignee", id: "Worker1" },
+        ],
+      ],
+      [
+        { kind: "room", roomName: "W2N2" },
+        "claimed",
+        [
+          { role: "producer", id: "workerTaskPool" },
+          { role: "assignee", id: "Worker2" },
+        ],
+      ],
+    ]);
+    expect(result.entries.every((entry) => entry.issues.length === 0)).toBe(true);
+  });
+
+  test("keeps fully closed sticky claims claimed after slot capacity shrinks", () => {
+    const result = workerWorkAdapter.snapshot(context({
+      W1N1: {
+        shared: task({
+          id: "shared",
+          assignedCreeps: ["WorkerA", "WorkerB"],
+          maxAssignees: 1,
+        }),
+      },
+    }, {
+      WorkerA: workerAssignment("W1N1", "shared"),
+      WorkerB: workerAssignment("W1N1", "shared"),
+    }));
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]).toEqual(expect.objectContaining({
+      activity: "claimed",
+      authorities: [
+        { role: "producer", id: "workerTaskPool" },
+        { role: "assignee", id: "WorkerA" },
+        { role: "assignee", id: "WorkerB" },
+      ],
+    }));
+    expect(result.entries[0].issues).toContainEqual(expect.objectContaining({
+      code: "worker-task-assignee-capacity-conflict",
+    }));
+  });
+
+  test("summarizes cross-room legacy ambiguity once per candidate without actor expansion", () => {
+    const roomCount = 12;
+    const actorCount = 30;
+    const board: MutableRecord = {};
+    for (let index = roomCount - 1; index >= 0; index -= 1) {
+      const roomName = `W${index}N${index}`;
+      board[roomName] = {
+        shared: task({
+          id: "shared",
+          roomName,
+          assignedCreeps: [],
+        }),
+      };
+    }
+    board.W99N99 = {
+      unique: task({
+        id: "unique",
+        roomName: "W99N99",
+        assignedCreeps: [],
+      }),
+    };
+    const assignments: MutableRecord = {};
+    for (let index = actorCount - 1; index >= 0; index -= 1) {
+      assignments[`LegacyActor${index.toString().padStart(2, "0")}`] = {
+        taskId: "shared",
+      };
+    }
+
+    const originalAdd = Set.prototype.add;
+    let legacyActorCandidateAdds = 0;
+    Set.prototype.add = (function countingSetAdd(
+      this: Set<unknown>,
+      value: unknown,
+    ): Set<unknown> {
+      if (typeof value === "string" && value.startsWith("LegacyActor")) {
+        legacyActorCandidateAdds += 1;
+      }
+      return Reflect.apply(originalAdd, this, [value]) as Set<unknown>;
+    }) as typeof Set.prototype.add;
+
+    let first: ReturnType<typeof workerWorkAdapter.snapshot>;
+    try {
+      first = workerWorkAdapter.snapshot(context(board, assignments));
+    } finally {
+      Set.prototype.add = originalAdd;
+    }
+    const second = workerWorkAdapter.snapshot(context(
+      Object.fromEntries(Object.entries(board).reverse()),
+      Object.fromEntries(Object.entries(assignments).reverse()),
+    ));
+
+    expect(first).toEqual(second);
+    expect(first.entries).toHaveLength(roomCount + 1);
+    const ambiguousEntries = first.entries.filter((entry) => entry.ref.localId === "shared");
+    expect(ambiguousEntries).toHaveLength(roomCount);
+    expect(ambiguousEntries.every((entry) => entry.activity === "unknown")).toBe(true);
+    expect(ambiguousEntries.every((entry) => entry.authorities.length === 1)).toBe(true);
+    expect(ambiguousEntries.every((entry) => entry.issues.filter(
+      (issue) => issue.code === "worker-assignment-identity-ambiguous",
+    ).length === 1)).toBe(true);
+    expect(ambiguousEntries[0].issues).toContainEqual(expect.objectContaining({
+      message: expect.stringContaining(`${actorCount} legacy Worker assignment(s)`),
+    }));
+    expect(first.entries.find((entry) => entry.ref.localId === "unique")).toEqual(
+      expect.objectContaining({ activity: "available", issues: [] }),
+    );
+    expect(legacyActorCandidateAdds).toBe(0);
+  });
+
+  test("fails closed for legacy-only, mirror drift, and canonical scope or namespace conflicts", () => {
+    const result = workerWorkAdapter.snapshot(context({
+      W1N1: {
+        legacy: task({ id: "legacy", assignedCreeps: ["Legacy"] }),
+        mirror: task({ id: "mirror", assignedCreeps: ["Mirror"] }),
+        scope: task({ id: "scope", assignedCreeps: ["Scope"] }),
+        namespace: task({ id: "namespace", assignedCreeps: ["Namespace"] }),
+      },
+    }, {
+      Legacy: { taskId: "legacy" },
+      Mirror: workerAssignment("W1N1", "mirror", { taskId: "other" }),
+      Scope: workerAssignment("W2N2", "scope"),
+      Namespace: workerAssignment("W1N1", "namespace", {
+        dispatchBindings: {
+          worker: {
+            system: "worker-work",
+            namespace: "other",
+            scope: { kind: "room", roomName: "W1N1" },
+            localId: "namespace",
+          },
+        },
+      }),
+    }));
+
+    expect(result.entries).toHaveLength(4);
+    expect(result.entries.every((entry) => entry.activity === "unknown")).toBe(true);
+    expect(result.entries.every((entry) => entry.authorities.length === 1)).toBe(true);
+    expect(result.entries.every((entry) => entry.issues.length > 0)).toBe(true);
+  });
+
+  test("does not execute assignment accessors while failing canonical closure closed", () => {
+    const getter = jest.fn(() => workerAssignment("W1N1", "build:site-1").dispatchBindings);
+    const assignment: MutableRecord = { taskId: "build:site-1" };
+    Object.defineProperty(assignment, "dispatchBindings", {
+      get: getter,
+      enumerable: true,
+      configurable: true,
+    });
+
+    const result = workerWorkAdapter.snapshot(context({
+      W1N1: {
+        "build:site-1": task({ assignedCreeps: ["Worker"] }),
+      },
+    }, { Worker: assignment }));
+
+    expect(getter).not.toHaveBeenCalled();
+    expect(result.entries[0]).toEqual(expect.objectContaining({
+      activity: "unknown",
+      authorities: [{ role: "producer", id: "workerTaskPool" }],
+    }));
+    expect(result.entries[0].issues).toContainEqual(expect.objectContaining({
+      code: "worker-assignment-canonical-missing",
+    }));
   });
 
   test("returns deeply isolated projection objects", () => {

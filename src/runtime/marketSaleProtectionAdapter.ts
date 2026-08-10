@@ -1,8 +1,14 @@
 import {
-  listCarrierTasksByRoom,
+  listCarrierDispatchEntriesByRoom,
   type CarrierTask,
+  type CarrierDispatchEntry,
 } from "@/runtime/carrierTaskBoard";
 import { getCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import {
+  cloneCarrierDispatchRef,
+  encodeCarrierDispatchStepKey,
+  type CarrierDispatchRef,
+} from "@/runtime/dispatchOwnership/ref";
 import {
   findFactoryInRoom,
   parseConfig as parseFactoryConfig,
@@ -478,8 +484,8 @@ function collectOutgoingTransfers(): SourceCollection {
   return { complete, facts };
 }
 
-function carrierFactKey(taskId: string, stepId: string): string {
-  return `carrier:${taskId}:${stepId}`;
+function carrierFactKey(ref: CarrierDispatchRef, stepId: string): string {
+  return encodeCarrierDispatchStepKey(ref, stepId);
 }
 
 function validCarrierTask(task: CarrierTask): boolean {
@@ -494,7 +500,6 @@ function collectCarrierCommitments(
   candidates: readonly MarketProtectionCandidate[],
 ): SourceCollection {
   const roomNames = new Set(candidates.map((candidate) => candidate.roomName));
-  const taskRoomById = new Map<string, string>();
   // CarrierTaskBoard and creep assignment memory can change on any tick (for
   // example, synthesis/factory run before market-sale). Inspect them directly
   // every tick instead of inheriting ResourceControl's slower cadence.
@@ -502,19 +507,24 @@ function collectCarrierCommitments(
   const facts: MarketProtectionFact[] = [];
 
   for (const roomName of roomNames) {
-    let tasks: CarrierTask[];
+    let entries: readonly CarrierDispatchEntry[];
     try {
-      tasks = listCarrierTasksByRoom(roomName);
+      entries = listCarrierDispatchEntriesByRoom(roomName);
     } catch {
       complete = false;
       continue;
     }
-    for (const task of tasks) {
-      if (!validCarrierTask(task) || task.roomName !== roomName) {
+    for (const { ref: taskRef, task } of entries) {
+      if (
+        !validCarrierTask(task) ||
+        task.roomName !== roomName ||
+        taskRef.namespace !== task.producer ||
+        taskRef.scope.roomName !== task.roomName ||
+        taskRef.localId !== task.id
+      ) {
         complete = false;
         continue;
       }
-      taskRoomById.set(task.id, roomName);
       for (const step of task.steps) {
         if (
           !validRoomName(step.id) ||
@@ -524,11 +534,18 @@ function collectCarrierCommitments(
           complete = false;
           continue;
         }
+        let stableKey: string;
+        try {
+          stableKey = carrierFactKey(taskRef, step.id);
+        } catch {
+          complete = false;
+          continue;
+        }
         facts.push({
           roomName,
           resource: step.resource,
           amount: step.amount,
-          stableKey: carrierFactKey(task.id, step.id),
+          stableKey,
           status: "pending",
         });
       }
@@ -538,20 +555,33 @@ function collectCarrierCommitments(
   for (const creep of Object.values(Game.creeps)) {
     const state = getCreepAssignmentState(creep.name);
     const resource = state?.synthesisCarrierPendingResource;
-    const taskId = state?.synthesisCarrierTaskId;
-    if (!resource || !taskId) continue;
+    if (!resource) continue;
     const amount = creep.store.getUsedCapacity(resource);
     if (!finiteNonNegative(amount) || amount <= 0) continue;
-    const roomName = taskRoomById.get(taskId) ?? creep.room.name;
+    const taskRef = cloneCarrierDispatchRef(
+      state?.synthesisCarrierPendingTaskRef,
+    );
+    if (!taskRef) {
+      complete = false;
+      continue;
+    }
+    const roomName = taskRef.scope.roomName;
     if (!roomNames.has(roomName)) continue;
     const stepId =
       state.synthesisCarrierPendingStepId ??
       `inflight:${creep.name}:${resource}`;
+    let stableKey: string;
+    try {
+      stableKey = carrierFactKey(taskRef, stepId);
+    } catch {
+      complete = false;
+      continue;
+    }
     facts.push({
       roomName,
       resource,
       amount,
-      stableKey: carrierFactKey(taskId, stepId),
+      stableKey,
       status: "active",
     });
   }

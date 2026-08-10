@@ -1,19 +1,44 @@
 import {
   claimCarrierTaskStepAmount,
+  cleanupCarrierTaskBoard,
   clearCarrierTaskBoardForTest,
+  findCarrierTaskByRef,
   getCarrierTasksByRoom,
+  getMutableCarrierTaskByRefForTest,
+  getMutableCarrierTasksByRoomForTest,
+  listCarrierDispatchEntriesByRoom,
   listCarrierTasksByRoom,
+  listCarrierTasksForProducer,
   peekCarrierTaskBoard,
   peekCarrierTasksByRoom,
-  replaceCarrierTasksForProducerRoom,
   pruneCarrierTasksForProducer,
-  cleanupCarrierTaskBoard,
+  replaceCarrierTasksForProducerRoom,
+  type CarrierTask,
+  type CarrierTaskDraft,
+  type CarrierTaskStep,
+  type MutableCarrierTaskForTest,
 } from "@/runtime/carrierTaskBoard";
-import type { CarrierTask, CarrierTaskDraft, CarrierTaskStep } from "@/runtime/carrierTaskBoard";
-import { createCarrierTaskStepId, createSingleStepDraft, createCarrierTaskStep, resolveTerminalStorageTarget, terminalStorageKind } from "@/runtime/carrierTaskHelpers";
+import {
+  createCarrierDispatchRef,
+  type CarrierDispatchRef,
+} from "@/runtime/dispatchOwnership/ref";
+import {
+  createSingleStepDraft,
+  resolveTerminalStorageTarget,
+} from "@/runtime/carrierTaskHelpers";
+
+interface RawCarrierRecord {
+  task: unknown;
+  publishOrder: number;
+}
+
+interface RawCarrierRoomStore {
+  byOwner: Map<string, Map<string, RawCarrierRecord>>;
+  nextPublishOrder: number;
+}
 
 type CarrierTaskRuntimeGlobal = typeof global & {
-  __carrierTaskBoard?: Record<string, Record<string, CarrierTask>>;
+  __carrierTaskBoard?: Map<string, RawCarrierRoomStore>;
   __carrierTaskClaims?: unknown;
 };
 
@@ -36,7 +61,9 @@ function makeStep(overrides: Partial<CarrierTaskStep> = {}): CarrierTaskStep {
   };
 }
 
-function makeDraft(overrides: Partial<CarrierTaskDraft> & { id: string }): CarrierTaskDraft {
+function makeDraft(
+  overrides: Partial<CarrierTaskDraft> & { id: string },
+): CarrierTaskDraft {
   return {
     type: "lab_supply",
     priority: 100,
@@ -45,456 +72,270 @@ function makeDraft(overrides: Partial<CarrierTaskDraft> & { id: string }): Carri
   };
 }
 
-describe("carrierTaskBoard", () => {
+function taskRef(
+  producer: string,
+  roomName: string,
+  localId: string,
+): CarrierDispatchRef {
+  const ref = createCarrierDispatchRef(producer, roomName, localId);
+  if (!ref) throw new Error("test fixture must use a valid CarrierDispatchRef");
+  return ref;
+}
+
+function exactTask(
+  producer: string,
+  roomName: string,
+  localId: string,
+): CarrierTask {
+  const task = findCarrierTaskByRef(taskRef(producer, roomName, localId));
+  if (!task) throw new Error(`missing Carrier task ${producer}/${roomName}/${localId}`);
+  return task;
+}
+
+describe("carrierTaskBoard owner-scoped storage", () => {
   beforeEach(() => {
     clearCarrierTaskBoardForTest();
     Game.time = 1000;
     Game.creeps = {};
   });
 
-  it("cleanup removes tasks in rooms not owned and stale tasks", () => {
-    const d1 = makeDraft({ id: "keep:fresh" });
-    Game.time = 1000;
-    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [d1]);
-
-    const d2 = makeDraft({ id: "keep:unowned" });
-    replaceCarrierTasksForProducerRoom("prodA", "W4N4", [d2]);
-
-    const d3 = makeDraft({ id: "stale:owned" });
-    Game.time = 800;
-    replaceCarrierTasksForProducerRoom("prodB", "W1N1", [d3]);
-    Game.time = 1000;
-
-    const removed = cleanupCarrierTaskBoard(new Set(["W1N1"]), 100);
-    expect(removed).toBe(2);
-    expect(getCarrierTasksByRoom("W1N1")["keep:fresh"]).toBeDefined();
-    expect(getCarrierTasksByRoom("W1N1")["stale:owned"]).toBeUndefined();
-    // W4N4 room entry should be cleaned up entirely
-    expect(getCarrierTasksByRoom("W4N4")["keep:unowned"]).toBeUndefined();
-  });
-
-  it("peek selectors stay side-effect free after global reset", () => {
+  it("keeps the private global name and materializes an empty room on an empty first replace", () => {
     expect(Object.prototype.hasOwnProperty.call(global, "__carrierTaskBoard"))
       .toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(global, "__carrierTaskClaims"))
-      .toBe(false);
-    const propertiesBefore = globalPropertyNames();
 
-    expect(peekCarrierTaskBoard()).toEqual({});
-    expect(peekCarrierTasksByRoom("W9N9")).toEqual({});
+    replaceCarrierTasksForProducerRoom("missing-producer", "W9N9", []);
 
-    expect(globalPropertyNames()).toEqual(propertiesBefore);
-    expect(Object.prototype.hasOwnProperty.call(global, "__carrierTaskBoard"))
-      .toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(global, "__carrierTaskClaims"))
-      .toBe(false);
+    const board = carrierTaskRuntimeGlobal.__carrierTaskBoard;
+    expect(board).toBeInstanceOf(Map);
+    expect(board?.has("W9N9")).toBe(true);
+    expect(board?.get("W9N9")?.byOwner).toBeInstanceOf(Map);
+    expect(board?.get("W9N9")?.byOwner.size).toBe(0);
   });
 
-  it("peeks an absent room without creating it in an existing board", () => {
+  it("coexists and performs exact lookup for equal local ids from different producers", () => {
+    const localId = "same:local->id";
     replaceCarrierTasksForProducerRoom(
-      "prodA",
+      "producer:a",
       "W1N1",
-      [makeDraft({ id: "prodA:task" })],
+      [makeDraft({ id: localId, priority: 10 })],
     );
-    const boardBefore = carrierTaskRuntimeGlobal.__carrierTaskBoard;
-    const propertiesBefore = globalPropertyNames();
-
-    expect(peekCarrierTasksByRoom("W9N9")).toEqual({});
-
-    expect(carrierTaskRuntimeGlobal.__carrierTaskBoard).toBe(boardBefore);
-    expect(boardBefore?.W9N9).toBeUndefined();
-    expect(globalPropertyNames()).toEqual(propertiesBefore);
-  });
-
-  it("preserves room, task, producer, step, and timestamp identity in peek snapshots", () => {
-    const firstDraft = makeDraft({
-      id: "prodA:task",
-      dispatchClass: "capacity_relief",
-      steps: [makeStep({ id: "prodA:step", amount: 321 })],
-    });
-    const secondDraft = makeDraft({
-      id: "prodB:task",
-      type: "terminal_offload",
-      priority: 90,
-      steps: [makeStep({
-        id: "prodB:step",
-        resource: RESOURCE_ENERGY,
-        fromKind: "terminal",
-        toKind: "storage",
-        fromId: "terminal-b",
-        toId: "storage-b",
-        amount: 654,
-      })],
-    });
-    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [firstDraft]);
-    Game.time = 1001;
-    replaceCarrierTasksForProducerRoom("prodB", "W2N2", [secondDraft]);
-
-    expect(peekCarrierTaskBoard()).toEqual({
-      W1N1: {
-        "prodA:task": {
-          id: "prodA:task",
-          producer: "prodA",
-          roomName: "W1N1",
-          type: "lab_supply",
-          priority: 100,
-          dispatchClass: "capacity_relief",
-          steps: [{
-            id: "prodA:step",
-            resource: "U",
-            fromKind: "terminal",
-            toKind: "lab",
-            fromId: "term123",
-            toId: "lab456",
-            amount: 321,
-          }],
-          createdAt: 1000,
-          updatedAt: 1000,
-        },
-      },
-      W2N2: {
-        "prodB:task": {
-          id: "prodB:task",
-          producer: "prodB",
-          roomName: "W2N2",
-          type: "terminal_offload",
-          priority: 90,
-          steps: [{
-            id: "prodB:step",
-            resource: RESOURCE_ENERGY,
-            fromKind: "terminal",
-            toKind: "storage",
-            fromId: "terminal-b",
-            toId: "storage-b",
-            amount: 654,
-          }],
-          createdAt: 1001,
-          updatedAt: 1001,
-        },
-      },
-    });
-    expect(peekCarrierTasksByRoom("W2N2")).toEqual(
-      peekCarrierTaskBoard().W2N2,
-    );
-  });
-
-  it("deeply isolates room and full-board snapshots from domain records", () => {
-    const taskId = "prodA:isolated";
     replaceCarrierTasksForProducerRoom(
-      "prodA",
+      "producer:b",
       "W1N1",
-      [makeDraft({
-        id: taskId,
-        steps: [
-          makeStep({ id: "step-a", amount: 300 }),
-          makeStep({ id: "step-b", fromId: "term789", amount: 200 }),
-        ],
-      })],
+      [makeDraft({ id: localId, priority: 20 })],
     );
-    const sourceStore = getCarrierTasksByRoom("W1N1");
-    const sourceTask = sourceStore[taskId];
-    const roomSnapshot = peekCarrierTasksByRoom("W1N1");
-    const boardSnapshot = peekCarrierTaskBoard();
 
-    expect(roomSnapshot[taskId]).not.toBe(sourceTask);
-    expect(roomSnapshot[taskId].steps).not.toBe(sourceTask.steps);
-    expect(roomSnapshot[taskId].steps[0]).not.toBe(sourceTask.steps[0]);
-    expect(boardSnapshot.W1N1[taskId]).not.toBe(sourceTask);
-    expect(boardSnapshot.W1N1[taskId]).not.toBe(roomSnapshot[taskId]);
-    expect(boardSnapshot.W1N1[taskId].steps[0])
-      .not.toBe(roomSnapshot[taskId].steps[0]);
-
-    const mutableRoomSnapshot = roomSnapshot as unknown as Record<
-      string,
-      CarrierTask
-    >;
-    mutableRoomSnapshot[taskId].producer = "mutated-producer";
-    mutableRoomSnapshot[taskId].steps[0].amount = 1;
-    mutableRoomSnapshot[taskId].steps.push(makeStep({ id: "injected" }));
-    delete mutableRoomSnapshot[taskId];
-
-    const mutableBoardSnapshot = boardSnapshot as unknown as Record<
-      string,
-      Record<string, CarrierTask>
-    >;
-    mutableBoardSnapshot.W1N1[taskId].roomName = "W9N9";
-    mutableBoardSnapshot.W1N1[taskId].steps[1].fromId = "mutated-source";
-    delete mutableBoardSnapshot.W1N1;
-
-    expect(sourceStore[taskId]).toBe(sourceTask);
-    expect(sourceTask).toMatchObject({
-      producer: "prodA",
-      roomName: "W1N1",
-      steps: [
-        expect.objectContaining({ id: "step-a", amount: 300 }),
-        expect.objectContaining({ id: "step-b", fromId: "term789" }),
-      ],
-    });
-    expect(sourceTask.steps).toHaveLength(2);
-    expect(peekCarrierTasksByRoom("W1N1")[taskId]).toEqual(sourceTask);
+    const entries = listCarrierDispatchEntriesByRoom("W1N1");
+    expect(entries.map((entry) => [
+      entry.ref.namespace,
+      entry.ref.scope.roomName,
+      entry.ref.localId,
+    ])).toEqual([
+      ["producer:b", "W1N1", localId],
+      ["producer:a", "W1N1", localId],
+    ]);
+    expect(findCarrierTaskByRef(taskRef("producer:a", "W1N1", localId))?.priority)
+      .toBe(10);
+    expect(findCarrierTaskByRef(taskRef("producer:b", "W1N1", localId))?.priority)
+      .toBe(20);
+    expect(findCarrierTaskByRef(taskRef("producer:a", "W2N2", localId)))
+      .toBeUndefined();
   });
 
-  it("isolates malformed runtime task shapes without blocking valid siblings", () => {
-    const validTaskId = "prodA:valid-sibling";
-    replaceCarrierTasksForProducerRoom(
-      "prodA",
-      "W1N1",
-      [makeDraft({
-        id: validTaskId,
-        steps: [makeStep({ id: "valid-step", amount: 500 })],
-      })],
-    );
-    const boardBefore = carrierTaskRuntimeGlobal.__carrierTaskBoard!;
-    const roomBefore = boardBefore.W1N1;
-    const validTaskBefore = roomBefore[validTaskId];
-    const firstClaim = claimCarrierTaskStepAmount(
-      validTaskBefore,
-      validTaskBefore.steps[0],
-      "carrier-a",
-      300,
-    );
-    expect(firstClaim?.amount).toBe(300);
-
-    const malformedNonArraySteps = {
-      ...validTaskBefore,
-      id: "prodB:non-array-steps",
-      producer: "prodB",
-      steps: {
-        legacy: true,
-        nested: { amount: 125 },
-      },
-    };
-    const malformedStep = {
-      ...validTaskBefore,
-      id: "prodC:malformed-step",
-      producer: "prodC",
-      steps: [
-        null,
-        7,
-        { id: "partial", nested: { marker: "source" } },
-      ],
-    };
-    const rawRoom = roomBefore as unknown as Record<string, unknown>;
-    rawRoom["prodB:non-object"] = 42;
-    rawRoom[malformedNonArraySteps.id] = malformedNonArraySteps;
-    rawRoom[malformedStep.id] = malformedStep;
-
-    const claimsBefore = carrierTaskRuntimeGlobal.__carrierTaskClaims;
-    const propertiesBefore = globalPropertyNames();
-    const roomSnapshot = peekCarrierTasksByRoom("W1N1");
-    const boardSnapshot = peekCarrierTaskBoard();
-    const rawRoomSnapshot = roomSnapshot as unknown as Record<string, any>;
-    const rawBoardRoomSnapshot = boardSnapshot.W1N1 as unknown as Record<string, any>;
-
-    expect(rawRoomSnapshot["prodB:non-object"]).toBe(42);
-    expect(rawRoomSnapshot[malformedNonArraySteps.id]).toEqual(
-      malformedNonArraySteps,
-    );
-    expect(rawRoomSnapshot[malformedStep.id]).toEqual(malformedStep);
-    expect(rawBoardRoomSnapshot["prodB:non-object"]).toBe(42);
-    expect(rawBoardRoomSnapshot[malformedNonArraySteps.id]).toEqual(
-      malformedNonArraySteps,
-    );
-    expect(rawBoardRoomSnapshot[malformedStep.id]).toEqual(malformedStep);
-    expect(rawRoomSnapshot[validTaskId]).toEqual(validTaskBefore);
-    expect(rawRoomSnapshot[validTaskId]).not.toBe(validTaskBefore);
-    expect(rawRoomSnapshot[malformedNonArraySteps.id])
-      .not.toBe(malformedNonArraySteps);
-    expect(rawRoomSnapshot[malformedNonArraySteps.id].steps)
-      .not.toBe(malformedNonArraySteps.steps);
-    expect(rawRoomSnapshot[malformedNonArraySteps.id].steps.nested)
-      .not.toBe(malformedNonArraySteps.steps.nested);
-    expect(rawRoomSnapshot[malformedStep.id].steps)
-      .not.toBe(malformedStep.steps);
-    expect(rawRoomSnapshot[malformedStep.id].steps[2])
-      .not.toBe(malformedStep.steps[2]);
-    expect(rawBoardRoomSnapshot[malformedStep.id])
-      .not.toBe(rawRoomSnapshot[malformedStep.id]);
-
-    rawRoomSnapshot[malformedNonArraySteps.id].steps.nested.amount = 1;
-    rawRoomSnapshot[malformedStep.id].steps[2].nested.marker = "mutated";
-    rawRoomSnapshot[validTaskId].steps[0].amount = 1;
-    rawBoardRoomSnapshot[malformedStep.id].steps.push("injected");
-
-    expect(malformedNonArraySteps.steps.nested.amount).toBe(125);
-    expect(malformedStep.steps).toHaveLength(3);
-    expect((malformedStep.steps[2] as { nested: { marker: string } }).nested.marker)
-      .toBe("source");
-    expect(validTaskBefore.steps[0].amount).toBe(500);
-    expect(carrierTaskRuntimeGlobal.__carrierTaskBoard).toBe(boardBefore);
-    expect(boardBefore.W1N1).toBe(roomBefore);
-    expect(roomBefore[validTaskId]).toBe(validTaskBefore);
-    expect(rawRoom[malformedNonArraySteps.id]).toBe(malformedNonArraySteps);
-    expect(rawRoom[malformedStep.id]).toBe(malformedStep);
-    expect(carrierTaskRuntimeGlobal.__carrierTaskClaims).toBe(claimsBefore);
-    expect(globalPropertyNames()).toEqual(propertiesBefore);
-
-    const secondClaim = claimCarrierTaskStepAmount(
-      validTaskBefore,
-      validTaskBefore.steps[0],
-      "carrier-b",
-      500,
-    );
-    expect(secondClaim?.amount).toBe(200);
-    firstClaim?.release();
-    secondClaim?.release();
-  });
-
-  it("does not invoke accessors or wash non-plain malformed tasks into plain records", () => {
-    const validTaskId = "valid-sibling";
-    replaceCarrierTasksForProducerRoom(
-      "producer",
-      "W1N1",
-      [makeDraft({ id: validTaskId })],
-    );
-    const boardBefore = carrierTaskRuntimeGlobal.__carrierTaskBoard!;
-    const roomBefore = boardBefore.W1N1;
-    const rawRoom = roomBefore as unknown as Record<string, unknown>;
-
+  it("clones exact lookup refs through own descriptors without invoking property getters", () => {
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [
+      makeDraft({ id: "descriptor-safe" }),
+    ]);
+    const sourceRef = taskRef("producer", "W1N1", "descriptor-safe");
     let getterReads = 0;
-    const accessorTask = {
-      ...roomBefore[validTaskId],
-      id: "accessor-task",
-    } as Record<string, unknown>;
-    Object.defineProperty(accessorTask, "producer", {
+    const proxyRef = new Proxy(sourceRef, {
+      get(): never {
+        getterReads += 1;
+        throw new Error("exact lookup must not use property getters");
+      },
+    });
+
+    expect(findCarrierTaskByRef(proxyRef)).toBe(
+      exactTask("producer", "W1N1", "descriptor-safe"),
+    );
+    expect(getterReads).toBe(0);
+
+    const accessorRef = { ...sourceRef } as Record<string, unknown>;
+    Object.defineProperty(accessorRef, "scope", {
       enumerable: true,
       configurable: true,
-      get(): string {
+      get(): never {
         getterReads += 1;
-        throw new Error("selector must not evaluate task accessors");
+        throw new Error("exact lookup must reject accessor refs");
       },
     });
-    const customTask = Object.assign(
-      Object.create({ sourcePrototype: true }) as Record<string, unknown>,
-      {
-        ...roomBefore[validTaskId],
-        id: "custom-task",
-        nested: { marker: "source" },
-      },
-    );
-    const mapTask = new Map<string, unknown>([["producer", "map-producer"]]);
-    const functionTask = Object.assign(
-      function malformedCarrierTask(): undefined {
-        return undefined;
-      },
-      {
-        id: "function-task",
-        producer: "function-producer",
-      },
-    );
-    rawRoom["accessor-task"] = accessorTask;
-    rawRoom["custom-task"] = customTask;
-    rawRoom["map-task"] = mapTask;
-    rawRoom["function-task"] = functionTask;
-
-    const roomSnapshot = peekCarrierTasksByRoom("W1N1") as unknown as Record<
-      string,
-      any
-    >;
-    const boardRoomSnapshot = peekCarrierTaskBoard().W1N1 as unknown as Record<
-      string,
-      any
-    >;
-
+    expect(findCarrierTaskByRef(accessorRef as unknown as CarrierDispatchRef))
+      .toBeUndefined();
     expect(getterReads).toBe(0);
-    expect(Object.prototype.hasOwnProperty.call(
-      roomSnapshot["accessor-task"],
-      "producer",
-    )).toBe(true);
-    expect(roomSnapshot["accessor-task"].producer).toBeUndefined();
-    for (const taskId of ["custom-task", "map-task"]) {
-      const prototype = Object.getPrototypeOf(roomSnapshot[taskId]);
-      expect(prototype).not.toBe(null);
-      expect(prototype).not.toBe(Object.prototype);
-      expect(Object.isFrozen(prototype)).toBe(true);
-      expect(boardRoomSnapshot[taskId]).not.toBe(roomSnapshot[taskId]);
+  });
+
+  it("treats prototype property strings as ordinary producer and local-id keys", () => {
+    const fixtures = [
+      ["__proto__", "constructor"],
+      ["constructor", "toString"],
+      ["toString", "__proto__"],
+    ] as const;
+    for (const [producer, localId] of fixtures) {
+      replaceCarrierTasksForProducerRoom(
+        producer,
+        "W1N1",
+        [makeDraft({ id: localId })],
+      );
     }
-    expect(typeof roomSnapshot["function-task"]).toBe("function");
-    expect(roomSnapshot["function-task"]).not.toBe(functionTask);
-    expect(boardRoomSnapshot["function-task"]).not.toBe(
-      roomSnapshot["function-task"],
-    );
-    expect(roomSnapshot["custom-task"].nested).not.toBe(customTask.nested);
 
-    roomSnapshot["custom-task"].nested.marker = "mutated";
-    expect(customTask.nested).toEqual({ marker: "source" });
-    expect(getterReads).toBe(0);
-    expect(carrierTaskRuntimeGlobal.__carrierTaskBoard).toBe(boardBefore);
-    expect(boardBefore.W1N1).toBe(roomBefore);
-    expect(rawRoom["accessor-task"]).toBe(accessorTask);
-    expect(rawRoom["custom-task"]).toBe(customTask);
-    expect(rawRoom["map-task"]).toBe(mapTask);
-    expect(rawRoom["function-task"]).toBe(functionTask);
-    expect(roomBefore[validTaskId]).toBeDefined();
+    expect(listCarrierDispatchEntriesByRoom("W1N1").map((entry) => [
+      entry.ref.namespace,
+      entry.ref.localId,
+    ])).toEqual(fixtures);
+    for (const [producer, localId] of fixtures) {
+      expect(findCarrierTaskByRef(taskRef(producer, "W1N1", localId)))
+        .toBeDefined();
+    }
   });
 
-  it("does not release claims or replace private slot references while peeking", () => {
-    const taskId = "claimed-peek-task";
-    replaceCarrierTasksForProducerRoom(
-      "claim-test",
-      "W1N1",
-      [makeDraft({ id: taskId, steps: [makeStep({ amount: 500 })] })],
-    );
-    const task = getCarrierTasksByRoom("W1N1")[taskId];
-    const firstClaim = claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "carrier-a",
-      300,
-    );
-    expect(firstClaim?.amount).toBe(300);
-    const boardBefore = carrierTaskRuntimeGlobal.__carrierTaskBoard;
-    const claimsBefore = carrierTaskRuntimeGlobal.__carrierTaskClaims;
-    const propertiesBefore = globalPropertyNames();
+  it("reconciles only one producer snapshot and leaves another owner untouched", () => {
+    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [
+      makeDraft({ id: "shared", priority: 10 }),
+      makeDraft({ id: "only-a" }),
+    ]);
+    replaceCarrierTasksForProducerRoom("prodB", "W1N1", [
+      makeDraft({ id: "shared", priority: 20 }),
+      makeDraft({ id: "only-b" }),
+    ]);
 
-    peekCarrierTaskBoard();
-    peekCarrierTasksByRoom("W1N1");
+    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [
+      makeDraft({ id: "shared", priority: 30 }),
+    ]);
 
-    expect(carrierTaskRuntimeGlobal.__carrierTaskBoard).toBe(boardBefore);
-    expect(carrierTaskRuntimeGlobal.__carrierTaskClaims).toBe(claimsBefore);
-    expect(globalPropertyNames()).toEqual(propertiesBefore);
-    const secondClaim = claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "carrier-b",
-      500,
-    );
-    expect(secondClaim?.amount).toBe(200);
-    firstClaim?.release();
-    secondClaim?.release();
+    expect(findCarrierTaskByRef(taskRef("prodA", "W1N1", "only-a")))
+      .toBeUndefined();
+    expect(findCarrierTaskByRef(taskRef("prodA", "W1N1", "shared"))?.priority)
+      .toBe(30);
+    expect(findCarrierTaskByRef(taskRef("prodB", "W1N1", "shared"))?.priority)
+      .toBe(20);
+    expect(findCarrierTaskByRef(taskRef("prodB", "W1N1", "only-b")))
+      .toBeDefined();
+    expect(listCarrierTasksForProducer("prodB")).toHaveLength(2);
   });
 
-  it("keeps legacy get/list live-reference behavior separate from peek snapshots", () => {
-    replaceCarrierTasksForProducerRoom(
-      "prodA",
-      "W1N1",
-      [makeDraft({ id: "prodA:live" })],
-    );
-    const liveStore = getCarrierTasksByRoom("W1N1");
+  it("prunes invalid producer rooms without touching another owner", () => {
+    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [makeDraft({ id: "valid" })]);
+    replaceCarrierTasksForProducerRoom("prodA", "W2N2", [makeDraft({ id: "invalid" })]);
+    replaceCarrierTasksForProducerRoom("prodB", "W2N2", [makeDraft({ id: "retained" })]);
 
-    expect(getCarrierTasksByRoom("W1N1")).toBe(liveStore);
-    expect(listCarrierTasksByRoom("W1N1")[0]).toBe(liveStore["prodA:live"]);
-    expect(peekCarrierTasksByRoom("W1N1")["prodA:live"])
-      .not.toBe(liveStore["prodA:live"]);
+    expect(pruneCarrierTasksForProducer("prodA", new Set(["W1N1"]))).toBe(1);
+    expect(findCarrierTaskByRef(taskRef("prodA", "W1N1", "valid")))
+      .toBeDefined();
+    expect(findCarrierTaskByRef(taskRef("prodA", "W2N2", "invalid")))
+      .toBeUndefined();
+    expect(findCarrierTaskByRef(taskRef("prodB", "W2N2", "retained")))
+      .toBeDefined();
   });
 
-  it("lists higher numeric priority first and preserves creation order for ties", () => {
-    replaceCarrierTasksForProducerRoom(
-      "older-high",
-      "W1N1",
-      [makeDraft({ id: "older-high", priority: 10 })],
+  it("keeps the TTL boundary and removes stale, lost-room, and room-mismatched records", () => {
+    Game.time = 899;
+    replaceCarrierTasksForProducerRoom("prod", "W1N1", [makeDraft({ id: "stale" })]);
+    Game.time = 900;
+    replaceCarrierTasksForProducerRoom("prod", "W1N1", [
+      makeDraft({ id: "stale" }),
+      makeDraft({ id: "boundary" }),
+    ]);
+    const stale = getMutableCarrierTaskByRefForTest(taskRef("prod", "W1N1", "stale"));
+    if (!stale) throw new Error("missing stale fixture");
+    stale.updatedAt = 899;
+    Game.time = 1000;
+    replaceCarrierTasksForProducerRoom("other", "W1N1", [makeDraft({ id: "mismatch" })]);
+    replaceCarrierTasksForProducerRoom("prod", "W2N2", [makeDraft({ id: "lost" })]);
+    const mismatch = getMutableCarrierTaskByRefForTest(
+      taskRef("other", "W1N1", "mismatch"),
     );
+    if (!mismatch) throw new Error("missing mismatch fixture");
+    mismatch.roomName = "W9N9";
+
+    expect(cleanupCarrierTaskBoard(new Set(["W1N1"]), 100)).toBe(3);
+    expect(findCarrierTaskByRef(taskRef("prod", "W1N1", "boundary")))
+      .toBeDefined();
+    expect(findCarrierTaskByRef(taskRef("prod", "W1N1", "stale")))
+      .toBeUndefined();
+    expect(findCarrierTaskByRef(taskRef("other", "W1N1", "mismatch")))
+      .toBeUndefined();
+    expect(peekCarrierTaskBoard().W2N2).toBeUndefined();
+  });
+
+  it("owns a deep copy of publish drafts and nested steps", () => {
+    const draft = makeDraft({
+      id: "alias-test",
+      priority: 100,
+      steps: [makeStep({ id: "owned-step", amount: 400 })],
+    });
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+
+    const mutableDraft = draft as unknown as {
+      priority: number;
+      steps: MutableCarrierTaskForTest["steps"];
+    };
+    mutableDraft.priority = 1;
+    mutableDraft.steps[0].amount = 1;
+    mutableDraft.steps.push({
+      ...makeStep({ id: "injected" }),
+    });
+
+    const task = exactTask("producer", "W1N1", "alias-test");
+    expect(task.priority).toBe(100);
+    expect(task.steps).toEqual([expect.objectContaining({
+      id: "owned-step",
+      amount: 400,
+    })]);
+    expect(task.steps).not.toBe(draft.steps);
+    expect(task.steps[0]).not.toBe(draft.steps[0]);
+  });
+
+  it("preserves createdAt and publish rank on refresh, then assigns a new rank after deletion", () => {
+    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [
+      makeDraft({ id: "a", priority: 10 }),
+    ]);
+    replaceCarrierTasksForProducerRoom("prodB", "W1N1", [
+      makeDraft({ id: "b", priority: 10 }),
+    ]);
+    expect(listCarrierTasksByRoom("W1N1").map((task) => task.id))
+      .toEqual(["a", "b"]);
+
+    Game.time = 1001;
+    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [
+      makeDraft({ id: "a", priority: 10 }),
+    ]);
+    expect(exactTask("prodA", "W1N1", "a")).toMatchObject({
+      createdAt: 1000,
+      updatedAt: 1001,
+    });
+    expect(listCarrierTasksByRoom("W1N1").map((task) => task.id))
+      .toEqual(["a", "b"]);
+
+    replaceCarrierTasksForProducerRoom("prodA", "W1N1", []);
+    Game.time = 1000;
+    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [
+      makeDraft({ id: "a", priority: 10 }),
+    ]);
+    expect(listCarrierTasksByRoom("W1N1").map((task) => task.id))
+      .toEqual(["b", "a"]);
+  });
+
+  it("sorts by priority, createdAt, and private publish order", () => {
+    replaceCarrierTasksForProducerRoom("older-high", "W1N1", [
+      makeDraft({ id: "older-high", priority: 10 }),
+    ]);
     Game.time += 1;
-    replaceCarrierTasksForProducerRoom(
-      "newer-high",
-      "W1N1",
-      [makeDraft({ id: "newer-high", priority: 10 })],
-    );
-    replaceCarrierTasksForProducerRoom(
-      "low",
-      "W1N1",
-      [makeDraft({ id: "low", priority: 0 })],
-    );
+    replaceCarrierTasksForProducerRoom("newer-high", "W1N1", [
+      makeDraft({ id: "newer-high", priority: 10 }),
+    ]);
+    replaceCarrierTasksForProducerRoom("low", "W1N1", [
+      makeDraft({ id: "low", priority: 0 }),
+    ]);
 
     expect(listCarrierTasksByRoom("W1N1").map((task) => task.id)).toEqual([
       "older-high",
@@ -503,169 +344,363 @@ describe("carrierTaskBoard", () => {
     ]);
   });
 
-  it("preserves a dispatch class on refresh and clears it when the next draft omits it", () => {
-    const classifiedDraft = makeDraft({
-      id: "capacity-relief-task",
-      dispatchClass: "capacity_relief",
-    });
-    replaceCarrierTasksForProducerRoom(
-      "resourceControl:preload",
-      "W1N1",
-      [classifiedDraft],
-    );
+  it("exposes deep-readonly live production views and an explicit mutable test helper", () => {
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [
+      makeDraft({ id: "live", steps: [makeStep({ amount: 321 })] }),
+    ]);
+    const first = listCarrierDispatchEntriesByRoom("W1N1")[0];
+    expect(findCarrierTaskByRef(first.ref)).toBe(first.task);
+    expect(getMutableCarrierTaskByRefForTest(first.ref)).toBe(first.task);
+    expect(getMutableCarrierTasksByRoomForTest("W1N1").live).toBe(first.task);
+    expect(getCarrierTasksByRoom("W1N1").live).toBe(first.task);
 
-    expect(getCarrierTasksByRoom("W1N1")[classifiedDraft.id]).toMatchObject({
-      dispatchClass: "capacity_relief",
-      createdAt: 1000,
-      updatedAt: 1000,
-    });
+    if (false) {
+      // @ts-expect-error production task identity is readonly
+      first.task.producer = "mutated";
+      // @ts-expect-error nested production steps are readonly
+      first.task.steps[0].amount = 1;
+      // @ts-expect-error the production steps array is readonly
+      first.task.steps.push(makeStep());
+    }
 
-    Game.time = 1001;
-    replaceCarrierTasksForProducerRoom(
-      "resourceControl:preload",
-      "W1N1",
-      [{ ...classifiedDraft, priority: 101 }],
-    );
-    expect(getCarrierTasksByRoom("W1N1")[classifiedDraft.id]).toMatchObject({
-      dispatchClass: "capacity_relief",
-      priority: 101,
-      createdAt: 1000,
-      updatedAt: 1001,
-    });
-
-    Game.time = 1002;
-    replaceCarrierTasksForProducerRoom(
-      "resourceControl:preload",
-      "W1N1",
-      [makeDraft({ id: classifiedDraft.id, priority: 102 })],
-    );
-    const unclassifiedTask = getCarrierTasksByRoom("W1N1")[classifiedDraft.id];
-    expect(unclassifiedTask).not.toHaveProperty("dispatchClass");
-    expect(unclassifiedTask).toMatchObject({
-      priority: 102,
-      createdAt: 1000,
-      updatedAt: 1002,
-    });
+    replaceCarrierTasksForProducerRoom("other", "W1N1", [
+      makeDraft({ id: "live" }),
+    ]);
+    expect(() => getMutableCarrierTasksByRoomForTest("W1N1"))
+      .toThrow("Ambiguous Carrier localId live");
   });
 
-  it("atomically caps claims by both task and step across same-tick refresh", () => {
-    const draft = makeDraft({
-      id: "claimed-task",
-      steps: [
-        makeStep({ id: "storage-step", amount: 600 }),
-        makeStep({ id: "terminal-step", fromId: "term789", amount: 400 }),
-      ],
-    });
-    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
-    let task = getCarrierTasksByRoom("W1N1")[draft.id];
+  it("peeks without ensure and deeply isolates full refs, tasks, and steps", () => {
+    const propertiesBefore = globalPropertyNames();
+    expect(peekCarrierTaskBoard()).toEqual({});
+    expect(peekCarrierTasksByRoom("W9N9")).toEqual([]);
+    expect(globalPropertyNames()).toEqual(propertiesBefore);
+    expect(Object.prototype.hasOwnProperty.call(global, "__carrierTaskBoard"))
+      .toBe(false);
 
-    const first = claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "carrier-a",
-      800,
+    replaceCarrierTasksForProducerRoom("prodA", "W1N1", [
+      makeDraft({ id: "same", steps: [makeStep({ amount: 111 })] }),
+    ]);
+    replaceCarrierTasksForProducerRoom("prodB", "W1N1", [
+      makeDraft({ id: "same", steps: [makeStep({ amount: 222 })] }),
+    ]);
+    const boardBefore = carrierTaskRuntimeGlobal.__carrierTaskBoard;
+    const snapshot = peekCarrierTaskBoard();
+    const roomSnapshot = peekCarrierTasksByRoom("W1N1");
+
+    expect(snapshot.W1N1.map((entry) => entry.ref.namespace))
+      .toEqual(["prodA", "prodB"]);
+    expect(roomSnapshot).toEqual(snapshot.W1N1);
+    expect(snapshot.W1N1[0].task).not.toBe(
+      exactTask("prodA", "W1N1", "same"),
     );
+    expect(snapshot.W1N1[0].task.steps[0]).not.toBe(
+      exactTask("prodA", "W1N1", "same").steps[0],
+    );
+    const mutableSnapshot = snapshot as unknown as Record<string, Array<{
+      ref: { namespace: string; scope: { roomName: string } };
+      task: MutableCarrierTaskForTest;
+    }>>;
+    mutableSnapshot.W1N1[0].ref.namespace = "mutated";
+    mutableSnapshot.W1N1[0].ref.scope.roomName = "W9N9";
+    mutableSnapshot.W1N1[0].task.steps[0].amount = 1;
+    mutableSnapshot.W1N1.splice(1, 1);
+
+    expect(exactTask("prodA", "W1N1", "same").steps[0].amount).toBe(111);
+    expect(listCarrierDispatchEntriesByRoom("W1N1")).toHaveLength(2);
+    expect(carrierTaskRuntimeGlobal.__carrierTaskBoard).toBe(boardBefore);
+  });
+
+  it("fails closed for illegal outer rooms and never executes malformed record accessors", () => {
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [
+      makeDraft({ id: "valid" }),
+    ]);
+    const board = carrierTaskRuntimeGlobal.__carrierTaskBoard;
+    const room = board?.get("W1N1");
+    if (!board || !room) throw new Error("missing raw board fixture");
+    const owner = room.byOwner.get("producer");
+    if (!owner) throw new Error("missing raw owner fixture");
+
+    let getterReads = 0;
+    const accessorRecord = { publishOrder: 1000 } as RawCarrierRecord;
+    Object.defineProperty(accessorRecord, "task", {
+      enumerable: true,
+      configurable: true,
+      get(): never {
+        getterReads += 1;
+        throw new Error("read selector must not execute accessors");
+      },
+    });
+    owner.set("accessor", accessorRecord);
+    board.set("__proto__", room);
+    board.set("constructor", room);
+    board.set("toString", room);
+
+    const snapshot = peekCarrierTaskBoard();
+    expect(getterReads).toBe(0);
+    expect(Object.keys(snapshot)).toEqual(["W1N1"]);
+    expect(snapshot.W1N1.find((entry) => entry.ref.localId === "valid")?.task)
+      .toEqual(exactTask("producer", "W1N1", "valid"));
+    expect(snapshot.W1N1.find((entry) => entry.ref.localId === "accessor")?.task)
+      .toBeUndefined();
+  });
+
+  it("isolates Proxy(Map), throwing iterable, and hostile Map properties without blocking valid owners", () => {
+    replaceCarrierTasksForProducerRoom("valid-a", "W1N1", [
+      makeDraft({ id: "task-a", priority: 20 }),
+    ]);
+    replaceCarrierTasksForProducerRoom("valid-b", "W1N1", [
+      makeDraft({ id: "task-b", priority: 10 }),
+    ]);
+    const board = carrierTaskRuntimeGlobal.__carrierTaskBoard;
+    const room = board?.get("W1N1");
+    if (!board || !room) throw new Error("missing raw board fixture");
+
+    let getterReads = 0;
+    const proxyOwner = new Proxy(new Map<string, RawCarrierRecord>(), {});
+    const throwingIterable = Object.create(null) as Record<PropertyKey, unknown>;
+    Object.defineProperty(throwingIterable, Symbol.iterator, {
+      configurable: true,
+      get(): never {
+        getterReads += 1;
+        throw new Error("malformed owner iterator must not be read");
+      },
+    });
+    room.byOwner.set(
+      "proxy-owner",
+      proxyOwner as unknown as Map<string, RawCarrierRecord>,
+    );
+    room.byOwner.set(
+      "throwing-owner",
+      throwingIterable as unknown as Map<string, RawCarrierRecord>,
+    );
+
+    const validOwner = room.byOwner.get("valid-a");
+    if (!validOwner) throw new Error("missing valid owner fixture");
+    for (const key of ["get", "set", "delete", "values", "entries"] as const) {
+      Object.defineProperty(validOwner, key, {
+        configurable: true,
+        get(): never {
+          getterReads += 1;
+          throw new Error(`private Map ${key} getter must not be read`);
+        },
+      });
+    }
+    Object.defineProperty(validOwner, Symbol.iterator, {
+      configurable: true,
+      get(): never {
+        getterReads += 1;
+        throw new Error("private Map iterator getter must not be read");
+      },
+    });
+
+    expect(() => peekCarrierTaskBoard()).not.toThrow();
+    expect(peekCarrierTaskBoard().W1N1.map((entry) => entry.ref.namespace))
+      .toEqual(["valid-a", "valid-b"]);
+    expect(listCarrierDispatchEntriesByRoom("W1N1").map(
+      (entry) => entry.ref.namespace,
+    )).toEqual(["valid-a", "valid-b"]);
+    expect(findCarrierTaskByRef(taskRef("valid-a", "W1N1", "task-a")))
+      .toBeDefined();
+    expect(() => cleanupCarrierTaskBoard(new Set(["W1N1"]), 100))
+      .not.toThrow();
+    expect(getterReads).toBe(0);
+  });
+
+  it("fails closed on a proxied outer board without ensuring or invoking proxy getters", () => {
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [
+      makeDraft({ id: "task" }),
+    ]);
+    const sourceBoard = carrierTaskRuntimeGlobal.__carrierTaskBoard;
+    if (!sourceBoard) throw new Error("missing raw board fixture");
+    let getterReads = 0;
+    const proxiedBoard = new Proxy(sourceBoard, {
+      get(): never {
+        getterReads += 1;
+        throw new Error("proxied Map properties must not be read");
+      },
+    });
+    carrierTaskRuntimeGlobal.__carrierTaskBoard = proxiedBoard;
+
+    expect(peekCarrierTaskBoard()).toEqual({});
+    expect(peekCarrierTasksByRoom("W1N1")).toEqual([]);
+    expect(findCarrierTaskByRef(taskRef("producer", "W1N1", "task")))
+      .toBeUndefined();
+    expect(carrierTaskRuntimeGlobal.__carrierTaskBoard).toBe(proxiedBoard);
+    expect(getterReads).toBe(0);
+  });
+
+  it("preserves and clears optional dispatchClass through owner refresh", () => {
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [makeDraft({
+      id: "capacity",
+      dispatchClass: "capacity_relief",
+    })]);
+    expect(exactTask("producer", "W1N1", "capacity").dispatchClass)
+      .toBe("capacity_relief");
+
+    Game.time += 1;
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [makeDraft({
+      id: "capacity",
+      priority: 101,
+    })]);
+    expect(exactTask("producer", "W1N1", "capacity")).toEqual(
+      expect.not.objectContaining({ dispatchClass: expect.anything() }),
+    );
+  });
+});
+
+describe("carrierTaskBoard amount compatibility gateway", () => {
+  beforeEach(() => {
+    clearCarrierTaskBoardForTest();
+    Game.time = 2000;
+    Game.creeps = {};
+  });
+
+  it("isolates equal task and step ids by full producer ref", () => {
+    for (const producer of ["producer:a\u0000segment", "producer:a"] as const) {
+      replaceCarrierTasksForProducerRoom(producer, "W1N1", [makeDraft({
+        id: producer === "producer:a" ? "segment\u0000same" : "same",
+        steps: [makeStep({ id: "step:\u0000->", amount: 500 })],
+      })]);
+    }
+    const first = exactTask("producer:a\u0000segment", "W1N1", "same");
+    const second = exactTask("producer:a", "W1N1", "segment\u0000same");
+
+    expect(claimCarrierTaskStepAmount(first, first.steps[0], "carrier-a", 500)?.amount)
+      .toBe(500);
+    expect(claimCarrierTaskStepAmount(second, second.steps[0], "carrier-b", 500)?.amount)
+      .toBe(500);
+  });
+
+  it("keeps uncommitted and committed slices across exact refresh", () => {
+    const draft = makeDraft({
+      id: "refresh",
+      steps: [makeStep({ amount: 1_000 })],
+    });
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    let task = exactTask("producer", "W1N1", "refresh");
+    const first = claimCarrierTaskStepAmount(task, task.steps[0], "carrier-a", 600);
     expect(first?.amount).toBe(600);
-    first?.commit();
-    expect(claimCarrierTaskStepAmount(
+
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    task = exactTask("producer", "W1N1", "refresh");
+    const uncommittedRemainder = claimCarrierTaskStepAmount(
       task,
       task.steps[0],
       "carrier-b",
-      800,
-    )).toBeNull();
-
-    const second = claimCarrierTaskStepAmount(
-      task,
-      task.steps[1],
-      "carrier-c",
-      800,
+      1_000,
     );
-    expect(second?.amount).toBe(400);
-    second?.commit();
+    expect(uncommittedRemainder?.amount).toBe(400);
+    uncommittedRemainder?.release();
 
-    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
-    task = getCarrierTasksByRoom("W1N1")[draft.id];
+    first?.commit();
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    task = exactTask("producer", "W1N1", "refresh");
     expect(claimCarrierTaskStepAmount(
       task,
       task.steps[0],
-      "carrier-d",
-      800,
-    )).toBeNull();
+      "carrier-c",
+      1_000,
+    )?.amount).toBe(400);
+  });
+
+  it("releases only uncommitted slices on exact deletion and retains committed slices", () => {
+    const draft = makeDraft({
+      id: "cleanup",
+      steps: [makeStep({ id: "a", amount: 600 }), makeStep({ id: "b", amount: 400 })],
+    });
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    let task = exactTask("producer", "W1N1", "cleanup");
+    const uncommitted = claimCarrierTaskStepAmount(task, task.steps[0], "carrier-a", 600);
+    const committed = claimCarrierTaskStepAmount(task, task.steps[1], "carrier-b", 400);
+    committed?.commit();
+
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", []);
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    task = exactTask("producer", "W1N1", "cleanup");
+    expect(claimCarrierTaskStepAmount(task, task.steps[0], "carrier-c", 600)?.amount)
+      .toBe(600);
+    expect(claimCarrierTaskStepAmount(task, task.steps[1], "carrier-d", 400))
+      .toBeNull();
+    uncommitted?.commit();
+    uncommitted?.release();
+  });
+
+  it("releases failed and thrown work, commits accepted work, and ignores stale handles", () => {
+    const draft = makeDraft({ id: "outcome", steps: [makeStep({ amount: 1_000 })] });
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    const task = exactTask("producer", "W1N1", "outcome");
+    const failed = claimCarrierTaskStepAmount(task, task.steps[0], "carrier", 1_000);
+    failed?.release();
+    const current = claimCarrierTaskStepAmount(task, task.steps[0], "carrier", 700);
+    failed?.commit();
+    failed?.release();
+    current?.commit();
+    current?.release();
+    expect(claimCarrierTaskStepAmount(task, task.steps[0], "other", 1_000)?.amount)
+      .toBe(300);
+  });
+
+  it("caps both whole-task and per-step budgets", () => {
+    const draft = makeDraft({
+      id: "caps",
+      steps: [
+        makeStep({ id: "storage", amount: 600 }),
+        makeStep({ id: "terminal", fromId: "term789", amount: 400 }),
+      ],
+    });
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    const task = exactTask("producer", "W1N1", "caps");
+    const first = claimCarrierTaskStepAmount(task, task.steps[0], "a", 800);
+    expect(first?.amount).toBe(600);
+    expect(claimCarrierTaskStepAmount(task, task.steps[0], "b", 800))
+      .toBeNull();
+    expect(claimCarrierTaskStepAmount(task, task.steps[1], "c", 800)?.amount)
+      .toBe(400);
+  });
+
+  it("reclaims dead live claimants and resets on tick, Game identity, and global reset", () => {
+    const draft = makeDraft({ id: "runtime", steps: [makeStep({ amount: 1_000 })] });
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    let task = exactTask("producer", "W1N1", "runtime");
+    Game.creeps.live = { name: "live" } as Creep;
+    const dead = claimCarrierTaskStepAmount(task, task.steps[0], "live", 1_000);
+    dead?.commit();
+    delete Game.creeps.live;
+    expect(claimCarrierTaskStepAmount(task, task.steps[0], "replacement", 1_000)?.amount)
+      .toBe(1_000);
 
     Game.time += 1;
-    expect(claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "carrier-d",
-      800,
-    )?.amount).toBe(600);
-  });
+    expect(claimCarrierTaskStepAmount(task, task.steps[0], "next-tick", 1_000)?.amount)
+      .toBe(1_000);
+    const originalGame = Game;
+    try {
+      (global as typeof global & { Game: Game }).Game = {
+        ...originalGame,
+        time: originalGame.time,
+        creeps: {},
+      } as Game;
+      expect(claimCarrierTaskStepAmount(task, task.steps[0], "next-game", 1_000)?.amount)
+        .toBe(1_000);
+    } finally {
+      (global as typeof global & { Game: Game }).Game = originalGame;
+    }
 
-  it("releases active claims on failure and task cleanup", () => {
-    const draft = makeDraft({ id: "released-task", steps: [makeStep({ amount: 1_000 })] });
-    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
-    let task = getCarrierTasksByRoom("W1N1")[draft.id];
-
-    const failed = claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "failed-carrier",
-      1_000,
-    );
-    expect(failed?.amount).toBe(1_000);
-    failed?.release();
-    expect(claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "retry-carrier",
-      1_000,
-    )?.amount).toBe(1_000);
-
-    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", []);
-    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
-    task = getCarrierTasksByRoom("W1N1")[draft.id];
-    expect(claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "after-cleanup",
-      1_000,
-    )?.amount).toBe(1_000);
-  });
-
-  it("reclaims a committed slice when its live claimant disappears", () => {
-    const draft = makeDraft({ id: "dead-claimant-task", steps: [makeStep({ amount: 1_000 })] });
-    replaceCarrierTasksForProducerRoom("claim-test", "W1N1", [draft]);
-    const task = getCarrierTasksByRoom("W1N1")[draft.id];
-    Game.creeps["live-carrier"] = { name: "live-carrier" } as Creep;
-    const accepted = claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "live-carrier",
-      1_000,
-    );
-    accepted?.commit();
-    expect(claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "blocked-carrier",
-      1_000,
-    )).toBeNull();
-
-    delete Game.creeps["live-carrier"];
-    expect(claimCarrierTaskStepAmount(
-      task,
-      task.steps[0],
-      "replacement-carrier",
-      1_000,
-    )?.amount).toBe(1_000);
+    clearCarrierTaskBoardForTest();
+    replaceCarrierTasksForProducerRoom("producer", "W1N1", [draft]);
+    task = exactTask("producer", "W1N1", "runtime");
+    expect(claimCarrierTaskStepAmount(task, task.steps[0], "post-reset", 1_000)?.amount)
+      .toBe(1_000);
   });
 });
 
 describe("carrierTaskHelpers", () => {
-
-  it("createSingleStepDraft produces a draft accepted by the board", () => {
+  beforeEach(() => {
     clearCarrierTaskBoardForTest();
     Game.time = 1000;
+  });
+
+  it("createSingleStepDraft produces a draft accepted by the board", () => {
     const draft = createSingleStepDraft({
       taskId: "factoryControl:factory_supply:W1N1:battery",
       type: "factory_supply",
@@ -681,9 +716,12 @@ describe("carrierTaskHelpers", () => {
     });
     replaceCarrierTasksForProducerRoom("factoryControl", "W1N1", [draft]);
 
-    const tasks = getCarrierTasksByRoom("W1N1");
-    expect(tasks["factoryControl:factory_supply:W1N1:battery"]).toBeDefined();
-    expect(tasks["factoryControl:factory_supply:W1N1:battery"].steps[0].id).toBe(
+    const task = exactTask(
+      "factoryControl",
+      "W1N1",
+      "factoryControl:factory_supply:W1N1:battery",
+    );
+    expect(task.steps[0].id).toBe(
       "factoryControl:W1N1:battery:storage-1->factory-1",
     );
   });
@@ -699,12 +737,9 @@ describe("carrierTaskHelpers", () => {
       structureType: STRUCTURE_STORAGE,
       store: { getFreeCapacity: () => 5000 },
     } as unknown as StructureStorage;
-    const room = {
-      terminal,
-      storage,
-    } as Room;
+    const room = { terminal, storage } as Room;
 
-    const result = resolveTerminalStorageTarget(room, RESOURCE_ENERGY, "terminal");
-    expect(result).toBe(terminal);
+    expect(resolveTerminalStorageTarget(room, RESOURCE_ENERGY, "terminal"))
+      .toBe(terminal);
   });
 });

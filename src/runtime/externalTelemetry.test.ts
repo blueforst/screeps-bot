@@ -1,6 +1,11 @@
 import { clearCreepMovementStateForTest, clearMovementAnalyticsForTest, ensureCreepMovementState, getMovementAnalyticsForTest } from "@/movement";
 import { runExternalTelemetryExport } from "@/runtime/externalTelemetry";
 import { resetCpuMonitorStore } from "@/runtime/cpuMonitor";
+import {
+  clearWorkerTaskBoardForTest,
+  getWorkerTasksByRoom,
+} from "@/runtime/workerTaskPool";
+import type { WorkerTask } from "@/types/system";
 
 function makeV2Snapshot(overrides: Partial<{
   tick: number;
@@ -33,6 +38,7 @@ function makeV2Snapshot(overrides: Partial<{
 }
 
 function setupBasicEnv() {
+  clearWorkerTaskBoardForTest();
   Game.time = 5;
   Memory.cfg = {
     telemetry: {
@@ -69,6 +75,68 @@ function setupBasicEnv() {
     setActiveSegments: jest.fn(),
   } as unknown as typeof RawMemory;
 }
+
+function workerTask(id: string, type: WorkerTask["type"]): WorkerTask {
+  return {
+    id,
+    type,
+    targetId: `${id}:target`,
+    roomName: "W1N1",
+    priority: 300,
+    assignedCreeps: [],
+    maxAssignees: 1,
+    status: "active",
+    updatedAt: Game.time,
+  };
+}
+
+describe("runExternalTelemetryExport Worker task observation", () => {
+  beforeEach(() => {
+    setupBasicEnv();
+    resetCpuMonitorStore();
+    Memory.analytics = undefined;
+  });
+
+  afterEach(() => {
+    resetCpuMonitorStore();
+    clearWorkerTaskBoardForTest();
+  });
+
+  it("does not materialize the private Worker board while observing an empty room", () => {
+    const runtimeGlobal = global as typeof global & {
+      __workerTaskBoard?: unknown;
+    };
+    expect(runtimeGlobal.__workerTaskBoard).toBeUndefined();
+
+    runExternalTelemetryExport();
+
+    expect(runtimeGlobal.__workerTaskBoard).toBeUndefined();
+    expect(JSON.parse(RawMemory.segments[42]).rooms[0]).toMatchObject({
+      roomName: "W1N1",
+      taskQueueDepth: 0,
+      buildTasks: 0,
+      repairTasks: 0,
+      upgradeTasks: 0,
+    });
+  });
+
+  it("preserves Worker task counts when reading an existing room store", () => {
+    const tasks = getWorkerTasksByRoom("W1N1");
+    tasks.build = workerTask("build", "build");
+    tasks.repair = workerTask("repair", "repair");
+    tasks.upgrade = workerTask("upgrade", "upgrade");
+
+    runExternalTelemetryExport();
+
+    expect(JSON.parse(RawMemory.segments[42]).rooms[0]).toMatchObject({
+      roomName: "W1N1",
+      taskQueueDepth: 3,
+      buildTasks: 1,
+      repairTasks: 1,
+      upgradeTasks: 1,
+    });
+  });
+});
 
 describe("runExternalTelemetryExport cpu monitor v2", () => {
   beforeEach(() => {
