@@ -40,3 +40,11 @@
 - [x] 6.2 为旧活动任务和 legacy 配置实现受 owner 保护的兼容初始化/清理，不宽泛删除其他任务资产
 - [x] 6.3 运行 PowerBank 定向测试、`npx tsc --noEmit`、全量 Jest 与 `npm run build`
 - [x] 6.4 运行只读 live monitor，确认无孤儿 synthesis pause、配置碰撞或新增 CPU 异常，并复核工作树差异
+
+## 7. 替补交接与同房编队恢复
+
+- [x] 7.1 为已到达目标房的就绪替补增加 `remainingAttackTicks + 75` 主动交接，并在晋升前重新验证 owner、generation、相邻关系和有效部件
+- [x] 7.2 让 PowerBank healer 同房会合与 attacker 接近 Bank 使用占用感知的 fresh path，同时清理有意等待/攻击/治疗角色的旧移动状态
+- [x] 7.3 增加阈值边界、原子 generation 交接、无效替补、占路绕行和空闲移动状态回归测试
+- [x] 7.4 为 travelling 替补增加独立进展、blocker、冷却软重寻路与状态投影，并覆盖主力进展不掩盖替补停滞
+- [ ] 7.5 运行 PowerBank 定向测试、双 TypeScript 边界、OpenSpec strict、全量 Jest 与构建，并部署后只读验证现场任务继续推进

@@ -106,16 +106,18 @@ describe("moveToTarget baseline", () => {
     expect(getCreepMovementState(powerCreep.name)).toBeUndefined();
   });
 
-  it("marks hostile creep positions as high-cost when dynamic creep avoidance is requested", () => {
+  it("marks friendly and hostile creep positions as high-cost when dynamic avoidance is requested", () => {
     const creeps: Creep[] = [];
     const room = createRoom("W1N1", creeps);
     const creep = createCreep("war-attacker", "meleeAttacker", 10, 10, room);
+    const friendly = createCreep("friendly-blocker", "worker", 12, 10, room);
     const hostile = {
       name: "hostile-blocker",
       pos: new MockRoomPosition(11, 10, room.name),
     } as unknown as Creep;
-    creeps.push(creep);
+    creeps.push(creep, friendly);
     Game.creeps[creep.name] = creep;
+    Game.creeps[friendly.name] = friendly;
     room.find = jest.fn((findConstant: FindConstant) => {
       if (findConstant === FIND_MY_CREEPS) return creeps;
       if (findConstant === FIND_HOSTILE_CREEPS) return [hostile];
@@ -141,6 +143,7 @@ describe("moveToTarget baseline", () => {
     );
 
     expect(capturedMatrix?.get(11, 10)).toBe(0xfe);
+    expect(capturedMatrix?.get(12, 10)).toBe(0xfe);
   });
 
   it("triggers exit recovery when on an exit tile targeting an interior position in the same room", () => {

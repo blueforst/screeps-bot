@@ -44,6 +44,19 @@ describe("powerBankStatus", () => {
       combatReady: true,
       attackerId: "attacker-2",
       healerId: "healer-2",
+      reinforcement: {
+        index: 3,
+        generation: 3,
+        stage: "travelling",
+        attackerId: "attacker-3",
+        healerId: "healer-3",
+        attackerReady: true,
+        healerReady: false,
+        combatReady: true,
+        stageEnteredAt: 90,
+        lastProgressAt: 96,
+        blocker: "reinforcement_travel_no_progress",
+      },
       blocker: "active_pair_not_adjacent",
       plannedDps: 1920,
       plannedHps: 300,
@@ -63,6 +76,16 @@ describe("powerBankStatus", () => {
       lastProgressAge: 5,
       activeGeneration: 2,
       combatReady: true,
+      reinforcementGeneration: 3,
+      reinforcementStage: "travelling",
+      reinforcementCombatReady: true,
+      reinforcementAttackerReady: true,
+      reinforcementHealerReady: false,
+      reinforcementAttackerId: "attacker-3",
+      reinforcementHealerId: "healer-3",
+      reinforcementStageAge: 10,
+      reinforcementLastProgressAge: 4,
+      reinforcementBlocker: "reinforcement_travel_no_progress",
       blocker: "active_pair_not_adjacent",
       plannedDps: 1920,
       haulerSpawnIn: 30,
@@ -70,6 +93,24 @@ describe("powerBankStatus", () => {
       deliveredPower: 500,
     });
     expect(JSON.parse(powerBankStatusCommand()).ok).toBe(true);
+  });
+
+  it("returns explicit empty reinforcement fields when no replacement exists", () => {
+    const task = makeTask();
+    Memory.data!.powerBankHarvest![task.id] = task;
+
+    expect(powerBankStatusRaw().tasks[0]).toMatchObject({
+      reinforcementGeneration: null,
+      reinforcementStage: null,
+      reinforcementCombatReady: false,
+      reinforcementAttackerReady: false,
+      reinforcementHealerReady: false,
+      reinforcementAttackerId: null,
+      reinforcementHealerId: null,
+      reinforcementStageAge: null,
+      reinforcementLastProgressAge: null,
+      reinforcementBlocker: null,
+    });
   });
 
   it("deduplicates terminal history by task and keeps the latest result", () => {

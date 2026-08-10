@@ -60,12 +60,33 @@ PowerBank config 名加入稳定的 task token 与 generation。配置枚举、S
 
 提供只读 `powerBankStatusRaw()`，输出阶段年龄、截止余量、计划/实际 DPS、成员 readiness、Boost blocker、Spawn/Hauler 状态和回收结果。终态完成一次幂等清理后写入有界 history，再删除活动任务，避免连续 100 tick 重复清理。
 
+### 10. 就绪替补按剩余击破时间主动交接
+
+替补到达目标房、双员相邻且仍具备有效战斗部件后，不再等待主力死亡或 Bank hits watchdog 触发。Manager 比较主力双员最小 TTL 与 `remainingAttackTicks + 75`；进入该闭区间时复用既有 generation 晋升入口，一次性切换 active generation/index/成员 ID/Boost owner，随后只退役旧代配置、队列和 creep。
+
+交接不计入仍在生产或旅行中的替补，也不在阈值之外提前换代。晋升入口在任何清理前重新核对 task ID、generation、角色、目标房、相邻关系和有效 ATTACK/TOUGH/HEAL，避免损坏的 readiness 状态先杀死健康主力。
+
+### 11. PowerBank 同房会合使用占用感知的短路径
+
+攻击手继续作为跨房 leader：普通格上 healer 掉队时不反向追逐，避免双方相互追赶和路线振荡；但 leader 有意等待、贴 Bank 攻击或 healer 贴身治疗时必须清除旧移动状态，使交通层能把它识别为静止单位。Healer 在同房追赶 leader、以及 attacker 接近 Bank 时使用 `ignoreCreeps=false`、`reusePath=0` 的单房路径，每 tick基于当前占用重新选择可走格；若单格通道因此返回 `ERR_NO_PATH`，同 tick 改用 `ignoreCreeps=true` 的 fresh path 交给 traffic push 协议。直接出口/侧移在清状态后重新标记本 tick 的主动移动，防止后序 creep 覆盖其 move intent。
+
+该策略只用于 PowerBank 战斗组的短距离编队恢复。通用 `moveToTarget` 的默认缓存、跨房共享路线和其他角色的交通策略保持不变；独立的全局 stuck-repath 策略另立变更。
+
+### 12. 替补进展与主任务进展分栏
+
+替补保存自身的 stage/成员签名、当前位置签名、当前窗口中最近首次到达的最多 32 个不同双员位置签名、阶段进入 tick、最近进展 tick、blocker 和最近软重寻路 tick。Manager 每 tick 在角色执行前观察上一 tick 的位置：stage 或成员变化会重置进展窗口；只有到达窗口内未见过的新位置才刷新替补进展。A↔B 等短周期振荡因重复命中历史位置，不再伪装成进展。travelling 双员均存在、无 fatigue 且连续 15 tick 没有新位置时，记录 `reinforcement_travel_no_progress` 并清除双方旧移动状态，10 tick 冷却内不重复执行。
+
+该 watchdog 不更新任务级 `lastProgressAt/blocker`，也不自杀、删配置或自动重建 generation。主力 Bank hits 仍只代表主任务战斗进展；替补停滞通过状态投影独立呈现。更激进的自动回收需要单独证明活 creep 与 generation 的安全清理边界。
+
 ## Risks / Trade-offs
 
 - [更严格的准入会暂时减少出征数量] → 输出明确 reject reasons 与 slack，先保证不会消耗资源执行必败任务。
 - [旧任务字段不完整] → 使用兼容初始化；发现配置归属或时间线不明确时安全中止并清理。
 - [配置名变化可能留下旧配置] → 增加一次受前缀和 owner 双重保护的迁移清理，不做宽泛删除。
 - [战斗锁步可能增加旅行时间] → 计划器把锁步旅行预算计入 ETA，并允许缓存共享路线降低 CPU。
+- [占用感知同房路径会增加局部寻路 CPU] → 仅在双员不相邻或 attacker 未贴 Bank 时启用，并限制 `maxRooms=1`；相邻/攻击/治疗等待路径主动清理状态。
+- [位置历史会把短距离回撤视为停滞] → 仅在连续 15 tick 都未进入新位置时执行无破坏性的软重寻路，历史固定为 32 项且不删除 creep/config。
+- [过早换代会浪费健康主力寿命] → 只在替补已完整到位且主力最小 TTL 进入 `remainingAttackTicks + 75` 闭区间时交接，阈值高一 tick 明确保持原代。
 - [跨房供给仍受 legacy transfer 健康语义限制] → 本变更只消费可信 incoming；统一 lease/claim 由既有物流变更继续完成。
 
 ## Migration Plan

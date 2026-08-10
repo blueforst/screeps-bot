@@ -1,4 +1,5 @@
 jest.mock("@/roles/shared", () => ({
+  clearMovementState: jest.fn(),
   moveToTarget: jest.fn(() => OK),
   moveToTargetRoom: jest.fn(() => OK),
 }));
@@ -9,9 +10,11 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
 }));
 
 import { powerBankHealerRole } from "@/roles/powerBankHealer";
+import { clearCreepMovementStateForTest, getCreepMovementState } from "@/movement/creepState";
 import { createMockPowerBankCreep, type MockCreepConfig } from "@mock/powerBank";
 
-const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
+const { clearMovementState, moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
+  clearMovementState: jest.Mock;
   moveToTarget: jest.Mock;
   moveToTargetRoom: jest.Mock;
 };
@@ -109,6 +112,7 @@ function setupPair(
 describe("powerBankHealerRole", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    clearCreepMovementStateForTest();
     Game.time = 1000;
     (Memory as any).data = {};
     (Memory as any).runtime = {};
@@ -149,9 +153,61 @@ describe("powerBankHealerRole", () => {
       healer,
       attacker,
       1,
-      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+      expect.objectContaining({ plainCost: 2, swampCost: 8, ignoreCreeps: false, reusePath: 0 }),
     );
     expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("requests occupied-aware pathing while regrouping with its same-room leader", () => {
+    setupTask({ status: "travelling" });
+    const { attacker, healer } = setupPair(
+      { roomName: "W1N1", x: 13, y: 10 },
+      { roomName: "W1N1", x: 10, y: 10 },
+    );
+    const blocker = createMockPowerBankCreep("worker", {
+      id: "friendly-blocker",
+      name: "friendly-blocker",
+      roomName: "W1N1",
+      x: 11,
+      y: 10,
+    });
+    Game.creeps[blocker.name] = blocker;
+
+    powerBankHealerRole(TARGET_ROOM).source?.(healer);
+
+    expect(moveToTarget).toHaveBeenCalledWith(
+      healer,
+      attacker,
+      1,
+      expect.objectContaining({ ignoreCreeps: false, reusePath: 0 }),
+    );
+    expect(moveToTargetRoom).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the traffic path when a single-width route has no unoccupied path", () => {
+    setupTask({ status: "travelling" });
+    const { attacker, healer } = setupPair(
+      { roomName: "W1N1", x: 13, y: 10 },
+      { roomName: "W1N1", x: 10, y: 10 },
+    );
+    moveToTarget.mockReturnValueOnce(ERR_NO_PATH).mockReturnValueOnce(OK);
+
+    powerBankHealerRole(TARGET_ROOM).source?.(healer);
+
+    expect(moveToTarget).toHaveBeenNthCalledWith(
+      1,
+      healer,
+      attacker,
+      1,
+      expect.objectContaining({ ignoreCreeps: false, reusePath: 0 }),
+    );
+    expect(moveToTarget).toHaveBeenNthCalledWith(
+      2,
+      healer,
+      attacker,
+      1,
+      expect.objectContaining({ ignoreCreeps: true, reusePath: 0 }),
+    );
   });
 
   it("uses the shared task route and dangers to catch a leader in the next room", () => {
@@ -207,6 +263,7 @@ describe("powerBankHealerRole", () => {
     expect(healer.heal).toHaveBeenCalledWith(attacker);
     expect(moveToTarget).not.toHaveBeenCalled();
     expect(moveToTargetRoom).not.toHaveBeenCalled();
+    expect(clearMovementState).toHaveBeenCalledWith(healer);
   });
 
   it("sidesteps when it blocks the leader's next shared-route exit", () => {
@@ -220,6 +277,7 @@ describe("powerBankHealerRole", () => {
     powerBankHealerRole(TARGET_ROOM).target(healer);
 
     expect(healer.move).toHaveBeenCalledWith(TOP);
+    expect(getCreepMovementState(healer)?.pathingRequestedAt).toBe(Game.time);
     expect(moveToTarget).not.toHaveBeenCalled();
     expect(moveToTargetRoom).not.toHaveBeenCalled();
   });
@@ -238,7 +296,7 @@ describe("powerBankHealerRole", () => {
       healer,
       attacker,
       1,
-      expect.objectContaining({ maxRooms: 1 }),
+      expect.objectContaining({ maxRooms: 1, ignoreCreeps: false, reusePath: 0 }),
     );
   });
 
@@ -278,8 +336,8 @@ describe("powerBankHealerRole", () => {
     expect(healer.rangedHeal).not.toHaveBeenCalledWith(attacker);
   });
 
-  it("source phase blocks all movement while the manager is renewing", () => {
-    setupTask({ status: "renewing" });
+  it.each(["renewing", "boosting"] as const)("source phase preserves manager movement while %s", (status) => {
+    setupTask({ status });
     const { healer } = setupPair({ roomName: "W1N1" }, { roomName: "W1N1", x: 49, y: 25 });
 
     const result = powerBankHealerRole(TARGET_ROOM).source?.(healer);
@@ -287,5 +345,6 @@ describe("powerBankHealerRole", () => {
     expect(result).toBe(false);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
     expect(moveToTarget).not.toHaveBeenCalled();
+    expect(clearMovementState).not.toHaveBeenCalled();
   });
 });

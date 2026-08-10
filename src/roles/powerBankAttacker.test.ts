@@ -1,4 +1,5 @@
 jest.mock("@/roles/shared", () => ({
+  clearMovementState: jest.fn(),
   moveToTarget: jest.fn(() => OK),
   moveToTargetRoom: jest.fn(() => OK),
 }));
@@ -9,6 +10,7 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
 }));
 
 import { powerBankAttackerRole } from "@/roles/powerBankAttacker";
+import { clearCreepMovementStateForTest, getCreepMovementState } from "@/movement/creepState";
 import {
   createMockPowerBankCreep,
   createMockPowerBank,
@@ -16,7 +18,8 @@ import {
   type MockCreepConfig,
 } from "@mock/powerBank";
 
-const { moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
+const { clearMovementState, moveToTarget, moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
+  clearMovementState: jest.Mock;
   moveToTarget: jest.Mock;
   moveToTargetRoom: jest.Mock;
 };
@@ -121,6 +124,7 @@ function setupBank() {
 describe("powerBankAttackerRole", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    clearCreepMovementStateForTest();
     Game.time = 1000;
     Game.creeps = {} as Record<string, Creep>;
     (Memory as any).data = {};
@@ -136,6 +140,7 @@ describe("powerBankAttackerRole", () => {
 
     expect(attacker.attack).toHaveBeenCalledTimes(1);
     expect(attacker.attack).toHaveBeenCalledWith(bank);
+    expect(clearMovementState).toHaveBeenCalledWith(attacker);
   });
 
   it("stops attacking while every TOUGH part is broken without changing task state", () => {
@@ -259,7 +264,7 @@ describe("powerBankAttackerRole", () => {
       attacker,
       expect.anything(),
       1,
-      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+      expect.objectContaining({ plainCost: 2, swampCost: 8, ignoreCreeps: false, reusePath: 0 }),
     );
   });
 
@@ -273,11 +278,12 @@ describe("powerBankAttackerRole", () => {
     powerBankAttackerRole(TARGET_ROOM).target(attacker);
 
     expect(attacker.move).toHaveBeenCalledWith(RIGHT);
+    expect(getCreepMovementState(attacker)?.pathingRequestedAt).toBe(Game.time);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
     expect(attacker.attack).not.toHaveBeenCalled();
   });
 
-  it("waits on an ordinary tile when the healer is not adjacent", () => {
+  it("waits for the same-room healer on an ordinary tile and clears stale movement state", () => {
     setupTask({ status: "travelling", attackerReady: true, healerReady: true });
     const { attacker } = setupPair(
       { roomName: "W1N1", x: 25, y: 25 },
@@ -287,7 +293,9 @@ describe("powerBankAttackerRole", () => {
     powerBankAttackerRole(TARGET_ROOM).target(attacker);
 
     expect(attacker.move).not.toHaveBeenCalled();
+    expect(moveToTarget).not.toHaveBeenCalled();
     expect(moveToTargetRoom).not.toHaveBeenCalled();
+    expect(clearMovementState).toHaveBeenCalledWith(attacker);
   });
 
   it("uses the task route and danger snapshot when the adjacent pair advances", () => {
@@ -325,8 +333,8 @@ describe("powerBankAttackerRole", () => {
     expect(attacker.attack).not.toHaveBeenCalled();
   });
 
-  it("source phase blocks movement while the manager is renewing", () => {
-    setupTask({ status: "renewing" });
+  it.each(["renewing", "boosting"] as const)("source phase preserves manager movement while %s", (status) => {
+    setupTask({ status });
     const { attacker } = setupPair({ roomName: "W1N1" }, { roomName: "W1N1" });
 
     const result = powerBankAttackerRole(TARGET_ROOM).source?.(attacker);
@@ -334,5 +342,31 @@ describe("powerBankAttackerRole", () => {
     expect(result).toBe(false);
     expect(moveToTargetRoom).not.toHaveBeenCalled();
     expect(moveToTarget).not.toHaveBeenCalled();
+    expect(clearMovementState).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the traffic path when occupied-aware Bank pathing has no route", () => {
+    setupTask();
+    setupBank();
+    const { attacker } = setupPair({ x: 10, y: 10 }, { x: 11, y: 10 });
+    (attacker.attack as jest.Mock).mockReturnValue(ERR_NOT_IN_RANGE);
+    moveToTarget.mockReturnValueOnce(ERR_NO_PATH).mockReturnValueOnce(OK);
+
+    powerBankAttackerRole(TARGET_ROOM).target(attacker);
+
+    expect(moveToTarget).toHaveBeenNthCalledWith(
+      1,
+      attacker,
+      expect.anything(),
+      1,
+      expect.objectContaining({ ignoreCreeps: false, reusePath: 0 }),
+    );
+    expect(moveToTarget).toHaveBeenNthCalledWith(
+      2,
+      attacker,
+      expect.anything(),
+      1,
+      expect.objectContaining({ ignoreCreeps: true, reusePath: 0 }),
+    );
   });
 });

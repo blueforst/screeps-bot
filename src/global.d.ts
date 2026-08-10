@@ -424,6 +424,20 @@ declare global {
     boostOwnerId?: string;
     boostLabs?: string[];
     lastMemberChangeAt?: number;
+    /** Tick when the current reinforcement stage was first observed. */
+    stageEnteredAt?: number;
+    /** Tick when stage/ownership changed or the pair reached a recently unseen position. */
+    lastProgressAt?: number;
+    /** Current compact position signature for the reinforcement pair. */
+    lastPairPosKey?: string;
+    /** Stage/member ownership signature for the current progress window. */
+    progressIdentityKey?: string;
+    /** Bounded recent position history used to detect short movement cycles. */
+    recentPairPosKeys?: string[];
+    /** Reinforcement-local blocker, independent from active Bank progress. */
+    blocker?: string;
+    /** Last tick when a stalled travelling pair had movement state cleared. */
+    lastRepathAt?: number;
   }
 
   interface PowerBankHarvestTask {
@@ -546,6 +560,15 @@ declare global {
     attackerId: string | null;
     healerId: string | null;
     reinforcementGeneration: number | null;
+    reinforcementStage: PowerBankReinforcementStage | null;
+    reinforcementCombatReady: boolean;
+    reinforcementAttackerReady: boolean;
+    reinforcementHealerReady: boolean;
+    reinforcementAttackerId: string | null;
+    reinforcementHealerId: string | null;
+    reinforcementStageAge: number | null;
+    reinforcementLastProgressAge: number | null;
+    reinforcementBlocker: string | null;
     plannedDps: number | null;
     plannedHps: number | null;
     plannedTtk: number | null;

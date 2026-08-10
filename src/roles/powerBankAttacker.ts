@@ -1,4 +1,4 @@
-import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { clearMovementState, moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import {
   getPowerBankAvoidRooms,
   getPowerBankEncodedRouteBetween,
@@ -9,6 +9,7 @@ import {
   type PowerBankPairContext,
 } from "@/roles/powerBankCombatPair";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { ensureCreepMovementState } from "@/movement/creepState";
 import type { RoleFactory } from "@/types/system";
 
 const TRAVEL_OPTIONS = { plainCost: 2, swampCost: 8 } as const;
@@ -52,8 +53,30 @@ function moveOffRoomExit(creep: Creep): boolean {
 
   if (!direction) return false;
   // Tactical directional move — not destination pathfinding.
-  measureCreepIntent(() => creep.move(direction));
+  clearMovementState(creep);
+  const code = measureCreepIntent(() => creep.move(direction));
+  if (code === OK || code === ERR_TIRED) {
+    ensureCreepMovementState(creep).pathingRequestedAt = Game.time;
+  }
   return true;
+}
+
+function moveToPowerBank(creep: Creep, bank: StructurePowerBank): void {
+  const dynamicCode = moveToTarget(creep, bank, 1, {
+    plainCost: 2,
+    swampCost: 8,
+    ignoreCreeps: false,
+    reusePath: 0,
+    maxRooms: 1,
+  });
+  if (dynamicCode !== ERR_NO_PATH) return;
+  moveToTarget(creep, bank, 1, {
+    plainCost: 2,
+    swampCost: 8,
+    ignoreCreeps: true,
+    reusePath: 0,
+    maxRooms: 1,
+  });
 }
 
 /** Leader movement is lockstep: it advances only while its healer is adjacent. */
@@ -70,10 +93,14 @@ function travelWithHealer(
     // After crossing, leave the edge so the follower can complete the same
     // transition. On ordinary tiles the leader simply waits.
     if (isExitTile(creep.pos)) moveOffRoomExit(creep);
+    else clearMovementState(creep);
     return;
   }
 
-  if (creep.room.name === targetRoom) return;
+  if (creep.room.name === targetRoom) {
+    clearMovementState(creep);
+    return;
+  }
   moveToTargetRoom(
     creep,
     targetRoom,
@@ -130,12 +157,20 @@ export const powerBankAttackerRole: RoleFactory = (targetRoomArg?: string, encod
     const bank = Game.getObjectById(task.bankId as Id<StructurePowerBank>);
     // The manager owns all task transitions. A missing bank is merely an
     // observation here; the role must not turn it into hauling or suicide.
-    if (!bank) return false;
-    if (!pairReadyForCombat(pair)) return false;
+    if (!bank) {
+      clearMovementState(creep);
+      return false;
+    }
+    if (!pairReadyForCombat(pair)) {
+      clearMovementState(creep);
+      return false;
+    }
 
     const code = measureCreepIntent(() => creep.attack(bank));
     if (code === ERR_NOT_IN_RANGE) {
-      moveToTarget(creep, bank, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+      moveToPowerBank(creep, bank);
+    } else {
+      clearMovementState(creep);
     }
 
     return false;

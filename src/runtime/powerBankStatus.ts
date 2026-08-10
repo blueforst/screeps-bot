@@ -55,6 +55,29 @@ function toTaskSnapshot(task: PowerBankHarvestTask): PowerBankStatusTaskSnapshot
     attackerId: task.attackerId ?? null,
     healerId: task.healerId ?? null,
     reinforcementGeneration: task.reinforcement?.generation ?? null,
+    reinforcementStage: task.reinforcement?.stage ?? null,
+    reinforcementCombatReady: task.reinforcement?.combatReady === true,
+    reinforcementAttackerReady: task.reinforcement?.attackerReady === true,
+    reinforcementHealerReady: task.reinforcement?.healerReady === true,
+    reinforcementAttackerId: task.reinforcement?.attackerId ?? null,
+    reinforcementHealerId: task.reinforcement?.healerId ?? null,
+    reinforcementStageAge: task.reinforcement
+      ? Math.max(0, Game.time - (
+        task.reinforcement.stageEnteredAt ??
+        task.reinforcement.lastMemberChangeAt ??
+        task.stageEnteredAt ??
+        task.discoveredTick
+      ))
+      : null,
+    reinforcementLastProgressAge: task.reinforcement
+      ? Math.max(0, Game.time - (
+        task.reinforcement.lastProgressAt ??
+        task.reinforcement.lastMemberChangeAt ??
+        task.lastProgressAt ??
+        task.discoveredTick
+      ))
+      : null,
+    reinforcementBlocker: task.reinforcement?.blocker ?? null,
     plannedDps: task.plannedDps ?? null,
     plannedHps: task.plannedHps ?? null,
     plannedTtk: task.plannedTtk ?? null,

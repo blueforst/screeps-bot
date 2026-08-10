@@ -1,11 +1,16 @@
 import { runPowerBankHarvest } from "@/runtime/powerBankHarvest";
-import { POWER_BANK_STATUS, getPowerBankConfigName } from "@/runtime/powerBankConstants";
+import { POWER_BANK_BODY_TIERS, POWER_BANK_STATUS, getPowerBankConfigName } from "@/runtime/powerBankConstants";
 import { getCreepConfigService, registerRuntimeServices } from "@/runtime/runtimeServices";
 import { clearDefenseModeCacheForTest } from "@/runtime/defenseMode";
 import { mountSpawn } from "@/mount/mountSpawn";
 import { isSynthesisPaused } from "@/runtime/synthesisControl";
 import { createMockStore, createMockPowerBankCreep, createMockPowerBank, createMockLab } from "@mock/powerBank";
 import { MockPos } from "@mock/powerBank";
+import {
+  clearCreepMovementStateForTest,
+  ensureCreepMovementState,
+  getCreepMovementState,
+} from "@/movement/creepState";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -329,8 +334,79 @@ function mockObjects(...objects: Array<{ id: string }>): void {
   ) as unknown as typeof Game.getObjectById;
 }
 
+function setupReadyReinforcementHandoff(options: {
+  taskId: string;
+  activeAttackerTtl: number;
+  activeHealerTtl: number;
+  remainingAttackTicks?: number;
+}): {
+  active: { attacker: Creep; healer: Creep };
+  reinforcement: { attacker: Creep; healer: Creep };
+  bank: StructurePowerBank;
+} {
+  const remainingAttackTicks = options.remainingAttackTicks ?? 100;
+  const active = setupOwnedCombatPair({
+    taskId: options.taskId,
+    ticksToLive: options.activeAttackerTtl,
+  });
+  (active.attacker as Creep & { ticksToLive: number }).ticksToLive = options.activeAttackerTtl;
+  (active.healer as Creep & { ticksToLive: number }).ticksToLive = options.activeHealerTtl;
+
+  const reinforcement = setupOwnedCombatPair({
+    taskId: options.taskId,
+    generation: 1,
+    index: 1,
+    ticksToLive: 1400,
+  });
+  const boostedDamage = POWER_BANK_BODY_TIERS[8].attacker
+    .filter((part) => part === ATTACK).length * ATTACK_POWER * 4;
+  const bank = createMockPowerBank({
+    id: `${options.taskId}-bank`,
+    hits: remainingAttackTicks * boostedDamage,
+    ticksToDecay: 5000,
+  });
+  mockObjects(
+    active.attacker as Creep & { id: string },
+    active.healer as Creep & { id: string },
+    reinforcement.attacker as Creep & { id: string },
+    reinforcement.healer as Creep & { id: string },
+    bank as StructurePowerBank & { id: string },
+  );
+  addTask(makeTask({
+    id: options.taskId,
+    status: POWER_BANK_STATUS.ATTACKING,
+    sourceRoom: SOURCE_ROOM,
+    bankId: bank.id,
+    attackerId: active.attacker.id as string,
+    healerId: active.healer.id as string,
+    activeGeneration: 0,
+    activeIndex: 0,
+    combatReady: true,
+    tier: 8,
+    routeDistance: 2,
+    bankExpiresAt: Game.time + 5000,
+    lastBankHits: bank.hits,
+    lastBankProgressAt: Game.time,
+    reinforcement: {
+      index: 1,
+      generation: 1,
+      stage: "attacking",
+      attackerId: reinforcement.attacker.id as string,
+      healerId: reinforcement.healer.id as string,
+      attackerReady: true,
+      healerReady: true,
+      combatReady: true,
+      boostOwnerId: `${options.taskId}:reinforcement:g1`,
+      boostLabs: [],
+    },
+  }));
+
+  return { active, reinforcement, bank };
+}
+
 describe("powerBankHarvest", () => {
   beforeEach(() => {
+    clearCreepMovementStateForTest();
     resetRuntimeServices();
     registerRuntimeServices();
     Game.time = 100;
@@ -902,6 +978,570 @@ describe("powerBankHarvest", () => {
   });
 
   describe("generation and owner isolation contracts", () => {
+    it("promotes a target-ready reinforcement when active minimum TTL reaches remaining attack ticks plus 75", () => {
+      setupSourceRoom();
+      const remainingAttackTicks = 100;
+      const handoffThreshold = remainingAttackTicks + 75;
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-boundary",
+        activeAttackerTtl: handoffThreshold + 200,
+        activeHealerTtl: handoffThreshold,
+        remainingAttackTicks,
+      });
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-proactive-handoff-boundary")).toMatchObject({
+        activeGeneration: 1,
+        activeIndex: 1,
+        attackerId: reinforcement.attacker.id,
+        healerId: reinforcement.healer.id,
+        combatReady: true,
+      });
+      expect(getTask("pb-proactive-handoff-boundary")?.reinforcement).toBeUndefined();
+      expect(active.attacker.suicide).toHaveBeenCalledTimes(1);
+      expect(active.healer.suicide).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the active generation when minimum TTL is above remaining attack ticks plus 75", () => {
+      setupSourceRoom();
+      const remainingAttackTicks = 100;
+      const handoffThreshold = remainingAttackTicks + 75;
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-above-threshold",
+        activeAttackerTtl: handoffThreshold + 1,
+        activeHealerTtl: handoffThreshold + 200,
+        remainingAttackTicks,
+      });
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-proactive-handoff-above-threshold")).toMatchObject({
+        activeGeneration: 0,
+        activeIndex: 0,
+        attackerId: active.attacker.id,
+        healerId: active.healer.id,
+        combatReady: true,
+        reinforcement: {
+          generation: 1,
+          index: 1,
+          stage: "attacking",
+          attackerId: reinforcement.attacker.id,
+          healerId: reinforcement.healer.id,
+          combatReady: true,
+        },
+      });
+      expect(active.attacker.suicide).not.toHaveBeenCalled();
+      expect(active.healer.suicide).not.toHaveBeenCalled();
+      expect(reinforcement.attacker.suicide).not.toHaveBeenCalled();
+      expect(reinforcement.healer.suicide).not.toHaveBeenCalled();
+    });
+
+    it("does not retire the active generation when the replacement pair is not adjacent", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-not-adjacent",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(30, 30, TARGET_ROOM) as unknown as RoomPosition;
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-proactive-handoff-not-adjacent")).toMatchObject({
+        activeGeneration: 0,
+        attackerId: active.attacker.id,
+        healerId: active.healer.id,
+        reinforcement: { generation: 1, stage: "attacking" },
+      });
+      expect(active.attacker.suicide).not.toHaveBeenCalled();
+      expect(active.healer.suicide).not.toHaveBeenCalled();
+    });
+
+    it("does not retire the active generation when an attacking replacement is outside the target room", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-still-travelling",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-proactive-handoff-still-travelling")!;
+      for (const creep of [reinforcement.attacker, reinforcement.healer]) {
+        (creep.room as unknown as { name: string }).name = "E1N60";
+      }
+      (reinforcement.attacker as unknown as { pos: RoomPosition }).pos =
+        new MockPos(24, 24, "E1N60") as unknown as RoomPosition;
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(25, 24, "E1N60") as unknown as RoomPosition;
+
+      runPowerBankHarvest();
+
+      expect(task).toMatchObject({
+        activeGeneration: 0,
+        attackerId: active.attacker.id,
+        healerId: active.healer.id,
+        reinforcement: { generation: 1, stage: "attacking" },
+      });
+      expect(active.attacker.suicide).not.toHaveBeenCalled();
+      expect(active.healer.suicide).not.toHaveBeenCalled();
+    });
+
+    it("does not retire the active generation when a replacement role is corrupted", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-role-mismatch",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      reinforcement.attacker.memory.role = "worker";
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-proactive-handoff-role-mismatch")).toMatchObject({
+        activeGeneration: 0,
+        attackerId: active.attacker.id,
+        healerId: active.healer.id,
+      });
+      expect(active.attacker.suicide).not.toHaveBeenCalled();
+      expect(active.healer.suicide).not.toHaveBeenCalled();
+    });
+
+    it("does not retire the active generation when replacement ownership no longer matches", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-owner-mismatch",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      (reinforcement.attacker.memory as PowerBankTestMemory).taskId = "another-task";
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-proactive-handoff-owner-mismatch")).toMatchObject({
+        activeGeneration: 0,
+        attackerId: active.attacker.id,
+        healerId: active.healer.id,
+      });
+      expect(active.attacker.suicide).not.toHaveBeenCalled();
+      expect(active.healer.suicide).not.toHaveBeenCalled();
+    });
+
+    it("revalidates replacement ownership immediately before destructive promotion", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-owner-changed-after-resolution",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-proactive-handoff-owner-changed-after-resolution")!;
+      const getObjectById = Game.getObjectById;
+      Game.getObjectById = jest.fn((id: string) => {
+        const object = getObjectById(id as Id<Creep | StructurePowerBank>);
+        if (id === active.healer.id) {
+          (reinforcement.attacker.memory as PowerBankTestMemory).taskId = "changed-after-resolution";
+        }
+        return object;
+      }) as unknown as typeof Game.getObjectById;
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-proactive-handoff-owner-changed-after-resolution")).toMatchObject({
+        activeGeneration: 0,
+        attackerId: active.attacker.id,
+        healerId: active.healer.id,
+        reinforcement: { generation: 1 },
+      });
+      expect(active.attacker.suicide).not.toHaveBeenCalled();
+      expect(active.healer.suicide).not.toHaveBeenCalled();
+    });
+
+    it("does not retire the active generation for a stale reinforcement generation", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-stale-generation",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-proactive-handoff-stale-generation")!;
+      task.reinforcement!.generation = 0;
+      for (const [role, creep] of [
+        ["attacker", reinforcement.attacker],
+        ["healer", reinforcement.healer],
+      ] as const) {
+        creep.memory.configName = getPowerBankConfigName(
+          SOURCE_ROOM,
+          TARGET_ROOM,
+          role,
+          1,
+          task.id,
+          0,
+        );
+        (creep.memory as CreepMemory & { pairGeneration?: number }).pairGeneration = 0;
+      }
+
+      runPowerBankHarvest();
+
+      expect(task).toMatchObject({
+        activeGeneration: 0,
+        attackerId: active.attacker.id,
+        healerId: active.healer.id,
+        reinforcement: { generation: 0, stage: "attacking" },
+      });
+      expect(active.attacker.suicide).not.toHaveBeenCalled();
+      expect(active.healer.suicide).not.toHaveBeenCalled();
+    });
+
+    it("backfills owner and generation on a legacy replacement before promotion", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-legacy-replacement",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      reinforcement.attacker.memory.configName = getPowerBankConfigName(
+        SOURCE_ROOM,
+        TARGET_ROOM,
+        "attacker",
+        1,
+      );
+      reinforcement.healer.memory.configName = getPowerBankConfigName(
+        SOURCE_ROOM,
+        TARGET_ROOM,
+        "healer",
+        1,
+      );
+      delete (reinforcement.attacker.memory as PowerBankTestMemory).taskId;
+      delete (reinforcement.healer.memory as PowerBankTestMemory).taskId;
+      delete (reinforcement.attacker.memory as CreepMemory & { pairGeneration?: number }).pairGeneration;
+      delete (reinforcement.healer.memory as CreepMemory & { pairGeneration?: number }).pairGeneration;
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-proactive-handoff-legacy-replacement")).toMatchObject({
+        activeGeneration: 1,
+        activeIndex: 1,
+        attackerId: reinforcement.attacker.id,
+        healerId: reinforcement.healer.id,
+      });
+      expect((reinforcement.attacker.memory as PowerBankTestMemory).taskId)
+        .toBe("pb-proactive-handoff-legacy-replacement");
+      expect((reinforcement.healer.memory as PowerBankTestMemory).taskId)
+        .toBe("pb-proactive-handoff-legacy-replacement");
+      expect((reinforcement.attacker.memory as CreepMemory & { pairGeneration?: number }).pairGeneration).toBe(1);
+      expect((reinforcement.healer.memory as CreepMemory & { pairGeneration?: number }).pairGeneration).toBe(1);
+      expect(active.attacker.suicide).toHaveBeenCalledTimes(1);
+      expect(active.healer.suicide).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retire the active generation when the replacement lost required combat parts", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-broken-replacement",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      const attackPart = reinforcement.attacker.body.find((part) => part.type === ATTACK)!;
+      attackPart.hits = 0;
+
+      runPowerBankHarvest();
+
+      expect(getTask("pb-proactive-handoff-broken-replacement")).toMatchObject({
+        activeGeneration: 0,
+        attackerId: active.attacker.id,
+        healerId: active.healer.id,
+      });
+      expect(active.attacker.suicide).not.toHaveBeenCalled();
+      expect(active.healer.suicide).not.toHaveBeenCalled();
+    });
+
+    it("tracks travelling reinforcement progress independently and soft-repaths after 15 idle ticks", () => {
+      setupSourceRoom();
+      const { reinforcement, bank } = setupReadyReinforcementHandoff({
+        taskId: "pb-reinforcement-progress-watchdog",
+        activeAttackerTtl: 500,
+        activeHealerTtl: 500,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-reinforcement-progress-watchdog")!;
+      task.reinforcement!.stage = "travelling";
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(30, 30, TARGET_ROOM) as unknown as RoomPosition;
+
+      runPowerBankHarvest();
+      const initialProgressAt = task.reinforcement!.lastProgressAt;
+      expect(initialProgressAt).toBe(Game.time);
+
+      (reinforcement.attacker.memory as CreepMemory & { _move?: unknown })._move = {};
+      (reinforcement.healer.memory as CreepMemory & { _move?: unknown })._move = {};
+      ensureCreepMovementState(reinforcement.attacker).pathingRequestedAt = Game.time;
+      ensureCreepMovementState(reinforcement.healer).pathingRequestedAt = Game.time;
+      Game.time += 15;
+      bank.hits -= 1920;
+      runPowerBankHarvest();
+
+      expect(task.lastBankProgressAt).toBe(Game.time);
+      expect(task.reinforcement).toMatchObject({
+        stage: "travelling",
+        lastProgressAt: initialProgressAt,
+        blocker: "reinforcement_travel_no_progress",
+        lastRepathAt: Game.time,
+      });
+      expect((reinforcement.attacker.memory as CreepMemory & { _move?: unknown })._move).toBeUndefined();
+      expect((reinforcement.healer.memory as CreepMemory & { _move?: unknown })._move).toBeUndefined();
+      expect(getCreepMovementState(reinforcement.attacker)).toBeUndefined();
+      expect(getCreepMovementState(reinforcement.healer)).toBeUndefined();
+
+      (reinforcement.attacker.memory as CreepMemory & { _move?: unknown })._move = {};
+      (reinforcement.healer.memory as CreepMemory & { _move?: unknown })._move = {};
+      ensureCreepMovementState(reinforcement.attacker).pathingRequestedAt = Game.time;
+      ensureCreepMovementState(reinforcement.healer).pathingRequestedAt = Game.time;
+      Game.time += 5;
+      runPowerBankHarvest();
+
+      expect((reinforcement.attacker.memory as CreepMemory & { _move?: unknown })._move).toEqual({});
+      expect((reinforcement.healer.memory as CreepMemory & { _move?: unknown })._move).toEqual({});
+      expect(getCreepMovementState(reinforcement.attacker)).toBeDefined();
+      expect(getCreepMovementState(reinforcement.healer)).toBeDefined();
+    });
+
+    it("clears the reinforcement blocker when the pair reaches a new position", () => {
+      setupSourceRoom();
+      const { reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-reinforcement-position-progress",
+        activeAttackerTtl: 500,
+        activeHealerTtl: 500,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-reinforcement-position-progress")!;
+      task.reinforcement!.stage = "travelling";
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(30, 30, TARGET_ROOM) as unknown as RoomPosition;
+      runPowerBankHarvest();
+
+      task.reinforcement!.blocker = "reinforcement_travel_no_progress";
+      Game.time += 1;
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(29, 30, TARGET_ROOM) as unknown as RoomPosition;
+      runPowerBankHarvest();
+
+      expect(task.reinforcement?.lastProgressAt).toBe(Game.time);
+      expect(task.reinforcement?.blocker).toBeUndefined();
+    });
+
+    it("does not treat repeated two-position oscillation as reinforcement progress", () => {
+      setupSourceRoom();
+      const { reinforcement, bank } = setupReadyReinforcementHandoff({
+        taskId: "pb-reinforcement-position-cycle",
+        activeAttackerTtl: 500,
+        activeHealerTtl: 500,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-reinforcement-position-cycle")!;
+      task.reinforcement!.stage = "travelling";
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(30, 30, TARGET_ROOM) as unknown as RoomPosition;
+      runPowerBankHarvest();
+
+      Game.time += 1;
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(29, 30, TARGET_ROOM) as unknown as RoomPosition;
+      runPowerBankHarvest();
+      const lastNovelProgressAt = task.reinforcement!.lastProgressAt;
+
+      for (let elapsed = 1; elapsed <= 15; elapsed += 1) {
+        Game.time += 1;
+        bank.hits -= 1;
+        (reinforcement.healer as unknown as { pos: RoomPosition }).pos = new MockPos(
+          elapsed % 2 === 0 ? 29 : 30,
+          30,
+          TARGET_ROOM,
+        ) as unknown as RoomPosition;
+        runPowerBankHarvest();
+      }
+
+      expect(task.lastBankProgressAt).toBe(Game.time);
+      expect(task.reinforcement).toMatchObject({
+        lastProgressAt: lastNovelProgressAt,
+        blocker: "reinforcement_travel_no_progress",
+        lastRepathAt: Game.time,
+      });
+      expect(task.reinforcement?.recentPairPosKeys).toHaveLength(2);
+    });
+
+    it("normalizes malformed or oversized persisted reinforcement position history", () => {
+      setupSourceRoom();
+      const { reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-reinforcement-position-history-normalization",
+        activeAttackerTtl: 500,
+        activeHealerTtl: 500,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-reinforcement-position-history-normalization")!;
+      task.reinforcement!.stage = "travelling";
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(30, 30, TARGET_ROOM) as unknown as RoomPosition;
+      runPowerBankHarvest();
+      const lastProgressAt = task.reinforcement!.lastProgressAt;
+      const currentPairPosKey = task.reinforcement!.lastPairPosKey!;
+      task.reinforcement!.recentPairPosKeys = [
+        42 as unknown as string,
+        ...Array.from({ length: 40 }, (_, index) => `old-${index}`),
+        currentPairPosKey,
+      ];
+
+      Game.time += 1;
+      runPowerBankHarvest();
+
+      expect(task.reinforcement?.recentPairPosKeys).toHaveLength(32);
+      expect(task.reinforcement?.recentPairPosKeys).toContain(currentPairPosKey);
+      expect(task.reinforcement?.recentPairPosKeys).not.toContain(42);
+      expect(task.reinforcement?.lastProgressAt).toBe(lastProgressAt);
+    });
+
+    it("does not flag or repath a fatigued travelling reinforcement", () => {
+      setupSourceRoom();
+      const { reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-reinforcement-fatigue",
+        activeAttackerTtl: 500,
+        activeHealerTtl: 500,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-reinforcement-fatigue")!;
+      task.reinforcement!.stage = "travelling";
+      (reinforcement.healer as unknown as { pos: RoomPosition }).pos =
+        new MockPos(30, 30, TARGET_ROOM) as unknown as RoomPosition;
+      runPowerBankHarvest();
+
+      Game.time += 15;
+      (reinforcement.attacker as Creep & { fatigue: number }).fatigue = 1;
+      (reinforcement.attacker.memory as CreepMemory & { _move?: unknown })._move = {};
+      runPowerBankHarvest();
+
+      expect(task.reinforcement?.blocker).toBeUndefined();
+      expect((reinforcement.attacker.memory as CreepMemory & { _move?: unknown })._move).toEqual({});
+    });
+
+    it("resets reinforcement progress identity in the same tick it enters travelling", () => {
+      setupSourceRoom();
+      const { reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-reinforcement-stage-progress",
+        activeAttackerTtl: 500,
+        activeHealerTtl: 500,
+        remainingAttackTicks: 100,
+      });
+      const task = getTask("pb-reinforcement-stage-progress")!;
+      task.reinforcement!.stage = "renewing";
+      task.reinforcement!.stageEnteredAt = Game.time - 20;
+      task.reinforcement!.lastProgressAt = Game.time - 20;
+      task.reinforcement!.progressIdentityKey = "renewing|old-attacker|old-healer";
+      for (const part of reinforcement.attacker.body) {
+        if (part.type === TOUGH) part.boost = RESOURCE_CATALYZED_GHODIUM_ALKALIDE;
+        if (part.type === ATTACK) part.boost = RESOURCE_CATALYZED_UTRIUM_ACID;
+      }
+
+      runPowerBankHarvest();
+
+      expect(task.reinforcement).toMatchObject({
+        stage: "travelling",
+        stageEnteredAt: Game.time,
+        lastProgressAt: Game.time,
+        progressIdentityKey: [
+          "travelling",
+          reinforcement.attacker.id,
+          reinforcement.healer.id,
+        ].join("|"),
+      });
+    });
+
+    it("atomically transfers active ownership and retires only the old generation on proactive TTL handoff", () => {
+      setupSourceRoom();
+      const { active, reinforcement } = setupReadyReinforcementHandoff({
+        taskId: "pb-proactive-handoff-ownership",
+        activeAttackerTtl: 175,
+        activeHealerTtl: 400,
+        remainingAttackTicks: 100,
+      });
+      const oldAttackerConfig = active.attacker.memory.configName!;
+      const oldHealerConfig = active.healer.memory.configName!;
+      const newAttackerConfig = reinforcement.attacker.memory.configName!;
+      const newHealerConfig = reinforcement.healer.memory.configName!;
+      const configStore = Memory.data!.creepConfigs ??= {};
+      configStore[oldAttackerConfig] = {
+        role: "powerBankAttacker",
+        args: [TARGET_ROOM, ""],
+        roomName: SOURCE_ROOM,
+        taskId: "pb-proactive-handoff-ownership",
+        powerBankGeneration: 0,
+      };
+      configStore[oldHealerConfig] = {
+        role: "powerBankHealer",
+        args: [TARGET_ROOM, ""],
+        roomName: SOURCE_ROOM,
+        taskId: "pb-proactive-handoff-ownership",
+        powerBankGeneration: 0,
+      };
+      configStore[newAttackerConfig] = {
+        role: "powerBankAttacker",
+        args: [TARGET_ROOM, ""],
+        roomName: SOURCE_ROOM,
+        taskId: "pb-proactive-handoff-ownership",
+        powerBankGeneration: 1,
+      };
+      configStore[newHealerConfig] = {
+        role: "powerBankHealer",
+        args: [TARGET_ROOM, ""],
+        roomName: SOURCE_ROOM,
+        taskId: "pb-proactive-handoff-ownership",
+        powerBankGeneration: 1,
+      };
+      Game.spawns[`${SOURCE_ROOM}-spawn1`].memory.spawnList = [
+        oldAttackerConfig,
+        oldHealerConfig,
+        newAttackerConfig,
+        newHealerConfig,
+      ];
+
+      runPowerBankHarvest();
+
+      const task = getTask("pb-proactive-handoff-ownership");
+      expect(task).toMatchObject({
+        activeGeneration: 1,
+        activeIndex: 1,
+        attackerId: reinforcement.attacker.id,
+        healerId: reinforcement.healer.id,
+        combatReady: true,
+        primaryBoostOwnerId: "pb-proactive-handoff-ownership:reinforcement:g1",
+      });
+      expect(task?.reinforcement).toBeUndefined();
+      expect((active.attacker.memory as PowerBankTestMemory).taskId).toBeUndefined();
+      expect((active.healer.memory as PowerBankTestMemory).taskId).toBeUndefined();
+      expect(active.attacker.suicide).toHaveBeenCalledTimes(1);
+      expect(active.healer.suicide).toHaveBeenCalledTimes(1);
+      expect((reinforcement.attacker.memory as PowerBankTestMemory).taskId)
+        .toBe("pb-proactive-handoff-ownership");
+      expect((reinforcement.healer.memory as PowerBankTestMemory).taskId)
+        .toBe("pb-proactive-handoff-ownership");
+      expect(reinforcement.attacker.suicide).not.toHaveBeenCalled();
+      expect(reinforcement.healer.suicide).not.toHaveBeenCalled();
+      expect(getCreepConfigService().get(oldAttackerConfig)).toBeUndefined();
+      expect(getCreepConfigService().get(oldHealerConfig)).toBeUndefined();
+      expect(getCreepConfigService().get(newAttackerConfig)).toBeDefined();
+      expect(getCreepConfigService().get(newHealerConfig)).toBeDefined();
+      expect(Game.spawns[`${SOURCE_ROOM}-spawn1`].memory.spawnList).toEqual([
+        newAttackerConfig,
+        newHealerConfig,
+      ]);
+    });
+
     it("promotes a ready g1 when the still-live g0 loses combat parts and retires only g0 assets", () => {
       setupSourceRoom();
       const generationZero = setupOwnedCombatPair({ taskId: "pb-broken-g0" });

@@ -18,7 +18,7 @@ import { cleanupStaleDiscoveries, ensureDiscoveryStore } from "@/runtime/powerBa
 import { hasPowerBankObserverCoverage } from "@/runtime/powerBankObserver";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
-import { moveToTarget } from "@/roles/shared";
+import { clearMovementState, moveToTarget } from "@/roles/shared";
 import type { CreepConfig } from "@/types/system";
 import {
   ensureResourceTransferTaskStore,
@@ -43,6 +43,9 @@ const POWER_BANK_HAULER_ARRIVAL_BUFFER = 200;
 const HAULING_EMPTY_CONFIRM_TICKS = 100;
 const REINFORCEMENT_INDEX = 1;
 const REINFORCEMENT_TTL_BUFFER = 75;
+const REINFORCEMENT_TRAVEL_STALL_TICKS = 15;
+const REINFORCEMENT_REPATH_COOLDOWN = 10;
+const REINFORCEMENT_PROGRESS_HISTORY_LIMIT = 32;
 const BOOST_FINISHED_STATUSES = new Set<string>([
   POWER_BANK_STATUS.TRAVELLING,
   POWER_BANK_STATUS.ATTACKING,
@@ -179,13 +182,15 @@ function setReinforcementStage(creep: Creep | undefined, stage?: PowerBankReinfo
 
 function ensureCombatTaskIds(task: PowerBankHarvestTask, index: number, stage?: PowerBankReinforcementStage): void {
   for (const role of ["attacker", "healer"] as const) {
-    for (const creep of getTickContextService().getCreepsByConfigName(getCombatConfigName(task, role, index))) {
-      const mem = creep.memory as PowerBankReinforcementCreepMemory;
-      if (mem.taskId === undefined || mem.taskId === task.id) {
-        mem.taskId = task.id;
-        (mem as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration =
-          getCombatGeneration(task, index);
-        if (stage) mem.powerBankReinforcementStage = stage;
+    for (const configName of getCombatConfigNames(task, role, index)) {
+      for (const creep of getTickContextService().getCreepsByConfigName(configName)) {
+        const mem = creep.memory as PowerBankReinforcementCreepMemory;
+        if (mem.taskId === undefined || mem.taskId === task.id) {
+          mem.taskId = task.id;
+          (mem as PowerBankCreepMemory & { pairGeneration?: number }).pairGeneration =
+            getCombatGeneration(task, index);
+          if (stage) mem.powerBankReinforcementStage = stage;
+        }
       }
     }
   }
@@ -1232,6 +1237,26 @@ function isPairCombatCapable(pair: ActivePowerBankPair): boolean {
     pair.healer.getActiveBodyparts(HEAL) > 0;
 }
 
+function isReinforcementOwnedAndReady(
+  task: PowerBankHarvestTask,
+  reinforcement: PowerBankReinforcementState,
+  attacker: Creep,
+  healer: Creep,
+): boolean {
+  const generation = reinforcement.generation;
+  const attackerMemory = attacker.memory as PowerBankCreepMemory & { pairGeneration?: number };
+  const healerMemory = healer.memory as PowerBankCreepMemory & { pairGeneration?: number };
+  if (attacker.memory.role !== "powerBankAttacker" || healer.memory.role !== "powerBankHealer") return false;
+  if (attackerMemory.taskId !== task.id || healerMemory.taskId !== task.id) return false;
+  if (
+    generation !== undefined &&
+    (attackerMemory.pairGeneration !== generation || healerMemory.pairGeneration !== generation)
+  ) return false;
+  if (attacker.room.name !== task.targetRoom || healer.room.name !== task.targetRoom) return false;
+  if (!attacker.pos.isNearTo(healer)) return false;
+  return isPairCombatCapable({ attacker, healer });
+}
+
 function promoteReinforcement(task: PowerBankHarvestTask): ActivePowerBankPair | null {
   const reinforcement = task.reinforcement;
   if (
@@ -1248,8 +1273,14 @@ function promoteReinforcement(task: PowerBankHarvestTask): ActivePowerBankPair |
   if (!attacker || !healer) return null;
 
   const oldIndex = getActiveCombatIndex(task);
-  retireCombatGeneration(task, oldIndex);
+  if (oldIndex === reinforcement.index) return null;
+  const activeGeneration = task.activeGeneration ?? 0;
+  if (reinforcement.generation !== undefined && reinforcement.generation <= activeGeneration) return null;
+  const activeIds = new Set([task.attackerId, task.healerId].filter((id): id is string => !!id));
+  if (activeIds.has(attacker.id as string) || activeIds.has(healer.id as string)) return null;
+  if (!isReinforcementOwnedAndReady(task, reinforcement, attacker, healer)) return null;
 
+  retireCombatGeneration(task, oldIndex);
   task.activeGeneration = reinforcement.generation ?? (task.activeGeneration ?? 0) + 1;
   task.activeIndex = reinforcement.index;
   task.attackerId = reinforcement.attackerId;
@@ -1262,6 +1293,28 @@ function promoteReinforcement(task: PowerBankHarvestTask): ActivePowerBankPair |
   delete task.reinforcement;
   markPowerBankProgress(task);
   return { attacker, healer };
+}
+
+function shouldProactivelyHandoff(
+  task: PowerBankHarvestTask,
+  pair: ActivePowerBankPair,
+  bank: StructurePowerBank,
+): boolean {
+  const reinforcement = task.reinforcement;
+  if (
+    !reinforcement?.combatReady ||
+    reinforcement.stage !== "attacking" ||
+    !reinforcement.attackerId ||
+    !reinforcement.healerId
+  ) return false;
+
+  const remainingAttackTicks = estimateRemainingAttackTicks(task, bank);
+  if (!Number.isFinite(remainingAttackTicks)) return false;
+  const pairTtl = Math.min(
+    pair.attacker.ticksToLive ?? CREEP_LIFE_TIME,
+    pair.healer.ticksToLive ?? CREEP_LIFE_TIME,
+  );
+  return pairTtl <= remainingAttackTicks + REINFORCEMENT_TTL_BUFFER;
 }
 
 function resetChangedActivePair(task: PowerBankHarvestTask): void {
@@ -1313,6 +1366,9 @@ function processAttacking(task: PowerBankHarvestTask): void {
     pair &&
     (!isPairCombatCapable(pair) || task.blocker === "attack_no_progress")
   ) {
+    pair = promoteReinforcement(task) ?? pair;
+  }
+  if (pair && shouldProactivelyHandoff(task, pair, bank)) {
     pair = promoteReinforcement(task) ?? pair;
   }
   if (!pair) pair = promoteReinforcement(task);
@@ -1418,6 +1474,91 @@ function resetReinforcementForMemberChange(
   markPowerBankProgress(task);
 }
 
+function getReinforcementProgressIdentity(
+  reinforcement: PowerBankReinforcementState,
+): string {
+  return [
+    reinforcement.stage,
+    reinforcement.attackerId ?? "",
+    reinforcement.healerId ?? "",
+  ].join("|");
+}
+
+function getReinforcementPairPosKey(
+  attacker?: Creep,
+  healer?: Creep,
+): string {
+  const attackerPos = attacker
+    ? `${attacker.room.name}:${attacker.pos.x}:${attacker.pos.y}`
+    : "missing";
+  const healerPos = healer
+    ? `${healer.room.name}:${healer.pos.x}:${healer.pos.y}`
+    : "missing";
+  return [
+    attackerPos,
+    healerPos,
+  ].join("|");
+}
+
+function observeReinforcementProgress(
+  reinforcement: PowerBankReinforcementState,
+  attacker?: Creep,
+  healer?: Creep,
+): void {
+  const progressIdentity = getReinforcementProgressIdentity(reinforcement);
+  const pairPosKey = getReinforcementPairPosKey(attacker, healer);
+  if (reinforcement.progressIdentityKey !== progressIdentity) {
+    reinforcement.progressIdentityKey = progressIdentity;
+    reinforcement.stageEnteredAt = Game.time;
+    reinforcement.lastPairPosKey = pairPosKey;
+    reinforcement.recentPairPosKeys = [pairPosKey];
+    reinforcement.lastProgressAt = Game.time;
+    delete reinforcement.blocker;
+    return;
+  }
+
+  reinforcement.lastPairPosKey = pairPosKey;
+  const storedPairPosKeys = reinforcement.recentPairPosKeys;
+  let recentPairPosKeys = Array.isArray(storedPairPosKeys)
+    ? storedPairPosKeys.filter((key): key is string => typeof key === "string")
+    : [];
+  if (recentPairPosKeys.length > REINFORCEMENT_PROGRESS_HISTORY_LIMIT) {
+    recentPairPosKeys = recentPairPosKeys.slice(-REINFORCEMENT_PROGRESS_HISTORY_LIMIT);
+  }
+  reinforcement.recentPairPosKeys = recentPairPosKeys;
+  if (!recentPairPosKeys.includes(pairPosKey)) {
+    recentPairPosKeys.push(pairPosKey);
+    if (recentPairPosKeys.length > REINFORCEMENT_PROGRESS_HISTORY_LIMIT) {
+      recentPairPosKeys.splice(0, recentPairPosKeys.length - REINFORCEMENT_PROGRESS_HISTORY_LIMIT);
+    }
+    reinforcement.recentPairPosKeys = recentPairPosKeys;
+    reinforcement.lastProgressAt = Game.time;
+    delete reinforcement.blocker;
+    return;
+  }
+
+  reinforcement.stageEnteredAt ??= Game.time;
+  reinforcement.lastProgressAt ??= Game.time;
+  if (
+    reinforcement.stage !== "travelling" ||
+    !attacker ||
+    !healer ||
+    attacker.fatigue > 0 ||
+    healer.fatigue > 0 ||
+    Game.time - reinforcement.lastProgressAt < REINFORCEMENT_TRAVEL_STALL_TICKS
+  ) return;
+
+  reinforcement.blocker = "reinforcement_travel_no_progress";
+  if (
+    reinforcement.lastRepathAt !== undefined &&
+    Game.time - reinforcement.lastRepathAt < REINFORCEMENT_REPATH_COOLDOWN
+  ) return;
+
+  clearMovementState(attacker);
+  clearMovementState(healer);
+  reinforcement.lastRepathAt = Game.time;
+}
+
 function processReinforcement(task: PowerBankHarvestTask): void {
   const reinforcement = task.reinforcement;
   if (!reinforcement) return;
@@ -1433,6 +1574,7 @@ function processReinforcement(task: PowerBankHarvestTask): void {
   const attacker = getCombatCreep(task, "attacker", reinforcement.index);
   const healer = getCombatCreep(task, "healer", reinforcement.index);
   resetReinforcementForMemberChange(task, reinforcement, attacker, healer);
+  observeReinforcementProgress(reinforcement, attacker, healer);
 
   if (reinforcement.stage === "spawning") {
     if (!attacker || !healer) {
@@ -1454,6 +1596,9 @@ function processReinforcement(task: PowerBankHarvestTask): void {
   }
   if (reinforcement.stage === "boosting") {
     processReinforcementBoosting(task, reinforcement, attacker, healer);
+    if (task.reinforcement === reinforcement) {
+      observeReinforcementProgress(reinforcement, attacker, healer);
+    }
     return;
   }
   if (reinforcement.stage === "travelling") {
@@ -1473,6 +1618,7 @@ function processReinforcement(task: PowerBankHarvestTask): void {
       reinforcement.stage = "attacking";
       setReinforcementStage(attacker, "attacking");
       setReinforcementStage(healer, "attacking");
+      observeReinforcementProgress(reinforcement, attacker, healer);
       markPowerBankProgress(task);
     }
   }

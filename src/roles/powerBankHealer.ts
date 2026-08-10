@@ -1,4 +1,4 @@
-import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { clearMovementState, moveToTarget, moveToTargetRoom } from "@/roles/shared";
 import {
   getPowerBankAvoidRooms,
   getPowerBankEncodedRouteBetween,
@@ -9,6 +9,7 @@ import {
   type PowerBankPairContext,
 } from "@/roles/powerBankCombatPair";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
+import { ensureCreepMovementState } from "@/movement/creepState";
 import type { RoleFactory } from "@/types/system";
 
 const TRAVEL_OPTIONS = { plainCost: 2, swampCost: 8 } as const;
@@ -130,8 +131,30 @@ function sidestepOutOfAttackerLane(creep: Creep, attacker: Creep, nextRoom: stri
   if (!direction) return false;
 
   // Tactical directional move — not destination pathfinding.
-  measureCreepIntent(() => creep.move(direction));
+  clearMovementState(creep);
+  const code = measureCreepIntent(() => creep.move(direction));
+  if (code === OK || code === ERR_TIRED) {
+    ensureCreepMovementState(creep).pathingRequestedAt = Game.time;
+  }
   return true;
+}
+
+function moveToPairedAttacker(creep: Creep, attacker: Creep): void {
+  const dynamicCode = moveToTarget(creep, attacker, 1, {
+    plainCost: 2,
+    swampCost: 8,
+    ignoreCreeps: false,
+    reusePath: 0,
+    maxRooms: 1,
+  });
+  if (dynamicCode !== ERR_NO_PATH) return;
+  moveToTarget(creep, attacker, 1, {
+    plainCost: 2,
+    swampCost: 8,
+    ignoreCreeps: true,
+    reusePath: 0,
+    maxRooms: 1,
+  });
 }
 
 /** The healer is the follower; it rejoins the leader instead of routing ahead. */
@@ -153,7 +176,9 @@ function followAttacker(creep: Creep, pair: PowerBankPairContext, fallbackEncode
   const nextRoom = getPowerBankNextRouteRoom(pair.task, attacker.room.name);
   if (attacker.room.name !== pair.task.targetRoom && sidestepOutOfAttackerLane(creep, attacker, nextRoom)) return;
   if (range > 1) {
-    moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+    moveToPairedAttacker(creep, attacker);
+  } else {
+    clearMovementState(creep);
   }
 }
 
@@ -170,7 +195,9 @@ function supportAttacker(creep: Creep, pair: PowerBankPairContext, fallbackEncod
     return;
   }
   if (range > 1) {
-    moveToTarget(creep, attacker, 1, { plainCost: 2, swampCost: 8, reusePath: 3, maxRooms: 1 });
+    moveToPairedAttacker(creep, attacker);
+  } else {
+    clearMovementState(creep);
   }
 }
 
