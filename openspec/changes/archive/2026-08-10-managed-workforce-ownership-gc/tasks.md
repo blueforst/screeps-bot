@@ -26,6 +26,6 @@
 
 ## 5. 部署与收口
 
-- [ ] 5.1 提交并部署同一 implementation commit，记录父提交与上一 runtime tag 作为回滚点
-- [ ] 5.2 至少跨过一个 51-tick cleanup/task-refresh 重合点，核对 dynamic identity、live/spawning、queue、tier、manual/reserved 状态和 CPU
-- [ ] 5.3 同步主规格、归档 change 并提交文档；若触发回滚条件则先恢复父提交并保留证据
+- [x] 5.1 提交并部署同一 implementation commit，记录父提交与上一 runtime tag 作为回滚点
+- [x] 5.2 至少跨过一个 51-tick cleanup/task-refresh 重合点，核对 dynamic identity、live/spawning、queue、tier、manual/reserved 状态和 CPU
+- [x] 5.3 同步主规格、归档 change 并提交文档；若触发回滚条件则先恢复父提交并保留证据

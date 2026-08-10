@@ -63,19 +63,24 @@ inventory 构建必须（MUST）显式返回 `preserve` 或 `set(0..3)` construc
 - **WHEN** colonization bootstrap 或 rescue 正为目标房提供 Source workforce
 - **THEN** bootstrap 从同一 inventory expected set 中抑制本地 Source specs，同时继续维护 Mineral、Carrier 与 Worker specs
 
-### Requirement: 跨 phase 兼容投影不得共享缓存
+### Requirement: Bootstrap 必须独占 workforce policy 解释
 
-系统必须（MUST）暂时保留 room-taking 名称投影供 17-tick managed GC 使用。每次 cleanup 与 bootstrap 调用必须独立观察并生成 inventory，且不得（MUST NOT）通过 runtimeServices、module global、Memory 或其他 tick cache 共享 inventory 实例。
+`bootstrapRooms` 必须（MUST）是 visible owned managed room 的唯一 workforce policy 解释者。17-tick cleanup 只可依赖纯 canonical identity 和有效 room owner，不得（MUST NOT）构建 inventory、投影 expected names、读取 Worker task board 或提交 construction tier effect。
 
 #### Scenario: Cleanup 与 task refresh 同 tick
 
 - **WHEN** Game tick 同时命中 17-tick cleanup 与 3-tick Worker task refresh
-- **THEN** cleanup 使用 refresh 前的独立名称投影，bootstrap 在 refresh 后重新生成 inventory；cleanup 的旧观察不得覆盖 bootstrap 结果
+- **THEN** cleanup 不得提前删除或创建 managed-room workforce config，refresh 后 bootstrap 以当前 task board 构建一次 inventory 并提交最终结果
 
-#### Scenario: 现有 managed GC 保持
+#### Scenario: Cleanup 不产生 workforce policy 副作用
 
-- **WHEN** `memoryCleanup` 处理 bootstrap-managed config
-- **THEN** 其五角色白名单、expected-name membership、live-creep guard、调用 phase 与删除行为保持不变
+- **WHEN** periodic cleanup 处理任意数量的 managed config
+- **THEN** 它不得扫描房间 Source、Mineral、Construction Site，不得创建/读取 Worker task board，也不得写 `workerConstructionTier`
+
+#### Scenario: Compatibility projection 被移除
+
+- **WHEN** 生产代码与测试需要观察 expected managed identities
+- **THEN** bootstrap 使用 `RoomWorkforceInventory.configs`，且系统不得保留供 cleanup 重建 policy 的 `getExpectedManagedConfigNames` 入口
 
 ### Requirement: 下游与运行时边界保持不变
 
