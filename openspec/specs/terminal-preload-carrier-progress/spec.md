@@ -127,4 +127,3 @@ classified preload候选不可运行或 withdraw失败时，系统必须（MUST�
 
 - **WHEN** classified Energy pickup仅因不在范围保留assignment，下一轮同id被刷新为无class ResourceControl feed，随后Tower或普通Energy开始pickup
 - **THEN** 系统必须清除未accepted旧binding，后续Energy不得被投递到Terminal
-

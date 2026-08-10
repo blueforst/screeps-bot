@@ -86,4 +86,3 @@ Manual、Hub、Synthesis、War 和 capacity-relief 等已存在的 Energy transf
 
 - **WHEN** 受压 Terminal 中 cargo 已就位且只补入精确手续费，发送后 Terminal Energy 低于 ordinary reserve
 - **THEN** internal capacity-relief send 可以成功，ordinary reserve 留待后续正常 staging 恢复；Direct market 不得继承该例外
-

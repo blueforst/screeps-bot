@@ -73,4 +73,3 @@ Normal receiver 的 Storage 可接收量必须（MUST）为 `max(0, storageFree-
 
 - **WHEN** free=150k的receiver已有30k健康incoming commitment
 - **THEN** 后续所有任务的新增reservation合计不得超过20k
-

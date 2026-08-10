@@ -13,6 +13,38 @@ type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
 };
 
+const SUPPORTED_ROLE_NAMES = [
+  "harvester",
+  "mineralHarvester",
+  "miner",
+  "carrier",
+  "worker",
+  "upgrader",
+  "hubUpgrader",
+  "scout",
+  "claimer",
+  "colonizerHarvester",
+  "colonizerWorker",
+  "meleeAttacker",
+  "healer",
+  "homeDefender",
+  "crossShardClaimer",
+  "crossShardColonizerHarvester",
+  "crossShardColonizerWorker",
+  "flagScout",
+  "remoteCarrier",
+  "remoteMiningCarrier",
+  "powerBankScout",
+  "powerBankAttacker",
+  "powerBankHealer",
+  "powerBankHauler",
+  "remoteMiningReserver",
+  "remoteWorker",
+  "remoteDefender",
+] as const satisfies readonly CreepMemory["role"][];
+
+const UNSUPPORTED_ROLE_NAMES = ["unknownRole", "constructor", "toString", "__proto__"] as const;
+
 function resetRuntimeServices(): void {
   delete (global as RuntimeGlobal).__runtimeServices;
 }
@@ -693,6 +725,87 @@ describe("runMemoryCleanup", () => {
     runMemoryCleanup();
 
     expect(Memory.runtime?.energyPickup).toBeUndefined();
+  });
+
+  it.each(SUPPORTED_ROLE_NAMES)(
+    "keeps generic config and same-cadence queue entry for supported role %s",
+    (role) => {
+      const configName = `manual:role-catalog:${role}`;
+      const config: CreepConfig = { role, args: [] };
+      const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [configName]);
+      Game.spawns = { [spawn.name]: spawn };
+      Memory.data = { creepConfigs: { [configName]: config } };
+
+      runMemoryCleanup();
+
+      expect(Memory.data?.creepConfigs?.[configName]).toEqual(config);
+      expect(spawn.memory.spawnList).toEqual([configName]);
+    },
+  );
+
+  it.each(UNSUPPORTED_ROLE_NAMES)(
+    "deletes unsupported role %s before trimming its queue entry on the next cleanup pass",
+    (role) => {
+      const invalidConfigName = `manual:invalid-role:${role}`;
+      const validConfigName = "manual:valid-role:flagScout";
+      const invalidConfig = { role, args: [] } as unknown as CreepConfig;
+      const validConfig: CreepConfig = { role: "flagScout", args: [] };
+      const originalQueue = [invalidConfigName, validConfigName, invalidConfigName];
+      const spawn = createSpawn("Spawn1", Game.rooms.W1N1, originalQueue);
+      Game.spawns = { [spawn.name]: spawn };
+      Memory.data = {
+        creepConfigs: {
+          [invalidConfigName]: invalidConfig,
+          [validConfigName]: validConfig,
+        },
+      };
+
+      runMemoryCleanup();
+
+      expect(Memory.data?.creepConfigs?.[invalidConfigName]).toBeUndefined();
+      expect(Memory.data?.creepConfigs?.[validConfigName]).toEqual(validConfig);
+      expect(spawn.memory.spawnList).toEqual(originalQueue);
+
+      Game.time += 17;
+      runMemoryCleanup();
+
+      expect(spawn.memory.spawnList).toEqual([validConfigName]);
+    },
+  );
+
+  it("delegates generic role validity to the shared role catalog gate", () => {
+    const catalogOnlyRole = "catalogOnlyRole";
+    const catalogConfigName = "manual:catalog-gate:accepted";
+    const rejectedConfigName = "manual:catalog-gate:rejected";
+    Memory.data = {
+      creepConfigs: {
+        [catalogConfigName]: { role: catalogOnlyRole, args: [] } as unknown as CreepConfig,
+        [rejectedConfigName]: { role: "worker", args: [] },
+      },
+    };
+
+    jest.doMock(
+      "@/types/roleCatalog",
+      () => ({
+        isRoleName: (value: unknown): boolean => value === catalogOnlyRole,
+      }),
+      { virtual: true },
+    );
+
+    try {
+      jest.isolateModules(() => {
+        const isolatedModule = require("@/runtime/memoryCleanup") as typeof import("@/runtime/memoryCleanup");
+        isolatedModule.runMemoryCleanup();
+      });
+    } finally {
+      jest.dontMock("@/types/roleCatalog");
+    }
+
+    expect(Memory.data?.creepConfigs?.[catalogConfigName]).toEqual({
+      role: catalogOnlyRole,
+      args: [],
+    });
+    expect(Memory.data?.creepConfigs?.[rejectedConfigName]).toBeUndefined();
   });
 
   it("keeps supported non-legacy creep configs for active specialized roles", () => {

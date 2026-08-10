@@ -10,37 +10,9 @@ import { pruneLinkNetworkRuntime } from "@/runtime/linkNetworkMemory";
 import { cleanupWorkerTaskBoard } from "@/runtime/workerTaskPool";
 import { gcProductionReservations } from "@/runtime/resourceReservation";
 import { cleanupTerminalBootstrapRecoveryRuntime } from "@/runtime/terminalBootstrapRecovery";
+import { isRoleName } from "@/types/roleCatalog";
 
 const CLEANUP_INTERVAL = 17;
-const VALID_ROLES = new Set([
-  "harvester",
-  "mineralHarvester",
-  "miner",
-  "carrier",
-  "worker",
-  "scout",
-  "claimer",
-  "colonizerHarvester",
-  "colonizerWorker",
-  "meleeAttacker",
-  "healer",
-  "homeDefender",
-  "crossShardClaimer",
-  "crossShardColonizerHarvester",
-  "crossShardColonizerWorker",
-  "flagScout",
-  "remoteCarrier",
-  "remoteMiningCarrier",
-  "powerBankScout",
-  "powerBankAttacker",
-  "powerBankHealer",
-  "powerBankHauler",
-  "upgrader",
-  "hubUpgrader",
-  "remoteMiningReserver",
-  "remoteWorker",
-  "remoteDefender",
-]);
 const ROOM_PLANNER_TTL = 50000;
 const INTER_SHARD_PORTAL_TTL = 10000;
 const INTER_SHARD_REMOTE_TTL = 500;
@@ -152,11 +124,11 @@ function cleanupSpawnQueueMemory(): number {
   return trimmed;
 }
 
-function cleanupLegacyConfigMemory(): number {
+function cleanupUnknownRoleConfigMemory(): number {
   const configStore = getMemoryService().getCreepConfigStore();
   let removed = 0;
   for (const [configName, config] of Object.entries(configStore)) {
-    if (!VALID_ROLES.has(config.role)) {
+    if (!isRoleName(config.role)) {
       delete configStore[configName];
       removed += 1;
     }
@@ -689,7 +661,7 @@ export function runMemoryCleanup(): void {
   pruneDeadCreepMovementState();
   cleanupDeadSpawnMemory();
   cleanupSpawnQueueMemory();
-  cleanupLegacyConfigMemory();
+  cleanupUnknownRoleConfigMemory();
   cleanupManagedCreepConfigs(creepConfigReferences.configNames);
   const ownedRooms = getOwnedRoomNameSet();
   const colonizationTargets = getColonizationTargetRoomNameSet();

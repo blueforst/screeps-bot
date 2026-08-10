@@ -1,32 +1,6 @@
-export type RoleName =
-  | "harvester"
-  | "mineralHarvester"
-  | "miner"
-  | "carrier"
-  | "worker"
-  | "upgrader"
-  /** @deprecated 仅用于清理部署前遗留配置。 */
-  | "hubUpgrader"
-  | "scout"
-  | "claimer"
-  | "colonizerHarvester"
-  | "colonizerWorker"
-  | "meleeAttacker"
-  | "healer"
-  | "homeDefender"
-  | "crossShardClaimer"
-  | "crossShardColonizerHarvester"
-  | "crossShardColonizerWorker"
-  | "flagScout"
-  | "remoteCarrier"
-  | "remoteMiningCarrier"
-  | "powerBankScout"
-  | "powerBankAttacker"
-  | "powerBankHealer"
-  | "powerBankHauler"
-  | "remoteMiningReserver"
-  | "remoteWorker"
-  | "remoteDefender";
+import type { RoleName } from "@/types/roleCatalog";
+
+export type { RoleName } from "@/types/roleCatalog";
 export type WorkerTaskType = "build" | "upgrade" | "repair" | "dismantle";
 export type RoomType = "normal" | "reserved" | "industrial";
 
