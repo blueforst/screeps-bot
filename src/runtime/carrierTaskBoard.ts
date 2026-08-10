@@ -41,6 +41,18 @@ export interface CarrierTaskStepAmountClaim {
 
 type CarrierTaskBoardStore = Record<string, Record<string, CarrierTask>>;
 
+export type CarrierTaskSnapshot = Readonly<Omit<CarrierTask, "steps">> & {
+  readonly steps: readonly Readonly<CarrierTaskStep>[];
+};
+
+export type CarrierTaskRoomSnapshot = Readonly<
+  Record<string, CarrierTaskSnapshot>
+>;
+
+export type CarrierTaskBoardSnapshot = Readonly<
+  Record<string, CarrierTaskRoomSnapshot>
+>;
+
 interface CarrierTaskClaimRecord {
   stepId: string;
   amount: number;
@@ -64,6 +76,114 @@ type RuntimeGlobalWithCarrierTasks = typeof global & {
 };
 
 const runtimeGlobal: RuntimeGlobalWithCarrierTasks = global;
+
+function defineCarrierSnapshotProperty(
+  target: object,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function cloneCarrierSnapshotValue(
+  value: unknown,
+  seen: WeakMap<object, unknown> = new WeakMap(),
+): unknown {
+  if (
+    value === null
+    || (typeof value !== "object" && typeof value !== "function")
+  ) {
+    return value;
+  }
+
+  const source = value as object;
+  const existing = seen.get(source);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  let snapshot: object;
+  if (Array.isArray(value)) {
+    snapshot = new Array(value.length);
+  } else if (typeof value === "function") {
+    snapshot = function carrierSnapshotFunction(): undefined {
+      return undefined;
+    };
+  } else {
+    const prototype = Object.getPrototypeOf(source);
+    if (prototype === null) {
+      snapshot = Object.create(null) as object;
+    } else if (prototype === Object.prototype) {
+      snapshot = {};
+    } else {
+      snapshot = Object.create(Object.freeze({})) as object;
+    }
+  }
+  seen.set(source, snapshot);
+
+  for (const key of Object.keys(source)) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(source, key);
+    } catch {
+      defineCarrierSnapshotProperty(snapshot, key, undefined);
+      continue;
+    }
+
+    if (!descriptor || !("value" in descriptor)) {
+      defineCarrierSnapshotProperty(snapshot, key, undefined);
+      continue;
+    }
+
+    let clonedValue: unknown;
+    try {
+      clonedValue = cloneCarrierSnapshotValue(descriptor.value, seen);
+    } catch {
+      clonedValue = undefined;
+    }
+    defineCarrierSnapshotProperty(snapshot, key, clonedValue);
+  }
+  return snapshot;
+}
+
+/**
+ * Returns an isolated read snapshot without creating the runtime board.
+ * Existing domain readers intentionally keep using get/list and their live
+ * references; projection callers must use this selector instead.
+ */
+export function peekCarrierTaskBoard(): CarrierTaskBoardSnapshot {
+  const board = runtimeGlobal.__carrierTaskBoard;
+  if (board === undefined) {
+    return {};
+  }
+  // Runtime heap state can be malformed after console/debug writes. Preserve
+  // the raw enumerable shape for adapter-level fail-closed handling while
+  // ensuring no mutable source reference escapes.
+  return cloneCarrierSnapshotValue(
+    board,
+  ) as CarrierTaskBoardSnapshot;
+}
+
+/**
+ * Returns one room's isolated read snapshot without creating either the board
+ * or an empty room store.
+ */
+export function peekCarrierTasksByRoom(
+  roomName: string,
+): CarrierTaskRoomSnapshot {
+  const board = runtimeGlobal.__carrierTaskBoard;
+  if (!board || !Object.prototype.hasOwnProperty.call(board, roomName)) {
+    return {};
+  }
+  return cloneCarrierSnapshotValue(
+    board[roomName],
+  ) as CarrierTaskRoomSnapshot;
+}
 
 function ensureCarrierTaskBoard(): CarrierTaskBoardStore {
   if (!runtimeGlobal.__carrierTaskBoard) {

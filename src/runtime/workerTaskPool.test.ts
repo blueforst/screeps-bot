@@ -6,13 +6,19 @@ jest.mock("@/runtime/safeZone", () => ({
   getSafeZone: jest.fn(() => new Set()),
 }));
 
-import { clearCreepAssignmentStateForTest, ensureCreepAssignmentState, getCreepAssignmentState } from "@/runtime/creepAssignmentState";
+import {
+  clearCreepAssignmentStateForTest,
+  ensureCreepAssignmentState,
+  getCreepAssignmentState,
+} from "@/runtime/creepAssignmentState";
 import {
   assignWorkerTask,
   clearWorkerTaskBoardForTest,
   completeWorkerTaskIfDone,
   getWorkerTasksByRoom,
   getWorkerTaskTarget,
+  peekWorkerTaskBoard,
+  peekWorkerTaskRoomSnapshot,
   peekWorkerTasksByRoom,
   refreshWorkerTasks,
   releaseWorkerTask,
@@ -26,6 +32,10 @@ type RuntimeGlobal = typeof global & {
   RoomPosition?: typeof MockRoomPosition;
   __workerTaskBoard?: Record<string, Record<string, WorkerTask>>;
 };
+
+function globalPropertyNames(): string[] {
+  return Object.getOwnPropertyNames(global).sort();
+}
 
 class MockRoomPosition {
   public constructor(
@@ -179,14 +189,165 @@ describe("workerTaskPool", () => {
       ?.illegalStructureCleanup;
   }
 
-  it("peeks an absent room without creating the heap task board", () => {
+  it("peeks an absent board and room without creating the heap task board", () => {
     expect((global as RuntimeGlobal).__workerTaskBoard).toBeUndefined();
+    const propertiesBefore = globalPropertyNames();
 
+    expect(peekWorkerTaskBoard()).toEqual({});
+    expect(peekWorkerTaskRoomSnapshot("W9N9")).toEqual({});
     expect(peekWorkerTasksByRoom("W9N9")).toEqual({});
     expect((global as RuntimeGlobal).__workerTaskBoard).toBeUndefined();
+    expect(globalPropertyNames()).toEqual(propertiesBefore);
+  });
 
-    const writableTasks = getWorkerTasksByRoom("W9N9");
-    expect(peekWorkerTasksByRoom("W9N9")).toBe(writableTasks);
+  it("keeps the legacy room peek ABI while safe selectors return isolated snapshots", () => {
+    const task = createTask({
+      id: "repair:r1",
+      type: "repair",
+      targetId: "r1",
+      roomName: "W1N1",
+      assignedCreeps: ["Worker1"],
+      repairMode: "normal",
+      priority: 320,
+    });
+    const writableTasks = getWorkerTasksByRoom(task.roomName);
+    writableTasks[task.id] = task;
+
+    expect(getWorkerTasksByRoom(task.roomName)).toBe(writableTasks);
+
+    const legacyRoomView = peekWorkerTasksByRoom(task.roomName);
+    const roomSnapshot = peekWorkerTaskRoomSnapshot(task.roomName);
+    const boardSnapshot = peekWorkerTaskBoard();
+
+    expect(legacyRoomView).toBe(writableTasks);
+    expect(legacyRoomView[task.id]).toBe(task);
+    expect(legacyRoomView[task.id].assignedCreeps).toBe(task.assignedCreeps);
+    expect(roomSnapshot).toEqual(writableTasks);
+    expect(roomSnapshot).not.toBe(writableTasks);
+    expect(roomSnapshot[task.id]).not.toBe(task);
+    expect(roomSnapshot[task.id].assignedCreeps).not.toBe(task.assignedCreeps);
+    expect(boardSnapshot).toEqual({ [task.roomName]: writableTasks });
+    expect(boardSnapshot[task.roomName]).not.toBe(writableTasks);
+    expect(boardSnapshot[task.roomName][task.id]).not.toBe(task);
+    expect(boardSnapshot[task.roomName][task.id].assignedCreeps).not.toBe(task.assignedCreeps);
+
+    const mutableRoomSnapshot = roomSnapshot as unknown as Record<string, WorkerTask>;
+    mutableRoomSnapshot[task.id].priority = -1;
+    mutableRoomSnapshot[task.id].assignedCreeps.push("SnapshotOnly");
+    delete mutableRoomSnapshot[task.id];
+
+    const mutableBoardSnapshot = boardSnapshot as unknown as Record<string, Record<string, WorkerTask>>;
+    mutableBoardSnapshot[task.roomName][task.id].targetId = "snapshot-target";
+    mutableBoardSnapshot.W9N9 = {};
+
+    expect(writableTasks[task.id]).toBe(task);
+    expect(task.priority).toBe(320);
+    expect(task.targetId).toBe("r1");
+    expect(task.assignedCreeps).toEqual(["Worker1"]);
+    expect((global as RuntimeGlobal).__workerTaskBoard).toEqual({
+      [task.roomName]: { [task.id]: task },
+    });
+    expect(peekWorkerTasksByRoom(task.roomName)).toBe(writableTasks);
+    expect(peekWorkerTaskRoomSnapshot(task.roomName)).toEqual({ [task.id]: task });
+    expect(peekWorkerTaskBoard()).toEqual({
+      [task.roomName]: { [task.id]: task },
+    });
+  });
+
+  it("does not create an absent room or replace source references while peeking an existing board", () => {
+    const writableTasks = getWorkerTasksByRoom("W1N1");
+    const board = (global as RuntimeGlobal).__workerTaskBoard;
+
+    const missingRoomView = peekWorkerTasksByRoom("W9N9");
+    expect(missingRoomView).toEqual({});
+    expect(peekWorkerTasksByRoom("W9N9")).toBe(missingRoomView);
+    expect(peekWorkerTaskRoomSnapshot("W9N9")).toEqual({});
+    expect(peekWorkerTaskBoard()).toEqual({ W1N1: writableTasks });
+    expect((global as RuntimeGlobal).__workerTaskBoard).toBe(board);
+    expect((global as RuntimeGlobal).__workerTaskBoard).toEqual({ W1N1: {} });
+  });
+
+  it("isolates malformed task shapes without blocking valid siblings or replacing global references", () => {
+    const writableTasks = getWorkerTasksByRoom("W1N1");
+    const validTask = createTask({
+      id: "build:valid",
+      type: "build",
+      targetId: "valid",
+      roomName: "W1N1",
+    });
+    const malformedAssignees = { nested: ["source"] };
+    const malformedTask = {
+      ...createTask({
+        id: "build:malformed",
+        type: "build",
+        targetId: "malformed",
+        roomName: "W1N1",
+      }),
+      assignedCreeps: malformedAssignees,
+    };
+    writableTasks[validTask.id] = validTask;
+    writableTasks[malformedTask.id] = malformedTask as unknown as WorkerTask;
+    writableTasks["malformed:primitive"] = 42 as unknown as WorkerTask;
+    const board = (global as RuntimeGlobal).__workerTaskBoard;
+
+    const boardSnapshot = peekWorkerTaskBoard() as unknown as Record<
+      string,
+      Record<string, Record<string, unknown>>
+    >;
+    const roomSnapshot = peekWorkerTaskRoomSnapshot("W1N1") as unknown as Record<
+      string,
+      Record<string, unknown>
+    >;
+
+    expect(boardSnapshot.W1N1[validTask.id]).toEqual(validTask);
+    expect(boardSnapshot.W1N1[validTask.id]).not.toBe(validTask);
+    expect(boardSnapshot.W1N1[malformedTask.id]).toEqual(malformedTask);
+    expect(boardSnapshot.W1N1[malformedTask.id]).not.toBe(malformedTask);
+    expect(boardSnapshot.W1N1[malformedTask.id].assignedCreeps).not.toBe(malformedAssignees);
+    expect(boardSnapshot.W1N1["malformed:primitive"] as unknown).toBe(42);
+    expect(roomSnapshot[validTask.id]).toEqual(validTask);
+    expect(roomSnapshot[malformedTask.id]).toEqual(malformedTask);
+    expect(roomSnapshot["malformed:primitive"] as unknown).toBe(42);
+
+    const copiedMalformedAssignees = boardSnapshot.W1N1[malformedTask.id]
+      .assignedCreeps as { nested: string[] };
+    copiedMalformedAssignees.nested.push("snapshot-only");
+
+    expect(malformedAssignees).toEqual({ nested: ["source"] });
+    expect((global as RuntimeGlobal).__workerTaskBoard).toBe(board);
+    expect((global as RuntimeGlobal).__workerTaskBoard?.W1N1).toBe(writableTasks);
+    expect(writableTasks[validTask.id]).toBe(validTask);
+    expect(writableTasks[malformedTask.id]).toBe(malformedTask);
+    expect(writableTasks["malformed:primitive"] as unknown).toBe(42);
+    expect(peekWorkerTasksByRoom("W1N1")).toBe(writableTasks);
+  });
+
+  it("keeps assign and release mutations on the writable source while snapshots stay observational", () => {
+    const task = createTask({
+      id: "upgrade:u1",
+      type: "upgrade",
+      targetId: "u1",
+      roomName: "W1N1",
+      maxAssignees: 2,
+    });
+    const writableTasks = getWorkerTasksByRoom(task.roomName);
+    writableTasks[task.id] = task;
+    objects.u1 = createControllerTarget("u1", 3);
+    const creep = createCreep("Worker1", task.roomName);
+    Game.creeps[creep.name] = creep;
+
+    expect(assignWorkerTask(creep)).toBe(task);
+    expect(task.assignedCreeps).toEqual([creep.name]);
+    expect(getCreepAssignmentState(creep.name)?.taskId).toBe(task.id);
+    expect(peekWorkerTasksByRoom(task.roomName)[task.id]).toBe(task);
+    expect(peekWorkerTaskRoomSnapshot(task.roomName)[task.id]).toEqual(task);
+    expect(peekWorkerTaskRoomSnapshot(task.roomName)[task.id]).not.toBe(task);
+
+    releaseWorkerTask(creep);
+
+    expect(writableTasks[task.id]).toBe(task);
+    expect(task.assignedCreeps).toEqual([]);
+    expect(getCreepAssignmentState(creep.name)?.taskId).toBeUndefined();
   });
 
   it("keeps RCL8 build and normal repair task generation while omitting upgrade", () => {

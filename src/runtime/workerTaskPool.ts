@@ -18,6 +18,13 @@ type StructureWithOptionalOwner = Structure<StructureConstant> & {
 
 type WorkerTaskBoardStore = Record<string, Record<string, WorkerTask>>;
 
+export type WorkerTaskSnapshot = Readonly<Omit<WorkerTask, "assignedCreeps">> & {
+  readonly assignedCreeps: readonly string[];
+};
+
+export type WorkerTaskRoomSnapshot = Readonly<Record<string, WorkerTaskSnapshot>>;
+export type WorkerTaskBoardSnapshot = Readonly<Record<string, WorkerTaskRoomSnapshot>>;
+
 type RuntimeGlobalWithWorkerTasks = typeof global & {
   __workerTaskBoard?: WorkerTaskBoardStore;
 };
@@ -46,6 +53,103 @@ function ensureRoomTaskStore(roomName: string): Record<string, WorkerTask> {
 
 export function getWorkerTasksByRoom(roomName: string): Record<string, WorkerTask> {
   return ensureRoomTaskStore(roomName);
+}
+
+function defineSnapshotProperty(
+  target: object,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function cloneWorkerSnapshotValue(
+  value: unknown,
+  seen: WeakMap<object, unknown> = new WeakMap(),
+): unknown {
+  if (
+    value === null
+    || (typeof value !== "object" && typeof value !== "function")
+  ) {
+    return value;
+  }
+
+  const source = value as object;
+  const existing = seen.get(source);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  let snapshot: object;
+  if (Array.isArray(value)) {
+    snapshot = new Array(value.length);
+  } else if (typeof value === "function") {
+    snapshot = function workerSnapshotFunction(): undefined {
+      return undefined;
+    };
+  } else {
+    const prototype = Object.getPrototypeOf(source);
+    if (prototype === null) {
+      snapshot = Object.create(null) as object;
+    } else if (prototype === Object.prototype) {
+      snapshot = {};
+    } else {
+      snapshot = Object.create(Object.freeze({})) as object;
+    }
+  }
+  seen.set(source, snapshot);
+
+  for (const key of Object.keys(source)) {
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Object.getOwnPropertyDescriptor(source, key);
+    } catch {
+      defineSnapshotProperty(snapshot, key, undefined);
+      continue;
+    }
+
+    if (!descriptor || !("value" in descriptor)) {
+      defineSnapshotProperty(snapshot, key, undefined);
+      continue;
+    }
+
+    let clonedValue: unknown;
+    try {
+      clonedValue = cloneWorkerSnapshotValue(descriptor.value, seen);
+    } catch {
+      clonedValue = undefined;
+    }
+    defineSnapshotProperty(snapshot, key, clonedValue);
+  }
+
+  return snapshot;
+}
+
+function cloneWorkerTaskRoomForSnapshot(
+  tasks: Readonly<Record<string, WorkerTask>>,
+): WorkerTaskRoomSnapshot {
+  return cloneWorkerSnapshotValue(tasks) as WorkerTaskRoomSnapshot;
+}
+
+/** Returns an isolated full-board snapshot without creating the private heap store. */
+export function peekWorkerTaskBoard(): WorkerTaskBoardSnapshot {
+  const board = runtimeGlobal.__workerTaskBoard;
+  if (!board) {
+    return {};
+  }
+
+  return cloneWorkerSnapshotValue(board) as WorkerTaskBoardSnapshot;
+}
+
+/** Returns one isolated room snapshot without creating the board or an empty room store. */
+export function peekWorkerTaskRoomSnapshot(roomName: string): WorkerTaskRoomSnapshot {
+  const tasks = runtimeGlobal.__workerTaskBoard?.[roomName];
+  return tasks ? cloneWorkerTaskRoomForSnapshot(tasks) : {};
 }
 
 export function peekWorkerTasksByRoom(roomName: string): Readonly<Record<string, WorkerTask>> {
