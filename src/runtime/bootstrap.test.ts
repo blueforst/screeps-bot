@@ -174,6 +174,60 @@ describe("bootstrapRooms", () => {
     expect(spawn.memory.spawnList).toEqual(["W1N1:miner:source-b", "manual:keep"]);
   });
 
+  it.each([
+    ["spawnOnce", { spawnOnce: { queuedAt: 1 } }],
+    ["taskId", { taskId: "foreign-task" }],
+    ["powerBankGeneration", { powerBankGeneration: 3 }],
+  ] as const)("normalizes stale %s metadata from a canonical managed config", (_field, extra) => {
+    const room = createRoom();
+    Game.rooms[room.name] = room;
+    Game.spawns.Spawn1 = createSpawn(room);
+    Memory.data = {
+      creepConfigs: {
+        "W1N1:worker:0": {
+          role: "worker",
+          args: [],
+          roomName: room.name,
+          ...extra,
+        },
+      },
+    } as Memory["data"];
+
+    bootstrapRooms();
+
+    expect(getCreepConfigService().get("W1N1:worker:0")).toEqual({
+      role: "worker",
+      args: [],
+      roomName: room.name,
+    });
+  });
+
+  it.each([
+    ["null", null],
+    ["sparse", new Array(1)],
+  ])("normalizes malformed %s args without aborting bootstrap", (_caseName, malformedArgs) => {
+    const room = createRoom({ sources: [createSource("source-a", "W1N1")] });
+    Game.rooms[room.name] = room;
+    Game.spawns.Spawn1 = createSpawn(room);
+    Memory.data = {
+      creepConfigs: {
+        "W1N1:harvester:source-a": {
+          role: "harvester",
+          args: malformedArgs,
+          roomName: room.name,
+        },
+      },
+    } as unknown as Memory["data"];
+
+    bootstrapRooms();
+
+    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toEqual({
+      role: "harvester",
+      args: ["source-a"],
+      roomName: room.name,
+    });
+  });
+
   it("does not bootstrap rooms configured with the reserved room type", () => {
     Memory.cfg = {
       rooms: {

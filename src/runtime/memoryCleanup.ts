@@ -1,7 +1,8 @@
-import { getExpectedManagedConfigNames } from "@/runtime/roomWorkforce";
 import { pruneDeadCreepMovementState } from "@/movement/creepState";
 import { pruneDeadCreepAssignmentState } from "@/runtime/creepAssignmentState";
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
+import { getOwnedRoomWorkforceConfigIdentity } from "@/runtime/roomWorkforceIdentity";
+import { isOwnedManagedRoom } from "@/runtime/roomTypes";
 import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
 import { cleanupPickupReservationStore } from "@/runtime/energyPickupReservation";
 import { cleanupResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
@@ -61,7 +62,39 @@ function getColonizationTargetRoomNameSet(): Set<string> {
   return new Set(Object.keys(colonization));
 }
 
-function cleanupDeadCreepMemory(): number {
+interface CreepConfigReferenceSnapshot {
+  readonly configNames: ReadonlySet<string>;
+  readonly spawningCreepNames: ReadonlySet<string>;
+}
+
+function createCreepConfigReferenceSnapshot(): CreepConfigReferenceSnapshot {
+  const configNames = new Set<string>();
+  const spawningCreepNames = new Set<string>();
+
+  for (const creep of Object.values(Game.creeps)) {
+    if (creep.memory.configName) {
+      configNames.add(creep.memory.configName);
+    }
+  }
+
+  for (const spawn of Object.values(Game.spawns)) {
+    const spawningName = spawn.spawning?.name;
+    if (!spawningName) {
+      continue;
+    }
+
+    spawningCreepNames.add(spawningName);
+    const configName = Game.creeps[spawningName]?.memory.configName
+      ?? Memory.creeps?.[spawningName]?.configName;
+    if (configName) {
+      configNames.add(configName);
+    }
+  }
+
+  return { configNames, spawningCreepNames };
+}
+
+function cleanupDeadCreepMemory(spawningCreepNames: ReadonlySet<string>): number {
   if (!Memory.creeps) {
     return 0;
   }
@@ -69,7 +102,7 @@ function cleanupDeadCreepMemory(): number {
   let removed = 0;
 
   for (const creepName of Object.keys(Memory.creeps)) {
-    if (!Game.creeps[creepName]) {
+    if (!Game.creeps[creepName] && !spawningCreepNames.has(creepName)) {
       delete Memory.creeps[creepName];
       removed += 1;
     }
@@ -131,41 +164,44 @@ function cleanupLegacyConfigMemory(): number {
   return removed;
 }
 
-const BOOTSTRAP_MANAGED_ROLES = new Set([
-  "harvester",
-  "mineralHarvester",
-  "miner",
-  "carrier",
-  "worker",
-]);
-
-function cleanupManagedCreepConfigs(): number {
+function cleanupManagedCreepConfigs(referencedConfigNames: ReadonlySet<string>): number {
   const configStore = getMemoryService().getCreepConfigStore();
-  const expected = new Set<string>();
-  const myRooms = getTickContextService().getMyRooms();
-  for (const room of myRooms) {
-    for (const name of getExpectedManagedConfigNames(room)) {
-      expected.add(name);
-    }
-  }
-  const activeConfigNames = new Set(
-    Object.values(Game.creeps)
-      .map((creep) => creep.memory.configName)
-      .filter((name): name is string => !!name),
+  const managedRoomNames = new Set(
+    getTickContextService()
+      .getMyRooms()
+      .filter((room) => isOwnedManagedRoom(room.name))
+      .map((room) => room.name),
   );
-  let removed = 0;
+  const retirements: Array<readonly [string, (typeof configStore)[string]]> = [];
 
   for (const [configName, config] of Object.entries(configStore)) {
-    if (!VALID_ROLES.has(config.role)) {
+    const identity = getOwnedRoomWorkforceConfigIdentity(configName, config);
+    if (!identity || managedRoomNames.has(identity.roomName)) {
       continue;
     }
 
-    if (!BOOTSTRAP_MANAGED_ROLES.has(config.role)) {
+    retirements.push([configName, config]);
+  }
+
+  if (retirements.length === 0) {
+    return 0;
+  }
+
+  const retiringConfigNames = new Set(retirements.map(([configName]) => configName));
+  for (const spawn of Object.values(Game.spawns)) {
+    const queue = spawn.memory.spawnList;
+    if (!queue?.some((configName) => retiringConfigNames.has(configName))) {
       continue;
     }
 
-    const hasLiveCreep = activeConfigNames.has(configName);
-    if (!expected.has(configName) && !hasLiveCreep) {
+    spawn.memory.spawnList = queue.filter((configName) => !retiringConfigNames.has(configName));
+  }
+
+  let removed = 0;
+  for (const [configName, config] of retirements) {
+    if (referencedConfigNames.has(configName)) {
+      delete config.roomName;
+    } else {
       delete configStore[configName];
       removed += 1;
     }
@@ -662,13 +698,14 @@ export function runMemoryCleanup(): void {
     return;
   }
 
-  cleanupDeadCreepMemory();
+  const creepConfigReferences = createCreepConfigReferenceSnapshot();
+  cleanupDeadCreepMemory(creepConfigReferences.spawningCreepNames);
   pruneDeadCreepAssignmentState();
   pruneDeadCreepMovementState();
   cleanupDeadSpawnMemory();
   cleanupSpawnQueueMemory();
   cleanupLegacyConfigMemory();
-  cleanupManagedCreepConfigs();
+  cleanupManagedCreepConfigs(creepConfigReferences.configNames);
   const ownedRooms = getOwnedRoomNameSet();
   const colonizationTargets = getColonizationTargetRoomNameSet();
   cleanupSpawnPlannerMemory(ownedRooms);

@@ -7,6 +7,7 @@ import {
   peekWorkerTasksByRoom,
   refreshWorkerTasks,
 } from "@/runtime/workerTaskPool";
+import type { CreepConfig } from "@/types/system";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -28,6 +29,27 @@ function createOwnedRoom(name: string): Room {
   } as unknown as Room;
 }
 
+function createNormalRepairRoom(name: string): Room {
+  const room = createOwnedRoom(name);
+  room.controller!.level = 5;
+  room.controller!.id = `${name}-controller` as Id<StructureController>;
+  room.memory.workerConstructionTier = 3;
+  const rampart = {
+    id: `${name}-rampart`,
+    room,
+    structureType: STRUCTURE_RAMPART,
+    hits: 6_000,
+    hitsMax: 100_000,
+  } as StructureRampart;
+  room.find = ((type: FindConstant) => {
+    if (type === FIND_MY_STRUCTURES || type === FIND_STRUCTURES) {
+      return [rampart];
+    }
+    return [];
+  }) as Room["find"];
+  return room;
+}
+
 function createManagedCreep(configName: string, role: CreepMemory["role"]): Creep {
   return {
     memory: {
@@ -37,70 +59,57 @@ function createManagedCreep(configName: string, role: CreepMemory["role"]): Cree
   } as unknown as Creep;
 }
 
-function createCrossPhaseRoom(name: string): {
-  room: Room;
-  source: Source;
-  mineral: Mineral;
-} {
-  const memory = { workerConstructionTier: 0 } as RoomMemory;
-  Memory.rooms[name] = memory;
-  const room = {
-    name,
-    memory,
-    controller: {
-      id: `${name}-controller`,
-      my: true,
-      level: 5,
-    } as StructureController,
-  } as Room;
-  const source = {
-    id: `${name}-source`,
-    room,
-    pos: {
-      x: 10,
-      y: 10,
-      roomName: name,
-    } as RoomPosition,
-  } as Source;
-  const mineralStructures = [
-    { structureType: STRUCTURE_EXTRACTOR },
-    { structureType: STRUCTURE_CONTAINER },
-  ] as Structure[];
-  const mineral = {
-    id: `${name}-mineral`,
-    mineralAmount: 10_000,
-    pos: {
-      findInRange: () => mineralStructures,
-    } as unknown as RoomPosition,
-  } as Mineral;
-  const rampart = {
-    id: `${name}-rampart`,
-    room,
-    structureType: STRUCTURE_RAMPART,
-    hits: 6_000,
-    hitsMax: 100_000,
-  } as StructureRampart;
-  room.find = ((type: FindConstant) => {
-    if (type === FIND_SOURCES) return [source];
-    if (type === FIND_MINERALS) return [mineral];
-    if (type === FIND_MY_STRUCTURES || type === FIND_STRUCTURES) return [rampart];
-    return [];
-  }) as Room["find"];
+type ManagedWorkforceRole = "harvester" | "miner" | "mineralHarvester" | "carrier" | "worker";
 
-  return { room, source, mineral };
+interface CanonicalManagedConfigFixture {
+  configName: string;
+  config: CreepConfig;
 }
 
-function createCrossPhaseManagedCreep(
+function createCanonicalManagedConfig(
+  roomName: string,
+  role: ManagedWorkforceRole,
+  discriminator: string | number,
+): CanonicalManagedConfigFixture {
+  const discriminatorText = String(discriminator);
+  const args = role === "carrier" || role === "worker" ? [] : [discriminatorText];
+  return {
+    configName: `${roomName}:${role}:${discriminatorText}`,
+    config: { role, args, roomName },
+  };
+}
+
+function createSpawn(
   name: string,
   room: Room,
-  configName: string,
-  role: CreepMemory["role"],
-): Creep {
+  queue: string[],
+  options: { active?: boolean; spawningName?: string } = {},
+): StructureSpawn {
   return {
+    id: `${name}-id` as Id<StructureSpawn>,
     name,
     room,
-    memory: { configName, role } as CreepMemory,
-  } as Creep;
+    memory: { spawnList: [...queue] },
+    spawning: options.spawningName ? ({ name: options.spawningName } as Spawning) : null,
+    isActive: jest.fn(() => options.active ?? true),
+  } as unknown as StructureSpawn;
+}
+
+function snapshotManagedGcState(): {
+  configs: Record<string, CreepConfig>;
+  queues: Record<string, string[]>;
+} {
+  return {
+    configs: Object.fromEntries(
+      Object.entries(Memory.data?.creepConfigs ?? {}).map(([configName, config]) => [
+        configName,
+        { ...config, args: [...config.args] },
+      ]),
+    ),
+    queues: Object.fromEntries(
+      Object.values(Game.spawns).map((spawn) => [spawn.name, [...(spawn.memory.spawnList ?? [])]]),
+    ),
+  };
 }
 
 describe("runMemoryCleanup", () => {
@@ -129,54 +138,51 @@ describe("runMemoryCleanup", () => {
     Memory.data = undefined;
   });
 
-  it("rebuilds workforce after same-tick normal-repair refresh without reusing cleanup observation", () => {
+  it("leaves visible managed-room canonical configs to bootstrap without scanning workforce policy", () => {
     Game.time = 51;
-    const { room, source, mineral } = createCrossPhaseRoom("W5N1");
+    const room = createOwnedRoom("W5N1");
+    room.controller!.level = 5;
+    room.memory.workerConstructionTier = 3;
+    const findSpy = jest.fn(() => []);
+    room.find = findSpy as Room["find"];
     Game.rooms = { [room.name]: room };
-    const expectedWithoutRepair = [
-      `${room.name}:harvester:${source.id}`,
-      `${room.name}:mineralHarvester:${mineral.id}`,
-      `${room.name}:carrier:0`,
-      `${room.name}:worker:0`,
-    ];
-    const bonusWorkerConfigName = `${room.name}:worker:1`;
-    const liveGuardConfigs = {
-      [`${room.name}:harvester:live-legacy`]: "harvester",
-      [`${room.name}:miner:live-legacy`]: "miner",
-      [`${room.name}:mineralHarvester:live-legacy`]: "mineralHarvester",
-      [`${room.name}:carrier:9`]: "carrier",
-      [`${room.name}:worker:9`]: "worker",
-    } as const;
+    const surplus = createCanonicalManagedConfig(room.name, "worker", 9);
     Memory.data = {
       creepConfigs: {
-        [expectedWithoutRepair[0]]: { role: "harvester", args: [source.id], roomName: room.name },
-        [expectedWithoutRepair[1]]: { role: "mineralHarvester", args: [mineral.id], roomName: room.name },
-        [expectedWithoutRepair[2]]: { role: "carrier", args: [], roomName: room.name },
-        [expectedWithoutRepair[3]]: { role: "worker", args: [], roomName: room.name },
-        [bonusWorkerConfigName]: { role: "worker", args: [], roomName: room.name },
-        ...Object.fromEntries(
-          Object.entries(liveGuardConfigs).map(([configName, role]) => [
-            configName,
-            { role, args: [], roomName: room.name },
-          ]),
-        ),
+        [surplus.configName]: surplus.config,
       },
     } as Memory["data"];
-    Game.creeps = Object.fromEntries(
-      Object.entries(liveGuardConfigs).map(([configName, role], index) => {
-        const name = `ManagedLive${index}`;
-        return [name, createCrossPhaseManagedCreep(name, room, configName, role)];
-      }),
-    );
+    const spawn = createSpawn("Spawn1", room, [surplus.configName]);
+    Game.spawns = { [spawn.name]: spawn };
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs?.[surplus.configName]).toEqual(surplus.config);
+    expect(spawn.memory.spawnList).toEqual([surplus.configName]);
+    expect(findSpy).not.toHaveBeenCalled();
+    expect(room.memory.workerConstructionTier).toBe(3);
+  });
+
+  it("independently observes cleanup, normal-repair refresh, and bootstrap workforce in tick 51", () => {
+    Game.time = 51;
+    const room = createNormalRepairRoom("W5N1");
+    Game.rooms = { [room.name]: room };
+    const bonusWorker = createCanonicalManagedConfig(room.name, "worker", 1);
+    Memory.data = {
+      creepConfigs: {
+        [bonusWorker.configName]: bonusWorker.config,
+      },
+    } as Memory["data"];
+    const spawn = createSpawn("Spawn1", room, [bonusWorker.configName]);
+    Game.spawns = { [spawn.name]: spawn };
 
     expect(peekWorkerTasksByRoom(room.name)).toEqual({});
 
     runMemoryCleanup();
 
-    expect(Memory.data?.creepConfigs?.[bonusWorkerConfigName]).toBeUndefined();
-    for (const configName of Object.keys(liveGuardConfigs)) {
-      expect(Memory.data?.creepConfigs?.[configName]).toBeDefined();
-    }
+    expect(Memory.data?.creepConfigs?.[bonusWorker.configName]).toEqual(bonusWorker.config);
+    expect(spawn.memory.spawnList).toEqual([bonusWorker.configName]);
+    expect(room.memory.workerConstructionTier).toBe(3);
     expect(peekWorkerTasksByRoom(room.name)).toEqual({});
 
     refreshWorkerTasks();
@@ -190,14 +196,323 @@ describe("runMemoryCleanup", () => {
         }),
       ]),
     );
+    expect(room.memory.workerConstructionTier).toBe(3);
 
     bootstrapRooms();
 
-    expect(Memory.data?.creepConfigs?.[bonusWorkerConfigName]).toEqual({
+    expect(Memory.data?.creepConfigs?.[bonusWorker.configName]).toEqual(bonusWorker.config);
+    expect(spawn.memory.spawnList).toEqual([bonusWorker.configName]);
+    expect(room.memory.workerConstructionTier).toBe(0);
+    expect(Memory.data?.creepConfigs?.[`${room.name}:worker:0`]).toEqual({
       role: "worker",
       args: [],
       roomName: room.name,
     });
+  });
+
+  it("preserves a queued-only manual max-carrier config and its queue request", () => {
+    const room = Game.rooms.W1N1;
+    const configName = `${room.name}:manual:maxcarrier:${Game.time}`;
+    const config: CreepConfig = {
+      role: "carrier",
+      args: [],
+      roomName: room.name,
+      body: [CARRY, MOVE],
+    };
+    const spawn = createSpawn("Spawn1", room, [configName]);
+    Game.spawns = { [spawn.name]: spawn };
+    Memory.data = { creepConfigs: { [configName]: config } };
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs?.[configName]).toEqual(config);
+    expect(spawn.memory.spawnList).toEqual([configName]);
+  });
+
+  it.each([
+    {
+      mismatch: "role",
+      configName: "W6N6:worker:0",
+      config: { role: "carrier", args: [], roomName: "W6N6" } as CreepConfig,
+    },
+    {
+      mismatch: "args",
+      configName: "W6N6:carrier:0",
+      config: { role: "carrier", args: ["unexpected"], roomName: "W6N6" } as CreepConfig,
+    },
+    {
+      mismatch: "roomName",
+      configName: "W6N6:worker:0",
+      config: { role: "worker", args: [], roomName: "W6N7" } as CreepConfig,
+    },
+  ])("preserves canonical-looking $mismatch mismatch config and queue fail-safe", ({ configName, config }) => {
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [configName]);
+    Game.spawns = { [spawn.name]: spawn };
+    Memory.data = { creepConfigs: { [configName]: config } };
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs?.[configName]).toEqual(config);
+    expect(spawn.memory.spawnList).toEqual([configName]);
+  });
+
+  it("retires idle and live canonical configs when a visible owned room becomes reserved", () => {
+    const room = createOwnedRoom("W4N4");
+    Game.rooms = { [room.name]: room };
+    Memory.cfg = { rooms: { [room.name]: { type: "reserved" } } };
+    const idle = createCanonicalManagedConfig(room.name, "worker", 0);
+    const live = createCanonicalManagedConfig(room.name, "carrier", 0);
+    Memory.data = {
+      creepConfigs: {
+        [idle.configName]: idle.config,
+        [live.configName]: live.config,
+      },
+    };
+    Game.creeps.LiveCarrier = createManagedCreep(live.configName, live.config.role);
+    const spawn = createSpawn("Spawn1", room, [idle.configName, live.configName]);
+    Game.spawns = { [spawn.name]: spawn };
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs?.[idle.configName]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[live.configName]).toEqual({
+      role: live.config.role,
+      args: live.config.args,
+    });
+    expect(spawn.memory.spawnList).toEqual([]);
+  });
+
+  it("deletes an idle lost-room config and orphans live configs for all five managed roles", () => {
+    const lostRoomName = "W9N9";
+    const idle = createCanonicalManagedConfig(lostRoomName, "worker", 8);
+    const liveConfigs = [
+      createCanonicalManagedConfig(lostRoomName, "harvester", "source-h"),
+      createCanonicalManagedConfig(lostRoomName, "miner", "source-m"),
+      createCanonicalManagedConfig(lostRoomName, "mineralHarvester", "mineral-a"),
+      createCanonicalManagedConfig(lostRoomName, "carrier", 0),
+      createCanonicalManagedConfig(lostRoomName, "worker", 0),
+    ];
+    Memory.data = {
+      creepConfigs: Object.fromEntries(
+        [idle, ...liveConfigs].map(({ configName, config }) => [configName, config]),
+      ),
+    };
+    Game.creeps = Object.fromEntries(
+      liveConfigs.map(({ configName, config }, index) => [
+        `LiveManaged${index}`,
+        createManagedCreep(configName, config.role),
+      ]),
+    );
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [
+      idle.configName,
+      ...liveConfigs.map(({ configName }) => configName),
+    ]);
+    Game.spawns = { [spawn.name]: spawn };
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs?.[idle.configName]).toBeUndefined();
+    for (const { configName, config } of liveConfigs) {
+      expect(Memory.data?.creepConfigs?.[configName]).toEqual({
+        role: config.role,
+        args: config.args,
+      });
+    }
+    expect(spawn.memory.spawnList).toEqual([]);
+  });
+
+  it("still owns canonical configs carrying body, name, and spawnOnce extensions", () => {
+    const lostRoomName = "W2N2";
+    const idle = createCanonicalManagedConfig(lostRoomName, "worker", 0);
+    const live = createCanonicalManagedConfig(lostRoomName, "carrier", 0);
+    const extendedIdle: CreepConfig = {
+      ...idle.config,
+      body: [WORK, MOVE],
+      name: "ExtendedIdleWorker",
+      spawnOnce: { queuedAt: Game.time - 1 },
+    };
+    const extendedLive: CreepConfig = {
+      ...live.config,
+      body: [CARRY, MOVE],
+      name: "ExtendedLiveCarrier",
+      spawnOnce: { queuedAt: Game.time },
+    };
+    Memory.data = {
+      creepConfigs: {
+        [idle.configName]: extendedIdle,
+        [live.configName]: extendedLive,
+      },
+    };
+    Game.creeps.ExtendedLiveCarrier = createManagedCreep(live.configName, live.config.role);
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [idle.configName, live.configName]);
+    Game.spawns = { [spawn.name]: spawn };
+    const expectedOrphan = { ...extendedLive };
+    delete expectedOrphan.roomName;
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.creepConfigs?.[idle.configName]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[live.configName]).toEqual(expectedOrphan);
+    expect(spawn.memory.spawnList).toEqual([]);
+  });
+
+  it("preserves Game.creeps spawning and Spawn-memory in-flight references before dead-memory cleanup", () => {
+    const lostRoomName = "W8N8";
+    const gameSpawning = createCanonicalManagedConfig(lostRoomName, "worker", 0);
+    const memorySpawning = createCanonicalManagedConfig(lostRoomName, "carrier", 0);
+    Memory.data = {
+      creepConfigs: {
+        [gameSpawning.configName]: gameSpawning.config,
+        [memorySpawning.configName]: memorySpawning.config,
+      },
+    };
+    const gameSpawningName = "GameSpawningWorker";
+    Game.creeps[gameSpawningName] = {
+      ...createManagedCreep(gameSpawning.configName, gameSpawning.config.role),
+      name: gameSpawningName,
+      spawning: true,
+    } as Creep;
+    Memory.creeps[gameSpawningName] = {
+      role: gameSpawning.config.role,
+      configName: gameSpawning.configName,
+    } as CreepMemory;
+    const memorySpawningName = "MemorySpawningCarrier";
+    Memory.creeps[memorySpawningName] = {
+      role: memorySpawning.config.role,
+      configName: memorySpawning.configName,
+    } as CreepMemory;
+    const spawnA = createSpawn("SpawnA", Game.rooms.W1N1, [gameSpawning.configName], {
+      spawningName: gameSpawningName,
+    });
+    const spawnB = createSpawn("SpawnB", Game.rooms.W1N1, [memorySpawning.configName], {
+      spawningName: memorySpawningName,
+    });
+    Game.spawns = { [spawnA.name]: spawnA, [spawnB.name]: spawnB };
+
+    runMemoryCleanup();
+
+    for (const { configName, config } of [gameSpawning, memorySpawning]) {
+      expect(Memory.data?.creepConfigs?.[configName]).toEqual({
+        role: config.role,
+        args: config.args,
+      });
+    }
+    expect(Memory.creeps[gameSpawningName]).toBeDefined();
+    expect(Memory.creeps[memorySpawningName]).toBeDefined();
+    expect(spawnA.memory.spawnList).toEqual([]);
+    expect(spawnB.memory.spawnList).toEqual([]);
+  });
+
+  it("does not treat isolated creep Memory or queue-only production intent as live references", () => {
+    const lostRoomName = "W7N7";
+    const isolatedMemory = createCanonicalManagedConfig(lostRoomName, "worker", 0);
+    const queueOnly = createCanonicalManagedConfig(lostRoomName, "carrier", 0);
+    Memory.data = {
+      creepConfigs: {
+        [isolatedMemory.configName]: isolatedMemory.config,
+        [queueOnly.configName]: queueOnly.config,
+      },
+    };
+    const deadCreepName = "DeadManagedWorker";
+    Memory.creeps[deadCreepName] = {
+      role: isolatedMemory.config.role,
+      configName: isolatedMemory.configName,
+    } as CreepMemory;
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [queueOnly.configName]);
+    Game.spawns = { [spawn.name]: spawn };
+
+    runMemoryCleanup();
+
+    expect(Memory.creeps[deadCreepName]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[isolatedMemory.configName]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[queueOnly.configName]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual([]);
+  });
+
+  it("retires multi-Spawn duplicates independently of Game.spawns enumeration order", () => {
+    const unrelated = ["manual:keep-a", "manual:keep-b", "manual:keep-c", "manual:keep-d"];
+    const runScenario = (spawnOrder: readonly ["SpawnActive" | "SpawnInactive", "SpawnActive" | "SpawnInactive"]) => {
+      resetRuntimeServices();
+      const stale = createCanonicalManagedConfig("W6N6", "worker", 0);
+      Memory.data = {
+        creepConfigs: {
+          [stale.configName]: stale.config,
+          ...Object.fromEntries(
+            unrelated.map((configName) => [configName, { role: "flagScout", args: [] } as CreepConfig]),
+          ),
+        },
+      };
+      const activeSpawn = createSpawn(
+        "SpawnActive",
+        Game.rooms.W1N1,
+        [stale.configName, unrelated[0], stale.configName, unrelated[1], stale.configName],
+        { active: true },
+      );
+      const inactiveSpawn = createSpawn(
+        "SpawnInactive",
+        Game.rooms.W1N1,
+        [unrelated[2], stale.configName, unrelated[3], stale.configName],
+        { active: false },
+      );
+      const spawns = { SpawnActive: activeSpawn, SpawnInactive: inactiveSpawn };
+      Game.spawns = Object.fromEntries(spawnOrder.map((spawnName) => [spawnName, spawns[spawnName]]));
+
+      runMemoryCleanup();
+
+      return {
+        staleConfig: Memory.data?.creepConfigs?.[stale.configName],
+        unrelatedConfigsPresent: unrelated.map(
+          (configName) => Memory.data?.creepConfigs?.[configName] !== undefined,
+        ),
+        queues: {
+          SpawnActive: [...(activeSpawn.memory.spawnList ?? [])],
+          SpawnInactive: [...(inactiveSpawn.memory.spawnList ?? [])],
+        },
+      };
+    };
+    const expected = {
+      staleConfig: undefined,
+      unrelatedConfigsPresent: unrelated.map(() => true),
+      queues: {
+        SpawnActive: unrelated.slice(0, 2),
+        SpawnInactive: unrelated.slice(2),
+      },
+    };
+
+    const forward = runScenario(["SpawnActive", "SpawnInactive"]);
+    const reverse = runScenario(["SpawnInactive", "SpawnActive"]);
+
+    expect(forward).toEqual(expected);
+    expect(reverse).toEqual(expected);
+    expect(reverse).toEqual(forward);
+  });
+
+  it("is idempotent after deleting idle configs, orphaning live configs, and filtering queues", () => {
+    const lostRoomName = "W3N3";
+    const idle = createCanonicalManagedConfig(lostRoomName, "worker", 0);
+    const live = createCanonicalManagedConfig(lostRoomName, "carrier", 0);
+    const manualConfigName = `${lostRoomName}:manual:maxcarrier:${Game.time}`;
+    Memory.data = {
+      creepConfigs: {
+        [idle.configName]: idle.config,
+        [live.configName]: live.config,
+        [manualConfigName]: { role: "carrier", args: [], roomName: lostRoomName },
+      },
+    };
+    Game.creeps.LiveCarrier = createManagedCreep(live.configName, live.config.role);
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [
+      idle.configName,
+      live.configName,
+      manualConfigName,
+    ]);
+    Game.spawns = { [spawn.name]: spawn };
+
+    runMemoryCleanup();
+    const afterFirstCleanup = snapshotManagedGcState();
+
+    runMemoryCleanup();
+
+    expect(snapshotManagedGcState()).toEqual(afterFirstCleanup);
   });
 
   it("removes foreign room pickup reservation memory after claims expire", () => {

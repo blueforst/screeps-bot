@@ -1,6 +1,7 @@
 import { hasSourceAdjacentLink } from "@/runtime/sourceLink";
 import { isRoomInReserveMode } from "@/runtime/roomReserve";
 import { peekWorkerTasksByRoom } from "@/runtime/workerTaskPool";
+import { formatRoomWorkforceConfigName } from "@/runtime/roomWorkforceIdentity";
 
 const DEFAULT_WORKER_MAX = 8;
 const DEFAULT_WORKER_BASE = 1;
@@ -188,11 +189,11 @@ export function buildRoomWorkforceInventory(room: Room): RoomWorkforceInventory 
     const deprecatedRole: SourceWorkerRole = role === "miner" ? "harvester" : "miner";
     configs.push({
       kind: "source",
-      configName: `${room.name}:${role}:${source.id}`,
+      configName: formatRoomWorkforceConfigName(room.name, role, source.id),
       role,
       args: [source.id],
       source,
-      deprecatedConfigName: `${room.name}:${deprecatedRole}:${source.id}`,
+      deprecatedConfigName: formatRoomWorkforceConfigName(room.name, deprecatedRole, source.id),
     });
   }
 
@@ -200,7 +201,7 @@ export function buildRoomWorkforceInventory(room: Room): RoomWorkforceInventory 
   for (const mineralId of mineralIds) {
     configs.push({
       kind: "mineral",
-      configName: `${room.name}:mineralHarvester:${mineralId}`,
+      configName: formatRoomWorkforceConfigName(room.name, "mineralHarvester", mineralId),
       role: "mineralHarvester",
       args: [mineralId],
       mineralId,
@@ -211,7 +212,7 @@ export function buildRoomWorkforceInventory(room: Room): RoomWorkforceInventory 
   for (let i = 0; i < carrierCount; i++) {
     configs.push({
       kind: "carrier",
-      configName: `${room.name}:carrier:${i}`,
+      configName: formatRoomWorkforceConfigName(room.name, "carrier", i),
       role: "carrier",
       args: [],
       slot: i,
@@ -226,7 +227,7 @@ export function buildRoomWorkforceInventory(room: Room): RoomWorkforceInventory 
     for (let i = 0; i < workerDecision.count; i++) {
       configs.push({
         kind: "worker",
-        configName: `${room.name}:worker:${i}`,
+        configName: formatRoomWorkforceConfigName(room.name, "worker", i),
         role: "worker",
         args: [],
         slot: i,
@@ -240,10 +241,4 @@ export function buildRoomWorkforceInventory(room: Room): RoomWorkforceInventory 
     constructionTierEffect,
     configs,
   };
-}
-
-export function getExpectedManagedConfigNames(room: Room): string[] {
-  const inventory = buildRoomWorkforceInventory(room);
-  applyRoomWorkforceConstructionTierEffect(room, inventory.constructionTierEffect);
-  return inventory.configs.map((config) => config.configName);
 }

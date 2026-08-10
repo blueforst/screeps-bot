@@ -17,13 +17,24 @@ type RuntimeGlobalWithServices = typeof global & {
 };
 
 const runtimeGlobal: RuntimeGlobalWithServices = global;
+const UPSERTED_CREEP_CONFIG_KEYS = new Set<keyof CreepConfig>([
+  "role",
+  "args",
+  "roomName",
+]);
 
-function areStringArraysEqual(left: string[], right: string[]): boolean {
-  if (left.length !== right.length) {
+function areStringArraysEqual(left: unknown, right: readonly string[]): boolean {
+  if (!Array.isArray(left) || left.length !== right.length) {
     return false;
   }
 
-  return left.every((value, index) => value === right[index]);
+  for (let index = 0; index < right.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(left, index) || left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function isUpsertedConfigCurrent(current: CreepConfig | undefined, next: CreepConfig): boolean {
@@ -32,10 +43,9 @@ function isUpsertedConfigCurrent(current: CreepConfig | undefined, next: CreepCo
   }
 
   return (
+    Object.keys(current).every((key) => UPSERTED_CREEP_CONFIG_KEYS.has(key as keyof CreepConfig)) &&
     current.role === next.role &&
     current.roomName === next.roomName &&
-    current.name === undefined &&
-    current.body === undefined &&
     areStringArraysEqual(current.args, next.args)
   );
 }

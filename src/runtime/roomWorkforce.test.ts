@@ -2,7 +2,6 @@ import {
   applyRoomWorkforceConstructionTierEffect,
   buildRoomWorkforceInventory,
   getDesiredWorkerCount,
-  getExpectedManagedConfigNames,
   getWorkerCap,
 } from "@/runtime/roomWorkforce";
 import { clearWorkerTaskBoardForTest, getWorkerTasksByRoom } from "@/runtime/workerTaskPool";
@@ -85,6 +84,10 @@ function createRoom(options: {
       return [];
     },
   } as Room;
+}
+
+function getInventoryConfigNames(room: Room): string[] {
+  return buildRoomWorkforceInventory(room).configs.map((config) => config.configName);
 }
 
 describe("roomWorkforce", () => {
@@ -272,7 +275,7 @@ describe("roomWorkforce", () => {
       ],
     });
 
-    expect(getExpectedManagedConfigNames(room)).toEqual([
+    expect(getInventoryConfigNames(room)).toEqual([
       "W1N1:harvester:source-a",
       "W1N1:miner:source-b",
       "W1N1:mineralHarvester:mineral-ok",
@@ -367,7 +370,7 @@ describe("roomWorkforce", () => {
     const rcl4Room = createRoom({ name: "W1N4", level: 4, sources: [createSource("source-a", "W1N4")] });
     const rcl5Room = createRoom({ name: "W1N5", level: 5, sources: [createSource("source-a", "W1N5")] });
 
-    expect(getExpectedManagedConfigNames(rcl3Room)).toEqual([
+    expect(getInventoryConfigNames(rcl3Room)).toEqual([
       "W1N3:harvester:source-a",
       "W1N3:carrier:0",
       "W1N3:carrier:1",
@@ -376,14 +379,14 @@ describe("roomWorkforce", () => {
       "W1N3:worker:2",
     ]);
 
-    expect(getExpectedManagedConfigNames(rcl4Room)).toEqual([
+    expect(getInventoryConfigNames(rcl4Room)).toEqual([
       "W1N4:harvester:source-a",
       "W1N4:carrier:0",
       "W1N4:carrier:1",
       "W1N4:worker:0",
     ]);
 
-    expect(getExpectedManagedConfigNames(rcl5Room)).toEqual([
+    expect(getInventoryConfigNames(rcl5Room)).toEqual([
       "W1N5:harvester:source-a",
       "W1N5:carrier:0",
       "W1N5:worker:0",
@@ -403,7 +406,7 @@ describe("roomWorkforce", () => {
       pos: { roomName: room.name } as RoomPosition,
     } as Flag;
 
-    expect(getExpectedManagedConfigNames(room)).toEqual([
+    expect(getInventoryConfigNames(room)).toEqual([
       "W1N6:harvester:source-a",
       "W1N6:carrier:0",
     ]);
