@@ -105,6 +105,9 @@ describe("powerSpawnControl", () => {
   beforeEach(() => {
     clearCarrierTaskBoardForTest();
     resetPowerCreepControlCacheForTest();
+    Game.rooms = {};
+    Game.flags = {};
+    Memory.cfg = {};
     (Game as Game & { powerCreeps: Record<string, PowerCreep> }).powerCreeps = {};
   });
 
@@ -144,7 +147,7 @@ describe("powerSpawnControl", () => {
     expect(powerSpawn.processPower).toHaveBeenCalledTimes(1);
   });
 
-  it("房间开关关闭后停止处理 power 并清理已有补给任务", () => {
+  it("进入储备状态后停止处理 power 并清理已有补给任务", () => {
     const { room, powerSpawn } = createScenario({ power: 1, energy: 50 });
     installCapability(room.name);
 
@@ -152,19 +155,33 @@ describe("powerSpawnControl", () => {
     expect(powerSpawn.processPower).toHaveBeenCalledTimes(1);
     expect(listCarrierTasksByRoom(room.name)).toHaveLength(1);
 
-    Memory.cfg = {
-      powerSpawnControl: {
-        rooms: {
-          [room.name]: { enabled: false },
-        },
-      },
-    };
+    Game.flags[`RESERVE_${room.name}`] = {
+      name: `RESERVE_${room.name}`,
+      pos: { roomName: room.name },
+    } as unknown as Flag;
     Game.time += 1;
 
     runPowerSpawnControl();
 
     expect(powerSpawn.processPower).toHaveBeenCalledTimes(1);
     expect(listCarrierTasksByRoom(room.name)).toHaveLength(0);
+  });
+
+  it("非储备状态忽略遗留 enabled=false 并自动处理 power", () => {
+    const { room, powerSpawn } = createScenario({ power: 1, energy: 50 });
+    installCapability(room.name);
+    (Memory as unknown as { cfg: Record<string, unknown> }).cfg = {
+      powerSpawnControl: {
+        rooms: {
+          [room.name]: { enabled: false },
+        },
+      },
+    };
+
+    runPowerSpawnControl();
+
+    expect(powerSpawn.processPower).toHaveBeenCalledTimes(1);
+    expect(listCarrierTasksByRoom(room.name)).toHaveLength(1);
   });
 
   it("补给使用 20%/90% 滞回，避免任务在临界值反复出现", () => {

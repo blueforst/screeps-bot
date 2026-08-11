@@ -221,6 +221,7 @@ describe("synthesis boost pause/resume contract", () => {
             successfulRuns: 10,
             pendingTasks: 0,
             lastTransitionAt: 90,
+            nextReactionAt: 150,
           },
         },
       },
@@ -238,6 +239,7 @@ describe("synthesis boost pause/resume contract", () => {
     const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
     expect(roomState.boostPause!.taskId).toBe("pb-task-1");
     expect(roomState.boostPause!.taskIds).toEqual(["pb-task-1", "pb-task-2"]);
+    expect(roomState.nextReactionAt).toBeUndefined();
 
     resumeSynthesisAfterBoost(ROOM, "pb-task-1");
     expect(roomState.boostPause!.taskId).toBe("pb-task-2");
@@ -246,6 +248,7 @@ describe("synthesis boost pause/resume contract", () => {
     resumeSynthesisAfterBoost(ROOM, "pb-task-2");
     expect(roomState.boostPause).toBeUndefined();
     expect(roomState.activeProduct).toBe(RESOURCE_UTRIUM_HYDRIDE);
+    expect(roomState.nextReactionAt).toBeUndefined();
   });
 
   it("pauseSynthesisForBoost for unknown room returns false", () => {

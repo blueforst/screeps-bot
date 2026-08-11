@@ -10,7 +10,7 @@ const MEMORY_BRANCHES = {
   cfg: {
     declaration: "src/types/memory/cfg.d.ts",
     interfaceName: "ScreepsMemoryConfig",
-    schemaFingerprint: "c95f29353e53e022c118a57f76846f0b0c4ce51c6e289658e877fd9455bb554c",
+    schemaFingerprint: "37b13b84da74a619425e5188a485601d0c738891102f40d64d463355d6ae19f7",
     imports: ["@/types/system:RoomType"],
     fields: [
       "rooms",
@@ -19,7 +19,6 @@ const MEMORY_BRANCHES = {
       "pixelGenerator",
       "roomPlannerBuild",
       "productionMonitor",
-      "powerSpawnControl",
       "crossShard",
       "telemetry",
       "cpuProfiler",
@@ -35,7 +34,7 @@ const MEMORY_BRANCHES = {
   runtime: {
     declaration: "src/types/memory/runtime.d.ts",
     interfaceName: "ScreepsMemoryRuntime",
-    schemaFingerprint: "7a09d22dbd3288886abea3cf8fd52ab20853f74f1fabf4956d39c7692f2e823d",
+    schemaFingerprint: "87e699ad2b4cc8504207669f9ab96109b46f4d0e5f26fd78086ef8ab4ea8ee1b",
     imports: [
       "@/runtime/hubPlanner:AllocationLedgerEntry",
       "@/runtime/hubPlanner:DirectRouteDecision",

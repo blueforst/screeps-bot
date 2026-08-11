@@ -31,9 +31,6 @@ declare global {
     productionMonitor?: {
       enabled?: boolean;
     };
-    powerSpawnControl?: {
-      rooms?: Record<string, { enabled?: boolean }>;
-    };
     crossShard?: {
       enabled?: boolean;
     };
@@ -55,13 +52,11 @@ declare global {
       enabled?: boolean;
       sampleInterval?: number;
       defaultBatchSize?: number;
-      defaultMaxRunsPerTick?: number;
       rooms?: Record<
         string,
         {
           enabled?: boolean;
           batchSize?: number;
-          maxRunsPerTick?: number;
           donorRoomNames?: string[];
           reagentLabIds?: string[];
           reactions?: Array<

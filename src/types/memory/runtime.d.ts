@@ -503,6 +503,7 @@ declare global {
           lastError?: string;
           lastTransitionAt: number;
           loadingSinceTick?: number;
+          nextReactionAt?: number;
           boostPause?: {
             reason: "powerBankBoost";
             taskId: string;

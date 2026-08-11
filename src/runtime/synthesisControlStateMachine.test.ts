@@ -132,7 +132,6 @@ function createSynthesisRoom(options: {
 
 function setConfig(overrides?: {
   sampleInterval?: number;
-  maxRunsPerTick?: number;
   reactions?: Array<{ product: ResourceConstant; targetAmount: number; batchSize?: number }>;
 }) {
   Memory.cfg = {
@@ -140,12 +139,10 @@ function setConfig(overrides?: {
       enabled: true,
       sampleInterval: overrides?.sampleInterval ?? 10,
       defaultBatchSize: 500,
-      defaultMaxRunsPerTick: 6,
       rooms: {
         W1N1: {
           enabled: true,
           batchSize: 500,
-          maxRunsPerTick: overrides?.maxRunsPerTick ?? 6,
           reactions: overrides?.reactions ?? [
             { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000 },
           ],
@@ -188,6 +185,158 @@ function setRoomStage(
     ...extra,
   } as any;
 }
+
+function setupEightProductLabSynthesisRoom(): { room: Room; labs: LabHandle[] } {
+  setConfig({
+    reactions: [
+      { product: RESOURCE_HYDROXIDE as ResourceConstant, targetAmount: 5000, batchSize: 500 },
+    ],
+  });
+  setRoomStage("synthesizing", {
+    activeProduct: RESOURCE_HYDROXIDE,
+    reagentA: RESOURCE_OXYGEN,
+    reagentB: RESOURCE_HYDROGEN,
+    targetAmount: 5000,
+    batchSize: 500,
+    nextReactionAt: undefined,
+  });
+
+  const { room, labs } = createSynthesisRoom({
+    name: "W1N1",
+    storageResources: {
+      [RESOURCE_ENERGY]: 500000,
+    },
+  });
+  const tenLabs = Array.from({ length: 10 }, (_, index) =>
+    createLab(room, `W1N1-lab-${index + 1}`),
+  );
+  labs.splice(0, labs.length, ...tenLabs);
+
+  labs[0].mineralType = RESOURCE_OXYGEN;
+  labs[0]._resourceMap[RESOURCE_OXYGEN] = 3000;
+  labs[1].mineralType = RESOURCE_HYDROGEN;
+  labs[1]._resourceMap[RESOURCE_HYDROGEN] = 3000;
+
+  const labById = Object.fromEntries(labs.map((lab) => [lab.id, lab]));
+  (Game as any).getObjectById = (id: string) => labById[id] ?? null;
+  Memory.cfg!.synthesisControl!.rooms!.W1N1.reagentLabIds = [labs[0].id, labs[1].id];
+  Game.rooms.W1N1 = room;
+
+  return { room, labs };
+}
+
+describe("reaction cooldown scheduling", () => {
+  beforeEach(() => {
+    resetRuntimeServices();
+    clearCarrierTaskBoardForTest();
+    Game.time = 100;
+    Game.rooms = {};
+    Game.creeps = {};
+    Memory.runtime = undefined;
+    Memory.data = undefined;
+    Memory.rooms = {};
+  });
+
+  it("runs all eight product labs together and skips lab scans until the product cooldown expires", () => {
+    const { room, labs } = setupEightProductLabSynthesisRoom();
+    const productLabs = labs.slice(2);
+    Memory.cfg!.synthesisControl!.rooms!.W1N1.reactions!.push({
+      product: RESOURCE_UTRIUM_OXIDE as ResourceConstant,
+      targetAmount: 5000,
+    });
+    const findSpy = jest.spyOn(room, "find");
+
+    runSynthesisControl();
+
+    for (const lab of productLabs) {
+      expect(lab.runReaction).toHaveBeenCalledTimes(1);
+    }
+    const reactionInterval = REACTION_TIME[RESOURCE_HYDROXIDE];
+    expect(Memory.runtime!.synthesisControl!.rooms.W1N1.nextReactionAt).toBe(
+      Game.time + reactionInterval,
+    );
+
+    findSpy.mockClear();
+    Game.time += 1;
+    runSynthesisControl();
+
+    expect(findSpy).not.toHaveBeenCalled();
+    for (const lab of productLabs) {
+      expect(lab.runReaction).toHaveBeenCalledTimes(1);
+    }
+
+    Game.time = 100 + reactionInterval;
+    runSynthesisControl();
+
+    expect(findSpy).toHaveBeenCalled();
+    for (const lab of productLabs) {
+      expect(lab.runReaction).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("waits for the slowest legacy cooldown before synchronizing every product lab", () => {
+    const { room, labs } = setupEightProductLabSynthesisRoom();
+    const productLabs = labs.slice(2);
+    for (const lab of productLabs.slice(0, 6)) {
+      lab.cooldown = 5;
+    }
+    for (const lab of productLabs.slice(6)) {
+      lab.cooldown = 6;
+    }
+    const findSpy = jest.spyOn(room, "find");
+
+    runSynthesisControl();
+
+    for (const lab of productLabs) {
+      expect(lab.runReaction).not.toHaveBeenCalled();
+    }
+    expect(Memory.runtime!.synthesisControl!.rooms.W1N1.nextReactionAt).toBe(106);
+
+    findSpy.mockClear();
+    Game.time = 101;
+    runSynthesisControl();
+    expect(findSpy).not.toHaveBeenCalled();
+
+    for (const lab of productLabs) {
+      lab.cooldown = 0;
+    }
+    Game.time = 106;
+    runSynthesisControl();
+
+    for (const lab of productLabs) {
+      expect(lab.runReaction).toHaveBeenCalledTimes(1);
+    }
+    expect(Memory.runtime!.synthesisControl!.rooms.W1N1.nextReactionAt).toBe(
+      106 + REACTION_TIME[RESOURCE_HYDROXIDE],
+    );
+  });
+
+  it("wakes during cooldown when the active reaction plan changes", () => {
+    const { room, labs } = setupEightProductLabSynthesisRoom();
+    const productLabs = labs.slice(2);
+    const findSpy = jest.spyOn(room, "find");
+
+    runSynthesisControl();
+
+    const reactionInterval = REACTION_TIME[RESOURCE_HYDROXIDE];
+    for (const lab of productLabs) {
+      lab.cooldown = reactionInterval - 1;
+    }
+    Memory.cfg!.synthesisControl!.rooms!.W1N1.reactions![0].targetAmount = 6000;
+    findSpy.mockClear();
+    Game.time = 101;
+
+    runSynthesisControl();
+
+    expect(findSpy).toHaveBeenCalled();
+    for (const lab of productLabs) {
+      expect(lab.runReaction).toHaveBeenCalledTimes(1);
+    }
+    const roomState = Memory.runtime!.synthesisControl!.rooms.W1N1;
+    expect(roomState.targetAmount).toBe(6000);
+    expect(roomState.nextReactionAt).toBe(100 + reactionInterval);
+  });
+});
 
 describe("stale hub lastError cleanup", () => {
   beforeEach(() => {

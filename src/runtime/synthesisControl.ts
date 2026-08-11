@@ -35,7 +35,6 @@ interface SynthesisReactionPlan {
 interface SynthesisRoomConfig {
   enabled: boolean;
   batchSize: number;
-  maxRunsPerTick: number;
   donorRoomNames: string[];
   reagentLabIds: string[];
   reactions: SynthesisReactionPlan[];
@@ -45,7 +44,6 @@ interface SynthesisControlConfig {
   enabled: boolean;
   sampleInterval: number;
   defaultBatchSize: number;
-  defaultMaxRunsPerTick: number;
   rooms: Record<string, SynthesisRoomConfig>;
 }
 
@@ -87,6 +85,7 @@ interface SynthesisRoomRuntimeState {
   lastError?: string;
   lastTransitionAt: number;
   loadingSinceTick?: number;
+  nextReactionAt?: number;
   boostPause?: BoostPauseState;
 }
 
@@ -113,13 +112,10 @@ interface DonorCandidate {
 
 const DEFAULT_SAMPLE_INTERVAL = 10;
 const DEFAULT_BATCH_SIZE = 500;
-const DEFAULT_MAX_RUNS_PER_TICK = 6;
 const MIN_SAMPLE_INTERVAL = 5;
 const MAX_SAMPLE_INTERVAL = 100;
 const MIN_BATCH_SIZE = LAB_REACTION_AMOUNT;
 const MAX_BATCH_SIZE = 3000;
-const MIN_MAX_RUNS_PER_TICK = 1;
-const MAX_MAX_RUNS_PER_TICK = 20;
 
 const SYNTHESIS_BINDING_LEASE_TICKS = 200;
 const SYNTHESIS_BINDING_STICKY_BONUS = 5;
@@ -156,18 +152,11 @@ function normalizeRoomConfig(
   _roomName: string,
   raw: unknown,
   defaultBatchSize: number,
-  defaultMaxRunsPerTick: number,
 ): SynthesisRoomConfig {
   const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const roomCfg: SynthesisRoomConfig = {
     enabled: normalizeBoolean(record.enabled, true),
     batchSize: normalizeNumber(record.batchSize, defaultBatchSize, MIN_BATCH_SIZE, MAX_BATCH_SIZE),
-    maxRunsPerTick: normalizeNumber(
-      record.maxRunsPerTick,
-      defaultMaxRunsPerTick,
-      MIN_MAX_RUNS_PER_TICK,
-      MAX_MAX_RUNS_PER_TICK,
-    ),
     donorRoomNames: normalizeRoomNameList(record.donorRoomNames),
     reagentLabIds: normalizeRoomNameList(record.reagentLabIds),
     reactions: [],
@@ -194,24 +183,17 @@ function normalizeConfig(): SynthesisControlConfig {
   const enabled = normalizeBoolean(raw?.enabled, false);
   const sampleInterval = normalizeNumber(raw?.sampleInterval, DEFAULT_SAMPLE_INTERVAL, MIN_SAMPLE_INTERVAL, MAX_SAMPLE_INTERVAL);
   const defaultBatchSize = normalizeNumber(raw?.defaultBatchSize, DEFAULT_BATCH_SIZE, MIN_BATCH_SIZE, MAX_BATCH_SIZE);
-  const defaultMaxRunsPerTick = normalizeNumber(
-    raw?.defaultMaxRunsPerTick,
-    DEFAULT_MAX_RUNS_PER_TICK,
-    MIN_MAX_RUNS_PER_TICK,
-    MAX_MAX_RUNS_PER_TICK,
-  );
 
   const roomsRaw = raw?.rooms && typeof raw.rooms === "object" ? (raw.rooms as Record<string, unknown>) : {};
   const rooms: Record<string, SynthesisRoomConfig> = {};
   for (const [roomName, roomCfg] of Object.entries(roomsRaw)) {
-    rooms[roomName] = normalizeRoomConfig(roomName, roomCfg, defaultBatchSize, defaultMaxRunsPerTick);
+    rooms[roomName] = normalizeRoomConfig(roomName, roomCfg, defaultBatchSize);
   }
 
   return {
     enabled,
     sampleInterval,
     defaultBatchSize,
-    defaultMaxRunsPerTick,
     rooms,
   };
 }
@@ -553,6 +535,53 @@ function createRoomState(stage: SynthesisStage, lastTransitionAt: number): Synth
     pendingTasks: 0,
     lastTransitionAt,
   };
+}
+
+function getReactionInterval(product: ResourceConstant): number {
+  const interval = (REACTION_TIME as Partial<Record<ResourceConstant, number>>)[product];
+  return typeof interval === "number" && Number.isFinite(interval) && interval > 0
+    ? Math.floor(interval)
+    : 1;
+}
+
+function shouldWaitForScheduledReaction(
+  roomState: SynthesisRoomRuntimeState,
+  roomCfg: SynthesisRoomConfig,
+  autoPlan?: SynthesisReactionPlan | null,
+): boolean {
+  if (
+    roomState.stage !== "synthesizing" ||
+    roomState.boostPause ||
+    typeof roomState.nextReactionAt !== "number" ||
+    !Number.isFinite(roomState.nextReactionAt) ||
+    Game.time >= roomState.nextReactionAt ||
+    roomState.productLabIds.length === 0
+  ) {
+    return false;
+  }
+
+  const plans = [
+    ...roomCfg.reactions,
+    ...(autoPlan ? [autoPlan] : []),
+  ];
+  const activePlanStillConfigured = plans.some(
+    (plan) =>
+      roomState.activeProduct === plan.product &&
+      roomState.targetAmount === plan.targetAmount &&
+      roomState.batchSize === plan.batchSize,
+  );
+  if (!activePlanStillConfigured) {
+    return false;
+  }
+
+  if (roomCfg.reagentLabIds.length === 2) {
+    const boundReagentIds = new Set(roomState.reagentLabIds);
+    if (roomCfg.reagentLabIds.some((labId) => !boundReagentIds.has(labId))) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function createCarrierTaskId(type: "lab_supply" | "lab_cleanup" | "lab_product_unload", roomName: string, product: ResourceConstant): string {
@@ -1022,6 +1051,7 @@ function handleRoom(
       ...roomState,
       stage: "blocked",
       cleanupTasks: undefined,
+      nextReactionAt: undefined,
       lastError: "room_config_disabled",
       lastTransitionAt: Game.time,
     };
@@ -1035,9 +1065,14 @@ function handleRoom(
       ...roomState,
       stage: "blocked",
       cleanupTasks: undefined,
+      nextReactionAt: undefined,
       lastError: "room_or_terminal_unavailable",
       lastTransitionAt: Game.time,
     };
+    return { generated, failed, runs };
+  }
+
+  if (shouldWaitForScheduledReaction(roomState, roomCfg, autoPlan)) {
     return { generated, failed, runs };
   }
 
@@ -1052,6 +1087,7 @@ function handleRoom(
       reagentLabIds: [],
       productLabIds: [],
       cleanupTasks: undefined,
+      nextReactionAt: undefined,
     };
     return { generated, failed, runs };
   }
@@ -1071,6 +1107,7 @@ function handleRoom(
       pendingTasks: countPendingToRoom(roomName),
       reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
       productLabIds: topology.productLabs.map((lab) => lab.id),
+      nextReactionAt: undefined,
     };
     return { generated, failed, runs };
   }
@@ -1124,6 +1161,7 @@ function handleRoom(
       cleanupTasks: undefined,
       lastError: undefined,
       loadingSinceTick: undefined,
+      nextReactionAt: undefined,
       pendingTasks: countPendingToRoom(roomName),
       reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
       productLabIds: topology.productLabs.map((lab) => lab.id),
@@ -1151,6 +1189,7 @@ function handleRoom(
       batchSize: activePlan.batchSize,
       cleanupTasks: undefined,
       lastError: "invalid_reaction_product",
+      nextReactionAt: undefined,
       pendingTasks: countPendingToRoom(roomName),
       reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
       productLabIds: topology.productLabs.map((lab) => lab.id),
@@ -1159,22 +1198,25 @@ function handleRoom(
     return { generated, failed, runs };
   }
 
-  let stage = roomState.stage;
-  if (
+  const planChanged =
     roomState.activeProduct !== activePlan.product ||
     roomState.batchSize !== activePlan.batchSize ||
-    roomState.targetAmount !== activePlan.targetAmount
-  ) {
+    roomState.targetAmount !== activePlan.targetAmount;
+  let stage = roomState.stage;
+  let nextReactionAt = planChanged ? undefined : roomState.nextReactionAt;
+  if (planChanged) {
     stage = "acquiring";
     roomState.lastTransitionAt = Game.time;
   }
 
   if (stage === "idle" || stage === "blocked") {
     stage = "acquiring";
+    nextReactionAt = undefined;
     roomState.lastTransitionAt = Game.time;
   }
 
   if (stage === "acquiring" || stage === "loading") {
+    nextReactionAt = undefined;
     markLoadingStart(roomState, Game.time);
   }
 
@@ -1221,6 +1263,7 @@ function handleRoom(
       stage: "idle",
       activeProduct: undefined,
       loadingSinceTick: undefined,
+      nextReactionAt: undefined,
       lastTransitionAt: Game.time,
       lastError: undefined,
     };
@@ -1251,47 +1294,61 @@ function handleRoom(
     roomState.loadingSinceTick = undefined;
   } else if (stage === "synthesizing" && hasContamination) {
     stage = "unloading";
+    nextReactionAt = undefined;
     roomState.lastTransitionAt = Game.time;
   } else if (stage === "unloading" && !hasContamination) {
     stage = "loading";
+    nextReactionAt = undefined;
     roomState.lastTransitionAt = Game.time;
     markLoadingStart(roomState, Game.time);
   }
 
-  if (stage === "synthesizing") {
+  const reactionDue = nextReactionAt === undefined || Game.time >= nextReactionAt;
+  if (stage === "synthesizing" && reactionDue) {
     let roomRuns = 0;
-    for (const lab of topology.productLabs) {
-      if (roomRuns >= roomCfg.maxRunsPerTick) {
-        break;
-      }
-      if (lab.cooldown > 0 || !canAcceptProduct(lab, activePlan.product)) {
-        continue;
-      }
+    const remainingCooldown = topology.productLabs.reduce(
+      (maximum, lab) => Math.max(maximum, lab.cooldown),
+      0,
+    );
 
-      const code = lab.runReaction(orderedReagentLabs[0], orderedReagentLabs[1]);
-      if (code === OK) {
-        recordFixedCpuAction("synthesisControl");
-        roomRuns += 1;
-      } else if (code === ERR_NOT_ENOUGH_RESOURCES || code === ERR_INVALID_ARGS) {
-        stage = hasContamination ? "unloading" : "loading";
+    if (remainingCooldown > 0) {
+      nextReactionAt = Game.time + remainingCooldown;
+    } else {
+      for (const lab of topology.productLabs) {
+        if (!canAcceptProduct(lab, activePlan.product)) {
+          continue;
+        }
+
+        const code = lab.runReaction(orderedReagentLabs[0], orderedReagentLabs[1]);
+        if (code === OK) {
+          recordFixedCpuAction("synthesisControl");
+          roomRuns += 1;
+        } else if (code === ERR_NOT_ENOUGH_RESOURCES || code === ERR_INVALID_ARGS) {
+          stage = hasContamination ? "unloading" : "loading";
+        }
       }
     }
 
     if (roomRuns > 0) {
       runs += roomRuns;
       actions.push(`synthesis-runs:${room.name}:${activePlan.product}:count=${roomRuns}`);
+      if (stage === "synthesizing") {
+        nextReactionAt = Game.time + getReactionInterval(activePlan.product);
+      }
     }
   }
 
   const productCurrent = roomResourceAmount(room, activePlan.product);
   if (isTargetSatisfiedByReactionGranularity(productCurrent, activePlan.targetAmount) && !hasContamination) {
     stage = "idle";
+    nextReactionAt = undefined;
     roomState.lastTransitionAt = Game.time;
     roomState.loadingSinceTick = undefined;
 
     signalHubNeedsPlan(room.name);
   } else if (!reagentReady && !hasContamination) {
     stage = "loading";
+    nextReactionAt = undefined;
     markLoadingStart(roomState, Game.time);
   }
 
@@ -1307,6 +1364,7 @@ function handleRoom(
     reagentLabIds: orderedReagentLabs.map((lab) => lab.id),
     productLabIds: topology.productLabs.map((lab) => lab.id),
     successfulRuns: (roomState.successfulRuns || 0) + runs,
+    nextReactionAt: stage === "synthesizing" ? nextReactionAt : undefined,
     lastError: stage === "unloading" ? "lab_contaminated_waiting_clear" : undefined,
     missing: stage === "acquiring" || stage === "loading" ? roomState.missing : undefined,
     cleanupTasks: stage === "unloading" ? cleanupTaskView : undefined,
@@ -1362,6 +1420,7 @@ export function pauseSynthesisForBoost(roomName: string, taskId: string): boolea
   roomState.targetAmount = undefined;
   roomState.batchSize = undefined;
   roomState.loadingSinceTick = undefined;
+  roomState.nextReactionAt = undefined;
   roomState.lastTransitionAt = Game.time;
 
   return true;
@@ -1398,6 +1457,7 @@ export function resumeSynthesisAfterBoost(roomName: string, taskId?: string): vo
   roomState.stage = pause.pausedStage === "idle" ? "acquiring" : pause.pausedStage;
   roomState.lastTransitionAt = Game.time;
   roomState.loadingSinceTick = Game.time;
+  roomState.nextReactionAt = undefined;
 
   delete roomState.boostPause;
 }

@@ -210,7 +210,6 @@ describe("hub production integration – ordered runtime calls", () => {
           W1N1: {
             enabled: true,
             batchSize: 500,
-            maxRunsPerTick: 6,
             donorRoomNames: [],
             reagentLabIds: [],
             reactions: [

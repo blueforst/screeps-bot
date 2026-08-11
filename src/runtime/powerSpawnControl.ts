@@ -10,6 +10,7 @@ import {
 import { createCarrierTaskStep } from "@/runtime/carrierTaskHelpers";
 import { getTerminalAmountOutsideMarketSaleExposure } from "@/runtime/marketSaleExposure";
 import { listOperateExtensionRoomCapabilities } from "@/runtime/powerCreepControl";
+import { isRoomInReserveMode } from "@/runtime/roomReserve";
 
 export const POWER_SPAWN_CARRIER_TASK_PRODUCER = "powerSpawnControl";
 export const POWER_SPAWN_SUPPLY_PRIORITY = 150;
@@ -159,16 +160,12 @@ function runRoomPowerSpawnControl(room: Room): void {
   );
 }
 
-function isPowerSpawnControlEnabled(roomName: string): boolean {
-  return Memory.cfg?.powerSpawnControl?.rooms?.[roomName]?.enabled !== false;
-}
-
 export function runPowerSpawnControl(): void {
   const validRoomNames = new Set<string>();
   for (const capability of listOperateExtensionRoomCapabilities()) {
     if (
       capability.roomName !== POWER_SPAWN_PROCESS_ROOM_NAME ||
-      !isPowerSpawnControlEnabled(capability.roomName)
+      isRoomInReserveMode(capability.roomName)
     ) {
       continue;
     }
