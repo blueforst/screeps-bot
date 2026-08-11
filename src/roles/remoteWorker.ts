@@ -20,6 +20,36 @@ function isFull(creep: Creep): boolean {
   return creep.store.getFreeCapacity(RESOURCE_ENERGY) <= 0;
 }
 
+function clearRepairTarget(creep: Creep): void {
+  delete creep.memory._remoteWorkerRepairTargetId;
+}
+
+function getTrackedRepairTarget(
+  creep: Creep,
+  containers: StructureContainer[],
+): StructureContainer | undefined {
+  const targetId = creep.memory._remoteWorkerRepairTargetId;
+  if (!targetId) return undefined;
+
+  const target = containers.find((container) =>
+    container.id === targetId && container.hits < container.hitsMax,
+  );
+  if (!target) {
+    clearRepairTarget(creep);
+  }
+  return target;
+}
+
+function repairContainer(creep: Creep, target: StructureContainer): void {
+  creep.memory._remoteWorkerRepairTargetId = target.id;
+  const range = creep.pos.getRangeTo(target.pos);
+  if (range <= 3) {
+    creep.repair(target);
+  } else {
+    moveToTarget(creep, target, 3);
+  }
+}
+
 function findRemoteSourceIds(targetRoom: string): string[] {
   return Memory.data?.remoteMining?.[targetRoom]?.sourceIds ?? [];
 }
@@ -114,6 +144,8 @@ function compareRemoteEnergyCandidates(creep: Creep, a: RemoteEnergyCandidate, b
 export const remoteWorkerRole: RoleFactory = (targetRoom: string) => {
   return {
     source: (creep): boolean => {
+      clearRepairTarget(creep);
+
       if (isFull(creep)) {
         return true;
       }
@@ -152,10 +184,17 @@ export const remoteWorkerRole: RoleFactory = (targetRoom: string) => {
       }
 
       if (isEmpty(creep)) {
+        clearRepairTarget(creep);
         return true;
       }
 
       const sourceIds = findRemoteSourceIds(targetRoom);
+      const containers = findSourceContainersInRoom(creep.room, sourceIds);
+      const trackedRepairTarget = getTrackedRepairTarget(creep, containers);
+      if (trackedRepairTarget) {
+        repairContainer(creep, trackedRepairTarget);
+        return false;
+      }
 
       const containerSites = findSourceContainerSitesInRoom(creep.room, sourceIds);
       if (containerSites.length > 0) {
@@ -169,17 +208,11 @@ export const remoteWorkerRole: RoleFactory = (targetRoom: string) => {
         return false;
       }
 
-      const containers = findSourceContainersInRoom(creep.room, sourceIds);
       const criticalContainers = containers.filter((container) => container.hits / container.hitsMax < 0.30);
       if (criticalContainers.length > 0) {
         criticalContainers.sort((a, b) => (a.hits / a.hitsMax) - (b.hits / b.hitsMax));
         const target = criticalContainers[0];
-        const range = creep.pos.getRangeTo(target.pos);
-        if (range <= 3) {
-          creep.repair(target);
-        } else {
-          moveToTarget(creep, target, 3);
-        }
+        repairContainer(creep, target);
         return false;
       }
 
@@ -200,12 +233,7 @@ export const remoteWorkerRole: RoleFactory = (targetRoom: string) => {
       if (damagedContainers.length > 0) {
         damagedContainers.sort((a, b) => (a.hits / a.hitsMax) - (b.hits / b.hitsMax));
         const target = damagedContainers[0];
-        const range = creep.pos.getRangeTo(target.pos);
-        if (range <= 3) {
-          creep.repair(target);
-        } else {
-          moveToTarget(creep, target, 3);
-        }
+        repairContainer(creep, target);
         return false;
       }
 

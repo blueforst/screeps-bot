@@ -242,5 +242,106 @@ describe("remoteWorkerRole - repairs damaged source container", () => {
 
     expect(creep.repair).toHaveBeenCalledWith(worseContainer);
     expect(creep.repair).not.toHaveBeenCalledWith(betterContainer);
+    expect(creep.memory._remoteWorkerRepairTargetId).toBe(worseContainer.id);
+  });
+
+  it("keeps repairing the selected container when hit-ratio ordering reverses", () => {
+    const sourcePos = makePos(27, 25, TARGET_ROOM);
+    const selectedContainer = {
+      id: "container-selected",
+      structureType: STRUCTURE_CONTAINER,
+      pos: makePos(26, 25, TARGET_ROOM),
+      store: createStore({ [RESOURCE_ENERGY]: 0 }),
+      hits: 50000,
+      hitsMax: 250000,
+    } as unknown as StructureContainer;
+    const otherContainer = {
+      id: "container-other",
+      structureType: STRUCTURE_CONTAINER,
+      pos: makePos(28, 25, TARGET_ROOM),
+      store: createStore({ [RESOURCE_ENERGY]: 0 }),
+      hits: 60000,
+      hitsMax: 250000,
+    } as unknown as StructureContainer;
+    const remoteRoom = makeRoom(TARGET_ROOM, { structures: [selectedContainer, otherContainer] });
+    Game.rooms[TARGET_ROOM] = remoteRoom;
+
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src-1") return { pos: sourcePos, id: "src-1" };
+      return null;
+    });
+
+    const creep = makeCreep({ room: remoteRoom, energy: 600 });
+    const role = remoteWorkerRole(TARGET_ROOM);
+
+    role.target(creep);
+    (selectedContainer as unknown as { hits: number }).hits = 80000;
+    role.target(creep);
+
+    expect(creep.repair).toHaveBeenNthCalledWith(1, selectedContainer);
+    expect(creep.repair).toHaveBeenNthCalledWith(2, selectedContainer);
+    expect(creep.repair).not.toHaveBeenCalledWith(otherContainer);
+    expect(creep.memory._remoteWorkerRepairTargetId).toBe(selectedContainer.id);
+  });
+
+  it("releases the selected container when the creep runs out of energy", () => {
+    const remoteRoom = makeRoom(TARGET_ROOM);
+    Game.rooms[TARGET_ROOM] = remoteRoom;
+    const creep = makeCreep({
+      room: remoteRoom,
+      energy: 0,
+      memory: {
+        configName: `${HOME_ROOM}:remoteMine:${TARGET_ROOM}:worker:0`,
+        _remoteWorkerRepairTargetId: "container-selected",
+      },
+    });
+
+    const result = remoteWorkerRole(TARGET_ROOM).target(creep);
+
+    expect(result).toBe(true);
+    expect(creep.memory._remoteWorkerRepairTargetId).toBeUndefined();
+    expect(creep.repair).not.toHaveBeenCalled();
+  });
+
+  it("selects another damaged container after the tracked one is fully repaired", () => {
+    const sourcePos = makePos(27, 25, TARGET_ROOM);
+    const completedContainer = {
+      id: "container-complete",
+      structureType: STRUCTURE_CONTAINER,
+      pos: makePos(26, 25, TARGET_ROOM),
+      store: createStore({ [RESOURCE_ENERGY]: 0 }),
+      hits: 250000,
+      hitsMax: 250000,
+    } as unknown as StructureContainer;
+    const damagedContainer = {
+      id: "container-damaged",
+      structureType: STRUCTURE_CONTAINER,
+      pos: makePos(28, 25, TARGET_ROOM),
+      store: createStore({ [RESOURCE_ENERGY]: 0 }),
+      hits: 100000,
+      hitsMax: 250000,
+    } as unknown as StructureContainer;
+    const remoteRoom = makeRoom(TARGET_ROOM, { structures: [completedContainer, damagedContainer] });
+    Game.rooms[TARGET_ROOM] = remoteRoom;
+
+    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
+      if (id === "src-1") return { pos: sourcePos, id: "src-1" };
+      return null;
+    });
+
+    const creep = makeCreep({
+      room: remoteRoom,
+      energy: 600,
+      memory: {
+        configName: `${HOME_ROOM}:remoteMine:${TARGET_ROOM}:worker:0`,
+        _remoteWorkerRepairTargetId: completedContainer.id,
+      },
+    });
+
+    remoteWorkerRole(TARGET_ROOM).target(creep);
+
+    expect(creep.repair).toHaveBeenCalledWith(damagedContainer);
+    expect(creep.repair).not.toHaveBeenCalledWith(completedContainer);
+    expect(creep.memory._remoteWorkerRepairTargetId).toBe(damagedContainer.id);
   });
 });

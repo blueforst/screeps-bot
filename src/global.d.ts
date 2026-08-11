@@ -633,6 +633,7 @@ declare global {
     _lastHits?: number;
     _rmcWait?: { ticks: number };
     _rmcSelectedSource?: string;
+    _remoteWorkerRepairTargetId?: Id<StructureContainer>;
     _warBreachTargetId?: Id<StructureRampart | StructureWall>;
     _warBreachResumeUntil?: number;
     _warCounterstrike?: {
