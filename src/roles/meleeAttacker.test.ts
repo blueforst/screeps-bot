@@ -169,15 +169,54 @@ describe("meleeAttackerRole war duo staging", () => {
     attacker.pos.findInRange = jest.fn((type: FindConstant) => (type === FIND_HOSTILE_CREEPS ? [hostile] : [])) as unknown as RoomPosition["findInRange"];
     Game.creeps = { attacker, healer };
 
-    meleeAttackerRole(TARGET_ROOM).source?.(attacker);
+    meleeAttackerRole(TARGET_ROOM, "", "", "", HEALER_CONFIG).source?.(attacker);
 
     expect(attacker.attack).toHaveBeenCalledWith(hostile);
     expect(moveToTargetRoom).toHaveBeenCalledWith(
       attacker,
       TARGET_ROOM,
-      undefined,
+      "",
       expect.objectContaining({ plainCost: 2, swampCost: 8 }),
     );
+  });
+
+  it("does not wait for an implicit same-index healer when the producer declares no partner", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "standard-attacker-1",
+      roomName: "E2N57",
+      x: 25,
+      y: 25,
+      memory: {
+        role: "meleeAttacker",
+        configName: "E1N57:war:E3N57:meleeAttacker:1",
+      },
+    });
+    Game.creeps = { [attacker.name]: attacker };
+
+    meleeAttackerRole(TARGET_ROOM, "", "", "", "").source?.(attacker);
+
+    expect(moveToTargetRoom).toHaveBeenCalledWith(
+      attacker,
+      TARGET_ROOM,
+      "",
+      expect.objectContaining({ plainCost: 2, swampCost: 8 }),
+    );
+  });
+
+  it("does not restore partner identity from fallback args after owner detach", () => {
+    const attacker = createMockPowerBankCreep("meleeAttacker", {
+      name: "detached-attacker",
+      roomName: "E2N57",
+      memory: {
+        role: "meleeAttacker",
+        _warDetached: true,
+      },
+    });
+    Game.creeps = { [attacker.name]: attacker };
+
+    meleeAttackerRole(TARGET_ROOM, "", "", "", HEALER_CONFIG).source?.(attacker);
+
+    expect(attacker.memory._warPartnerConfigName).toBeUndefined();
   });
 
   it("ignores an adjacent defender protected by a hostile rampart and continues breaching", () => {
@@ -226,7 +265,7 @@ describe("meleeAttackerRole war duo staging", () => {
       }),
     };
 
-    meleeAttackerRole(TARGET_ROOM).target(attacker);
+    meleeAttackerRole(TARGET_ROOM, "", "", "", HEALER_CONFIG).target(attacker);
 
     expect(attacker.attack).not.toHaveBeenCalledWith(defender);
     expect(attacker.attack).toHaveBeenCalledWith(wall);
@@ -253,7 +292,7 @@ describe("meleeAttackerRole war duo staging", () => {
     attacker.attack = jest.fn((target: Creep | Structure) => (target === spawn ? ERR_NOT_IN_RANGE : OK)) as Creep["attack"];
     Game.creeps = { attacker, healer: createMockPowerBankCreep("healer", { name: "healer", roomName: TARGET_ROOM, x: 2, y: 1, memory: { role: "healer", configName: HEALER_CONFIG } }) };
 
-    meleeAttackerRole(TARGET_ROOM).target(attacker);
+    meleeAttackerRole(TARGET_ROOM, "", "", "", HEALER_CONFIG).target(attacker);
 
     expect(attacker.attack).toHaveBeenCalledWith(spawn);
     expect(attacker.attack).not.toHaveBeenCalledWith(hostile);
@@ -317,7 +356,7 @@ describe("meleeAttackerRole war duo staging", () => {
       }),
     };
 
-    meleeAttackerRole(TARGET_ROOM).target(attacker);
+    meleeAttackerRole(TARGET_ROOM, "", "", "", HEALER_CONFIG).target(attacker);
 
     expect(attacker.attack).toHaveBeenCalledWith(trackedWall);
     expect(attacker.attack).not.toHaveBeenCalledWith(builder);

@@ -166,7 +166,29 @@ describe("warWorkflowAdapter", () => {
     }));
   });
 
-  test("keeps legacy fields optional and exposes only the bounded lifecycle ambiguities", () => {
+  test("projects a terminal owner as closed when the War writer records release evidence", () => {
+    installWarStore({
+      W2N2: warTask({
+        status: "done",
+        reason: "npc_reservation",
+        squad: "standard",
+        oneShot: true,
+        activeGeneration: undefined,
+        completedAt: 120,
+        assetsReleasedAt: 120,
+      }),
+    });
+
+    const result = snapshotWarWorkflow();
+    expect(result.entries[0]).toEqual(expect.objectContaining({
+      activity: "terminal",
+      sourceState: "done",
+      retryAt: undefined,
+    }));
+    expect(result.entries[0].issues).toEqual([]);
+  });
+
+  test("retains a non-fatal diagnostic for a legacy terminal owner without release evidence", () => {
     installWarStore({
       W2N2: warTask({
         status: "done",
@@ -177,19 +199,42 @@ describe("warWorkflowAdapter", () => {
       }),
     });
 
-    const result = snapshotWarWorkflow();
-    expect(result.entries[0]).toEqual(expect.objectContaining({
+    const entry = snapshotWarWorkflow().entries[0];
+    expect(entry).toEqual(expect.objectContaining({
       activity: "terminal",
       sourceState: "done",
-      retryAt: undefined,
     }));
-    expect(result.entries[0].issues.map((projectionIssue) => projectionIssue.code)).toEqual([
-      "war-raw-delete-cleanup-ambiguity",
-      "war-standard-pairing-ambiguity",
-      "war-one-shot-generation-loss-ambiguity",
-      "war-terminal-config-retention-ambiguity",
+    expect(entry.issues).toContainEqual(expect.objectContaining({
+      code: "war-terminal-release-unconfirmed",
+      field: "assetsReleasedAt",
+    }));
+  });
+
+  test("fails closed on contradictory release lifecycle timestamps", () => {
+    installWarStore({
+      W2N2: warTask({
+        status: "done",
+        completedAt: 120,
+        assetsReleasedAt: 119,
+      }),
+      W3N3: warTask({
+        targetRoom: "W3N3",
+        status: "clearing",
+        completedAt: 120,
+        assetsReleasedAt: 120,
+      }),
+    });
+
+    const entries = snapshotWarWorkflow().entries;
+    expect(entries).toHaveLength(2);
+    expect(entries.every((entry) => entry.activity === "unknown")).toBe(true);
+    expect(entries[0].issues).toContainEqual(expect.objectContaining({
+      code: "war-release-before-completion-conflict",
+    }));
+    expect(entries[1].issues.map((projectionIssue) => projectionIssue.code)).toEqual([
+      "war-active-completed-at-conflict",
+      "war-active-release-at-conflict",
     ]);
-    expect(result.entries[0].issues).toHaveLength(4);
   });
 
   test("fails closed on unknown or conflicting fields without borrowing another identity", () => {

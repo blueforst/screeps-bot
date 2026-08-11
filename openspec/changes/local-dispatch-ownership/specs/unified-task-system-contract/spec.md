@@ -27,7 +27,11 @@
 - **THEN** 这些写操作必须继续通过原领域入口执行，统一 adapter 不得改写或重新解释其幂等语义
 
 ### Requirement: 现有行为与 ABI 保持不变
-本变更 MUST保持37个main phase及顺序、Memory wire、private/public global slot名称、console API、Worker/Carrier priority与action、producer refresh、domain lifecycle、Spawn queue、role topology、cleanup cadence和现有执行副作用不变。Local Dispatch MAY改变private heap内部identity表示，并仅修复完整ref身份错误：Worker跨房同localId的lookup/release、actor派工房scope漂移，以及Carrier跨producer同localId的board/binding/downstream稳定键隔离；除此之外行为 MUST保持不变。系统 MUST保留现有领域gateway与compatibility localId字段，且不得把TaskSystem runtime变成生产决策依赖。
+统一TaskSystem foundation本身 MUST保持37个main phase及顺序、Memory wire、private/public global slot名称、console API、Worker/Carrier priority与action、producer refresh、domain lifecycle、Spawn queue、role topology、cleanup cadence和现有执行副作用不变。后续独立domain capability MAY修改其明确列出的来源行为，但必须由domain writer/command实现和验收。Local Dispatch MAY改变private heap内部identity表示，并仅修复完整ref身份错误：Worker跨房同localId的lookup/release、actor派工房scope漂移，以及Carrier跨producer同localId的board/binding/downstream稳定键隔离；除此之外行为 MUST保持不变。系统 MUST保留现有领域gateway与compatibility localId字段，且foundation adapter不得自行推断或执行，不得把TaskSystem runtime变成生产决策依赖。
+
+#### Scenario: Foundation 不进入生产调度路径
+- **WHEN** foundation完成并执行Rollup build
+- **THEN** main、producer、planner、role、cleanup、spawn executor、ResourceControl与market executor不得依赖统一snapshot/adapters，规范化生产bundle必须与foundation基线保持等价
 
 #### Scenario: Local Dispatch进入生产但TaskSystem仍不调度
 - **WHEN** Local Dispatch实现完成并执行Rollup build
@@ -37,9 +41,13 @@
 - **WHEN**Worker出现跨房同localId或派工房scope漂移，或者同房不同producer发布相同Carrier localId
 - **THEN**Worker lookup/release必须精确隔离并在当前房重选，Carrier两条工作及其downstream稳定键必须独立；除此之外hard lane、sticky选择、step选择、amount claim、accepted cargo delivery、Worker评分与既有release条件必须保持characterization结果
 
-#### Scenario: 基础层既有领域歧义不被改写
-- **WHEN** adapter 遇到 War、RemoteMining、Factory 或 Spawn 的既有歧义状态
-- **THEN** 它只能保留来源状态并报告 projection issue，不得推断新的终态、retry、retention、成员退役或资产清理行为
+#### Scenario: 尚未闭合的领域歧义不被改写
+- **WHEN** adapter遇到War、RemoteMining、Factory或Spawn尚未被独立domain capability闭合的歧义状态
+- **THEN** 它只能保留来源状态并报告projection issue，不得推断新的终态、retry、retention、成员退役或资产清理行为
+
+#### Scenario: 独立War capability闭合来源歧义
+- **WHEN** War领域writer已按`war-workflow-lifecycle-ownership`显式完成terminal、pairing与owner release
+- **THEN** War adapter可以移除对应历史ambiguity issue，但仍不得导入领域mutation API、读取执行资产来清理来源或改变其它domain行为
 
 #### Scenario: 现存领域缺口不被顺手改写
 - **WHEN** ownership或adapter遇到Worker reset空窗、Carrier cargo reset、普通任务无amount slice或其它既有歧义

@@ -38,6 +38,7 @@ interface WarTask {
   lastHostileSeenAt?: number;
   clearSince?: number;
   completedAt?: number;
+  assetsReleasedAt?: number;
   controllerAttackerLastQueuedAt?: number;
   generationCounter?: number;
   activeGeneration?: WarGenerationState;
@@ -90,6 +91,19 @@ export interface StopWarResult {
   removedConfigs: number;
   removedQueuedTasks: number;
   cancelledSpawns: number;
+  suicidedCreeps: number;
+  releasedBoosts: boolean;
+}
+
+interface WarTaskAssetReleaseOptions {
+  suicide?: boolean;
+}
+
+interface WarTaskAssetReleaseResult {
+  removedConfigs: number;
+  removedQueuedTasks: number;
+  cancelledSpawns: number;
+  detachedCreeps: number;
   suicidedCreeps: number;
   releasedBoosts: boolean;
 }
@@ -290,9 +304,10 @@ function getRoleArgs(
   role: WarRole,
   encodedRoute: string,
   boostTaskId = getLegacyWarBoostTaskId(task),
+  partnerConfigName = "",
 ): string[] {
   if (!isT3DuoTask(task)) {
-    return [task.targetRoom, encodedRoute];
+    return [task.targetRoom, encodedRoute, "", "", partnerConfigName];
   }
 
   return [
@@ -300,7 +315,22 @@ function getRoleArgs(
     encodedRoute,
     boostTaskId,
     encodeBoosts(role === "meleeAttacker" ? T3_ATTACKER_BOOSTS : T3_HEALER_BOOSTS),
+    partnerConfigName,
   ];
+}
+
+function getCombatPartnerConfigName(task: WarTask, role: WarRole, index: number): string {
+  if (isT3DuoTask(task)) {
+    const generation = ensureActiveGeneration(task);
+    return role === "meleeAttacker"
+      ? generation.configNames.healer
+      : generation.configNames.meleeAttacker;
+  }
+
+  if (role === "meleeAttacker") {
+    return index < getHealerCount(task) ? getConfigName(task, "healer", index) : "";
+  }
+  return index < getMeleeCount(task) ? getConfigName(task, "meleeAttacker", index) : "";
 }
 
 function getRoleBody(task: WarTask, role: WarRole): BodyPartConstant[] | undefined {
@@ -317,7 +347,7 @@ function resetWarCreepTargetState(creep: Creep): void {
   delete creep.memory._warQueued;
 }
 
-function updatePatrolAssignments(task: WarTask): void {
+function synchronizeGenerationRoleArgs(task: WarTask, resetTargets: boolean): void {
   const generation = task.activeGeneration;
   if (!generation) return;
 
@@ -325,15 +355,22 @@ function updatePatrolAssignments(task: WarTask): void {
   const store = ensureConfigStore();
   for (const role of ["meleeAttacker", "healer"] as const) {
     const configName = generation.configNames[role];
-    const args = getRoleArgs(task, role, encodedRoute, generation.boostTaskId);
+    const partnerConfigName = role === "meleeAttacker"
+      ? generation.configNames.healer
+      : generation.configNames.meleeAttacker;
+    const args = getRoleArgs(task, role, encodedRoute, generation.boostTaskId, partnerConfigName);
     if (store[configName]) {
       store[configName].args = args;
     }
     for (const creep of getLiveCreepsByConfig(configName)) {
       creep.memory.roleArgs = [...args];
-      resetWarCreepTargetState(creep);
+      if (resetTargets) resetWarCreepTargetState(creep);
     }
   }
+}
+
+function updatePatrolAssignments(task: WarTask): void {
+  synchronizeGenerationRoleArgs(task, true);
 }
 
 function advancePatrol(task: WarTask, nextIndex: number): boolean {
@@ -347,8 +384,7 @@ function advancePatrol(task: WarTask, nextIndex: number): boolean {
   if (collision && collision !== task) {
     const terminal = collision.status === "done" || collision.status === "failed";
     if (terminal) {
-      disableTaskProduction(collision);
-      releaseWarBoosts(collision);
+      releaseWarTaskAssets(collision);
     }
     if (!terminal || hasTaskWarActivity(collision)) {
       task.failReason = `patrol_target_busy:${nextTarget}`;
@@ -412,11 +448,12 @@ function getExpectedTaskConfigNames(task: WarTask): string[] {
 function getTaskConfigNames(task: WarTask): string[] {
   const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
   const names = new Set<string>(getExpectedTaskConfigNames(task));
+  names.add(getControllerAttackConfigName(task));
   for (const configName of Object.keys(getCreepConfigService().list(prefix))) {
     names.add(configName);
   }
   for (const creepMemory of Object.values(Memory.creeps || {})) {
-    if (creepMemory.configName?.startsWith(prefix)) {
+    if (creepMemory._warDetached !== true && creepMemory.configName?.startsWith(prefix)) {
       names.add(creepMemory.configName);
     }
   }
@@ -433,7 +470,9 @@ function hasTaskWarActivity(task: WarTask): boolean {
 }
 
 function getLiveCreepsByConfig(configName: string): Creep[] {
-  return getTickContextService().getCreepsByConfigName(configName);
+  return getTickContextService().getCreepsByConfigName(configName).filter(
+    (creep) => creep.memory._warDetached !== true && creep.memory.configName === configName,
+  );
 }
 
 function isConfigSpawning(configName: string): boolean {
@@ -504,9 +543,9 @@ function removeQueuedConfigByName(configName: string): number {
   return removed;
 }
 
-function cancelSpawnIfSpawningConfig(configName: string): number {
+function collectSpawningForConfigs(configNames: ReadonlySet<string>): Spawning[] {
   const creepMemory = Memory.creeps || {};
-  let cancelled = 0;
+  const spawning = new Set<Spawning>();
   for (const room of getTickContextService().getMyRooms()) {
     for (const spawn of getTickContextService().getSpawnsByRoom(room.name)) {
       if (!spawn.spawning) {
@@ -514,30 +553,44 @@ function cancelSpawnIfSpawningConfig(configName: string): number {
       }
 
       const spawningName = spawn.spawning.name;
-      if (creepMemory[spawningName]?.configName !== configName) {
+      const configName = creepMemory[spawningName]?.configName;
+      if (!configName || !configNames.has(configName)) {
         continue;
       }
-
-      if (spawn.spawning.cancel() === OK) {
-        cancelled += 1;
-      }
+      spawning.add(spawn.spawning);
     }
   }
-  return cancelled;
+  return [...spawning];
 }
 
-function suicideCreepsByConfig(configName: string): number {
+function detachWarTaskCreeps(
+  configNames: ReadonlySet<string>,
+  suicide: boolean,
+): { detachedCreeps: number; suicidedCreeps: number } {
+  const detachedNames = new Set<string>();
   let suicided = 0;
-  for (const creep of getLiveCreepsByConfig(configName)) {
-    if (creep.memory.configName !== configName) {
-      continue;
-    }
-
-    if (creep.suicide() === OK) {
+  for (const [creepName, creep] of Object.entries(Game.creeps)) {
+    const configName = creep.memory.configName;
+    if (!configName || !configNames.has(configName)) continue;
+    if (suicide && creep.suicide() === OK) {
       suicided += 1;
     }
+    creep.memory._warDetached = true;
+    delete creep.memory._warPartnerConfigName;
+    delete creep.memory.configName;
+    detachedNames.add(creepName);
   }
-  return suicided;
+
+  for (const [creepName, memory] of Object.entries(Memory.creeps || {})) {
+    const configName = memory.configName;
+    if (!configName || !configNames.has(configName)) continue;
+    memory._warDetached = true;
+    delete memory._warPartnerConfigName;
+    delete memory.configName;
+    detachedNames.add(creepName);
+  }
+
+  return { detachedCreeps: detachedNames.size, suicidedCreeps: suicided };
 }
 
 function removeConfigWhenIdle(configName: string): void {
@@ -792,7 +845,13 @@ function ensureCombatConfigs(task: WarTask): void {
     const existing = store[configName];
     store[configName] = {
       role: "meleeAttacker",
-      args: getRoleArgs(task, "meleeAttacker", encodedRoute, generation?.boostTaskId),
+      args: getRoleArgs(
+        task,
+        "meleeAttacker",
+        encodedRoute,
+        generation?.boostTaskId,
+        getCombatPartnerConfigName(task, "meleeAttacker", i),
+      ),
       roomName: task.sourceRoom,
       body: getRoleBody(task, "meleeAttacker"),
       spawnOnce: task.oneShot ? (existing?.spawnOnce ?? {}) : undefined,
@@ -804,7 +863,13 @@ function ensureCombatConfigs(task: WarTask): void {
     const existing = store[configName];
     store[configName] = {
       role: "healer",
-      args: getRoleArgs(task, "healer", encodedRoute, generation?.boostTaskId),
+      args: getRoleArgs(
+        task,
+        "healer",
+        encodedRoute,
+        generation?.boostTaskId,
+        getCombatPartnerConfigName(task, "healer", i),
+      ),
       roomName: task.sourceRoom,
       body: getRoleBody(task, "healer"),
       spawnOnce: task.oneShot ? (existing?.spawnOnce ?? {}) : undefined,
@@ -845,6 +910,11 @@ function getGenerationCreeps(generation: WarGenerationState): Creep[] {
   );
 }
 
+function isGenerationComplete(generation: WarGenerationState): boolean {
+  return getLiveCreepsByConfig(generation.configNames.meleeAttacker).length > 0
+    && getLiveCreepsByConfig(generation.configNames.healer).length > 0;
+}
+
 function cleanupGenerationConfigs(task: WarTask, generation: WarGenerationState): void {
   for (const configName of Object.values(generation.configNames)) {
     removeQueuedConfig(task, configName);
@@ -857,6 +927,7 @@ function reconcileGenerationLifecycle(task: WarTask): boolean {
 
   const generation = ensureActiveGeneration(task);
   const generationCreeps = getGenerationCreeps(generation);
+  synchronizeGenerationRoleArgs(task, false);
 
   if (
     generation.phase === "assembling"
@@ -869,20 +940,15 @@ function reconcileGenerationLifecycle(task: WarTask): boolean {
     cleanupGenerationConfigs(task, generation);
   }
 
-  if (generation.phase !== "deployed" || generationCreeps.length >= 2) {
+  if (generation.phase !== "deployed" || isGenerationComplete(generation)) {
     return false;
   }
 
-  for (const survivor of generationCreeps) {
-    if (isPatrolTask(task)) {
-      survivor.suicide();
-    } else {
-      survivor.memory._warDetached = true;
-    }
-  }
+  detachWarTaskCreeps(new Set(Object.values(generation.configNames)), isPatrolTask(task));
   cleanupGenerationConfigs(task, generation);
 
   if (task.oneShot) {
+    transitionWarTaskTerminal(task, "failed", "generation_exhausted");
     return true;
   }
 
@@ -971,9 +1037,7 @@ function prepareT3DuoBoosts(task: WarTask): boolean {
   }
 
   if (result.status === "failed") {
-    setTaskStatus(task, "failed");
-    releaseBoostLabs(generation.boostTaskId, task.sourceRoom);
-    clearTaskConfigs(task);
+    transitionWarTaskTerminal(task, "failed", result.reason);
     return false;
   }
 
@@ -995,12 +1059,59 @@ function releaseWarBoosts(task: WarTask): void {
   task.boostLabs = [];
 }
 
-function clearTaskConfigs(task: WarTask): void {
-  const configNames = getTaskConfigNames(task);
+function releaseWarTaskAssets(
+  task: WarTask,
+  options: WarTaskAssetReleaseOptions = {},
+): WarTaskAssetReleaseResult {
+  const configNames = new Set(getTaskConfigNames(task));
+  const spawning = collectSpawningForConfigs(configNames);
+  let removedQueuedTasks = 0;
+  let removedConfigs = 0;
   for (const configName of configNames) {
-    removeQueuedConfig(task, configName);
-    removeConfigWhenIdle(configName);
+    removedQueuedTasks += removeQueuedConfigByName(configName);
   }
+
+  const detached = detachWarTaskCreeps(configNames, options.suicide === true);
+  let cancelledSpawns = 0;
+  for (const spawnState of spawning) {
+    if (spawnState.cancel() === OK) cancelledSpawns += 1;
+  }
+  for (const configName of configNames) {
+    removedConfigs += removeConfig(configName);
+  }
+
+  const releasedBoosts = isT3DuoTask(task);
+  releaseWarBoosts(task);
+  if (
+    typeof task.assetsReleasedAt !== "number"
+    || !Number.isFinite(task.assetsReleasedAt)
+    || task.assetsReleasedAt < 0
+  ) {
+    task.assetsReleasedAt = Game.time;
+  }
+  return {
+    removedConfigs,
+    removedQueuedTasks,
+    cancelledSpawns,
+    detachedCreeps: detached.detachedCreeps,
+    suicidedCreeps: detached.suicidedCreeps,
+    releasedBoosts,
+  };
+}
+
+function transitionWarTaskTerminal(
+  task: WarTask,
+  status: Extract<WarStatus, "done" | "failed">,
+  failReason?: string | null,
+): WarTaskAssetReleaseResult {
+  setTaskStatus(task, status);
+  task.completedAt ??= Game.time;
+  if (failReason === null) {
+    task.failReason = undefined;
+  } else if (failReason !== undefined) {
+    task.failReason = failReason;
+  }
+  return releaseWarTaskAssets(task);
 }
 
 function disableTaskProduction(task: WarTask): void {
@@ -1023,8 +1134,7 @@ function processControllerVictory(task: WarTask): void {
   }
 
   if (completePatrolTarget(task)) return;
-  setTaskStatus(task, "done");
-  task.completedAt = Game.time;
+  transitionWarTaskTerminal(task, "done", null);
 }
 
 function getQueuedConfigs(task: WarTask): string[] {
@@ -1146,9 +1256,7 @@ function processTask(task: WarTask): void {
     && task.failReason !== "insufficient_labs"
     && Game.time - task.statusSince > MAX_STAGING_TICKS;
   if (stagingTooLong) {
-    setTaskStatus(task, "failed");
-    clearTaskConfigs(task);
-    releaseWarBoosts(task);
+    transitionWarTaskTerminal(task, "failed", "staging_timeout");
     return;
   }
 
@@ -1196,10 +1304,7 @@ function processTask(task: WarTask): void {
     }
 
     if (!completePatrolTarget(task)) {
-      setTaskStatus(task, "done");
-      task.completedAt = Game.time;
-      clearTaskConfigs(task);
-      releaseWarBoosts(task);
+      transitionWarTaskTerminal(task, "done", null);
     }
     return;
   }
@@ -1260,6 +1365,10 @@ export function requestWarRoomClear(
   const nextStatus: WarStatus = restart ? "staging" : existing.status;
   const nextAttempts = restart ? (existing?.attempts ?? 0) + 1 : (existing?.attempts ?? 1);
 
+  if (existing && restart) {
+    releaseWarTaskAssets(existing);
+  }
+
   store[targetRoom] = {
     targetRoom,
     sourceRoom,
@@ -1268,17 +1377,18 @@ export function requestWarRoomClear(
     routeRooms: options?.routeRooms ?? existing?.routeRooms,
     squad: options?.squad ?? existing?.squad,
     boostTier: options?.boostTier ?? existing?.boostTier,
-    boostLabs: existing?.boostLabs,
-    boostStatus: existing?.boostStatus,
+    boostLabs: restart ? undefined : existing?.boostLabs,
+    boostStatus: restart ? undefined : existing?.boostStatus,
     oneShot: options?.oneShot ?? existing?.oneShot,
-    failReason: existing?.failReason,
+    failReason: restart ? undefined : existing?.failReason,
     attempts: nextAttempts,
     createdAt: restart ? now : (existing?.createdAt ?? now),
     statusSince: restart ? now : (existing?.statusSince ?? now),
-    lastHostileSeenAt: existing?.lastHostileSeenAt,
-    clearSince: existing?.clearSince,
+    lastHostileSeenAt: restart ? undefined : existing?.lastHostileSeenAt,
+    clearSince: restart ? undefined : existing?.clearSince,
     updatedAt: now,
-    completedAt: existing?.completedAt,
+    completedAt: restart ? undefined : existing?.completedAt,
+    assetsReleasedAt: restart ? undefined : existing?.assetsReleasedAt,
     controllerAttackerLastQueuedAt: restart ? undefined : existing?.controllerAttackerLastQueuedAt,
     generationCounter: restart
       ? (existing?.sourceRoom === sourceRoom ? existing?.generationCounter : undefined)
@@ -1337,8 +1447,7 @@ export function startWarPatrol(
       task.targetRoom === roomName || task.patrolRooms?.includes(roomName)
     );
     if (terminal && (task.sourceRoom === sourceRoom || overlapsPatrol)) {
-      disableTaskProduction(task);
-      releaseWarBoosts(task);
+      releaseWarTaskAssets(task);
     }
   }
 
@@ -1412,40 +1521,16 @@ export function isWarRoomClearDone(roomName: string): boolean {
 }
 
 export function clearWarRoomTask(roomName: string): void {
-  if (Memory.data?.war?.[roomName]) {
-    delete Memory.data.war[roomName];
-  }
+  releaseWarTaskOwner(roomName);
 }
 
-export function stopWarRoom(targetRoom: string, options: StopWarOptions = {}): StopWarResult | string {
-  const store = ensureWarStore();
-  const taskEntry = Object.entries(store).find(([key, candidate]) =>
-    key === targetRoom || candidate.targetRoom === targetRoom || candidate.patrolRooms?.includes(targetRoom)
-  );
-  if (!taskEntry) {
-    return `ERR_NO_WAR_TASK:${targetRoom}`;
+export function releaseWarTaskOwner(taskKey: string, options: StopWarOptions = {}): StopWarResult | string {
+  const store = Memory.data?.war;
+  if (!store || !Object.prototype.hasOwnProperty.call(store, taskKey)) {
+    return `ERR_NO_WAR_TASK:${taskKey}`;
   }
-  const [taskKey, task] = taskEntry;
-
-  const configNames = getTaskConfigNames(task);
-  let removedConfigs = 0;
-  let removedQueuedTasks = 0;
-  let cancelledSpawns = 0;
-  let suicidedCreeps = 0;
-
-  for (const configName of configNames) {
-    cancelledSpawns += cancelSpawnIfSpawningConfig(configName);
-    removedQueuedTasks += removeQueuedConfigByName(configName);
-    if (options.suicide) {
-      suicidedCreeps += suicideCreepsByConfig(configName);
-      removedConfigs += removeConfig(configName);
-    } else {
-      removedConfigs += removeConfig(configName);
-    }
-  }
-
-  const releasedBoosts = isT3DuoTask(task);
-  releaseWarBoosts(task);
+  const task = store[taskKey];
+  const released = releaseWarTaskAssets(task, options);
   delete store[taskKey];
   writeWarTelemetry();
 
@@ -1453,12 +1538,26 @@ export function stopWarRoom(targetRoom: string, options: StopWarOptions = {}): S
     ok: true,
     targetRoom: task.targetRoom,
     removedTask: true,
-    removedConfigs,
-    removedQueuedTasks,
-    cancelledSpawns,
-    suicidedCreeps,
-    releasedBoosts,
+    removedConfigs: released.removedConfigs,
+    removedQueuedTasks: released.removedQueuedTasks,
+    cancelledSpawns: released.cancelledSpawns,
+    suicidedCreeps: released.suicidedCreeps,
+    releasedBoosts: released.releasedBoosts,
   };
+}
+
+export function stopWarRoom(targetRoom: string, options: StopWarOptions = {}): StopWarResult | string {
+  const store = Memory.data?.war;
+  if (!store) {
+    return `ERR_NO_WAR_TASK:${targetRoom}`;
+  }
+  const taskEntry = Object.entries(store).find(([key, candidate]) =>
+    key === targetRoom || candidate.targetRoom === targetRoom || candidate.patrolRooms?.includes(targetRoom)
+  );
+  if (!taskEntry) {
+    return `ERR_NO_WAR_TASK:${targetRoom}`;
+  }
+  return releaseWarTaskOwner(taskEntry[0], options);
 }
 
 export function getWarStatus(targetRoom?: string): WarStatusSnapshot {
@@ -1474,6 +1573,16 @@ export function getWarStatus(targetRoom?: string): WarStatusSnapshot {
 export function runWarControl(): void {
   const store = ensureWarStore();
   const tasks = Object.values(store);
+  for (const task of tasks) {
+    const terminal = task.status === "done" || task.status === "failed";
+    if (terminal && (
+      typeof task.assetsReleasedAt !== "number"
+      || !Number.isFinite(task.assetsReleasedAt)
+      || task.assetsReleasedAt < 0
+    )) {
+      releaseWarTaskAssets(task);
+    }
+  }
   const tasksBySource = new Map<string, WarTask[]>();
   for (const task of tasks) {
     const sourceTasks = tasksBySource.get(task.sourceRoom) ?? [];

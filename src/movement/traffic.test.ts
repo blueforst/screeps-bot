@@ -71,6 +71,23 @@ function makePowerCreep(name: string, x: number, y: number, roomName = "W1N1") {
   } as unknown as PowerCreep;
 }
 
+function planHeadOnStep(creep: Creep, target: RoomPosition): void {
+  ensureCreepMovementState(creep).movePathState = {
+    key: "head-on",
+    path: "",
+    steps: [
+      { x: creep.pos.x, y: creep.pos.y },
+      { x: target.x, y: target.y },
+    ],
+    targetRoom: target.roomName,
+    targetX: target.x,
+    targetY: target.y,
+    range: 0,
+    stuckTicks: 0,
+    expiresAt: Game.time + 1,
+  };
+}
+
 describe("moveToAdjacentPosition", () => {
   beforeEach(() => {
     clearCreepMovementStateForTest();
@@ -144,5 +161,76 @@ describe("moveToAdjacentPosition", () => {
 
     expect(result).toBe(ERR_BUSY);
     expect(blocker.move).toHaveBeenCalled();
+  });
+
+  it("coordinates a head-on War swap only for reciprocal exact partners", () => {
+    const attacker = makeCreep("attacker", 10, 10);
+    const healer = makeCreep("healer", 11, 10);
+    const attackerConfig = "W1N1:war:W2N2:meleeAttacker:0";
+    const healerConfig = "W1N1:war:W2N2:healer:0";
+    Object.assign(attacker.memory, {
+      role: "meleeAttacker",
+      configName: attackerConfig,
+      _warPartnerConfigName: healerConfig,
+    });
+    Object.assign(healer.memory, {
+      role: "healer",
+      configName: healerConfig,
+      _warPartnerConfigName: attackerConfig,
+    });
+    planHeadOnStep(healer, attacker.pos);
+    setupRoomContext([attacker, healer]);
+
+    const result = moveToAdjacentPosition(attacker, healer.pos);
+
+    expect(result).toBe(OK);
+    expect(healer.move).toHaveBeenCalledWith(LEFT);
+    expect(attacker.move).toHaveBeenCalledWith(RIGHT);
+  });
+
+  it("does not infer a head-on partner for the unpaired standard attacker", () => {
+    const attacker = makeCreep("attacker-1", 10, 10);
+    const healer = makeCreep("healer-1", 11, 10);
+    Object.assign(attacker.memory, {
+      role: "meleeAttacker",
+      configName: "W1N1:war:W2N2:meleeAttacker:1",
+    });
+    Object.assign(healer.memory, {
+      role: "healer",
+      configName: "W1N1:war:W2N2:healer:1",
+    });
+    planHeadOnStep(healer, attacker.pos);
+    setupRoomContext([attacker, healer]);
+
+    const result = moveToAdjacentPosition(attacker, healer.pos);
+
+    expect(result).toBe(OK);
+    expect(healer.move).not.toHaveBeenCalled();
+    expect(attacker.move).toHaveBeenCalledWith(RIGHT);
+  });
+
+  it("fails closed when only one War member points at the other", () => {
+    const attacker = makeCreep("attacker-drift", 10, 10);
+    const healer = makeCreep("healer-drift", 11, 10);
+    const attackerConfig = "W1N1:war:W2N2:meleeAttacker:0";
+    const healerConfig = "W1N1:war:W2N2:healer:0";
+    Object.assign(attacker.memory, {
+      role: "meleeAttacker",
+      configName: attackerConfig,
+      _warPartnerConfigName: healerConfig,
+    });
+    Object.assign(healer.memory, {
+      role: "healer",
+      configName: healerConfig,
+      _warPartnerConfigName: "W1N1:war:W2N2:meleeAttacker:other",
+    });
+    planHeadOnStep(healer, attacker.pos);
+    setupRoomContext([attacker, healer]);
+
+    const result = moveToAdjacentPosition(attacker, healer.pos);
+
+    expect(result).toBe(OK);
+    expect(healer.move).not.toHaveBeenCalled();
+    expect(attacker.move).toHaveBeenCalledWith(RIGHT);
   });
 });

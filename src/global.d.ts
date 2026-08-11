@@ -650,6 +650,7 @@ declare global {
     };
     _warCounterstrikeSuppressedTargetIds?: Id<Creep>[];
     _warMoveIntentAt?: number;
+    _warPartnerConfigName?: string;
     _warDetached?: boolean;
     _warQueued?: boolean;
     _move?: {

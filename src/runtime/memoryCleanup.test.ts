@@ -203,6 +203,72 @@ describe("runMemoryCleanup", () => {
     });
   });
 
+  it("purges terminal War owners from completedAt even when updatedAt was refreshed", () => {
+    Game.time = 221;
+    const configName = "W1N1:war:W2N2:meleeAttacker:0";
+    const survivor = {
+      name: "war-survivor",
+      memory: {
+        role: "meleeAttacker",
+        roleArgs: ["W2N2", "", "", "", ""],
+        configName,
+      },
+      suicide: jest.fn(() => OK),
+    } as unknown as Creep;
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [configName]);
+    Game.creeps = { [survivor.name]: survivor };
+    Game.spawns = { [spawn.name]: spawn };
+    Memory.data = {
+      war: {
+        W2N2: {
+          targetRoom: "W2N2",
+          sourceRoom: "W1N1",
+          status: "done",
+          reason: "npc_reservation",
+          attempts: 1,
+          createdAt: 1,
+          statusSince: 20,
+          completedAt: 20,
+          updatedAt: 220,
+        },
+      },
+      creepConfigs: {
+        [configName]: { role: "meleeAttacker", args: [...survivor.memory.roleArgs!], roomName: "W1N1" },
+      },
+    } as Memory["data"];
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.war?.W2N2).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[configName]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual([]);
+    expect(survivor.memory._warDetached).toBe(true);
+    expect(survivor.memory.configName).toBeUndefined();
+    expect(survivor.suicide).not.toHaveBeenCalled();
+  });
+
+  it("falls back to statusSince for legacy terminal War owners without completedAt", () => {
+    Game.time = 221;
+    Memory.data = {
+      war: {
+        W2N2: {
+          targetRoom: "W2N2",
+          sourceRoom: "W1N1",
+          status: "failed",
+          reason: "npc_reservation",
+          attempts: 1,
+          createdAt: 1,
+          statusSince: 20,
+          updatedAt: 220,
+        },
+      },
+    } as Memory["data"];
+
+    runMemoryCleanup();
+
+    expect(Memory.data?.war?.W2N2).toBeUndefined();
+  });
+
   it("keeps owned link cache and prunes visible-lost and unseen rooms on tick 17", () => {
     const visibleLostRoom = createOwnedRoom("W2N2");
     visibleLostRoom.controller!.my = false;

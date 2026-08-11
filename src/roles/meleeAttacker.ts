@@ -392,7 +392,7 @@ function getCounterstrikeThreat(hostile: Creep): number {
   );
 }
 
-function findCounterstrikeApproach(creep: Creep): CounterstrikeApproach | null {
+function findCounterstrikeApproach(creep: Creep, coordinatedHealer?: Creep): CounterstrikeApproach | null {
   clearExpiredCounterstrikeSuppression(creep);
   const suppressedIds = new Set(creep.memory._warCounterstrikeSuppressedTargetIds ?? []);
   const protectedPositions = getHostileRampartPositions(creep.room);
@@ -412,7 +412,9 @@ function findCounterstrikeApproach(creep: Creep): CounterstrikeApproach | null {
     });
   if (candidates.length === 0) return null;
 
-  const healer = findPairedWarHealer(creep);
+  const healer = coordinatedHealer?.memory._warPartnerConfigName === creep.memory.configName
+    ? coordinatedHealer
+    : findPairedWarHealer(creep);
   const healerCanCoordinate = !!(
     healer &&
     !creep.memory._warDetached &&
@@ -505,8 +507,8 @@ export function shouldWarHealerHoldForCounterstrike(attacker: Creep, healer: Cre
   if (attacker.room.name !== targetRoom || healer.room.name !== targetRoom) return false;
   if (attacker.memory._warDetached || healer.memory._warDetached || !attacker.pos.isNearTo(healer.pos)) return false;
   if (attacker.memory._warCounterstrike || hasExposedAdjacentHostile(attacker)) return false;
-  if (findPairedWarHealer(attacker)?.name !== healer.name) return false;
-  return findCounterstrikeApproach(attacker)?.healerCoordinated === true;
+  if (healer.memory._warPartnerConfigName !== attacker.memory.configName) return false;
+  return findCounterstrikeApproach(attacker, healer)?.healerCoordinated === true;
 }
 
 function isCoordinatedCounterstrikeReady(
@@ -657,11 +659,8 @@ function attackRouteBreachWhileTraveling(creep: Creep): boolean {
 }
 
 function findPairedWarHealer(creep: Creep): Creep | null {
-  const configName = creep.memory.configName;
-  if (!configName?.includes(":war:")) return null;
-
-  const healerConfigName = configName.replace(":meleeAttacker:", ":healer:");
-  if (healerConfigName === configName) return null;
+  const healerConfigName = creep.memory._warPartnerConfigName;
+  if (!healerConfigName) return null;
 
   for (const name of Object.keys(Game.creeps)) {
     const candidate = Game.creeps[name];
@@ -693,8 +692,16 @@ function getTargetRoomMoveOptions(creep: Creep) {
 
 function expectsWarHealer(creep: Creep): boolean {
   return creep.memory._warDetached !== true
-    && creep.memory.configName?.includes(":war:") === true
-    && creep.memory.configName.includes(":meleeAttacker:");
+    && typeof creep.memory._warPartnerConfigName === "string"
+    && creep.memory._warPartnerConfigName.length > 0;
+}
+
+function synchronizeWarPartnerConfigName(creep: Creep, partnerConfigName?: string): void {
+  if (partnerConfigName && creep.memory._warDetached !== true) {
+    creep.memory._warPartnerConfigName = partnerConfigName;
+    return;
+  }
+  delete creep.memory._warPartnerConfigName;
 }
 
 function isOnExitDirection(pos: RoomPosition, direction: DirectionConstant): boolean {
@@ -810,9 +817,14 @@ export const meleeAttackerRole: RoleFactory = (
   encodedRouteRooms?: string,
   boostTaskId?: string,
   encodedBoostCompounds?: string,
+  partnerConfigName?: string,
 ) => ({
-  prepare: (creep): boolean => prepareCombatBoost(creep, boostTaskId, encodedBoostCompounds),
+  prepare: (creep): boolean => {
+    synchronizeWarPartnerConfigName(creep, partnerConfigName);
+    return prepareCombatBoost(creep, boostTaskId, encodedBoostCompounds);
+  },
   source: (creep): boolean => {
+    synchronizeWarPartnerConfigName(creep, partnerConfigName);
     if (targetRoom && waitForWarHealerFormation(creep, targetRoom, encodedRouteRooms)) {
       attackAdjacentWhileHoldingFormation(creep, creep.room.name === targetRoom);
       return false;
@@ -827,6 +839,7 @@ export const meleeAttackerRole: RoleFactory = (
     return true;
   },
   target: (creep): boolean => {
+    synchronizeWarPartnerConfigName(creep, partnerConfigName);
     if (targetRoom && waitForWarHealerFormation(creep, targetRoom, encodedRouteRooms)) {
       attackAdjacentWhileHoldingFormation(creep, creep.room.name === targetRoom);
       return false;

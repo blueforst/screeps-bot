@@ -262,33 +262,50 @@ function projectWarEntry(
   const createdAt = optionalFiniteNumber(value, "createdAt", issues);
   const updatedAt = optionalFiniteNumber(value, "updatedAt", issues);
   const retryAt = optionalFiniteNumber(value, "patrolNextSweepAt", issues);
-  malformed ||= createdAt.malformed || updatedAt.malformed || retryAt.malformed;
+  const completedAt = optionalFiniteNumber(value, "completedAt", issues);
+  const assetsReleasedAt = optionalFiniteNumber(value, "assetsReleasedAt", issues);
+  malformed ||= createdAt.malformed
+    || updatedAt.malformed
+    || retryAt.malformed
+    || completedAt.malformed
+    || assetsReleasedAt.malformed;
 
-  // These are documented source ambiguities, not inferred lifecycle outcomes.
-  if (reason === "npc_reservation") {
+  const terminal = status === "done" || status === "failed";
+  if (terminal && assetsReleasedAt.value === undefined && !assetsReleasedAt.malformed) {
     issues.push(issue(
-      "war-raw-delete-cleanup-ambiguity",
-      "npc reservation callers can purge the workflow without owner-scoped asset cleanup",
+      "war-terminal-release-unconfirmed",
+      "legacy terminal owner has no evidence that production and execution assets were released",
+      "assetsReleasedAt",
     ));
   }
-  const isT3Duo = squad === "t3Duo" || boostTier === "t3";
-  if (!isT3Duo) {
+  if (!terminal && completedAt.value !== undefined) {
     issues.push(issue(
-      "war-standard-pairing-ambiguity",
-      "standard squad pairing is implicit in config-name indexes",
+      "war-active-completed-at-conflict",
+      "non-terminal war owner must not retain completedAt",
+      "completedAt",
     ));
+    malformed = true;
   }
-  if (oneShot === true) {
+  if (!terminal && assetsReleasedAt.value !== undefined) {
     issues.push(issue(
-      "war-one-shot-generation-loss-ambiguity",
-      "one-shot generation loss has no explicit domain terminal transition",
+      "war-active-release-at-conflict",
+      "non-terminal war owner must not retain assetsReleasedAt",
+      "assetsReleasedAt",
     ));
+    malformed = true;
   }
-  if (status === "done" || status === "failed") {
+  if (
+    terminal
+    && completedAt.value !== undefined
+    && assetsReleasedAt.value !== undefined
+    && assetsReleasedAt.value < completedAt.value
+  ) {
     issues.push(issue(
-      "war-terminal-config-retention-ambiguity",
-      "terminal workflow state does not prove that live-owned configs were retired",
+      "war-release-before-completion-conflict",
+      "assetsReleasedAt must not precede completedAt",
+      "assetsReleasedAt",
     ));
+    malformed = true;
   }
 
   const authorities: WorkAuthorityRef[] = [

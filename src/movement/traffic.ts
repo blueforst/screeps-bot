@@ -118,10 +118,14 @@ function issueMove(creep: AnyCreep, direction: DirectionConstant): CreepMoveRetu
 function isHeadOnWarDuoSwap(attacker: AnyCreep, healer: AnyCreep): boolean {
   if (!isStandardCreep(attacker) || !isStandardCreep(healer)) return false;
   if (attacker.memory.role !== "meleeAttacker" || healer.memory.role !== "healer") return false;
+  if (attacker.memory._warDetached === true || healer.memory._warDetached === true) return false;
 
   const attackerConfig = attacker.memory.configName;
+  const healerConfig = healer.memory.configName;
   if (!attackerConfig?.includes(":war:") || !attackerConfig.includes(":meleeAttacker:")) return false;
-  if (healer.memory.configName !== attackerConfig.replace(":meleeAttacker:", ":healer:")) return false;
+  if (!healerConfig?.includes(":war:") || !healerConfig.includes(":healer:")) return false;
+  if (attacker.memory._warPartnerConfigName !== healerConfig) return false;
+  if (healer.memory._warPartnerConfigName !== attackerConfig) return false;
 
   const nextStep = getPlannedNextStep(healer);
   return nextStep?.x === attacker.pos.x && nextStep.y === attacker.pos.y;

@@ -978,6 +978,9 @@ function ensureScout(task: ColonizationTask): void {
 }
 
 function abandonColonization(task: ColonizationTask, reason: string): void {
+  if (task.status === "clearing") {
+    clearWarRoomTask(task.targetRoom);
+  }
   const configNames = getTaskConfigNames(task);
   const store = ensureColonizationStore();
   const configStore = ensureConfigStore();

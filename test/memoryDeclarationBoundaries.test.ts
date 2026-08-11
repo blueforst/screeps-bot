@@ -74,7 +74,7 @@ const MEMORY_BRANCHES = {
   data: {
     declaration: "src/types/memory/data.d.ts",
     interfaceName: "ScreepsMemoryData",
-    schemaFingerprint: "a4e8565351f062f9fdb8420adade83d33517a289a4202c72df37ba4fda72681b",
+    schemaFingerprint: "6dd4c88049dfdf31f86acb4d8095f219c068d9c0ccd735a283671d1dd9661bcb",
     imports: [
       "@/runtime/marketActionArbiter:MarketAccountClaim",
       "@/runtime/marketActionArbiter:MarketActionJournalEntry",

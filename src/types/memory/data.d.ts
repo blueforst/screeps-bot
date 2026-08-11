@@ -277,6 +277,7 @@ declare global {
         lastHostileSeenAt?: number;
         clearSince?: number;
         completedAt?: number;
+        assetsReleasedAt?: number;
         controllerAttackerLastQueuedAt?: number;
         generationCounter?: number;
         activeGeneration?: {

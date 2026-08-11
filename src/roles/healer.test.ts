@@ -126,6 +126,22 @@ describe("healerRole war duo staging", () => {
     Game.getObjectById = jest.fn(() => null) as typeof Game.getObjectById;
   });
 
+  it("does not restore partner identity from fallback args after owner detach", () => {
+    const healer = createMockPowerBankCreep("healer", {
+      name: "detached-healer",
+      roomName: "E2N57",
+      memory: {
+        role: "healer",
+        _warDetached: true,
+      },
+    });
+    Game.creeps = { [healer.name]: healer };
+
+    healerRole(TARGET_ROOM, "", "", "", ATTACKER_CONFIG).source?.(healer);
+
+    expect(healer.memory._warPartnerConfigName).toBeUndefined();
+  });
+
   it("steps into the attacker's previous tile when the paired attacker moves this tick", () => {
     const spawn = hostileStructure(STRUCTURE_SPAWN, "spawn-following-move", 23, 20, 5000);
     const attacker = createMockPowerBankCreep("meleeAttacker", {
@@ -148,7 +164,7 @@ describe("healerRole war duo staging", () => {
     Game.creeps = { attacker, healer };
     (attacker.memory as CreepMemory & { _warMoveIntentAt?: number })._warMoveIntentAt = Game.time;
 
-    healerRole(TARGET_ROOM).target(healer);
+    healerRole(TARGET_ROOM, "", "", "", ATTACKER_CONFIG).target(healer);
 
     expect(healer.move).toHaveBeenCalledWith(healer.pos.getDirectionTo(attacker.pos));
     expect(moveToTarget).not.toHaveBeenCalled();
@@ -181,7 +197,7 @@ describe("healerRole war duo staging", () => {
     Game.getObjectById = jest.fn((id: Id<_HasId>) => (id === wall.id ? wall : null)) as typeof Game.getObjectById;
     Game.creeps = { attacker, healer };
 
-    healerRole(TARGET_ROOM).target(healer);
+    healerRole(TARGET_ROOM, "", "", "", ATTACKER_CONFIG).target(healer);
 
     expect(moveToTarget).not.toHaveBeenCalled();
   });
@@ -190,15 +206,15 @@ describe("healerRole war duo staging", () => {
     Game.time = 101;
     const { attacker, healer } = setupCounterstrikeSwapScenario({ createdAt: 100 });
 
-    healerRole(TARGET_ROOM).target(healer);
+    healerRole(TARGET_ROOM, "", "", "", ATTACKER_CONFIG).target(healer);
 
     expect(healer.move).not.toHaveBeenCalled();
     expect(attacker.memory._warCounterstrike?.healerReadyAt).toBe(101);
 
     Game.time = 102;
     jest.clearAllMocks();
-    healerRole(TARGET_ROOM).target(healer);
-    meleeAttackerRole(TARGET_ROOM).target(attacker);
+    healerRole(TARGET_ROOM, "", "", "", ATTACKER_CONFIG).target(healer);
+    meleeAttackerRole(TARGET_ROOM, "", "", "", HEALER_CONFIG).target(attacker);
 
     expect(healer.move).toHaveBeenCalledWith(TOP_LEFT);
     expect(attacker.move).toHaveBeenCalledWith(BOTTOM_RIGHT);
@@ -209,7 +225,7 @@ describe("healerRole war duo staging", () => {
     const { attacker, healer, hostile } = setupCounterstrikeSwapScenario({ createdAt: 100 });
     hostile.pos = new MockPos(27, 26, TARGET_ROOM) as unknown as RoomPosition;
 
-    healerRole(TARGET_ROOM).target(healer);
+    healerRole(TARGET_ROOM, "", "", "", ATTACKER_CONFIG).target(healer);
 
     expect(attacker.memory._warCounterstrike).toBeUndefined();
   });
@@ -218,7 +234,7 @@ describe("healerRole war duo staging", () => {
     Game.time = 101;
     const { healer } = setupCounterstrikeSwapScenario({ createdAt: 100, protectedByRampart: true });
 
-    healerRole(TARGET_ROOM).target(healer);
+    healerRole(TARGET_ROOM, "", "", "", ATTACKER_CONFIG).target(healer);
 
     expect(healer.move).not.toHaveBeenCalled();
     expect(Game.creeps.attacker.memory._warCounterstrike?.healerReadyAt).toBeUndefined();
@@ -237,7 +253,7 @@ describe("healerRole war duo staging", () => {
       return base;
     }) as Room["find"];
 
-    healerRole(TARGET_ROOM).target(healer);
+    healerRole(TARGET_ROOM, "", "", "", ATTACKER_CONFIG).target(healer);
 
     expect(healer.move).not.toHaveBeenCalled();
     expect(attacker.memory._warCounterstrike?.healerReadyAt).toBeUndefined();

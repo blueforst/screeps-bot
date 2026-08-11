@@ -1,4 +1,12 @@
-import { getWarStatus, runWarControl, startWarPatrol, startWarRoom, stopWarRoom } from "@/runtime/warControl";
+import {
+  clearWarRoomTask,
+  getWarStatus,
+  requestWarRoomClear,
+  runWarControl,
+  startWarPatrol,
+  startWarRoom,
+  stopWarRoom,
+} from "@/runtime/warControl";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import { listCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
 import { createMockStore, MockPos } from "@mock/powerBank";
@@ -329,6 +337,421 @@ describe("runWarControl", () => {
     expect(Memory.data?.creepConfigs?.[healerConfig]).toBeUndefined();
     expect(attackerSuicide).not.toHaveBeenCalled();
     expect(healerSuicide).not.toHaveBeenCalled();
+  });
+
+  it("terminalizes and detaches live and spawning members while removing production immediately", () => {
+    const attackerConfig = "E1N57:war:E3N57:meleeAttacker:0";
+    const healerConfig = "E1N57:war:E3N57:healer:0";
+    const attackerSuicide = jest.fn(() => OK);
+    const attacker = createWarCreep("attacker", "meleeAttacker", attackerConfig);
+    attacker.memory.roleArgs = ["E3N57", "", "", "", healerConfig];
+    attacker.memory._warPartnerConfigName = healerConfig;
+    attacker.suicide = attackerSuicide;
+    const spawningMemory = {
+      role: "healer" as const,
+      roleArgs: ["E3N57", "", "", "", attackerConfig],
+      configName: healerConfig,
+      _warPartnerConfigName: attackerConfig,
+    } as CreepMemory;
+    const cancel = jest.fn(() => ERR_BUSY);
+    const sourceRoom = createSourceRoom([]);
+    const spawn = createSpawn(sourceRoom);
+    spawn.memory.spawnList = [attackerConfig, healerConfig];
+    (spawn as StructureSpawn & { spawning: Spawning }).spawning = {
+      name: "forming-healer",
+      cancel,
+    } as unknown as Spawning;
+
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "clearing",
+          reason: "npc_reservation",
+          squad: "standard",
+          attempts: 1,
+          createdAt: 900,
+          updatedAt: 999,
+          statusSince: 900,
+          clearSince: 981,
+        },
+      },
+      creepConfigs: {
+        [attackerConfig]: { role: "meleeAttacker", args: [...attacker.memory.roleArgs!], roomName: "E1N57" },
+        [healerConfig]: { role: "healer", args: [...spawningMemory.roleArgs!], roomName: "E1N57" },
+      },
+    } as Memory["data"];
+    Memory.creeps = { "forming-healer": spawningMemory };
+    Game.rooms = { E1N57: sourceRoom, E3N57: createTargetRoom() };
+    Game.spawns = { Spawn1: spawn };
+    Game.creeps = { attacker };
+    resetRuntimeServices();
+
+    runWarControl();
+
+    expect(Memory.data?.war?.E3N57).toMatchObject({
+      status: "done",
+      completedAt: 1000,
+      assetsReleasedAt: 1000,
+    });
+    expect(Memory.data?.creepConfigs?.[attackerConfig]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[healerConfig]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual([]);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(attacker.memory).toMatchObject({
+      role: "meleeAttacker",
+      roleArgs: ["E3N57", "", "", "", healerConfig],
+      _warDetached: true,
+    });
+    expect(attacker.memory.configName).toBeUndefined();
+    expect(attacker.memory._warPartnerConfigName).toBeUndefined();
+    expect(attackerSuicide).not.toHaveBeenCalled();
+    expect(spawningMemory._warDetached).toBe(true);
+    expect(spawningMemory.configName).toBeUndefined();
+    expect(spawningMemory._warPartnerConfigName).toBeUndefined();
+  });
+
+  it("fails an exhausted one-shot generation instead of leaving it deployed forever", () => {
+    const attackerConfig = "E1N57:war:E3N57:g1:meleeAttacker:0";
+    const healerConfig = "E1N57:war:E3N57:g1:healer:0";
+    const attacker = createWarCreep("attacker", "meleeAttacker", attackerConfig, "E3N57");
+    attacker.memory._warPartnerConfigName = healerConfig;
+    attacker.memory.roleArgs = ["E3N57", "", "war:E1N57:E3N57:g1", "boosts", healerConfig];
+    attacker.suicide = jest.fn(() => OK);
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "clearing",
+          reason: "manual",
+          squad: "t3Duo",
+          boostTier: "t3",
+          oneShot: true,
+          attempts: 1,
+          createdAt: 900,
+          updatedAt: 999,
+          activeGeneration: {
+            id: 1,
+            phase: "deployed",
+            createdAt: 900,
+            deployedAt: 950,
+            boostTaskId: "war:E1N57:E3N57:g1",
+            configNames: { meleeAttacker: attackerConfig, healer: healerConfig },
+          },
+        },
+      },
+      creepConfigs: {
+        [attackerConfig]: { role: "meleeAttacker", args: [...attacker.memory.roleArgs!], roomName: "E1N57" },
+        [healerConfig]: { role: "healer", args: [], roomName: "E1N57" },
+      },
+    } as Memory["data"];
+    Game.rooms = { E1N57: createSourceRoom([]) };
+    Game.creeps = { attacker };
+    resetRuntimeServices();
+
+    runWarControl();
+
+    expect(Memory.data?.war?.E3N57).toMatchObject({
+      status: "failed",
+      failReason: "generation_exhausted",
+      completedAt: 1000,
+      assetsReleasedAt: 1000,
+    });
+    expect(attacker.memory._warDetached).toBe(true);
+    expect(attacker.memory.configName).toBeUndefined();
+    expect(attacker.memory._warPartnerConfigName).toBeUndefined();
+    expect(Memory.data?.war?.E3N57?.activeGeneration?.id).toBe(1);
+  });
+
+  it("replaces an exhausted reusable generation with a monotonically newer generation", () => {
+    const attackerConfig = "E1N57:war:E3N57:g1:meleeAttacker:0";
+    const healerConfig = "E1N57:war:E3N57:g1:healer:0";
+    const attacker = createWarCreep("attacker", "meleeAttacker", attackerConfig, "E3N57");
+    attacker.memory._warPartnerConfigName = healerConfig;
+    attacker.suicide = jest.fn(() => OK);
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "clearing",
+          reason: "manual",
+          squad: "t3Duo",
+          boostTier: "t3",
+          oneShot: false,
+          attempts: 1,
+          createdAt: 900,
+          updatedAt: 999,
+          generationCounter: 1,
+          activeGeneration: {
+            id: 1,
+            phase: "deployed",
+            createdAt: 900,
+            deployedAt: 950,
+            boostTaskId: "war:E1N57:E3N57:g1",
+            configNames: { meleeAttacker: attackerConfig, healer: healerConfig },
+          },
+        },
+      },
+      creepConfigs: {
+        [attackerConfig]: { role: "meleeAttacker", args: ["E3N57"], roomName: "E1N57" },
+        [healerConfig]: { role: "healer", args: ["E3N57"], roomName: "E1N57" },
+      },
+    } as Memory["data"];
+    Game.rooms = { E1N57: createSourceRoom([]) };
+    Game.creeps = { attacker };
+    resetRuntimeServices();
+
+    runWarControl();
+
+    expect(Memory.data?.war?.E3N57).toMatchObject({
+      status: "clearing",
+      generationCounter: 2,
+      activeGeneration: {
+        id: 2,
+        phase: "preparing",
+      },
+    });
+    expect(attacker.memory._warDetached).toBe(true);
+    expect(attacker.memory.configName).toBeUndefined();
+    expect(attacker.memory._warPartnerConfigName).toBeUndefined();
+    expect(Memory.data?.war?.E3N57?.completedAt).toBeUndefined();
+  });
+
+  it("releases the old exact owner before restarting the same target from another source", () => {
+    const oldConfig = "E1N57:war:E3N57:meleeAttacker:0";
+    const otherConfig = "E5N57:war:E7N57:meleeAttacker:0";
+    const survivor = createWarCreep("old-attacker", "meleeAttacker", oldConfig);
+    survivor.memory.roleArgs = ["E3N57", "", "", "", ""];
+    survivor.suicide = jest.fn(() => OK);
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "done",
+          reason: "manual",
+          attempts: 1,
+          createdAt: 900,
+          updatedAt: 999,
+          completedAt: 990,
+        },
+        E7N57: {
+          targetRoom: "E7N57",
+          sourceRoom: "E5N57",
+          status: "clearing",
+          reason: "manual",
+          attempts: 1,
+          createdAt: 900,
+          updatedAt: 999,
+        },
+      },
+      creepConfigs: {
+        [oldConfig]: { role: "meleeAttacker", args: [...survivor.memory.roleArgs!], roomName: "E1N57" },
+        [otherConfig]: { role: "meleeAttacker", args: ["E7N57"], roomName: "E5N57" },
+      },
+    } as Memory["data"];
+    Game.rooms = { E1N57: createSourceRoom([]) };
+    Game.creeps = { survivor };
+    resetRuntimeServices();
+
+    requestWarRoomClear("E3N57", "E2N57", { reason: "npc_reservation" });
+
+    expect(Memory.data?.war?.E3N57).toMatchObject({ sourceRoom: "E2N57", status: "staging", attempts: 2 });
+    expect(Memory.data?.creepConfigs?.[oldConfig]).toBeUndefined();
+    expect(survivor.memory._warDetached).toBe(true);
+    expect(survivor.memory.configName).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[otherConfig]).toBeDefined();
+    expect(Memory.data?.war?.E7N57).toBeDefined();
+  });
+
+  it("uses the compatibility clear gateway to release assets before deleting the owner", () => {
+    const configName = "E1N57:war:E3N57:meleeAttacker:0";
+    const survivor = createWarCreep("attacker", "meleeAttacker", configName);
+    survivor.suicide = jest.fn(() => OK);
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "done",
+          reason: "npc_reservation",
+          attempts: 1,
+          createdAt: 900,
+          updatedAt: 999,
+          completedAt: 990,
+        },
+      },
+      creepConfigs: {
+        [configName]: { role: "meleeAttacker", args: ["E3N57"], roomName: "E1N57" },
+      },
+    } as Memory["data"];
+    Game.rooms = { E1N57: createSourceRoom([]) };
+    Game.creeps = { survivor };
+    resetRuntimeServices();
+
+    clearWarRoomTask("E3N57");
+
+    expect(Memory.data?.war?.E3N57).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[configName]).toBeUndefined();
+    expect(survivor.memory._warDetached).toBe(true);
+    expect(survivor.memory.configName).toBeUndefined();
+    expect(survivor.suicide).not.toHaveBeenCalled();
+  });
+
+  it("does not ensure an empty War store when clearing an absent owner", () => {
+    Memory.data = undefined;
+    resetRuntimeServices();
+
+    clearWarRoomTask("E3N57");
+
+    expect(Memory.data).toBeUndefined();
+  });
+
+  it("reconciles a legacy terminal owner once and records release evidence", () => {
+    const configName = "E1N57:war:E3N57:meleeAttacker:0";
+    const survivor = createWarCreep("legacy-terminal-attacker", "meleeAttacker", configName);
+    survivor.memory._warPartnerConfigName = "E1N57:war:E3N57:healer:0";
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "done",
+          reason: "manual",
+          attempts: 1,
+          createdAt: 900,
+          updatedAt: 999,
+          completedAt: 990,
+        },
+      },
+      creepConfigs: {
+        [configName]: { role: "meleeAttacker", args: ["E3N57"], roomName: "E1N57" },
+      },
+    } as Memory["data"];
+    Game.rooms = { E1N57: createSourceRoom([]) };
+    Game.creeps = { [survivor.name]: survivor };
+    resetRuntimeServices();
+
+    runWarControl();
+
+    expect(Memory.data?.war?.E3N57).toMatchObject({
+      status: "done",
+      completedAt: 990,
+      assetsReleasedAt: 1000,
+    });
+    expect(Memory.data?.creepConfigs?.[configName]).toBeUndefined();
+    expect(survivor.memory).toMatchObject({ _warDetached: true });
+    expect(survivor.memory.configName).toBeUndefined();
+    expect(survivor.memory._warPartnerConfigName).toBeUndefined();
+  });
+
+  it("publishes explicit standard pair identities without pairing attacker index one", () => {
+    Memory.data!.war!.E3N57!.squad = "standard";
+    Memory.data!.war!.E3N57!.boostTier = undefined;
+    Memory.data!.war!.E3N57!.oneShot = false;
+    const sourceRoom = createSourceRoom([]);
+    Game.rooms = { E1N57: sourceRoom };
+    Game.spawns = { Spawn1: createSpawn(sourceRoom) };
+
+    runWarControl();
+
+    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:meleeAttacker:0"]?.args).toEqual([
+      "E3N57", "", "", "", "E1N57:war:E3N57:healer:0",
+    ]);
+    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:meleeAttacker:1"]?.args).toEqual([
+      "E3N57", "", "", "", "",
+    ]);
+    expect(Memory.data?.creepConfigs?.["E1N57:war:E3N57:healer:0"]?.args).toEqual([
+      "E3N57", "", "", "", "E1N57:war:E3N57:meleeAttacker:0",
+    ]);
+  });
+
+  it("appends exact T3 duo partners without shifting the existing Boost arguments", () => {
+    setupWarBoostRoom();
+
+    runWarControl();
+
+    const generation = Memory.data?.war?.E3N57?.activeGeneration;
+    expect(generation).toBeDefined();
+    const attackerArgs = Memory.data?.creepConfigs?.[generation!.configNames.meleeAttacker]?.args;
+    const healerArgs = Memory.data?.creepConfigs?.[generation!.configNames.healer]?.args;
+    expect(attackerArgs?.slice(0, 4)).toEqual([
+      "E3N57",
+      "",
+      generation!.boostTaskId,
+      [
+        RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+        RESOURCE_CATALYZED_UTRIUM_ACID,
+      ].join("|"),
+    ]);
+    expect(healerArgs?.slice(0, 4)).toEqual([
+      "E3N57",
+      "",
+      generation!.boostTaskId,
+      [
+        RESOURCE_CATALYZED_ZYNTHIUM_ALKALIDE,
+        RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+        RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE,
+      ].join("|"),
+    ]);
+    expect(attackerArgs?.[4]).toBe(generation!.configNames.healer);
+    expect(healerArgs?.[4]).toBe(generation!.configNames.meleeAttacker);
+  });
+
+  it("refreshes explicit partner args on already deployed legacy T3 members", () => {
+    const attackerConfig = "E1N57:war:E3N57:g1:meleeAttacker:0";
+    const healerConfig = "E1N57:war:E3N57:g1:healer:0";
+    const boostTaskId = "war:E1N57:E3N57:g1";
+    const attacker = createWarCreep("attacker", "meleeAttacker", attackerConfig, "E3N57");
+    const healer = createWarCreep("healer", "healer", healerConfig, "E3N57");
+    attacker.owner = { username: "me" } as Owner;
+    healer.owner = { username: "me" } as Owner;
+    attacker.memory.roleArgs = ["E3N57", "", boostTaskId, "legacy-attacker-boosts"];
+    healer.memory.roleArgs = ["E3N57", "", boostTaskId, "legacy-healer-boosts"];
+    const hostile = { owner: { username: "enemy" } } as Creep;
+    Memory.data = {
+      war: {
+        E3N57: {
+          targetRoom: "E3N57",
+          sourceRoom: "E1N57",
+          status: "clearing",
+          reason: "npc_reservation",
+          squad: "t3Duo",
+          boostTier: "t3",
+          oneShot: false,
+          attempts: 1,
+          createdAt: 900,
+          updatedAt: 999,
+          generationCounter: 1,
+          activeGeneration: {
+            id: 1,
+            phase: "deployed",
+            createdAt: 900,
+            deployedAt: 950,
+            boostTaskId,
+            configNames: { meleeAttacker: attackerConfig, healer: healerConfig },
+          },
+        },
+      },
+      creepConfigs: {},
+    } as Memory["data"];
+    Game.rooms = {
+      E1N57: createSourceRoom([]),
+      E3N57: createTargetRoom({ hostileCreeps: [hostile] }),
+    };
+    Game.creeps = { attacker, healer };
+    resetRuntimeServices();
+
+    runWarControl();
+
+    expect(attacker.memory.roleArgs?.[4]).toBe(healerConfig);
+    expect(healer.memory.roleArgs?.[4]).toBe(attackerConfig);
+    expect(attacker.memory.roleArgs?.[2]).toBe(boostTaskId);
+    expect(healer.memory.roleArgs?.[2]).toBe(boostTaskId);
   });
 });
 

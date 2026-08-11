@@ -20,11 +20,8 @@ const TARGET_ROOM_MOVE_OPTIONS = {
 } as const;
 
 function findPairedWarAttacker(creep: Creep): Creep | null {
-  const configName = creep.memory.configName;
-  if (!configName?.includes(":war:")) return null;
-
-  const attackerConfigName = configName.replace(":healer:", ":meleeAttacker:");
-  if (attackerConfigName === configName) return null;
+  const attackerConfigName = creep.memory._warPartnerConfigName;
+  if (!attackerConfigName) return null;
 
   for (const name of Object.keys(Game.creeps)) {
     const candidate = Game.creeps[name];
@@ -39,8 +36,16 @@ function findPairedWarAttacker(creep: Creep): Creep | null {
 
 function expectsWarAttacker(creep: Creep): boolean {
   return creep.memory._warDetached !== true
-    && creep.memory.configName?.includes(":war:") === true
-    && creep.memory.configName.includes(":healer:");
+    && typeof creep.memory._warPartnerConfigName === "string"
+    && creep.memory._warPartnerConfigName.length > 0;
+}
+
+function synchronizeWarPartnerConfigName(creep: Creep, partnerConfigName?: string): void {
+  if (partnerConfigName && creep.memory._warDetached !== true) {
+    creep.memory._warPartnerConfigName = partnerConfigName;
+    return;
+  }
+  delete creep.memory._warPartnerConfigName;
 }
 
 function isOnExitDirection(pos: RoomPosition, direction: DirectionConstant): boolean {
@@ -208,6 +213,10 @@ function getEscortTarget(creep: Creep, targetRoom?: string): Creep | null {
     return pairedAttacker;
   }
 
+  if (creep.memory.configName?.includes(":war:") && creep.memory._warDetached !== true) {
+    return null;
+  }
+
   const friendlies = creep.room.find(FIND_MY_CREEPS, {
     filter: (ally) => ally.name !== creep.name && ally.memory.role === "meleeAttacker",
   });
@@ -233,9 +242,14 @@ export const healerRole: RoleFactory = (
   encodedRouteRooms?: string,
   boostTaskId?: string,
   encodedBoostCompounds?: string,
+  partnerConfigName?: string,
 ) => ({
-  prepare: (creep): boolean => prepareCombatBoost(creep, boostTaskId, encodedBoostCompounds),
+  prepare: (creep): boolean => {
+    synchronizeWarPartnerConfigName(creep, partnerConfigName);
+    return prepareCombatBoost(creep, boostTaskId, encodedBoostCompounds);
+  },
   source: (creep): boolean => {
+    synchronizeWarPartnerConfigName(creep, partnerConfigName);
     if (targetRoom && moveWithWarAttackerFormation(creep, targetRoom, encodedRouteRooms)) return false;
 
     if (targetRoom && creep.room.name !== targetRoom) {
@@ -246,6 +260,7 @@ export const healerRole: RoleFactory = (
     return true;
   },
   target: (creep): boolean => {
+    synchronizeWarPartnerConfigName(creep, partnerConfigName);
     if (targetRoom && moveWithWarAttackerFormation(creep, targetRoom, encodedRouteRooms)) return false;
 
     if (targetRoom && creep.room.name !== targetRoom) {

@@ -10,6 +10,7 @@ import { pruneLinkNetworkRuntime } from "@/runtime/linkNetworkMemory";
 import { cleanupWorkerTaskBoard } from "@/runtime/workerTaskPool";
 import { gcProductionReservations } from "@/runtime/resourceReservation";
 import { cleanupTerminalBootstrapRecoveryRuntime } from "@/runtime/terminalBootstrapRecovery";
+import { releaseWarTaskOwner } from "@/runtime/warControl";
 import { isRoleName } from "@/types/roleCatalog";
 
 const CLEANUP_INTERVAL = 17;
@@ -413,10 +414,11 @@ function cleanupWarMemory(ownedRooms: Set<string>): number {
   for (const [targetRoom, task] of Object.entries(Memory.data.war)) {
     const sourceRoomOwned = ownedRooms.has(task.sourceRoom);
     const terminalDone = task.status === "done" || task.status === "failed";
-    const expiredTerminal = terminalDone && Game.time - task.updatedAt > 200;
+    const terminalAnchor = task.completedAt ?? task.statusSince ?? task.createdAt;
+    const expiredTerminal = terminalDone && Game.time - terminalAnchor > 200;
     if (!sourceRoomOwned || expiredTerminal) {
-      delete Memory.data.war[targetRoom];
-      removed += 1;
+      const result = releaseWarTaskOwner(targetRoom);
+      if (typeof result !== "string" && result.removedTask) removed += 1;
     }
   }
 

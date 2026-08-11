@@ -11,6 +11,7 @@ import {
 import { getCreepConfigService, getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import {
   getWarStatus,
+  releaseWarTaskOwner,
   startWarPatrol,
   startWarRoom,
   stopWarRoom,
@@ -172,14 +173,6 @@ export function stopColonization(targetRoom?: string): StopColonizationResult | 
     }
   }
 
-  for (const roomName of warRooms) {
-    const task = warStore[roomName];
-    const prefix = `${task.sourceRoom}:war:${task.targetRoom}:`;
-    for (const configName of collectConfigNamesByPrefix(prefix)) {
-      configNames.add(configName);
-    }
-  }
-
   for (const [, task] of crossShardTaskEntries) {
     for (const configName of getCrossShardTaskConfigNames(task)) {
       configNames.add(configName);
@@ -209,7 +202,12 @@ export function stopColonization(targetRoom?: string): StopColonizationResult | 
   }
 
   for (const roomName of warRooms) {
-    delete warStore[roomName];
+    const result = releaseWarTaskOwner(roomName, { suicide: true });
+    if (typeof result === "string") continue;
+    removedConfigs += result.removedConfigs;
+    removedQueuedTasks += result.removedQueuedTasks;
+    cancelledSpawns += result.cancelledSpawns;
+    suicidedCreeps += result.suicidedCreeps;
   }
 
   return {
