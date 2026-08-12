@@ -10,6 +10,7 @@ import { getProtoStorageContainer, getProtoControllerLinkContainer } from "@/run
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { isSpawnActive } from "@/runtime/tickContext";
 import { getPowerCreepRoomEnergyPolicy } from "@/runtime/powerCreepControl";
+import { isPowerSpawnProcessingEnabledForRoom } from "@/runtime/powerSpawnControl";
 import { moveToTarget } from "@/roles/shared";
 import { isPositionAllowedForCreep, shouldRestrictToSafeZone } from "@/runtime/safeZoneHelpers";
 
@@ -101,7 +102,10 @@ export function getEnergyStoreTarget(creep: Creep, options: EnergyStoreTargetOpt
       }
 
       if (structure.structureType === STRUCTURE_POWER_SPAWN) {
-        if (powerCreepPolicy.managePowerSpawnSupply) {
+        if (
+          powerCreepPolicy.managePowerSpawnSupply ||
+          isPowerSpawnProcessingEnabledForRoom(roomName)
+        ) {
           continue;
         }
         const powerSpawn = structure as StructurePowerSpawn;

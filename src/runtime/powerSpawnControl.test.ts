@@ -2,7 +2,6 @@ import {
   clearCarrierTaskBoardForTest,
   listCarrierTasksByRoom,
 } from "@/runtime/carrierTaskBoard";
-import { resetPowerCreepControlCacheForTest } from "@/runtime/powerCreepControl";
 import {
   POWER_SPAWN_HIGH_WATER_RATIO,
   runPowerSpawnControl,
@@ -44,24 +43,18 @@ function createMutableStore(
   } as MutableStore;
 }
 
-function installCapability(roomName: string, level = 4): void {
-  const powerCreep = {
-    name: roomName,
-    memory: { homeRoom: roomName },
-    powers: {
-      [PWR_OPERATE_EXTENSION]: { level, cooldown: 0 },
-    },
-  } as unknown as PowerCreep;
-  (Game as Game & { powerCreeps: Record<string, PowerCreep> }).powerCreeps = {
-    [powerCreep.name]: powerCreep,
-  };
-}
-
-function createScenario(options: { roomName?: string; power?: number; energy?: number } = {}): {
+function createScenario(options: {
+  roomName?: string;
+  power?: number;
+  energy?: number;
+  controllerMy?: boolean;
+  includePowerSpawn?: boolean;
+} = {}): {
   room: Room;
   powerSpawn: StructurePowerSpawn;
   powerSpawnStore: MutableStore;
   storage: StructureStorage;
+  myStructures: Structure<StructureConstant>[];
 } {
   const roomName = options.roomName || "E4N58";
   const powerSpawnStore = createMutableStore({
@@ -85,35 +78,36 @@ function createScenario(options: { roomName?: string; power?: number; energy?: n
       [RESOURCE_ENERGY]: 500_000,
     }, {}, 1_000_000),
   } as unknown as StructureStorage;
+  const myStructures = options.includePowerSpawn === false
+    ? []
+    : [powerSpawn as unknown as Structure<StructureConstant>];
   const room = {
     name: roomName,
-    controller: { my: true, level: 8 },
+    controller: { my: options.controllerMy ?? true, level: 8 },
     storage,
     terminal: null,
     find(type: FindConstant) {
       if (type === FIND_MY_STRUCTURES) {
-        return [powerSpawn];
+        return myStructures;
       }
       return [];
     },
   } as unknown as Room;
   Game.rooms[roomName] = room;
-  return { room, powerSpawn, powerSpawnStore, storage };
+  return { room, powerSpawn, powerSpawnStore, storage, myStructures };
 }
 
 describe("powerSpawnControl", () => {
   beforeEach(() => {
     clearCarrierTaskBoardForTest();
-    resetPowerCreepControlCacheForTest();
     Game.rooms = {};
     Game.flags = {};
     Memory.cfg = {};
     (Game as Game & { powerCreeps: Record<string, PowerCreep> }).powerCreeps = {};
   });
 
-  it("仅在有 OPERATE_EXTENSION PC 的房间发布 PowerSpawn power/energy 补给任务", () => {
-    const { room, powerSpawn, storage } = createScenario();
-    installCapability(room.name);
+  it("没有 OPERATE_EXTENSION PC 的非 Hub 房间也发布 PowerSpawn power/energy 补给任务", () => {
+    const { room, powerSpawn, storage } = createScenario({ roomName: "E6N59" });
 
     runPowerSpawnControl();
 
@@ -138,9 +132,8 @@ describe("powerSpawnControl", () => {
     ]);
   });
 
-  it("PowerSpawn 同时有至少 1 power 和 50 energy 时每 tick 自动运行", () => {
-    const { room, powerSpawn } = createScenario({ power: 1, energy: 50 });
-    installCapability(room.name);
+  it("非 Hub 无 PC 房间的 PowerSpawn 资源充足时每 tick 自动运行", () => {
+    const { powerSpawn } = createScenario({ roomName: "E6N59", power: 1, energy: 50 });
 
     runPowerSpawnControl();
 
@@ -148,8 +141,7 @@ describe("powerSpawnControl", () => {
   });
 
   it("进入储备状态后停止处理 power 并清理已有补给任务", () => {
-    const { room, powerSpawn } = createScenario({ power: 1, energy: 50 });
-    installCapability(room.name);
+    const { room, powerSpawn } = createScenario({ roomName: "E6N59", power: 1, energy: 50 });
 
     runPowerSpawnControl();
     expect(powerSpawn.processPower).toHaveBeenCalledTimes(1);
@@ -168,8 +160,7 @@ describe("powerSpawnControl", () => {
   });
 
   it("非储备状态忽略遗留 enabled=false 并自动处理 power", () => {
-    const { room, powerSpawn } = createScenario({ power: 1, energy: 50 });
-    installCapability(room.name);
+    const { room, powerSpawn } = createScenario({ roomName: "E5N59", power: 1, energy: 50 });
     (Memory as unknown as { cfg: Record<string, unknown> }).cfg = {
       powerSpawnControl: {
         rooms: {
@@ -185,8 +176,7 @@ describe("powerSpawnControl", () => {
   });
 
   it("补给使用 20%/90% 滞回，避免任务在临界值反复出现", () => {
-    const { room, powerSpawnStore } = createScenario();
-    installCapability(room.name);
+    const { room, powerSpawnStore } = createScenario({ roomName: "E5N59" });
 
     runPowerSpawnControl();
     expect(listCarrierTasksByRoom(room.name)[0].steps).toHaveLength(2);
@@ -204,22 +194,39 @@ describe("powerSpawnControl", () => {
     expect(listCarrierTasksByRoom(room.name)).toHaveLength(0);
   });
 
-  it("没有相应技能 PC 时既不发任务也不自动运行 PowerSpawn", () => {
-    const { room, powerSpawn } = createScenario({ power: 100, energy: 5_000 });
+  it("同一 tick 处理多个非储备己方 PowerSpawn 房间", () => {
+    const hub = createScenario({ roomName: "E4N58", power: 1, energy: 50 });
+    const nonHub = createScenario({ roomName: "E6N59", power: 1, energy: 50 });
+
+    runPowerSpawnControl();
+
+    expect(hub.powerSpawn.processPower).toHaveBeenCalledTimes(1);
+    expect(nonHub.powerSpawn.processPower).toHaveBeenCalledTimes(1);
+    expect(listCarrierTasksByRoom(hub.room.name)).toHaveLength(1);
+    expect(listCarrierTasksByRoom(nonHub.room.name)).toHaveLength(1);
+  });
+
+  it("PowerSpawn 消失后清理已有补给任务", () => {
+    const { room, myStructures } = createScenario({ roomName: "E6N59" });
+
+    runPowerSpawnControl();
+    expect(listCarrierTasksByRoom(room.name)).toHaveLength(1);
+
+    myStructures.length = 0;
+    Game.time += 1;
 
     runPowerSpawnControl();
 
     expect(listCarrierTasksByRoom(room.name)).toHaveLength(0);
-    expect(powerSpawn.processPower).not.toHaveBeenCalled();
   });
 
-  it("非 E4N58 房间即使具备 PC 能力和资源也不补给或运行 PowerSpawn", () => {
+  it("非己方房间即使存在 PowerSpawn 和资源也不加工或补给", () => {
     const { room, powerSpawn } = createScenario({
-      roomName: "E6N59",
+      roomName: "W2N2",
       power: 100,
       energy: 5_000,
+      controllerMy: false,
     });
-    installCapability(room.name);
 
     runPowerSpawnControl();
 

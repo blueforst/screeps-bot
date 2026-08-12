@@ -9,14 +9,12 @@ import {
 } from "@/runtime/carrierTaskBoard";
 import { createCarrierTaskStep } from "@/runtime/carrierTaskHelpers";
 import { getTerminalAmountOutsideMarketSaleExposure } from "@/runtime/marketSaleExposure";
-import { listOperateExtensionRoomCapabilities } from "@/runtime/powerCreepControl";
 import { isRoomInReserveMode } from "@/runtime/roomReserve";
 
 export const POWER_SPAWN_CARRIER_TASK_PRODUCER = "powerSpawnControl";
 export const POWER_SPAWN_SUPPLY_PRIORITY = 150;
 export const POWER_SPAWN_LOW_WATER_RATIO = 0.2;
 export const POWER_SPAWN_HIGH_WATER_RATIO = 0.9;
-export const POWER_SPAWN_PROCESS_ROOM_NAME = "E4N58";
 
 type SupplySource = StructureStorage | StructureTerminal;
 
@@ -138,13 +136,7 @@ function buildSupplyDraft(room: Room, powerSpawn: StructurePowerSpawn): CarrierT
   };
 }
 
-function runRoomPowerSpawnControl(room: Room): void {
-  const powerSpawn = getOwnedPowerSpawn(room);
-  if (!powerSpawn) {
-    replaceCarrierTasksForProducerRoom(POWER_SPAWN_CARRIER_TASK_PRODUCER, room.name, []);
-    return;
-  }
-
+function runRoomPowerSpawnControl(room: Room, powerSpawn: StructurePowerSpawn): void {
   if (
     powerSpawn.store.getUsedCapacity(RESOURCE_POWER) >= 1 &&
     powerSpawn.store.getUsedCapacity(RESOURCE_ENERGY) >= POWER_SPAWN_ENERGY_RATIO
@@ -160,20 +152,24 @@ function runRoomPowerSpawnControl(room: Room): void {
   );
 }
 
+export function isPowerSpawnProcessingEnabledForRoom(roomName: string): boolean {
+  const room = Game.rooms[roomName];
+  return !!room?.controller?.my && !isRoomInReserveMode(roomName);
+}
+
 export function runPowerSpawnControl(): void {
   const validRoomNames = new Set<string>();
-  for (const capability of listOperateExtensionRoomCapabilities()) {
-    if (
-      capability.roomName !== POWER_SPAWN_PROCESS_ROOM_NAME ||
-      isRoomInReserveMode(capability.roomName)
-    ) {
+  const rooms = Object.values(Game.rooms).sort((left, right) => left.name.localeCompare(right.name));
+  for (const room of rooms) {
+    if (!isPowerSpawnProcessingEnabledForRoom(room.name)) {
       continue;
     }
-    validRoomNames.add(capability.roomName);
-    const room = Game.rooms[capability.roomName];
-    if (room?.controller?.my) {
-      runRoomPowerSpawnControl(room);
+    const powerSpawn = getOwnedPowerSpawn(room);
+    if (!powerSpawn) {
+      continue;
     }
+    validRoomNames.add(room.name);
+    runRoomPowerSpawnControl(room, powerSpawn);
   }
   pruneCarrierTasksForProducer(POWER_SPAWN_CARRIER_TASK_PRODUCER, validRoomNames);
 }

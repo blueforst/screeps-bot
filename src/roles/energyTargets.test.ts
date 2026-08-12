@@ -121,6 +121,7 @@ describe("energyTargets", () => {
     Game.time += 1;
     (isDefenseMode as jest.Mock).mockReturnValue(false);
     (getSafeZone as jest.Mock).mockReturnValue(new Set());
+    Game.flags = {};
     getProtoStorageContainer.mockReset();
     getProtoStorageContainer.mockReturnValue(null);
     getProtoControllerLinkContainer.mockReset();
@@ -309,6 +310,36 @@ describe("energyTargets", () => {
     Game.spawns = { [busySpawn.name]: busySpawn };
 
     expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(powerSpawn.id);
+  });
+
+  it("无 PC 能力的非储备己方房间跳过普通 PowerSpawn Energy 投递", () => {
+    const roomName = "W5N6";
+    const powerSpawn = {
+      id: "dedicated-power-spawn",
+      structureType: STRUCTURE_POWER_SPAWN,
+      pos: createPos(8, roomName),
+      store: createStore(0, 5_000),
+    } as unknown as StructurePowerSpawn;
+    const storage = {
+      id: "dedicated-power-spawn-storage",
+      structureType: STRUCTURE_STORAGE,
+      pos: createPos(10, roomName),
+      store: createStore(100_000, 1_000_000),
+    } as unknown as StructureStorage;
+    const controller = {
+      my: true,
+      level: 8,
+      isPowerEnabled: false,
+    } as StructureController;
+    const room = createRoom({
+      name: roomName,
+      controller,
+      storage,
+      myStructures: [powerSpawn as unknown as Structure<StructureConstant>],
+    });
+    Game.rooms[room.name] = room;
+
+    expect(getEnergyStoreTarget(createCreep(room))?.id).toBe(storage.id);
   });
 
   it("至少一个 active Spawn 空闲时，仍优先预填 Spawn 或 Extension", () => {
