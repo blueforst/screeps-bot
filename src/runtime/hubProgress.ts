@@ -1,5 +1,5 @@
 import { getCreepConfigService, getMemoryService } from "@/runtime/runtimeServices";
-import { HUB_RESERVE_PER_ROOM } from "@/config/hub";
+import { HUB_RESERVE_PER_COMPOUND, HUB_RESERVE_PER_ROOM } from "@/config/hub";
 import type { ResourceTransferTask } from "@/runtime/logistics/resourceTransferTasks";
 import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
 import type {
@@ -16,6 +16,13 @@ import type {
   HubRuntimeProtectionExtension,
 } from "@/runtime/hubProtectionSnapshot";
 import { Panel, type VisualSurface } from "@/visual/panel";
+import {
+  VIS_ERROR,
+  VIS_HEADER_FILL,
+  VIS_MUTED,
+  VIS_OK,
+  VIS_WARN,
+} from "@/visual/palette";
 
 export interface HubProgressInput {
   hubConfig: {
@@ -123,6 +130,34 @@ export interface ProductionRoomEntry {
   blocker: string | null;
 }
 
+export type HubTransferClassification = "import" | "reclaim" | "export";
+
+export interface HubProgressPendingTask {
+  resource: string;
+  from: string;
+  to: string;
+  remaining: number;
+  reason: string;
+  classification: HubTransferClassification;
+  createdAt: number;
+  updatedAt: number;
+  lastProgressAt: number;
+  age: number;
+  lastProgressAge: number;
+  blockedReason: ResourceTransferTask["blockedReason"] | null;
+  blockedSince: number | null;
+  blockedAge: number | null;
+}
+
+export interface HubT3CompoundStatus {
+  compound: string;
+  hubAmount: number;
+  hubReserve: number;
+  hubSurplus: number;
+  hubDeficit: number;
+  networkDeficit: number;
+}
+
 export interface HubProgressSnapshot {
   updatedAt: number;
   enabled: boolean;
@@ -142,13 +177,7 @@ export interface HubProgressSnapshot {
   pendingImports: number;
   pendingReclaims: number;
   pendingExports: number;
-  pendingTasks: Array<{
-    resource: string;
-    from: string;
-    to: string;
-    remaining: number;
-    reason: string;
-  }>;
+  pendingTasks: HubProgressPendingTask[];
   roomTerminalBlockers: Array<{
     room: string;
     terminalEnergy: number;
@@ -162,6 +191,7 @@ export interface HubProgressSnapshot {
   t3ReserveStatus: {
     hubSurplus: number;
     totalDeficit: Array<{ compound: string; needed: number }>;
+    compounds: HubT3CompoundStatus[];
   };
   /**
    * 当前 planning attempt 的小型状态投影。它只用于判断旧 committed
@@ -207,80 +237,217 @@ const DEFAULT_TERMINAL_ENERGY_RESERVE = 20_000;
 const HUB_VISUAL_X = 1;
 const HUB_VISUAL_Y = 2;
 const HUB_VISUAL_WIDTH = 13.5;
-const HUB_VISUAL_ROW = 0.7;
-const HUB_VISUAL_BAR_HEIGHT = 0.45;
-const HUB_VISUAL_BAR_PAD = 0.15;
-const HUB_PROGRESS_TARGET = 1000;
-
-// Palette
-const VIS_TEXT = "#c9c9c9";
-const VIS_HEADER_FILL = "#1a1a2e";
-const VIS_PANEL_STROKE = "#c9c9c9";
-const VIS_OK = "#00ff88";
-const VIS_WARN = "#ffaa00";
-const VIS_ERROR = "#ff5555";
-const VIS_MUTED = "#888888";
-
-function formatEnergy(amount: number): string {
-  if (amount >= 1000000) return `${Math.round(amount / 10000) / 100}M`;
-  if (amount >= 1000) return `${Math.round(amount / 100) / 10}K`;
-  return `${amount}`;
-}
+const VISUAL_HEADER_STRIDE = 0.7;
+const VISUAL_ROW_STRIDE = 0.7;
+const VISUAL_BAR_STRIDE = 0.6;
 
 export interface HubVisualModel {
-  totalTasks: number;
-  roomBreakdown: Array<{ room: string; taskCount: number; resourceAmount: number }>;
+  hubRoomName: string;
+  status: string;
+  stage: string | null;
+  healthLevel: "ok" | "warn" | "error";
+  healthLabel: "OK" | "WARN" | "ERROR";
+  alerts: string[];
+  alertOverflow: number;
   activeProduct: string | null;
-  progressPercent: number;
+  progressMode: "idle" | "activity" | "determinate";
+  progressPercent: number | null;
   progressText: string;
+  logistics: {
+    totalTasks: number;
+    imports: number;
+    reclaims: number;
+    exports: number;
+    rows: HubLogisticsVisualRow[];
+    overflow: number;
+  };
+  production: {
+    activeRooms: number;
+    blockedRooms: number;
+  };
   t3Reserve: {
-    hubSurplus: number;
-    totalDeficit: Array<{ compound: string; needed: number }>;
+    totalCompounds: number;
+    stockedCompounds: number;
+    rows: HubReserveVisualRow[];
+    overflow: number;
   };
 }
 
-const MAX_INBOUND_ROWS = 2;
+export interface HubLogisticsVisualRow {
+  classification: HubTransferClassification;
+  direction: "in" | "out";
+  counterpartRoom: string;
+  resource: string;
+  remaining: number;
+  age: number;
+  lastProgressAge: number;
+  blockedReason: ResourceTransferTask["blockedReason"] | null;
+  blockedAge: number | null;
+}
 
-export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualModel {
-  const byRoom = new Map<string, { taskCount: number; resourceAmount: number }>();
-  let totalTasks = 0;
+export interface HubReserveVisualRow extends HubT3CompoundStatus {
+  totalDeficit: number;
+}
 
-  for (const task of snapshot.pendingTasks) {
-    totalTasks++;
-    const existing = byRoom.get(task.from);
-    if (existing) {
-      existing.taskCount++;
-      existing.resourceAmount += task.remaining;
-    } else {
-      byRoom.set(task.from, { taskCount: 1, resourceAmount: task.remaining });
-    }
+const MAX_ALERT_ROWS = 2;
+const MAX_LOGISTICS_ROWS = 3;
+const MAX_T3_ROWS = 3;
+const ACTIVE_PRODUCTION_STAGES = new Set(["loading", "synthesizing", "unloading"]);
+
+function protectionMarkerIsConsistent(marker: HubCommittedProtectionProgressMarker): boolean {
+  const expected = marker.marker;
+  return Object.values(marker.components).every(component =>
+    component.revision === expected.revision &&
+    component.configIncarnation === expected.configIncarnation &&
+    component.configFingerprint === expected.configFingerprint,
+  );
+}
+
+function buildHubHealth(snapshot: HubProgressSnapshot): Pick<HubVisualModel, "healthLevel" | "healthLabel" | "alerts" | "alertOverflow"> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (snapshot.lastError) errors.push(`error: ${snapshot.lastError}`);
+  if (snapshot.status === "blocked") errors.push("hub status blocked");
+
+  const attempt = snapshot.protectionAttempt;
+  if (attempt && (!attempt.valid || attempt.status === "failed" || attempt.status === "blocked")) {
+    errors.push(`protection ${attempt.reason || attempt.status}`);
   }
 
-  const roomBreakdown = Array.from(byRoom.entries())
-    .map(([room, data]) => ({ room, taskCount: data.taskCount, resourceAmount: data.resourceAmount }))
-    .sort((a, b) => b.taskCount - a.taskCount || a.room.localeCompare(b.room));
+  const committed = snapshot.committedProtectionMarker;
+  if (committed) {
+    const committedFailure = committed.failureReason
+      || (!committed.valid ? "invalid" : null)
+      || (committed.status !== "committed" ? committed.status : null)
+      || (committed.expiresAt < snapshot.updatedAt ? "expired" : null)
+      || (!protectionMarkerIsConsistent(committed) ? "inconsistent" : null);
+    if (committedFailure) errors.push(`protection snapshot ${committedFailure}`);
+  }
 
+  const blockedProductionRooms = snapshot.productionRooms
+    .filter(room => room.stage === "blocked" || !!room.blocker)
+    .map(room => room.roomName)
+    .sort();
+  if (blockedProductionRooms.length > 0) {
+    errors.push(`production blocked: ${blockedProductionRooms.slice(0, 2).join(",")}${blockedProductionRooms.length > 2 ? ` +${blockedProductionRooms.length - 2}` : ""}`);
+  }
+
+  if (snapshot.needsPlan) warnings.push("needs plan");
+  if (snapshot.missingResources.length > 0) {
+    const visible = snapshot.missingResources.slice(0, 3);
+    warnings.push(`missing: ${visible.join(",")}${snapshot.missingResources.length > visible.length ? ` +${snapshot.missingResources.length - visible.length}` : ""}`);
+  }
+
+  const blockedTasks = snapshot.pendingTasks.filter(task => !!task.blockedReason);
+  if (blockedTasks.length > 0) warnings.push(`${blockedTasks.length} transfer blocked`);
+
+  const terminalRiskRooms = snapshot.roomTerminalBlockers
+    .filter(room => room.pendingNonEnergy > 0 && room.terminalEnergy < room.reserve)
+    .map(room => room.room)
+    .sort();
+  if (terminalRiskRooms.length > 0) {
+    warnings.push(`terminal reserve: ${terminalRiskRooms.slice(0, 2).join(",")}${terminalRiskRooms.length > 2 ? ` +${terminalRiskRooms.length - 2}` : ""}`);
+  }
+
+  const allAlerts = [...errors, ...warnings];
+  const healthLevel = errors.length > 0 ? "error" : warnings.length > 0 ? "warn" : "ok";
+  return {
+    healthLevel,
+    healthLabel: healthLevel === "error" ? "ERROR" : healthLevel === "warn" ? "WARN" : "OK",
+    alerts: allAlerts.slice(0, MAX_ALERT_ROWS),
+    alertOverflow: Math.max(0, allAlerts.length - MAX_ALERT_ROWS),
+  };
+}
+
+export function buildHubVisualModel(snapshot: HubProgressSnapshot): HubVisualModel {
   const activeProduct = snapshot.activeProduct;
   const isBatchMode = !!activeProduct && typeof snapshot.synthesisTargetAmount === "number" && snapshot.synthesisTargetAmount > 0;
 
-  let progressPercent: number;
+  let progressMode: HubVisualModel["progressMode"];
+  let progressPercent: number | null;
   let progressText: string;
 
   if (!activeProduct) {
-    progressPercent = 0;
+    progressMode = "idle";
+    progressPercent = null;
     progressText = "idle";
   } else if (isBatchMode) {
     const target = snapshot.synthesisTargetAmount!;
     const currentAmount = (snapshot.hubInventory[activeProduct] || 0) + (snapshot.hubLabInventory[activeProduct] || 0);
+    progressMode = "determinate";
     progressPercent = Math.min(currentAmount / target, 1);
-    progressText = `${activeProduct} ${currentAmount}/${target}`;
+    progressText = `${activeProduct} ${formatCompactAmount(currentAmount)}/${formatCompactAmount(target)} ${Math.round(progressPercent * 100)}%`;
   } else {
     const inventoryAmount = snapshot.hubInventory[activeProduct] || 0;
-    progressPercent = Math.min(inventoryAmount / HUB_PROGRESS_TARGET, 1);
-    progressText = `${activeProduct} ${formatEnergy(inventoryAmount)}/${HUB_PROGRESS_TARGET}`;
+    const labAmount = snapshot.hubLabInventory[activeProduct] || 0;
+    const activity = snapshot.stage ?? snapshot.status ?? "active";
+    progressMode = "activity";
+    progressPercent = null;
+    progressText = `${activeProduct} ${formatCompactAmount(inventoryAmount + labAmount)} · ${activity}`;
   }
 
-  return { totalTasks, roomBreakdown, activeProduct, progressPercent, progressText, t3Reserve: snapshot.t3ReserveStatus };
+  const logisticsRows = snapshot.pendingTasks
+    .map<HubLogisticsVisualRow>(task => ({
+      classification: task.classification,
+      direction: task.classification === "export" ? "out" : "in",
+      counterpartRoom: task.classification === "export" ? task.to : task.from,
+      resource: task.resource,
+      remaining: task.remaining,
+      age: task.age,
+      lastProgressAge: task.lastProgressAge,
+      blockedReason: task.blockedReason,
+      blockedAge: task.blockedAge,
+    }))
+    .sort((left, right) =>
+      Number(!!right.blockedReason) - Number(!!left.blockedReason) ||
+      right.age - left.age ||
+      right.remaining - left.remaining ||
+      left.counterpartRoom.localeCompare(right.counterpartRoom) ||
+      left.resource.localeCompare(right.resource) ||
+      left.classification.localeCompare(right.classification),
+    );
+
+  const productionRooms = snapshot.productionRooms.filter(room => !room.isHubRoom);
+  const activeRooms = productionRooms.filter(room => ACTIVE_PRODUCTION_STAGES.has(room.stage)).length;
+  const blockedRooms = productionRooms.filter(room => room.stage === "blocked" || !!room.blocker).length;
+
+  const reserveRows = snapshot.t3ReserveStatus.compounds
+    .map<HubReserveVisualRow>(compound => ({
+      ...compound,
+      totalDeficit: compound.hubDeficit + compound.networkDeficit,
+    }))
+    .filter(compound => compound.totalDeficit > 0)
+    .sort((left, right) => right.totalDeficit - left.totalDeficit || left.compound.localeCompare(right.compound));
+  const stockedCompounds = snapshot.t3ReserveStatus.compounds.filter(
+    compound => compound.hubDeficit === 0 && compound.networkDeficit === 0,
+  ).length;
+
+  return {
+    hubRoomName: snapshot.hubRoomName,
+    status: snapshot.status ?? "idle",
+    stage: snapshot.stage,
+    ...buildHubHealth(snapshot),
+    activeProduct,
+    progressMode,
+    progressPercent,
+    progressText,
+    logistics: {
+      totalTasks: snapshot.pendingTasks.length,
+      imports: snapshot.pendingImports,
+      reclaims: snapshot.pendingReclaims,
+      exports: snapshot.pendingExports,
+      rows: logisticsRows.slice(0, MAX_LOGISTICS_ROWS),
+      overflow: Math.max(0, logisticsRows.length - MAX_LOGISTICS_ROWS),
+    },
+    production: { activeRooms, blockedRooms },
+    t3Reserve: {
+      totalCompounds: snapshot.t3ReserveStatus.compounds.length,
+      stockedCompounds,
+      rows: reserveRows.slice(0, MAX_T3_ROWS),
+      overflow: Math.max(0, reserveRows.length - MAX_T3_ROWS),
+    },
+  };
 }
 
 function formatCompactAmount(amount: number): string {
@@ -289,94 +456,109 @@ function formatCompactAmount(amount: number): string {
   return `${amount}`;
 }
 
-function drawDistributedProductionSection(
-  p: Panel,
-  productionRooms: ProductionRoomEntry[],
-): void {
-  if (productionRooms.length === 0) return;
-
-  p.sectionHeader("Distributed Production");
-
-  const rooms = productionRooms.slice(0, MAX_PRODUCTION_ROOM_ROWS);
-
-  for (const room of rooms) {
-    // Row 1: room name + product + stage
-    const hubTag = room.isHubRoom ? " ★" : "";
-    p.textRow(`${room.roomName}${hubTag} ${room.product} [${room.stage}]`, { font: 0.35 });
-
-    // Row 2: progress bar
-    const pct = room.progressPercent;
-    const progressLabel = `${formatCompactAmount(room.currentAmount)}/${formatCompactAmount(room.targetAmount)} ${Math.round(pct * 100)}%`;
-    const barColor = room.stage === "blocked" ? VIS_ERROR
-      : room.stage === "synthesizing" ? VIS_OK
-      : pct >= 1 ? VIS_OK
-      : VIS_MUTED;
-    p.progressBar(pct, barColor, progressLabel);
-
-    // Row 3: upstream + downstream links + amounts
-    const upstreamLabels = room.upstream
-      .slice(0, MAX_LINK_LABELS)
-      .map(u => u.roomName);
-    const upstreamStr = upstreamLabels.length > 0
-      ? `←${upstreamLabels.join(",")}${room.upstream.length > MAX_LINK_LABELS ? `+${room.upstream.length - MAX_LINK_LABELS}` : ""}`
-      : "";
-
-    const downstreamLabels = room.downstream
-      .slice(0, MAX_LINK_LABELS)
-      .map(d => d.roomName);
-    const downstreamStr = downstreamLabels.length > 0
-      ? `→${downstreamLabels.join(",")}${room.downstream.length > MAX_LINK_LABELS ? `+${room.downstream.length - MAX_LINK_LABELS}` : ""}`
-      : "";
-
-    const supplyParts: string[] = [];
-    if (upstreamStr) supplyParts.push(upstreamStr);
-    if (downstreamStr) supplyParts.push(downstreamStr);
-    if (room.directSupplyAmount > 0) supplyParts.push(`direct:${formatCompactAmount(room.directSupplyAmount)}`);
-    if (room.hubSurplusAmount > 0) supplyParts.push(`hub:${formatCompactAmount(room.hubSurplusAmount)}`);
-
-    if (supplyParts.length > 0) {
-      p.textRow(supplyParts.join(" "), { font: 0.35, color: VIS_MUTED });
-    }
-
-    // Row 4: blockers (up to 2)
-    if (room.blocker) {
-      p.textRow(`⚠ ${room.blocker}`, { font: 0.35, color: VIS_ERROR });
-    }
-  }
+function formatTickAge(age: number): string {
+  if (age >= 1000) return `${Math.round(age / 100) / 10}kt`;
+  return `${age}t`;
 }
 
-export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel): void {
+function formatBlockedReason(reason: ResourceTransferTask["blockedReason"]): string {
+  if (reason === "receiver_capacity") return "capacity";
+  if (reason === "source_depleted") return "depleted";
+  if (reason === "insufficient_terminal_resource_or_fee") return "terminal/fee";
+  return "blocked";
+}
+
+function formatLogisticsRow(row: HubLogisticsVisualRow): string {
+  const arrow = row.direction === "in" ? "←" : "→";
+  const blocked = row.blockedReason
+    ? ` ⚠${formatBlockedReason(row.blockedReason)}${row.blockedAge === null ? "" : ` ${formatTickAge(row.blockedAge)}`}`
+    : "";
+  return `${arrow} ${row.classification} ${row.counterpartRoom} ${row.resource} ${formatCompactAmount(row.remaining)} · ${formatTickAge(row.age)}${blocked}`;
+}
+
+function formatReserveRow(row: HubReserveVisualRow): string {
+  const hubGap = row.hubDeficit > 0 ? `(-${formatCompactAmount(row.hubDeficit)})` : "";
+  const networkGap = row.networkDeficit > 0 ? ` N-${formatCompactAmount(row.networkDeficit)}` : "";
+  return `${row.compound} H${formatCompactAmount(row.hubAmount)}/${formatCompactAmount(row.hubReserve)}${hubGap}${networkGap}`;
+}
+
+function hubPanelHeight(model: HubVisualModel): number {
+  const alertRows = model.alerts.length + (model.alertOverflow > 0 ? 1 : 0);
+  const progressHeight = model.progressMode === "determinate" ? VISUAL_BAR_STRIDE : VISUAL_ROW_STRIDE;
+  const logisticsRows = model.logistics.totalTasks === 0
+    ? 1
+    : model.logistics.rows.length + (model.logistics.overflow > 0 ? 1 : 0);
+  const reserveRows = model.t3Reserve.totalCompounds === 0 || model.t3Reserve.rows.length === 0
+    ? 1
+    : model.t3Reserve.rows.length + (model.t3Reserve.overflow > 0 ? 1 : 0);
+  return VISUAL_HEADER_STRIDE * 4 + alertRows * VISUAL_ROW_STRIDE + progressHeight + logisticsRows * VISUAL_ROW_STRIDE + reserveRows * VISUAL_ROW_STRIDE;
+}
+
+function healthColor(model: HubVisualModel): string {
+  if (model.healthLevel === "error") return VIS_ERROR;
+  if (model.healthLevel === "warn") return VIS_WARN;
+  return VIS_OK;
+}
+
+export function drawHubVisualPanel(rv: VisualSurface, model: HubVisualModel): number {
   const p = new Panel({ rv, x: HUB_VISUAL_X, y: HUB_VISUAL_Y, width: HUB_VISUAL_WIDTH });
+  p.background(hubPanelHeight(model));
 
-  p.sectionHeader("Progress");
-  const barColor = !model.activeProduct ? VIS_MUTED : model.progressPercent >= 1 ? VIS_OK : VIS_WARN;
-  p.progressBar(model.progressPercent, barColor, model.progressText);
-
-  p.sectionHeader("Logistics");
-  p.textRow(`tasks: ${model.totalTasks}`);
-
-  for (const room of model.roomBreakdown.slice(0, 3)) {
-    p.textRow(`${room.room}: ${room.taskCount} tasks, ${formatEnergy(room.resourceAmount)}`, { font: 0.35 });
+  const statusParts = [model.status];
+  if (model.stage && model.stage !== model.status) statusParts.push(model.stage);
+  p.sectionHeader(
+    `HUB ${model.hubRoomName} · ${statusParts.join("/")} · ${model.healthLabel}`,
+    { fill: healthColor(model), opacity: model.healthLevel === "ok" ? 0.22 : 0.35 },
+  );
+  for (const alert of model.alerts) {
+    p.textRow(`⚠ ${alert}`, { font: 0.35, color: model.healthLevel === "error" ? VIS_ERROR : VIS_WARN });
+  }
+  if (model.alertOverflow > 0) {
+    p.textRow(`+${model.alertOverflow} more alerts`, { font: 0.35, color: VIS_MUTED });
   }
 
-  if (model.roomBreakdown.length === 0) {
+  const productionParts = [`${model.production.activeRooms} active`];
+  if (model.production.blockedRooms > 0) productionParts.push(`${model.production.blockedRooms} blocked`);
+  p.sectionHeader(`Production · ${productionParts.join(" · ")}`);
+  if (model.progressMode === "determinate") {
+    const progressPercent = model.progressPercent ?? 0;
+    const barColor = model.healthLevel === "error" ? VIS_ERROR : progressPercent >= 1 ? VIS_OK : VIS_WARN;
+    p.progressBar(progressPercent, barColor, model.progressText);
+  } else {
+    p.textRow(model.progressText, {
+      font: 0.4,
+      color: model.progressMode === "activity" ? VIS_OK : VIS_MUTED,
+    });
+  }
+
+  const inboundCount = model.logistics.imports + model.logistics.reclaims;
+  p.sectionHeader(`Logistics · ←${inboundCount} →${model.logistics.exports}`);
+
+  for (const row of model.logistics.rows) {
+    p.textRow(formatLogisticsRow(row), { font: 0.35, color: row.blockedReason ? VIS_WARN : undefined });
+  }
+  if (model.logistics.totalTasks === 0) {
     p.textRow("none", { font: 0.35, color: VIS_MUTED });
+  }
+  if (model.logistics.overflow > 0) {
+    p.textRow(`+${model.logistics.overflow} more tasks`, { font: 0.35, color: VIS_MUTED });
   }
 
   p.sectionHeader("T3 Reserve");
-  const { hubSurplus, totalDeficit } = model.t3Reserve;
-  const hubLabel = hubSurplus >= 0 ? `Hub: ${formatCompactAmount(hubSurplus)} surplus` : `Hub: -${formatCompactAmount(-hubSurplus)} deficit`;
-  const hubColor = hubSurplus > 0 ? VIS_OK : hubSurplus < 0 ? VIS_ERROR : VIS_MUTED;
-  p.textRow(hubLabel, { color: hubColor });
+  if (model.t3Reserve.totalCompounds === 0) {
+    p.textRow("not configured", { font: 0.35, color: VIS_MUTED });
+  } else if (model.t3Reserve.rows.length === 0) {
+    p.textRow(`${model.t3Reserve.stockedCompounds}/${model.t3Reserve.totalCompounds} stocked`, { font: 0.35, color: VIS_OK });
+  }
+  for (const row of model.t3Reserve.rows) {
+    const deficitColor = row.totalDeficit >= 5000 ? VIS_ERROR : VIS_WARN;
+    p.textRow(formatReserveRow(row), { font: 0.35, color: deficitColor });
+  }
+  if (model.t3Reserve.overflow > 0) {
+    p.textRow(`+${model.t3Reserve.overflow} more deficits`, { font: 0.35, color: VIS_MUTED });
+  }
 
-  const totalNeeded = totalDeficit.reduce((sum, d) => sum + d.needed, 0);
-  if (totalNeeded === 0) {
-    p.textRow("all rooms stocked", { font: 0.35, color: VIS_MUTED });
-  }
-  for (const d of totalDeficit.slice(0, 3)) {
-    const deficitColor = d.needed >= 5000 ? VIS_ERROR : VIS_WARN;
-    p.textRow(`${d.compound}: -${formatCompactAmount(d.needed)}`, { font: 0.35, color: deficitColor });
-  }
+  return p.callsUsed;
 }
 
 
@@ -385,20 +567,7 @@ const SATELLITE_VISUAL_X = 1;
 const SATELLITE_VISUAL_Y = 2;
 const SATELLITE_VISUAL_WIDTH = 13.5;
 
-/** Render a compact production panel in a satellite room. */
-function drawSatellitePanel(rv: VisualSurface, room: ProductionRoomEntry): void {
-  const p = new Panel({ rv, x: SATELLITE_VISUAL_X, y: SATELLITE_VISUAL_Y, width: SATELLITE_VISUAL_WIDTH });
-
-  p.sectionHeader(`Production: ${room.product} [${room.stage}]`);
-
-  const pct = room.progressPercent;
-  const progressLabel = `${formatCompactAmount(room.currentAmount)}/${formatCompactAmount(room.targetAmount)} ${Math.round(pct * 100)}%`;
-  const barColor = room.stage === "blocked" ? VIS_ERROR
-    : room.stage === "synthesizing" ? VIS_OK
-    : pct >= 1 ? VIS_OK
-    : VIS_MUTED;
-  p.progressBar(pct, barColor, progressLabel);
-
+function buildSatelliteSupplyText(room: ProductionRoomEntry): string {
   const upstreamLabels = room.upstream
     .slice(0, MAX_LINK_LABELS)
     .map(u => u.roomName);
@@ -418,19 +587,62 @@ function drawSatellitePanel(rv: VisualSurface, room: ProductionRoomEntry): void 
   if (downstreamStr) supplyParts.push(downstreamStr);
   if (room.directSupplyAmount > 0) supplyParts.push(`direct:${formatCompactAmount(room.directSupplyAmount)}`);
   if (room.hubSurplusAmount > 0) supplyParts.push(`hub:${formatCompactAmount(room.hubSurplusAmount)}`);
+  return supplyParts.join(" ");
+}
 
-  if (supplyParts.length > 0) {
-    p.textRow(supplyParts.join(" "), { font: 0.35, color: VIS_MUTED });
+function satellitePanelHeight(room: ProductionRoomEntry): number {
+  const progressHeight = room.targetAmount > 0 ? VISUAL_BAR_STRIDE : VISUAL_ROW_STRIDE;
+  const optionalRows = Number(buildSatelliteSupplyText(room).length > 0) + Number(!!room.blocker);
+  return VISUAL_HEADER_STRIDE + progressHeight + optionalRows * VISUAL_ROW_STRIDE;
+}
+
+export function estimateSatellitePanelCalls(room: ProductionRoomEntry): number {
+  const progressCalls = room.targetAmount > 0 ? (room.progressPercent > 0 ? 3 : 2) : 1;
+  return 1 + 2 + progressCalls + Number(buildSatelliteSupplyText(room).length > 0) + Number(!!room.blocker);
+}
+
+/** Render a compact production panel in a satellite room. */
+export function drawSatellitePanel(rv: VisualSurface, room: ProductionRoomEntry): number {
+  const p = new Panel({ rv, x: SATELLITE_VISUAL_X, y: SATELLITE_VISUAL_Y, width: SATELLITE_VISUAL_WIDTH });
+  p.background(satellitePanelHeight(room));
+
+  const headerFill = room.stage === "blocked" || room.blocker
+    ? VIS_ERROR
+    : room.stage === "synthesizing"
+      ? VIS_OK
+      : VIS_HEADER_FILL;
+  p.sectionHeader(`Production: ${room.product} [${room.stage}]`, {
+    fill: headerFill,
+    opacity: headerFill === VIS_HEADER_FILL ? 0.8 : 0.3,
+  });
+
+  const pct = room.progressPercent;
+  const progressLabel = `${formatCompactAmount(room.currentAmount)}/${formatCompactAmount(room.targetAmount)} ${Math.round(pct * 100)}%`;
+  const barColor = room.stage === "blocked" ? VIS_ERROR
+    : room.stage === "synthesizing" ? VIS_OK
+    : pct >= 1 ? VIS_OK
+    : VIS_MUTED;
+  if (room.targetAmount > 0) {
+    p.progressBar(pct, barColor, progressLabel);
+  } else {
+    p.textRow(`${formatCompactAmount(room.currentAmount)} · no target`, { font: 0.35, color: VIS_MUTED });
+  }
+
+  const supplyText = buildSatelliteSupplyText(room);
+  if (supplyText) {
+    p.textRow(supplyText, { font: 0.35, color: VIS_MUTED });
   }
 
   if (room.blocker) {
     p.textRow(`⚠ ${room.blocker}`, { font: 0.35, color: VIS_ERROR });
   }
+
+  return p.callsUsed;
 }
 
 function classifyTransferTask(
   reason: string | undefined,
-): "import" | "reclaim" | "export" | null {
+): HubTransferClassification | null {
   if (!reason) return null;
   if (reason.startsWith("hub:import:")) return "import";
   if (reason.startsWith("hub:reclaim:")) return "reclaim";
@@ -508,16 +720,17 @@ function buildCompactInventory(
 function countPendingHubTasks(
   transferTasks: Record<string, ResourceTransferTask> | null,
   hubRoomName: string,
+  currentTick: number,
 ): {
   pendingImports: number;
   pendingReclaims: number;
   pendingExports: number;
-  pendingTasks: Array<{ resource: string; from: string; to: string; remaining: number; reason: string }>;
+  pendingTasks: HubProgressPendingTask[];
 } {
   let pendingImports = 0;
   let pendingReclaims = 0;
   let pendingExports = 0;
-  const pendingTasks: Array<{ resource: string; from: string; to: string; remaining: number; reason: string }> = [];
+  const pendingTasks: HubProgressPendingTask[] = [];
 
   if (!transferTasks) {
     return { pendingImports, pendingReclaims, pendingExports, pendingTasks };
@@ -530,12 +743,26 @@ function countPendingHubTasks(
 
     if (task.fromRoomName !== hubRoomName && task.toRoomName !== hubRoomName) continue;
 
+    const createdAt = Number.isFinite(task.createdAt) ? task.createdAt : currentTick;
+    const updatedAt = Number.isFinite(task.updatedAt) ? task.updatedAt : createdAt;
+    const lastProgressAt = Number.isFinite(task.lastProgressAt) ? task.lastProgressAt : updatedAt;
+    const blockedSince = Number.isFinite(task.blockedSince) ? task.blockedSince! : null;
+
     pendingTasks.push({
       resource: task.resource,
       from: task.fromRoomName,
       to: task.toRoomName,
       remaining: task.remainingAmount,
       reason: task.reason || "",
+      classification,
+      createdAt,
+      updatedAt,
+      lastProgressAt,
+      age: Math.max(0, currentTick - createdAt),
+      lastProgressAge: Math.max(0, currentTick - lastProgressAt),
+      blockedReason: task.blockedReason ?? null,
+      blockedSince,
+      blockedAge: blockedSince === null ? null : Math.max(0, currentTick - blockedSince),
     });
 
     if (classification === "import") pendingImports++;
@@ -727,10 +954,16 @@ function buildT3ReserveStatus(
   reservePerRoom: number,
   hubReservePerCompound: number,
   satelliteStores: HubProgressInput["satelliteStores"],
-): { hubSurplus: number; totalDeficit: Array<{ compound: string; needed: number }> } {
+): {
+  hubSurplus: number;
+  totalDeficit: Array<{ compound: string; needed: number }>;
+  compounds: HubT3CompoundStatus[];
+} {
   let hubSurplus = 0;
+  const hubAmountByCompound: Record<string, number> = {};
   for (const compound of targetCompounds) {
     const hubAmount = (hubStorageStore?.[compound] || 0) + (hubTerminalStore?.[compound] || 0) + (hubLabInventory[compound] || 0);
+    hubAmountByCompound[compound] = hubAmount;
     hubSurplus += Math.max(0, hubAmount - hubReservePerCompound);
   }
 
@@ -751,7 +984,19 @@ function buildT3ReserveStatus(
     .map(([compound, needed]) => ({ compound, needed }))
     .sort((a, b) => b.needed - a.needed);
 
-  return { hubSurplus, totalDeficit };
+  const compounds = targetCompounds.map<HubT3CompoundStatus>(compound => {
+    const hubAmount = hubAmountByCompound[compound] || 0;
+    return {
+      compound,
+      hubAmount,
+      hubReserve: hubReservePerCompound,
+      hubSurplus: Math.max(0, hubAmount - hubReservePerCompound),
+      hubDeficit: Math.max(0, hubReservePerCompound - hubAmount),
+      networkDeficit: compoundDeficit[compound] || 0,
+    };
+  });
+
+  return { hubSurplus, totalDeficit, compounds };
 }
 
 function cloneProtectionAttempt(
@@ -851,7 +1096,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
       hubLabInventory: {},
       hubCarrierCargo: {},
       productionRooms: [],
-      t3ReserveStatus: { hubSurplus: 0, totalDeficit: [] },
+      t3ReserveStatus: { hubSurplus: 0, totalDeficit: [], compounds: [] },
       protectionAttempt: cloneProtectionAttempt(
         hubRuntime?.currentProtectionAttempt,
       ),
@@ -885,6 +1130,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
   const { pendingImports, pendingReclaims, pendingExports, pendingTasks } = countPendingHubTasks(
     input.transferTasks,
     hubRoomName,
+    currentTick,
   );
 
   const roomTerminalBlockers = buildRoomTerminalBlockers(
@@ -895,7 +1141,7 @@ export function buildHubProgressSnapshot(input: HubProgressInput): HubProgressSn
 
   const targetCompounds = hubConfig.targetCompounds?.length ? hubConfig.targetCompounds : [];
   const reservePerRoom = hubConfig.reservePerRoom ?? HUB_RESERVE_PER_ROOM;
-  const hubReservePerCompound = hubConfig.hubReservePerCompound ?? 0;
+  const hubReservePerCompound = hubConfig.hubReservePerCompound ?? HUB_RESERVE_PER_COMPOUND;
   const t3ReserveStatus = buildT3ReserveStatus(
     input.hubStorageStore,
     input.hubTerminalStore,
@@ -1014,6 +1260,77 @@ export function collectHubProgressSnapshot(): HubProgressSnapshot {
   });
 }
 
+interface HubVisualCacheEntry {
+  collectedAt: number;
+  signature: string;
+  snapshot: HubProgressSnapshot;
+  model: HubVisualModel;
+}
+
+const HUB_VISUAL_CACHE_TTL = 5;
+let hubVisualCache: HubVisualCacheEntry | null = null;
+
+function currentHubVisualSignature(): string {
+  const cfg = Memory.cfg?.hub;
+  const hub = Memory.runtime?.hub;
+  const hubRoomName = cfg?.hubRoomName || "";
+  const synthesis = Memory.runtime?.synthesisControl?.rooms?.[hubRoomName];
+  const attempt = hub?.currentProtectionAttempt;
+  const committed = hub?.committedProtectionSnapshot;
+
+  return JSON.stringify([
+    cfg?.enabled ?? false,
+    hubRoomName,
+    cfg?.reservePerRoom ?? null,
+    cfg?.hubReservePerCompound ?? null,
+    cfg?.targetCompounds?.join(",") ?? "",
+    hub?.status ?? null,
+    hub?.needsPlan ?? false,
+    hub?.lastError ?? null,
+    hub?.activeProduct ?? null,
+    synthesis?.stage ?? null,
+    synthesis?.activeProduct ?? null,
+    synthesis?.targetAmount ?? null,
+    attempt?.attemptRevision ?? null,
+    attempt?.status ?? null,
+    attempt?.valid ?? null,
+    committed?.planRevision ?? null,
+    committed?.status ?? null,
+    committed?.valid ?? null,
+    committed ? Game.time > committed.expiresAt : false,
+  ]);
+}
+
+function cacheHubVisualSnapshot(snapshot: HubProgressSnapshot, signature = currentHubVisualSignature()): HubVisualCacheEntry {
+  const entry: HubVisualCacheEntry = {
+    collectedAt: Game.time,
+    signature,
+    snapshot,
+    model: buildHubVisualModel(snapshot),
+  };
+  hubVisualCache = entry;
+  return entry;
+}
+
+function getHubVisualState(): HubVisualCacheEntry {
+  const signature = currentHubVisualSignature();
+  const cacheAge = hubVisualCache ? Game.time - hubVisualCache.collectedAt : Number.POSITIVE_INFINITY;
+  if (
+    hubVisualCache &&
+    cacheAge >= 0 &&
+    cacheAge < HUB_VISUAL_CACHE_TTL &&
+    hubVisualCache.signature === signature
+  ) {
+    return hubVisualCache;
+  }
+
+  return cacheHubVisualSnapshot(collectHubProgressSnapshot(), signature);
+}
+
+export function resetHubVisualCacheForTests(): void {
+  hubVisualCache = null;
+}
+
 export function runHubProgressAnalytics(): void {
   const hubConfig = Memory.cfg?.hub;
   if (!hubConfig?.enabled) return;
@@ -1026,6 +1343,7 @@ export function runHubProgressAnalytics(): void {
   }
 
   const snapshot = collectHubProgressSnapshot();
+  cacheHubVisualSnapshot(snapshot);
   const analytics = getMemoryService().ensureAnalytics();
   analytics.hub = snapshot;
 }
@@ -1036,52 +1354,80 @@ export function buildHubOverlayLines(snapshot: HubProgressSnapshot): string[] {
   const lines: string[] = [];
   const model = buildHubVisualModel(snapshot);
 
+  lines.push(`[hub] ${model.healthLabel} ${model.status}${model.stage ? `/${model.stage}` : ""}`);
+  for (const alert of model.alerts) lines.push(`alert: ${alert}`);
+  if (model.alertOverflow > 0) lines.push(`alerts: +${model.alertOverflow}`);
   lines.push(`progress: ${model.progressText}`);
-  lines.push(`tasks: ${model.totalTasks}`);
-  for (const room of model.roomBreakdown.slice(0, 3)) {
-    lines.push(`${room.room}: ${room.taskCount} tasks, ${formatEnergy(room.resourceAmount)}`);
-  }
+  lines.push(`tasks: ${model.logistics.totalTasks} (in ${model.logistics.imports + model.logistics.reclaims}, out ${model.logistics.exports})`);
+  for (const row of model.logistics.rows) lines.push(formatLogisticsRow(row));
+  if (model.logistics.overflow > 0) lines.push(`tasks: +${model.logistics.overflow}`);
 
   return lines.slice(0, MAX_OVERLAY_LINES);
 }
 
-const MAX_PRODUCTION_ROOM_ROWS = 6;
 const MAX_LINK_LABELS = 2;
 const MAX_HUB_VISUAL_CALLS = 80;
+const MAX_SATELLITE_PANELS = 6;
 
-export function renderHubProgressOverlays(): void {
-  if (typeof RoomVisual === "undefined") return;
-  if (!Memory.cfg?.hub?.enabled) return;
+export interface HubOverlayRenderStats {
+  callsUsed: number;
+  satellitePanels: number;
+  skippedSatellitePanels: number;
+}
 
-  if (Game.cpu.bucket < 100) return;
+function sortSatelliteCandidates(left: ProductionRoomEntry, right: ProductionRoomEntry): number {
+  const leftBlocked = left.stage === "blocked" || !!left.blocker;
+  const rightBlocked = right.stage === "blocked" || !!right.blocker;
+  if (leftBlocked !== rightBlocked) return Number(rightBlocked) - Number(leftBlocked);
 
-  const snapshot = collectHubProgressSnapshot();
-  if (!snapshot.enabled) return;
-  if (!snapshot.hubRoomName) return;
+  const leftActive = ACTIVE_PRODUCTION_STAGES.has(left.stage);
+  const rightActive = ACTIVE_PRODUCTION_STAGES.has(right.stage);
+  if (leftActive !== rightActive) return Number(rightActive) - Number(leftActive);
+  return left.roomName.localeCompare(right.roomName);
+}
+
+function buildSatelliteCandidates(snapshot: HubProgressSnapshot): ProductionRoomEntry[] {
+  const candidates = new Map<string, ProductionRoomEntry>();
+  for (const room of snapshot.productionRooms) {
+    if (room.isHubRoom || room.roomName === snapshot.hubRoomName || !Game.rooms[room.roomName]) continue;
+    if (!candidates.has(room.roomName)) candidates.set(room.roomName, room);
+  }
+  return Array.from(candidates.values()).sort(sortSatelliteCandidates);
+}
+
+export function renderHubProgressOverlays(): HubOverlayRenderStats | null {
+  if (typeof RoomVisual === "undefined") return null;
+  if (!Memory.cfg?.hub?.enabled) return null;
+
+  if (Game.cpu.bucket < 100) return null;
+
+  const visualState = getHubVisualState();
+  const { snapshot, model } = visualState;
+  if (!snapshot.enabled) return null;
+  if (!snapshot.hubRoomName) return null;
 
   const hubRoom = Game.rooms[snapshot.hubRoomName];
-  if (!hubRoom) return;
+  if (!hubRoom) return null;
 
   const rv = new RoomVisual(snapshot.hubRoomName);
-  const model = buildHubVisualModel(snapshot);
+  let callsUsed = drawHubVisualPanel(rv, model);
+  let satellitePanels = 0;
+  let skippedSatellitePanels = 0;
 
-  const callsBefore = (global as any).__roomVisualCalls?.length ?? 0;
-  drawHubVisualPanel(rv, model);
-
-  const seenRooms = new Set<string>();
-  seenRooms.add(snapshot.hubRoomName);
-
-  for (const room of snapshot.productionRooms) {
-    if (room.isHubRoom || room.roomName === snapshot.hubRoomName || seenRooms.has(room.roomName) || !Game.rooms[room.roomName]) continue;
-    seenRooms.add(room.roomName);
+  for (const room of buildSatelliteCandidates(snapshot)) {
+    const estimatedCalls = estimateSatellitePanelCalls(room);
+    if (satellitePanels >= MAX_SATELLITE_PANELS || callsUsed + estimatedCalls > MAX_HUB_VISUAL_CALLS) {
+      skippedSatellitePanels++;
+      continue;
+    }
     const satelliteRv = new RoomVisual(room.roomName);
-    drawSatellitePanel(satelliteRv, room);
+    callsUsed += drawSatellitePanel(satelliteRv, room);
+    satellitePanels++;
   }
 
-  const callsAfter = (global as any).__roomVisualCalls?.length ?? 0;
-  const callsUsed = callsAfter - callsBefore;
-
-  if (callsUsed > MAX_HUB_VISUAL_CALLS) {
-    console.log(`[hub-visual] WARNING: panel used ${callsUsed} visual calls (max ${MAX_HUB_VISUAL_CALLS})`);
+  if (skippedSatellitePanels > 0 && Game.time % 100 === 0) {
+    console.log(`[hub-visual] skipped ${skippedSatellitePanels} satellite panels; calls=${callsUsed}/${MAX_HUB_VISUAL_CALLS}`);
   }
+
+  return { callsUsed, satellitePanels, skippedSatellitePanels };
 }

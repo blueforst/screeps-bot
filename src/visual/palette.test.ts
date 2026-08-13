@@ -4,12 +4,15 @@ import {
   VIS_PANEL_FILL,
   VIS_PANEL_STROKE,
   VIS_MUTED,
+  VIS_OK,
+  VIS_WARN,
+  VIS_ERROR,
 } from "@/visual/palette";
 
 describe("palette constants", () => {
-  const all = { VIS_TEXT, VIS_HEADER_FILL, VIS_PANEL_FILL, VIS_PANEL_STROKE, VIS_MUTED };
+  const all = { VIS_TEXT, VIS_HEADER_FILL, VIS_PANEL_FILL, VIS_PANEL_STROKE, VIS_MUTED, VIS_OK, VIS_WARN, VIS_ERROR };
 
-  it("all 5 constants are non-empty strings", () => {
+  it("all palette constants are non-empty strings", () => {
     const entries = Object.entries(all) as [string, string][];
     for (const [name, value] of entries) {
       expect(typeof value).toBe("string");

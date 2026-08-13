@@ -1,7 +1,23 @@
-import { buildHubProgressSnapshot, buildHubVisualModel, collectHubProgressSnapshot, collectCarrierCargoInventory, runHubProgressAnalytics, buildHubOverlayLines, renderHubProgressOverlays, drawHubVisualPanel } from "@/runtime/hubProgress";
-import type { HubProgressInput, HubProgressSnapshot, HubVisualModel, ProductionRoomEntry } from "@/runtime/hubProgress";
-import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
-import { getCreepConfigService, registerRuntimeServices } from "@/runtime/runtimeServices";
+import {
+  buildHubProgressSnapshot,
+  buildHubVisualModel,
+  collectCarrierCargoInventory,
+  runHubProgressAnalytics,
+  buildHubOverlayLines,
+  renderHubProgressOverlays,
+  drawHubVisualPanel,
+  drawSatellitePanel,
+  estimateSatellitePanelCalls,
+  resetHubVisualCacheForTests,
+} from "@/runtime/hubProgress";
+import type {
+  HubProgressInput,
+  HubProgressPendingTask,
+  HubProgressSnapshot,
+  ProductionRoomEntry,
+} from "@/runtime/hubProgress";
+import { registerRuntimeServices } from "@/runtime/runtimeServices";
+import { VIS_PANEL_FILL } from "@/visual/palette";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -20,6 +36,11 @@ function makeMockTask(
     remainingAmount: number;
     status: "pending" | "done" | "cancelled" | "failed";
     reason: string;
+    createdAt: number;
+    updatedAt: number;
+    lastProgressAt: number;
+    blockedReason: "receiver_capacity" | "source_depleted" | "insufficient_terminal_resource_or_fee";
+    blockedSince: number;
   }> = {},
 ): Record<string, any> {
   return {
@@ -28,12 +49,85 @@ function makeMockTask(
     fromRoomName: overrides.fromRoomName || "W1N1",
     toRoomName: overrides.toRoomName || "W2N1",
     amount: 1000,
-    remainingAmount: overrides.remainingAmount || 500,
+    remainingAmount: overrides.remainingAmount ?? 500,
     status: overrides.status || "pending",
-    createdAt: 100,
-    updatedAt: 100,
+    createdAt: overrides.createdAt ?? 100,
+    updatedAt: overrides.updatedAt ?? 100,
+    origin: "automatic",
+    lastProgressAt: overrides.lastProgressAt ?? overrides.updatedAt ?? 100,
+    blockedReason: overrides.blockedReason,
+    blockedSince: overrides.blockedSince,
     reason: overrides.reason,
     lastError: undefined,
+  };
+}
+
+function makePendingTask(overrides: Partial<HubProgressPendingTask> = {}): HubProgressPendingTask {
+  return {
+    resource: RESOURCE_UTRIUM,
+    from: "W2N1",
+    to: "W1N1",
+    remaining: 500,
+    reason: "hub:reclaim:U",
+    classification: "reclaim",
+    createdAt: 100,
+    updatedAt: 100,
+    lastProgressAt: 100,
+    age: 50,
+    lastProgressAge: 50,
+    blockedReason: null,
+    blockedSince: null,
+    blockedAge: null,
+    ...overrides,
+  };
+}
+
+function makeSnapshot(overrides: Partial<HubProgressSnapshot> = {}): HubProgressSnapshot {
+  return {
+    updatedAt: 150,
+    enabled: true,
+    hubRoomName: "W1N1",
+    hubRoomVisible: true,
+    status: "importing",
+    stage: "acquiring",
+    activeProduct: RESOURCE_CATALYZED_GHODIUM_ACID,
+    lastPlanActions: [],
+    missingResources: [],
+    lastError: null,
+    needsPlan: false,
+    hubStorageEnergy: 100000,
+    hubTerminalEnergy: 20000,
+    hubInventory: {},
+    pendingImports: 0,
+    pendingReclaims: 0,
+    pendingExports: 0,
+    pendingTasks: [],
+    roomTerminalBlockers: [],
+    hubLabInventory: {},
+    hubCarrierCargo: {},
+    productionRooms: [],
+    t3ReserveStatus: { hubSurplus: 0, totalDeficit: [], compounds: [] },
+    protectionAttempt: null,
+    committedProtectionMarker: null,
+    ...overrides,
+  };
+}
+
+function makeProductionRoom(overrides: Partial<ProductionRoomEntry> = {}): ProductionRoomEntry {
+  return {
+    roomName: "W2N1",
+    product: RESOURCE_UTRIUM_HYDRIDE,
+    stage: "synthesizing",
+    progressPercent: 0.5,
+    currentAmount: 500,
+    targetAmount: 1000,
+    isHubRoom: false,
+    upstream: [],
+    downstream: [],
+    directSupplyAmount: 0,
+    hubSurplusAmount: 0,
+    blocker: null,
+    ...overrides,
   };
 }
 
@@ -251,43 +345,234 @@ describe("buildHubProgressSnapshot", () => {
 
     expect(snapshot.roomTerminalBlockers[0]?.pendingNonEnergy).toBe(1);
   });
+
+  it("projects Hub task direction, ages and blocker lifecycle without dropping legacy fields", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: { enabled: true, hubRoomName: "W1N1" },
+      hubRuntime: { status: "distributing" },
+      synthesisRuntime: null,
+      hubStorageStore: null,
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: {
+        export: makeMockTask({
+          id: "export",
+          resource: RESOURCE_CATALYZED_GHODIUM_ACID,
+          fromRoomName: "W1N1",
+          toRoomName: "W2N1",
+          remainingAmount: 750,
+          reason: "hub:export:XGH2O",
+          createdAt: 100,
+          updatedAt: 160,
+          lastProgressAt: 175,
+          blockedReason: "insufficient_terminal_resource_or_fee",
+          blockedSince: 200,
+        }),
+      } as any,
+      currentTick: 250,
+    });
+
+    expect(snapshot.pendingExports).toBe(1);
+    expect(snapshot.pendingTasks).toEqual([
+      expect.objectContaining({
+        resource: RESOURCE_CATALYZED_GHODIUM_ACID,
+        from: "W1N1",
+        to: "W2N1",
+        remaining: 750,
+        reason: "hub:export:XGH2O",
+        classification: "export",
+        createdAt: 100,
+        updatedAt: 160,
+        lastProgressAt: 175,
+        age: 150,
+        lastProgressAge: 75,
+        blockedReason: "insufficient_terminal_resource_or_fee",
+        blockedSince: 200,
+        blockedAge: 50,
+      }),
+    ]);
+  });
+});
+
+describe("buildHubVisualModel", () => {
+  it("uses activity mode without a reliable target and never invents a 1000 target", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      stage: "synthesizing",
+      activeProduct: RESOURCE_CATALYZED_GHODIUM_ACID,
+      hubInventory: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 2000 },
+      hubLabInventory: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 500 },
+      synthesisTargetAmount: undefined,
+    }));
+
+    expect(model.progressMode).toBe("activity");
+    expect(model.progressPercent).toBeNull();
+    expect(model.progressText).toContain("2.5K");
+    expect(model.progressText).toContain("synthesizing");
+    expect(model.progressText).not.toContain("/1K");
+  });
+
+  it("uses determinate progress only when an absolute target exists", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      activeProduct: RESOURCE_CATALYZED_GHODIUM_ACID,
+      hubInventory: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 8000 },
+      hubLabInventory: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 1000 },
+      synthesisTargetAmount: 10000,
+    }));
+
+    expect(model.progressMode).toBe("determinate");
+    expect(model.progressPercent).toBeCloseTo(0.9);
+    expect(model.progressText).toContain("9K/10K 90%");
+  });
+
+  it("sorts blocked logistics first and resolves inbound/outbound counterpart rooms", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      pendingReclaims: 1,
+      pendingExports: 1,
+      pendingTasks: [
+        makePendingTask({ classification: "reclaim", from: "W2N1", to: "W1N1", age: 200 }),
+        makePendingTask({
+          classification: "export",
+          from: "W1N1",
+          to: "W3N1",
+          resource: RESOURCE_CATALYZED_UTRIUM_ACID,
+          age: 5,
+          blockedReason: "receiver_capacity",
+          blockedSince: 145,
+          blockedAge: 5,
+        }),
+      ],
+    }));
+
+    expect(model.logistics.rows).toHaveLength(2);
+    expect(model.logistics.rows[0]).toEqual(expect.objectContaining({
+      classification: "export",
+      direction: "out",
+      counterpartRoom: "W3N1",
+      blockedReason: "receiver_capacity",
+    }));
+    expect(model.logistics.rows[1]).toEqual(expect.objectContaining({
+      classification: "reclaim",
+      direction: "in",
+      counterpartRoom: "W2N1",
+    }));
+  });
+
+  it("prioritizes errors, bounds alerts and reports overflow", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      lastError: "planner exploded",
+      needsPlan: true,
+      missingResources: [RESOURCE_UTRIUM],
+      pendingTasks: [makePendingTask({ blockedReason: "source_depleted", blockedAge: 20 })],
+      roomTerminalBlockers: [
+        { room: "W2N1", terminalEnergy: 10000, reserve: 20000, pendingNonEnergy: 1 },
+      ],
+    }));
+
+    expect(model.healthLevel).toBe("error");
+    expect(model.healthLabel).toBe("ERROR");
+    expect(model.alerts[0]).toBe("error: planner exploded");
+    expect(model.alerts).toHaveLength(2);
+    expect(model.alertOverflow).toBe(3);
+  });
+
+  it("orders compound deficits independently and summarizes satellite production", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      productionRooms: [
+        { roomName: "W2N1", product: RESOURCE_UTRIUM_HYDRIDE, stage: "synthesizing", progressPercent: 0.5, currentAmount: 500, targetAmount: 1000, isHubRoom: false, upstream: [], downstream: [], directSupplyAmount: 0, hubSurplusAmount: 0, blocker: null },
+        { roomName: "W3N1", product: RESOURCE_UTRIUM_ACID, stage: "blocked", progressPercent: 0.2, currentAmount: 200, targetAmount: 1000, isHubRoom: false, upstream: [], downstream: [], directSupplyAmount: 0, hubSurplusAmount: 0, blocker: "missing reagent" },
+      ],
+      t3ReserveStatus: {
+        hubSurplus: 30000,
+        totalDeficit: [{ compound: RESOURCE_CATALYZED_GHODIUM_ACID, needed: 10000 }],
+        compounds: [
+          { compound: RESOURCE_CATALYZED_GHODIUM_ACID, hubAmount: 15000, hubReserve: 20000, hubSurplus: 0, hubDeficit: 5000, networkDeficit: 10000 },
+          { compound: RESOURCE_CATALYZED_UTRIUM_ACID, hubAmount: 19000, hubReserve: 20000, hubSurplus: 0, hubDeficit: 1000, networkDeficit: 0 },
+          { compound: RESOURCE_CATALYZED_ZYNTHIUM_ACID, hubAmount: 50000, hubReserve: 20000, hubSurplus: 30000, hubDeficit: 0, networkDeficit: 0 },
+        ],
+      },
+    }));
+
+    expect(model.t3Reserve.rows.map(row => row.compound)).toEqual([
+      RESOURCE_CATALYZED_GHODIUM_ACID,
+      RESOURCE_CATALYZED_UTRIUM_ACID,
+    ]);
+    expect(model.t3Reserve.stockedCompounds).toBe(1);
+    expect(model.production).toEqual({ activeRooms: 1, blockedRooms: 1 });
+  });
 });
 
 describe("buildHubOverlayLines", () => {
-  function makeSnapshot(overrides: Partial<HubProgressSnapshot> = {}): HubProgressSnapshot {
-    return {
-      updatedAt: 100,
-      enabled: true,
-      hubRoomName: "W1N1",
-      hubRoomVisible: true,
-      status: "importing",
-      stage: "acquiring",
-      activeProduct: "XGH2O",
-      lastPlanActions: ["XGH2O", "XUHO2"],
-      missingResources: ["U"],
-      lastError: null,
-      needsPlan: false,
-      hubStorageEnergy: 100000,
-      hubTerminalEnergy: 20000,
-      hubInventory: {},
-      pendingImports: 3,
-      pendingReclaims: 0,
-      pendingExports: 1,
-      pendingTasks: [],
-      roomTerminalBlockers: [],
-      hubLabInventory: {},
-      hubCarrierCargo: {},
-      productionRooms: [],
-      t3ReserveStatus: { hubSurplus: 0, totalDeficit: [] },
-      protectionAttempt: null,
-      committedProtectionMarker: null,
-      ...overrides,
-    };
-  }
-
   it("returns [] when snapshot.enabled is false", () => {
     const lines = buildHubOverlayLines(makeSnapshot({ enabled: false }));
     expect(lines).toEqual([]);
+  });
+});
+
+describe("Hub visual panel rendering", () => {
+  beforeEach(() => {
+    (global as any).__resetRoomVisualCalls();
+  });
+
+  it("renders adaptive health, directional logistics and compound reserve content over one background", () => {
+    const model = buildHubVisualModel(makeSnapshot({
+      status: "blocked",
+      stage: "synthesizing",
+      lastError: "planner failure",
+      activeProduct: RESOURCE_CATALYZED_GHODIUM_ACID,
+      hubInventory: { [RESOURCE_CATALYZED_GHODIUM_ACID]: 9000 },
+      synthesisTargetAmount: 10000,
+      pendingReclaims: 1,
+      pendingTasks: [makePendingTask({ blockedReason: "source_depleted", blockedAge: 25 })],
+      productionRooms: [makeProductionRoom()],
+      t3ReserveStatus: {
+        hubSurplus: 0,
+        totalDeficit: [{ compound: RESOURCE_CATALYZED_GHODIUM_ACID, needed: 4000 }],
+        compounds: [
+          { compound: RESOURCE_CATALYZED_GHODIUM_ACID, hubAmount: 9000, hubReserve: 20000, hubSurplus: 0, hubDeficit: 11000, networkDeficit: 4000 },
+        ],
+      },
+    }));
+
+    const callsUsed = drawHubVisualPanel(new RoomVisual("W1N1"), model);
+    const calls: Array<{ method: string; args: any[] }> = (global as any).__roomVisualCalls;
+    const texts = calls.filter(call => call.method === "text").map(call => String(call.args[0]));
+    const backgrounds = calls.filter(call => call.method === "rect" && call.args[4]?.fill === VIS_PANEL_FILL);
+
+    expect(callsUsed).toBe(calls.length);
+    expect(backgrounds).toHaveLength(1);
+    expect(texts).toEqual(expect.arrayContaining([
+      expect.stringContaining("HUB W1N1"),
+      expect.stringContaining("ERROR"),
+      expect.stringContaining("← reclaim W2N1"),
+      expect.stringContaining(`${RESOURCE_CATALYZED_GHODIUM_ACID} H9K/20K`),
+    ]));
+
+    const backgroundBottom = backgrounds[0].args[1] + backgrounds[0].args[3];
+    const contentBottom = Math.max(...calls
+      .filter(call => call !== backgrounds[0])
+      .map(call => call.method === "rect" ? call.args[1] + call.args[3] : call.args[2]));
+    expect(contentBottom).toBeLessThanOrEqual(backgroundBottom);
+  });
+
+  it("renders a satellite-local panel with exact estimated and actual call counts", () => {
+    const room = makeProductionRoom({
+      upstream: [{ roomName: "W3N1", resource: RESOURCE_UTRIUM }],
+      downstream: [{ roomName: "W1N1", resource: RESOURCE_UTRIUM_HYDRIDE }],
+      blocker: "missing reagent",
+    });
+
+    const callsUsed = drawSatellitePanel(new RoomVisual(room.roomName), room);
+    const calls: Array<{ roomName: string; method: string; args: any[] }> = (global as any).__roomVisualCalls;
+    const texts = calls.filter(call => call.method === "text").map(call => String(call.args[0]));
+
+    expect(callsUsed).toBe(calls.length);
+    expect(callsUsed).toBe(estimateSatellitePanelCalls(room));
+    expect(calls.filter(call => call.method === "rect" && call.args[4]?.fill === VIS_PANEL_FILL)).toHaveLength(1);
+    expect(texts).toEqual(expect.arrayContaining([
+      expect.stringContaining("Production:"),
+      expect.stringContaining("←W3N1"),
+      "⚠ missing reagent",
+    ]));
   });
 });
 
@@ -295,6 +580,7 @@ describe("renderHubProgressOverlays", () => {
   beforeEach(() => {
     resetRuntimeServices();
     registerRuntimeServices();
+    resetHubVisualCacheForTests();
     Memory.cfg = {
       hub: {
         enabled: true,
@@ -380,6 +666,128 @@ describe("renderHubProgressOverlays", () => {
       c => c.roomName === "E6N59" && c.method === "text" && String(c.args[0]).startsWith("Production:"),
     );
     expect(e6n59ProdHeaders.length).toBe(1);
+  });
+
+  it("reuses a stable visual snapshot for less than five ticks and invalidates on Hub status change", () => {
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    const find = jest.fn(() => []);
+    Game.rooms = {
+      W1N1: {
+        name: "W1N1",
+        controller: { my: true },
+        storage: { store: { energy: 100000 } },
+        terminal: { store: { energy: 20000 } },
+        find,
+      } as any,
+    };
+
+    renderHubProgressOverlays();
+    Game.time = 101;
+    renderHubProgressOverlays();
+    expect(find).toHaveBeenCalledTimes(1);
+
+    Game.time = 102;
+    Memory.runtime!.hub!.status = "blocked";
+    renderHubProgressOverlays();
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes a stable visual snapshot when it reaches five ticks old", () => {
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    const find = jest.fn(() => []);
+    Game.rooms = {
+      W1N1: {
+        name: "W1N1",
+        controller: { my: true },
+        storage: { store: { energy: 100000 } },
+        terminal: { store: { energy: 20000 } },
+        find,
+      } as any,
+    };
+
+    renderHubProgressOverlays();
+    Game.time = 104;
+    renderHubProgressOverlays();
+    expect(find).toHaveBeenCalledTimes(1);
+
+    Game.time = 105;
+    renderHubProgressOverlays();
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+
+  it("reuses the analytics snapshot in the overlay phase of the same tick", () => {
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.time = 105;
+    const find = jest.fn(() => []);
+    Game.rooms = {
+      W1N1: {
+        name: "W1N1",
+        controller: { my: true },
+        storage: { store: { energy: 100000 } },
+        terminal: { store: { energy: 20000 } },
+        find,
+      } as any,
+    };
+
+    runHubProgressAnalytics();
+    renderHubProgressOverlays();
+
+    expect(find).toHaveBeenCalledTimes(1);
+    expect(Memory.analytics?.hub?.updatedAt).toBe(105);
+  });
+
+  it("keeps real calls within budget and prioritizes blocked satellites before the hard cap", () => {
+    Game.cpu = { bucket: 5000, limit: 500, used: 0, tickLimit: 500, getUsed: () => 0 } as any;
+    Game.time = 101;
+    const satelliteNames = ["W2N1", "W3N1", "W4N1", "W5N1", "W6N1", "W7N1", "W8N1", "W9N1"];
+    Game.rooms = {
+      W1N1: { name: "W1N1", controller: { my: true }, find: () => [] } as any,
+      ...Object.fromEntries(satelliteNames.map(roomName => [
+        roomName,
+        { name: roomName, controller: { my: true }, find: () => [] } as any,
+      ])),
+    };
+    Memory.runtime!.hub!.distributedSynthesis = {
+      dispatchAssignments: satelliteNames.map(roomName => ({
+        roomName,
+        product: RESOURCE_UTRIUM_HYDRIDE,
+        targetAmount: 1000,
+        isHubRoom: false,
+      })),
+      routeDecisions: [],
+      progressEdges: [],
+    };
+    Memory.runtime!.synthesisControl = {
+      updatedAt: 101,
+      generatedTaskCount: 0,
+      failedTaskCount: 0,
+      successfulRunCount: 0,
+      lastActions: [],
+      bindings: {},
+      rooms: Object.fromEntries(satelliteNames.map(roomName => [
+        roomName,
+        {
+          stage: roomName === "W9N1" ? "blocked" : "synthesizing",
+          activeProduct: RESOURCE_UTRIUM_HYDRIDE,
+          reagentLabIds: [],
+          productLabIds: [],
+          successfulRuns: 0,
+          pendingTasks: 0,
+          lastTransitionAt: 100,
+          ...(roomName === "W9N1" ? { lastError: "missing reagent" } : {}),
+        },
+      ])),
+    } as any;
+
+    const stats = renderHubProgressOverlays();
+    const calls: Array<{ roomName: string; method: string; args: any[] }> = (global as any).__roomVisualCalls;
+    const headers = calls.filter(call => call.method === "text" && String(call.args[0]).startsWith("Production:"));
+
+    expect(stats).toEqual(expect.objectContaining({ satellitePanels: 6, skippedSatellitePanels: 2 }));
+    expect(stats!.callsUsed).toBe(calls.length);
+    expect(stats!.callsUsed).toBeLessThanOrEqual(80);
+    expect(headers.some(call => call.roomName === "W9N1")).toBe(true);
+    expect(headers.some(call => call.roomName === "W8N1")).toBe(false);
   });
 });
 
@@ -517,5 +925,61 @@ describe("buildHubProgressSnapshot t3ReserveStatus", () => {
 
     expect(snapshot.t3ReserveStatus.hubSurplus).toBe(0);
     expect(snapshot.t3ReserveStatus.totalDeficit).toEqual([]);
+    expect(snapshot.t3ReserveStatus.compounds).toEqual([]);
+  });
+
+  it("keeps legacy totals while exposing independent per-compound Hub and network deficits", () => {
+    const snapshot = buildHubProgressSnapshot({
+      hubConfig: {
+        enabled: true,
+        hubRoomName: "W1N1",
+        targetCompounds: [RESOURCE_CATALYZED_GHODIUM_ACID, RESOURCE_CATALYZED_UTRIUM_ACID],
+        reservePerRoom: 5000,
+        hubReservePerCompound: 20000,
+      },
+      hubRuntime: { status: "idle" },
+      synthesisRuntime: null,
+      hubStorageStore: {
+        [RESOURCE_CATALYZED_GHODIUM_ACID]: 30000,
+        [RESOURCE_CATALYZED_UTRIUM_ACID]: 5000,
+      },
+      hubTerminalStore: null,
+      resourceControlRooms: null,
+      transferTasks: null,
+      currentTick: 200,
+      satelliteStores: [
+        {
+          roomName: "W2N1",
+          storage: {
+            [RESOURCE_CATALYZED_GHODIUM_ACID]: 5000,
+            [RESOURCE_CATALYZED_UTRIUM_ACID]: 1000,
+          },
+          terminal: null,
+        },
+      ],
+    });
+
+    expect(snapshot.t3ReserveStatus.hubSurplus).toBe(10000);
+    expect(snapshot.t3ReserveStatus.totalDeficit).toEqual([
+      { compound: RESOURCE_CATALYZED_UTRIUM_ACID, needed: 4000 },
+    ]);
+    expect(snapshot.t3ReserveStatus.compounds).toEqual([
+      {
+        compound: RESOURCE_CATALYZED_GHODIUM_ACID,
+        hubAmount: 30000,
+        hubReserve: 20000,
+        hubSurplus: 10000,
+        hubDeficit: 0,
+        networkDeficit: 0,
+      },
+      {
+        compound: RESOURCE_CATALYZED_UTRIUM_ACID,
+        hubAmount: 5000,
+        hubReserve: 20000,
+        hubSurplus: 0,
+        hubDeficit: 15000,
+        networkDeficit: 4000,
+      },
+    ]);
   });
 });

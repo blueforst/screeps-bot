@@ -1,5 +1,6 @@
 import { Panel } from "@/visual/panel";
 import type { VisualSurface } from "@/visual/panel";
+import { VIS_PANEL_FILL } from "@/visual/palette";
 
 type VisualCall = { roomName: string; method: string; args: any[] };
 
@@ -50,6 +51,30 @@ describe("Panel", () => {
     const textY = texts[0].args[2]; // text baseline y (text args: [text, x, y, style])
     expect(textY).toBeGreaterThanOrEqual(rectY);
     expect(textY).toBeLessThanOrEqual(rectY + rectH);
+  });
+
+  it("background emits one bounded panel rect without moving the cursor", () => {
+    const panel = makePanel();
+    panel.background(4.2);
+
+    const backgrounds = findCalls("rect", args => args[4]?.fill === VIS_PANEL_FILL);
+    expect(backgrounds).toHaveLength(1);
+    expect(backgrounds[0].args[1]).toBeLessThan(2);
+    expect(backgrounds[0].args[3]).toBeGreaterThan(4.2);
+    expect(panel.cursorY).toBe(2);
+    expect(panel.callsUsed).toBe(1);
+  });
+
+  it("sectionHeader supports health color overrides while preserving call accounting", () => {
+    const panel = makePanel();
+    panel.sectionHeader("Warning", { fill: "#ffaa00", color: "#ffffff", opacity: 0.35 });
+
+    const headers = findCalls("rect", args => args[4]?.fill === "#ffaa00");
+    const labels = findCalls("text", args => args[0] === "Warning");
+    expect(headers).toHaveLength(1);
+    expect(headers[0].args[4]?.opacity).toBe(0.35);
+    expect(labels[0].args[3]?.color).toBe("#ffffff");
+    expect(panel.callsUsed).toBe(2);
   });
 
   it("progressBar at 50% emits outline rect + fill rect + centered text", () => {

@@ -1,6 +1,7 @@
 import {
   VIS_TEXT,
   VIS_HEADER_FILL,
+  VIS_PANEL_FILL,
   VIS_PANEL_STROKE,
 } from "@/visual/palette";
 
@@ -20,6 +21,13 @@ interface PanelConfig {
   barHeight?: number;
   barPad?: number;
   paddingX?: number;
+}
+
+export interface PanelHeaderStyle {
+  fill?: string;
+  color?: string;
+  opacity?: number;
+  stroke?: string;
 }
 
 export class Panel {
@@ -56,18 +64,30 @@ export class Panel {
     return this._callsUsed;
   }
 
-  sectionHeader(title: string): void {
-    this.rv.rect(this.x, this.y, this.width, this.headerHeight, {
-      fill: VIS_HEADER_FILL,
-      opacity: 0.8,
+  background(height: number): void {
+    if (height <= 0) return;
+    const inset = 0.08;
+    this.rv.rect(this.x - inset, this.y - inset, this.width + inset * 2, height + inset * 2, {
+      fill: VIS_PANEL_FILL,
+      opacity: 0.72,
       stroke: VIS_PANEL_STROKE,
+      strokeWidth: 0.03,
+    });
+    this._callsUsed += 1;
+  }
+
+  sectionHeader(title: string, style: PanelHeaderStyle = {}): void {
+    this.rv.rect(this.x, this.y, this.width, this.headerHeight, {
+      fill: style.fill ?? VIS_HEADER_FILL,
+      opacity: style.opacity ?? 0.8,
+      stroke: style.stroke ?? VIS_PANEL_STROKE,
       strokeWidth: 0.03,
     });
     const textY = this.y + this.headerHeight * 0.76;
     this.rv.text(title, this.x + this.paddingX, textY, {
       align: "left",
       font: 0.45,
-      color: VIS_TEXT,
+      color: style.color ?? VIS_TEXT,
     });
     this.y += this.headerStride;
     this._callsUsed += 2;
