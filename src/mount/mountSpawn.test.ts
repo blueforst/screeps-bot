@@ -166,3 +166,143 @@ describe("mountSpawn war energy reservation", () => {
     expect(maintenanceSpawn.memory.spawnList).toEqual([]);
   });
 });
+
+describe("mountSpawn fixed safe exit directions", () => {
+  let prototype: SpawnPrototype;
+
+  beforeEach(() => {
+    delete (global as typeof global & { __runtimeServices?: unknown }).__runtimeServices;
+    Object.assign(global, { StructureSpawn: function StructureSpawn() {} });
+    mountSpawn();
+    prototype = (global as typeof global & {
+      StructureSpawn: { prototype: SpawnPrototype };
+    }).StructureSpawn.prototype;
+    Memory.data = { creepConfigs: {} } as Memory["data"];
+    Game.spawns = {};
+  });
+
+  it.each([
+    ["carrier", [CARRY, MOVE] as BodyPartConstant[]],
+    ["worker", [WORK, CARRY, MOVE] as BodyPartConstant[]],
+  ] as const)("locks E5N59 Spawn20 %s spawns to TOP", (role, body) => {
+    const room = {
+      name: "E5N59",
+      energyAvailable: 1_000,
+      energyCapacityAvailable: 12_900,
+    } as Room;
+    const configName = `${room.name}:${role}:0`;
+    Memory.data!.creepConfigs = {
+      [configName]: { role, args: [], roomName: room.name, body: [...body] },
+    };
+    const spawn = createSpawn("Spawn20", room, [configName]);
+    Object.setPrototypeOf(spawn, prototype);
+    Game.spawns = { Spawn20: spawn };
+
+    prototype.work.call(spawn);
+
+    expect(spawn.spawnCreep).toHaveBeenCalledWith(
+      body,
+      `${role}-${Game.time}`,
+      expect.objectContaining({
+        directions: [TOP],
+        memory: expect.objectContaining({ role, configName }),
+      }),
+    );
+    expect(spawn.memory.spawnList).toEqual([]);
+  });
+
+  it.each([
+    ["E5N59", "Spawn15"],
+    ["E6N59", "Spawn20"],
+  ])("keeps default directions for %s/%s", (roomName, spawnName) => {
+    const room = {
+      name: roomName,
+      energyAvailable: 1_000,
+      energyCapacityAvailable: 12_900,
+    } as Room;
+    const configName = `${room.name}:worker:0`;
+    Memory.data!.creepConfigs = {
+      [configName]: {
+        role: "worker",
+        args: [],
+        roomName: room.name,
+        body: [WORK, CARRY, MOVE],
+      },
+    };
+    const spawn = createSpawn(spawnName, room, [configName]);
+    Object.setPrototypeOf(spawn, prototype);
+    Game.spawns = { [spawnName]: spawn };
+
+    prototype.work.call(spawn);
+
+    const options = (spawn.spawnCreep as jest.Mock).mock.calls[0][2] as SpawnOptions;
+    expect(options).not.toHaveProperty("directions");
+  });
+
+  it("preserves Spawn20 failure recording and queue retry", () => {
+    const room = {
+      name: "E5N59",
+      energyAvailable: 200,
+      energyCapacityAvailable: 12_900,
+    } as Room;
+    const configName = `${room.name}:carrier:0`;
+    Memory.data!.creepConfigs = {
+      [configName]: {
+        role: "carrier",
+        args: [],
+        roomName: room.name,
+        body: [CARRY, CARRY, MOVE],
+      },
+    };
+    const spawn = createSpawn("Spawn20", room, [configName]);
+    spawn.spawnCreep = jest.fn(() => ERR_NOT_ENOUGH_ENERGY);
+    Object.setPrototypeOf(spawn, prototype);
+    Game.spawns = { Spawn20: spawn };
+
+    prototype.work.call(spawn);
+
+    expect(spawn.memory.spawnList).toEqual([configName]);
+    expect(spawn.memory._lastSpawnFail).toMatchObject({
+      tick: Game.time,
+      spawnName: "Spawn20",
+      configName,
+      role: "carrier",
+      code: ERR_NOT_ENOUGH_ENERGY,
+    });
+    expect(spawn.spawnCreep).toHaveBeenCalledWith(
+      [CARRY, CARRY, MOVE],
+      `carrier-${Game.time}`,
+      expect.objectContaining({ directions: [TOP] }),
+    );
+  });
+
+  it("preserves successful transient config cleanup", () => {
+    const room = {
+      name: "E5N59",
+      energyAvailable: 1_000,
+      energyCapacityAvailable: 12_900,
+    } as Room;
+    const configName = `${room.name}:manual:maxcarrier:${Game.time}`;
+    Memory.data!.creepConfigs = {
+      [configName]: {
+        role: "carrier",
+        args: [],
+        roomName: room.name,
+        body: [CARRY, MOVE],
+      },
+    };
+    const spawn = createSpawn("Spawn20", room, [configName]);
+    Object.setPrototypeOf(spawn, prototype);
+    Game.spawns = { Spawn20: spawn };
+
+    prototype.work.call(spawn);
+
+    expect(spawn.memory.spawnList).toEqual([]);
+    expect(Memory.data!.creepConfigs![configName]).toBeUndefined();
+    expect(spawn.spawnCreep).toHaveBeenCalledWith(
+      [CARRY, MOVE],
+      `carrier-${Game.time}`,
+      expect.objectContaining({ directions: [TOP] }),
+    );
+  });
+});

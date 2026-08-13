@@ -41,6 +41,15 @@ function getCreepNamePrefix(role: RoleName): string {
   return role;
 }
 
+function getSpawnExitDirections(spawn: StructureSpawn): DirectionConstant[] | undefined {
+  if (spawn.room.name === "E5N59" && spawn.name === "Spawn20") {
+    // Spawn20 的南侧出口通向永久封闭的双格空间，只允许从北侧落地。
+    return [TOP];
+  }
+
+  return undefined;
+}
+
 function isWarConfigName(configName: string): boolean {
   return configName.includes(":war:");
 }
@@ -154,7 +163,7 @@ export function mountSpawn(): void {
 
     const body = chooseBody(this, configName);
     const name = config.name || `${getCreepNamePrefix(config.role)}-${Game.time}`;
-    const code = this.spawnCreep(body, name, {
+    const options: SpawnOptions = {
       memory: {
         role: config.role,
         roleArgs: [...config.args],
@@ -162,7 +171,12 @@ export function mountSpawn(): void {
         ready: false,
         working: false,
       },
-    });
+    };
+    const directions = getSpawnExitDirections(this);
+    if (directions) {
+      options.directions = directions;
+    }
+    const code = this.spawnCreep(body, name, options);
 
     if (code === OK) {
       recordFixedCpuAction("spawnWork");
