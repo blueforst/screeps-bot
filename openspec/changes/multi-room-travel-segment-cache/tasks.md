@@ -23,4 +23,4 @@
 
 - [x] 4.1 获得明确部署授权后再更新版本、原子提交并 `npm run push`；不得修改线上 Memory、route、telemetry 或 profiler 配置
 - [x] 4.2 只读确认 shard1 deploy tag、bucket、segment search/hit/invalidation 与 stuck/repath/exit recovery 无异常，出现行为回归立即回滚代码版本
-- [ ] 4.3 收集完整新 120 样本窗口，与本 change 基线比较 pathing mean/p50/p95、creepWork、total CPU、bucket 和世界负载后再归档
+- [x] 4.3 收集完整新 120 样本窗口，与本 change 基线比较 pathing mean/p50/p95、creepWork、total CPU、bucket 和世界负载后再归档

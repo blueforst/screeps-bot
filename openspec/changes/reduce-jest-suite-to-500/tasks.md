@@ -21,4 +21,4 @@
 
 ## 4. 提交边界
 
-- [ ] 4.1 原子提交测试、预算门禁与本 change 文档；不得递增版本或 `npm run push`，并只读确认线上 movement deploy tag 未被改变
+- [x] 4.1 原子提交测试、预算门禁与本 change 文档；不得递增版本或 `npm run push`，并只读确认线上 movement deploy tag 未被改变

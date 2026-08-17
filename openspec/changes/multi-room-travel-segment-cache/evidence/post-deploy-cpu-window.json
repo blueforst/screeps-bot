@@ -1,0 +1,1295 @@
+{
+  "schema": "multi-room-travel-segment-cache/post-deploy-cpu-window/v1",
+  "capturedAt": "2026-08-17T13:58:33.251Z",
+  "capturedGameTick": 73068518,
+  "shard": "shard1",
+  "deployTag": "2026.8.17-1+84a9cb0@2026-08-17T12:23:15.202Z",
+  "source": {
+    "kind": "read-only-console",
+    "expressionSource": "global.__cpuMonitor.history",
+    "reproductionExpression": "(()=>{const cost=0.2;const records=(global.__cpuMonitor?.history??[]).slice().sort((a,b)=>a.tick-b.tick).map(e=>({tick:e.tick,totalUsed:e.totalUsed,bucket:e.bucket,pathing:e.phases?.['creepWork:pathing']??null,creepWork:e.phases?.creepWork??null,decision:e.phases?.['creepWork:decision']??null,intent:e.phases?.['creepWork:intent']??null,fixedActionEstimate:Object.values(e.fixedActionCounts??{}).reduce((sum,value)=>sum+(Number(value)||0),0)*cost}));return {capturedAt:new Date().toISOString(),capturedGameTick:Game.time,shard:Game.shard.name,deployTag:Memory.runtime?.lastDeployTag??null,records};})()",
+    "onlineStateMutation": false,
+    "note": "未写入 Memory、config、telemetry 或 profiler；records 按 tick 升序固化。"
+  },
+  "sampleInterval": 10,
+  "historyLimit": 120,
+  "ticks": {
+    "first": 73067320,
+    "last": 73068510,
+    "count": 120,
+    "uniqueCount": 120,
+    "consecutive": true,
+    "expectedStep": 10
+  },
+  "fixedActionEstimateDefinition": {
+    "source": "fixedActionCounts",
+    "fixedActionCpuCost": 0.2,
+    "formula": "sum(fixedActionCounts) * fixedActionCpuCost"
+  },
+  "quantileDefinition": {
+    "ordering": "每个指标独立按数值升序排序。",
+    "median": "N 为偶数时取第 N/2 与 N/2+1 项的算术平均；N 为奇数时取中间项。",
+    "p95": "nearest-rank：取排序后第 ceil(0.95 * N) 项（1-based）。",
+    "missingValues": "仅统计有限数值；summary.count 记录每项有效样本数。"
+  },
+  "records": [
+    {
+      "tick": 73067320,
+      "totalUsed": 86.70137350000005,
+      "bucket": 10000,
+      "pathing": 13.753686700008984,
+      "creepWork": 32.373723599994264,
+      "decision": 3.9966003999797977,
+      "intent": 11.288981800011243,
+      "fixedActionEstimate": 10.600000000000001
+    },
+    {
+      "tick": 73067330,
+      "totalUsed": 81.18503179999607,
+      "bucket": 10000,
+      "pathing": 22.13793010000518,
+      "creepWork": 40.04941340000005,
+      "decision": 2.8368846999728703,
+      "intent": 12.194963200014172,
+      "fixedActionEstimate": 12.200000000000001
+    },
+    {
+      "tick": 73067340,
+      "totalUsed": 81.6898076000034,
+      "bucket": 10000,
+      "pathing": 13.220199200011848,
+      "creepWork": 30.62722080000094,
+      "decision": 2.6811057000231813,
+      "intent": 11.606711299988092,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73067350,
+      "totalUsed": 107.65113669999846,
+      "bucket": 10000,
+      "pathing": 15.54982000000382,
+      "creepWork": 33.581163800005015,
+      "decision": 2.759387800026161,
+      "intent": 11.775105500022619,
+      "fixedActionEstimate": 11.200000000000001
+    },
+    {
+      "tick": 73067360,
+      "totalUsed": 68.29186590000245,
+      "bucket": 10000,
+      "pathing": 2.6497627000171633,
+      "creepWork": 19.655262400003267,
+      "decision": 2.275867099986499,
+      "intent": 11.868218200008414,
+      "fixedActionEstimate": 11.200000000000001
+    },
+    {
+      "tick": 73067370,
+      "totalUsed": 77.83012190000227,
+      "bucket": 10000,
+      "pathing": 12.829349000006914,
+      "creepWork": 29.35830690000148,
+      "decision": 2.4914499999795225,
+      "intent": 10.798685099947761,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73067380,
+      "totalUsed": 85.54883999999947,
+      "bucket": 10000,
+      "pathing": 15.872636000003695,
+      "creepWork": 31.60761099999945,
+      "decision": 3.2476781999757804,
+      "intent": 9.41182549999212,
+      "fixedActionEstimate": 9
+    },
+    {
+      "tick": 73067390,
+      "totalUsed": 83.20345369999995,
+      "bucket": 10000,
+      "pathing": 15.779865400014387,
+      "creepWork": 31.94805869999982,
+      "decision": 3.940550900028029,
+      "intent": 9.200351699983003,
+      "fixedActionEstimate": 8.6
+    },
+    {
+      "tick": 73067400,
+      "totalUsed": 91.55681500000355,
+      "bucket": 10000,
+      "pathing": 2.4563357000006363,
+      "creepWork": 26.661621400002332,
+      "decision": 10.313470700020844,
+      "intent": 10.315451099988422,
+      "fixedActionEstimate": 10.4
+    },
+    {
+      "tick": 73067410,
+      "totalUsed": 109.81831859999511,
+      "bucket": 10000,
+      "pathing": 26.916570200002752,
+      "creepWork": 43.4428043999942,
+      "decision": 2.689894999944954,
+      "intent": 10.699298600040493,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067420,
+      "totalUsed": 91.63897590000124,
+      "bucket": 10000,
+      "pathing": 22.832552599997143,
+      "creepWork": 38.69343089999893,
+      "decision": 1.7492045999752008,
+      "intent": 11.791918600021745,
+      "fixedActionEstimate": 13
+    },
+    {
+      "tick": 73067430,
+      "totalUsed": 111.30665360000421,
+      "bucket": 10000,
+      "pathing": 38.53570760000002,
+      "creepWork": 56.039673300001596,
+      "decision": 3.33512790005625,
+      "intent": 11.04019929999049,
+      "fixedActionEstimate": 12.8
+    },
+    {
+      "tick": 73067440,
+      "totalUsed": 92.86450309999782,
+      "bucket": 10000,
+      "pathing": 24.796705700005987,
+      "creepWork": 42.2470922999928,
+      "decision": 3.4938631000259193,
+      "intent": 11.195325899978343,
+      "fixedActionEstimate": 11.8
+    },
+    {
+      "tick": 73067450,
+      "totalUsed": 118.65293410000595,
+      "bucket": 10000,
+      "pathing": 34.10499559998425,
+      "creepWork": 53.53593580000597,
+      "decision": 3.5579387999896426,
+      "intent": 12.31430320002255,
+      "fixedActionEstimate": 12.600000000000001
+    },
+    {
+      "tick": 73067460,
+      "totalUsed": 82.13418140000431,
+      "bucket": 10000,
+      "pathing": 2.3932077000063146,
+      "creepWork": 18.911291299998993,
+      "decision": 2.376836800009187,
+      "intent": 11.100975599969388,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73067470,
+      "totalUsed": 84.5985961999977,
+      "bucket": 10000,
+      "pathing": 13.11353809999855,
+      "creepWork": 29.839387500003795,
+      "decision": 2.6161668000058853,
+      "intent": 10.856327099980263,
+      "fixedActionEstimate": 10.600000000000001
+    },
+    {
+      "tick": 73067480,
+      "totalUsed": 87.73961240000062,
+      "bucket": 10000,
+      "pathing": 2.499723200002336,
+      "creepWork": 18.51534449999599,
+      "decision": 2.4868116000288865,
+      "intent": 10.449205699951563,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73067490,
+      "totalUsed": 82.20676310000272,
+      "bucket": 10000,
+      "pathing": 13.035526399973605,
+      "creepWork": 31.202458700012357,
+      "decision": 3.088663499962422,
+      "intent": 11.4664996000065,
+      "fixedActionEstimate": 12.600000000000001
+    },
+    {
+      "tick": 73067500,
+      "totalUsed": 69.66530950000015,
+      "bucket": 10000,
+      "pathing": 1.24402849998296,
+      "creepWork": 17.528611799993087,
+      "decision": 3.580118100006075,
+      "intent": 10.330425999978615,
+      "fixedActionEstimate": 10
+    },
+    {
+      "tick": 73067510,
+      "totalUsed": 80.3693076999989,
+      "bucket": 10000,
+      "pathing": 13.998665199993411,
+      "creepWork": 31.483711400003813,
+      "decision": 4.0172808000133955,
+      "intent": 10.232754200027557,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067520,
+      "totalUsed": 96.89012969999749,
+      "bucket": 10000,
+      "pathing": 1.7855617000022903,
+      "creepWork": 19.584182899998268,
+      "decision": 4.2656197999895085,
+      "intent": 9.892273399957048,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73067530,
+      "totalUsed": 81.39200079999137,
+      "bucket": 10000,
+      "pathing": 13.191020700010995,
+      "creepWork": 29.659444600001734,
+      "decision": 3.369670199957909,
+      "intent": 10.003547099942807,
+      "fixedActionEstimate": 10.600000000000001
+    },
+    {
+      "tick": 73067540,
+      "totalUsed": 74.6068521000052,
+      "bucket": 10000,
+      "pathing": 1.1664835000046878,
+      "creepWork": 17.031600599999365,
+      "decision": 3.325757500017062,
+      "intent": 9.791546799977368,
+      "fixedActionEstimate": 10.4
+    },
+    {
+      "tick": 73067550,
+      "totalUsed": 92.68564869999682,
+      "bucket": 10000,
+      "pathing": 16.573888500024623,
+      "creepWork": 34.522192299999006,
+      "decision": 3.965536899973813,
+      "intent": 10.2903819000785,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73067560,
+      "totalUsed": 91.0991051000019,
+      "bucket": 10000,
+      "pathing": 3.349179600016214,
+      "creepWork": 19.70337959999597,
+      "decision": 3.041407200078538,
+      "intent": 10.600532399977965,
+      "fixedActionEstimate": 11.200000000000001
+    },
+    {
+      "tick": 73067570,
+      "totalUsed": 99.71498109999811,
+      "bucket": 10000,
+      "pathing": 14.153911200002767,
+      "creepWork": 33.07785259999946,
+      "decision": 4.741673299977265,
+      "intent": 11.075086099961482,
+      "fixedActionEstimate": 12.600000000000001
+    },
+    {
+      "tick": 73067580,
+      "totalUsed": 105.29502800000046,
+      "bucket": 10000,
+      "pathing": 13.186573400009365,
+      "creepWork": 33.29146389999369,
+      "decision": 6.90207959995314,
+      "intent": 10.235527099968749,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067590,
+      "totalUsed": 93.85242370000924,
+      "bucket": 10000,
+      "pathing": 19.45254479997675,
+      "creepWork": 39.7023160999961,
+      "decision": 5.435254499971052,
+      "intent": 11.151314199989429,
+      "fixedActionEstimate": 10.4
+    },
+    {
+      "tick": 73067600,
+      "totalUsed": 93.42183569999906,
+      "bucket": 10000,
+      "pathing": 4.928244100017764,
+      "creepWork": 22.535270799999125,
+      "decision": 4.189203199988697,
+      "intent": 10.406141900042712,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73067610,
+      "totalUsed": 77.17479930000263,
+      "bucket": 10000,
+      "pathing": 14.185766399998101,
+      "creepWork": 32.94819280000229,
+      "decision": 3.458053300018946,
+      "intent": 10.427587999954994,
+      "fixedActionEstimate": 10.600000000000001
+    },
+    {
+      "tick": 73067620,
+      "totalUsed": 94.0110516999921,
+      "bucket": 10000,
+      "pathing": 1.8062252000017907,
+      "creepWork": 18.065257200003543,
+      "decision": 3.065319399960572,
+      "intent": 10.343766600053641,
+      "fixedActionEstimate": 9.8
+    },
+    {
+      "tick": 73067630,
+      "totalUsed": 81.82659220000642,
+      "bucket": 10000,
+      "pathing": 13.796896099993319,
+      "creepWork": 29.555764400000044,
+      "decision": 2.6716911000039545,
+      "intent": 10.117579200035834,
+      "fixedActionEstimate": 9.600000000000001
+    },
+    {
+      "tick": 73067640,
+      "totalUsed": 84.59157899999991,
+      "bucket": 10000,
+      "pathing": 13.899685800002771,
+      "creepWork": 28.76119249999465,
+      "decision": 2.152034299913794,
+      "intent": 9.780141899958835,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73067650,
+      "totalUsed": 81.9200794999997,
+      "bucket": 10000,
+      "pathing": 15.94173099998443,
+      "creepWork": 32.222132599999895,
+      "decision": 2.9525652000593254,
+      "intent": 10.610871300006693,
+      "fixedActionEstimate": 10
+    },
+    {
+      "tick": 73067660,
+      "totalUsed": 95.37160600000061,
+      "bucket": 10000,
+      "pathing": 4.7501870000123745,
+      "creepWork": 22.533335699998133,
+      "decision": 3.5702393999963533,
+      "intent": 10.990388500067638,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73067670,
+      "totalUsed": 79.36866939999891,
+      "bucket": 10000,
+      "pathing": 15.847302900008799,
+      "creepWork": 30.83207260000927,
+      "decision": 2.84097059994383,
+      "intent": 9.593373299947416,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73067680,
+      "totalUsed": 67.41124609999679,
+      "bucket": 10000,
+      "pathing": 2.9554147999951965,
+      "creepWork": 18.192693900004087,
+      "decision": 3.0346744999624207,
+      "intent": 9.57977659995231,
+      "fixedActionEstimate": 9
+    },
+    {
+      "tick": 73067690,
+      "totalUsed": 83.21703390000039,
+      "bucket": 10000,
+      "pathing": 18.168615400005365,
+      "creepWork": 33.38617850001174,
+      "decision": 2.866936800041003,
+      "intent": 9.22645049993298,
+      "fixedActionEstimate": 9.200000000000001
+    },
+    {
+      "tick": 73067700,
+      "totalUsed": 93.91152940000029,
+      "bucket": 10000,
+      "pathing": 1.6433845999999903,
+      "creepWork": 20.0493981000036,
+      "decision": 2.737183800112689,
+      "intent": 9.598890300025232,
+      "fixedActionEstimate": 9
+    },
+    {
+      "tick": 73067710,
+      "totalUsed": 68.4819462000014,
+      "bucket": 10000,
+      "pathing": 12.771008899988374,
+      "creepWork": 28.08836059999885,
+      "decision": 2.731488499994157,
+      "intent": 9.732708800016553,
+      "fixedActionEstimate": 9.200000000000001
+    },
+    {
+      "tick": 73067720,
+      "totalUsed": 82.72061009999015,
+      "bucket": 10000,
+      "pathing": 11.422356399983983,
+      "creepWork": 26.431776899989927,
+      "decision": 2.7127372999530053,
+      "intent": 9.56385030002275,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067730,
+      "totalUsed": 110.03720010000688,
+      "bucket": 10000,
+      "pathing": 14.7343520999857,
+      "creepWork": 31.160923800009186,
+      "decision": 3.6845340998261236,
+      "intent": 9.992946900005336,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73067740,
+      "totalUsed": 88.05837230000179,
+      "bucket": 10000,
+      "pathing": 0.9910134000092512,
+      "creepWork": 16.494287900000927,
+      "decision": 3.4920964000193635,
+      "intent": 9.143812099981005,
+      "fixedActionEstimate": 9.4
+    },
+    {
+      "tick": 73067750,
+      "totalUsed": 92.47224119999737,
+      "bucket": 10000,
+      "pathing": 13.9165714999981,
+      "creepWork": 31.19412299999385,
+      "decision": 3.637162100058049,
+      "intent": 9.898669399990467,
+      "fixedActionEstimate": 10.4
+    },
+    {
+      "tick": 73067760,
+      "totalUsed": 85.13435089999984,
+      "bucket": 10000,
+      "pathing": 13.988813799995114,
+      "creepWork": 31.0983574000129,
+      "decision": 3.770500499944319,
+      "intent": 10.407857700018212,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73067770,
+      "totalUsed": 76.22356700000819,
+      "bucket": 10000,
+      "pathing": 12.078779700008454,
+      "creepWork": 27.13540689999354,
+      "decision": 3.160292199871037,
+      "intent": 9.337591600051383,
+      "fixedActionEstimate": 10
+    },
+    {
+      "tick": 73067780,
+      "totalUsed": 68.93864749999193,
+      "bucket": 10000,
+      "pathing": 0.7902166999992914,
+      "creepWork": 15.33079719998932,
+      "decision": 2.396521400063648,
+      "intent": 9.355789000008372,
+      "fixedActionEstimate": 8.8
+    },
+    {
+      "tick": 73067790,
+      "totalUsed": 84.90429419997963,
+      "bucket": 10000,
+      "pathing": 16.035650800040457,
+      "creepWork": 32.189466899988474,
+      "decision": 3.331996200082358,
+      "intent": 9.275286500065704,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73067800,
+      "totalUsed": 81.39035029998922,
+      "bucket": 10000,
+      "pathing": 12.874988100011251,
+      "creepWork": 28.54180429999542,
+      "decision": 3.0798118000820978,
+      "intent": 9.35837079997873,
+      "fixedActionEstimate": 9.8
+    },
+    {
+      "tick": 73067810,
+      "totalUsed": 76.53040899999905,
+      "bucket": 10000,
+      "pathing": 14.091473499996937,
+      "creepWork": 27.957138900004793,
+      "decision": 2.415030799951637,
+      "intent": 8.730028199919616,
+      "fixedActionEstimate": 8.200000000000001
+    },
+    {
+      "tick": 73067820,
+      "totalUsed": 75.19411160000891,
+      "bucket": 10000,
+      "pathing": 4.654808599982061,
+      "creepWork": 21.07775200001197,
+      "decision": 3.408005899938871,
+      "intent": 9.878332199994475,
+      "fixedActionEstimate": 9.200000000000001
+    },
+    {
+      "tick": 73067830,
+      "totalUsed": 74.58103840000695,
+      "bucket": 10000,
+      "pathing": 14.16049570000905,
+      "creepWork": 28.629142399993725,
+      "decision": 2.2903049000742612,
+      "intent": 9.51678119994176,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067840,
+      "totalUsed": 82.58409509998455,
+      "bucket": 10000,
+      "pathing": 13.276547699962975,
+      "creepWork": 28.889070899997023,
+      "decision": 3.327866100051324,
+      "intent": 9.773921400003019,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73067850,
+      "totalUsed": 85.54623690000153,
+      "bucket": 10000,
+      "pathing": 15.738459099971806,
+      "creepWork": 32.68576179999218,
+      "decision": 3.5250995001697447,
+      "intent": 10.153077200011467,
+      "fixedActionEstimate": 9.600000000000001
+    },
+    {
+      "tick": 73067860,
+      "totalUsed": 69.41713390001678,
+      "bucket": 10000,
+      "pathing": 3.1947616999968886,
+      "creepWork": 19.534921800004668,
+      "decision": 3.843101599952206,
+      "intent": 9.303942400001688,
+      "fixedActionEstimate": 9.4
+    },
+    {
+      "tick": 73067870,
+      "totalUsed": 81.2647844000021,
+      "bucket": 10000,
+      "pathing": 15.988493300013943,
+      "creepWork": 31.05490339998505,
+      "decision": 2.551411200023722,
+      "intent": 9.74314130008861,
+      "fixedActionEstimate": 9.8
+    },
+    {
+      "tick": 73067880,
+      "totalUsed": 93.40727309999056,
+      "bucket": 10000,
+      "pathing": 23.329312499976368,
+      "creepWork": 38.123590599992895,
+      "decision": 2.480483199993614,
+      "intent": 9.388847999987775,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067890,
+      "totalUsed": 98.45138729999599,
+      "bucket": 10000,
+      "pathing": 23.025155399984214,
+      "creepWork": 40.492055299997446,
+      "decision": 3.33535539994773,
+      "intent": 10.910180900144042,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067900,
+      "totalUsed": 98.5040439999866,
+      "bucket": 10000,
+      "pathing": 20.58526730000449,
+      "creepWork": 37.767277799983276,
+      "decision": 3.0943380001554033,
+      "intent": 10.785897000008845,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73067910,
+      "totalUsed": 96.36906920000911,
+      "bucket": 10000,
+      "pathing": 28.928147300001,
+      "creepWork": 54.59595439999248,
+      "decision": 2.7367573998344596,
+      "intent": 10.888034100047662,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067920,
+      "totalUsed": 131.372417400009,
+      "bucket": 10000,
+      "pathing": 60.99946190002083,
+      "creepWork": 78.8984136999934,
+      "decision": 2.7830400000530062,
+      "intent": 11.255866900071851,
+      "fixedActionEstimate": 11.200000000000001
+    },
+    {
+      "tick": 73067930,
+      "totalUsed": 94.72342710000521,
+      "bucket": 10000,
+      "pathing": 23.625271800061455,
+      "creepWork": 40.941107800012105,
+      "decision": 2.727137399808271,
+      "intent": 10.76285039987124,
+      "fixedActionEstimate": 11.200000000000001
+    },
+    {
+      "tick": 73067940,
+      "totalUsed": 94.21532279999519,
+      "bucket": 10000,
+      "pathing": 13.369288399961079,
+      "creepWork": 31.749174800002947,
+      "decision": 3.581809399984195,
+      "intent": 11.12491250000312,
+      "fixedActionEstimate": 10.600000000000001
+    },
+    {
+      "tick": 73067950,
+      "totalUsed": 98.12418250001792,
+      "bucket": 10000,
+      "pathing": 15.524241199993412,
+      "creepWork": 30.95054479999817,
+      "decision": 2.5872014999913517,
+      "intent": 9.963472000003094,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73067960,
+      "totalUsed": 96.95276379999996,
+      "bucket": 10000,
+      "pathing": 26.290043000044534,
+      "creepWork": 45.01486160000786,
+      "decision": 4.519516300148098,
+      "intent": 8.989557799883187,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73067970,
+      "totalUsed": 81.95743750000838,
+      "bucket": 10000,
+      "pathing": 17.76400469998771,
+      "creepWork": 33.72158140002284,
+      "decision": 4.564865499996813,
+      "intent": 8.208719799877144,
+      "fixedActionEstimate": 8.4
+    },
+    {
+      "tick": 73067980,
+      "totalUsed": 87.75372630002676,
+      "bucket": 10000,
+      "pathing": 6.266703300003428,
+      "creepWork": 22.209397799990256,
+      "decision": 4.1542916998732835,
+      "intent": 8.245767200030969,
+      "fixedActionEstimate": 7.800000000000001
+    },
+    {
+      "tick": 73067990,
+      "totalUsed": 97.9658924999967,
+      "bucket": 10000,
+      "pathing": 17.606456399982562,
+      "creepWork": 34.72522269998444,
+      "decision": 3.5110621000785613,
+      "intent": 9.505761999986134,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73068000,
+      "totalUsed": 107.95610440000019,
+      "bucket": 10000,
+      "pathing": 22.801103000034345,
+      "creepWork": 38.37153400000534,
+      "decision": 2.247208600034355,
+      "intent": 9.622685299938894,
+      "fixedActionEstimate": 10.4
+    },
+    {
+      "tick": 73068010,
+      "totalUsed": 78.99966630000563,
+      "bucket": 10000,
+      "pathing": 13.781995500030462,
+      "creepWork": 28.765158400012297,
+      "decision": 2.526390100189019,
+      "intent": 9.377873400080716,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73068020,
+      "totalUsed": 80.06863629999862,
+      "bucket": 10000,
+      "pathing": 3.4148204999946756,
+      "creepWork": 19.120485599996755,
+      "decision": 2.0762859000096796,
+      "intent": 10.622237199830124,
+      "fixedActionEstimate": 11.200000000000001
+    },
+    {
+      "tick": 73068030,
+      "totalUsed": 81.08647860000201,
+      "bucket": 10000,
+      "pathing": 13.55975010000111,
+      "creepWork": 28.127880199986976,
+      "decision": 2.473846700057038,
+      "intent": 9.364808400190668,
+      "fixedActionEstimate": 11.8
+    },
+    {
+      "tick": 73068040,
+      "totalUsed": 103.42377289998694,
+      "bucket": 10000,
+      "pathing": 24.88958939994336,
+      "creepWork": 42.11362290001125,
+      "decision": 3.4488051000080304,
+      "intent": 10.096078500006115,
+      "fixedActionEstimate": 10.600000000000001
+    },
+    {
+      "tick": 73068050,
+      "totalUsed": 86.36058680001588,
+      "bucket": 10000,
+      "pathing": 13.736599500014563,
+      "creepWork": 29.55410429998301,
+      "decision": 3.0476666999602458,
+      "intent": 9.795792600052664,
+      "fixedActionEstimate": 9.4
+    },
+    {
+      "tick": 73068060,
+      "totalUsed": 73.51233529999445,
+      "bucket": 10000,
+      "pathing": 2.894655399941257,
+      "creepWork": 17.323925400007283,
+      "decision": 3.1174338002165314,
+      "intent": 8.7360354999837,
+      "fixedActionEstimate": 8.200000000000001
+    },
+    {
+      "tick": 73068070,
+      "totalUsed": 76.03625990000728,
+      "bucket": 10000,
+      "pathing": 14.50450689997524,
+      "creepWork": 31.857420299988007,
+      "decision": 4.456919999895035,
+      "intent": 9.461982099863235,
+      "fixedActionEstimate": 8.8
+    },
+    {
+      "tick": 73068080,
+      "totalUsed": 107.92248090000066,
+      "bucket": 10000,
+      "pathing": 21.303462700016098,
+      "creepWork": 39.420054800008074,
+      "decision": 5.208316099844524,
+      "intent": 9.635207300059847,
+      "fixedActionEstimate": 9
+    },
+    {
+      "tick": 73068090,
+      "totalUsed": 81.28626569999324,
+      "bucket": 10000,
+      "pathing": 21.63004740003089,
+      "creepWork": 36.87295920001634,
+      "decision": 2.951681199701852,
+      "intent": 9.251539199860417,
+      "fixedActionEstimate": 8.6
+    },
+    {
+      "tick": 73068100,
+      "totalUsed": 102.76194820001547,
+      "bucket": 10000,
+      "pathing": 17.345126499974867,
+      "creepWork": 33.979478100009146,
+      "decision": 3.7365432000660803,
+      "intent": 9.321990100012044,
+      "fixedActionEstimate": 8.8
+    },
+    {
+      "tick": 73068110,
+      "totalUsed": 88.79501389998768,
+      "bucket": 10000,
+      "pathing": 23.994556299978285,
+      "creepWork": 41.04176860002917,
+      "decision": 3.4535565999540268,
+      "intent": 10.248630900110584,
+      "fixedActionEstimate": 11.4
+    },
+    {
+      "tick": 73068120,
+      "totalUsed": 121.46212100000412,
+      "bucket": 10000,
+      "pathing": 33.37704760002089,
+      "creepWork": 51.98709950000921,
+      "decision": 4.236599900017609,
+      "intent": 9.635819600123796,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73068130,
+      "totalUsed": 101.66685359999246,
+      "bucket": 10000,
+      "pathing": 32.12756689998787,
+      "creepWork": 47.6171725000022,
+      "decision": 2.436008899981971,
+      "intent": 9.774037100069108,
+      "fixedActionEstimate": 9.200000000000001
+    },
+    {
+      "tick": 73068140,
+      "totalUsed": 96.79543260000355,
+      "bucket": 10000,
+      "pathing": 15.798972800024785,
+      "creepWork": 33.29919710001559,
+      "decision": 3.152948500122875,
+      "intent": 11.05976169994392,
+      "fixedActionEstimate": 10.8
+    },
+    {
+      "tick": 73068150,
+      "totalUsed": 116.72972470000968,
+      "bucket": 10000,
+      "pathing": 34.73185170009674,
+      "creepWork": 54.47183320000477,
+      "decision": 3.633540300128516,
+      "intent": 11.29181300009077,
+      "fixedActionEstimate": 10.4
+    },
+    {
+      "tick": 73068160,
+      "totalUsed": 112.54352310000104,
+      "bucket": 10000,
+      "pathing": 37.36247060005553,
+      "creepWork": 55.333096899994416,
+      "decision": 3.389228700005333,
+      "intent": 10.610468099970603,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73068170,
+      "totalUsed": 97.7385528000159,
+      "bucket": 10000,
+      "pathing": 24.634998699984862,
+      "creepWork": 41.00284420000389,
+      "decision": 2.9201093999727163,
+      "intent": 10.244182499998715,
+      "fixedActionEstimate": 9.600000000000001
+    },
+    {
+      "tick": 73068180,
+      "totalUsed": 89.60166819997539,
+      "bucket": 10000,
+      "pathing": 14.192636899984791,
+      "creepWork": 32.36071130000346,
+      "decision": 3.559542999966652,
+      "intent": 10.903582100043423,
+      "fixedActionEstimate": 12.200000000000001
+    },
+    {
+      "tick": 73068190,
+      "totalUsed": 103.00114039999607,
+      "bucket": 10000,
+      "pathing": 26.20944300001429,
+      "creepWork": 44.2286763000011,
+      "decision": 3.398885100017651,
+      "intent": 10.82793489996402,
+      "fixedActionEstimate": 10
+    },
+    {
+      "tick": 73068200,
+      "totalUsed": 112.45099350000964,
+      "bucket": 10000,
+      "pathing": 14.367291900023702,
+      "creepWork": 29.86352270001953,
+      "decision": 2.1604648000065936,
+      "intent": 9.788875299942447,
+      "fixedActionEstimate": 10.4
+    },
+    {
+      "tick": 73068210,
+      "totalUsed": 95.05302009997831,
+      "bucket": 10000,
+      "pathing": 23.977617300028214,
+      "creepWork": 39.61985239997739,
+      "decision": 2.4209210999833886,
+      "intent": 10.144599899911555,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73068220,
+      "totalUsed": 80.89295429999765,
+      "bucket": 10000,
+      "pathing": 3.038379499965231,
+      "creepWork": 21.1018056999892,
+      "decision": 4.150004299954162,
+      "intent": 9.923155999931623,
+      "fixedActionEstimate": 9.600000000000001
+    },
+    {
+      "tick": 73068230,
+      "totalUsed": 105.95226550001826,
+      "bucket": 10000,
+      "pathing": 19.341812099999515,
+      "creepWork": 37.6150564999989,
+      "decision": 2.6016172000818187,
+      "intent": 10.879750299995067,
+      "fixedActionEstimate": 11.200000000000001
+    },
+    {
+      "tick": 73068240,
+      "totalUsed": 106.5180675000156,
+      "bucket": 10000,
+      "pathing": 27.135968600021442,
+      "creepWork": 43.92869050000445,
+      "decision": 2.609059700072976,
+      "intent": 10.210604599909857,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73068250,
+      "totalUsed": 109.99973290000344,
+      "bucket": 10000,
+      "pathing": 36.83628780003346,
+      "creepWork": 54.762979800012545,
+      "decision": 3.791681399976369,
+      "intent": 9.714749100006884,
+      "fixedActionEstimate": 9.200000000000001
+    },
+    {
+      "tick": 73068260,
+      "totalUsed": 91.5475987999962,
+      "bucket": 10000,
+      "pathing": 17.575877800016315,
+      "creepWork": 36.795871000009356,
+      "decision": 3.621707700105617,
+      "intent": 11.164264799939701,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73068270,
+      "totalUsed": 83.78698570000415,
+      "bucket": 10000,
+      "pathing": 13.370013800013112,
+      "creepWork": 31.951777900001616,
+      "decision": 4.383176200106391,
+      "intent": 10.526532299991231,
+      "fixedActionEstimate": 9.8
+    },
+    {
+      "tick": 73068280,
+      "totalUsed": 86.08112469999469,
+      "bucket": 10000,
+      "pathing": 13.406287700039684,
+      "creepWork": 29.81105540000135,
+      "decision": 3.3825206998881185,
+      "intent": 9.599073799850885,
+      "fixedActionEstimate": 10.4
+    },
+    {
+      "tick": 73068290,
+      "totalUsed": 102.43223459999717,
+      "bucket": 10000,
+      "pathing": 19.885633299985784,
+      "creepWork": 40.2046119000006,
+      "decision": 5.45083889986563,
+      "intent": 10.298808500068844,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73068300,
+      "totalUsed": 94.59793749998789,
+      "bucket": 10000,
+      "pathing": 1.318265000008978,
+      "creepWork": 19.622317700021085,
+      "decision": 3.8002860999840777,
+      "intent": 9.989006399875507,
+      "fixedActionEstimate": 10.600000000000001
+    },
+    {
+      "tick": 73068310,
+      "totalUsed": 79.63125670001318,
+      "bucket": 10000,
+      "pathing": 1.4218190999963554,
+      "creepWork": 18.678860599990003,
+      "decision": 2.831973300097161,
+      "intent": 10.910284899873659,
+      "fixedActionEstimate": 11.4
+    },
+    {
+      "tick": 73068320,
+      "totalUsed": 82.32955569998012,
+      "bucket": 10000,
+      "pathing": 12.552506200008793,
+      "creepWork": 29.47365179998451,
+      "decision": 3.4317776999087073,
+      "intent": 10.447702899939031,
+      "fixedActionEstimate": 9.8
+    },
+    {
+      "tick": 73068330,
+      "totalUsed": 101.02364310000848,
+      "bucket": 10000,
+      "pathing": 21.774795899968012,
+      "creepWork": 42.23386799998116,
+      "decision": 3.871628800057806,
+      "intent": 11.93160990018805,
+      "fixedActionEstimate": 14
+    },
+    {
+      "tick": 73068340,
+      "totalUsed": 77.75599910000165,
+      "bucket": 10000,
+      "pathing": 1.1068680999887874,
+      "creepWork": 18.716447499988135,
+      "decision": 2.8330730999732623,
+      "intent": 11.066607500120881,
+      "fixedActionEstimate": 11.600000000000001
+    },
+    {
+      "tick": 73068350,
+      "totalUsed": 81.65700130001642,
+      "bucket": 10000,
+      "pathing": 1.1241100000333972,
+      "creepWork": 18.575193700031377,
+      "decision": 3.1682612000440713,
+      "intent": 10.411860399908619,
+      "fixedActionEstimate": 10.200000000000001
+    },
+    {
+      "tick": 73068360,
+      "totalUsed": 66.03776069998275,
+      "bucket": 10000,
+      "pathing": 0.9072726000740658,
+      "creepWork": 15.989145300001837,
+      "decision": 2.2715589001600165,
+      "intent": 9.924468100158265,
+      "fixedActionEstimate": 9.4
+    },
+    {
+      "tick": 73068370,
+      "totalUsed": 78.12499410001328,
+      "bucket": 10000,
+      "pathing": 11.244793300051242,
+      "creepWork": 26.38106320000952,
+      "decision": 2.218858199979877,
+      "intent": 10.132836199976737,
+      "fixedActionEstimate": 9.600000000000001
+    },
+    {
+      "tick": 73068380,
+      "totalUsed": 105.5673976999824,
+      "bucket": 10000,
+      "pathing": 20.408176099997945,
+      "creepWork": 37.842742200009525,
+      "decision": 3.134019199962495,
+      "intent": 10.287083800067194,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73068390,
+      "totalUsed": 71.84814600000391,
+      "bucket": 10000,
+      "pathing": 10.480761200014967,
+      "creepWork": 26.29868649999844,
+      "decision": 2.2492847000830807,
+      "intent": 10.40535149993957,
+      "fixedActionEstimate": 9.8
+    },
+    {
+      "tick": 73068400,
+      "totalUsed": 100.84037720001652,
+      "bucket": 10000,
+      "pathing": 13.686650900024688,
+      "creepWork": 31.304319399991073,
+      "decision": 3.1944536000082735,
+      "intent": 10.262498199852416,
+      "fixedActionEstimate": 12.8
+    },
+    {
+      "tick": 73068410,
+      "totalUsed": 78.41833660000702,
+      "bucket": 10000,
+      "pathing": 12.174044999992475,
+      "creepWork": 30.05219250000664,
+      "decision": 3.392495599837275,
+      "intent": 11.154755299852695,
+      "fixedActionEstimate": 11
+    },
+    {
+      "tick": 73068420,
+      "totalUsed": 82.02692420000676,
+      "bucket": 10000,
+      "pathing": 13.042766100057634,
+      "creepWork": 30.078731300018262,
+      "decision": 2.3505963001516648,
+      "intent": 11.621367500076303,
+      "fixedActionEstimate": 11.8
+    },
+    {
+      "tick": 73068430,
+      "totalUsed": 116.17012329999125,
+      "bucket": 10000,
+      "pathing": 44.49236480004038,
+      "creepWork": 62.928959299984854,
+      "decision": 2.460519099899102,
+      "intent": 11.917791099811438,
+      "fixedActionEstimate": 14.8
+    },
+    {
+      "tick": 73068440,
+      "totalUsed": 118.28460600000108,
+      "bucket": 10000,
+      "pathing": 38.58198109996738,
+      "creepWork": 57.18329020001693,
+      "decision": 2.6620607001241297,
+      "intent": 11.39911390002817,
+      "fixedActionEstimate": 12.4
+    },
+    {
+      "tick": 73068450,
+      "totalUsed": 112.3370093999838,
+      "bucket": 10000,
+      "pathing": 22.325565600011032,
+      "creepWork": 41.10604189999867,
+      "decision": 2.9406779999262653,
+      "intent": 12.55489309996483,
+      "fixedActionEstimate": 11.8
+    },
+    {
+      "tick": 73068460,
+      "totalUsed": 110.53620869998122,
+      "bucket": 10000,
+      "pathing": 29.584781200013822,
+      "creepWork": 48.12795590001042,
+      "decision": 1.8205707001616247,
+      "intent": 12.93044269978418,
+      "fixedActionEstimate": 14
+    },
+    {
+      "tick": 73068470,
+      "totalUsed": 126.79381000000285,
+      "bucket": 10000,
+      "pathing": 44.04358140000841,
+      "creepWork": 64.64673239999684,
+      "decision": 2.691245700028958,
+      "intent": 13.287653000064893,
+      "fixedActionEstimate": 14.4
+    },
+    {
+      "tick": 73068480,
+      "totalUsed": 121.96146869997028,
+      "bucket": 10000,
+      "pathing": 42.814361199969426,
+      "creepWork": 63.16216209999402,
+      "decision": 3.4950486999296118,
+      "intent": 12.951809499965748,
+      "fixedActionEstimate": 13.600000000000001
+    },
+    {
+      "tick": 73068490,
+      "totalUsed": 87.47888669997337,
+      "bucket": 10000,
+      "pathing": 19.89964600003441,
+      "creepWork": 39.64392189998762,
+      "decision": 3.3454914998146705,
+      "intent": 13.00561910009128,
+      "fixedActionEstimate": 12.200000000000001
+    },
+    {
+      "tick": 73068500,
+      "totalUsed": 119.71420250000665,
+      "bucket": 10000,
+      "pathing": 31.199821899994276,
+      "creepWork": 51.96298100001877,
+      "decision": 3.5385597001586575,
+      "intent": 13.398630300012883,
+      "fixedActionEstimate": 13.200000000000001
+    },
+    {
+      "tick": 73068510,
+      "totalUsed": 89.07935010001529,
+      "bucket": 10000,
+      "pathing": 23.667303400026867,
+      "creepWork": 42.16581209999276,
+      "decision": 2.1545913998270407,
+      "intent": 12.429847200051881,
+      "fixedActionEstimate": 11.8
+    }
+  ],
+  "summary": {
+    "totalUsed": {
+      "count": 120,
+      "mean": 91.50308886833339,
+      "median": 88.93718200000148,
+      "p95": 118.28460600000108,
+      "min": 66.03776069998275,
+      "max": 131.372417400009
+    },
+    "bucket": {
+      "count": 120,
+      "mean": 10000,
+      "median": 10000,
+      "p95": 10000,
+      "min": 10000,
+      "max": 10000
+    },
+    "pathing": {
+      "count": 120,
+      "mean": 16.54670144833814,
+      "median": 14.279964400004246,
+      "p95": 37.36247060005553,
+      "min": 0.7902166999992914,
+      "max": 60.99946190002083
+    },
+    "creepWork": {
+      "count": 120,
+      "mean": 33.735987895834114,
+      "median": 31.803297549995477,
+      "p95": 55.333096899994416,
+      "min": 15.33079719998932,
+      "max": 78.8984136999934
+    },
+    "decision": {
+      "count": 120,
+      "mean": 3.278792779167998,
+      "median": 3.156620349996956,
+      "p95": 4.564865499996813,
+      "min": 1.7492045999752008,
+      "max": 10.313470700020844
+    },
+    "intent": {
+      "count": 120,
+      "mean": 10.42835655415929,
+      "median": 10.288732850072847,
+      "p95": 12.429847200051881,
+      "min": 8.208719799877144,
+      "max": 13.398630300012883
+    },
+    "fixedActionEstimate": {
+      "count": 120,
+      "mean": 10.69833333333333,
+      "median": 10.600000000000001,
+      "p95": 13,
+      "min": 7.800000000000001,
+      "max": 14.8
+    }
+  }
+}

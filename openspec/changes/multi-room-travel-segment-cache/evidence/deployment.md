@@ -25,7 +25,7 @@
 - 首个 CPU 样本：tick `73067070`，bucket `10000`，total `92.1523`，pathing `23.9735`，creepWork `39.8671`
 - 未观察到立即 bucket、主循环或 deploy-tag 异常，因此未触发回滚
 
-## 当前证据边界
+## 初始证据边界
 
 - 后续快照 `2026-08-17T12:26:07.013Z` 显示 global-reset 后已有 3 个纯新版本 CPU 样本：total 平均 `125.6291`、pathing 平均 `22.3467`、creepWork 平均 `39.0614`，bucket 平均/最小仍为 `10000`。
 - 最近样本 tick `73067100`：total `151.3439`、pathing `21.0702`、creepWork `36.6632`；该 tick 的 total 尖峰主要来自 MarketSaleAutomation `68.1628` 与 HubPlanner `20.8001`，不能归因于本 change。
@@ -41,6 +41,32 @@
 - tick `73067319` 的 3 个 stuck actor 均为 `segment: null`，说明 stuck 门禁会退出 segment cache；现有 repath/exit recovery 活动没有伴随 segment 持有或 invalidation/fallback 异常。
 - 以上证据支持完成初始运行安全门禁 4.2，但只覆盖部署后的短窗口，不能替代完整 CPU 统计验收。
 
-## 待完成
+## 完整 120 样本验收
 
-- Task 4.3 必须等待完整新 120 样本，比较 pathing mean/p50/p95、creepWork、total CPU、bucket 与世界负载后才能完成并归档。
+- 最终只读快照：`2026-08-17T13:50:30.683Z`，shard1 tick / CPU tick `73068390`；deploy tag 仍为 `2026.8.17-1+84a9cb0@2026-08-17T12:23:15.202Z`。
+- CPU monitor 已填满 `120/120`，采样间隔 `10` ticks；最新 total `71.8481`，bucket `10000`。
+
+同一 Memory CPU summary schema 的连续窗口均值（部署后窗口截止 CPU tick `73068390`）：
+
+| 指标 | 部署前 120 | 部署后 120 | 变化 |
+| --- | ---: | ---: | ---: |
+| `creepWork:pathing` mean | `18.6077` | `15.1941` | `-18.34%` |
+| `creepWork` mean | `36.1466` | `32.4203` | `-10.31%` |
+| total mean | `93.0529` | `90.8679` | `-2.35%` |
+| bucket mean / min | `10000 / 10000` | `10000 / 10000` | 不变 |
+
+- 为使分位数可独立复算，`2026-08-17T13:58:33.251Z` 又以只读 console 固化当时 `global.__cpuMonitor.history` 的完整 ring 到 [`post-deploy-cpu-window.json`](post-deploy-cpu-window.json)。该文件保存 tick `73067320..73068510` 的 120 条唯一连续记录、deploy tag、采集边界，以及 median 和 nearest-rank p95 算法；没有写入线上 Memory/config/telemetry/profiler。
+- 可复算 raw window 的 pathing mean / p50 / p95 / max 为 `16.5467 / 14.2800 / 37.3625 / 60.9995`；creepWork 为 `33.7360 / 31.8033 / 55.3331 / 78.8984`；total 为 `91.5031 / 88.9372 / 118.2846 / 131.3724`；bucket 的 mean / p50 / p95 / min / max 均为 `10000`。
+- 部署前连续 120 summary 没有持久化原始 history，因此不能重建严格同窗口的旧 p50/p95。`pre-change-baseline.md` 中跨版本、跨世界状态历史去重窗口的 pathing p50 / p95 为 `16.0545 / 42.1165`；新 raw window 方向上分别低 `11.05% / 11.29%`，但该比较不是同版本因果 A/B，不能作为收益归因依据。
+
+世界负载并非完全同构：
+
+- 监控房间数保持 `8`；Worker `7 → 9`，Carrier `8 → 8`。
+- stored Energy `1,653,501 → 1,619,439`，source Energy `21,040 → 32,700`。
+- CPU monitor 的平均 fixed-action estimate `11.3283 → 10.5900`，下降约 `6.52%`。
+
+## 验收结论
+
+- pathing 与 creepWork 在完整新窗口中均明显低于部署前连续窗口，bucket 全程满值，且前述 heap search/hit/invalidation、stuck/repath/exit recovery 没有安全异常；无需触发回滚。
+- 世界行为负载存在变化，尤其 fixed-action estimate 较低，因此不能把全部 CPU 差值纯归因于 segment cache；可确认的是本版本在当前世界负载下同时取得较低 pathing/creepWork 与安全 bucket。
+- Task 4.3 的完整窗口、分位数、bucket 与世界负载比较已完成；本 change 已满足归档前证据门禁。
