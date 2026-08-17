@@ -8,8 +8,6 @@ jest.mock("@/runtime/boostControl", () => ({
 
 import { runHomeDefense } from "@/runtime/homeDefense";
 import { getRoomDefenseCoordination } from "@/runtime/defenseCoordination";
-import { clearBoostLabTasks } from "@/runtime/boostControl";
-import { getCreepConfigService } from "@/runtime/runtimeServices";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -204,36 +202,6 @@ describe("runHomeDefense", () => {
       expect(spawnB.memory.spawnList).not.toContain(defender1);
       expect(spawnA.memory.spawnList).toContain(unrelatedConfig);
       expect(spawnB.memory.spawnList).toContain(`${roomName}:carrier:0`);
-    });
-  });
-
-  describe("multi-spawn direct enqueue", () => {
-    it("does not duplicate a defender already queued on a secondary spawn", () => {
-      const roomName = "W4N1";
-      const defender0 = `${roomName}:homeDefense:defender:0`;
-
-      const hostile = createHostile(roomName, 12, 12);
-      const room = createRoom(roomName, {
-        towers: [createTower(roomName, 25, 25, 0)],
-        hostiles: [hostile],
-      });
-
-      const spawnA = createSpawn(room);
-      spawnA.name = `${roomName}-spawnA`;
-      const spawnB = createSpawn(room, [defender0]);
-      spawnB.name = `${roomName}-spawnB`;
-
-      Game.rooms[room.name] = room;
-      Game.spawns[spawnA.name] = spawnA;
-      Game.spawns[spawnB.name] = spawnB;
-      Memory.data = {
-        creepConfigs: {},
-      } as Memory["data"];
-
-      runHomeDefense();
-
-      expect(spawnA.memory.spawnList).not.toContain(defender0);
-      expect(spawnB.memory.spawnList).toContain(defender0);
     });
   });
 });

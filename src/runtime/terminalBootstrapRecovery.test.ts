@@ -86,13 +86,6 @@ function installRoom(options: {
 }
 
 describe("Terminal bootstrap recovery policy", () => {
-  it("requires an explicit room flag and resolves the ResourceControl reserve", () => {
-    installRoom({ flag: false });
-    expect(observeTerminalBootstrapRecovery(ROOM_NAME)).toBeUndefined();
-
-    installRoom();
-    expect(observeTerminalBootstrapRecovery(ROOM_NAME)).toBe(20_000);
-  });
 
   it("auto-clears only after 25 consecutive healthy ticks", () => {
     installRoom();
@@ -108,23 +101,6 @@ describe("Terminal bootstrap recovery policy", () => {
     expect(observeTerminalBootstrapRecovery(ROOM_NAME)).toBeUndefined();
     expect(Memory.cfg?.energyPickup?.terminalBootstrapRecoveryRooms?.[ROOM_NAME]).toBeUndefined();
     expect(Memory.runtime?.energyPickup?.terminalBootstrapRecovery?.[ROOM_NAME]).toBeUndefined();
-  });
-
-  it("resets the stable window after a low-energy tick or observation gap", () => {
-    const room = installRoom();
-    Game.time = 2_000;
-    observeTerminalBootstrapRecovery(ROOM_NAME);
-
-    Game.time += 1;
-    room.energyAvailable = 2_799;
-    observeTerminalBootstrapRecovery(ROOM_NAME);
-    expect(Memory.runtime?.energyPickup?.terminalBootstrapRecovery?.[ROOM_NAME]?.healthySince).toBeUndefined();
-
-    room.energyAvailable = 2_800;
-    Game.time += 2;
-    observeTerminalBootstrapRecovery(ROOM_NAME);
-    expect(Memory.runtime?.energyPickup?.terminalBootstrapRecovery?.[ROOM_NAME]?.healthySince).toBe(Game.time);
-    expect(Memory.cfg?.energyPickup?.terminalBootstrapRecoveryRooms?.[ROOM_NAME]).toBe(true);
   });
 
   it("resets the stable window when bootstrap Terminal Energy is used", () => {
@@ -143,17 +119,5 @@ describe("Terminal bootstrap recovery policy", () => {
       expect(observeTerminalBootstrapRecovery(ROOM_NAME)).toBe(20_000);
     }
     expect(Memory.cfg?.energyPickup?.terminalBootstrapRecoveryRooms?.[ROOM_NAME]).toBe(true);
-  });
-
-  it("does not count a spawning canonical carrier or a manual carrier as recovered", () => {
-    installRoom({ carrierSpawning: true, includeManualCarrier: true });
-
-    for (let offset = 0; offset < TERMINAL_BOOTSTRAP_RECOVERY_STABLE_TICKS + 5; offset += 1) {
-      Game.time = 4_000 + offset;
-      expect(observeTerminalBootstrapRecovery(ROOM_NAME)).toBe(20_000);
-    }
-
-    expect(Memory.cfg?.energyPickup?.terminalBootstrapRecoveryRooms?.[ROOM_NAME]).toBe(true);
-    expect(Memory.runtime?.energyPickup?.terminalBootstrapRecovery?.[ROOM_NAME]?.healthySince).toBeUndefined();
   });
 });

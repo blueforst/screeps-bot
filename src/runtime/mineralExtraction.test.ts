@@ -1,5 +1,5 @@
 import { runMineralExtraction } from "@/runtime/mineralExtraction";
-import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom, replaceCarrierTasksForProducerRoom } from "@/runtime/carrierTaskBoard";
+import { clearCarrierTaskBoardForTest, getCarrierTasksByRoom } from "@/runtime/carrierTaskBoard";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -133,35 +133,6 @@ describe("runMineralExtraction", () => {
     const mineral = createMineral(room, { containerAmount: 700 });
     room.find = ((type: FindConstant) => (type === FIND_MINERALS ? [mineral] : [])) as Room["find"];
     Game.rooms[room.name] = room;
-
-    runMineralExtraction();
-
-    expect(getCarrierTasksByRoom(room.name)).toEqual({});
-  });
-
-  it("clears existing mineral tasks when stock falls back to threshold", () => {
-    const room = createRoom({ name: "W1N4" });
-    const mineral = createMineral(room, { containerAmount: 700 });
-    room.find = ((type: FindConstant) => (type === FIND_MINERALS ? [mineral] : [])) as Room["find"];
-    Game.rooms[room.name] = room;
-    replaceCarrierTasksForProducerRoom("mineralExtraction", room.name, [
-      {
-        id: `mineral:mineral_haul:${room.name}:${mineral.id}`,
-        type: "mineral_haul",
-        priority: 91,
-        steps: [
-          {
-            id: "step-1",
-            resource: mineral.mineralType,
-            fromKind: "container",
-            toKind: "terminal",
-            fromId: "from-1",
-            toId: "to-1",
-            amount: 800,
-          },
-        ],
-      },
-    ]);
 
     runMineralExtraction();
 

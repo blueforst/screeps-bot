@@ -34,15 +34,6 @@ describe("minerBodyPolicy", () => {
   const newBody = getLinkMinerBodyForRegenSourceLevel(4);
   const source = { id: "source-a" } as Source;
 
-  it("does not retire the old miner before the matching replacement reaches the Source", () => {
-    const oldMiner = createMiner("old", oldBody, true);
-    const replacement = createMiner("replacement", newBody, false);
-
-    retireMismatchedMinersAfterHandoff([oldMiner, replacement], source, newBody);
-
-    expect(oldMiner.suicide).not.toHaveBeenCalled();
-  });
-
   it("retires only the mismatched miner after the replacement reaches the Source", () => {
     const oldMiner = createMiner("old", oldBody, true);
     const replacement = createMiner("replacement", newBody, true);

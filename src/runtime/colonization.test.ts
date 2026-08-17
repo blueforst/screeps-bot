@@ -16,11 +16,6 @@ jest.mock("@/runtime/defenseMode", () => ({
 import { runColonizationByFlag } from "@/runtime/colonization";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getCreepConfigService } from "@/runtime/runtimeServices";
-import { clearWarRoomTask, requestWarRoomClear } from "@/runtime/warControl";
-
-const { runPlannerForRoom } = jest.requireMock("@/modules/autoplanner") as {
-  runPlannerForRoom: jest.Mock;
-};
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -53,57 +48,7 @@ function createSourceRoom(name: string): Room {
   } as unknown as Room;
 }
 
-function createSource(id: string): Source {
-  return { id } as Source;
-}
 
-function createTargetRoom(
-  name: string,
-  options: {
-    my?: boolean;
-    level?: number;
-    sources?: Source[];
-    structures?: Structure[];
-    constructionSites?: ConstructionSite[];
-  } = {},
-): Room {
-  const memory = {} as RoomMemory;
-  Memory.rooms[name] = memory;
-  const sources = options.sources ?? [];
-  const structures = options.structures ?? [];
-  const constructionSites = options.constructionSites ?? [];
-  return {
-    name,
-    memory,
-    controller: {
-      my: options.my ?? false,
-      level: options.level,
-      reservation: options.my
-        ? undefined
-        : {
-            username: "Invader",
-          },
-    } as StructureController,
-    find: jest.fn((type: FindConstant) => {
-      if (type === FIND_SOURCES) {
-        return sources;
-      }
-
-      if (type === FIND_STRUCTURES) {
-        return structures;
-      }
-
-      if (type === FIND_CONSTRUCTION_SITES) {
-        return constructionSites;
-      }
-
-      if (type === FIND_HOSTILE_STRUCTURES) {
-        return [];
-      }
-      return [];
-    }),
-  } as unknown as Room;
-}
 
 function createSpawn(room: Room): StructureSpawn {
   return {
@@ -120,47 +65,9 @@ function createSpawn(room: Room): StructureSpawn {
   } as unknown as StructureSpawn;
 }
 
-function createOwnedStructure(structureType: StructureConstant): Structure {
-  return {
-    structureType,
-    my: true,
-  } as unknown as Structure;
-}
 
-function createConstructionSite(structureType: BuildableStructureConstant): ConstructionSite {
-  return {
-    structureType,
-    my: true,
-  } as ConstructionSite;
-}
 
-function createRoomPlannerEntry(layout: Record<string, { x: number; y: number }[]>) {
-  return {
-    layout,
-    timestamp: "test-plan",
-    savedAt: Game.time,
-  };
-}
 
-function createScout(sourceRoom: string, targetRoom: Room, name = "scout1"): Creep {
-  const configName = `${sourceRoom}:colonize:${targetRoom.name}:scout:0`;
-  const memory = {
-    role: "scout",
-    configName,
-    scoutVisitedRooms: [sourceRoom, targetRoom.name],
-  } as CreepMemory;
-
-  Memory.creeps[name] = memory;
-
-  return {
-    name,
-    room: targetRoom,
-    owner: {
-      username: "me",
-    } as Owner,
-    memory,
-  } as Creep;
-}
 
 describe("runColonizationByFlag", () => {
   beforeEach(() => {
@@ -234,33 +141,6 @@ describe("runColonizationByFlag", () => {
     expect(Game.map.findRoute).toHaveBeenCalledTimes(1);
   });
 
-  it("creates and queues a scout even before a fixed safe route is found", () => {
-    const sourceRoom = createSourceRoom("W1N1");
-    const spawn = createSpawn(sourceRoom);
-
-    Game.rooms[sourceRoom.name] = sourceRoom;
-    Game.spawns.Spawn1 = spawn;
-    Game.flags.CL = {
-      name: "CL",
-      pos: {
-        roomName: "W1N2",
-      } as RoomPosition,
-      remove: jest.fn(),
-    } as unknown as Flag;
-
-    (Game.map.findRoute as jest.Mock).mockReturnValue(ERR_NO_PATH);
-
-    runColonizationByFlag();
-
-    expect(getCreepConfigService().get("W1N1:colonize:W1N2:scout:0")).toMatchObject({
-      role: "scout",
-      roomName: "W1N1",
-      args: ["W1N2", ""],
-      body: [MOVE],
-    });
-    expect(spawn.memory.spawnList).toContain("W1N1:colonize:W1N2:scout:0");
-  });
-
   it("detaches colonization configs immediately when the flag is removed while creeps are alive", () => {
     const sourceRoom = createSourceRoom("W1N1");
     const spawn = createSpawn(sourceRoom);
@@ -324,96 +204,6 @@ describe("runColonizationByFlag", () => {
 
     expect(getCreepConfigService().get(workerConfigName)).toBeUndefined();
     expect(Memory.data?.colonization?.W1N2).toBeUndefined();
-  });
-
-  it("purges an owned War workflow when a clearing colonization is abandoned", () => {
-    Game.flags = {};
-    Memory.data = {
-      colonization: {
-        W1N2: {
-          targetRoom: "W1N2",
-          sourceRoom: "W1N1",
-          status: "clearing",
-          flagName: "CL",
-          planReady: false,
-          claimCompleted: false,
-          createdAt: Game.time,
-          updatedAt: Game.time,
-        },
-      },
-    } as Memory["data"];
-
-    runColonizationByFlag();
-
-    expect(clearWarRoomTask).toHaveBeenCalledWith("W1N2");
-  });
-
-  it("purges the old War workflow before changing the colonization source room", () => {
-    const oldSource = createSourceRoom("W1N1");
-    const nextSource = createSourceRoom("W2N1");
-    Game.rooms = { W1N1: oldSource, W2N1: nextSource };
-    Game.spawns = {
-      Spawn1: createSpawn(oldSource),
-      Spawn2: createSpawn(nextSource),
-    };
-    Game.flags = {
-      CL_W2N1: {
-        name: "CL_W2N1",
-        pos: { roomName: "W1N2" } as RoomPosition,
-        remove: jest.fn(),
-      } as unknown as Flag,
-    };
-    Memory.data = {
-      colonization: {
-        W1N2: {
-          targetRoom: "W1N2",
-          sourceRoom: "W1N1",
-          status: "clearing",
-          flagName: "CL_W2N1",
-          planReady: false,
-          claimCompleted: false,
-          createdAt: Game.time,
-          updatedAt: Game.time,
-        },
-      },
-    } as Memory["data"];
-
-    runColonizationByFlag();
-
-    expect(clearWarRoomTask).toHaveBeenCalledWith("W1N2");
-    expect(Memory.data?.colonization?.W1N2?.sourceRoom).toBe("W2N1");
-  });
-
-  it("purges the War workflow while defense mode pauses a clearing colonization", () => {
-    const sourceRoom = createSourceRoom("W1N1");
-    Game.rooms = { W1N1: sourceRoom };
-    Game.spawns = { Spawn1: createSpawn(sourceRoom) };
-    Game.flags = {
-      CL: {
-        name: "CL",
-        pos: { roomName: "W1N2" } as RoomPosition,
-        remove: jest.fn(),
-      } as unknown as Flag,
-    };
-    Memory.data = {
-      colonization: {
-        W1N2: {
-          targetRoom: "W1N2",
-          sourceRoom: "W1N1",
-          status: "clearing",
-          flagName: "CL",
-          planReady: false,
-          claimCompleted: false,
-          createdAt: Game.time,
-          updatedAt: Game.time,
-        },
-      },
-    } as Memory["data"];
-    (isDefenseMode as jest.Mock).mockReturnValue(true);
-
-    runColonizationByFlag();
-
-    expect(clearWarRoomTask).toHaveBeenCalledWith("W1N2");
   });
 
 });

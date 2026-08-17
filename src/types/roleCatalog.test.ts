@@ -64,7 +64,7 @@ describe("roleCatalog", () => {
     );
   });
 
-  it("marks hubUpgrader as the only legacy role and the other 26 roles as active", () => {
+  it("marks only hubUpgrader as legacy and exposes a frozen catalog", () => {
     const activeRoles = Object.entries(ROLE_CATALOG)
       .filter(([, lifecycle]) => lifecycle === "active")
       .map(([role]) => role)
@@ -78,29 +78,35 @@ describe("roleCatalog", () => {
     );
     expect(activeRoles).toHaveLength(26);
     expect(legacyRoles).toEqual(["hubUpgrader"]);
-  });
-
-  it("exposes a frozen catalog", () => {
     expect(Object.isFrozen(ROLE_CATALOG)).toBe(true);
   });
 
   describe("isRoleName", () => {
-    it.each(EXPECTED_ROLES)("accepts supported role %s", (role) => {
-      expect(isRoleName(role)).toBe(true);
+    it("accepts every supported role", () => {
+      for (const role of EXPECTED_ROLES) {
+        expect(isRoleName(role)).toBe(true);
+      }
     });
 
-    it.each(["unknownRole", "", "constructor", "toString", "__proto__"])(
-      "rejects unsupported or inherited string key %s",
-      (value) => {
+    it("rejects unsupported, inherited, and non-string values", () => {
+      for (const value of [
+        "unknownRole",
+        "",
+        "constructor",
+        "toString",
+        "__proto__",
+        undefined,
+        null,
+        0,
+        1,
+        true,
+        false,
+        {},
+        [],
+        Symbol("role"),
+      ]) {
         expect(isRoleName(value)).toBe(false);
-      },
-    );
-
-    it.each([undefined, null, 0, 1, true, false, {}, [], Symbol("role")])(
-      "rejects non-string input %#",
-      (value) => {
-        expect(isRoleName(value)).toBe(false);
-      },
-    );
+      }
+    });
   });
 });

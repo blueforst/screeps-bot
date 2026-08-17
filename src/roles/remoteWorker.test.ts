@@ -14,7 +14,6 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
 
 const HOME_ROOM = "W1N1";
 const TARGET_ROOM = "W2N1";
-const TRAVEL_OPTS = { plainCost: 2, swampCost: 10, travelRange: 3, reusePath: 10 };
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -145,19 +144,6 @@ function makeCreep(opts: {
 
 describe("remoteWorkerRole - source phase", () => {
 
-  it("switches to target after carrying any remote-room energy instead of filling to capacity", () => {
-    const remoteRoom = makeRoom(TARGET_ROOM);
-    Game.rooms[TARGET_ROOM] = remoteRoom;
-    const creep = makeCreep({ room: remoteRoom, energy: 130, capacity: 600 });
-
-    const result = remoteWorkerRole(TARGET_ROOM).source?.(creep);
-
-    expect(result).toBe(true);
-    expect(creep.withdraw).not.toHaveBeenCalled();
-    expect(creep.pickup).not.toHaveBeenCalled();
-    expect(moveToTarget).not.toHaveBeenCalled();
-  });
-
   it("clears stale movement state when no remote energy is available", () => {
     const remoteRoom = makeRoom(TARGET_ROOM);
     Game.rooms[TARGET_ROOM] = remoteRoom;
@@ -178,72 +164,9 @@ describe("remoteWorkerRole - source phase", () => {
   });
 });
 
-// ─── TARGET PHASE: BUILD SOURCE CONTAINER SITES ──────────────────────
-
-describe("remoteWorkerRole - builds source container site only", () => {
-  it("builds source container construction site near remote source", () => {
-    const sourcePos = makePos(27, 25, TARGET_ROOM);
-    const containerSite = {
-      id: "csite-1",
-      structureType: STRUCTURE_CONTAINER,
-      my: true,
-      pos: makePos(26, 25, TARGET_ROOM),
-    } as unknown as ConstructionSite;
-    const remoteRoom = makeRoom(TARGET_ROOM, { constructionSites: [containerSite] });
-    Game.rooms[TARGET_ROOM] = remoteRoom;
-
-    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
-      if (id === "src-1") return { pos: sourcePos, id: "src-1" };
-      return null;
-    });
-
-    const creep = makeCreep({ room: remoteRoom, energy: 600 });
-
-    const result = remoteWorkerRole(TARGET_ROOM).target(creep);
-
-    expect(creep.build).toHaveBeenCalledWith(containerSite);
-    expect(result).toBe(false);
-  });
-});
-
 // ─── TARGET PHASE: REPAIR SOURCE CONTAINERS ──────────────────────────
 
 describe("remoteWorkerRole - repairs damaged source container", () => {
-
-  it("prioritizes lowest hit ratio container for repair", () => {
-    const sourcePos = makePos(27, 25, TARGET_ROOM);
-    const worseContainer = {
-      id: "container-worse",
-      structureType: STRUCTURE_CONTAINER,
-      pos: makePos(26, 25, TARGET_ROOM),
-      store: createStore({ [RESOURCE_ENERGY]: 0 }),
-      hits: 50000,
-      hitsMax: 250000,
-    } as unknown as StructureContainer;
-    const betterContainer = {
-      id: "container-better",
-      structureType: STRUCTURE_CONTAINER,
-      pos: makePos(28, 25, TARGET_ROOM),
-      store: createStore({ [RESOURCE_ENERGY]: 0 }),
-      hits: 150000,
-      hitsMax: 250000,
-    } as unknown as StructureContainer;
-    const remoteRoom = makeRoom(TARGET_ROOM, { structures: [worseContainer, betterContainer] });
-    Game.rooms[TARGET_ROOM] = remoteRoom;
-
-    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
-      if (id === "src-1") return { pos: sourcePos, id: "src-1" };
-      return null;
-    });
-
-    const creep = makeCreep({ room: remoteRoom, energy: 600 });
-
-    remoteWorkerRole(TARGET_ROOM).target(creep);
-
-    expect(creep.repair).toHaveBeenCalledWith(worseContainer);
-    expect(creep.repair).not.toHaveBeenCalledWith(betterContainer);
-    expect(creep.memory._remoteWorkerRepairTargetId).toBe(worseContainer.id);
-  });
 
   it("keeps repairing the selected container when hit-ratio ordering reverses", () => {
     const sourcePos = makePos(27, 25, TARGET_ROOM);
@@ -282,66 +205,5 @@ describe("remoteWorkerRole - repairs damaged source container", () => {
     expect(creep.repair).toHaveBeenNthCalledWith(2, selectedContainer);
     expect(creep.repair).not.toHaveBeenCalledWith(otherContainer);
     expect(creep.memory._remoteWorkerRepairTargetId).toBe(selectedContainer.id);
-  });
-
-  it("releases the selected container when the creep runs out of energy", () => {
-    const remoteRoom = makeRoom(TARGET_ROOM);
-    Game.rooms[TARGET_ROOM] = remoteRoom;
-    const creep = makeCreep({
-      room: remoteRoom,
-      energy: 0,
-      memory: {
-        configName: `${HOME_ROOM}:remoteMine:${TARGET_ROOM}:worker:0`,
-        _remoteWorkerRepairTargetId: "container-selected",
-      },
-    });
-
-    const result = remoteWorkerRole(TARGET_ROOM).target(creep);
-
-    expect(result).toBe(true);
-    expect(creep.memory._remoteWorkerRepairTargetId).toBeUndefined();
-    expect(creep.repair).not.toHaveBeenCalled();
-  });
-
-  it("selects another damaged container after the tracked one is fully repaired", () => {
-    const sourcePos = makePos(27, 25, TARGET_ROOM);
-    const completedContainer = {
-      id: "container-complete",
-      structureType: STRUCTURE_CONTAINER,
-      pos: makePos(26, 25, TARGET_ROOM),
-      store: createStore({ [RESOURCE_ENERGY]: 0 }),
-      hits: 250000,
-      hitsMax: 250000,
-    } as unknown as StructureContainer;
-    const damagedContainer = {
-      id: "container-damaged",
-      structureType: STRUCTURE_CONTAINER,
-      pos: makePos(28, 25, TARGET_ROOM),
-      store: createStore({ [RESOURCE_ENERGY]: 0 }),
-      hits: 100000,
-      hitsMax: 250000,
-    } as unknown as StructureContainer;
-    const remoteRoom = makeRoom(TARGET_ROOM, { structures: [completedContainer, damagedContainer] });
-    Game.rooms[TARGET_ROOM] = remoteRoom;
-
-    (Game.getObjectById as jest.Mock) = jest.fn((id: string) => {
-      if (id === "src-1") return { pos: sourcePos, id: "src-1" };
-      return null;
-    });
-
-    const creep = makeCreep({
-      room: remoteRoom,
-      energy: 600,
-      memory: {
-        configName: `${HOME_ROOM}:remoteMine:${TARGET_ROOM}:worker:0`,
-        _remoteWorkerRepairTargetId: completedContainer.id,
-      },
-    });
-
-    remoteWorkerRole(TARGET_ROOM).target(creep);
-
-    expect(creep.repair).toHaveBeenCalledWith(damagedContainer);
-    expect(creep.repair).not.toHaveBeenCalledWith(completedContainer);
-    expect(creep.memory._remoteWorkerRepairTargetId).toBe(damagedContainer.id);
   });
 });

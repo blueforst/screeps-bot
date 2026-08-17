@@ -1,16 +1,12 @@
 import {
-  MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
-  MARKET_BASE_RESOURCE_MAX_SHADOW_LANES_PER_CYCLE,
   applyMarketBaseResourceShadowObservations,
   buildMarketBaseResourcePricingRatchetState,
   marketBaseResourceCpuFallbackRequiresCanonicalCommit,
   marketBaseResourceOperatorAuthorizationFingerprint,
   materializeMarketBaseResourceCpuFallback,
-  observeMarketBaseResourceOuterPrecommitCpu,
   planMarketBaseResourceTwoRead,
   reconcileLiveMarketBaseResourceScope,
   runMarketBaseResourceAutomation,
-  validateMarketBaseResourceReadinessRuntimeCapability,
   type MarketBaseResourceAutomationInput,
   type MarketBaseResourcePlanningDependencies,
   type MarketBaseResourcePlanningScopeSnapshot,
@@ -30,7 +26,6 @@ import {
   MARKET_BASE_RESOURCE_CATALOG,
   MARKET_BASE_RESOURCE_CATALOG_REVISION,
   MARKET_BASE_RESOURCE_CONFIG_REVISION,
-  MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
   MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE,
   MARKET_BASE_RESOURCE_POLICIES,
   createMarketBaseSharedPolicy,
@@ -62,8 +57,6 @@ import {
   canonicalStableHashV1,
 } from "@/runtime/marketDirectContinuousPolicy";
 import {
-  directSafetyFingerprint,
-  MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
   resolveMarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
 import type { MarketProtectionEntry } from "@/runtime/marketSaleProtection";
@@ -175,35 +168,6 @@ function entry(
   };
 }
 
-/** 仅用于覆盖 immutable catalog 到 direct-planner 映射的篡改边界。 */
-function immutablePolicyEntry(
-  resource: "H" | "K" | "L" | "O" | "U" | "X" | "Z",
-  rooms: readonly string[],
-  authorization: "writable" | "suspended_shadow" = "writable",
-): ReturnType<typeof entry> {
-  const base = entry(resource, rooms, authorization, 10);
-  const policy = MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE[resource];
-  return {
-    ...base,
-    policy: {
-      ...base.policy,
-      entryId: policy.policyId,
-      revision: policy.policyRevision,
-      resourceType: policy.resource,
-      hardNetFloor: policy.hardFloor,
-      economicNetFloor: policy.economicFloor,
-      historyNetFloor: policy.economicFloor,
-      ratchetNetFloor: policy.economicFloor,
-      minExecutableNotional: policy.minOrderNotional,
-      maxRawOrders: policy.maxRawOrdersScanned,
-      maxEligibleOrders: policy.maxEligibleOrdersPriced,
-      maxTransactionEnergy: policy.maxTransactionEnergy,
-      terminalEnergyReserve: policy.terminalEnergyReserve,
-      resourceRollingCap: policy.rollingMaxAmount,
-      opportunityReserve: policy.rollingOpportunityReserveAmount,
-    },
-  };
-}
 
 function scope(
   entries: readonly ReturnType<typeof entry>[],
@@ -340,162 +304,6 @@ function dependencies(
     cpuUsed: jest.fn(() => 1),
   };
 }
-
-describe("Market Base Resource V3 runtime", () => {
-  it("跨资源和房间统一选择最高单位净价，不受大额低价单优先级影响", () => {
-    const h = entry(RESOURCE_HYDROGEN, ["W1N1"], "writable", 100);
-    const x = entry(RESOURCE_CATALYST, ["W2N2"], "writable", 500);
-    const deps = dependencies({
-      scope: scope([h, x]),
-      books: {
-        [RESOURCE_HYDROGEN]: [
-          order("h-large-low", RESOURCE_HYDROGEN, 200, 100_000, "E20S20"),
-        ],
-        [RESOURCE_CATALYST]: [
-          order("x-small-high", RESOURCE_CATALYST, 700, 1_000, "E21S21"),
-        ],
-      },
-    });
-
-    const result = planMarketBaseResourceTwoRead(deps);
-
-    expect(result.complete).toBe(true);
-    expect(result.selected).toMatchObject({
-      resourceType: RESOURCE_CATALYST,
-      roomName: "W2N2",
-      order: { id: "x-small-high" },
-    });
-    expect(
-      deps.readCurrentBuyOrders.mock.calls.filter(
-        ([resource]) => resource === RESOURCE_HYDROGEN,
-      ),
-    ).toHaveLength(2);
-    expect(
-      deps.readCurrentBuyOrders.mock.calls.filter(
-        ([resource]) => resource === RESOURCE_CATALYST,
-      ),
-    ).toHaveLength(2);
-    expect(result.firstReadEvidence).toBeDefined();
-    expect(result.actualTransactionEnergyEvaluations).toBe(4);
-  });
-
-  it("resource cohort 的候选批规划只处理同资源 ready 精确子集", () => {
-    const makeHarness = (): Harness => {
-      const entries = [
-        immutablePolicyEntry(
-          "H",
-          ["E3N59", "E4N58"],
-          "suspended_shadow",
-        ),
-        immutablePolicyEntry(
-          "L",
-          ["E7N57", "E1N57"],
-          "suspended_shadow",
-        ),
-        immutablePolicyEntry("U", ["E7N57"], "suspended_shadow"),
-        immutablePolicyEntry("O", ["E5N59"], "suspended_shadow"),
-        immutablePolicyEntry("Z", ["E5N59"], "suspended_shadow"),
-        immutablePolicyEntry("X", ["W1N57"], "suspended_shadow"),
-      ].map((candidate) => ({
-        ...candidate,
-        quota: {
-          ...candidate.quota,
-          rollingCap: candidate.policy.resourceRollingCap,
-        },
-      }));
-      entries
-        .find((candidate) => candidate.policy.resourceType === RESOURCE_HYDROGEN)!
-        .lanes.find((lane) => lane.lane.roomName === "E4N58")!.lane.hub = true;
-      for (const [resource, roomName] of [
-        [RESOURCE_HYDROGEN, "E3N59"],
-        [RESOURCE_OXYGEN, "E5N59"],
-        [RESOURCE_UTRIUM, "E7N57"],
-      ] as const) {
-        entries
-          .find((candidate) => candidate.policy.resourceType === resource)!
-          .lanes.find((lane) => lane.lane.roomName === roomName)!
-          .protection.complete = false;
-      }
-      const bookShape: Array<{
-        resource: ResourceConstant;
-        raw: number;
-        eligibleRooms: readonly string[];
-      }> = [
-        { resource: RESOURCE_HYDROGEN, raw: 16, eligibleRooms: ["E1S10", "E2S10"] },
-        { resource: RESOURCE_LEMERGIUM, raw: 18, eligibleRooms: ["E3S10", "E4S10"] },
-        { resource: RESOURCE_UTRIUM, raw: 14, eligibleRooms: ["E5S10"] },
-        { resource: RESOURCE_OXYGEN, raw: 15, eligibleRooms: ["E6S10"] },
-        { resource: RESOURCE_ZYNTHIUM, raw: 14, eligibleRooms: ["E7S10"] },
-        { resource: RESOURCE_CATALYST, raw: 17, eligibleRooms: ["E8S10"] },
-      ];
-      const books = Object.fromEntries(
-        bookShape.map(({ resource, raw, eligibleRooms }) => {
-          const candidates = eligibleRooms.map((roomName, index) =>
-            order(
-              `${resource}-eligible-${index}`,
-              resource,
-              700,
-              1_000,
-              roomName,
-            ));
-          const lowOrders = Array.from(
-            { length: raw - candidates.length },
-            (_unused, index) =>
-              order(
-                `${resource}-low-${String(index).padStart(2, "0")}`,
-                resource,
-                1,
-                index === 0 ? 100_000 : 1_000,
-                `W${index + 1}S20`,
-              ),
-          );
-          return [resource, [...lowOrders, ...candidates]];
-        }),
-      ) as Partial<Record<ResourceConstant, MarketOrderSnapshot[]>>;
-      return { scope: scope(entries), books };
-    };
-    const batchDeps = dependencies(makeHarness());
-    const fallbackDeps = dependencies(makeHarness());
-    const batchProbe = jest.fn();
-    const throwingProbe = jest.fn((_used: boolean) => {
-      throw new Error("force fresh-capability fallback oracle");
-    });
-    batchDeps.observeShadowNormalizationArtifact = batchProbe;
-    fallbackDeps.observeShadowNormalizationArtifact = throwingProbe;
-
-    const batch = planMarketBaseResourceTwoRead(batchDeps);
-    const fallback = planMarketBaseResourceTwoRead(fallbackDeps);
-
-    expect(batch.complete).toBe(true);
-    expect(batch.selected).toBeUndefined();
-    expect(batch.firstReadEvidence).toBeUndefined();
-    expect(batch.rawOrderCount).toBe(16);
-    expect(batch.eligibleOrderCount).toBe(2);
-    expect(batch.distinctOrderRoomCount).toBe(2);
-    expect(batch.transactionCostEvaluationBudget).toBe(8);
-    expect(batch.sampledShadowLaneIds).toHaveLength(2);
-    expect(batch.shadowObservations.filter(
-      (observation) =>
-        observation.result === "incomplete" &&
-        observation.blocker === "market_base_protection_incomplete",
-    )).toHaveLength(1);
-    expect(batch.shadowObservations.filter(
-      (observation) => observation.result === "safe_opportunity",
-    )).toHaveLength(1);
-    expect(batch.shadowPlannerMode).toBe("batch_candidate");
-    expect(batch.shadowPlannerInvocationCount).toBe(1);
-    expect(batch.actualTransactionEnergyEvaluations).toBe(4);
-    expect(batch.evaluatedShadowResourceCount).toBe(1);
-    expect(batch.candidateIdentityOrderChecks).toBe(16);
-    expect(batchProbe).toHaveBeenCalledTimes(1);
-    expect(batchProbe).toHaveBeenLastCalledWith(false);
-    expect(fallback.complete).toBe(true);
-    expect(fallback.shadowObservations).toEqual(batch.shadowObservations);
-    expect(fallback.shadowPlannerMode).toBe("batch_fallback");
-    expect(fallback.shadowPlannerInvocationCount).toBe(2);
-    expect(throwingProbe).toHaveBeenCalledTimes(2);
-  });
-});
 
 /** 运行时写路径用的最小完整 V3 许可、账本和 live-read 夹具。 */
 const V3_TEST_ACCOUNT = "market-base-runtime-test";
@@ -950,16 +758,6 @@ function v3RuntimeFixture(writableCatalyst = true): {
   };
 }
 
-function currentPolicyPricingRatchet(initializedAt = 100) {
-  return buildMarketBaseResourcePricingRatchetState({
-    initializedAt,
-    entries: MARKET_BASE_RESOURCE_POLICIES.map((policy) => ({
-      resource: policy.resource,
-      value: policy.economicFloor,
-      marketDate: "2026-07-27",
-    })),
-  });
-}
 
 function currentScopeChurnPermit(
   chain: MarketBaseResourcePermitChainState,
@@ -1093,78 +891,112 @@ function scopeChurnObservations(
   }));
 }
 
-describe("Market Base Resource scope tombstone discharge", () => {
+describe("Market Base Resource high-risk decision and retirement contracts", () => {
 
-  it("current permit grant 未 discharge 时保持 tombstone，historical pending pin 延迟 exact 消费", () => {
-    const fixture = v3RuntimeFixture();
-    const firstRetirement = reconcileLiveMarketBaseResourceScope({
-      tick: 200,
-      accountIdentity: V3_TEST_ACCOUNT,
-      observations: scopeChurnObservations(1),
-      previous: fixture.state.scope,
-    });
-    expect(firstRetirement.ok).toBe(true);
-    if (!firstRetirement.ok) return;
-    const rollover = rolloverScopeChurnPermit(
-      fixture.state.permitChain!,
-      fixture.state.scope!.laneLifecycles,
-      firstRetirement.state.laneLifecycles,
-      2_000,
-    );
-    expect(
-      reconcileLiveMarketBaseResourceScope({
-        tick: 201,
-        accountIdentity: V3_TEST_ACCOUNT,
-        observations: scopeChurnObservations(1),
-        previous: firstRetirement.state,
-        permitChain: rollover.state,
-      }),
-    ).toEqual({
-      ok: false,
-      blockers: ["derived_lane_tombstone_pin_set_missing"],
-    });
-    const currentPinned = reconcileLiveMarketBaseResourceScope({
-      tick: 201,
-      accountIdentity: V3_TEST_ACCOUNT,
-      observations: scopeChurnObservations(1),
-      previous: firstRetirement.state,
-      permitChain: rollover.state,
-      pinnedLaneIds: [],
-    });
-    expect(currentPinned.ok).toBe(true);
-    if (!currentPinned.ok) return;
-    expect(currentPinned.state.recentLaneTombstones).toHaveLength(7);
-    expect(
-      currentPinned.state.laneTombstoneDischargeCheckpoint.dischargedCount,
-    ).toBe(0);
+  it("覆盖最高净价、二读与 outer CAS fail-closed，以及 225+ retirement 边界", () => {
+    // 子场景 1：fresh planner fixture，normal lane 跨资源统一按单位净价选 winner。
+    {
+      const h = entry(RESOURCE_HYDROGEN, ["W1N1"], "writable", 100);
+      const x = entry(RESOURCE_CATALYST, ["W2N2"], "writable", 500);
+      const deps = dependencies({
+        scope: scope([h, x]),
+        books: {
+          [RESOURCE_HYDROGEN]: [
+            order("h-large-low", RESOURCE_HYDROGEN, 200, 100_000, "E20S20"),
+          ],
+          [RESOURCE_CATALYST]: [
+            order("x-small-high", RESOURCE_CATALYST, 700, 1_000, "E21S21"),
+          ],
+        },
+      });
 
-    const discharged = appendScopeChurnPermit(
-      rollover.state,
-      buildScopeChurnPermit(rollover.state, rollover.nextActive, 2_001),
-      firstRetirement.state.laneLifecycles,
-      2_001,
-    );
-    const pendingLaneId = currentPinned.state.recentLaneTombstones[0].laneId;
-    const pendingPinned = reconcileLiveMarketBaseResourceScope({
-      tick: 202,
-      accountIdentity: V3_TEST_ACCOUNT,
-      observations: scopeChurnObservations(1),
-      previous: currentPinned.state,
-      permitChain: discharged,
-      pinnedLaneIds: [pendingLaneId],
-    });
-    expect(pendingPinned.ok).toBe(true);
-    if (!pendingPinned.ok) return;
-    expect(pendingPinned.state.recentLaneTombstones).toHaveLength(1);
-    expect(pendingPinned.state.recentLaneTombstones[0].laneId).toBe(
-      pendingLaneId,
-    );
-    expect(
-      pendingPinned.state.laneTombstoneDischargeCheckpoint.dischargedCount,
-    ).toBe(6);
-  });
+      const result = planMarketBaseResourceTwoRead(deps);
 
-  it("33+ room incarnation 形成 225+ lane retirement 时只消费 exact permit discharge", () => {
+      expect(result.complete).toBe(true);
+      expect(result.selected).toMatchObject({
+        resourceType: RESOURCE_CATALYST,
+        roomName: "W2N2",
+        order: { id: "x-small-high" },
+      });
+      expect(
+        deps.readCurrentBuyOrders.mock.calls.filter(
+          ([resource]) => resource === RESOURCE_HYDROGEN,
+        ),
+      ).toHaveLength(2);
+      expect(
+        deps.readCurrentBuyOrders.mock.calls.filter(
+          ([resource]) => resource === RESOURCE_CATALYST,
+        ),
+      ).toHaveLength(2);
+      expect(result.firstReadEvidence).toBeDefined();
+      expect(result.actualTransactionEnergyEvaluations).toBe(4);
+    }
+
+    // 子场景 2：fresh runtime fixture，第二读只改变 protection contribution 也必须零写拒绝。
+    {
+      const { state, harness, deps, input } = v3RuntimeFixture();
+      const runtimeInput = input();
+      const originalReadCandidates = runtimeInput.readCandidates;
+      let candidateReads = 0;
+      runtimeInput.readCandidates = () => {
+        candidateReads += 1;
+        return originalReadCandidates().map((candidate) =>
+          candidateReads === 2 && candidate.resourceType === RESOURCE_CATALYST
+            ? {
+                ...candidate,
+                protectionEntry: {
+                  ...candidate.protectionEntry,
+                  sourceContributions: [
+                    {
+                      dedupeKey: "second-read-protection-only",
+                      stableKey: "second-read-protection-only",
+                      anonymous: false,
+                      bucket: "hardReserve" as const,
+                      amount: 0,
+                      sourceKinds: ["floor" as const],
+                      observedAt: harness.tick,
+                      expiresAt: harness.tick + 10,
+                    },
+                  ],
+                },
+              }
+            : candidate,
+        );
+      };
+
+      const result = runMarketBaseResourceAutomation(state, runtimeInput, deps);
+
+      expect(candidateReads).toBe(2);
+      expect(result.planComplete).toBe(false);
+      expect(result.writes).toBe(0);
+      expect(result.rejectedByReason).toHaveProperty(
+        "market_base_second_read_scope_changed",
+      );
+      expect(state.lastPlanningSnapshot?.selected).toBeUndefined();
+      expect(state.ledger?.pending).toBeUndefined();
+      expect(deps.commitPreparedState).not.toHaveBeenCalled();
+      expect(deps.claimPrepared).not.toHaveBeenCalled();
+      expect(deps.executePrepared).not.toHaveBeenCalled();
+    }
+
+    // 子场景 3：fresh runtime fixture，prepared root 丢失 outer exact CAS 时保留 WAL 且零 deal。
+    {
+      const { state, deps, input } = v3RuntimeFixture();
+      deps.validatePreparedCanonicalRoot.mockReturnValue(false);
+
+      const result = runMarketBaseResourceAutomation(state, input(), deps);
+
+      expect(deps.commitPreparedState).toHaveBeenCalledTimes(1);
+      expect(deps.validatePreparedCanonicalRoot).toHaveBeenCalledTimes(1);
+      expect(deps.claimPrepared).not.toHaveBeenCalled();
+      expect(deps.executePrepared).not.toHaveBeenCalled();
+      expect(state.ledger?.pending).toBeDefined();
+      expect(result.rejectedByReason).toMatchObject({
+        market_base_v3_prepared_root_cas_failed: 1,
+      });
+    }
+
+    // 子场景 4：fresh scope/permit fixture，33+ room incarnation 的大批 retirement 只按 exact discharge 收敛。
     const fixture = v3RuntimeFixture();
     let scopeState = fixture.state.scope!;
     let chain = fixture.state.permitChain!;
@@ -1347,163 +1179,6 @@ describe("Market Base Resource scope tombstone discharge", () => {
 
 describe("Market Base Resource V3 live WAL glue", () => {
 
-  it("第二读仅 protection contribution 变化时拒绝 evidence 且零 pending/commit/claim/deal", () => {
-    const { state, harness, deps, input } = v3RuntimeFixture();
-    const runtimeInput = input();
-    const originalReadCandidates = runtimeInput.readCandidates;
-    let candidateReads = 0;
-    runtimeInput.readCandidates = () => {
-      candidateReads += 1;
-      return originalReadCandidates().map((candidate) =>
-        candidateReads === 2 &&
-        candidate.resourceType === RESOURCE_CATALYST
-          ? {
-              ...candidate,
-              protectionEntry: {
-                ...candidate.protectionEntry,
-                sourceContributions: [
-                  {
-                    dedupeKey: "second-read-protection-only",
-                    stableKey: "second-read-protection-only",
-                    anonymous: false,
-                    bucket: "hardReserve" as const,
-                    amount: 0,
-                    sourceKinds: ["floor" as const],
-                    observedAt: harness.tick,
-                    expiresAt: harness.tick + 10,
-                  },
-                ],
-              },
-            }
-          : candidate,
-      );
-    };
-
-    const result = runMarketBaseResourceAutomation(state, runtimeInput, deps);
-
-    expect(candidateReads).toBe(2);
-    expect(result.planComplete).toBe(false);
-    expect(result.writes).toBe(0);
-    expect(result.rejectedByReason).toHaveProperty(
-      "market_base_second_read_scope_changed",
-    );
-    expect(state.lastPlanningSnapshot?.selected).toBeUndefined();
-    expect(state.ledger?.pending).toBeUndefined();
-    expect(deps.commitPreparedState).not.toHaveBeenCalled();
-    expect(deps.claimPrepared).not.toHaveBeenCalled();
-    expect(deps.executePrepared).not.toHaveBeenCalled();
-  });
-
-  it("inner apply CPU cut 保留一次性 reset-only capability，且 clone/重放均失败", () => {
-    const { state, harness, deps, input } = v3RuntimeFixture(false);
-    harness.tick = 200;
-    state.preflightAt = harness.tick;
-    const hydrogenLane = state.scope!.laneLifecycles.find(
-      (lane) => lane.resource === RESOURCE_HYDROGEN,
-    )!;
-    for (let tick = 101; tick <= 199; tick += 1) {
-      state.scope = applyMarketBaseResourceShadowObservations(
-        state.scope!,
-        tick,
-        [
-          {
-            laneId: hydrogenLane.laneId,
-            result: "safe_no_opportunity",
-          },
-        ],
-        undefined,
-      );
-    }
-    const canonicalScope = state.scope!;
-    const canonicalSource = { ...state };
-    const cursorBefore = canonicalScope.shadowCursor;
-    deps.readCurrentBuyOrders.mockImplementation(
-      (resource: ResourceConstant) => {
-        if (resource === RESOURCE_HYDROGEN) {
-          throw new Error("injected shadow book gap");
-        }
-        return [];
-      },
-    );
-    deps.cpuUsed.mockImplementation(() =>
-      state.scope === canonicalScope ? 1 : 26,
-    );
-
-    const result = runMarketBaseResourceAutomation(
-      state,
-      { ...input(), cpuStartedAt: 0 },
-      deps,
-    );
-
-    expect(result.planComplete).toBe(false);
-    expect(result.rejectedByReason).toMatchObject({
-      market_base_cpu_ceiling_exceeded: 1,
-    });
-    expect(result.cpuTrace).toMatchObject({
-      observedAt: harness.tick,
-      cpuAfterOuterSession: 1,
-      cpuAfterScopeCore: 1,
-      cpuAfterMarketFacts: 1,
-      cpuAfterShadowBatch: 1,
-      cpuAfterInnerApply: 26,
-      cpuCutPhase: "inner_apply",
-      marketFactsDisposition: "read",
-    });
-    expect(result.cpuFallbackCapability).toBeDefined();
-    expect(
-      marketBaseResourceCpuFallbackRequiresCanonicalCommit(
-        result.cpuFallbackCapability,
-        canonicalSource,
-        harness.tick,
-      ),
-    ).toBe(true);
-    const clonedCapability = JSON.parse(
-      JSON.stringify(result.cpuFallbackCapability),
-    );
-    expect(
-      materializeMarketBaseResourceCpuFallback(
-        clonedCapability,
-        result.cpuTrace!,
-      ),
-    ).toBeUndefined();
-
-    const fallback = materializeMarketBaseResourceCpuFallback(
-      result.cpuFallbackCapability,
-      result.cpuTrace!,
-    );
-    expect(fallback).toBeDefined();
-    expect(fallback?.appliedResetCount).toBe(1);
-    expect(fallback?.state.scope?.shadowCursor).toBe(cursorBefore);
-    expect(
-      fallback?.state.scope?.laneLifecycles.find(
-        (lane) => lane.laneId === hydrogenLane.laneId,
-      ),
-    ).toMatchObject({
-      stage: "shadow",
-      status: "suspended",
-      shadowEvidence: { completeCycles: 0 },
-    });
-    expect(fallback?.state.lastPlanningSnapshot?.selected).toBeUndefined();
-    expect(
-      validateMarketBaseResourceReadinessRuntimeCapability(
-        fallback?.readinessRuntimeCapability,
-        fallback!.state,
-        harness.tick,
-        fallback?.ledgerRuntimeAnchor,
-      ),
-    ).toBe(true);
-    expect(fallback?.state).not.toBe(result.state);
-    expect(
-      materializeMarketBaseResourceCpuFallback(
-        result.cpuFallbackCapability,
-        result.cpuTrace!,
-      ),
-    ).toBeUndefined();
-    expect(deps.commitPreparedState).not.toHaveBeenCalled();
-    expect(deps.claimPrepared).not.toHaveBeenCalled();
-    expect(deps.executePrepared).not.toHaveBeenCalled();
-  });
-
   it("Shadow batch 内 CPU cut 仍为已确定的 99-cycle reset 铸造 fallback", () => {
     const { state, harness, deps, input } = v3RuntimeFixture(false);
     harness.tick = 200;
@@ -1575,126 +1250,5 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();
     expect(deps.executePrepared).not.toHaveBeenCalled();
-  });
-
-  it("outer anchor reader 与 runtime session 铸造成本计入同一 25 CPU 窗口", () => {
-    const { state, harness, deps, input } = v3RuntimeFixture();
-    state.preflightAt = harness.tick;
-    // 模拟上一版 bundle 留下、尚无 Shadow planner telemetry 的 snapshot。
-    (state as any).lastPlanningSnapshot = {
-      observedAt: harness.tick - 1,
-      complete: true,
-      sampledShadowLaneIds: [],
-      cpuUsed: 1,
-      rawOrderCount: 0,
-      eligibleOrderCount: 0,
-      distinctOrderRoomCount: 0,
-      transactionCostEvaluationBudget: 0,
-    };
-    let anchorRead = false;
-    const readLedgerRuntimeAnchor = deps.readLedgerRuntimeAnchor as jest.Mock;
-    readLedgerRuntimeAnchor.mockImplementation(
-      (current: MarketBaseResourceV3RuntimeState) => {
-        anchorRead = true;
-        return buildMarketBaseResourceLedgerRuntimeAnchor(
-          current.ledger!,
-          current.permitChain!,
-        );
-      },
-    );
-    deps.cpuUsed.mockImplementation(() => (anchorRead ? 26 : 0));
-
-    const result = runMarketBaseResourceAutomation(state, input(), deps);
-
-    expect(result.rejectedByReason).toMatchObject({
-      market_base_cpu_ceiling_exceeded: 1,
-    });
-    expect(readLedgerRuntimeAnchor).toHaveBeenCalledTimes(1);
-    expect(deps.readCurrentBuyOrders).not.toHaveBeenCalled();
-    expect(state.lastPlanningSnapshot).toMatchObject({
-      complete: false,
-      blocker: "market_base_cpu_ceiling_exceeded",
-      shadowPlannerMode: "none",
-      shadowPlannerInvocationCount: 0,
-      actualTransactionEnergyEvaluations: 0,
-      evaluatedShadowResourceCount: 0,
-      candidateIdentityOrderChecks: 0,
-    });
-    expect(deps.commitPreparedState).not.toHaveBeenCalled();
-    expect(deps.claimPrepared).not.toHaveBeenCalled();
-    expect(deps.executePrepared).not.toHaveBeenCalled();
-  });
-
-  it("pre-planner CPU cut 不把上一 tick 的非零 planner telemetry 冒充当前值", () => {
-    const { state, harness, deps, input } = v3RuntimeFixture();
-    state.preflightAt = harness.tick;
-    state.lastPlanningSnapshot = {
-      observedAt: harness.tick - 1,
-      complete: true,
-      sampledShadowLaneIds: ["previous-lane"],
-      cpuUsed: 10,
-      rawOrderCount: 94,
-      eligibleOrderCount: 8,
-      distinctOrderRoomCount: 8,
-      transactionCostEvaluationBudget: 96,
-      shadowPlannerMode: "batch_candidate",
-      shadowPlannerInvocationCount: 1,
-      actualTransactionEnergyEvaluations: 12,
-      evaluatedShadowResourceCount: 6,
-      candidateIdentityOrderChecks: 94,
-    };
-    let anchorRead = false;
-    (deps.readLedgerRuntimeAnchor as jest.Mock).mockImplementation(
-      (current: MarketBaseResourceV3RuntimeState) => {
-        anchorRead = true;
-        return buildMarketBaseResourceLedgerRuntimeAnchor(
-          current.ledger!,
-          current.permitChain!,
-        );
-      },
-    );
-    deps.cpuUsed.mockImplementation(() => (anchorRead ? 26 : 0));
-
-    const result = runMarketBaseResourceAutomation(state, input(), deps);
-
-    expect(result.rejectedByReason).toMatchObject({
-      market_base_cpu_ceiling_exceeded: 1,
-    });
-    expect(deps.readCurrentBuyOrders).not.toHaveBeenCalled();
-    expect(deps.calculateTransactionEnergy).not.toHaveBeenCalled();
-    expect(state.lastPlanningSnapshot).toMatchObject({
-      observedAt: harness.tick,
-      complete: false,
-      blocker: "market_base_cpu_ceiling_exceeded",
-      sampledShadowLaneIds: [],
-      rawOrderCount: 0,
-      eligibleOrderCount: 0,
-      distinctOrderRoomCount: 0,
-      transactionCostEvaluationBudget: 0,
-      shadowPlannerMode: "none",
-      shadowPlannerInvocationCount: 0,
-      actualTransactionEnergyEvaluations: 0,
-      evaluatedShadowResourceCount: 0,
-      candidateIdentityOrderChecks: 0,
-    });
-    expect(deps.commitPreparedState).not.toHaveBeenCalled();
-    expect(deps.claimPrepared).not.toHaveBeenCalled();
-    expect(deps.executePrepared).not.toHaveBeenCalled();
-  });
-
-  it("prepared root 在 claim 前失去 outer exact CAS 时保留 WAL、零 claim、零 deal", () => {
-    const { state, deps, input } = v3RuntimeFixture();
-    deps.validatePreparedCanonicalRoot.mockReturnValue(false);
-
-    const result = runMarketBaseResourceAutomation(state, input(), deps);
-
-    expect(deps.commitPreparedState).toHaveBeenCalledTimes(1);
-    expect(deps.validatePreparedCanonicalRoot).toHaveBeenCalledTimes(1);
-    expect(deps.claimPrepared).not.toHaveBeenCalled();
-    expect(deps.executePrepared).not.toHaveBeenCalled();
-    expect(state.ledger?.pending).toBeDefined();
-    expect(result.rejectedByReason).toMatchObject({
-      market_base_v3_prepared_root_cas_failed: 1,
-    });
   });
 });

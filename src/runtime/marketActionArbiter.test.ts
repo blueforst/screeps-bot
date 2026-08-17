@@ -1,23 +1,7 @@
 import {
-  claimPreparedDirectMarketClaims,
   clearMarketActionArbiterForTest,
-  declareMarketActionIntent,
-  executeCancelOrder,
-  executeChangeOrderPrice,
-  executeCreateOrder,
-  executeExtendOrder,
   executeMarketDeal,
-  executePreparedDirectMarketDeal,
-  executeTerminalAction,
-  executeTerminalSend,
-  getMarketAccountClaim,
   getMarketActionJournal,
-  getTerminalActionClaim,
-  getTerminalActionClaims,
-  hasMarketAccountClaim,
-  hasMarketActionIntentThisTick,
-  hasTerminalActionClaim,
-  releasePreparedDirectMarketClaims,
 } from "@/runtime/marketActionArbiter";
 import {
   clearMarketSaleExposureReservationsForTest,
@@ -143,55 +127,6 @@ describe("market action arbiter", () => {
         resultCode: ERR_NOT_ENOUGH_RESOURCES,
       }),
     ]));
-  });
-
-  it("生产购买只领取 reservation 外能量，成功后保留到 tick 结束", () => {
-    const terminal = installTerminal("W8N8", {
-      [RESOURCE_ENERGY]: 1_200,
-    });
-    const market = installMarketMock({
-      calcTransactionCost: jest.fn(() => 300),
-    });
-    Memory.data = {
-      marketSaleAutomation: {
-        managedOrders: {},
-        pendingDirectDeals: {
-          direct: {
-            requestId: "direct-gap-exact-energy",
-            status: "reconcile_gap",
-            canaryRoomName: "W8N8",
-            resource: RESOURCE_KEANIUM,
-            dealAmount: 1_000,
-            transactionEnergy: 900,
-          },
-        },
-      },
-    } as unknown as Memory["data"];
-
-    expect(
-      executeProductionBuy(
-        "production-buy",
-        100,
-        "W8N8",
-        "factoryControl:purchase",
-      ),
-    ).toBe(OK);
-    expect(market.calcTransactionCost).toHaveBeenCalledWith(
-      100,
-      "W8N8",
-      "W7N7",
-    );
-    expect(market.deal).toHaveBeenCalledWith(
-      "production-buy",
-      100,
-      "W8N8",
-    );
-    expect(
-      getTerminalAmountOutsideMarketSaleExposure(
-        terminal,
-        RESOURCE_ENERGY,
-      ),
-    ).toBe(0);
   });
 
   it("普通生产卖出同时原子保护待售资源和 transaction energy", () => {

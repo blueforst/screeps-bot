@@ -14,6 +14,7 @@
     "monitor:serve": "node scripts/monitor-service.mjs",
     "monitor:once": "node scripts/monitor-service.mjs --once",
     "test": "jest --config jest.config.cjs",
+    "test:budget": "node scripts/verify-jest-budget.mjs",
     "test-c": "jest --config jest.config.cjs --coverage"
   },
   "keywords": [],

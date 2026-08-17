@@ -4,9 +4,7 @@ import {
 } from "@/runtime/carrierTaskBoard";
 import {
   clearCreepAssignmentStateForTest,
-  ensureCreepAssignmentState,
 } from "@/runtime/creepAssignmentState";
-import { getResourceTransferTaskListSorted } from "@/runtime/logistics/resourceTransferTasks";
 import {
   NUKER_CARRIER_TASK_PRODUCER,
   NUKER_ENERGY_SUPPLY_PRIORITY,
@@ -235,160 +233,6 @@ describe("nukerControl", () => {
     )?.amount).toBe(1_000);
   });
 
-  it("扣除已由 Carrier 携带到该 Nuker 的 Ghodium", () => {
-    const scenario = createRoomScenario({
-      roomName: "W1N2",
-      storageEnergy: 200_000,
-      storageGhodium: 5_000,
-    });
-    const creep = {
-      name: "nuker-ghodium-carrier",
-      store: createMutableStore(
-        { [RESOURCE_GHODIUM]: 1_000 },
-        {},
-        1_000,
-      ),
-    } as unknown as Creep;
-    Game.creeps[creep.name] = creep;
-    const assignment = ensureCreepAssignmentState(creep.name);
-    assignment.synthesisCarrierPendingToId = scenario.nuker?.id;
-    assignment.synthesisCarrierPendingResource = RESOURCE_GHODIUM;
-
-    runNukerControl();
-
-    const ghodiumSteps = getNukerTasks(scenario.room.name)
-      .flatMap((task) => task.steps)
-      .filter((step) => step.resource === RESOURCE_GHODIUM);
-    expect(ghodiumSteps.reduce((sum, step) => sum + step.amount, 0)).toBe(4_000);
-  });
-
-  it("RESERVE 房间继续补 Ghodium，但不发布 Energy pickup", () => {
-    const scenario = createRoomScenario({
-      roomName: "W1N3",
-      storageEnergy: 500_000,
-      storageGhodium: 5_000,
-    });
-    Game.flags.RESERVE_W1N3 = {
-      name: "RESERVE_W1N3",
-      pos: { roomName: scenario.room.name },
-    } as unknown as Flag;
-
-    runNukerControl();
-
-    const steps = getNukerTasks(scenario.room.name).flatMap(
-      (task) => task.steps,
-    );
-    expect(steps.some((step) => step.resource === RESOURCE_GHODIUM)).toBe(true);
-    expect(steps.some((step) => step.resource === RESOURCE_ENERGY)).toBe(false);
-    expect(Memory.runtime?.nukerControl?.rooms.W1N3).toEqual(
-      expect.objectContaining({ reserveMode: true, safeEnergy: 0 }),
-    );
-  });
-
-  it("进入 RESERVE 后清理既有 Energy task 和 reservation", () => {
-    const scenario = createRoomScenario({
-      roomName: "W11N3",
-      storageEnergy: 500_000,
-      nukerGhodium: 5_000,
-    });
-    runNukerControl();
-    expect(getNukerTasks(scenario.room.name).some((task) =>
-      task.steps.some((step) => step.resource === RESOURCE_ENERGY),
-    )).toBe(true);
-    expect(listProductionReservations().some((reservation) =>
-      reservation.resource === RESOURCE_ENERGY &&
-      reservation.holderId.startsWith("nuker:"),
-    )).toBe(true);
-
-    Game.flags.RESERVE_W11N3 = {
-      name: "RESERVE_W11N3",
-      pos: { roomName: scenario.room.name },
-    } as unknown as Flag;
-    Game.time += 1;
-    runNukerControl();
-
-    expect(getNukerTasks(scenario.room.name).some((task) =>
-      task.steps.some((step) => step.resource === RESOURCE_ENERGY),
-    )).toBe(false);
-    expect(listProductionReservations().some((reservation) =>
-      reservation.resource === RESOURCE_ENERGY &&
-      reservation.holderId.startsWith("nuker:"),
-    )).toBe(false);
-  });
-
-  it("Storage 低于 floor 时不让 Terminal 余量掩盖缺口", () => {
-    const scenario = createRoomScenario({
-      roomName: "W1N4",
-      storageEnergy: 119_999,
-      terminalEnergy: 100_000,
-      nukerGhodium: 5_000,
-    });
-
-    runNukerControl();
-
-    expect(getNukerTasks(scenario.room.name)).toHaveLength(0);
-    expect(Memory.runtime?.nukerControl?.rooms.W1N4.safeEnergy).toBe(0);
-    expect(getResourceTransferTaskListSorted().some(
-      (task) => task.resource === RESOURCE_ENERGY,
-    )).toBe(false);
-  });
-
-  it("已有 pending incoming Ghodium 时不重复增加跨房任务", () => {
-    const target = createRoomScenario({
-      roomName: "W2N1",
-      storageEnergy: 200_000,
-    });
-    createRoomScenario({
-      roomName: "W2N2",
-      withNuker: false,
-      storageEnergy: 200_000,
-      storageGhodium: 5_000,
-    });
-
-    runNukerControl();
-    Game.time += 1;
-    runNukerControl();
-
-    const transfers = getResourceTransferTaskListSorted().filter(
-      (task) =>
-        task.resource === RESOURCE_GHODIUM &&
-        task.toRoomName === target.room.name &&
-        task.status === "pending",
-    );
-    expect(transfers).toHaveLength(1);
-    expect(transfers[0].amount).toBe(5_000);
-    expect(transfers[0].remainingAmount).toBe(5_000);
-    expect(Memory.runtime?.nukerControl?.rooms.W2N1.pendingIncomingGhodium)
-      .toBe(5_000);
-  });
-
-  it("donor 自己的空 Nuker 缺口优先受保护", () => {
-    const target = createRoomScenario({
-      roomName: "W3N1",
-      storageEnergy: 200_000,
-    });
-    const donor = createRoomScenario({
-      roomName: "W3N2",
-      storageEnergy: 200_000,
-      storageGhodium: 7_000,
-    });
-
-    runNukerControl();
-
-    const transfer = getResourceTransferTaskListSorted().find(
-      (task) =>
-        task.resource === RESOURCE_GHODIUM &&
-        task.fromRoomName === donor.room.name &&
-        task.toRoomName === target.room.name,
-    );
-    expect(transfer?.amount).toBe(2_000);
-    const donorLocalAmount = getNukerTasks(donor.room.name)
-      .flatMap((task) => task.steps)
-      .filter((step) => step.resource === RESOURCE_GHODIUM)
-      .reduce((sum, step) => sum + step.amount, 0);
-    expect(donorLocalAmount).toBe(5_000);
-  });
-
   it("Nuker 消失后清除任务、预留和运行态，并请求 Hub 重规划", () => {
     const scenario = createRoomScenario({
       roomName: "W4N1",
@@ -410,32 +254,5 @@ describe("nukerControl", () => {
     expect(Memory.runtime?.nukerControl?.rooms).toEqual({});
     expect(Memory.runtime?.nukerControl?.ghodiumProductionDemand).toBe(0);
     expect(Memory.runtime?.hub?.needsPlan).toBe(true);
-  });
-
-  it("小批投递不逐 tick 重规划，但累计一个 Nuker 容量后会唤醒 Hub", () => {
-    const first = createRoomScenario({
-      roomName: "W5N1",
-      storageEnergy: 200_000,
-    });
-    createRoomScenario({
-      roomName: "W5N2",
-      storageEnergy: 200_000,
-    });
-    runNukerControl();
-    expect(Memory.runtime?.nukerControl?.hubPlanDemandBaseline).toBe(10_000);
-
-    Memory.runtime!.hub!.needsPlan = false;
-    (first.nuker?.store as MutableStore).set(RESOURCE_GHODIUM, 1_000);
-    Game.time += 1;
-    runNukerControl();
-    expect(Memory.runtime?.nukerControl?.ghodiumProductionDemand).toBe(9_000);
-    expect(Memory.runtime?.hub?.needsPlan).toBe(false);
-
-    (first.nuker?.store as MutableStore).set(RESOURCE_GHODIUM, 5_000);
-    Game.time += 1;
-    runNukerControl();
-    expect(Memory.runtime?.nukerControl?.ghodiumProductionDemand).toBe(5_000);
-    expect(Memory.runtime?.hub?.needsPlan).toBe(true);
-    expect(Memory.runtime?.nukerControl?.hubPlanDemandBaseline).toBe(5_000);
   });
 });

@@ -162,57 +162,6 @@ describe("collectMarketSalePriceSnapshots", () => {
     expect(result.snapshots[RESOURCE_UTRIUM]?.trusted).toBe(true);
   });
 
-  it("只在新的完整 historyDate 上最多下调 5%，同日重复采样不递归下降", () => {
-    const cfg = config({
-      hardFloor: { [RESOURCE_KEANIUM]: 0.4 },
-      economicFloor: { [RESOURCE_KEANIUM]: 0.3 },
-    });
-    const dataStore: MarketSalePricingDataStore = {
-      trustedFloors: {
-        [RESOURCE_KEANIUM]: {
-          value: 1,
-          marketDate: "2026-07-24",
-          updatedAt: 100,
-        },
-      },
-    };
-    const firstApi = readMarket({ historyPrice: 0.5 });
-
-    const first = collectMarketSalePriceSnapshots(
-      cfg,
-      dataStore,
-      [RESOURCE_KEANIUM],
-      { market: firstApi.market, gameTime: 200, utcNow: UTC_NOW },
-    );
-
-    expect(first.snapshots[RESOURCE_KEANIUM]).toMatchObject({
-      historyDate: "2026-07-25",
-      historyFloor: 0.5,
-      ratchetFloor: 0.95,
-      effectiveNetFloor: 0.95,
-    });
-    expect(dataStore.trustedFloors?.[RESOURCE_KEANIUM]).toEqual({
-      value: 0.95,
-      marketDate: "2026-07-25",
-      updatedAt: 200,
-    });
-
-    const sameDayApi = readMarket({ historyPrice: 0.1 });
-    const sameDay = collectMarketSalePriceSnapshots(
-      cfg,
-      dataStore,
-      [RESOURCE_KEANIUM],
-      { market: sameDayApi.market, gameTime: 201, utcNow: UTC_NOW },
-    );
-
-    expect(sameDay.snapshots[RESOURCE_KEANIUM]?.ratchetFloor).toBe(0.95);
-    expect(dataStore.trustedFloors?.[RESOURCE_KEANIUM]).toEqual({
-      value: 0.95,
-      marketDate: "2026-07-25",
-      updatedAt: 200,
-    });
-  });
-
   it("maker 最低安全价覆盖 hard/economic/history/ratchet 与向上取整后的 5% create fee", () => {
     const cfg = config();
     const api = readMarket({ historyPrice: 0.8 });

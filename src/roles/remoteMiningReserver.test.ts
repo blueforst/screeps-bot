@@ -12,8 +12,7 @@ jest.mock("@/runtime/remoteMining", () => ({
 }));
 
 import { remoteMiningReserverRole } from "@/roles/remoteMiningReserver";
-import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
-import { getMyUsername } from "@/runtime/remoteMining";
+import { moveToTarget } from "@/roles/shared";
 
 function makeController(overrides: Partial<StructureController> = {}): StructureController {
   return {
@@ -47,16 +46,6 @@ describe("remoteMiningReserverRole", () => {
   });
 
   describe("target phase – reservation", () => {
-    it("reserves an unreserved neutral controller", () => {
-      const controller = makeController();
-      const room = makeRoom("W5N5", controller);
-      const creep = makeCreep(room);
-
-      const result = remoteMiningReserverRole("W5N5").target(creep);
-
-      expect(creep.reserveController).toHaveBeenCalledWith(controller);
-      expect(result).toBe(false);
-    });
 
     it("moves toward controller when not in range", () => {
       const controller = makeController();

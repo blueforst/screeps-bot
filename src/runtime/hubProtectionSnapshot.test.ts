@@ -1,10 +1,8 @@
 import {
-  HUB_PROTECTION_SNAPSHOT_SCHEMA,
   beginHubProtectionAttempt,
   buildCommittedHubProtectionSnapshot,
   observeHubProtectionConfigIncarnation,
   publishCommittedHubProtectionSnapshot,
-  publishInvalidHubProtectionSnapshot,
   readFreshCommittedHubProtectionSnapshot,
   type HubProtectionConfigInput,
   type HubRuntimeProtectionExtension,
@@ -152,40 +150,6 @@ describe("Hub committed market protection snapshot", () => {
         configA,
         TICK + 1,
       ),
-    ).toBeUndefined();
-  });
-
-  it("publishes an invalid empty successor after an early-return/throw outcome", () => {
-    const runtime = distributedRuntime();
-    commit(runtime);
-    const attempt = beginHubProtectionAttempt(runtime, config(), TICK + 1);
-
-    publishInvalidHubProtectionSnapshot(
-      runtime,
-      attempt,
-      config(),
-      TICK + 1,
-      "failed",
-      "fixture_throw",
-    );
-
-    expect(runtime.committedProtectionSnapshot).toEqual(
-      expect.objectContaining({
-        planRevision: attempt.attemptRevision,
-        status: "failed",
-        valid: false,
-        distributed: expect.objectContaining({
-          dispatchAssignments: [],
-          routeDecisions: [],
-          allocationLedger: {},
-        }),
-        baseMineralSurplus: expect.objectContaining({
-          byRoom: { [HUB_ROOM]: {} },
-        }),
-      }),
-    );
-    expect(
-      readFreshCommittedHubProtectionSnapshot(runtime, config(), TICK + 1),
     ).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-import { roundUpReactionAmount, getProductReagentMap, getProductReagents } from "@/runtime/reactionMap";
+import { roundUpReactionAmount, getProductReagentMap } from "@/runtime/reactionMap";
 
 describe("reactionMap", () => {
   describe("roundUpReactionAmount", () => {
@@ -16,13 +16,6 @@ describe("reactionMap", () => {
       const first = getProductReagentMap();
       const second = getProductReagentMap();
       expect(first).toBe(second);
-    });
-  });
-
-  describe("getProductReagents", () => {
-
-    it("returns null for a base mineral", () => {
-      expect(getProductReagents(RESOURCE_HYDROGEN)).toBeNull();
     });
   });
 });

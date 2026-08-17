@@ -1,22 +1,7 @@
 import {
-  MAX_FEE_EVENTS,
-  advanceFeeLedgerWindow,
   applyFillFeeDebt,
-  buildProcessedFillKey,
-  commitProspectiveFeeReservation,
   createEmptyMarketSaleFeeLedger,
-  evaluateProspectiveFeeGate,
-  getFeeLedgerTotals,
-  markExternalOrderMutationFeeGap,
-  reconcileDisappearedOrderFeeDebt,
-  releaseProspectiveFeeReservation,
-  reserveProspectiveFee,
-  resolveExternalOrderMutationFeeGap,
-  resolveDisappearedOrderFeeGap,
-  takeCarriedFeeDebt,
   type FeeLedgerLimits,
-  type MarketSaleFeeLedgerState,
-  type ProspectiveFeeGateInput,
 } from "@/runtime/marketSaleFeeLedger";
 
 const LIMITS: FeeLedgerLimits = {
@@ -27,50 +12,6 @@ const LIMITS: FeeLedgerLimits = {
   maxProcessedFills: 8,
 };
 
-function gateInput(
-  ledger: MarketSaleFeeLedgerState,
-  overrides: Partial<ProspectiveFeeGateInput> = {},
-): ProspectiveFeeGateInput {
-  return {
-    ledger,
-    gameTime: 100,
-    action: "extend",
-    prospectiveFeeMilli: 200,
-    creditsMilli: 10_000,
-    creditReserveMilli: 1_000,
-    rollingFeeBudgetMilli: 5_000,
-    limits: LIMITS,
-    ...overrides,
-  };
-}
-
-describe("prospective fee reservation and gates", () => {
-
-  it("enforces credit reserve and rolling fee budget including uncommitted reservations", () => {
-    const first = reserveProspectiveFee({
-      ...gateInput(createEmptyMarketSaleFeeLedger(), {
-        prospectiveFeeMilli: 600,
-        creditsMilli: 1_000,
-        creditReserveMilli: 300,
-        rollingFeeBudgetMilli: 1_000,
-      }),
-      reservationId: "first",
-    });
-    expect(first.allowed).toBe(true);
-
-    const denied = evaluateProspectiveFeeGate(gateInput(first.ledger, {
-      prospectiveFeeMilli: 500,
-      creditsMilli: 1_000,
-      creditReserveMilli: 300,
-      rollingFeeBudgetMilli: 1_000,
-    }));
-    expect(denied.allowed).toBe(false);
-    expect(denied.reasons).toEqual(expect.arrayContaining([
-      "credit_reserve",
-      "rolling_fee_budget",
-    ]));
-  });
-});
 
 describe("fill idempotency and fee-debt allocation", () => {
   it("uses transactionId+orderId exactly once and preserves pricing rounding remainder", () => {

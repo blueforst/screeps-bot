@@ -28,6 +28,10 @@ import {
   getWorkerTasksByRoom,
   releaseWorkerTask,
 } from "@/runtime/workerTaskPool";
+import {
+  createCarrierDispatchRef,
+  encodeCarrierDispatchStepKey,
+} from "@/runtime/dispatchOwnership/ref";
 import carrierLogisticsAdapter from "@/runtime/taskSystem/adapters/carrierLogistics";
 import { collectLiveMarketSaleProtectionLedger } from "@/runtime/marketSaleProtectionAdapter";
 import { getMarketProtectionEntryKey } from "@/runtime/marketSaleProtection";
@@ -112,34 +116,42 @@ function worker(name: string, roomName: string): Creep {
   } as Creep;
 }
 
+function resetFixtures(): void {
+  clearCarrierTaskBoardForTest();
+  clearCreepAssignmentStateForTest();
+  clearWorkerTaskBoardForTest();
+  Game.time = 1_000;
+  Game.creeps = {};
+  Game.rooms = {};
+  Game.spawns = {};
+  (Game as Game & { getObjectById: Game["getObjectById"] }).getObjectById = jest.fn(
+    () => null,
+  ) as unknown as Game["getObjectById"];
+  (Game as unknown as { market: Partial<Market> }).market = { orders: {} };
+  Memory.cfg = {
+    resourceControl: {
+      capacityBalancing: {
+        automaticTaskNoProgressTtl: 5_000,
+      },
+    },
+  };
+  Memory.runtime = {
+    resourceControl: {
+      updatedAt: Game.time,
+      rooms: {},
+      lastActions: [],
+      lastMarketActions: [],
+    },
+  };
+  Memory.data = { resourceControl: { tasks: {} } };
+}
+
 describe("local dispatch full-ref target behavior", () => {
   beforeEach(() => {
-    clearCarrierTaskBoardForTest();
-    clearCreepAssignmentStateForTest();
-    clearWorkerTaskBoardForTest();
-    Game.time = 1_000;
-    Game.creeps = {};
-    Game.rooms = {};
-    (Game as unknown as { market: Partial<Market> }).market = { orders: {} };
-    Memory.cfg = {
-      resourceControl: {
-        capacityBalancing: {
-          automaticTaskNoProgressTtl: 5_000,
-        },
-      },
-    };
-    Memory.runtime = {
-      resourceControl: {
-        updatedAt: Game.time,
-        rooms: {},
-        lastActions: [],
-        lastMarketActions: [],
-      },
-    };
-    Memory.data = { resourceControl: { tasks: {} } };
+    resetFixtures();
   });
 
-  test("Worker release touches only the bound room when local ids collide", () => {
+  test("Worker release remains full-ref scoped across explicit release and room drift", () => {
     const creep = worker("Worker1", "W2N2");
     Game.creeps[creep.name] = creep;
     getWorkerTasksByRoom("W1N1")["shared-local-id"] = workerTask(
@@ -170,13 +182,13 @@ describe("local dispatch full-ref target behavior", () => {
       .toEqual([]);
     expect(state.dispatchBindings?.worker).toBeUndefined();
     expect(state.taskId).toBeUndefined();
-  });
 
-  test("Worker room drift releases the old inverse before selecting in the current room", () => {
-    const creep = worker("Worker1", "W2N2");
-    Game.creeps[creep.name] = creep;
-    Game.rooms.W2N2 = creep.room;
-    const oldTask = workerTask("W1N1", [creep.name], "old-target");
+    resetFixtures();
+
+    const driftedCreep = worker("Worker1", "W2N2");
+    Game.creeps[driftedCreep.name] = driftedCreep;
+    Game.rooms.W2N2 = driftedCreep.room;
+    const oldTask = workerTask("W1N1", [driftedCreep.name], "old-target");
     const currentTask = workerTask("W2N2", [], "current-target");
     getWorkerTasksByRoom("W1N1")[oldTask.id] = oldTask;
     getWorkerTasksByRoom("W2N2")[currentTask.id] = currentTask;
@@ -186,9 +198,11 @@ describe("local dispatch full-ref target behavior", () => {
         : null,
     ) as unknown as Game["getObjectById"];
 
-    const state = ensureCreepAssignmentState(creep.name) as MutableWorkerBindingState;
-    state.taskId = oldTask.id;
-    state.dispatchBindings = {
+    const driftedState = ensureCreepAssignmentState(
+      driftedCreep.name,
+    ) as MutableWorkerBindingState;
+    driftedState.taskId = oldTask.id;
+    driftedState.dispatchBindings = {
       worker: {
         system: "worker-work",
         namespace: "workerTaskPool",
@@ -197,10 +211,10 @@ describe("local dispatch full-ref target behavior", () => {
       },
     };
 
-    expect(assignWorkerTask(creep)).toBe(currentTask);
+    expect(assignWorkerTask(driftedCreep)).toBe(currentTask);
     expect(oldTask.assignedCreeps).toEqual([]);
-    expect(currentTask.assignedCreeps).toEqual([creep.name]);
-    expect(state.dispatchBindings?.worker).toEqual({
+    expect(currentTask.assignedCreeps).toEqual([driftedCreep.name]);
+    expect(driftedState.dispatchBindings?.worker).toEqual({
       system: "worker-work",
       namespace: "workerTaskPool",
       scope: { kind: "room", roomName: "W2N2" },
@@ -208,7 +222,7 @@ describe("local dispatch full-ref target behavior", () => {
     });
   });
 
-  test("Carrier board and amount budget isolate equal local and step ids by producer", () => {
+  test("Carrier refs isolate board, amount, projection, and downstream protection by producer", () => {
     replaceCarrierTasksForProducerRoom(
       "producer:a",
       "W1N1",
@@ -244,9 +258,9 @@ describe("local dispatch full-ref target behavior", () => {
       "CarrierB",
       500,
     )?.amount).toBe(500);
-  });
 
-  test("Carrier projection emits both producer refs without collision-risk diagnostics", () => {
+    resetFixtures();
+
     replaceCarrierTasksForProducerRoom(
       "producer:a",
       "W1N1",
@@ -258,20 +272,30 @@ describe("local dispatch full-ref target behavior", () => {
       [carrierDraft(500)],
     );
 
-    const result = carrierLogisticsAdapter.snapshot({
+    const projection = carrierLogisticsAdapter.snapshot({
       board: peekCarrierTaskBoard(),
     });
 
-    expect(result.entries.map((entry) => entry.ref.namespace).sort()).toEqual([
-      "producer:a",
-      "producer:b",
+    expect(projection.entries.map((entry) => entry.ref)).toEqual([
+      {
+        system: "carrier-logistics",
+        namespace: "producer:a",
+        scope: { kind: "room", roomName: "W1N1" },
+        localId: "shared-local-id",
+      },
+      {
+        system: "carrier-logistics",
+        namespace: "producer:b",
+        scope: { kind: "room", roomName: "W1N1" },
+        localId: "shared-local-id",
+      },
     ]);
-    expect(result.issues).not.toContainEqual(expect.objectContaining({
+    expect(projection.issues).not.toContainEqual(expect.objectContaining({
       code: "carrier-task-id-collision-risk",
     }));
-  });
 
-  test("Carrier downstream protection keeps equal task and step ids producer-scoped", () => {
+    resetFixtures();
+
     Game.rooms.W1N1 = {
       name: "W1N1",
       controller: { my: true, level: 8 },
@@ -288,16 +312,15 @@ describe("local dispatch full-ref target behavior", () => {
       },
       find: jest.fn(() => []),
     } as unknown as Room;
-    replaceCarrierTasksForProducerRoom(
-      "producer:a:with:separator",
-      "W1N1",
-      [carrierDraft(500)],
-    );
-    replaceCarrierTasksForProducerRoom(
-      "producer:b->with:separator",
-      "W1N1",
-      [carrierDraft(500)],
-    );
+    const producerA = "producer:a:with:separator";
+    const producerB = "producer:b->with:separator";
+    replaceCarrierTasksForProducerRoom(producerA, "W1N1", [carrierDraft(500)]);
+    replaceCarrierTasksForProducerRoom(producerB, "W1N1", [carrierDraft(500)]);
+    const refA = createCarrierDispatchRef(producerA, "W1N1", "shared-local-id");
+    const refB = createCarrierDispatchRef(producerB, "W1N1", "shared-local-id");
+    expect(refA).toBeDefined();
+    expect(refB).toBeDefined();
+    if (!refA || !refB) return;
 
     const config = resolveMarketSaleAutomationConfig({
       mode: "shadow",
@@ -321,11 +344,17 @@ describe("local dispatch full-ref target behavior", () => {
       (contribution) => contribution.bucket === "carrierOrInFlight",
     );
 
+    expect(carrierContributions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stableKey: encodeCarrierDispatchStepKey(refA, "shared-step-id"),
+        amount: 500,
+      }),
+      expect.objectContaining({
+        stableKey: encodeCarrierDispatchStepKey(refB, "shared-step-id"),
+        amount: 500,
+      }),
+    ]));
     expect(carrierContributions).toHaveLength(2);
-    expect(new Set(
-      carrierContributions.map((contribution) => contribution.stableKey),
-    ).size).toBe(2);
-    expect(carrierContributions.map((contribution) => contribution.amount).sort())
-      .toEqual([500, 500]);
+    expect(entry.carrierOrInFlight).toBe(1_000);
   });
 });

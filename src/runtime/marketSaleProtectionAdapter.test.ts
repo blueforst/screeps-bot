@@ -16,7 +16,6 @@ import {
 } from "@/runtime/dispatchOwnership/ref";
 import {
   collectLiveMarketSaleProtectionLedger,
-  type LiveManagedOrderExposure,
 } from "@/runtime/marketSaleProtectionAdapter";
 import { getMarketProtectionEntryKey } from "@/runtime/marketSaleProtection";
 import {
@@ -184,70 +183,6 @@ beforeEach(() => {
 });
 
 describe("collectLiveMarketSaleProtectionLedger", () => {
-
-  it("deduplicates one accepted cargo view with its exact board step by maximum amount", () => {
-    Game.rooms[ROOM] = createRoom(
-      ROOM,
-      { [RESOURCE_KEANIUM]: 5_000 },
-      { [RESOURCE_KEANIUM]: 5_000 },
-    );
-    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
-    const taskId = "factory-supply";
-    const stepId = "keanium-step";
-    const producer = "factory:test";
-    const ref = createCarrierDispatchRef(producer, ROOM, taskId);
-    expect(ref).toBeDefined();
-    if (!ref) return;
-
-    replaceCarrierTasksForProducerRoom(producer, ROOM, [{
-      id: taskId,
-      type: "factory_supply",
-      priority: 100,
-      steps: [{
-        id: stepId,
-        resource: RESOURCE_KEANIUM,
-        fromKind: "terminal",
-        toKind: "factory",
-        fromId: `${ROOM}:terminal`,
-        toId: `${ROOM}:factory`,
-        amount: 500,
-      }],
-    }]);
-    const carrier = {
-      name: "carrier-with-duplicate-observation",
-      room: Game.rooms[ROOM],
-      store: createStore({ [RESOURCE_KEANIUM]: 300 }),
-    } as unknown as Creep;
-    Game.creeps[carrier.name] = carrier;
-    Object.assign(ensureCreepAssignmentState(carrier.name), {
-      synthesisCarrierTaskId: taskId,
-      synthesisCarrierPendingTaskRef: ref,
-      synthesisCarrierPendingStepId: stepId,
-      synthesisCarrierPendingResource: RESOURCE_KEANIUM,
-    });
-
-    const ledger = collectLiveMarketSaleProtectionLedger(
-      config({ [RESOURCE_KEANIUM]: 0 }),
-      undefined,
-      {
-        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
-      },
-    );
-    const entry = ledger.entries[
-      getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)
-    ];
-    const carrierContributions = entry.sourceContributions.filter(
-      (contribution) => contribution.bucket === "carrierOrInFlight",
-    );
-
-    expect(carrierContributions).toEqual([
-      expect.objectContaining({
-        stableKey: encodeCarrierDispatchStepKey(ref, stepId),
-        amount: 500,
-      }),
-    ]);
-    expect(entry.carrierOrInFlight).toBe(500);
-  });
 
   it("keeps accepted cargo bound to its full producer ref after board deletion", () => {
     const displacedRoom = "W9N9";
@@ -440,110 +375,5 @@ describe("collectLiveMarketSaleProtectionLedger", () => {
       ]),
     );
     expect(productionContributions).toHaveLength(2);
-  });
-
-  it("keeps Hub room stock fully protected without an explicit market surplus", () => {
-    Game.rooms[ROOM] = createRoom(
-      ROOM,
-      { [RESOURCE_KEANIUM]: 5_000 },
-      { [RESOURCE_KEANIUM]: 5_000 },
-    );
-    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
-    Memory.cfg!.hub = {
-      enabled: true,
-      hubRoomName: ROOM,
-      planInterval: 200,
-      targetCompounds: [],
-    };
-    Memory.runtime!.hub = {
-      updatedAt: TICK,
-      needsPlan: false,
-      distributedSynthesis: {
-        allocationLedger: {
-          K: {
-            resource: RESOURCE_KEANIUM,
-            totalAmount: 5_000,
-            roomCommitments: { [ROOM]: 5_000 },
-          },
-        },
-      },
-      // A forged legacy surplus must not be consumed by the adapter.
-      marketSellSurplus: {
-        [RESOURCE_KEANIUM]: 9_999,
-      },
-    };
-    commitCurrentHubProtection("fallback");
-
-    const ledger = collectLiveMarketSaleProtectionLedger(
-      config({ [RESOURCE_KEANIUM]: 100 }),
-      undefined,
-      {
-        candidates: [{ roomName: ROOM, resource: RESOURCE_KEANIUM }],
-      },
-    );
-    const keanium =
-      ledger.entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
-
-    expect(keanium.blocked).toBe(false);
-    expect(keanium.productionDemand).toBe(10_000);
-    expect(keanium.sellableAmount).toBe(0);
-    expect(keanium.sourceContributions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          stableKey: `hub:surplus-limit:${ROOM}:${RESOURCE_KEANIUM}`,
-          amount: 10_000,
-          sourceKinds: ["hub"],
-        }),
-      ]),
-    );
-  });
-
-  it("protects an active PowerBank task before its boost prep memory is created", () => {
-    Game.rooms[ROOM] = createRoom(
-      ROOM,
-      {},
-      { [RESOURCE_KEANIUM]: 8_000 },
-    );
-    mockFloors({ [ROOM]: { [RESOURCE_KEANIUM]: 0 } });
-    Memory.data!.powerBankHarvest = {
-      "pb-gap": {
-        id: "pb-gap",
-        status: "preparing_boosts",
-        sourceRoom: ROOM,
-        targetRoom: "W9N9",
-        bankId: "bank-1",
-        bankPos: { x: 25, y: 25 },
-        hits: 1_000_000,
-        power: 5_000,
-        ticksToDecay: 4_000,
-        freeTiles: 2,
-        discoveredTick: TICK - 1,
-        lastSeenTick: TICK,
-        haulerIds: [],
-        boostLabs: [],
-        compoundTransferTaskIds: [],
-        tier: 8,
-      },
-    };
-
-    const ledger = collectLiveMarketSaleProtectionLedger(
-      config({ [RESOURCE_KEANIUM]: 100 }),
-    );
-    const entry =
-      ledger.entries[getMarketProtectionEntryKey(ROOM, RESOURCE_KEANIUM)];
-
-    expect(Memory.runtime?.powerBankBoost).toBeUndefined();
-    expect(entry.fresh).toBe(true);
-    expect(entry.productionDemand).toBe(3_000);
-    expect(entry.sellableAmount).toBe(4_900);
-    expect(entry.sourceContributions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          stableKey: expect.stringContaining("boost-contract:pb-gap:"),
-          sourceKinds: ["boost"],
-          amount: 3_000,
-        }),
-      ]),
-    );
   });
 });

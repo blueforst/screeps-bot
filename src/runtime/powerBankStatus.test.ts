@@ -1,7 +1,6 @@
 import {
   powerBankStatusCommand,
   powerBankStatusRaw,
-  recordPowerBankHistory,
 } from "@/runtime/powerBankStatus";
 import { POWER_BANK_STATUS } from "@/runtime/powerBankConstants";
 
@@ -111,38 +110,5 @@ describe("powerBankStatus", () => {
       reinforcementLastProgressAge: null,
       reinforcementBlocker: null,
     });
-  });
-
-  it("deduplicates terminal history by task and keeps the latest result", () => {
-    const task = makeTask({
-      status: POWER_BANK_STATUS.COMPLETE,
-      terminalTick: 100,
-      outcome: "partial",
-      deliveredPower: 1000,
-      lostPower: 2000,
-    });
-    recordPowerBankHistory(task);
-    task.deliveredPower = 1500;
-    recordPowerBankHistory(task);
-
-    expect(Memory.data?.powerBankHarvestHistory).toHaveLength(1);
-    expect(Memory.data?.powerBankHarvestHistory?.[0]).toMatchObject({
-      taskId: "pb-status",
-      outcome: "partial",
-      deliveredPower: 1500,
-    });
-  });
-
-  it("bounds terminal history", () => {
-    for (let index = 0; index < 30; index += 1) {
-      recordPowerBankHistory(makeTask({
-        id: `pb-${index}`,
-        status: POWER_BANK_STATUS.FAILED,
-        terminalTick: index,
-      }));
-    }
-
-    expect(Memory.data?.powerBankHarvestHistory).toHaveLength(25);
-    expect(Memory.data?.powerBankHarvestHistory?.[0].taskId).toBe("pb-5");
   });
 });

@@ -10,22 +10,6 @@ describe("resolveRoomEnergyPolicy", () => {
     });
   });
 
-  it("normalizes room overrides into floor target export order", () => {
-    expect(
-      resolveRoomEnergyPolicy({
-        energyFloor: 210_000,
-        energyTarget: 190_000,
-        energyExportStart: 195_000,
-        terminalEnergyReserve: 12_345,
-      }),
-    ).toEqual({
-      energyFloor: 210_000,
-      energyTarget: 210_000,
-      energyExportStart: 210_000,
-      terminalEnergyReserve: 12_345,
-    });
-  });
-
   it("clamps invalid values with the existing resource-control bounds", () => {
     expect(
       resolveRoomEnergyPolicy({

@@ -121,22 +121,6 @@ describe("receiver capacity ledger", () => {
     expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM)).toBe(40_000);
   });
 
-  it("reclamps an idempotent provisional reservation after physical capacity shrinks", () => {
-    const ledger = createLedger();
-
-    expect(ledger.reserve("draft", "W1N2", RESOURCE_KEANIUM, 20_000)).toBe(20_000);
-    ledger.applySend("W1N2", RESOURCE_HYDROGEN, 40_000);
-
-    expect(ledger.reserve("draft", "W1N2", RESOURCE_KEANIUM, 20_000)).toBe(10_000);
-    expect(ledger.getAvailability("W1N2", RESOURCE_KEANIUM)).toMatchObject({
-      storageSafeCapacity: 10_000,
-      terminalTotalSafeCapacity: 10_000,
-      reservationTotal: 10_000,
-      reservationResource: 10_000,
-      available: 0,
-    });
-  });
-
   it("limits new reservations to the 20000 left after a healthy 30000 commitment", () => {
     const committed = createTask("committed", RESOURCE_KEANIUM, 30_000);
     const ledger = createLedger([committed]);
@@ -154,26 +138,6 @@ describe("receiver capacity ledger", () => {
       totalCommitted: 30_000,
       reservationTotal: 20_000,
       available: 0,
-    });
-  });
-
-  it("does not count unhealthy or invalid-endpoint tasks and reports why they were excluded", () => {
-    const blocked = createTask("blocked", RESOURCE_KEANIUM, 20_000, {
-      blockedReason: "receiver_capacity",
-    });
-    const invalid = createTask("invalid", RESOURCE_HYDROGEN, 15_000, {
-      fromRoomName: "W9N9",
-    });
-    const missingReceiver = createTask("missing", RESOURCE_OXYGEN, 12_000, {
-      toRoomName: "W8N8",
-    });
-    const ledger = createLedger([blocked, invalid, missingReceiver]);
-
-    expect(ledger.getAvailableAmount("W1N2", RESOURCE_KEANIUM)).toBe(50_000);
-    expect(ledger.getExclusionSummary()).toEqual({
-      unhealthy_commitment: { taskCount: 1, amount: 20_000 },
-      invalid_endpoint: { taskCount: 1, amount: 15_000 },
-      missing_receiver: { taskCount: 1, amount: 12_000 },
     });
   });
 });

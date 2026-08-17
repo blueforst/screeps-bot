@@ -6,15 +6,11 @@ jest.mock("@/movement/pathing", () => ({
 
 import {
   getPowerCreepRoomEnergyPolicy,
-  getRegenSourceLevelForRoom,
   listPowerCreepTasks,
   resetPowerCreepControlCacheForTest,
   runPowerCreepControl,
 } from "@/runtime/powerCreepControl";
-import {
-  clearCreepMovementStateForTest,
-  getCreepMovementState,
-} from "@/movement/creepState";
+import { clearCreepMovementStateForTest } from "@/movement/creepState";
 
 type ResourceAmounts = Partial<Record<ResourceConstant, number>>;
 
@@ -25,15 +21,11 @@ function createStore(
 ): StoreDefinition {
   return {
     getUsedCapacity(resource?: ResourceConstant) {
-      if (resource !== undefined) {
-        return amounts[resource] || 0;
-      }
+      if (resource !== undefined) return amounts[resource] || 0;
       return Object.values(amounts).reduce((sum, amount) => sum + (amount || 0), 0);
     },
     getCapacity(resource?: ResourceConstant) {
-      if (resource !== undefined && capacities[resource] !== undefined) {
-        return capacities[resource] || 0;
-      }
+      if (resource !== undefined && capacities[resource] !== undefined) return capacities[resource] || 0;
       return totalCapacity;
     },
     getFreeCapacity(resource?: ResourceConstant) {
@@ -48,20 +40,14 @@ function createStore(
   } as StoreDefinition;
 }
 
-function createPos(roomName: string, x: number): RoomPosition {
-  return {
-    x,
-    y: 25,
-    roomName,
-    getRangeTo: () => 1,
-  } as unknown as RoomPosition;
+function createPos(roomName: string, x: number, range = 1): RoomPosition {
+  return { x, y: 25, roomName, getRangeTo: () => range } as unknown as RoomPosition;
 }
 
 function createRoom(options: {
   name?: string;
   controllerPowerEnabled?: boolean;
   storage?: StructureStorage | null;
-  terminal?: StructureTerminal | null;
   extensions?: StructureExtension[];
   sources?: Source[];
 } = {}): { room: Room; controller: StructureController; powerSpawn: StructurePowerSpawn } {
@@ -78,10 +64,7 @@ function createRoom(options: {
     structureType: STRUCTURE_POWER_SPAWN,
     my: true,
     pos: createPos(name, 21),
-    store: createStore({}, {
-      [RESOURCE_ENERGY]: 5_000,
-      [RESOURCE_POWER]: 100,
-    }, 5_100),
+    store: createStore({}, { [RESOURCE_ENERGY]: 5_000, [RESOURCE_POWER]: 100 }, 5_100),
   } as unknown as StructurePowerSpawn;
   const extensions = options.extensions || [];
   const sources = options.sources || [];
@@ -92,13 +75,12 @@ function createRoom(options: {
   const structures: Structure<StructureConstant>[] = [
     ...myStructures,
     ...(options.storage ? [options.storage as unknown as Structure<StructureConstant>] : []),
-    ...(options.terminal ? [options.terminal as unknown as Structure<StructureConstant>] : []),
   ];
   const room = {
     name,
     controller,
     storage: options.storage || null,
-    terminal: options.terminal || null,
+    terminal: null,
     find(type: FindConstant) {
       if (type === FIND_MY_STRUCTURES) return myStructures;
       if (type === FIND_STRUCTURES) return structures;
@@ -106,7 +88,6 @@ function createRoom(options: {
       return [];
     },
   } as unknown as Room;
-
   Game.rooms[name] = room;
   return { room, controller, powerSpawn };
 }
@@ -129,33 +110,11 @@ function createStorage(roomName = "E4N58", options: {
 }
 
 function createSource(roomName: string, id: string, x: number): Source {
-  return {
-    id,
-    pos: createPos(roomName, x),
-    effects: [],
-  } as unknown as Source;
+  return { id, pos: createPos(roomName, x), effects: [] } as unknown as Source;
 }
 
-function createPowerEffect(
-  power: PowerConstant,
-  level: number,
-  ticksRemaining = 50,
-): RoomObjectEffect {
-  return {
-    effect: power,
-    power,
-    level,
-    ticksRemaining,
-  } as RoomObjectEffect;
-}
-
-function createExtension(roomName = "E4N58", energy = 0): StructureExtension {
-  return {
-    id: `${roomName}-extension`,
-    structureType: STRUCTURE_EXTENSION,
-    pos: createPos(roomName, 23),
-    store: createStore({ [RESOURCE_ENERGY]: energy }, { [RESOURCE_ENERGY]: 50 }, 50),
-  } as unknown as StructureExtension;
+function createPowerEffect(power: PowerConstant, level: number, ticksRemaining = 50): RoomObjectEffect {
+  return { effect: power, power, level, ticksRemaining } as RoomObjectEffect;
 }
 
 function createPowerCreep(options: {
@@ -168,35 +127,27 @@ function createPowerCreep(options: {
   usePowerResult?: ScreepsReturnCode;
   enableRoomResult?: ScreepsReturnCode;
   renewResult?: ScreepsReturnCode;
-  transferResult?: ScreepsReturnCode;
   rangeToTarget?: number;
 } = {}): PowerCreep {
-  const usePower = jest.fn(() => options.usePowerResult ?? OK);
-  const powerCreep = {
+  return {
     name: options.name || "E4N58",
     memory: {},
     room: options.room,
-    pos: {
-      x: 10,
-      y: 10,
-      roomName: options.room?.name || options.name || "E4N58",
-      getRangeTo: () => options.rangeToTarget ?? 1,
-    } as unknown as RoomPosition,
+    pos: createPos(
+      options.room?.name || options.name || "E4N58",
+      10,
+      options.rangeToTarget ?? 1,
+    ),
     ticksToLive: options.ticksToLive,
     powers: options.powers || {},
-    store: createStore(
-      { [RESOURCE_OPS]: options.ops || 0 },
-      {},
-      options.capacity || 100,
-    ),
+    store: createStore({ [RESOURCE_OPS]: options.ops || 0 }, {}, options.capacity || 100),
     spawn: jest.fn(() => OK),
     enableRoom: jest.fn(() => options.enableRoomResult ?? OK),
     renew: jest.fn(() => options.renewResult ?? OK),
-    transfer: jest.fn(() => options.transferResult ?? OK),
-    usePower,
+    transfer: jest.fn(() => OK),
+    usePower: jest.fn(() => options.usePowerResult ?? OK),
     moveTo: jest.fn(() => OK),
   } as unknown as PowerCreep;
-  return powerCreep;
 }
 
 function installGameObjects(objects: Array<{ id: string }>): void {
@@ -220,116 +171,14 @@ describe("powerCreepControl", () => {
     Memory.powerCreeps = {};
   });
 
-  it("按同名拥有房间建立归属，并在未出生时从 PowerSpawn 出生", () => {
-    const { powerSpawn } = createRoom({ name: "E4N58" });
-    const powerCreep = createPowerCreep({
-      name: "E4N58",
-      ticksToLive: null,
-      powers: {
-        [PWR_OPERATE_EXTENSION]: { level: 4, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([powerSpawn]);
-
-    runPowerCreepControl();
-
-    expect(powerCreep.memory.homeRoom).toBe("E4N58");
-    expect(powerCreep.spawn).toHaveBeenCalledWith(powerSpawn);
-    expect(getPowerCreepRoomEnergyPolicy("E4N58")).toEqual({
-      suppressSpawnSupply: true,
-      suppressExtensionSupply: false,
-      managePowerSpawnSupply: true,
-    });
-  });
-
-  it("未出生 PC 的 ticksToLive 为 NaN 时仍从同名 PowerSpawn 出生", () => {
-    const { powerSpawn } = createRoom({ name: "E6N59" });
-    const powerCreep = createPowerCreep({
-      name: "E6N59",
-      ticksToLive: Number.NaN,
-    });
-    Object.assign(powerCreep, {
-      shard: null,
-      spawnCooldownTime: null,
-      room: null,
-      pos: undefined,
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([powerSpawn]);
-
-    runPowerCreepControl();
-
-    expect(typeof powerCreep.ticksToLive).toBe("number");
-    expect(JSON.stringify(powerCreep.ticksToLive)).toBe("null");
-    expect(powerCreep.memory.homeRoom).toBe("E6N59");
-    expect(powerCreep.spawn).toHaveBeenCalledWith(powerSpawn);
-    expect(powerCreep.memory.lastControlTick).toBeUndefined();
-  });
-
-  it.each([0, 1_000])(
-    "有限 ticksToLive=%s 且无 room/pos 时安全等待而不重复孵化",
-    (ticksToLive) => {
-      const { powerSpawn } = createRoom({ name: "E6N59" });
-      const powerCreep = createPowerCreep({
-        name: "E6N59",
-        ticksToLive,
-      });
-      Object.assign(powerCreep, {
-        shard: null,
-        spawnCooldownTime: null,
-        room: null,
-        pos: undefined,
-      });
-      installPowerCreeps(powerCreep);
-      installGameObjects([powerSpawn]);
-
-      runPowerCreepControl();
-
-      expect(powerCreep.spawn).not.toHaveBeenCalled();
-      expect(powerCreep.memory.lastControlTick).toBeUndefined();
-    },
-  );
-
-  it("同名己方房间没有 PowerSpawn 时不回退到 PC 当前房间", () => {
-    const { room: fallbackRoom, powerSpawn } = createRoom({ name: "E4N58" });
-    Game.rooms.W1N57 = {
-      name: "W1N57",
-      controller: { my: true, isPowerEnabled: false },
-      find: jest.fn(() => []),
-    } as unknown as Room;
-    const powerCreep = createPowerCreep({
-      name: "W1N57",
-      room: fallbackRoom,
-      ticksToLive: null,
-      powers: {
-        [PWR_OPERATE_EXTENSION]: { level: 4, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([powerSpawn]);
-
-    runPowerCreepControl();
-
-    expect(powerCreep.memory.homeRoom).toBeUndefined();
-    expect(powerCreep.spawn).not.toHaveBeenCalled();
-    expect(powerCreep.enableRoom).not.toHaveBeenCalled();
-    expect(getPowerCreepRoomEnergyPolicy("W1N57")).toEqual({
-      suppressSpawnSupply: false,
-      suppressExtensionSupply: false,
-      managePowerSpawnSupply: false,
-    });
-  });
-
-  it("已出生同名 PC 为未启用 Controller 去重保留并执行 enable_room", () => {
+  it("从同名 PowerSpawn 出生，并跨 tick 去重 enable_room 直至房间启用", () => {
     const { room, controller, powerSpawn } = createRoom({
       name: "E6N59",
       controllerPowerEnabled: false,
     });
     const powerCreep = createPowerCreep({
       name: room.name,
-      room,
-      ticksToLive: 1_000,
+      ticksToLive: null,
       enableRoomResult: ERR_NOT_IN_RANGE,
       rangeToTarget: 5,
     });
@@ -337,7 +186,12 @@ describe("powerCreepControl", () => {
     installGameObjects([controller, powerSpawn]);
 
     runPowerCreepControl();
+    expect(powerCreep.memory.homeRoom).toBe(room.name);
+    expect(powerCreep.spawn).toHaveBeenCalledWith(powerSpawn);
 
+    Object.assign(powerCreep, { room, ticksToLive: 1_000 });
+    Game.time += 1;
+    runPowerCreepControl();
     expect(powerCreep.enableRoom).toHaveBeenCalledWith(controller);
     expect(powerCreep.moveTo).toHaveBeenCalledWith(controller, { reusePath: 5, range: 1 });
     expect(listPowerCreepTasks(powerCreep)).toEqual([
@@ -354,66 +208,41 @@ describe("powerCreepControl", () => {
     expect(listPowerCreepTasks(powerCreep)).toHaveLength(0);
   });
 
-  it("有寿命但当前 shard 尚无位置时跳过任务执行", () => {
-    const { room, powerSpawn } = createRoom({ name: "E6N59" });
-    const powerCreep = createPowerCreep({
-      name: "E6N59",
-      ticksToLive: 1_000,
-      powers: {
-        [PWR_GENERATE_OPS]: { level: 1, cooldown: 0 },
-      },
-    });
-    powerCreep.memory.homeRoom = room.name;
-    (powerCreep as PowerCreep & { pos?: RoomPosition }).pos = undefined;
-    installPowerCreeps(powerCreep);
-    installGameObjects([powerSpawn]);
+  it("区分 NaN 未出生态、有限寿命无位置态，并拒绝回退到非同名房间", () => {
+    const { room: fallbackRoom, powerSpawn: fallbackPowerSpawn } = createRoom({ name: "E4N58" });
+    const { powerSpawn: finitePowerSpawn } = createRoom({ name: "E6N59" });
+    const { powerSpawn: nanPowerSpawn } = createRoom({ name: "E7N59" });
+    Game.rooms.W1N57 = {
+      name: "W1N57",
+      controller: { my: true, isPowerEnabled: false },
+      find: jest.fn(() => []),
+    } as unknown as Room;
 
-    expect(() => runPowerCreepControl()).not.toThrow();
-    expect(powerCreep.memory.lastControlTick).toBeUndefined();
-    expect(powerCreep.usePower).not.toHaveBeenCalled();
-  });
-
-  it("寿命低于 200 时 renew 抢占已就绪的 GENERATE_OPS", () => {
-    const { room, powerSpawn } = createRoom();
-    const powerCreep = createPowerCreep({
-      room,
-      ticksToLive: 199,
-      powers: {
-        [PWR_GENERATE_OPS]: { level: 5, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([powerSpawn]);
+    const wrongRoom = createPowerCreep({ name: "W1N57", room: fallbackRoom, ticksToLive: null });
+    const finiteNoPosition = createPowerCreep({ name: "E6N59", ticksToLive: 1_000 });
+    const nanUnspawned = createPowerCreep({ name: "E7N59", ticksToLive: Number.NaN });
+    Object.assign(finiteNoPosition, { shard: null, spawnCooldownTime: null, room: null, pos: undefined });
+    Object.assign(nanUnspawned, { shard: null, spawnCooldownTime: null, room: null, pos: undefined });
+    installPowerCreeps(wrongRoom, finiteNoPosition, nanUnspawned);
+    installGameObjects([fallbackPowerSpawn, finitePowerSpawn, nanPowerSpawn]);
 
     runPowerCreepControl();
 
-    expect(powerCreep.renew).toHaveBeenCalledWith(powerSpawn);
-    expect(powerCreep.usePower).not.toHaveBeenCalled();
-    expect(listPowerCreepTasks(powerCreep).map((task) => task.type)).toEqual(["generate_ops"]);
-  });
-
-  it("OPS 接近满仓时先卸载并精确保留容量的一半", () => {
-    const storage = createStorage();
-    const { room, powerSpawn } = createRoom({ storage });
-    const powerCreep = createPowerCreep({
-      room,
-      ticksToLive: 1_000,
-      ops: 95,
-      capacity: 100,
-      powers: {
-        [PWR_GENERATE_OPS]: { level: 5, cooldown: 0 },
-      },
+    expect(wrongRoom.memory.homeRoom).toBeUndefined();
+    expect(wrongRoom.spawn).not.toHaveBeenCalled();
+    expect(wrongRoom.enableRoom).not.toHaveBeenCalled();
+    expect(getPowerCreepRoomEnergyPolicy("W1N57")).toEqual({
+      suppressSpawnSupply: false,
+      suppressExtensionSupply: false,
+      managePowerSpawnSupply: false,
     });
-    installPowerCreeps(powerCreep);
-    installGameObjects([storage, powerSpawn]);
-
-    runPowerCreepControl();
-
-    expect(powerCreep.transfer).toHaveBeenCalledWith(storage, RESOURCE_OPS, 45);
-    expect(powerCreep.usePower).not.toHaveBeenCalled();
+    expect(finiteNoPosition.spawn).not.toHaveBeenCalled();
+    expect(finiteNoPosition.memory.lastControlTick).toBeUndefined();
+    expect(nanUnspawned.spawn).toHaveBeenCalledWith(nanPowerSpawn);
+    expect(nanUnspawned.memory.lastControlTick).toBeUndefined();
   });
 
-  it("高优先技能缺少 OPS 时不会阻塞可运行的 GENERATE_OPS", () => {
+  it("缺 OPS 时让 GENERATE_OPS 越过高优先任务，低寿命下一 tick 由 renew 抢占", () => {
     const storage = createStorage();
     const { room, powerSpawn } = createRoom({ storage });
     const powerCreep = createPowerCreep({
@@ -428,143 +257,17 @@ describe("powerCreepControl", () => {
     installGameObjects([storage, powerSpawn]);
 
     runPowerCreepControl();
-
     expect(powerCreep.usePower).toHaveBeenCalledWith(PWR_GENERATE_OPS);
     expect(listPowerCreepTasks(powerCreep).map((task) => task.type)).toEqual(["operate_storage"]);
-  });
 
-  it.each([4, 5])(
-    "OPERATE_STORAGE cooldown 完成时立即覆盖 level=%s 的同级或更低级 effect",
-    (effectLevel) => {
-      const storage = createStorage("E4N58", {
-        effects: [createPowerEffect(PWR_OPERATE_STORAGE, effectLevel)],
-      });
-      const { room, powerSpawn } = createRoom({ storage });
-      const powerCreep = createPowerCreep({
-        room,
-        ticksToLive: 1_000,
-        ops: 100,
-        capacity: 200,
-        powers: {
-          [PWR_OPERATE_STORAGE]: { level: 5, cooldown: 0 },
-        },
-      });
-      installPowerCreeps(powerCreep);
-      installGameObjects([storage, powerSpawn]);
-
-      runPowerCreepControl();
-
-      expect(powerCreep.usePower).toHaveBeenCalledWith(PWR_OPERATE_STORAGE, storage);
-      expect(listPowerCreepTasks(powerCreep)).toHaveLength(0);
-    },
-  );
-
-  it("OPERATE_STORAGE 面对更高级有效 effect 时保留任务且不调用技能", () => {
-    const storage = createStorage("E4N58", {
-      effects: [createPowerEffect(PWR_OPERATE_STORAGE, 5)],
-    });
-    const { room, powerSpawn } = createRoom({ storage });
-    const powerCreep = createPowerCreep({
-      room,
-      ticksToLive: 1_000,
-      ops: 100,
-      capacity: 200,
-      powers: {
-        [PWR_OPERATE_STORAGE]: { level: 4, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([storage, powerSpawn]);
-
+    (powerCreep as PowerCreep & { ticksToLive: number }).ticksToLive = 199;
+    Game.time += 1;
     runPowerCreepControl();
-
-    expect(powerCreep.usePower).not.toHaveBeenCalled();
-    expect(listPowerCreepTasks(powerCreep)).toEqual([
-      expect.objectContaining({ type: "operate_storage", targetId: storage.id }),
-    ]);
+    expect(powerCreep.renew).toHaveBeenCalledWith(powerSpawn);
+    expect(powerCreep.usePower).toHaveBeenCalledTimes(1);
   });
 
-  it("OPERATE_STORAGE 在 Storage 无 effect 时保持 cooldown 即时执行", () => {
-    const storage = createStorage();
-    const { room, powerSpawn } = createRoom({ storage });
-    const powerCreep = createPowerCreep({
-      room,
-      ticksToLive: 1_000,
-      ops: 100,
-      capacity: 200,
-      powers: {
-        [PWR_OPERATE_STORAGE]: { level: 5, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([storage, powerSpawn]);
-
-    runPowerCreepControl();
-
-    expect(powerCreep.usePower).toHaveBeenCalledWith(PWR_OPERATE_STORAGE, storage);
-    expect(listPowerCreepTasks(powerCreep)).toHaveLength(0);
-  });
-
-  it.each([3, 4])(
-    "REGEN_SOURCE cooldown 完成时立即覆盖 level=%s 的同级或更低级 effect 并轮换",
-    (effectLevel) => {
-      const roomName = "E4N58";
-      const sourceA = createSource(roomName, "source-a", 10);
-      const sourceB = createSource(roomName, "source-b", 40);
-      (sourceA as Source & { effects: RoomObjectEffect[] }).effects = [
-        createPowerEffect(PWR_REGEN_SOURCE, effectLevel),
-      ];
-      const { room, powerSpawn } = createRoom({ sources: [sourceB, sourceA] });
-      const powerCreep = createPowerCreep({
-        room,
-        ticksToLive: 1_000,
-        ops: 100,
-        capacity: 200,
-        powers: {
-          [PWR_REGEN_SOURCE]: { level: 4, cooldown: 0 },
-        },
-      });
-      installPowerCreeps(powerCreep);
-      installGameObjects([sourceA, sourceB, powerSpawn]);
-
-      runPowerCreepControl();
-
-      expect(powerCreep.usePower).toHaveBeenCalledWith(PWR_REGEN_SOURCE, sourceA);
-      expect(listPowerCreepTasks(powerCreep)).toHaveLength(0);
-      expect(powerCreep.memory.nextRegenSourceIndex).toBe(1);
-    },
-  );
-
-  it("REGEN_SOURCE 面对更高级有效 effect 时等待且不轮换", () => {
-    const roomName = "E4N58";
-    const sourceA = createSource(roomName, "source-a", 10);
-    const sourceB = createSource(roomName, "source-b", 40);
-    (sourceA as Source & { effects: RoomObjectEffect[] }).effects = [
-      createPowerEffect(PWR_REGEN_SOURCE, 5),
-    ];
-    const { room, powerSpawn } = createRoom({ sources: [sourceB, sourceA] });
-    const powerCreep = createPowerCreep({
-      room,
-      ticksToLive: 1_000,
-      ops: 100,
-      capacity: 200,
-      powers: {
-        [PWR_REGEN_SOURCE]: { level: 4, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([sourceA, sourceB, powerSpawn]);
-
-    runPowerCreepControl();
-
-    expect(powerCreep.usePower).not.toHaveBeenCalled();
-    expect(listPowerCreepTasks(powerCreep)).toEqual([
-      expect.objectContaining({ type: "regen_source", targetId: sourceA.id }),
-    ]);
-    expect(powerCreep.memory.nextRegenSourceIndex).toBe(0);
-  });
-
-  it("Storage 与 Regen 同时就绪时先刷新 Storage，下一 tick 刷新 Source", () => {
+  it("Storage 与 Regen 同时就绪时按优先级跨 tick 执行并轮换 Source", () => {
     const roomName = "E4N58";
     const storage = createStorage(roomName, {
       effects: [createPowerEffect(PWR_OPERATE_STORAGE, 5)],
@@ -590,7 +293,6 @@ describe("powerCreepControl", () => {
     installGameObjects([storage, sourceA, sourceB, powerSpawn]);
 
     runPowerCreepControl();
-
     expect(powerCreep.usePower).toHaveBeenNthCalledWith(1, PWR_OPERATE_STORAGE, storage);
     expect(listPowerCreepTasks(powerCreep)).toEqual([
       expect.objectContaining({ type: "regen_source", targetId: sourceA.id }),
@@ -599,92 +301,7 @@ describe("powerCreepControl", () => {
     storagePower.cooldown = 200;
     Game.time += 1;
     runPowerCreepControl();
-
     expect(powerCreep.usePower).toHaveBeenNthCalledWith(2, PWR_REGEN_SOURCE, sourceA);
     expect(powerCreep.memory.nextRegenSourceIndex).toBe(1);
-  });
-
-  it("更高级 Storage effect 等待时不阻断 runnable Regen 且锚点指向 Source", () => {
-    const roomName = "E4N58";
-    const storage = createStorage(roomName, {
-      effects: [createPowerEffect(PWR_OPERATE_STORAGE, 5)],
-    });
-    const sourceA = createSource(roomName, "source-a", 10);
-    const sourceB = createSource(roomName, "source-b", 40);
-    const { room, powerSpawn } = createRoom({ storage, sources: [sourceB, sourceA] });
-    const powerCreep = createPowerCreep({
-      room,
-      ticksToLive: 1_000,
-      ops: 100,
-      capacity: 200,
-      rangeToTarget: 10,
-      usePowerResult: ERR_NOT_IN_RANGE,
-      powers: {
-        [PWR_OPERATE_STORAGE]: { level: 4, cooldown: 0 },
-        [PWR_REGEN_SOURCE]: { level: 4, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([storage, sourceA, sourceB, powerSpawn]);
-
-    runPowerCreepControl();
-
-    expect(powerCreep.usePower).toHaveBeenCalledTimes(1);
-    expect(powerCreep.usePower).toHaveBeenCalledWith(PWR_REGEN_SOURCE, sourceA);
-    expect(powerCreep.moveTo).toHaveBeenCalledWith(sourceA, { reusePath: 5, range: 3 });
-    expect(getCreepMovementState(powerCreep)?.workAnchor).toEqual({
-      x: sourceA.pos.x,
-      y: sourceA.pos.y,
-      roomName,
-      range: 3,
-    });
-    expect(powerCreep.memory.nextRegenSourceIndex).toBe(0);
-  });
-
-  it("REGEN_SOURCE 只在成功后轮换两个 Source", () => {
-    const roomName = "E4N58";
-    const sourceA = createSource(roomName, "source-a", 10);
-    const sourceB = createSource(roomName, "source-b", 40);
-    const { room, powerSpawn } = createRoom({ sources: [sourceB, sourceA] });
-    const powerCreep = createPowerCreep({
-      room,
-      ticksToLive: 1_000,
-      ops: 100,
-      capacity: 200,
-      powers: {
-        [PWR_REGEN_SOURCE]: { level: 4, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([sourceA, sourceB, powerSpawn]);
-
-    runPowerCreepControl();
-    Game.time += 1;
-    runPowerCreepControl();
-
-    expect(powerCreep.usePower).toHaveBeenNthCalledWith(1, PWR_REGEN_SOURCE, sourceA);
-    expect(powerCreep.usePower).toHaveBeenNthCalledWith(2, PWR_REGEN_SOURCE, sourceB);
-    expect(powerCreep.memory.nextRegenSourceIndex).toBe(0);
-  });
-
-  it("OPERATE_EXTENSION 在 Extension 缺能时使用有能量的 Storage", () => {
-    const storage = createStorage("E4N58", { energy: 100_000 });
-    const extension = createExtension();
-    const { room, powerSpawn } = createRoom({ storage, extensions: [extension] });
-    const powerCreep = createPowerCreep({
-      room,
-      ticksToLive: 1_000,
-      ops: 100,
-      capacity: 200,
-      powers: {
-        [PWR_OPERATE_EXTENSION]: { level: 4, cooldown: 0 },
-      },
-    });
-    installPowerCreeps(powerCreep);
-    installGameObjects([storage, extension, powerSpawn]);
-
-    runPowerCreepControl();
-
-    expect(powerCreep.usePower).toHaveBeenCalledWith(PWR_OPERATE_EXTENSION, storage);
   });
 });

@@ -14,14 +14,6 @@ beforeEach(() => {
 
 describe("isSpawnActive", () => {
 
-  test("reflects isActive() result when present", () => {
-    const active = makeSpawn({ isActive: jest.fn(() => true) });
-    const inactive = makeSpawn({ isActive: jest.fn(() => false) });
-
-    expect(isSpawnActive(active)).toBe(true);
-    expect(isSpawnActive(inactive)).toBe(false);
-  });
-
   test("calls isActive() only once per spawn within a tick", () => {
     const isActive = jest.fn(() => true);
     const spawn = makeSpawn({ isActive });

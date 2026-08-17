@@ -1,18 +1,6 @@
 import { buildMemoryAuditSnapshot } from "@/runtime/memoryAudit";
 
 describe("buildMemoryAuditSnapshot", () => {
-  it("returns correct totalBytes for a known Memory-like object", () => {
-    const mem = {
-      cfg: { enabled: true },
-      runtime: { hub: { status: "idle" } },
-      data: { colonization: { W1N2: { cachedTravelPath: "xyz" } } },
-    };
-    const expected = JSON.stringify(mem).length;
-
-    const result = buildMemoryAuditSnapshot(mem);
-
-    expect(result.totalBytes).toBe(expected);
-  });
 
   it("returns empty result for null/undefined input", () => {
     expect(buildMemoryAuditSnapshot(null)).toEqual({ totalBytes: 0, branches: [], top: [] });

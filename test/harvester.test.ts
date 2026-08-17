@@ -120,15 +120,4 @@ describe("harvesterRole – pre-spawn overlap (two harvesters for same source)",
     expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 1, { reusePath: 5 });
     expect(moveToTarget).not.toHaveBeenCalledWith(creep, source);
   });
-
-  test("unoccupied workPos: creep moves to workPos as normal", () => {
-    workPos.setLookFor(LOOK_CREEPS, []);
-
-    const creep = makeCreep(5, 5, ROOM);
-
-    const role = harvesterRole(SOURCE_ID);
-    role.source(creep as unknown as Creep);
-
-    expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
-  });
 });

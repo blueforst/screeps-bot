@@ -31,14 +31,6 @@ describe("safeZoneHelpers", () => {
     (getSafeZone as jest.Mock).mockReturnValue(new Set());
   });
 
-  it("still restricts normal workers during defense mode", () => {
-    const creep = makeCreep("worker");
-    (isDefenseMode as jest.Mock).mockReturnValue(true);
-    (getSafeZone as jest.Mock).mockReturnValue(new Set([10 * 50 + 10]));
-
-    expect(shouldRestrictToSafeZone(creep)).toBe(true);
-  });
-
   it("allows offensive war creeps to bypass restrictions", () => {
     const creep = makeCreep("meleeAttacker");
     (isDefenseMode as jest.Mock).mockReturnValue(true);

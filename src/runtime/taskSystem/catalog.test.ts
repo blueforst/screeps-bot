@@ -145,25 +145,26 @@ describe("task system catalog", () => {
     }
   });
 
-  test.each(Object.keys(EXPECTED_CATALOG) as ExpectedTaskSystemId[])(
-    "accepts canonical system %s",
-    (system) => {
+  test("accepts every canonical system", () => {
+    for (const system of Object.keys(EXPECTED_CATALOG) as ExpectedTaskSystemId[]) {
       expect(isTaskSystemId(system)).toBe(true);
-    },
-  );
+    }
+  });
 
-  test.each([
-    "",
-    "unknown-system",
-    "constructor",
-    "toString",
-    "__proto__",
-    undefined,
-    null,
-    0,
-    {},
-    [],
-  ])("rejects unknown, inherited, or non-string value %#", (value) => {
-    expect(isTaskSystemId(value)).toBe(false);
+  test("rejects every unknown, inherited, or non-string value", () => {
+    for (const value of [
+      "",
+      "unknown-system",
+      "constructor",
+      "toString",
+      "__proto__",
+      undefined,
+      null,
+      0,
+      {},
+      [],
+    ]) {
+      expect(isTaskSystemId(value)).toBe(false);
+    }
   });
 });

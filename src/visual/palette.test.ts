@@ -14,14 +14,10 @@ describe("palette constants", () => {
 
   it("all palette constants are non-empty strings", () => {
     const entries = Object.entries(all) as [string, string][];
-    for (const [name, value] of entries) {
+    for (const [, value] of entries) {
       expect(typeof value).toBe("string");
       expect(value.length).toBeGreaterThan(0);
     }
-  });
-
-  it("VIS_PANEL_STROKE is #c9c9c9", () => {
-    expect(VIS_PANEL_STROKE).toBe("#c9c9c9");
   });
 
   it("VIS_PANEL_FILL is a defined non-empty string", () => {

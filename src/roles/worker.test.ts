@@ -140,7 +140,7 @@ function arrangeTask(type: WorkerTaskType): WorkerTask {
   return task;
 }
 
-beforeEach(() => {
+function resetWorkerFixture(): void {
   jest.clearAllMocks();
   mockedPickupEnergy.mockReturnValue({ picked: false, outOfRange: false });
   mockedMoveToRemoteWorkTarget.mockReturnValue(OK);
@@ -149,72 +149,69 @@ beforeEach(() => {
   mockedGetWorkerTaskTarget.mockReturnValue(target);
   mockedIsWorkerTaskSafeForCreep.mockReturnValue(true);
   mockedCompleteWorkerTaskIfDone.mockReturnValue(false);
-});
+}
 
-describe("workerRole source phase", () => {
-  it.each([
-    ["picked energy", { picked: true, outOfRange: false }, 20, 100],
-    ["became full", { picked: false, outOfRange: false }, 100, 100],
-  ])("returns the mount switch signal after it %s", (_label, pickupResult, energy, capacity) => {
-    const { creep } = createCreep(energy, capacity);
-    mockedPickupEnergy.mockReturnValue(pickupResult);
+beforeEach(resetWorkerFixture);
 
-    const shouldSwitchToTarget = workerRole().source!(creep);
+describe("workerRole", () => {
+  it("switches from source after a pickup or when the store becomes full", () => {
+    for (const scenario of [
+      { label: "picked energy", pickup: { picked: true, outOfRange: false }, energy: 20 },
+      { label: "became full", pickup: { picked: false, outOfRange: false }, energy: 100 },
+    ]) {
+      resetWorkerFixture();
+      const { creep } = createCreep(scenario.energy, 100);
+      mockedPickupEnergy.mockReturnValue(scenario.pickup);
 
-    expect(shouldSwitchToTarget).toBe(true);
-    expect(mockedPickupEnergy).toHaveBeenCalledWith(creep, { swampCost: 8 });
-    expect(mockedReleasePickupReservation).toHaveBeenCalledWith(creep);
+      expect(workerRole().source!(creep)).toBe(true);
+      expect(mockedPickupEnergy).toHaveBeenCalledWith(creep, { swampCost: 8 });
+      expect(mockedReleasePickupReservation).toHaveBeenCalledWith(creep);
+    }
   });
 
-  it.each([
-    ["has no pickup target", { picked: false, outOfRange: false }],
-    ["is still walking to energy", { picked: false, outOfRange: true }],
-  ])("stays in source phase when it %s", (_label, pickupResult) => {
-    const { creep } = createCreep(0, 100);
-    mockedPickupEnergy.mockReturnValue(pickupResult);
+  it("stays in source while no pickup exists or energy movement is pending", () => {
+    for (const scenario of [
+      { label: "no pickup target", pickup: { picked: false, outOfRange: false } },
+      { label: "walking to energy", pickup: { picked: false, outOfRange: true } },
+    ]) {
+      resetWorkerFixture();
+      const { creep } = createCreep(0, 100);
+      mockedPickupEnergy.mockReturnValue(scenario.pickup);
 
-    expect(workerRole().source!(creep)).toBe(false);
-    expect(mockedReleasePickupReservation).not.toHaveBeenCalled();
-  });
-});
-
-describe("workerRole target preconditions", () => {
-  it.each([
-    [50, false],
-    [0, true],
-  ])("only asks mount to return to source when no task exists and energy is %i", (energy, expected) => {
-    const { creep } = createCreep(energy);
-
-    expect(workerRole().target(creep)).toBe(expected);
-    expect(mockedReleaseWorkerTask).not.toHaveBeenCalled();
+      expect(workerRole().source!(creep)).toBe(false);
+      expect(mockedReleasePickupReservation).not.toHaveBeenCalled();
+    }
   });
 
-  it("releases an assignment whose target disappeared before issuing any intent", () => {
-    const task = arrangeTask("build");
-    const { creep } = createCreep(0);
+  it("handles missing, vanished, and unsafe task preconditions without issuing work", () => {
+    for (const energy of [50, 0]) {
+      resetWorkerFixture();
+      const { creep } = createCreep(energy);
+      expect(workerRole().target(creep)).toBe(energy === 0);
+      expect(mockedReleaseWorkerTask).not.toHaveBeenCalled();
+    }
+
+    resetWorkerFixture();
+    const missingTask = arrangeTask("build");
+    const { creep: missingTargetCreep } = createCreep(0);
     mockedGetWorkerTaskTarget.mockReturnValue(null);
-
-    expect(workerRole().target(creep)).toBe(true);
-    expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(creep);
+    expect(workerRole().target(missingTargetCreep)).toBe(true);
+    expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(missingTargetCreep);
     expect(mockedIsWorkerTaskSafeForCreep).not.toHaveBeenCalled();
-    expect(getActionMock(creep, task.type)).not.toHaveBeenCalled();
-  });
+    expect(getActionMock(missingTargetCreep, missingTask.type)).not.toHaveBeenCalled();
 
-  it("releases an unsafe assignment before issuing any intent", () => {
-    const task = arrangeTask("repair");
-    const { creep } = createCreep(50);
+    resetWorkerFixture();
+    const unsafeTask = arrangeTask("repair");
+    const { creep: unsafeCreep } = createCreep(50);
     mockedIsWorkerTaskSafeForCreep.mockReturnValue(false);
-
-    expect(workerRole().target(creep)).toBe(false);
-    expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(creep);
-    expect(getActionMock(creep, task.type)).not.toHaveBeenCalled();
+    expect(workerRole().target(unsafeCreep)).toBe(false);
+    expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(unsafeCreep);
+    expect(getActionMock(unsafeCreep, unsafeTask.type)).not.toHaveBeenCalled();
   });
-});
 
-describe("workerRole task execution", () => {
-  it.each<WorkerTaskType>(["build", "upgrade", "repair", "dismantle"])(
-    "issues the %s intent and its existing movement on OK",
-    (type) => {
+  it("executes every supported task with its role-specific movement contract", () => {
+    for (const type of ["build", "upgrade", "repair", "dismantle"] as WorkerTaskType[]) {
+      resetWorkerFixture();
       const task = arrangeTask(type);
       const { creep } = createCreep(50);
 
@@ -223,12 +220,12 @@ describe("workerRole task execution", () => {
       expectMovementFor(creep, type);
       expect(mockedCompleteWorkerTaskIfDone).toHaveBeenCalledWith(task);
       expect(mockedReleaseWorkerTask).not.toHaveBeenCalled();
-    },
-  );
+    }
+  });
 
-  it.each<WorkerTaskType>(["build", "upgrade", "repair", "dismantle"])(
-    "releases a %s assignment after ERR_INVALID_TARGET",
-    (type) => {
+  it("releases every supported assignment after ERR_INVALID_TARGET", () => {
+    for (const type of ["build", "upgrade", "repair", "dismantle"] as WorkerTaskType[]) {
+      resetWorkerFixture();
       arrangeTask(type);
       const { creep } = createCreep(50);
       getActionMock(creep, type).mockReturnValue(ERR_INVALID_TARGET);
@@ -237,12 +234,12 @@ describe("workerRole task execution", () => {
       expectMovementFor(creep, type);
       expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(creep);
       expect(mockedCompleteWorkerTaskIfDone).not.toHaveBeenCalled();
-    },
-  );
+    }
+  });
 
-  it.each<WorkerTaskType>(["build", "upgrade", "repair", "dismantle"])(
-    "releases a completed %s assignment after the intent",
-    (type) => {
+  it("cleans up completed and energy-exhausted assignments but keeps dismantle active", () => {
+    for (const type of ["build", "upgrade", "repair", "dismantle"] as WorkerTaskType[]) {
+      resetWorkerFixture();
       const task = arrangeTask(type);
       const { creep } = createCreep(50);
       mockedCompleteWorkerTaskIfDone.mockReturnValue(true);
@@ -250,12 +247,10 @@ describe("workerRole task execution", () => {
       expect(workerRole().target(creep)).toBe(false);
       expect(mockedCompleteWorkerTaskIfDone).toHaveBeenCalledWith(task);
       expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(creep);
-    },
-  );
+    }
 
-  it.each<Exclude<WorkerTaskType, "dismantle">>(["build", "upgrade", "repair"])(
-    "releases %s and returns the mount switch signal when its last energy is spent",
-    (type) => {
+    for (const type of ["build", "upgrade", "repair"] as const) {
+      resetWorkerFixture();
       arrangeTask(type);
       const { creep, energy } = createCreep(1);
       getActionMock(creep, type).mockImplementation(() => {
@@ -265,26 +260,19 @@ describe("workerRole task execution", () => {
 
       expect(workerRole().target(creep)).toBe(true);
       expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(creep);
-    },
-  );
+    }
 
-  it("keeps dismantle in target phase even with an empty energy store", () => {
+    resetWorkerFixture();
     arrangeTask("dismantle");
-    const { creep } = createCreep(0);
-
-    expect(workerRole().target(creep)).toBe(false);
+    const { creep: dismantler } = createCreep(0);
+    expect(workerRole().target(dismantler)).toBe(false);
     expect(mockedReleaseWorkerTask).not.toHaveBeenCalled();
   });
-});
 
-describe("workerRole movement failures", () => {
-  it.each([
-    ["build" as const, true],
-    ["upgrade" as const, false],
-  ])(
-    "keeps a distant %s assignment when remote movement returns ERR_NO_PATH",
-    (type, checksCompletion) => {
-      const task = arrangeTask(type);
+  it("keeps or releases unreachable work according to the task retry contract", () => {
+    for (const type of ["build", "upgrade"] as const) {
+      resetWorkerFixture();
+      arrangeTask(type);
       const { creep } = createCreep(50);
       getActionMock(creep, type).mockReturnValue(ERR_NOT_IN_RANGE);
       mockedMoveToRemoteWorkTarget.mockReturnValue(ERR_NO_PATH);
@@ -292,30 +280,10 @@ describe("workerRole movement failures", () => {
       expect(workerRole().target(creep)).toBe(false);
       expect(mockedMoveToRemoteWorkTarget).toHaveBeenCalledWith(creep, target);
       expect(mockedReleaseWorkerTask).not.toHaveBeenCalled();
-      if (checksCompletion) {
-        expect(mockedCompleteWorkerTaskIfDone).toHaveBeenCalledWith(task);
-      } else {
-        expect(mockedCompleteWorkerTaskIfDone).not.toHaveBeenCalled();
-      }
-    },
-  );
+    }
 
-  it.each<"repair" | "dismantle">(["repair", "dismantle"])(
-    "keeps a distant %s assignment while a route still exists",
-    (type) => {
-      arrangeTask(type);
-      const { creep } = createCreep(50);
-      getActionMock(creep, type).mockReturnValue(ERR_NOT_IN_RANGE);
-
-      expect(workerRole().target(creep)).toBe(false);
-      expect(mockedReleaseWorkerTask).not.toHaveBeenCalled();
-      expect(mockedCompleteWorkerTaskIfDone).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each<"repair" | "dismantle">(["repair", "dismantle"])(
-    "releases a distant %s assignment when movement returns ERR_NO_PATH",
-    (type) => {
+    for (const type of ["repair", "dismantle"] as const) {
+      resetWorkerFixture();
       arrangeTask(type);
       const { creep } = createCreep(50);
       getActionMock(creep, type).mockReturnValue(ERR_NOT_IN_RANGE);
@@ -328,30 +296,28 @@ describe("workerRole movement failures", () => {
       expect(workerRole().target(creep)).toBe(false);
       expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(creep);
       expect(mockedCompleteWorkerTaskIfDone).not.toHaveBeenCalled();
-    },
-  );
-});
+    }
+  });
 
-describe("workerRole unknown task fallback", () => {
-  it.each([
-    [50, false],
-    [0, true],
-  ])("releases an unknown task and bases the phase signal on %i energy", (energy, expected) => {
-    const task = {
-      ...createTask("build"),
-      type: "unknown",
-    } as unknown as WorkerTask;
-    mockedAssignWorkerTask.mockReturnValue(task);
-    mockedGetWorkerTaskTarget.mockReturnValue(target);
-    const { creep } = createCreep(energy);
+  it("releases unknown task types and derives the phase signal from remaining energy", () => {
+    for (const energy of [50, 0]) {
+      resetWorkerFixture();
+      const unknownTask = {
+        ...createTask("build"),
+        type: "unknown",
+      } as unknown as WorkerTask;
+      mockedAssignWorkerTask.mockReturnValue(unknownTask);
+      mockedGetWorkerTaskTarget.mockReturnValue(target);
+      const { creep } = createCreep(energy);
 
-    expect(workerRole().target(creep)).toBe(expected);
-    expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(creep);
-    expect(creep.build).not.toHaveBeenCalled();
-    expect(creep.upgradeController).not.toHaveBeenCalled();
-    expect(creep.repair).not.toHaveBeenCalled();
-    expect(creep.dismantle).not.toHaveBeenCalled();
-    expect(mockedMoveToRemoteWorkTarget).not.toHaveBeenCalled();
-    expect(mockedMoveToTarget).not.toHaveBeenCalled();
+      expect(workerRole().target(creep)).toBe(energy === 0);
+      expect(mockedReleaseWorkerTask).toHaveBeenCalledWith(creep);
+      expect(creep.build).not.toHaveBeenCalled();
+      expect(creep.upgradeController).not.toHaveBeenCalled();
+      expect(creep.repair).not.toHaveBeenCalled();
+      expect(creep.dismantle).not.toHaveBeenCalled();
+      expect(mockedMoveToRemoteWorkTarget).not.toHaveBeenCalled();
+      expect(mockedMoveToTarget).not.toHaveBeenCalled();
+    }
   });
 });

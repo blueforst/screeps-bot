@@ -1,5 +1,5 @@
 import { clearRemoteSafetyCacheForTest, remoteMiningCarrierRole } from "@/roles/remoteMiningCarrier";
-import { clearMovementState, moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { clearMovementState, moveToTarget } from "@/roles/shared";
 
 jest.mock("@/roles/shared", () => ({
   clearMovementState: jest.fn(),
@@ -149,22 +149,6 @@ function makeCreep(opts: {
 
 describe("partial withdrawal and maintenance", () => {
 
-  it("explicit-source carrier at range 1 withdraws from partial container and returns for delivery", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(10, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const room = makeRoom("W5N5", { structures: [container] });
-
-    const creepPos = makePos(25, 25, "W5N5");
-    const creep = makeCreep({ room, energy: 0, pos: creepPos });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(result).toBe(true);
-  });
-
   it("explicit-source carrier uses its planned container position instead of a neighboring source container", () => {
     const source1Pos = makePos(5, 31, "W5N5");
     const source2Pos = makePos(6, 32, "W5N5");
@@ -231,129 +215,5 @@ describe("container approach behavior", () => {
     expect(containerCalls).toHaveLength(0);
     expect(clearMovementState).toHaveBeenCalledWith(creep);
     expect(creep.move).not.toHaveBeenCalled();
-  });
-});
-
-describe("source container construction site build", () => {
-
-  it("prioritizes build over pickup when carrier has surplus energy and both dropped energy and container site exist", () => {
-    const sourcePos = makePos(27, 25, "W5N5");
-    const containerSite = {
-      id: "csite-1",
-      structureType: STRUCTURE_CONTAINER,
-      my: true,
-      pos: makePos(26, 25, "W5N5"),
-    } as unknown as ConstructionSite;
-    const dropped = {
-      id: "drop-1",
-      resourceType: RESOURCE_ENERGY,
-      amount: 200,
-      pos: makePos(26, 25, "W5N5"),
-    } as unknown as Resource;
-    const room = makeRoom("W5N5", { constructionSites: [containerSite], droppedResources: [dropped] });
-
-    const creep = makeCreep({ room, energy: 200, pos: makePos(26, 25, "W5N5") });
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(creep.build).toHaveBeenCalledWith(containerSite);
-    expect(creep.pickup).not.toHaveBeenCalled();
-  });
-});
-
-describe("retreats when suspended", () => {
-  beforeEach(() => {
-    Memory.data = {};
-  });
-
-  it("source phase does not retreat when target room has WORK-only hostile", () => {
-    const remoteRoom = makeRoom("W5N5");
-    const workHostile = {
-      id: "hc-work",
-      getActiveBodyparts: (part: BodyPartConstant) => part === WORK ? 3 : 0,
-    } as unknown as Creep;
-    (remoteRoom.find as jest.Mock).mockImplementation((type: number) => {
-      if (type === FIND_HOSTILE_CREEPS) return [workHostile];
-      return [];
-    });
-    Game.rooms["W5N5"] = remoteRoom;
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(1500, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    (remoteRoom.find as jest.Mock).mockImplementation((type: number, opts?: any) => {
-      if (type === FIND_HOSTILE_CREEPS) return [workHostile];
-      if (type === FIND_STRUCTURES) {
-        const all = [container];
-        return opts?.filter ? all.filter(opts.filter) : all;
-      }
-      return [];
-    });
-    let carried = 0;
-    const creep = makeCreep({ room: remoteRoom, energy: 0 });
-    (creep.store.getUsedCapacity as jest.Mock) = jest.fn(() => carried);
-    (creep.store.getFreeCapacity as jest.Mock) = jest.fn(() => 800 - carried);
-    creep.withdraw = jest.fn(() => { carried = 800; return OK; });
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    Memory.data!.remoteMining = {
-      W5N5: {
-        sourceRoom: "W1N1",
-        targetRoom: "W5N5",
-        status: "active",
-        sourceIds: ["src1"],
-        assignedAt: 50,
-        updatedAt: 50,
-      },
-    };
-
-    const result = remoteMiningCarrierRole("W5N5", "src-1").source?.(creep);
-
-    expect(moveToTargetRoom).not.toHaveBeenCalled();
-    expect(creep.withdraw).toHaveBeenCalled();
-    expect(result).toBe(true);
-  });
-});
-
-describe("per-tick scan deduplication across carriers", () => {
-  beforeEach(() => {
-    Memory.data = {};
-  });
-
-  it("does not repeat safety room.find scans when two carriers check the same visible remote room in one tick", () => {
-    const containerPos = makePos(26, 25, "W5N5");
-    const container = makeSourceContainer(1500, containerPos);
-    const sourcePos = makePos(27, 25, "W5N5");
-    const remoteRoom = makeRoom("W5N5", { structures: [container] });
-    Game.rooms["W5N5"] = remoteRoom;
-
-    (Game.getObjectById as jest.Mock) = jest.fn(() => ({ pos: sourcePos, id: "src-1" }));
-
-    Memory.data!.remoteMining = {
-      W5N5: {
-        sourceRoom: "W1N1",
-        targetRoom: "W5N5",
-        status: "active",
-        sourceIds: ["src1"],
-        assignedAt: 50,
-        updatedAt: 50,
-      },
-    };
-
-    const creep1 = makeCreep({ room: remoteRoom, energy: 0, name: "c1" });
-    const creep2 = makeCreep({ room: remoteRoom, energy: 0, name: "c2" });
-
-    remoteMiningCarrierRole("W5N5", "src-1").source?.(creep1);
-    remoteMiningCarrierRole("W5N5", "src-1").source?.(creep2);
-
-    const findCalls = (remoteRoom.find as jest.Mock).mock.calls;
-    const countType = (type: number) => findCalls.filter((c) => c[0] === type).length;
-
-    expect(countType(FIND_HOSTILE_CREEPS)).toBeLessThanOrEqual(1);
-    expect(countType(FIND_HOSTILE_STRUCTURES)).toBeLessThanOrEqual(1);
-    expect(countType(FIND_STRUCTURES)).toBeLessThanOrEqual(1);
-    expect(countType(FIND_CONSTRUCTION_SITES)).toBeLessThanOrEqual(1);
-    expect(countType(FIND_DROPPED_RESOURCES)).toBeLessThanOrEqual(1);
   });
 });

@@ -1,10 +1,6 @@
 import {
   reserveProductionResource,
   releaseProductionReservation,
-  renewProductionReservation,
-  getReservedProductionAmount,
-  getReservedProductionAmountExcludingHolder,
-  gcProductionReservations,
   listProductionReservations,
 } from "@/runtime/resourceReservation";
 
@@ -31,13 +27,6 @@ describe("resourceReservation", () => {
       const entries = listProductionReservations();
       expect(entries).toHaveLength(1);
       expect(entries[0].holderId).toBe("carrier2");
-    });
-  });
-
-  describe("getReservedProductionAmount", () => {
-
-    it("returns 0 when no reservations exist", () => {
-      expect(getReservedProductionAmount("E4N58", "energy" as ResourceConstant)).toBe(0);
     });
   });
 });

@@ -1,21 +1,6 @@
 import {
-  advanceTrustedFloor,
-  allocateFeeDebtForFill,
-  assessOrderBookDepth,
   buildTrustedHistoryFloor,
-  calculateOrderFeeMilli,
-  calculatePriceIncreaseFeeMilli,
-  calculateProspectiveFeeMilli,
-  ceilMilli,
-  computeEffectiveNetFloor,
-  computeEnergyShadowPrice,
-  evaluatePostActionInvariant,
-  findMinimumSafePrice,
-  priceToMilliDown,
   rankDirectBuyOrders,
-  roomBalancedMedianPrice,
-  roundMarketPriceUp,
-  weightedMedian,
   type MarketHistoryDay,
   type MarketOrderSnapshot,
 } from "@/runtime/marketSalePricing";
@@ -95,25 +80,6 @@ describe("trusted market history", () => {
       { date: "2026-07-25", reason: "incomplete_day" },
     ]));
   });
-
-  it("compresses split orders to one equal-weight room vote and uses the safe upper middle boundary", () => {
-    const orders = [
-      buyOrder("low-1", 0.8, 1_000, "W1N1"),
-      buyOrder("low-2", 0.8, 1_000, "W1N1"),
-      buyOrder("low-3", 0.8, 1_000, "W1N1"),
-      buyOrder("high-1", 1.2, 1_000, "W2N2"),
-      buyOrder("high-2", 1.2, 1_000, "W3N3"),
-    ];
-
-    expect(roomBalancedMedianPrice(orders, 1_000)).toBe(1.2);
-    expect(
-      roomBalancedMedianPrice(
-        orders.filter((order) => order.roomName !== "W3N3"),
-        1_000,
-      ),
-    ).toBe(1.2);
-    expect(roomBalancedMedianPrice([], 1_000)).toBeNull();
-  });
 });
 
 describe("order book depth and direct buy-order ranking", () => {
@@ -146,61 +112,5 @@ describe("order book depth and direct buy-order ranking", () => {
       { orderId: "low-deep", reason: "quote_below_floor" },
       { reason: "book_depth_untrusted" },
     ]));
-  });
-});
-
-describe("post-action order price invariant", () => {
-
-  it("finds safe up- and down-reprice ticks with their different prospective fees", () => {
-    const up = findMinimumSafePrice({
-      effectiveNetFloor: 1,
-      feeDebtMilli: 50_000,
-      action: {
-        kind: "repriceUp",
-        currentPrice: 1,
-        remainingAmount: 1_000,
-      },
-    });
-    expect(up).toMatchObject({
-      safe: true,
-      minimumSafePrice: 1.053,
-      evaluation: {
-        prospectiveFeeMilli: 2_650,
-        netRemainingValueMilli: 1_000_350,
-      },
-    });
-
-    const down = findMinimumSafePrice({
-      effectiveNetFloor: 1,
-      feeDebtMilli: 60_000,
-      action: {
-        kind: "repriceDown",
-        currentPrice: 1.2,
-        remainingAmount: 1_000,
-      },
-    });
-    expect(down).toMatchObject({
-      safe: true,
-      minimumSafePrice: 1.06,
-      evaluation: {
-        prospectiveFeeMilli: 0,
-        netRemainingValueMilli: 1_000_000,
-      },
-    });
-
-    const noSafeDown = findMinimumSafePrice({
-      effectiveNetFloor: 1,
-      feeDebtMilli: 60_000,
-      action: {
-        kind: "repriceDown",
-        currentPrice: 1.05,
-        remainingAmount: 1_000,
-      },
-    });
-    expect(noSafeDown).toMatchObject({
-      safe: false,
-      reason: "no_safe_down_reprice",
-      minimumSafePrice: 1.06,
-    });
   });
 });

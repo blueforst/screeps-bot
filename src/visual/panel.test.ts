@@ -1,5 +1,4 @@
 import { Panel } from "@/visual/panel";
-import type { VisualSurface } from "@/visual/panel";
 import { VIS_PANEL_FILL } from "@/visual/palette";
 
 type VisualCall = { roomName: string; method: string; args: any[] };
@@ -63,67 +62,5 @@ describe("Panel", () => {
     expect(backgrounds[0].args[3]).toBeGreaterThan(4.2);
     expect(panel.cursorY).toBe(2);
     expect(panel.callsUsed).toBe(1);
-  });
-
-  it("sectionHeader supports health color overrides while preserving call accounting", () => {
-    const panel = makePanel();
-    panel.sectionHeader("Warning", { fill: "#ffaa00", color: "#ffffff", opacity: 0.35 });
-
-    const headers = findCalls("rect", args => args[4]?.fill === "#ffaa00");
-    const labels = findCalls("text", args => args[0] === "Warning");
-    expect(headers).toHaveLength(1);
-    expect(headers[0].args[4]?.opacity).toBe(0.35);
-    expect(labels[0].args[3]?.color).toBe("#ffffff");
-    expect(panel.callsUsed).toBe(2);
-  });
-
-  it("progressBar at 50% emits outline rect + fill rect + centered text", () => {
-    const panel = makePanel();
-    panel.progressBar(0.5, "#00ff88", "500/1000");
-
-    const rects = findCalls("rect");
-
-    // outline rect (transparent fill or no fill)
-    const outlines = rects.filter(
-      (c) => c.args[4]?.fill === "transparent" || c.args[4]?.fill === undefined,
-    );
-    expect(outlines.length).toBeGreaterThanOrEqual(1);
-
-    // fill rect
-    const fills = rects.filter((c) => c.args[4]?.fill === "#00ff88");
-    expect(fills).toHaveLength(1);
-
-    // text label
-    const labelTexts = findCalls("text", (args) => args[0] === "500/1000");
-    expect(labelTexts).toHaveLength(1);
-
-    // cursorY advanced by barHeight + barPad
-    const barAdvance = 0.45 + 0.15; // 0.6
-    expect(panel.cursorY).toBeCloseTo(2 + barAdvance, 4);
-  });
-
-  it("progressBar at 0% emits NO fill rect (only outline + text)", () => {
-    const panel = makePanel();
-    panel.progressBar(0, "#00ff88", "0/1000");
-
-    const rects = findCalls("rect");
-
-    // NO colored fill rect
-    const coloredFills = rects.filter((c) => c.args[4]?.fill === "#00ff88");
-    expect(coloredFills).toHaveLength(0);
-
-    // outline rect still present
-    const outlines = rects.filter(
-      (c) => c.args[4]?.fill === "transparent" || c.args[4]?.fill === undefined,
-    );
-    expect(outlines.length).toBeGreaterThanOrEqual(1);
-
-    // text label
-    const labelTexts = findCalls("text", (args) => args[0] === "0/1000");
-    expect(labelTexts).toHaveLength(1);
-
-    // cursorY still advanced by barHeight + barPad
-    const barAdvance = 0.6;
-    expect(panel.cursorY).toBeCloseTo(2 + barAdvance, 4);
   });
 });

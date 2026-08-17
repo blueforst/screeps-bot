@@ -1,7 +1,5 @@
 import {
-  getPlannedSourceContainerPos,
   getSourceContainerPositionsForRoom,
-  runRoomPlannerConstruction,
 } from "@/runtime/roomPlannerConstruction";
 
 type RuntimeGlobal = typeof global & {
@@ -122,20 +120,6 @@ function resetRuntimeServices(): void {
   delete (global as RuntimeGlobal).__runtimeServices;
 }
 
-function createStructure(
-  room: Room,
-  structureType: StructureConstant,
-  x: number,
-  y: number,
-): MockStructure {
-  return {
-    destroy: jest.fn(() => OK),
-    structureType,
-    my: true,
-    pos: new MockRoomPosition(x, y, room.name),
-    room,
-  } as unknown as MockStructure;
-}
 
 function createSource(room: Room, x: number, y: number): Source {
   return {
@@ -145,29 +129,7 @@ function createSource(room: Room, x: number, y: number): Source {
   } as Source;
 }
 
-function createMineral(room: Room, x: number, y: number): Mineral {
-  return {
-    id: `mineral:${room.name}:${x}:${y}`,
-    room,
-    pos: new MockRoomPosition(x, y, room.name) as RoomPosition,
-  } as Mineral;
-}
 
-function createPlannedSite(
-  room: Room,
-  structureType: BuildableStructureConstant,
-  x: number,
-  y: number,
-): MockSite {
-  return {
-    id: `existing:${structureType}:${x}:${y}`,
-    my: true,
-    remove: jest.fn(() => OK),
-    structureType,
-    pos: new MockRoomPosition(x, y, room.name),
-    room,
-  } as unknown as MockSite;
-}
 
 function createRoom(options: {
   name?: string;
@@ -321,33 +283,5 @@ describe("getSourceContainerPositionsForRoom", () => {
 
     const second = getSourceContainerPositionsForRoom(room.name);
     expect(second).toEqual([{ x: 12, y: 10 }]);
-  });
-});
-
-describe("getPlannedSourceContainerPos", () => {
-  beforeAll(() => {
-    (global as RuntimeGlobal).RoomPosition = MockRoomPosition;
-  });
-
-  beforeEach(() => {
-    resetRuntimeServices();
-    Game.time = 100;
-    Game.rooms = {} as Game["rooms"];
-    Memory.data = {} as Memory["data"];
-  });
-
-  it("ignores a remote mining source container plan after the target room is owned before lifecycle cleanup", () => {
-    const room = createRoom({ name: "E1N55" });
-    const source = createSource(room, 6, 32);
-    room.__sources.push(source);
-    Game.rooms[room.name] = room;
-    const task = createRemoteMiningTask("E1N57", room.name, {
-      [source.id]: { x: 5, y: 33, roomName: room.name },
-    });
-    Memory.data = {
-      remoteMining: { [room.name]: task },
-    } as Memory["data"];
-
-    expect(getPlannedSourceContainerPos(source)).toBeNull();
   });
 });

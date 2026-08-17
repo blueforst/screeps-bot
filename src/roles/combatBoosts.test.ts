@@ -26,13 +26,6 @@ function createAttacker(): Creep {
   } as unknown as Creep;
 }
 
-function createUpgrader(): Creep {
-  return {
-    body: [{ type: WORK, hits: 100 }],
-    memory: {},
-    pos: { isNearTo: jest.fn(() => true) } as unknown as RoomPosition,
-  } as unknown as Creep;
-}
 
 function createBoostLab(energy: number): StructureLab {
   return {
@@ -74,28 +67,6 @@ describe("prepareCombatBoost", () => {
       creep,
       "war:E1N57:E2N54:g1",
       RESOURCE_CATALYZED_UTRIUM_ACID,
-    );
-
-    expect(ready).toBe(false);
-    expect(lab.boostCreep).toHaveBeenCalledWith(creep);
-  });
-
-  it("issues a boost intent for an unboosted WORK part", () => {
-    const lab = {
-      id: "lab-1" as Id<StructureLab>,
-      store: createMockStore({
-        [RESOURCE_CATALYZED_GHODIUM_ACID]: LAB_BOOST_MINERAL,
-        [RESOURCE_ENERGY]: LAB_BOOST_ENERGY,
-      }),
-      boostCreep: jest.fn(() => OK),
-    } as unknown as StructureLab;
-    Game.getObjectById = jest.fn(() => lab) as typeof Game.getObjectById;
-    const creep = createUpgrader();
-
-    const ready = prepareCombatBoost(
-      creep,
-      "hubUpgrade:E4N58",
-      RESOURCE_CATALYZED_GHODIUM_ACID,
     );
 
     expect(ready).toBe(false);

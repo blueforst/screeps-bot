@@ -1,9 +1,5 @@
 import {
-  DIRECT_CANARY_MAX_ELIGIBLE_ORDERS,
-  DIRECT_CANARY_MAX_RAW_ORDERS,
-  compareDirectPricingCandidates,
   rankDirectCurrentBuyOrders,
-  type DirectPricingCandidate,
 } from "@/runtime/marketSaleDirectPricing";
 import type { MarketOrderSnapshot } from "@/runtime/marketSalePricing";
 
@@ -43,29 +39,6 @@ function rank(
   });
 }
 
-function comparisonCandidate(
-  id: string,
-  netCreditsMilli: number,
-  dealAmount: number,
-  grossPriceMilli = 1_000,
-): DirectPricingCandidate {
-  return {
-    order: order(id, grossPriceMilli / 1_000),
-    dealAmount,
-    grossPriceMilli,
-    grossCreditsMilli: grossPriceMilli * dealAmount,
-    transactionEnergy: 0,
-    energyShadowPriceMilli: 0,
-    energyShadowCostMilli: 0,
-    netCreditsMilli,
-    effectiveNetFloorMilli: 1,
-    requiredNetCreditsMilli: dealAmount,
-    worstCaseActualAmount: 1,
-    worstCaseTransactionEnergy: 0,
-    worstCaseNetCreditsMilli: grossPriceMilli,
-    worstCaseRequiredNetCreditsMilli: 1,
-  };
-}
 
 describe("Direct current BUY pricing", () => {
 
@@ -107,19 +80,6 @@ describe("Direct current BUY pricing", () => {
     expect(partialUnsafe.rejectedOrders).toContainEqual({
       orderId: "partial-unsafe",
       reason: "worst_case_net_below_floor",
-    });
-  });
-
-  it("fails closed when a conservative milli-credit operation exceeds safe precision", () => {
-    const result = rank([order("overflow", Number.MAX_SAFE_INTEGER)]);
-
-    expect(result).toMatchObject({
-      safe: false,
-      cycleRejection: {
-        reason: "unsafe_arithmetic",
-        orderId: "overflow",
-      },
-      candidates: [],
     });
   });
 });

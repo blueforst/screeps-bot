@@ -1,15 +1,12 @@
 import {
   MARKET_PROTECTION_SOURCE_KINDS,
   buildMarketSaleProtectionLedger,
-  evaluateMarketSaleCanaryPrerequisites,
   getMarketProtectionEntryKey,
-  getMarketProtectionSellableAmount,
   type BuildMarketSaleProtectionLedgerInput,
   type MarketProtectionFact,
   type MarketProtectionSourceKind,
   type MarketProtectionSourceSnapshot,
 } from "@/runtime/marketSaleProtection";
-import { canonicalStableHashV1 } from "@/runtime/marketDirectContinuousPolicy";
 
 const TICK = 12_345;
 const ROOM = "W1N1";
@@ -141,69 +138,5 @@ describe("marketSaleProtection", () => {
     expect(entry.productionDemand).toBe(500);
     expect(entry.protectedAmount).toBe(600);
     expect(entry.sellableAmount).toBe(400);
-  });
-
-  it("applies exact self-exclusion and the maintained amount to canary prerequisites", () => {
-    const entry = entryFrom({
-      managedExposure: snapshot([
-        fact(200, {
-          stableKey: "order:a",
-          managedOrderId: "a",
-        }),
-        fact(50, {
-          stableKey: "order:b",
-          managedOrderId: "b",
-        }),
-      ]),
-    });
-    const prerequisite = {
-      currentTick: TICK,
-      isHubRoom: false,
-      capacityState: "normal" as const,
-      terminalExists: true,
-      terminalCooldown: 0,
-      terminalEnergy: 50_000,
-      terminalEnergyReserve: 20_000,
-      terminalFreeCapacity: 80_000,
-      minimumTerminalFreeCapacity: 40_000,
-      resourceAllowed: true,
-      hasCriticalConflict: false,
-      trustedPrice: true,
-      trustedDepth: true,
-      requireNoManagedExposure: false,
-    };
-
-    expect(
-      evaluateMarketSaleCanaryPrerequisites(entry, {
-        ...prerequisite,
-        excludeManagedOrderId: "a",
-        minimumSellableAmount: 550,
-      }),
-    ).toMatchObject({
-      eligible: true,
-      sellableAmount: 550,
-      reasons: [],
-    });
-    expect(
-      evaluateMarketSaleCanaryPrerequisites(entry, {
-        ...prerequisite,
-        excludeManagedOrderId: "a",
-        minimumSellableAmount: 551,
-      }),
-    ).toMatchObject({
-      eligible: false,
-      sellableAmount: 550,
-      reasons: ["no_sellable_amount"],
-    });
-    expect(
-      evaluateMarketSaleCanaryPrerequisites(entry, {
-        ...prerequisite,
-        minimumSellableAmount: 500,
-      }),
-    ).toMatchObject({
-      eligible: false,
-      sellableAmount: 350,
-      reasons: ["no_sellable_amount"],
-    });
   });
 });

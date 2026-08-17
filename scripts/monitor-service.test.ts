@@ -123,6 +123,55 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
         }),
       ]),
     );
+
+    const sourcePath = resolve(
+      REPO_ROOT,
+      "scripts/fixtures/market-sale-continuous-monitor.json",
+    );
+    const fixture = JSON.parse(readFileSync(sourcePath, "utf8")) as Record<string, any>;
+    const planning = fixture.data.marketSaleAutomation.directAutomation.baseResourceV3
+      .lastPlanningSnapshot;
+    planning.cpuTrace = {
+      observedAt: 700,
+      cpuAfterOuterSession: 1,
+      cpuAfterScopeCore: 2,
+      cpuAfterMarketFacts: 3,
+      cpuAfterShadowBatch: 4,
+      cpuAfterInnerApply: 5,
+      cpuCutPhase: null,
+      marketFactsDisposition: "read",
+    };
+    fixture.runtime.marketSaleAutomation.direct.baseResourceV3CpuTrace = {
+      observedAt: 701,
+      cpuAfterOuterSession: 6,
+      cpuAfterScopeCore: 12,
+      cpuAfterMarketFacts: 19,
+      cpuAfterShadowBatch: 24,
+      cpuAfterInnerApply: 25,
+      cpuCutPhase: "outer_precommit",
+      marketFactsDisposition: "read",
+    };
+
+    const temporaryDirectory = mkdtempSync(resolve(tmpdir(), "screeps-monitor-cpu-trace-"));
+    const fixturePath = resolve(temporaryDirectory, "fixture.json");
+    try {
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const projected = executeFixture(fixturePath)
+        .payload.memory.marketSaleAutomation.direct.baseResourceV3;
+      expect(projected.cpuTrace).toEqual({
+        observedAt: 701,
+        cpuAfterOuterSession: 6,
+        cpuAfterScopeCore: 12,
+        cpuAfterMarketFacts: 19,
+        cpuAfterShadowBatch: 24,
+        cpuAfterInnerApply: 25,
+        cpuCutPhase: "outer_precommit",
+        marketFactsDisposition: "read",
+      });
+      expect(projected.planning.cpuTrace).toEqual(projected.cpuTrace);
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
   });
 });
 
@@ -223,65 +272,4 @@ describe("monitor-service Hub protection projection", () => {
       });
     }
   });
-});
-
-describe("monitor-service market sale automation projection", () => {
-
-  test("未提交 canonical root 时优先投影更新的 runtime CPU trace", () => {
-    const sourcePath = resolve(
-      REPO_ROOT,
-      "scripts/fixtures/market-sale-continuous-monitor.json",
-    );
-    const fixture = JSON.parse(
-      readFileSync(sourcePath, "utf8"),
-    ) as Record<string, any>;
-    const planning =
-      fixture.data.marketSaleAutomation.directAutomation.baseResourceV3
-        .lastPlanningSnapshot;
-    planning.cpuTrace = {
-      observedAt: 700,
-      cpuAfterOuterSession: 1,
-      cpuAfterScopeCore: 2,
-      cpuAfterMarketFacts: 3,
-      cpuAfterShadowBatch: 4,
-      cpuAfterInnerApply: 5,
-      cpuCutPhase: null,
-      marketFactsDisposition: "read",
-    };
-    fixture.runtime.marketSaleAutomation.direct.baseResourceV3CpuTrace = {
-      observedAt: 701,
-      cpuAfterOuterSession: 6,
-      cpuAfterScopeCore: 12,
-      cpuAfterMarketFacts: 19,
-      cpuAfterShadowBatch: 24,
-      cpuAfterInnerApply: 25,
-      cpuCutPhase: "outer_precommit",
-      marketFactsDisposition: "read",
-    };
-
-    const temporaryDirectory = mkdtempSync(
-      resolve(tmpdir(), "screeps-monitor-cpu-trace-"),
-    );
-    const fixturePath = resolve(temporaryDirectory, "fixture.json");
-    try {
-      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
-      const { payload } = executeFixture(fixturePath);
-      const projected =
-        payload.memory.marketSaleAutomation.direct.baseResourceV3;
-      expect(projected.cpuTrace).toEqual({
-        observedAt: 701,
-        cpuAfterOuterSession: 6,
-        cpuAfterScopeCore: 12,
-        cpuAfterMarketFacts: 19,
-        cpuAfterShadowBatch: 24,
-        cpuAfterInnerApply: 25,
-        cpuCutPhase: "outer_precommit",
-        marketFactsDisposition: "read",
-      });
-      expect(projected.planning.cpuTrace).toEqual(projected.cpuTrace);
-    } finally {
-      rmSync(temporaryDirectory, { recursive: true, force: true });
-    }
-  });
-
 });

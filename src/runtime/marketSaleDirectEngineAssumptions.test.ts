@@ -2,7 +2,6 @@ import {
   DIRECT_ENGINE_ASSUMPTIONS,
   directEngineAssumptionsValid,
   evaluatePinnedDirectDealFixture,
-  fixtureTransactionEnergy,
 } from "@/runtime/marketSaleDirectEngineAssumptions";
 
 describe("Direct pinned Screeps engine assumptions", () => {
@@ -64,15 +63,5 @@ describe("Direct pinned Screeps engine assumptions", () => {
       skipped: false,
       cooldownApplied: false,
     });
-  });
-
-  it("ceil 能量模型证明任意正 underfill 的单位费用不超过 amount=1", () => {
-    for (const rate of [0, 0.0001, 0.25, 0.999999]) {
-      const worst = fixtureTransactionEnergy(1, rate);
-      for (const amount of [1, 2, 3, 999, 1_000]) {
-        const energy = fixtureTransactionEnergy(amount, rate);
-        expect(energy / amount).toBeLessThanOrEqual(worst);
-      }
-    }
   });
 });

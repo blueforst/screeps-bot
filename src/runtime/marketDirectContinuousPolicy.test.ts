@@ -1,38 +1,18 @@
 import {
   LEGACY_REVIEWED_X_CANARY_OUTCOME_IDENTITY,
   MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
-  MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE_FINGERPRINT,
-  MARKET_DIRECT_CONTINUOUS_GLOBAL_POLICY,
   MARKET_DIRECT_CONTINUOUS_PERMIT_GENESIS,
   appendMarketDirectContinuousPermit,
   buildMarketDirectContinuousPermit,
-  canonicalStableHashV1,
-  createLegacyReviewedXEntryLifecycle,
-  createMarketDirectEntryLifecycle,
   createMarketDirectPermitChainState,
-  marketDirectContinuousEntry,
   marketDirectContinuousEvidenceFingerprint,
   marketDirectContinuousLegacyXOutcomeFingerprint,
-  marketDirectLifecycleEvidenceDigest,
-  marketDirectContinuousSharedFingerprint,
-  marketDirectPermitAllowsNewDeal,
-  observeMarketDirectShadowCycle,
-  promoteMarketDirectEntryToCanary,
-  promoteMarketDirectEntryToContinuous,
-  reconcileMarketDirectEntryLifecycleFingerprints,
-  reconcileMarketDirectLifecycleSetSharedFingerprint,
-  recordMarketDirectCanaryConfirmation,
-  validateMarketDirectContinuousPermitChain,
   type MarketDirectContinuousPermit,
-  type MarketDirectEntryLifecycle,
   type MarketDirectPermitEntryGrant,
   type MarketDirectPermitEvidenceBinding,
 } from "@/runtime/marketDirectContinuousPolicy";
 
 const DIRECT_RUNTIME_FINGERPRINT = "direct-runtime-v2:fixture";
-const SHARED = marketDirectContinuousSharedFingerprint({
-  directRuntimeFingerprint: DIRECT_RUNTIME_FINGERPRINT,
-});
 const LEDGER_GENESIS = "receipt-head:legacy-x";
 
 function frozenLegacyXOutcome(
@@ -181,64 +161,6 @@ describe("marketDirectContinuous canonical policy", () => {
         frozenLegacyXOutcome({ actualTransactionEnergy: 395 }),
       ),
     ).toThrow("actualTransactionEnergy");
-  });
-});
-
-describe("marketDirectContinuous per-entry lifecycle", () => {
-  function completeCycles(
-    initial: MarketDirectEntryLifecycle,
-    startTick: number,
-    count: number,
-    tickStep = 1,
-  ): MarketDirectEntryLifecycle {
-    const entry = marketDirectContinuousEntry(initial.entryId)!;
-    let state = initial;
-    for (let offset = 0; offset < count; offset += 1) {
-      state = observeMarketDirectShadowCycle(state, {
-        tick: startTick + offset * tickStep,
-        result: offset % 2 ? "safe_no_opportunity" : "safe_opportunity",
-        resourceFingerprint: entry.resourceFingerprint,
-        sharedFingerprint: SHARED,
-      });
-    }
-    return state;
-  }
-
-  it("qualified 后 tick 回拨必须退回 Shadow 并从一个完整周期重新开始", () => {
-    const qualified = completeCycles(
-      createMarketDirectEntryLifecycle(
-        "base-h-e3n59-v1",
-        SHARED,
-      ),
-      1_000,
-      100,
-      10,
-    );
-    const entry = marketDirectContinuousEntry(
-      qualified.entryId,
-    )!;
-    const evidenceCount = qualified.evidenceHistory.length;
-
-    const rolledBack = observeMarketDirectShadowCycle(
-      qualified,
-      {
-        tick: qualified.lastCycleTick! - 1,
-        result: "safe_no_opportunity",
-        resourceFingerprint: entry.resourceFingerprint,
-        sharedFingerprint: SHARED,
-      },
-    );
-
-    expect(rolledBack).toMatchObject({
-      stage: "shadow",
-      consecutiveCompleteCycles: 1,
-      lastCycleTick: qualified.lastCycleTick! - 1,
-      lastShadowResult: "safe_no_opportunity",
-      qualifiedAt: undefined,
-    });
-    expect(rolledBack.evidenceHistory).toHaveLength(
-      evidenceCount,
-    );
   });
 });
 

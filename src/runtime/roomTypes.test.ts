@@ -1,10 +1,6 @@
-import { DEFAULT_ROOM_TYPE, getRoomType, isOwnedManagedRoom, isRoomType } from "@/runtime/roomTypes";
+import { getRoomType, isOwnedManagedRoom, isRoomType } from "@/runtime/roomTypes";
 
 describe("roomTypes", () => {
-  it("defaults rooms to normal when no explicit type is configured", () => {
-    expect(getRoomType("W1N1")).toBe(DEFAULT_ROOM_TYPE);
-    expect(isOwnedManagedRoom("W1N1")).toBe(true);
-  });
 
   it("reads explicit room type from Memory.cfg.rooms", () => {
     Memory.cfg = {

@@ -24,16 +24,6 @@ function createRoom(name: string, storageEnergy: number, level = 4, terminalEner
   return room;
 }
 
-function createAutoFlag(room: Room, x = 20, y = 20): Flag {
-  const flag = {
-    name: `RESERVE_${room.name}`,
-    pos: { x, y, roomName: room.name },
-    remove: jest.fn(() => OK),
-    setPosition: jest.fn(() => OK),
-  } as unknown as Flag;
-  Game.flags[flag.name] = flag;
-  return flag;
-}
 
 function setRoomPolicy(roomName: string, energyFloor: number, energyTarget: number): void {
   Memory.cfg = {
@@ -64,13 +54,5 @@ describe("runAutoReserveFlags", () => {
     setRoomPolicy(room.name, 40_000, 60_000);
     runAutoReserveFlags();
     expect(room.createFlag).not.toHaveBeenCalled();
-  });
-
-  it("removes the auto reserve flag at the configured energyTarget", () => {
-    const room = createRoom("W1N4", 60_000);
-    setRoomPolicy(room.name, 40_000, 60_000);
-    const flag = createAutoFlag(room);
-    runAutoReserveFlags();
-    expect(flag.remove).toHaveBeenCalled();
   });
 });

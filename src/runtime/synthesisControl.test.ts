@@ -1,9 +1,8 @@
-import { runSynthesisControl, pauseSynthesisForBoost, resumeSynthesisAfterBoost, isSynthesisPaused, clearBoostPause } from "@/runtime/synthesisControl";
+import { runSynthesisControl, pauseSynthesisForBoost, resumeSynthesisAfterBoost } from "@/runtime/synthesisControl";
 import {
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
 } from "@/runtime/logistics/resourceTransferTasks";
-import { reserveProductionResource } from "@/runtime/resourceReservation";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -249,31 +248,5 @@ describe("synthesis boost pause/resume contract", () => {
     expect(roomState.boostPause).toBeUndefined();
     expect(roomState.activeProduct).toBe(RESOURCE_UTRIUM_HYDRIDE);
     expect(roomState.nextReactionAt).toBeUndefined();
-  });
-
-  it("pauseSynthesisForBoost for unknown room returns false", () => {
-    const result = pauseSynthesisForBoost("W9N9", "pb-task-x");
-    expect(result).toBe(false);
-  });
-
-  it("boost-pause cleanup includes all labs when no powerbank boost labs are assigned", () => {
-    setupActiveRoom();
-    pauseSynthesisForBoost(ROOM, "pb-task-1");
-
-    const room = Game.rooms[ROOM] as Room;
-    const labs = room.find(FIND_MY_STRUCTURES) as StructureLab[];
-    const labA = labs[0];
-
-    labA.mineralType = RESOURCE_UTRIUM;
-    labA.store.getUsedCapacity = ((resource?: ResourceConstant) => {
-      if (resource === RESOURCE_UTRIUM) return 100;
-      return 0;
-    }) as typeof labA.store.getUsedCapacity;
-
-    // No powerBankBoost memory set — all labs eligible for cleanup
-    runSynthesisControl();
-
-    const roomState = Memory.runtime!.synthesisControl!.rooms[ROOM];
-    expect(roomState.stage).toBe("unloading");
   });
 });

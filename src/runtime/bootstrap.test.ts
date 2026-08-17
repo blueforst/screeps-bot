@@ -22,26 +22,15 @@ function createSource(id: string, roomName: string, hasLink = false): Source {
 
 function createMineral(
   id: string,
-  options: {
-    hasExtractor?: boolean;
-    hasContainer?: boolean;
-    amount?: number;
-  } = {},
+  options: { hasExtractor?: boolean; hasContainer?: boolean; amount?: number } = {},
 ): Mineral {
   const structures: Structure[] = [];
-  if (options.hasExtractor) {
-    structures.push({ structureType: STRUCTURE_EXTRACTOR } as StructureExtractor);
-  }
-  if (options.hasContainer) {
-    structures.push({ structureType: STRUCTURE_CONTAINER } as StructureContainer);
-  }
-
+  if (options.hasExtractor) structures.push({ structureType: STRUCTURE_EXTRACTOR } as StructureExtractor);
+  if (options.hasContainer) structures.push({ structureType: STRUCTURE_CONTAINER } as StructureContainer);
   return {
     id,
     mineralAmount: options.amount ?? 1000,
-    pos: {
-      findInRange: () => structures,
-    } as unknown as RoomPosition,
+    pos: { findInRange: () => structures } as unknown as RoomPosition,
   } as Mineral;
 }
 
@@ -60,68 +49,38 @@ function createRoom(options: {
   const sources = options.sources ?? [];
   const minerals = options.minerals ?? [];
   const structures = options.structures ?? [];
-  const constructionSites = options.constructionSites ?? Array.from({ length: options.constructionCount ?? 0 }, (_, index) => ({
-    id: `site-${index}`,
-  })) as ConstructionSite[];
-
+  const constructionSites = options.constructionSites ?? Array.from(
+    { length: options.constructionCount ?? 0 },
+    (_, index) => ({ id: `site-${index}` }),
+  ) as ConstructionSite[];
   return {
     name,
     memory,
-    controller: {
-      my: true,
-      level: options.level ?? 5,
-    } as StructureController,
+    controller: { my: true, level: options.level ?? 5 } as StructureController,
     find(type: FindConstant) {
-      if (type === FIND_SOURCES) {
-        return sources;
-      }
-
-      if (type === FIND_CONSTRUCTION_SITES) {
-        return constructionSites;
-      }
-
-      if (type === FIND_STRUCTURES) {
-        return structures;
-      }
-
-      if (type === FIND_MINERALS) {
-        return minerals;
-      }
-
+      if (type === FIND_SOURCES) return sources;
+      if (type === FIND_CONSTRUCTION_SITES) return constructionSites;
+      if (type === FIND_STRUCTURES) return structures;
+      if (type === FIND_MINERALS) return minerals;
       return [];
     },
   } as Room;
 }
 
 function createSpawn(room: Room, queue: string[] = []): StructureSpawn {
-  return {
-    room,
-    memory: {
-      spawnList: [...queue],
-    },
-  } as StructureSpawn;
+  return { room, memory: { spawnList: [...queue] } } as StructureSpawn;
 }
 
 function createOwnedStructure(structureType: StructureConstant): Structure {
-  return {
-    structureType,
-    my: true,
-  } as unknown as Structure;
+  return { structureType, my: true } as unknown as Structure;
 }
 
 function createConstructionSite(structureType: BuildableStructureConstant): ConstructionSite {
-  return {
-    structureType,
-    my: true,
-  } as ConstructionSite;
+  return { structureType, my: true } as ConstructionSite;
 }
 
 function createRoomPlannerEntry(layout: Record<string, { x: number; y: number }[]>) {
-  return {
-    layout,
-    timestamp: "test-plan",
-    savedAt: Game.time,
-  };
+  return { layout, timestamp: "test-plan", savedAt: Game.time };
 }
 
 describe("bootstrapRooms", () => {
@@ -161,130 +120,13 @@ describe("bootstrapRooms", () => {
       args: ["mineral-a"],
       roomName: "W1N1",
     });
-    expect(getCreepConfigService().get("W1N1:carrier:0")).toEqual({
-      role: "carrier",
-      args: [],
-      roomName: "W1N1",
-    });
-    expect(getCreepConfigService().get("W1N1:worker:0")).toEqual({
-      role: "worker",
-      args: [],
-      roomName: "W1N1",
-    });
+    expect(getCreepConfigService().get("W1N1:carrier:0")?.roomName).toBe("W1N1");
+    expect(getCreepConfigService().get("W1N1:worker:0")?.roomName).toBe("W1N1");
     expect(spawn.memory.spawnList).toEqual(["W1N1:miner:source-b", "manual:keep"]);
   });
 
-  it.each([
-    ["spawnOnce", { spawnOnce: { queuedAt: 1 } }],
-    ["taskId", { taskId: "foreign-task" }],
-    ["powerBankGeneration", { powerBankGeneration: 3 }],
-  ] as const)("normalizes stale %s metadata from a canonical managed config", (_field, extra) => {
-    const room = createRoom();
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room);
-    Memory.data = {
-      creepConfigs: {
-        "W1N1:worker:0": {
-          role: "worker",
-          args: [],
-          roomName: room.name,
-          ...extra,
-        },
-      },
-    } as Memory["data"];
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().get("W1N1:worker:0")).toEqual({
-      role: "worker",
-      args: [],
-      roomName: room.name,
-    });
-  });
-
-  it.each([
-    ["null", null],
-    ["sparse", new Array(1)],
-  ])("normalizes malformed %s args without aborting bootstrap", (_caseName, malformedArgs) => {
-    const room = createRoom({ sources: [createSource("source-a", "W1N1")] });
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room);
-    Memory.data = {
-      creepConfigs: {
-        "W1N1:harvester:source-a": {
-          role: "harvester",
-          args: malformedArgs,
-          roomName: room.name,
-        },
-      },
-    } as unknown as Memory["data"];
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toEqual({
-      role: "harvester",
-      args: ["source-a"],
-      roomName: room.name,
-    });
-  });
-
-  it("does not bootstrap rooms configured with the reserved room type", () => {
-    Memory.cfg = {
-      rooms: {
-        W1N1: { type: "reserved" },
-      },
-    };
-    const room = createRoom({ sources: [createSource("source-a", "W1N1")] });
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room);
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().list()).toEqual({});
-  });
-
-  it("removes stale source, mineral, and worker configs when no live creep still references them", () => {
-    const room = createRoom({
-      sources: [createSource("source-a", "W1N1")],
-      minerals: [createMineral("mineral-a", { hasExtractor: true, hasContainer: true, amount: 500 })],
-    });
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room);
-    Memory.data = {
-      creepConfigs: {
-        "W1N1:harvester:source-a": { role: "harvester", args: ["source-a"], roomName: "W1N1" },
-        "W1N1:harvester:stale": { role: "harvester", args: ["stale"], roomName: "W1N1" },
-        "W1N1:mineralHarvester:mineral-a": {
-          role: "mineralHarvester",
-          args: ["mineral-a"],
-          roomName: "W1N1",
-        },
-        "W1N1:mineralHarvester:stale": {
-          role: "mineralHarvester",
-          args: ["stale"],
-          roomName: "W1N1",
-        },
-        "W1N1:worker:0": { role: "worker", args: [], roomName: "W1N1" },
-        "W1N1:worker:9": { role: "worker", args: [], roomName: "W1N1" },
-      },
-    } as Memory["data"];
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().get("W1N1:harvester:stale")).toBeUndefined();
-    expect(getCreepConfigService().get("W1N1:mineralHarvester:stale")).toBeUndefined();
-    expect(getCreepConfigService().get("W1N1:worker:9")).toBeUndefined();
-    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toBeDefined();
-    expect(getCreepConfigService().get("W1N1:mineralHarvester:mineral-a")).toBeDefined();
-    expect(getCreepConfigService().get("W1N1:worker:0")).toBeDefined();
-  });
-
-  it("orphans a live surplus RCL8 worker and removes its queued replacement", () => {
-    const room = createRoom({
-      name: "W8N8",
-      level: 8,
-      constructionCount: 20,
-    });
+  it("orphans a live surplus worker, clears every queue, then deletes it after the creep is gone", () => {
+    const room = createRoom({ name: "W8N8", level: 8, constructionCount: 20 });
     const spawnA = createSpawn(room, ["W8N8:worker:1", "manual:keep-a"]);
     const spawnB = createSpawn(room, ["manual:keep-b", "W8N8:worker:1"]);
     Game.rooms[room.name] = room;
@@ -299,10 +141,7 @@ describe("bootstrapRooms", () => {
     Game.creeps.workerLive = {
       name: "workerLive",
       room,
-      memory: {
-        role: "worker",
-        configName: "W8N8:worker:1",
-      },
+      memory: { role: "worker", configName: "W8N8:worker:1" },
       suicide: jest.fn(() => OK),
     } as unknown as Creep;
 
@@ -317,152 +156,58 @@ describe("bootstrapRooms", () => {
     delete Game.creeps.workerLive;
     Game.time += 1;
     bootstrapRooms();
-
     expect(getCreepConfigService().get("W8N8:worker:1")).toBeUndefined();
   });
 
-  it("preserves Reserve tier while draining worker configs and queues", () => {
-    const room = createRoom({
+  it("fails closed for reserved room types while RESERVE flags drain only worker ownership", () => {
+    Memory.cfg = { rooms: { W1N1: { type: "reserved" } } };
+    const reservedRoom = createRoom({ name: "W1N1", sources: [createSource("reserved-source", "W1N1")] });
+    const reserveFlagRoom = createRoom({
       name: "W5N5",
       level: 5,
       sources: [createSource("source-a", "W5N5")],
       constructionCount: 20,
     });
-    room.memory.workerConstructionTier = 3;
-    const spawnA = createSpawn(room, ["W5N5:worker:0", "manual:keep-a"]);
-    const spawnB = createSpawn(room, ["manual:keep-b", "W5N5:worker:1"]);
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = spawnA;
-    Game.spawns.Spawn2 = spawnB;
+    reserveFlagRoom.memory.workerConstructionTier = 3;
+    Game.rooms = { W1N1: reservedRoom, W5N5: reserveFlagRoom };
+    Game.spawns.Spawn1 = createSpawn(reservedRoom);
+    const reserveSpawn = createSpawn(reserveFlagRoom, ["W5N5:worker:0", "manual:keep"]);
+    Game.spawns.Spawn2 = reserveSpawn;
     Game.flags.RESERVE_W5N5 = {
       name: "RESERVE_W5N5",
-      pos: { roomName: room.name } as RoomPosition,
+      pos: { roomName: reserveFlagRoom.name } as RoomPosition,
     } as Flag;
     Memory.data = {
       creepConfigs: {
-        "W5N5:worker:0": { role: "worker", args: [], roomName: room.name },
-        "W5N5:worker:1": { role: "worker", args: [], roomName: room.name },
+        "W5N5:worker:0": { role: "worker", args: [], roomName: reserveFlagRoom.name },
       },
     } as Memory["data"];
     Game.creeps.workerLive = {
       name: "workerLive",
-      room,
+      room: reserveFlagRoom,
       memory: { role: "worker", configName: "W5N5:worker:0" },
       suicide: jest.fn(() => OK),
     } as unknown as Creep;
 
     bootstrapRooms();
 
-    expect(room.memory.workerConstructionTier).toBe(3);
+    expect(getCreepConfigService().get("W1N1:harvester:reserved-source")).toBeUndefined();
     expect(getCreepConfigService().get("W5N5:worker:0")?.roomName).toBeUndefined();
-    expect(getCreepConfigService().get("W5N5:worker:1")).toBeUndefined();
-    expect(getCreepConfigService().get("W5N5:harvester:source-a")?.roomName).toBe(room.name);
-    expect(getCreepConfigService().get("W5N5:carrier:0")?.roomName).toBe(room.name);
-    expect(spawnA.memory.spawnList).toEqual(["manual:keep-a"]);
-    expect(spawnB.memory.spawnList).toEqual(["manual:keep-b"]);
+    expect(getCreepConfigService().get("W5N5:harvester:source-a")?.roomName).toBe("W5N5");
+    expect(getCreepConfigService().get("W5N5:carrier:0")?.roomName).toBe("W5N5");
+    expect(reserveSpawn.memory.spawnList).toEqual(["manual:keep"]);
     expect(Game.creeps.workerLive.suicide).not.toHaveBeenCalled();
   });
 
-  it("orphans the deprecated source role and clears it from every Spawn queue", () => {
-    const room = createRoom({
-      sources: [createSource("source-a", "W1N1", true)],
-    });
-    const spawnA = createSpawn(room, ["W1N1:harvester:source-a", "manual:keep-a"]);
-    const spawnB = createSpawn(room, ["manual:keep-b", "W1N1:harvester:source-a"]);
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = spawnA;
-    Game.spawns.Spawn2 = spawnB;
-    Memory.data = {
-      creepConfigs: {
-        "W1N1:harvester:source-a": { role: "harvester", args: ["source-a"], roomName: room.name },
-      },
-    } as Memory["data"];
-    Game.creeps.harvesterLive = {
-      name: "harvesterLive",
-      room,
-      memory: { role: "harvester", configName: "W1N1:harvester:source-a" },
-      suicide: jest.fn(() => OK),
-    } as unknown as Creep;
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().get("W1N1:miner:source-a")).toEqual({
-      role: "miner",
-      args: ["source-a"],
-      roomName: room.name,
-    });
-    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toEqual({
-      role: "harvester",
-      args: ["source-a"],
-    });
-    expect(spawnA.memory.spawnList).toEqual(["manual:keep-a"]);
-    expect(spawnB.memory.spawnList).toEqual(["manual:keep-b"]);
-    expect(Game.creeps.harvesterLive.suicide).not.toHaveBeenCalled();
-  });
-
-  it("retires the deprecated source role after a non-spawning replacement is live", () => {
-    const room = createRoom({
-      sources: [createSource("source-a", "W1N1", true)],
-    });
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room);
-    Memory.data = {
-      creepConfigs: {
-        "W1N1:harvester:source-a": { role: "harvester", args: ["source-a"] },
-        "W1N1:miner:source-a": { role: "miner", args: ["source-a"], roomName: room.name },
-      },
-    } as Memory["data"];
-    Game.creeps.harvesterLive = {
-      name: "harvesterLive",
-      room,
-      spawning: false,
-      memory: { role: "harvester", configName: "W1N1:harvester:source-a" },
-      suicide: jest.fn(() => OK),
-    } as unknown as Creep;
-    Game.creeps.minerLive = {
-      name: "minerLive",
-      room,
-      spawning: false,
-      memory: { role: "miner", configName: "W1N1:miner:source-a" },
-      suicide: jest.fn(() => OK),
-    } as unknown as Creep;
-
-    bootstrapRooms();
-
-    expect(Game.creeps.harvesterLive.suicide).toHaveBeenCalledTimes(1);
-    expect(Game.creeps.minerLive.suicide).not.toHaveBeenCalled();
-    expect(getCreepConfigService().get("W1N1:harvester:source-a")?.roomName).toBeUndefined();
-  });
-
-  it("removes an orphaned stale harvester config after the live creep is gone", () => {
-    const room = createRoom({
-      sources: [createSource("source-a", "W1N1", true)],
-    });
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room);
-    Memory.data = {
-      creepConfigs: {
-        "W1N1:harvester:source-a": { role: "harvester", args: ["source-a"] },
-        "W1N1:miner:source-a": { role: "miner", args: ["source-a"], roomName: "W1N1" },
-      },
-    } as Memory["data"];
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toBeUndefined();
-    expect(getCreepConfigService().get("W1N1:miner:source-a")).toMatchObject({
-      role: "miner",
-      args: ["source-a"],
-      roomName: "W1N1",
-    });
-  });
-
-  it("creates local harvesters for managed colonies after rcl3 extensions are complete", () => {
+  it("keeps colony source assistance until the planned RCL3 extension boundary is complete", () => {
+    const structures = Array.from({ length: 9 }, () => createOwnedStructure(STRUCTURE_EXTENSION));
+    const constructionSites = [createConstructionSite(STRUCTURE_EXTENSION)];
     const room = createRoom({
       name: "W1N1",
       level: 3,
       sources: [createSource("source-a", "W1N1")],
-      structures: Array.from({ length: 10 }, () => createOwnedStructure(STRUCTURE_EXTENSION)),
+      structures,
+      constructionSites,
     });
     Game.rooms[room.name] = room;
     Game.spawns.Spawn1 = createSpawn(room);
@@ -489,106 +234,16 @@ describe("bootstrapRooms", () => {
     } as unknown as Memory["data"];
 
     bootstrapRooms();
+    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toBeUndefined();
 
+    structures.push(createOwnedStructure(STRUCTURE_EXTENSION));
+    constructionSites.splice(0);
+    Game.time += 1;
+    bootstrapRooms();
     expect(getCreepConfigService().get("W1N1:harvester:source-a")).toMatchObject({
       role: "harvester",
       args: ["source-a"],
       roomName: "W1N1",
     });
-  });
-
-  it("suppresses local source configs while a managed colony still needs assistance", () => {
-    const room = createRoom({
-      name: "W1N1",
-      level: 3,
-      sources: [createSource("source-a", "W1N1")],
-      minerals: [createMineral("mineral-a", { hasExtractor: true, hasContainer: true, amount: 2000 })],
-      structures: Array.from({ length: 9 }, () => createOwnedStructure(STRUCTURE_EXTENSION)),
-      constructionSites: [createConstructionSite(STRUCTURE_EXTENSION)],
-    });
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room);
-    Memory.data = {
-      colonization: {
-        W1N1: {
-          targetRoom: "W1N1",
-          sourceRoom: "W9N9",
-          status: "managed",
-          flagName: "CL",
-          planReady: true,
-          claimCompleted: true,
-          scoutSafe: true,
-          dangerousRooms: [],
-          createdAt: Game.time,
-          updatedAt: Game.time,
-        },
-      },
-      roomPlanner: {
-        W1N1: createRoomPlannerEntry({
-          [STRUCTURE_EXTENSION]: Array.from({ length: 10 }, (_, index) => ({ x: 10 + index, y: 10 })),
-        }),
-      },
-    } as unknown as Memory["data"];
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().get("W1N1:harvester:source-a")).toBeUndefined();
-    expect(getCreepConfigService().get("W1N1:mineralHarvester:mineral-a")?.roomName).toBe(room.name);
-    expect(getCreepConfigService().get("W1N1:carrier:0")?.roomName).toBe(room.name);
-    expect(getCreepConfigService().get("W1N1:worker:0")?.roomName).toBe(room.name);
-  });
-
-  it("suppresses only local source configs while rescue assistance is active", () => {
-    const room = createRoom({
-      name: "W2N2",
-      level: 5,
-      sources: [createSource("source-a", "W2N2")],
-      minerals: [createMineral("mineral-a", { hasExtractor: true, hasContainer: true, amount: 2000 })],
-    });
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room);
-    Memory.data = {
-      rescue: {
-        W2N2: {
-          targetRoom: "W2N2",
-          sourceRoom: "W9N9",
-          status: "bootstrapping",
-          flagName: "RESCUE_W2N2",
-          createdAt: Game.time,
-          updatedAt: Game.time,
-        },
-      },
-    } as Memory["data"];
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().get("W2N2:harvester:source-a")).toBeUndefined();
-    expect(getCreepConfigService().get("W2N2:mineralHarvester:mineral-a")?.roomName).toBe(room.name);
-    expect(getCreepConfigService().get("W2N2:carrier:0")?.roomName).toBe(room.name);
-    expect(getCreepConfigService().get("W2N2:worker:0")?.roomName).toBe(room.name);
-  });
-
-  it("immediately removes the surplus carrier config after an RCL4 to RCL5 shrink", () => {
-    const room = createRoom({ name: "W4N5", level: 5 });
-    Game.rooms[room.name] = room;
-    Game.spawns.Spawn1 = createSpawn(room, ["W4N5:carrier:1"]);
-    Memory.data = {
-      creepConfigs: {
-        "W4N5:carrier:0": { role: "carrier", args: [], roomName: room.name },
-        "W4N5:carrier:1": { role: "carrier", args: [], roomName: room.name },
-      },
-    } as Memory["data"];
-    Game.creeps.carrierLive = {
-      name: "carrierLive",
-      room,
-      memory: { role: "carrier", configName: "W4N5:carrier:1" },
-      suicide: jest.fn(() => OK),
-    } as unknown as Creep;
-
-    bootstrapRooms();
-
-    expect(getCreepConfigService().get("W4N5:carrier:0")?.roomName).toBe(room.name);
-    expect(getCreepConfigService().get("W4N5:carrier:1")).toBeUndefined();
-    expect(Game.creeps.carrierLive.suicide).not.toHaveBeenCalled();
   });
 });

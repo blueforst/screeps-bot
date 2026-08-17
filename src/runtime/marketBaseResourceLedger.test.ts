@@ -15,50 +15,31 @@ import {
   buildMarketBaseResourceV2EventCutoverCheckpoint,
   createMarketBaseResourcePermitRuntimeContext,
   createMarketBaseResourcePermitChainState,
-  validateMarketBaseResourcePermitChain,
   validateMarketBaseResourcePermitRuntimeGate,
   wrapAuthenticatedLegacyV2PermitRecord,
   type AppendMarketBaseResourcePermitInput,
   type MarketBaseResourcePermitChainState,
 } from "@/runtime/marketBaseResourcePermit";
 import {
-  MARKET_BASE_RESOURCE_CONFIRMED_COOLDOWN_TICKS,
   MARKET_BASE_RESOURCE_OUTCOME_HASH_REVISION,
-  MARKET_BASE_RESOURCE_OUTCOME_RING_LIMIT,
-  MARKET_BASE_RESOURCE_PENDING_HASH_REVISION,
-  MARKET_BASE_RESOURCE_PROCESSED_KEY_RING_LIMIT,
-  MARKET_BASE_RESOURCE_RECEIPT_RING_LIMIT,
   advanceMarketBaseResourceWal,
-  advanceMarketBaseResourceWalWithRuntimeContext,
   buildMarketBaseResourceAuthenticatedV2LedgerMigrationBasis,
-  buildMarketBaseResourceConfirmedCanaryProof,
   buildMarketBaseResourceHistoricalPermitRef,
   buildMarketBaseResourceLedgerRuntimeAnchor,
-  buildMarketBaseResourcePermitChainAnchor,
-  computeMarketBaseResourceQuota,
   createMarketBaseResourceLedgerRuntimeContext,
   createMarketBaseResourceLedger,
-  inspectMarketBaseResourceCanaryGrantAvailability,
-  inspectMarketBaseResourceCanaryGrantAvailabilityWithRuntimeContext,
-  marketBaseResourceCanaryReviewFactsFor,
-  marketBaseResourceConfirmedCanaryFor,
   marketBaseResourceRetainedReceiptPermitReferences,
   prepareMarketBaseResourceAttempt,
-  prepareMarketBaseResourceAttemptWithRuntimeContext,
   rebindMarketBaseResourceLedgerPermitAnchor,
   recordMarketBaseResourceOutcome,
-  recordMarketBaseResourceOutcomeWithRuntimeContext,
   sealMarketBaseResourceOutcome,
   validateMarketBaseResourceLedger,
   validateMarketBaseResourceLedgerRuntimeGate,
-  validateMarketBaseResourceMixedVersionEvent,
-  validateMarketBaseResourcePermitChainDominatesAnchor,
   type MarketBaseResourceLedger,
   type MarketBaseResourceLedgerOperation,
   type MarketBaseResourceLedgerCounters,
   type MarketBaseResourceLegacyV2ConfirmedCanary,
   type MarketBaseResourceQuotaReceipt,
-  type MarketBaseResourceReceipt,
 } from "@/runtime/marketBaseResourceLedger";
 import {
   MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
@@ -254,51 +235,6 @@ function permitChains(): {
   return { first, canary: chain, currentLane };
 }
 
-function incarnatedXLanes(
-  count: number,
-): readonly MarketBaseDerivedLaneLifecycle[] {
-  const shared = createMarketBaseSharedPolicy(ACCOUNT);
-  const result: MarketBaseDerivedLaneLifecycle[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const rooms = reconcileMarketBaseSellerRooms({
-      tick: 10_000 + index,
-      admissionPolicy: shared.roomAdmissionPolicy,
-      observations: [
-        {
-          roomName: "E6N59",
-          visible: true,
-          controllerMy: true,
-          controllerOwner: ACCOUNT,
-          terminalId: `terminal-e6n59-${index}`,
-          terminalOwned: true,
-          roomClass: "normal",
-        },
-      ],
-    });
-    if ("blockers" in rooms) {
-      throw new Error(rooms.blockers.join(","));
-    }
-    const lanes = reconcileMarketBaseDerivedLanes({
-      sharedPolicyFingerprint: shared.fingerprint,
-      sellerRooms: rooms.sellerRooms,
-    });
-    const lane = lanes.lanes?.find((candidate) => candidate.resource === "X");
-    if (!lanes.ok || !lane) {
-      throw new Error(lanes.blockers?.join(",") ?? "missing incarnated X lane");
-    }
-    result.push({
-      ...lane,
-      stage: "qualified",
-      status: "suspended",
-      shadowEvidence: {
-        completeCycles: 100,
-        lastCompleteTick: 10_000 + index,
-        evidenceDigest: digest(`shadow:E6N59:X:${index}`),
-      },
-    });
-  }
-  return result;
-}
 
 function replacementXLaneFromOwnedTerminalIncarnation(): {
   readonly lane: MarketBaseDerivedLaneLifecycle;
@@ -468,109 +404,6 @@ function retireCanaryAndAuthorizeNext(input: {
   };
 }
 
-function replaceLaneScopeThroughCanonicalTombstones(input: {
-  readonly state: MarketBaseResourceLedger;
-  readonly chain: MarketBaseResourcePermitChainState;
-  readonly priorLanes: readonly MarketBaseDerivedLaneLifecycle[];
-  readonly nextLanes: readonly MarketBaseDerivedLaneLifecycle[];
-  readonly tick: number;
-}): {
-  readonly state: MarketBaseResourceLedger;
-  readonly chain: MarketBaseResourcePermitChainState;
-} {
-  const current =
-    input.chain.retainedPermits[input.chain.retainedPermits.length - 1];
-  if (!current || current.schemaVersion !== 3) {
-    throw new Error("missing current v3 permit");
-  }
-  const laneById = new Map(input.priorLanes.map((lane) => [lane.laneId, lane]));
-  const tombstones = current.signedLaneGrants
-    .filter((grant) => grant.status === "active")
-    .map((grant) =>
-      buildMarketBaseResourceSignedLaneGrant({
-        lane: laneById.get(grant.laneId)!,
-        status: "tombstoned",
-        stage: grant.stage,
-        newDealGrant: "suspended",
-        lifecycleEvidenceDigest: grant.lifecycleEvidenceDigest,
-        reviewDigest: grant.reviewDigest,
-      }),
-    );
-  const nextGrants = input.nextLanes.map((lane) =>
-    buildMarketBaseResourceSignedLaneGrant({
-      lane,
-      stage: "shadow",
-      newDealGrant: "suspended",
-    }),
-  );
-  const transitionPermit = buildMarketBaseResourcePermit({
-    epoch: input.chain.permitEpochHighWater + 1,
-    accountIdentity: ACCOUNT,
-    sharedPolicy: current.sharedPolicy,
-    ratchetHighWater: current.ratchetHighWater,
-    signedLaneGrants: [...nextGrants, ...tombstones],
-    previousPermitId: input.chain.currentPermitId,
-    previousPermitHead: input.chain.permitChainHead,
-    previousLedgerHead: input.state.receiptHeadHash,
-    createdAt: input.tick,
-    operatorAuthorizationFingerprint: digest(`operator:scope:${input.tick}`),
-  });
-  const transitioning = appendPermitOrThrow(
-    input.chain,
-    transitionPermit,
-    input.nextLanes[0],
-    {
-      currentDerivedLanes: input.nextLanes,
-      currentLifecycleCheckpointCommitment:
-        marketBaseDerivedLaneLifecycleCheckpointCommitment(input.nextLanes),
-      receiptPermitReferences:
-        marketBaseResourceRetainedReceiptPermitReferences(
-          input.state,
-          input.chain,
-        ),
-    },
-  );
-  const transitioningState = rebindMarketBaseResourceLedgerPermitAnchor(
-    input.state,
-    transitioning,
-  );
-  const dischargePermit = buildMarketBaseResourcePermit({
-    epoch: transitioning.permitEpochHighWater + 1,
-    accountIdentity: ACCOUNT,
-    sharedPolicy: current.sharedPolicy,
-    ratchetHighWater: current.ratchetHighWater,
-    signedLaneGrants: nextGrants,
-    previousPermitId: transitioning.currentPermitId,
-    previousPermitHead: transitioning.permitChainHead,
-    previousLedgerHead: transitioningState.receiptHeadHash,
-    createdAt: input.tick + 1,
-    operatorAuthorizationFingerprint: digest(
-      `operator:discharge:${input.tick}`,
-    ),
-  });
-  const chain = appendPermitOrThrow(
-    transitioning,
-    dischargePermit,
-    input.nextLanes[0],
-    {
-      currentDerivedLanes: input.nextLanes,
-      currentLifecycleCheckpointCommitment:
-        marketBaseDerivedLaneLifecycleCheckpointCommitment(input.nextLanes),
-      receiptPermitReferences:
-        marketBaseResourceRetainedReceiptPermitReferences(
-          transitioningState,
-          transitioning,
-        ),
-    },
-  );
-  return {
-    chain,
-    state: rebindMarketBaseResourceLedgerPermitAnchor(
-      transitioningState,
-      chain,
-    ),
-  };
-}
 
 function legacyReceipt(attemptSeq: number): MarketBaseResourceQuotaReceipt {
   const transactionTime = 49_800 + attemptSeq;
@@ -602,38 +435,6 @@ function lifetime(): MarketBaseResourceLedgerCounters {
   };
 }
 
-function lifetimeForReceipts(
-  receipts: readonly MarketBaseResourceQuotaReceipt[],
-): MarketBaseResourceLedgerCounters {
-  const counters: {
-    global: { count: number; amount: number };
-    resources: Record<string, { count: number; amount: number }>;
-    rooms: Record<string, { count: number; amount: number }>;
-    lanes: Record<string, { count: number; amount: number }>;
-  } = {
-    global: { count: 0, amount: 0 },
-    resources: {},
-    rooms: {},
-    lanes: {},
-  };
-  for (const receipt of receipts) {
-    if (receipt.status !== "confirmed") continue;
-    counters.global.count += 1;
-    counters.global.amount += receipt.actualAmount;
-    for (const [map, key] of [
-      [counters.resources, receipt.resource],
-      [counters.rooms, receipt.sellerRoom],
-      [counters.lanes, `${receipt.resource}:${receipt.sellerRoom}`],
-    ] as const) {
-      const current = map[key] ?? { count: 0, amount: 0 };
-      map[key] = {
-        count: current.count + 1,
-        amount: current.amount + receipt.actualAmount,
-      };
-    }
-  }
-  return counters;
-}
 
 function legacyConfirmedCanaries(): Readonly<
   Record<string, MarketBaseResourceLegacyV2ConfirmedCanary>
@@ -746,43 +547,7 @@ function prepareInput(
   };
 }
 
-function prepareContinuousInput(
-  chain: MarketBaseResourcePermitChainState,
-  currentLane: MarketBaseDerivedLaneLifecycle,
-  tick: number,
-) {
-  return {
-    ...prepareInput(chain, currentLane, tick),
-    executionPolicy: "continuous" as const,
-  };
-}
 
-function notFilledOutcomeFor(state: MarketBaseResourceLedger, tick: number) {
-  const pending = state.pending;
-  if (!pending) {
-    throw new Error("missing pending for outcome");
-  }
-  return sealMarketBaseResourceOutcome({
-    schemaVersion: 3,
-    hashRevision: MARKET_BASE_RESOURCE_OUTCOME_HASH_REVISION,
-    attemptSeq: pending.attemptSeq,
-    status: "not_filled",
-    permitId: pending.historicalPermit.permitId,
-    permitEpoch: pending.historicalPermit.permitEpoch,
-    laneId: pending.historicalLane.laneId,
-    sellerRoom: pending.historicalLane.sellerRoom,
-    resource: pending.historicalLane.resource,
-    orderId: pending.orderId,
-    orderRoom: pending.orderRoom,
-    attemptAt: pending.attemptAt,
-    plannedAmount: 1_000,
-    resolvedAt: tick,
-    evidenceKey: digest(`runtime-not-filled:${pending.attemptSeq}`),
-    actualAmount: 0,
-    reason: "test_not_filled",
-    pendingEvidenceHash: pending.frozenEvidenceHash,
-  });
-}
 
 function settlePreparedCanary(
   prepared: MarketBaseResourceLedgerOperation,
@@ -829,237 +594,11 @@ function settlePreparedCanary(
   return operation.state;
 }
 
-function settleConfirmedCanary(
-  prepared: MarketBaseResourceLedgerOperation,
-  chain: MarketBaseResourcePermitChainState,
-  tick: number,
-): MarketBaseResourceLedger {
-  const pending = prepared.state.pending;
-  if (!pending) {
-    throw new Error("missing prepared canary");
-  }
-  const outcome = sealMarketBaseResourceOutcome({
-    schemaVersion: 3,
-    hashRevision: MARKET_BASE_RESOURCE_OUTCOME_HASH_REVISION,
-    attemptSeq: pending.attemptSeq,
-    status: "confirmed",
-    permitId: pending.historicalPermit.permitId,
-    permitEpoch: pending.historicalPermit.permitEpoch,
-    laneId: pending.historicalLane.laneId,
-    sellerRoom: pending.historicalLane.sellerRoom,
-    resource: pending.historicalLane.resource,
-    orderId: pending.orderId,
-    orderRoom: pending.orderRoom,
-    attemptAt: pending.attemptAt,
-    plannedAmount: 1_000,
-    resolvedAt: tick,
-    evidenceKey: digest(`confirmed:${pending.attemptSeq}`),
-    actualAmount: 400,
-    transactionId: `transaction-${pending.attemptSeq}`,
-    transactionTime: tick,
-    actualTransactionEnergy: 160,
-    actualNetCreditsMilli: 279_960_000,
-    pendingEvidenceHash: pending.frozenEvidenceHash,
-  });
-  let operation = recordMarketBaseResourceOutcome(
-    prepared.state,
-    outcome,
-    chain,
-  );
-  operation = advanceMarketBaseResourceWal(operation.state, chain);
-  operation = advanceMarketBaseResourceWal(operation.state, chain);
-  operation = advanceMarketBaseResourceWal(operation.state, chain);
-  if (operation.action !== "pending_deleted") {
-    throw new Error(`canary settlement failed:${operation.blockerCode}`);
-  }
-  return operation.state;
-}
 
-function promoteConfirmedCanaryToContinuous(input: {
-  readonly state: MarketBaseResourceLedger;
-  readonly chain: MarketBaseResourcePermitChainState;
-  readonly currentLane: MarketBaseDerivedLaneLifecycle;
-  readonly tick: number;
-}): {
-  readonly state: MarketBaseResourceLedger;
-  readonly chain: MarketBaseResourcePermitChainState;
-} {
-  const current =
-    input.chain.retainedPermits[input.chain.retainedPermits.length - 1];
-  if (!current || current.schemaVersion !== 3) {
-    throw new Error("missing canary permit");
-  }
-  const proof = buildMarketBaseResourceConfirmedCanaryProof(
-    input.state,
-    input.currentLane.laneId,
-    input.chain,
-  );
-  const operatorReviewSnapshotDigest = digest(
-    `operator-review:${proof.attemptSeq}`,
-  );
-  const continuousGrant = buildMarketBaseResourceSignedLaneGrant({
-    lane: input.currentLane,
-    stage: "continuous",
-    newDealGrant: "enabled",
-    reviewDigest: operatorReviewSnapshotDigest,
-  });
-  const continuousPermit = buildMarketBaseResourcePermit({
-    epoch: input.chain.permitEpochHighWater + 1,
-    accountIdentity: ACCOUNT,
-    sharedPolicy: createMarketBaseSharedPolicy(ACCOUNT),
-    ratchetHighWater: current.ratchetHighWater,
-    signedLaneGrants: [continuousGrant],
-    reviewedEvidence: [
-      {
-        laneId: input.currentLane.laneId,
-        kind: "continuous_review",
-        evidenceKey: proof.evidenceKey,
-        digest: operatorReviewSnapshotDigest,
-        confirmedCanaryReviewDigest: proof.reviewDigest,
-        operatorReviewSnapshotDigest,
-        permitId: proof.permitId,
-        attemptSeq: proof.attemptSeq,
-        receiptEventHash: proof.receiptEventHash,
-        ledgerCheckpointHash: proof.ledgerCheckpointHash,
-        ledgerReceiptHeadHash: proof.ledgerReceiptHeadHash,
-        ledgerPermitAnchorHash: proof.ledgerPermitAnchorHash,
-      },
-    ],
-    previousPermitId: input.chain.currentPermitId,
-    previousPermitHead: input.chain.permitChainHead,
-    previousLedgerHead: input.state.receiptHeadHash,
-    createdAt: input.tick,
-    operatorAuthorizationFingerprint: digest(
-      `operator:continuous:${proof.attemptSeq}`,
-    ),
-  });
-  const chain = appendPermitOrThrow(
-    input.chain,
-    continuousPermit,
-    input.currentLane,
-    {
-      currentLedgerCheckpointHash: input.state.checkpoint.checkpointHash,
-      currentLedgerPermitAnchorHash: input.state.permitAnchor.anchorHash,
-      confirmedCanaryProofs: [proof],
-      receiptPermitReferences:
-        marketBaseResourceRetainedReceiptPermitReferences(
-          input.state,
-          input.chain,
-        ),
-      activeReviewPermitReferences: [
-        {
-          sourceId: input.currentLane.laneId,
-          permitId: proof.permitId,
-        },
-      ],
-    },
-  );
-  return {
-    chain,
-    state: rebindMarketBaseResourceLedgerPermitAnchor(input.state, chain),
-  };
-}
 
-function extendNotFilledReceiptChain(input: {
-  readonly first: MarketBaseResourceReceipt;
-  readonly previousHead: string;
-  readonly firstAttemptSeq: number;
-  readonly lastAttemptSeq: number;
-  readonly firstAttemptAt: number;
-}): readonly MarketBaseResourceReceipt[] {
-  const receipts: MarketBaseResourceReceipt[] = [];
-  let previousHead = input.previousHead;
-  for (
-    let attemptSeq = input.firstAttemptSeq;
-    attemptSeq <= input.lastAttemptSeq;
-    attemptSeq += 1
-  ) {
-    const attemptAt =
-      input.firstAttemptAt + (attemptSeq - input.firstAttemptSeq) * 101;
-    const {
-      prevHash: _templatePrevHash,
-      eventHash: _templateEventHash,
-      headHash: _templateHeadHash,
-      outcomeEventHash: _templateOutcomeEventHash,
-      ...templatePayload
-    } = input.first;
-    const payload = {
-      ...templatePayload,
-      attemptSeq,
-      attemptAt,
-      resolvedAt: attemptAt,
-      retentionTick: attemptAt,
-      evidenceKey: digest(`synthetic-not-filled:${attemptSeq}`),
-      pendingEvidenceHash: digest(`synthetic-pending:${attemptSeq}`),
-    };
-    const {
-      executionPolicy: _executionPolicy,
-      retentionTick: _retentionTick,
-      hashRevision: _receiptHashRevision,
-      ...outcomePayload
-    } = payload;
-    const outcomeEventHash = sealMarketBaseResourceOutcome({
-      ...outcomePayload,
-      hashRevision: MARKET_BASE_RESOURCE_OUTCOME_HASH_REVISION,
-    }).outcomeEventHash;
-    const receiptPayload = {
-      ...payload,
-      outcomeEventHash,
-    };
-    const eventHash = canonicalStableHashV1({
-      domain: "market-base-resource:receipt-v1",
-      receipt: receiptPayload,
-    });
-    const headHash = canonicalStableHashV1({
-      domain: "market-base-resource:receipt-head-v1",
-      eventHash,
-      prevHash: previousHead,
-    });
-    receipts.push({
-      ...receiptPayload,
-      prevHash: previousHead,
-      eventHash,
-      headHash,
-    });
-    previousHead = headHash;
-  }
-  return receipts;
-}
 
-function outcomeFromReceipt(
-  receipt: MarketBaseResourceReceipt,
-): ReturnType<typeof sealMarketBaseResourceOutcome> {
-  const {
-    executionPolicy: _executionPolicy,
-    retentionTick: _retentionTick,
-    prevHash: _prevHash,
-    eventHash: _eventHash,
-    headHash: _headHash,
-    outcomeEventHash: _outcomeEventHash,
-    hashRevision: _receiptHashRevision,
-    ...payload
-  } = receipt;
-  return sealMarketBaseResourceOutcome({
-    ...payload,
-    hashRevision: MARKET_BASE_RESOURCE_OUTCOME_HASH_REVISION,
-  });
-}
 
 describe("marketBaseResourceLedger", () => {
-  test("迁移原样继承 seq/head/lifetime/cooldown 与 legacy canary high-water", () => {
-    const { canary } = permitChains();
-    const state = ledger(canary);
-    expect(state.finalizedAttemptSeq).toBe(6);
-    expect(state.nextAttemptSeq).toBe(7);
-    expect(state.receiptHeadHash).toBe(V2_HEAD);
-    expect(state.confirmedCooldownNotBefore).toBe(50_806);
-    expect(state.lifetimeConfirmed).toEqual(lifetime());
-    expect(state.legacyV2ConfirmedCanaries).toEqual(legacyConfirmedCanaries());
-    expect(state.checkpoint.legacyV2ConfirmedCanaryCommitment).toBeTruthy();
-    expect(
-      validateMarketBaseResourceLedger(state, MIGRATION_TICK, canary),
-    ).toEqual({ ok: true, prefix: "idle" });
-  });
 
   test("V2 迁移后的 V3 pending 冻结历史 scope，owned terminal incarnation 变化后仍按旧 WAL 收敛再授权新 lane", () => {
     const { canary, currentLane } = permitChains();

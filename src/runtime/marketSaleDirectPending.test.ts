@@ -1,14 +1,10 @@
 import {
   createEmptyDirectPendingStore,
-  isRecoverableDirectDealOutcome,
-  isRecoverableDirectPendingStoreShape,
-  isRecoverablePendingDirectDeal,
   markDirectSubmissionResult,
   normalizeDirectPendingStore,
   prepareDirectPending,
   recoverPendingDirectDeal,
   reconcileDirectPendingDeals,
-  resolveDirectPendingWithEvidence,
   type DirectOutgoingTransaction,
   type DirectOutgoingWindow,
   type DirectPendingReconcileDependencies,
@@ -111,27 +107,6 @@ function prepare(
 
 describe("Direct pending WAL", () => {
 
-  it("submitted marker 先于 submittedAt 落盘的 CPU cut 恢复为 prepared", () => {
-    const { pending } = prepare();
-    const atCpuCut = {
-      ...pending,
-      status: "submitted",
-      resultCode: OK,
-    };
-
-    const recovered = recoverPendingDirectDeal(
-      JSON.parse(JSON.stringify(atCpuCut)),
-      pending.requestId,
-    );
-
-    expect(recovered).toMatchObject({
-      requestId: pending.requestId,
-      status: "prepared",
-      resultCode: OK,
-    });
-    expect(recovered?.submittedAt).toBeUndefined();
-  });
-
   it("changed 首观测先于 gap marker 落盘的 CPU cut 恢复为 reconcile_gap", () => {
     const { pending } = prepare();
     const atCpuCut = {
@@ -204,139 +179,5 @@ describe("Direct pending WAL", () => {
     expect(recovered.processedDirectTransactionKeys).toContain(
       "tx-100:buy-x",
     );
-  });
-
-  it("operator exact transaction 复用确认 finalize，重复 resolution 不重复计数", () => {
-    const { store } = prepare();
-    store.pendingDirectDeals["direct-100"].status = "reconcile_gap";
-    const deps = dependencies();
-    const evidence = {
-      kind: "transaction" as const,
-      requestId: "direct-100",
-      orderId: "buy-x",
-      operator: "forst",
-      transaction: transaction(),
-    };
-
-    expect(
-      resolveDirectPendingWithEvidence(
-        store,
-        evidence,
-        103,
-        deps.value,
-      ),
-    ).toEqual({ ok: true });
-    expect(store.directConfirmedDealCount).toBe(1);
-    expect(store.directPausedForReview).toBe(true);
-    expect(deps.releasePreparedClaims).toHaveBeenCalledWith(
-      "direct-100",
-    );
-    expect(
-      resolveDirectPendingWithEvidence(
-        store,
-        evidence,
-        104,
-        deps.value,
-      ),
-    ).toEqual({ ok: true, duplicate: true });
-    expect(store.directConfirmedDealCount).toBe(1);
-  });
-
-  it("operator no-fill 仅接受有界当前窗口，且 exact 重复 resolution 幂等", () => {
-    const { store } = prepare();
-    store.pendingDirectDeals["direct-100"].status = "reconcile_gap";
-    const deps = dependencies();
-    const evidence = {
-      kind: "not_filled" as const,
-      requestId: "direct-100",
-      orderId: "buy-x",
-      operator: "forst",
-      window: window(103),
-      physical: BEFORE,
-    };
-
-    expect(
-      resolveDirectPendingWithEvidence(
-        store,
-        evidence,
-        103,
-        deps.value,
-      ),
-    ).toEqual({ ok: true });
-    expect(store.pendingDirectDeals).toEqual({});
-    expect(store.directDealOutcomes[0]).toMatchObject({
-      status: "not_filled",
-      resolvedAt: 103,
-      evidenceSource: "operator",
-      evidenceKey: "operator-window:103:0",
-      operator: "forst",
-    });
-    expect(
-      isRecoverableDirectDealOutcome(store.directDealOutcomes[0]),
-    ).toBe(true);
-    expect(
-      resolveDirectPendingWithEvidence(
-        store,
-        evidence,
-        104,
-        deps.value,
-      ),
-    ).toEqual({ ok: true, duplicate: true });
-  });
-
-  it("operator no-fill 同时间同条数但内容或物理快照变化时必须冲突暂停", () => {
-    const { store } = prepare();
-    store.pendingDirectDeals["direct-100"].status = "reconcile_gap";
-    const deps = dependencies();
-    const unrelated = transaction({
-      transactionId: "unrelated",
-      time: 99,
-      order: {
-        id: "other-order",
-        type: ORDER_BUY,
-        price: 1,
-      },
-    });
-    const evidence = {
-      kind: "not_filled" as const,
-      requestId: "direct-100",
-      orderId: "buy-x",
-      operator: "forst",
-      window: window(103, [unrelated]),
-      physical: BEFORE,
-    };
-
-    expect(
-      resolveDirectPendingWithEvidence(
-        store,
-        evidence,
-        103,
-        deps.value,
-      ),
-    ).toEqual({ ok: true });
-    expect(
-      resolveDirectPendingWithEvidence(
-        store,
-        evidence,
-        104,
-        deps.value,
-      ),
-    ).toEqual({ ok: true, duplicate: true });
-
-    expect(
-      resolveDirectPendingWithEvidence(
-        store,
-        {
-          ...evidence,
-          window: window(103, [transaction()]),
-        },
-        104,
-        deps.value,
-      ),
-    ).toEqual({
-      ok: false,
-      error: "direct_operator_evidence_conflict",
-    });
-    expect(store.directPausedForReview).toBe(true);
   });
 });

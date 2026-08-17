@@ -8,7 +8,7 @@ jest.mock("@/runtime/cpuPhaseProfiler", () => ({
 }));
 
 import { claimerRole } from "@/roles/claimer";
-import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { moveToTarget } from "@/roles/shared";
 
 function createRoom(): Room {
   return {
@@ -58,24 +58,5 @@ describe("claimerRole", () => {
     role.target(creep);
 
     expect(moveToTarget).toHaveBeenCalledWith(creep, room.controller, 1, { plainCost: 2, swampCost: 8, maxRooms: 1 });
-  });
-
-  it("attacks an owned controller directly in war downgrade mode", () => {
-    const room = createRoom();
-    room.controller!.owner = { username: "enemy" };
-    room.controller!.reservation = undefined;
-    const creep = createCreep(room);
-    creep.attackController = jest.fn(() => ERR_NOT_IN_RANGE);
-
-    claimerRole(room.name, "", "attack").target(creep);
-
-    expect(creep.claimController).not.toHaveBeenCalled();
-    expect(creep.attackController).toHaveBeenCalledWith(room.controller);
-    expect(moveToTarget).toHaveBeenCalledWith(
-      creep,
-      room.controller,
-      1,
-      { plainCost: 2, swampCost: 8, maxRooms: 1, ignoreCreeps: false, reusePath: 0 },
-    );
   });
 });

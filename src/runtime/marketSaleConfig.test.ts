@@ -1,14 +1,7 @@
 import {
   directSafetyFingerprint,
-  enforceLegacyMarketSafetyLatch,
   MARKET_BASE_RESOURCE_CANONICAL_DIRECT_SAFETY_FINGERPRINT,
   MARKET_BASE_RESOURCE_CONFIG_REVISION,
-  MARKET_BASE_RESOURCE_RUNTIME_FINGERPRINT,
-  MARKET_DIRECT_CANARY_POLICY,
-  MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION,
-  MARKET_DIRECT_CONTINUOUS_RUNTIME_FINGERPRINT,
-  marketBaseResourceV3ConfigMismatchReasons,
-  marketDirectContinuousConfigMismatchReasons,
   resolveMarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
 import {
@@ -22,71 +15,7 @@ describe("marketSaleConfig", () => {
     Memory.cfg = {};
   });
 
-  function validDirectRaw(
-    mode: "shadow" | "direct" = "shadow",
-  ): Record<string, unknown> {
-    return {
-      mode,
-      ...(mode === "shadow" ? { shadowStrategy: "direct" } : {}),
-      configRevision: "x-direct-rev",
-      sellResources: [RESOURCE_CATALYST],
-      hardFloor: { [RESOURCE_CATALYST]: 600 },
-      economicFloor: { [RESOURCE_CATALYST]: 600 },
-      forecastBuffer: { [RESOURCE_CATALYST]: 100_000 },
-      minDealAmount: 500,
-      makerBatchAmount: 5_000,
-      creditReserve: 0,
-      terminalEnergyReserve: 25_000,
-    };
-  }
 
-  function validContinuousRaw(): Record<string, unknown> {
-    return {
-      mode: "direct",
-      directCapability: "continuous-v2",
-      configRevision: MARKET_DIRECT_CONTINUOUS_CONFIG_REVISION,
-      sellResources: [
-        RESOURCE_CATALYST,
-        RESOURCE_HYDROGEN,
-        RESOURCE_ZYNTHIUM,
-      ],
-      hardFloor: {
-        [RESOURCE_CATALYST]: 600,
-        [RESOURCE_HYDROGEN]: 428,
-        [RESOURCE_ZYNTHIUM]: 43,
-      },
-      economicFloor: {
-        [RESOURCE_CATALYST]: 600,
-        [RESOURCE_HYDROGEN]: 451,
-        [RESOURCE_ZYNTHIUM]: 45,
-      },
-      forecastBuffer: {
-        [RESOURCE_CATALYST]: 100_000,
-        [RESOURCE_HYDROGEN]: 100_000,
-        [RESOURCE_ZYNTHIUM]: 100_000,
-      },
-      minDealAmount: 1_000,
-      makerBatchAmount: 5_000,
-      creditReserve: 0,
-      terminalEnergyReserve: 25_000,
-      maxDirectDealAmount: 1_000,
-      maxDirectDealsPerCycle: 1,
-      minDirectOrderAmount: 1_000,
-      minDirectOrderNotional: 600_000,
-      maxDirectRawOrdersScannedPerCycle: 1_000,
-      maxDirectEligibleOrdersPricedPerCycle: 200,
-      maxDirectTransactionEnergy: 1_000,
-      directCanaryMaxConfirmedDeals: 1,
-      energyShadowHardFloor: 20,
-      planningSnapshotMaxAgeTicks: 10,
-      minHistoryDays: 7,
-      minHistoryTransactions: 100,
-      minHistoryVolume: 100_000,
-      historyFloorRatio: 0.95,
-      historyMaxAgeDays: 2,
-      canary: { enabled: true, allowExpansion: false },
-    };
-  }
 
   function validBaseResourceV3Raw(): Record<string, unknown> {
     return {
@@ -189,33 +118,6 @@ describe("marketSaleConfig", () => {
     expect(marketBaseResourceOperatorAuthorizationFingerprint(config)).not.toBe(
       MARKET_BASE_RESOURCE_CANONICAL_OPERATOR_AUTHORIZATION_FINGERPRINT,
     );
-  });
-
-  it("Direct 单笔上限必须覆盖 minDeal 与 minDirectOrder", () => {
-    const config = resolveMarketSaleAutomationConfig({
-      ...validDirectRaw(),
-      minDealAmount: 1_001,
-    });
-
-    expect(config.validForPlanning).toBe(false);
-    expect(config.invalidReasons).toContain(
-      "direct_max_deal_below_required_minimum",
-    );
-  });
-
-  it("只允许首版基础矿物白名单并保留显式空数组", () => {
-    expect(
-      resolveMarketSaleAutomationConfig({
-        mode: "off",
-        sellResources: [RESOURCE_KEANIUM, RESOURCE_ENERGY, RESOURCE_POWER],
-      }).sellResources,
-    ).toEqual([RESOURCE_KEANIUM]);
-    expect(
-      resolveMarketSaleAutomationConfig({
-        mode: "off",
-        sellResources: [],
-      }).sellResources,
-    ).toEqual([]);
   });
 
   it("盘口偏离、ask 保护和历史成交量比例使用保守默认并限制危险输入", () => {

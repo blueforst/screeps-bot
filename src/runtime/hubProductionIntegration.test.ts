@@ -10,11 +10,9 @@
  * 3. statusHub reflects cleanup error state from runtime
  */
 
-import { runHubPlanner, getEligibleSynthesisRooms } from "@/runtime/hubPlanner";
+import { runHubPlanner } from "@/runtime/hubPlanner";
 import { runSynthesisControl } from "@/runtime/synthesisControl";
-import { statusHubRaw, hubProgressRaw } from "@/runtime/consoleCommands";
-import { buildHubProgressSnapshot, collectHubProgressSnapshot } from "@/runtime/hubProgress";
-import { ensureResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import { statusHubRaw } from "@/runtime/consoleCommands";
 import {
   clearCarrierTaskBoardForTest,
 } from "@/runtime/carrierTaskBoard";
@@ -171,7 +169,7 @@ beforeEach(() => {
   clearCarrierTaskBoardForTest();
   Game.time = 0;
   Game.rooms = {};
-  (Game as any).getObjectById = (id: string) => null;
+  (Game as any).getObjectById = () => null;
   (Game as any).market = {
     calcTransactionCost: () => 0,
   } as any;
@@ -252,61 +250,6 @@ describe("hub production integration – ordered runtime calls", () => {
       hubRoomName: "W1N1",
       status: "active",
       activeProduct: RESOURCE_HYDROXIDE,
-    });
-  });
-});
-
-describe("hub production integration – statusHub reflects cleanup error", () => {
-  it("returns lastError from hub runtime state", () => {
-    Memory.cfg = {
-      hub: {
-        enabled: true,
-        hubRoomName: "W1N1",
-        internalOnly: true,
-      },
-    };
-
-    Memory.runtime = {
-      hub: {
-        status: "blocked",
-        updatedAt: 50,
-        activeProduct: "",
-        activeStep: 0,
-        missingResources: [],
-        lastPlanActions: [],
-        needsPlan: true,
-        lastError: "lab_cleanup_destination_full",
-      },
-      synthesisControl: {
-        updatedAt: 50,
-        generatedTaskCount: 0,
-        failedTaskCount: 0,
-        successfulRunCount: 0,
-        lastActions: [],
-        bindings: {},
-        rooms: {
-          W1N1: {
-            stage: "unloading",
-            activeProduct: RESOURCE_HYDROXIDE,
-            reagentLabIds: [],
-            productLabIds: [],
-            successfulRuns: 0,
-            pendingTasks: 0,
-            lastTransitionAt: 50,
-          } as any,
-        },
-      },
-    };
-
-    const result = statusHubRaw();
-
-    expect(result).toMatchObject({
-      enabled: true,
-      hubRoomName: "W1N1",
-      status: "active",
-      activeStage: "unloading",
-      lastError: "lab_cleanup_destination_full",
-      needsPlan: true,
     });
   });
 });

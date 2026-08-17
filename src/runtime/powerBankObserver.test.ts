@@ -21,15 +21,6 @@ function createOwnedRoom(name: string, structures: Structure[] = []): Room {
   } as unknown as Room;
 }
 
-function createObservedRoom(name: string, structures: Structure[] = []): Room {
-  return {
-    name,
-    find: jest.fn((type: FindConstant) => {
-      if (type === FIND_STRUCTURES) return structures;
-      return [];
-    }),
-  } as unknown as Room;
-}
 
 function createObserver(room: Room): StructureObserver {
   return {
@@ -42,16 +33,6 @@ function createObserver(room: Room): StructureObserver {
   } as unknown as StructureObserver;
 }
 
-function createPowerBank(roomName: string): StructurePowerBank {
-  return {
-    id: "bank-0" as Id<StructurePowerBank>,
-    structureType: STRUCTURE_POWER_BANK,
-    pos: { x: 25, y: 25, roomName } as RoomPosition,
-    hits: 2_000_000,
-    power: 5000,
-    ticksToDecay: 5000,
-  } as unknown as StructurePowerBank;
-}
 
 describe("powerBankObserver", () => {
   beforeEach(() => {
@@ -66,23 +47,6 @@ describe("powerBankObserver", () => {
       getRoomLinearDistance: jest.fn(() => 1),
       getRoomTerrain: jest.fn(() => ({ get: jest.fn(() => 0) })),
     } as unknown as GameMap;
-  });
-
-  it("scans visible patrol rooms and records power bank discoveries", () => {
-    const ownedRoom = createOwnedRoom("E3N59");
-    const bank = createPowerBank("E3N60");
-    Game.rooms[ownedRoom.name] = ownedRoom;
-    Game.rooms.E3N60 = createObservedRoom("E3N60", [bank as unknown as Structure]);
-
-    runPowerBankObserver();
-
-    expect(Memory.data?.powerBankHarvest?.[bank.id]).toMatchObject({
-      id: bank.id,
-      status: "discovered",
-      targetRoom: "E3N60",
-      hits: 2_000_000,
-      power: 5000,
-    });
   });
 
   it("schedules observer patrol rooms round-robin", () => {

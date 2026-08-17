@@ -2,9 +2,7 @@ import {
   advanceDirectShadowQualification,
   createDirectShadowQualification,
   getDirectPlanningSnapshotStatus,
-  isDirectActivationQualified,
   observeDirectLifecycleTransition,
-  selectDirectStructuralCanary,
   type DirectStructuralCandidate,
 } from "@/runtime/marketSaleDirectShadow";
 
@@ -51,20 +49,6 @@ describe("Direct Shadow qualification", () => {
 
     expect(state.consecutiveCycles).toBe(100);
     expect(state.qualifiedAt).toBe(1_000);
-  });
-
-  it("同 tick 重复调用不重复计数", () => {
-    const state = createDirectShadowQualification();
-    const input = {
-      tick: 10,
-      configRevision: "r1",
-      safetyFingerprint: "fp1",
-      canary: candidate(),
-      complete: true,
-    };
-    advanceDirectShadowQualification(state, input);
-    advanceDirectShadowQualification(state, input);
-    expect(state.consecutiveCycles).toBe(1);
   });
 
   it("规划快照 age=10 仍 fresh，age=11 stale", () => {

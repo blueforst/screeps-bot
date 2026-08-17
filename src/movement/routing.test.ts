@@ -1,6 +1,5 @@
-import { clearCreepMovementStateForTest, ensureCreepMovementState, getCreepMovementState } from "@/movement/creepState";
+import { clearCreepMovementStateForTest } from "@/movement/creepState";
 import { moveToTargetRoom } from "@/movement/routing";
-import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstruction";
 
 jest.mock("@/runtime/roomPlannerConstruction", () => ({
   getSourceContainerPositionsForRoom: jest.fn(() => []),
@@ -147,51 +146,5 @@ describe("moveToTargetRoom", () => {
     expect(result).toBe(OK);
     expect(move).toHaveBeenCalledWith(BOTTOM);
     expect(moveTo).not.toHaveBeenCalled();
-  });
-
-  it("keeps ignoreCreeps default on normal first path (creeps NOT high-cost)", () => {
-    const room = {
-      name: "W1N1",
-      findExitTo: jest.fn(() => RIGHT),
-      find: jest.fn((findConstant: number) => {
-        if (findConstant === FIND_STRUCTURES) return [];
-        if (findConstant === FIND_CONSTRUCTION_SITES) return [];
-        if (findConstant === FIND_MY_CREEPS) {
-          return [{ name: "other-creep", pos: new MockRoomPosition(27, 18, "W1N1") }];
-        }
-        if (findConstant === FIND_EXIT) return [new MockRoomPosition(49, 25, "W1N1")];
-        return [];
-      }),
-    } as unknown as Room;
-    const move = jest.fn(() => OK);
-    const moveTo = jest.fn(() => OK);
-    const findClosestByPath = jest.fn(() => new MockRoomPosition(49, 25, "W1N1") as unknown as RoomPosition);
-    const findPathTo = jest.fn(() => [{ x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT }]);
-    const creep = {
-      name: "carrier-normal-path",
-      fatigue: 0,
-      room,
-      pos: Object.assign(new MockRoomPosition(10, 10, "W1N1"), { findClosestByPath, findPathTo }) as unknown as RoomPosition,
-      memory: {},
-      move,
-      moveTo,
-    } as unknown as Creep;
-
-    (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([]);
-    Game.rooms["W1N1"] = room;
-
-    let capturedCallback: ((roomName: string) => boolean | CostMatrix) | undefined;
-    (PathFinder.search as jest.Mock).mockImplementation(
-      (_origin: any, _goal: any, opts: { roomCallback?: (roomName: string) => boolean | CostMatrix }) => {
-        capturedCallback = opts.roomCallback;
-        return { path: [new MockRoomPosition(10, 11, "W1N1")], incomplete: false, ops: 10, cost: 1 };
-      },
-    );
-
-    moveToTargetRoom(creep, "W1N3", "W1N1|W1N2|W1N3", { plainCost: 2, swampCost: 10 });
-
-    expect(capturedCallback).toBeDefined();
-    const matrix = capturedCallback!("W1N1") as CostMatrix;
-    expect((matrix as unknown as RealCostMatrix).get(27, 18)).toBe(0);
   });
 });

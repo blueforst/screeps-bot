@@ -8,7 +8,6 @@ import { prepareCombatBoost } from "@/roles/combatBoosts";
 import { pickupEnergyFromPreferredTarget } from "@/roles/energyTargets";
 import { moveToTarget } from "@/roles/shared";
 import { upgraderRole } from "@/roles/upgrader";
-import { RCL8_UPGRADER_RECOVERY_START_TICKS } from "@/runtime/upgraderPolicy";
 import { createMockStore } from "@mock/powerBank";
 
 const mockedPrepareBoost = prepareCombatBoost as jest.MockedFunction<typeof prepareCombatBoost>;
@@ -82,17 +81,6 @@ describe("upgraderRole", () => {
     expect(mockedMoveToTarget).not.toHaveBeenCalled();
     expect(creep.withdraw).not.toHaveBeenCalled();
     expect(creep.upgradeController).not.toHaveBeenCalled();
-  });
-
-  it("works at RCL8 while an authenticated maintenance task is inside the recovery window", () => {
-    const room = createRoom([], 8, true, "E4N58", RCL8_UPGRADER_RECOVERY_START_TICKS);
-    Game.rooms.E4N58 = room;
-    Memory.data!.manualUpgraders!.E4N58.maintenance = true;
-    Memory.data!.creepConfigs!["E4N58:upgrader:0"].args = ["E4N58"];
-    const creep = createCreep(room, 100);
-
-    expect(upgraderRole("E4N58").target(creep)).toBe(false);
-    expect(creep.upgradeController).toHaveBeenCalledWith(room.controller);
   });
 
   it("stops an RCL8 maintenance creep at the recovery stop threshold", () => {

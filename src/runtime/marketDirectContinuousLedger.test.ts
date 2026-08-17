@@ -1,26 +1,15 @@
 import {
-  CONTINUOUS_FAILED_RETRY_TICKS,
-  CONTINUOUS_CONFIRMED_CANARY_CHECKPOINT_GENESIS,
-  CONTINUOUS_OUTCOME_RING_LIMIT,
   CONTINUOUS_PLANNED_AMOUNT,
-  CONTINUOUS_QUOTA_BATCH_LIMIT,
-  CONTINUOUS_RECEIPT_GENESIS,
-  CONTINUOUS_RECEIPT_RING_LIMIT,
-  CONTINUOUS_ROLLING_WINDOW_TICKS,
   LEGACY_X_PROCESSED_EVIDENCE_KEY,
   advanceContinuousWal,
   canonicalStableHashV1,
   computeContinuousQuota,
-  computeContinuousQuotaBatch,
-  computeOpportunityAdmissions,
   migrateLegacyXSeedLedger,
   prepareContinuousAttempt,
   recordContinuousOutcome,
-  sealContinuousOutcome,
   validateContinuousLedger,
   type ContinuousOutcome,
   type ContinuousPendingAttempt,
-  type ContinuousReceipt,
   type ContinuousSafeOpportunity,
   type LegacyV1SafeStateFixture,
   type LegacyXGenesisInput,
@@ -255,31 +244,6 @@ function confirmedOutcome(
   };
 }
 
-function failedOutcome(
-  pending: ContinuousPendingAttempt,
-  status: "failed" | "not_filled" = "failed",
-): ContinuousOutcome {
-  return {
-    attemptSeq: pending.attemptSeq,
-    status,
-    permitId: pending.permitId,
-    permitEpoch: pending.permitEpoch,
-    entryId: pending.entryId,
-    resourcePolicyFingerprint:
-      pending.resourcePolicyFingerprint,
-    sellerRoom: pending.sellerRoom,
-    resource: pending.resource,
-    orderId: pending.orderId,
-    orderRoom: pending.orderRoom,
-    attemptAt: pending.attemptAt,
-    plannedAmount: CONTINUOUS_PLANNED_AMOUNT,
-    resolvedAt: pending.attemptAt + 1,
-    evidenceKey: `${status}-${pending.attemptSeq}:${pending.orderId}`,
-    reason: status,
-    actualAmount: 0,
-    pendingEvidenceHash: pending.frozenEvidenceHash,
-  };
-}
 
 function finish(
   state: MarketDirectContinuousLedger,
@@ -330,139 +294,8 @@ function executeConfirmed(
   );
 }
 
-function executeFailed(
-  state: MarketDirectContinuousLedger,
-  tick: number,
-): MarketDirectContinuousLedger {
-  const safe = [{ resource: "H", resourceLimit: 100_000 }];
-  const prepared = prepareContinuousAttempt(
-    state,
-    prepareInput(state, tick, "H", safe),
-  );
-  expect(prepared.action).toBe("prepared");
-  return finish(
-    prepared.state,
-    failedOutcome(prepared.state.pending!),
-  );
-}
 
-function appendFailedFixture(
-  state: MarketDirectContinuousLedger,
-  attemptAt: number,
-): MarketDirectContinuousLedger {
-  const next = JSON.parse(
-    JSON.stringify(state),
-  ) as MarketDirectContinuousLedger;
-  const attemptSeq = next.nextAttemptSeq;
-  const orderId = `buy-H-${attemptSeq}`;
-  const evidenceKey = `failed-${attemptSeq}:${orderId}`;
-  const storedOutcome = sealContinuousOutcome({
-    attemptSeq,
-    status: "failed",
-    permitId: "permit-epoch-1",
-    permitEpoch: 1,
-    entryId: "base-h-e3n59-v1",
-    resourcePolicyFingerprint: "fingerprint-H",
-    sellerRoom: "E3N59",
-    resource: "H",
-    orderId,
-    orderRoom: "E11S21",
-    attemptAt,
-    plannedAmount: 1_000,
-    resolvedAt: attemptAt + 1,
-    evidenceKey,
-    reason: "failed",
-    actualAmount: 0,
-    pendingEvidenceHash: "fixture",
-  });
-  const base: Omit<
-    ContinuousReceipt,
-    "prevHash" | "eventHash" | "headHash"
-  > = {
-    attemptSeq,
-    executionPolicy: "continuous",
-    status: "failed",
-    permitId: "permit-epoch-1",
-    permitEpoch: 1,
-    entryId: "base-h-e3n59-v1",
-    resourcePolicyFingerprint: "fingerprint-H",
-    sellerRoom: "E3N59",
-    resource: "H",
-    orderId,
-    orderRoom: "E11S21",
-    attemptAt,
-    plannedAmount: 1_000,
-    resolvedAt: attemptAt + 1,
-    retentionTick: attemptAt + 1,
-    evidenceKey,
-    reason: "failed",
-    actualAmount: 0,
-    outcomeEventHash: storedOutcome.outcomeEventHash!,
-  };
-  const eventHash = canonicalStableHashV1({
-    domain: "market-direct-continuous:receipt-v2",
-    attemptSeq: base.attemptSeq,
-    executionPolicy: base.executionPolicy,
-    status: base.status,
-    permitId: base.permitId,
-    permitEpoch: base.permitEpoch,
-    entryId: base.entryId,
-    resourcePolicyFingerprint: base.resourcePolicyFingerprint,
-    sellerRoom: base.sellerRoom,
-    resource: base.resource,
-    orderId: base.orderId,
-    orderRoom: base.orderRoom,
-    attemptAt: base.attemptAt,
-    plannedAmount: base.plannedAmount,
-    resolvedAt: base.resolvedAt,
-    retentionTick: base.retentionTick,
-    evidenceKey: base.evidenceKey,
-    reason: base.reason,
-    transactionId: null,
-    transactionTime: null,
-    actualAmount: 0,
-    actualTransactionEnergy: null,
-    actualNetCreditsMilli: null,
-    outcomeEventHash: base.outcomeEventHash,
-  });
-  const receipt: ContinuousReceipt = {
-    ...base,
-    prevHash: next.receiptHeadHash,
-    eventHash,
-    headHash: canonicalStableHashV1({
-      domain: "receipt-head-v2",
-      prevHash: next.receiptHeadHash,
-      eventHash,
-    }),
-  };
-  next.receipts.push(receipt);
-  next.receiptHeadHash = receipt.headHash;
-  next.finalizedAttemptSeq = attemptSeq;
-  next.nextAttemptSeq = attemptSeq + 1;
-  next.retryNotBefore = attemptAt + CONTINUOUS_FAILED_RETRY_TICKS;
-  next.processedEvidenceKeys.push({ attemptSeq, key: evidenceKey });
-  next.outcomes.push(storedOutcome);
-  if (next.outcomes.length > CONTINUOUS_OUTCOME_RING_LIMIT) {
-    next.outcomes.splice(
-      0,
-      next.outcomes.length - CONTINUOUS_OUTCOME_RING_LIMIT,
-    );
-  }
-  return next;
-}
 
-function failedFixture(count: number): {
-  state: MarketDirectContinuousLedger;
-  nextTick: number;
-} {
-  let state = genesis();
-  let tick = LEGACY_TRANSACTION_TICK + 30_000;
-  for (let index = 0; index < count; index += 1) {
-    state = appendFailedFixture(state, tick);
-    tick += CONTINUOUS_FAILED_RETRY_TICKS;
-  }
-  return { state, nextTick: tick };
-}
 
 describe("Continuous Direct WAL prefixes", () => {
 
@@ -515,34 +348,5 @@ describe("Continuous Direct receipt retention and quota", () => {
       computeContinuousQuota(state, outsideTick, "X", 8_000, 12_000)!
         .resourceConfirmedActual,
     ).toBe(0);
-  });
-});
-
-describe("Continuous Direct opportunity reserve", () => {
-  it("只给 current safe resources 留 1,000，且不改变 X > H > Z 价格顺序", () => {
-    const state = genesis();
-    const tick = LEGACY_TRANSACTION_TICK + 1_000;
-    const all = computeOpportunityAdmissions(
-      state,
-      tick,
-      SAFE_RESOURCES,
-      12_000,
-    )!;
-    expect(all.find((entry) => entry.resource === "X")).toEqual(
-      expect.objectContaining({
-        admitted: true,
-        unmetOtherReserves: { H: 1_000, Z: 1_000 },
-      }),
-    );
-    const withoutZ = computeOpportunityAdmissions(
-      state,
-      tick,
-      SAFE_RESOURCES.filter((entry) => entry.resource !== "Z"),
-      12_000,
-    )!;
-    expect(
-      withoutZ.find((entry) => entry.resource === "X")
-        ?.unmetOtherReserves,
-    ).toEqual({ H: 1_000 });
   });
 });

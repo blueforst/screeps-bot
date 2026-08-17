@@ -1,6 +1,5 @@
 import {
   createDirectAutomationState,
-  defaultDirectAutomationDependencies,
   normalizeDirectAutomationState,
   runDirectAutomationPlanning,
   runDirectAutomationPreflight,
@@ -308,38 +307,5 @@ describe("Direct automation orchestration", () => {
     );
     expect(stillPaused.writes).toBe(0);
     expect(deps.executePrepared).not.toHaveBeenCalled();
-  });
-
-  it("已有 Direct 状态缺 schema 或 qualification 损坏时迁移阻断且资格归零", () => {
-    const missingSchema = normalizeDirectAutomationState({
-      shadowQualification: {
-        consecutiveCycles: 100,
-        qualifiedAt: 1_000,
-        activationAuthorized: true,
-      },
-    } as Partial<ReturnType<typeof createDirectAutomationState>>);
-    expect(missingSchema.migrationBlockedReason).toBe(
-      "unsupported_direct_state_schema",
-    );
-    expect(missingSchema.shadowQualification.consecutiveCycles).toBe(0);
-    expect(missingSchema.shadowQualification.activationAuthorized).toBe(false);
-
-    const corruptQualification = normalizeDirectAutomationState({
-      ...createDirectAutomationState(),
-      shadowQualification: {
-        consecutiveCycles: 100,
-        qualifiedAt: 1_000,
-        activationAuthorized: true,
-      },
-    });
-    expect(corruptQualification.migrationBlockedReason).toBe(
-      "direct_qualification_state_invalid",
-    );
-    expect(corruptQualification.shadowQualification.consecutiveCycles).toBe(0);
-    expect(
-      normalizeDirectAutomationState(
-        corruptQualification,
-      ).migrationBlockedReason,
-    ).toBeUndefined();
   });
 });

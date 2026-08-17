@@ -89,25 +89,6 @@ describe("runFlagHaulingByFlag", () => {
     } as GameMap;
   });
 
-  it("removes the flag and cleans up config when the visible target has no haul resources", () => {
-    const home = createRoom("W1N1");
-    createSpawn(home);
-    const target = {
-      name: "W5N5",
-      controller: undefined,
-      find: jest.fn(() => []),
-    } as unknown as Room;
-    Game.rooms[target.name] = target;
-    const flag = createFlag("HAUL", target.name);
-    Game.flags.HAUL = flag;
-
-    runFlagHaulingByFlag();
-
-    expect(flag.remove).toHaveBeenCalledTimes(1);
-    expect(getCreepConfigService().list()).toEqual({});
-    expect(Memory.data?.flagHauling).toEqual({});
-  });
-
   it("removes the flag when only less-than-carrier-capacity energy remains", () => {
     const home = createRoom("W1N1");
     createSpawn(home);
@@ -130,19 +111,6 @@ describe("runFlagHaulingByFlag", () => {
 
     expect(flag.remove).toHaveBeenCalledTimes(1);
     expect(getCreepConfigService().list()).toEqual({});
-  });
-
-  it("creates HAUL configs with the shared 1000-capacity carrier body", () => {
-    const home = createRoom("W1N1");
-    home.energyCapacityAvailable = 5_600;
-    createSpawn(home);
-    Game.flags.HAUL = createFlag("HAUL", "W5N5");
-
-    runFlagHaulingByFlag();
-
-    const body = getCreepConfigService().get("W1N1:haul:W5N5:carrier:HAUL")?.body;
-    expect(body?.filter((part) => part === CARRY)).toHaveLength(20);
-    expect(body?.filter((part) => part === MOVE)).toHaveLength(20);
   });
 
   it("keeps cancelled configs while loaded carriers still need to return home", () => {

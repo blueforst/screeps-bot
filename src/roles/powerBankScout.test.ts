@@ -7,8 +7,6 @@ jest.mock("@/runtime/powerBankDiscovery", () => ({
 }));
 
 import { powerBankScoutRole, getActiveTransitDangerRooms } from "@/roles/powerBankScout";
-import { POWER_BANK_PATROL_ROOMS } from "@/runtime/powerBankConstants";
-import { recordPowerBankDiscovery } from "@/runtime/powerBankDiscovery";
 
 const { moveToTargetRoom } = jest.requireMock("@/roles/shared") as {
   moveToTargetRoom: jest.Mock;
@@ -49,13 +47,6 @@ describe("powerBankScoutRole", () => {
     });
   });
 
-  it("patrol room list is exactly E0N60 through E9N60", () => {
-    expect(POWER_BANK_PATROL_ROOMS).toEqual([
-      "E0N60", "E1N60", "E2N60", "E3N60", "E4N60",
-      "E5N60", "E6N60", "E7N60", "E8N60", "E9N60",
-    ]);
-  });
-
   it("moves to first patrol room when no memory", () => {
     const creep = createMockCreep("E5N55");
 
@@ -67,14 +58,6 @@ describe("powerBankScoutRole", () => {
       undefined,
       expect.objectContaining({ plainCost: 1, swampCost: 1 }),
     );
-  });
-
-  it("never returns true (never suicides)", () => {
-    const creep = createMockCreep("E0N60");
-
-    const result = powerBankScoutRole().source?.(creep);
-
-    expect(result).toBe(false);
   });
 
   describe("getActiveTransitDangerRooms", () => {

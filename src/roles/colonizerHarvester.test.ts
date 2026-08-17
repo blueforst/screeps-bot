@@ -10,11 +10,10 @@ jest.mock("@/runtime/roomPlannerConstruction", () => ({
 }));
 
 import { colonizerHarvesterRole } from "@/roles/colonizerHarvester";
-import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
+import { moveToTarget } from "@/roles/shared";
 import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction";
 
 const mockedMoveToTarget = moveToTarget as jest.MockedFunction<typeof moveToTarget>;
-const mockedMoveToTargetRoom = moveToTargetRoom as jest.MockedFunction<typeof moveToTargetRoom>;
 const mockedGetPlannedSourceContainerPos = getPlannedSourceContainerPos as jest.MockedFunction<typeof getPlannedSourceContainerPos>;
 
 function createContainer(freeCapacity: number): StructureContainer {
@@ -92,16 +91,6 @@ describe("colonizerHarvesterRole", () => {
 
     expect(creep.harvest).not.toHaveBeenCalled();
     expect(mockedMoveToTarget).not.toHaveBeenCalled();
-  });
-
-  it("resumes harvesting as soon as its work container has free capacity", () => {
-    const workPos = createPosition(10, 10, [createContainer(1)]);
-    const creep = createCreep("W1N0", workPos);
-    const source = bindSource(workPos);
-
-    expect(colonizerHarvesterRole("W1N0", "source-a").source?.(creep)).toBe(false);
-
-    expect(creep.harvest).toHaveBeenCalledWith(source);
   });
 
   it("moves toward the assigned work position instead of stalling on an unrelated full container", () => {

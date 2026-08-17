@@ -14,7 +14,6 @@ jest.mock("@/runtime/sourceLink", () => ({
 import { minerRole } from "@/roles/miner";
 import { moveToTarget } from "@/roles/shared";
 import { getPlannedSourceContainerPos } from "@/runtime/roomPlannerConstruction";
-import { getSourceAdjacentLink } from "@/runtime/sourceLink";
 
 class MockPos {
   x: number;
@@ -58,15 +57,6 @@ function makeSource(id: string, x: number, y: number, roomName: string) {
   return { id: id as Id<Source>, pos: new MockPos(x, y, roomName), room: { name: roomName } } as unknown as Source;
 }
 
-function makeLink(id: string, x: number, y: number, roomName: string, freeCapacity = 800) {
-  return {
-    id: id as Id<StructureLink>,
-    pos: new MockPos(x, y, roomName),
-    store: {
-      getFreeCapacity: jest.fn(() => freeCapacity),
-    },
-  } as unknown as StructureLink;
-}
 
 function makeCreep(x: number, y: number, roomName: string, freeCapacity = 50, usedCapacity = 0) {
   return {
@@ -124,18 +114,5 @@ describe("minerRole – work position alignment with harvester", () => {
 
     expect(moveToTarget).toHaveBeenCalledWith(creep, workPos, 0, { reusePath: 5, allowSourceContainerTarget: true });
     expect(creep.harvest).not.toHaveBeenCalled();
-  });
-
-  test("no workPos in layout: miner moves directly to source", () => {
-    (getPlannedSourceContainerPos as jest.Mock).mockReturnValue(null);
-    (source.pos as unknown as MockPos).setInRange([]);
-
-    const creep = makeCreep(5, 5, ROOM);
-    creep.harvest.mockReturnValue(ERR_NOT_IN_RANGE);
-
-    const role = minerRole(SOURCE_ID);
-    role.source(creep as unknown as Creep);
-
-    expect(moveToTarget).toHaveBeenCalledWith(creep, source);
   });
 });

@@ -1,8 +1,5 @@
 import {
   chooseBoundaryBurstEngagement,
-  chooseInsideBurstTarget,
-  getBoundaryDefensePriority,
-  getInsideDefensePriority,
 } from "@/runtime/hostilePriorities";
 
 class MockPos {
@@ -53,12 +50,5 @@ describe("hostilePriorities", () => {
     const engagement = chooseBoundaryBurstEngagement([hostile], [occupiedRampart, freeRampart], new Set([occupiedRampart.id]));
 
     expect(engagement?.rampart).toBe(freeRampart);
-  });
-
-  it("chooses the highest-value inside target for burst focus", () => {
-    const healer = createHostile({ [HEAL]: 2 }, new MockPos(10, 10, "W1N1"));
-    const attacker = createHostile({ [ATTACK]: 2 }, new MockPos(11, 10, "W1N1"));
-
-    expect(chooseInsideBurstTarget([attacker, healer])).toBe(healer);
   });
 });

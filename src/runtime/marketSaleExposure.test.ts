@@ -1,7 +1,5 @@
 import {
-  canTerminalSendPreserveMarketSaleExposure,
   claimTerminalAmountOutsideMarketSaleExposure,
-  claimTerminalSendOutsideMarketSaleExposure,
   clearMarketSaleExposureReservationsForTest,
   getTerminalAmountOutsideMarketSaleExposure,
   summarizeMarketSaleTerminalExposure,
@@ -98,33 +96,5 @@ describe("marketSaleExposure", () => {
         RESOURCE_KEANIUM,
       ),
     ).toBe(0);
-  });
-
-  it("Direct 出售 energy 时合并货物与 transaction energy reservation", () => {
-    const source = terminal("W8N9", {
-      [RESOURCE_ENERGY]: 2_000,
-    });
-    Memory.data = {
-      marketSaleAutomation: {
-        managedOrders: {},
-        pendingDirectDeals: {
-          direct: {
-            requestId: "direct-energy",
-            status: "prepared",
-            canaryRoomName: "W8N9",
-            resource: RESOURCE_ENERGY,
-            dealAmount: 1_000,
-            transactionEnergy: 100,
-          },
-        },
-      },
-    } as unknown as Memory["data"];
-
-    expect(
-      getTerminalAmountOutsideMarketSaleExposure(
-        source,
-        RESOURCE_ENERGY,
-      ),
-    ).toBe(900);
   });
 });

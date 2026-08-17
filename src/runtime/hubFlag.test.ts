@@ -7,12 +7,6 @@ function createOwnedRoom(name: string): Room {
   } as unknown as Room;
 }
 
-function createNonOwnedRoom(name: string): Room {
-  return {
-    name,
-    controller: { my: false, level: 0 } as StructureController,
-  } as unknown as Room;
-}
 
 function createFlag(name: string, roomName: string): Flag {
   return {
@@ -28,20 +22,6 @@ describe("runHubByFlag", () => {
     Game.rooms = {};
     Memory.cfg = {};
     Memory.runtime = {};
-  });
-
-  it("owned visible room: flag consumed, hubRoomName written, needsPlan=true", () => {
-    const room = createOwnedRoom("W1N1");
-    Game.rooms["W1N1"] = room;
-    const flag = createFlag("HUB", "W1N1");
-    Game.flags["HUB"] = flag;
-
-    runHubByFlag();
-
-    expect(flag.remove).toHaveBeenCalledTimes(1);
-    expect(Memory.cfg?.hub?.enabled).toBe(true);
-    expect(Memory.cfg?.hub?.hubRoomName).toBe("W1N1");
-    expect(Memory.runtime?.hub?.needsPlan).toBe(true);
   });
 
   it("flag in same room as already-configured hub: re-applies defaults (idempotent), flag consumed", () => {

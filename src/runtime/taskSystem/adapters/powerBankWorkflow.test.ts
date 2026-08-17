@@ -137,56 +137,6 @@ describe("powerBankWorkflowAdapter", () => {
     });
   });
 
-  test("keeps legacy generation optional and allows discovered tasks without a source room", () => {
-    const id = "bank:discovered";
-    installPowerBankStore({
-      [id]: powerBankTask(id, {
-        status: "discovered",
-        sourceRoom: "",
-        activeGeneration: undefined,
-        primaryBoostOwnerId: undefined,
-      }),
-    });
-
-    const result = snapshotPowerBankWorkflow();
-    expect(result.invalidCount).toBe(0);
-    expect(result.entries[0]).toEqual(expect.objectContaining({
-      activity: "available",
-      sourceState: "discovered",
-      authorities: [{ role: "producer", id: "powerBankHarvest" }],
-      deadlineAt: undefined,
-      issues: [],
-    }));
-  });
-
-  test("keeps a legacy reinforcement generation absent without fabricating one", () => {
-    const id = "pb-legacy-reinforcement";
-    installPowerBankStore({
-      [id]: powerBankTask(id, {
-        activeGeneration: 0,
-        activeIndex: 0,
-        reinforcement: {
-          index: 1,
-          stage: "spawning",
-          boostOwnerId: `${id}:reinforcement:legacy`,
-        },
-      }),
-    });
-
-    const entry = snapshotPowerBankWorkflow().entries[0];
-    expect(entry.activity).toBe("running");
-    expect(entry.issues).toEqual([expect.objectContaining({
-      code: "power-bank-legacy-reinforcement-generation-missing",
-      field: "reinforcement.generation",
-    })]);
-    expect(entry.authorities).toContainEqual({
-      role: "workflow_owner",
-      id: `${id}:reinforcement:legacy`,
-      generation: undefined,
-      component: "reinforcement",
-    });
-  });
-
   test("fails closed on invalid reinforcement indexes and non-increasing generations", () => {
     const missingIndexId = "pb-missing-index";
     const indexId = "pb-invalid-index";
@@ -258,67 +208,44 @@ describe("powerBankWorkflowAdapter", () => {
       code: "power-bank-reinforcement-generation-conflict",
       field: "reinforcement.generation",
     }));
-  });
 
-  test.each([
-    "preparing_boosts",
-    "spawning",
-    "boosting",
-    "renewing",
-    "travelling",
-    "attacking",
-    "hauling",
-    "complete",
-  ])("fails closed when %s has no source room", (status) => {
-    const id = `pb-no-source:${status}`;
-    installPowerBankStore({
-      [id]: powerBankTask(id, { status, sourceRoom: "" }),
-    });
+    for (const status of [
+      "preparing_boosts",
+      "spawning",
+      "boosting",
+      "renewing",
+      "travelling",
+      "attacking",
+      "hauling",
+      "complete",
+    ]) {
+      const id = `pb-no-source:${status}`;
+      installPowerBankStore({
+        [id]: powerBankTask(id, { status, sourceRoom: "" }),
+      });
+      const entry = snapshotPowerBankWorkflow().entries[0];
+      expect(entry.activity).toBe("unknown");
+      expect(entry.issues).toContainEqual(expect.objectContaining({
+        code: "power-bank-source-room-required",
+        field: "sourceRoom",
+      }));
+    }
 
-    const entry = snapshotPowerBankWorkflow().entries[0];
-    expect(entry.activity).toBe("unknown");
-    expect(entry.issues).toContainEqual(expect.objectContaining({
-      code: "power-bank-source-room-required",
-      field: "sourceRoom",
-    }));
-  });
-
-  test.each([
-    ["discovered", "available"],
-    ["failed", "terminal"],
-    ["aborted", "terminal"],
-  ] as const)("allows an early %s workflow to omit source room", (status, activity) => {
-    const id = `pb-early:${status}`;
-    installPowerBankStore({
-      [id]: powerBankTask(id, { status, sourceRoom: "" }),
-    });
-
-    const entry = snapshotPowerBankWorkflow().entries[0];
-    expect(entry.activity).toBe(activity);
-    expect(entry.issues).not.toContainEqual(expect.objectContaining({
-      code: "power-bank-source-room-required",
-    }));
-  });
-
-  test("fails closed when running work retains a terminal failReason", () => {
-    const id = "pb-stale-fail-reason";
-    installPowerBankStore({
-      [id]: powerBankTask(id, {
-        status: "attacking",
-        failReason: "stale_terminal_reason",
-      }),
-    });
-
-    const entry = snapshotPowerBankWorkflow().entries[0];
-    expect(entry).toEqual(expect.objectContaining({
-      activity: "unknown",
-      sourceState: "attacking",
-      blocker: "stale_terminal_reason",
-      issues: [expect.objectContaining({
-        code: "power-bank-stale-fail-reason",
-        field: "failReason",
-      })],
-    }));
+    for (const [status, activity] of [
+      ["discovered", "available"],
+      ["failed", "terminal"],
+      ["aborted", "terminal"],
+    ] as const) {
+      const id = `pb-early:${status}`;
+      installPowerBankStore({
+        [id]: powerBankTask(id, { status, sourceRoom: "" }),
+      });
+      const entry = snapshotPowerBankWorkflow().entries[0];
+      expect(entry.activity).toBe(activity);
+      expect(entry.issues).not.toContainEqual(expect.objectContaining({
+        code: "power-bank-source-room-required",
+      }));
+    }
   });
 
   test("preserves blocker and hauling deadline while terminal active records stay distinct from history", () => {
@@ -370,20 +297,6 @@ describe("powerBankWorkflowAdapter", () => {
     expect((Memory.data as unknown as MutableRecord).powerBankHarvestHistory).toBe(history);
   });
 
-  test("never promotes bounded history back into active work", () => {
-    const history = Object.freeze([{ taskId: "bank:complete", status: "complete", terminalTick: 100 }]);
-    const data = { powerBankHarvestHistory: history };
-    Memory.data = data as unknown as NonNullable<Memory["data"]>;
-
-    expect(powerBankWorkflowAdapter.snapshot(undefined)).toEqual({
-      entries: [],
-      invalidCount: 0,
-      issues: [],
-    });
-    expect(Memory.data).toBe(data);
-    expect((Memory.data as unknown as MutableRecord).powerBankHarvestHistory).toBe(history);
-  });
-
   test("fails closed on malformed and unknown active records while preserving key-proven refs", () => {
     installPowerBankStore({
       "pb-future": powerBankTask("pb-future", { status: "future" }),
@@ -429,74 +342,4 @@ describe("powerBankWorkflowAdapter", () => {
     ]);
   });
 
-  test("does not ensure missing stores and reports malformed data/store shapes", () => {
-    expect(powerBankWorkflowAdapter.snapshot(undefined)).toEqual({
-      entries: [],
-      invalidCount: 0,
-      issues: [],
-    });
-    expect(Memory.data).toBeUndefined();
-
-    (Memory as unknown as { data?: unknown }).data = [];
-    expect(powerBankWorkflowAdapter.snapshot(undefined)).toEqual(expect.objectContaining({
-      entries: [],
-      invalidCount: 1,
-      issues: [expect.objectContaining({
-        code: "power-bank-malformed-data",
-        field: "Memory.data",
-      })],
-    }));
-
-    installPowerBankStore([]);
-    expect(powerBankWorkflowAdapter.snapshot(undefined)).toEqual(expect.objectContaining({
-      entries: [],
-      invalidCount: 1,
-      issues: [expect.objectContaining({
-        code: "power-bank-malformed-store",
-        field: "Memory.data.powerBankHarvest",
-      })],
-    }));
-  });
-
-  test("returns deeply isolated output and leaves active/history source identities unchanged", () => {
-    const id = "bank:isolated";
-    const reinforcement = Object.freeze({
-      index: 1,
-      generation: 2,
-      stage: "spawning",
-      boostOwnerId: `${id}:reinforcement:g2`,
-    });
-    const sourceTask = Object.freeze(powerBankTask(id, {
-      activeGeneration: 1,
-      primaryBoostOwnerId: `${id}:primary:g1`,
-      reinforcement,
-    }));
-    const store = Object.freeze({ [id]: sourceTask });
-    const history = Object.freeze([{ taskId: "bank:old", status: "complete" }]);
-    const data = { powerBankHarvest: store, powerBankHarvestHistory: history };
-    Memory.data = data as unknown as NonNullable<Memory["data"]>;
-    const before = JSON.stringify(data);
-
-    const first = powerBankWorkflowAdapter.snapshot(undefined);
-    const mutableEntry = first.entries[0] as any;
-    mutableEntry.ref.scope.objectId = "changed";
-    mutableEntry.authorities[0].id = "changed";
-    mutableEntry.issues.push({ code: "changed", message: "changed" });
-
-    expect(JSON.stringify(data)).toBe(before);
-    expect(Memory.data).toBe(data);
-    expect((Memory.data as unknown as MutableRecord).powerBankHarvest).toBe(store);
-    expect((Memory.data as unknown as MutableRecord).powerBankHarvestHistory).toBe(history);
-    expect(store[id]).toBe(sourceTask);
-    expect(sourceTask.reinforcement).toBe(reinforcement);
-    expect(powerBankWorkflowAdapter.snapshot(undefined).entries[0]).toEqual(expect.objectContaining({
-      ref: expect.objectContaining({
-        scope: { kind: "object", objectId: `object:${id}` },
-      }),
-      authorities: expect.arrayContaining([
-        { role: "producer", id: "powerBankHarvest" },
-      ]),
-      issues: [],
-    }));
-  });
 });

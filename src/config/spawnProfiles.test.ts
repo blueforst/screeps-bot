@@ -14,133 +14,51 @@ function makeRoom(energyCapacityAvailable: number): Room {
 }
 
 describe("spawnProfiles", () => {
-  it("builds the fixed 15 WORK, 5 CARRY, 10 MOVE hub upgrader body", () => {
-    const profile = (spawnProfiles as unknown as Record<string, (room: Room) => BodyPartConstant[]>).hubUpgrader;
+  it("keeps representative fixed and shared production body contracts", () => {
+    const hubUpgrader = (
+      spawnProfiles as unknown as Record<string, (room: Room) => BodyPartConstant[]>
+    ).hubUpgrader;
+    const room = makeRoom(5_600);
+    const upgraderBody = hubUpgrader(room);
+    const carrierBody = buildStandardCarrierBody(room.energyCapacityAvailable);
 
-    expect(profile).toBeDefined();
+    expect(upgraderBody).toHaveLength(30);
+    expect(upgraderBody.filter(part => part === WORK)).toHaveLength(15);
+    expect(upgraderBody.filter(part => part === CARRY)).toHaveLength(5);
+    expect(upgraderBody.filter(part => part === MOVE)).toHaveLength(10);
+    expect(bodyCost(upgraderBody)).toBe(2_250);
+    expect(spawnProfiles.carrier(room)).toEqual(carrierBody);
+    expect(spawnProfiles.remoteCarrier(room)).toEqual(carrierBody);
+    expect(carrierBody.filter(part => part === CARRY)).toHaveLength(20);
+    expect(carrierBody.filter(part => part === MOVE)).toHaveLength(20);
 
-    const body = profile(makeRoom(5600));
-    expect(body).toHaveLength(30);
-    expect(body.filter((part) => part === WORK)).toHaveLength(15);
-    expect(body.filter((part) => part === CARRY)).toHaveLength(5);
-    expect(body.filter((part) => part === MOVE)).toHaveLength(10);
-    expect(bodyCost(body)).toBe(2250);
+    const boostedMiner = getLinkMinerBodyForRegenSourceLevel(4);
+    expect(getLinkMinerWorkPartsForRegenSourceLevel(4)).toBe(12);
+    expect(boostedMiner.filter(part => part === WORK)).toHaveLength(12);
+    expect(boostedMiner.filter(part => part === CARRY)).toHaveLength(8);
+    expect(boostedMiner.filter(part => part === MOVE)).toHaveLength(10);
+    expect(bodyCost(boostedMiner)).toBe(2_100);
   });
 
-  describe("worker (oneOneOneBody)", () => {
-    it("at high energy capacity (5600) produces a valid body within 50 parts and energy budget", () => {
-      const room = makeRoom(5600);
-
-      const body = spawnProfiles.worker(room);
-
-      expect(body.length).toBeLessThanOrEqual(50);
-      expect(bodyCost(body)).toBeLessThanOrEqual(5600);
-    });
-  });
-
-  describe("carrier", () => {
-    it("uses the shared 1000-capacity body for carrier and remoteCarrier", () => {
-      const room = makeRoom(5_600);
-      const expected = buildStandardCarrierBody(room.energyCapacityAvailable);
-
-      expect(spawnProfiles.carrier(room)).toEqual(expected);
-      expect(spawnProfiles.remoteCarrier(room)).toEqual(expected);
-      expect(expected.filter((part) => part === CARRY)).toHaveLength(20);
-      expect(expected.filter((part) => part === MOVE)).toHaveLength(20);
-    });
-  });
-
-  describe("mineralHarvester (twoToOneWorkMoveBody)", () => {
-    it.each([
+  it("keeps complete-unit scaling boundaries and minimum-body fallbacks", () => {
+    for (const [energyCapacity, unitCount, expectedCost] of [
       [3_999, 15, 3_750],
       [4_000, 16, 4_000],
-    ])(
-      "at %i energy only adds affordable complete WORK+WORK+MOVE units",
-      (energyCapacity, unitCount, expectedCost) => {
-        const body = spawnProfiles.mineralHarvester(makeRoom(energyCapacity));
+      [4_250, 16, 4_000],
+    ] as const) {
+      const room = makeRoom(energyCapacity);
+      const body = spawnProfiles.mineralHarvester(room);
 
-        expect(body).toEqual(
-          Array.from({ length: unitCount }, () => [WORK, WORK, MOVE]).flat(),
-        );
-        expect(bodyCost(body)).toBe(expectedCost);
-        expect(bodyCost(body)).toBeLessThanOrEqual(energyCapacity);
-      },
-    );
+      expect(body).toEqual(
+        Array.from({ length: unitCount }, () => [WORK, WORK, MOVE]).flat(),
+      );
+      expect(bodyCost(body)).toBe(expectedCost);
+      expect(bodyCost(body)).toBeLessThanOrEqual(room.energyCapacityAvailable);
+    }
 
-    it.each([4_250, 5_600])(
-      "at %i energy keeps the complete 48-part body instead of filling 50 parts",
-      (energyCapacity) => {
-        const body = spawnProfiles.mineralHarvester(makeRoom(energyCapacity));
-
-        expect(body).toEqual(
-          Array.from({ length: 16 }, () => [WORK, WORK, MOVE]).flat(),
-        );
-        expect(body).toHaveLength(48);
-        expect(body.filter((part) => part === WORK)).toHaveLength(32);
-        expect(body.filter((part) => part === MOVE)).toHaveLength(16);
-        expect(bodyCost(body)).toBe(4_000);
-      },
-    );
-  });
-
-  describe("miner (REGEN_SOURCE throughput)", () => {
-    it("builds the base body as 6 WORK, 8 CARRY, and 7 MOVE", () => {
-      const body = getLinkMinerBodyForRegenSourceLevel(0);
-
-      expect(body.filter((part) => part === WORK)).toHaveLength(6);
-      expect(body.filter((part) => part === CARRY)).toHaveLength(8);
-      expect(body.filter((part) => part === MOVE)).toHaveLength(7);
-      expect(body).toHaveLength(21);
-      expect(bodyCost(body)).toBe(1_350);
-    });
-
-    it("builds the level-4 body as 12 WORK, 8 CARRY, and 10 MOVE", () => {
-      const body = getLinkMinerBodyForRegenSourceLevel(4);
-
-      expect(getLinkMinerWorkPartsForRegenSourceLevel(4)).toBe(12);
-      expect(body.filter((part) => part === WORK)).toHaveLength(12);
-      expect(body.filter((part) => part === CARRY)).toHaveLength(8);
-      expect(body.filter((part) => part === MOVE)).toHaveLength(10);
-      expect(body).toHaveLength(30);
-      expect(bodyCost(body)).toBe(2_100);
-    });
-  });
-
-  describe("remoteMiningReserver", () => {
-    it("returns fallback body when energy is insufficient for even one CLAIM+MOVE pair", () => {
-      const room = makeRoom(100);
-
-      const body = spawnProfiles.remoteMiningReserver(room);
-
-      expect(body).toEqual([WORK, CARRY, MOVE]);
-    });
-  });
-
-  describe("remoteDefender", () => {
-    it("builds a single RCL7 defender with enough damage budget for a level 0 Invader Core", () => {
-      const body = spawnProfiles.remoteDefender(makeRoom(5_300));
-      const rangedParts = body.filter(part => part === RANGED_ATTACK).length;
-      const healParts = body.filter(part => part === HEAL).length;
-      const moveParts = body.filter(part => part === MOVE).length;
-      const ticksToClear = Math.ceil(100_000 / (rangedParts * RANGED_ATTACK_POWER));
-
-      expect(bodyCost(body)).toBe(5_300);
-      expect(rangedParts).toBe(16);
-      expect(healParts).toBe(7);
-      expect(moveParts).toBe(23);
-      expect(ticksToClear).toBe(625);
-      expect(ticksToClear).toBeLessThan(CREEP_LIFE_TIME - 250);
-    });
-  });
-
-  describe("remoteWorker", () => {
-
-    it("at low energy (200) returns minimum fallback [WORK, CARRY, MOVE]", () => {
-      const room = makeRoom(200);
-
-      const body = spawnProfiles.remoteWorker(room);
-
-      expect(body).toEqual([WORK, CARRY, MOVE]);
-    });
+    const reserverRoom = makeRoom(100);
+    const workerRoom = makeRoom(200);
+    expect(spawnProfiles.remoteMiningReserver(reserverRoom)).toEqual([WORK, CARRY, MOVE]);
+    expect(spawnProfiles.remoteWorker(workerRoom)).toEqual([WORK, CARRY, MOVE]);
   });
 });

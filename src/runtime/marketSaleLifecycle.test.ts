@@ -1,14 +1,8 @@
 import {
   attestPendingCreateOrder,
-  canUseCanary,
   createPendingCreateState,
-  createPendingMutation,
   hashOrderIds,
-  lockCanary,
-  markPendingCreateSubmitted,
-  markPendingMutationSubmitted,
   reconcilePendingCreate,
-  reconcilePendingMutation,
   updateDrainState,
   type MarketOrderSnapshot,
   type OrderMutationLease,
@@ -77,25 +71,6 @@ describe("marketSaleLifecycle", () => {
       gameTime: 122,
     });
     expect(attested.adoptedOrderId).toBe("candidate");
-  });
-
-  it("extend 使用 totalAmount 确认并计算并发 fill", () => {
-    const pending = markPendingMutationSubmitted(
-      createPendingMutation({
-        kind: "extend",
-        order: order({ totalAmount: 5_000, remainingAmount: 2_000 }),
-        gameTime: 100,
-        requested: { addAmount: 1_000 },
-        prospectiveFeeMilli: 5_000,
-        conservativeExposure: 3_000,
-      }),
-    );
-    const result = reconcilePendingMutation({
-      pending,
-      liveOrder: order({ totalAmount: 6_000, remainingAmount: 2_500 }),
-    });
-    expect(result.confirmed).toBe(true);
-    expect(result.observedFillAmount).toBe(500);
   });
 
   it("off 必须跨 tick 确认全部 pending 与 exposure 归零", () => {

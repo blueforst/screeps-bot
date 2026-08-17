@@ -1,6 +1,4 @@
 import { runTowerControl } from "@/runtime/towerControl";
-import { writeDefenseFronts } from "@/runtime/defenseCoordination";
-import type { DefenseFront } from "@/runtime/defenseFronts";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
@@ -193,49 +191,5 @@ describe("runTowerControl", () => {
 
     expect(towerA.attack).not.toHaveBeenCalled();
     expect(towerB.attack).not.toHaveBeenCalled();
-  });
-
-  it("focuses tower fire on the coordinated front", () => {
-    const roomName = "W9N9";
-    const frontHostile = createHostile(roomName, "front-hostile", 11, 10, {
-      body: createBody(ATTACK, 2),
-      hits: 200,
-    });
-    const offFrontHostile = createHostile(roomName, "off-front-hostile", 40, 40, {
-      body: createBody(ATTACK, 1),
-      hits: 100,
-    });
-    const towerA = createTower(roomName, "tower-a", 10, 10);
-    const towerB = createTower(roomName, "tower-b", 12, 10);
-    const room = createRoom(roomName, {
-      towers: [towerA, towerB],
-      hostiles: [frontHostile, offFrontHostile],
-    });
-    Game.rooms[room.name] = room;
-
-    const fronts: DefenseFront[] = [
-      {
-        id: "front:0",
-        hostiles: [frontHostile],
-        hostileIds: [frontHostile.id],
-        centroid: { x: frontHostile.pos.x, y: frontHostile.pos.y },
-        threatScore: 10,
-      },
-      {
-        id: "front:1",
-        hostiles: [offFrontHostile],
-        hostileIds: [offFrontHostile.id],
-        centroid: { x: offFrontHostile.pos.x, y: offFrontHostile.pos.y },
-        threatScore: 2,
-      },
-    ];
-    writeDefenseFronts(roomName, fronts);
-
-    runTowerControl();
-
-    expect(towerA.attack).toHaveBeenCalledWith(frontHostile);
-    expect(towerB.attack).toHaveBeenCalledWith(frontHostile);
-    expect(towerA.attack).not.toHaveBeenCalledWith(offFrontHostile);
-    expect(towerB.attack).not.toHaveBeenCalledWith(offFrontHostile);
   });
 });

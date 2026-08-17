@@ -106,20 +106,38 @@ describe("roomWorkforce", () => {
 
     Memory.cfg = { worker: { maxPerRoom: 6 } };
     expect(getWorkerCap()).toBe(6);
+    for (const [level, expected] of [
+      [1, 5],
+      [2, 4],
+      [3, 3],
+      [4, 1],
+      [5, 1],
+      [7, 1],
+    ] as const) {
+      expect(getDesiredWorkerCount(createRoom({ name: `W${level}N1`, level })))
+        .toBe(expected);
+    }
   });
 
-  it.each([
-    [1, 5],
-    [2, 4],
-    [3, 3],
-    [4, 1],
-    [5, 1],
-    [7, 1],
-  ] as const)("uses the existing RCL %i worker baseline", (level, expected) => {
-    expect(getDesiredWorkerCount(createRoom({ name: `W${level}N1`, level }))).toBe(expected);
-  });
+  it("applies construction hysteresis, repair demand, and the RCL8 hard cap", () => {
+    for (const [workerConstructionTier, constructionCount, expectedTier, expectedWorkers] of [
+      [0, 1, 1, 2],
+      [1, 0, 0, 1],
+      [1, 6, 2, 3],
+      [2, 4, 1, 2],
+      [2, 15, 3, 4],
+      [3, 12, 2, 3],
+    ] as const) {
+      const fixture = createRoom({
+        name: `W${workerConstructionTier}N${constructionCount}`,
+        level: 5,
+        constructionCount,
+        workerConstructionTier,
+      });
+      expect(getDesiredWorkerCount(fixture)).toBe(expectedWorkers);
+      expect(fixture.memory.workerConstructionTier).toBe(expectedTier);
+    }
 
-  it("uses construction hysteresis when deciding worker count", () => {
     const room = createRoom({ level: 5, constructionCount: 6 });
 
     expect(getDesiredWorkerCount(room)).toBe(3);
@@ -154,31 +172,7 @@ describe("roomWorkforce", () => {
 
     expect(getDesiredWorkerCount(room)).toBe(2);
     expect(room.memory.workerConstructionTier).toBe(1);
-  });
 
-  it.each([
-    [0, 1, 1, 2],
-    [1, 0, 0, 1],
-    [1, 6, 2, 3],
-    [2, 4, 1, 2],
-    [2, 15, 3, 4],
-    [3, 12, 2, 3],
-  ] as const)(
-    "moves construction tier %i with %i sites to tier %i and %i workers",
-    (workerConstructionTier, constructionCount, expectedTier, expectedWorkers) => {
-      const room = createRoom({
-        name: `W${workerConstructionTier}N${constructionCount}`,
-        level: 5,
-        constructionCount,
-        workerConstructionTier,
-      });
-
-      expect(getDesiredWorkerCount(room)).toBe(expectedWorkers);
-      expect(room.memory.workerConstructionTier).toBe(expectedTier);
-    },
-  );
-
-  it("adds a worker only for an active normal repair task", () => {
     const normalRepairRoom = createRoom({ level: 5 });
     const normalTasks = getWorkerTasksByRoom(normalRepairRoom.name);
     normalTasks["repair:r1"] = {
@@ -210,21 +204,19 @@ describe("roomWorkforce", () => {
       repairMode: "emergency",
     };
     expect(getDesiredWorkerCount(emergencyRepairRoom)).toBe(1);
-  });
 
-  it("caps RCL8 at one worker regardless of construction and normal repair demand", () => {
-    const room = createRoom({
+    const rcl8Room = createRoom({
       name: "W8N8",
       level: 8,
       constructionCount: 20,
       workerConstructionTier: 3,
     });
-    const tasks = getWorkerTasksByRoom(room.name);
+    const tasks = getWorkerTasksByRoom(rcl8Room.name);
     tasks["repair:r8"] = {
       id: "repair:r8",
       type: "repair",
       targetId: "r8",
-      roomName: room.name,
+      roomName: rcl8Room.name,
       priority: 320,
       assignedCreeps: [],
       maxAssignees: 1,
@@ -233,58 +225,11 @@ describe("roomWorkforce", () => {
       repairMode: "normal",
     };
 
-    expect(getDesiredWorkerCount(room)).toBe(1);
-    expect(room.memory.workerConstructionTier).toBe(0);
+    expect(getDesiredWorkerCount(rcl8Room)).toBe(1);
+    expect(rcl8Room.memory.workerConstructionTier).toBe(0);
   });
 
-  it("keeps RCL8 inventory construction pure until its exact set-zero effect is applied", () => {
-    const room = createRoom({
-      name: "W8N7",
-      level: 8,
-      constructionCount: 20,
-      workerConstructionTier: 3,
-    });
-
-    const inventory = buildRoomWorkforceInventory(room);
-
-    expect(inventory.constructionTierEffect).toEqual({ kind: "set", value: 0 });
-    expect(inventory.configs.filter((config) => config.kind === "worker")).toEqual([
-      {
-        kind: "worker",
-        configName: "W8N7:worker:0",
-        role: "worker",
-        args: [],
-        slot: 0,
-      },
-    ]);
-    expect(room.memory.workerConstructionTier).toBe(3);
-
-    applyRoomWorkforceConstructionTierEffect(room, inventory.constructionTierEffect);
-
-    expect(room.memory.workerConstructionTier).toBe(0);
-  });
-
-  it("builds managed config names from source roles, carrier, and workers", () => {
-    const room = createRoom({
-      level: 5,
-      sources: [createSource("source-a", "W1N1"), createSource("source-b", "W1N1", true)],
-      minerals: [
-        createMineral("mineral-ok", { hasExtractor: true, hasContainer: true, amount: 4000 }),
-        createMineral("mineral-no-container", { hasExtractor: true, hasContainer: false, amount: 4000 }),
-        createMineral("mineral-empty", { hasExtractor: true, hasContainer: true, amount: 0 }),
-      ],
-    });
-
-    expect(getInventoryConfigNames(room)).toEqual([
-      "W1N1:harvester:source-a",
-      "W1N1:miner:source-b",
-      "W1N1:mineralHarvester:mineral-ok",
-      "W1N1:carrier:0",
-      "W1N1:worker:0",
-    ]);
-  });
-
-  it("builds typed config payloads without mutating construction tier", () => {
+  it("builds typed source, mineral, carrier, and worker inventory with capacity cutovers", () => {
     const room = createRoom({
       level: 5,
       constructionCount: 6,
@@ -320,52 +265,7 @@ describe("roomWorkforce", () => {
 
     applyRoomWorkforceConstructionTierEffect(room, inventory.constructionTierEffect);
     expect(room.memory.workerConstructionTier).toBe(2);
-  });
 
-  it("returns a preserve effect for Reserve without mutating or recalculating tier", () => {
-    const room = createRoom({
-      name: "W1N6",
-      level: 5,
-      constructionCount: 20,
-      workerConstructionTier: 3,
-    });
-    Game.flags.RESERVE_W1N6 = {
-      name: "RESERVE_W1N6",
-      pos: { roomName: room.name } as RoomPosition,
-    } as Flag;
-
-    const inventory = buildRoomWorkforceInventory(room);
-
-    expect(inventory.constructionTierEffect).toEqual({ kind: "preserve" });
-    expect(inventory.configs.some((config) => config.kind === "worker")).toBe(false);
-    expect(room.memory.workerConstructionTier).toBe(3);
-  });
-
-  it("does not cache inventories across task-board observations in the same tick", () => {
-    const room = createRoom({ name: "W2N2", level: 5 });
-
-    const beforeRepair = buildRoomWorkforceInventory(room);
-    const tasks = getWorkerTasksByRoom(room.name);
-    tasks["repair:r1"] = {
-      id: "repair:r1",
-      type: "repair",
-      targetId: "r1",
-      roomName: room.name,
-      priority: 320,
-      assignedCreeps: [],
-      maxAssignees: 1,
-      status: "active",
-      updatedAt: Game.time,
-      repairMode: "normal",
-    };
-    const afterRepair = buildRoomWorkforceInventory(room);
-
-    expect(afterRepair).not.toBe(beforeRepair);
-    expect(beforeRepair.configs.filter((config) => config.kind === "worker")).toHaveLength(1);
-    expect(afterRepair.configs.filter((config) => config.kind === "worker")).toHaveLength(2);
-  });
-
-  it("keeps two carriers through rcl4 before reducing to one at rcl5", () => {
     const rcl3Room = createRoom({ name: "W1N3", level: 3, sources: [createSource("source-a", "W1N3")] });
     const rcl4Room = createRoom({ name: "W1N4", level: 4, sources: [createSource("source-a", "W1N4")] });
     const rcl5Room = createRoom({ name: "W1N5", level: 5, sources: [createSource("source-a", "W1N5")] });
@@ -393,23 +293,59 @@ describe("roomWorkforce", () => {
     ]);
   });
 
-  it.each(["RESERVE", "RESERVE_W1N6"])("keeps construction tier and omits workers under %s", (flagName) => {
-    const room = createRoom({
+  it("keeps inventory observation pure until effects apply and preserves Reserve state", () => {
+    const rcl8Room = createRoom({
+      name: "W8N7",
+      level: 8,
+      constructionCount: 20,
+      workerConstructionTier: 3,
+    });
+    const rcl8Inventory = buildRoomWorkforceInventory(rcl8Room);
+    expect(rcl8Inventory.constructionTierEffect).toEqual({ kind: "set", value: 0 });
+    expect(rcl8Inventory.configs.filter((config) => config.kind === "worker"))
+      .toHaveLength(1);
+    expect(rcl8Room.memory.workerConstructionTier).toBe(3);
+    applyRoomWorkforceConstructionTierEffect(rcl8Room, rcl8Inventory.constructionTierEffect);
+    expect(rcl8Room.memory.workerConstructionTier).toBe(0);
+
+    const reserveRoom = createRoom({
       name: "W1N6",
       level: 5,
       constructionCount: 20,
       workerConstructionTier: 3,
       sources: [createSource("source-a", "W1N6")],
     });
-    Game.flags[flagName] = {
-      name: flagName,
-      pos: { roomName: room.name } as RoomPosition,
+    Game.flags.RESERVE_W1N6 = {
+      name: "RESERVE_W1N6",
+      pos: { roomName: reserveRoom.name } as RoomPosition,
     } as Flag;
-
-    expect(getInventoryConfigNames(room)).toEqual([
+    const reserveInventory = buildRoomWorkforceInventory(reserveRoom);
+    expect(reserveInventory.constructionTierEffect).toEqual({ kind: "preserve" });
+    expect(getInventoryConfigNames(reserveRoom)).toEqual([
       "W1N6:harvester:source-a",
       "W1N6:carrier:0",
     ]);
-    expect(room.memory.workerConstructionTier).toBe(3);
+    expect(reserveRoom.memory.workerConstructionTier).toBe(3);
+
+    const observedRoom = createRoom({ name: "W2N2", level: 5 });
+    const beforeRepair = buildRoomWorkforceInventory(observedRoom);
+    getWorkerTasksByRoom(observedRoom.name)["repair:r1"] = {
+      id: "repair:r1",
+      type: "repair",
+      targetId: "r1",
+      roomName: observedRoom.name,
+      priority: 320,
+      assignedCreeps: [],
+      maxAssignees: 1,
+      status: "active",
+      updatedAt: Game.time,
+      repairMode: "normal",
+    };
+    const afterRepair = buildRoomWorkforceInventory(observedRoom);
+    expect(afterRepair).not.toBe(beforeRepair);
+    expect(beforeRepair.configs.filter((config) => config.kind === "worker"))
+      .toHaveLength(1);
+    expect(afterRepair.configs.filter((config) => config.kind === "worker"))
+      .toHaveLength(2);
   });
 });

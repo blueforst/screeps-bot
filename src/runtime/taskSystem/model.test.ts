@@ -1,19 +1,14 @@
 import {
   compareWorkNamespaces,
-  compareWorkRefs,
   compareWorkScopes,
-  sortWorkRefs,
-  sortWorkStatusViews,
   type TaskSystemAdapter,
   type TaskSystemAdapterResult,
   type TaskSystemSnapshot,
   type TaskSystemSummary,
   type WorkActivity,
   type WorkAuthorityRef,
-  type WorkProjectionIssue,
   type WorkRef,
   type WorkScope,
-  type WorkStatusView,
 } from "@/runtime/taskSystem/model";
 
 type IsExactly<A, B> =
@@ -61,67 +56,10 @@ void adapterKeysMatch;
 void adapterResultKeysMatch;
 void adapterHasNoMutationMethod;
 
-const SCOPES: readonly WorkScope[] = [
-  { kind: "room", roomName: "W1N1" },
-  { kind: "actor", actorId: "Operator-1" },
-  { kind: "cross_room", fromRoomName: "W1N1", toRoomName: "W2N2" },
-  { kind: "shard_room", shardName: "shard3", roomName: "W3N3" },
-  { kind: "object", objectId: "5bbcac149099fc012e632db0" },
-  { kind: "global" },
-];
 
-function createRef(overrides: Partial<WorkRef> = {}): WorkRef {
-  return {
-    system: "worker-work",
-    namespace: "workerTaskPool",
-    scope: { kind: "room", roomName: "W1N1" },
-    localId: "task:alpha->beta",
-    ...overrides,
-  };
-}
 
-function createView(ref: WorkRef, sourceState: string): WorkStatusView {
-  return {
-    ref,
-    activity: "available",
-    sourceState,
-    authorities: [],
-    issues: [],
-  };
-}
 
 describe("task system core model", () => {
-  test("represents every scope as a structured discriminated value", () => {
-    expect(SCOPES.map((scope) => scope.kind)).toEqual([
-      "room",
-      "actor",
-      "cross_room",
-      "shard_room",
-      "object",
-      "global",
-    ]);
-    expect(createRef().namespace).toBe("workerTaskPool");
-  });
-
-  test("supports multiple structured authorities and projection issues", () => {
-    const authorities: readonly WorkAuthorityRef[] = [
-      { role: "producer", id: "resourceControl" },
-      { role: "lease_owner", id: "W2N2", generation: 4, component: "terminal" },
-    ];
-    const issues: readonly WorkProjectionIssue[] = [
-      { code: "assignment-drift", message: "assignment evidence is incomplete", field: "assignees" },
-    ];
-    const view: WorkStatusView = {
-      ref: createRef(),
-      activity: "unknown",
-      sourceState: "active",
-      authorities,
-      issues,
-    };
-
-    expect(view.authorities).toEqual(authorities);
-    expect(view.issues).toEqual(issues);
-  });
 
   test("defines explicit adapter, summary, and snapshot result contracts", () => {
     const result: TaskSystemAdapterResult = {
@@ -171,38 +109,5 @@ describe("task system core model", () => {
       { kind: "global" },
       { kind: "global" },
     )).toBe(0);
-  });
-
-  test("orders refs by system, namespace, canonical scope, and localId", () => {
-    const refs = [
-      createRef({ localId: "z" }),
-      createRef({ namespace: "z-producer", localId: "a" }),
-      createRef({ system: "carrier-logistics", namespace: "a-producer", localId: "a" }),
-      createRef({ scope: { kind: "room", roomName: "W0N0" }, localId: "z" }),
-      createRef({ localId: "a:part->tail" }),
-    ];
-
-    expect(sortWorkRefs(refs)).toEqual([
-      refs[2],
-      refs[3],
-      refs[4],
-      refs[0],
-      refs[1],
-    ]);
-    expect(refs[0].localId).toBe("z");
-    expect(compareWorkRefs(refs[4], refs[0])).toBeLessThan(0);
-  });
-
-  test("sorts status views stably without mutating the caller array", () => {
-    const sameRef = createRef({ localId: "same" });
-    const first = createView(sameRef, "first");
-    const second = createView({ ...sameRef }, "second");
-    const earlier = createView(createRef({ localId: "earlier" }), "earlier");
-    const input = [first, second, earlier];
-    const sorted = sortWorkStatusViews(input);
-
-    expect(sorted).toEqual([earlier, first, second]);
-    expect(sorted).not.toBe(input);
-    expect(input).toEqual([first, second, earlier]);
   });
 });

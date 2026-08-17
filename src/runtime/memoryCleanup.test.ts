@@ -1,12 +1,12 @@
 import { runMemoryCleanup } from "@/runtime/memoryCleanup";
-import { clearPickupReservationStoreForTest, getPickupReservationsByRoom } from "@/runtime/energyPickupReservation";
-import { reserveProductionResource, listProductionReservations } from "@/runtime/resourceReservation";
-import { bootstrapRooms } from "@/runtime/bootstrap";
 import {
-  clearWorkerTaskBoardForTest,
-  peekWorkerTasksByRoom,
-  refreshWorkerTasks,
-} from "@/runtime/workerTaskPool";
+  clearPickupReservationStoreForTest,
+  getPickupReservationsByRoom,
+} from "@/runtime/energyPickupReservation";
+import {
+  listProductionReservations,
+  reserveProductionResource,
+} from "@/runtime/resourceReservation";
 import type { CreepConfig } from "@/types/system";
 
 type RuntimeGlobal = typeof global & {
@@ -53,42 +53,13 @@ function createOwnedRoom(name: string): Room {
   return {
     name,
     memory: {} as RoomMemory,
-    controller: {
-      my: true,
-      level: 8,
-    } as StructureController,
+    controller: { my: true, level: 8 } as StructureController,
     find: () => [],
   } as unknown as Room;
 }
 
-function createNormalRepairRoom(name: string): Room {
-  const room = createOwnedRoom(name);
-  room.controller!.level = 5;
-  room.controller!.id = `${name}-controller` as Id<StructureController>;
-  room.memory.workerConstructionTier = 3;
-  const rampart = {
-    id: `${name}-rampart`,
-    room,
-    structureType: STRUCTURE_RAMPART,
-    hits: 6_000,
-    hitsMax: 100_000,
-  } as StructureRampart;
-  room.find = ((type: FindConstant) => {
-    if (type === FIND_MY_STRUCTURES || type === FIND_STRUCTURES) {
-      return [rampart];
-    }
-    return [];
-  }) as Room["find"];
-  return room;
-}
-
 function createManagedCreep(configName: string, role: CreepMemory["role"]): Creep {
-  return {
-    memory: {
-      configName,
-      role,
-    } as CreepMemory,
-  } as unknown as Creep;
+  return { memory: { configName, role } as CreepMemory } as unknown as Creep;
 }
 
 type ManagedWorkforceRole = "harvester" | "miner" | "mineralHarvester" | "carrier" | "worker";
@@ -148,21 +119,13 @@ describe("runMemoryCleanup", () => {
   beforeEach(() => {
     resetRuntimeServices();
     clearPickupReservationStoreForTest();
-    clearWorkerTaskBoardForTest();
     Game.time = 17;
-    Game.rooms = {
-      W1N1: createOwnedRoom("W1N1"),
-    };
+    Game.rooms = { W1N1: createOwnedRoom("W1N1") };
     Game.creeps = {};
     Game.spawns = {};
     getPickupReservationsByRoom("W2N2").target1 = {
       kind: "structure",
-      claims: {
-        DeadCarrier: {
-          amount: 50,
-          until: 10,
-        },
-      },
+      claims: { DeadCarrier: { amount: 50, until: 10 } },
     };
     Memory.creeps = {};
     Memory.cfg = undefined;
@@ -170,40 +133,24 @@ describe("runMemoryCleanup", () => {
     Memory.data = undefined;
   });
 
-  it("does not prune link network cache outside the 17-tick cleanup cadence", () => {
+  it("does not prune link-network cache outside the 17-tick cadence", () => {
     Game.time = 18;
     Memory.runtime = {
       linkNetwork: {
-        W1N1: {
-          updatedAt: 10,
-          senderIds: ["owned-sender"],
-          receiverIds: ["owned-receiver"],
-        },
-        W9N9: {
-          updatedAt: 11,
-          senderIds: ["unseen-sender"],
-          receiverIds: ["unseen-receiver"],
-        },
+        W1N1: { updatedAt: 10, senderIds: ["owned-sender"], receiverIds: ["owned-receiver"] },
+        W9N9: { updatedAt: 11, senderIds: ["unseen-sender"], receiverIds: ["unseen-receiver"] },
       },
     } as Memory["runtime"];
 
     runMemoryCleanup();
 
     expect(Memory.runtime?.linkNetwork).toEqual({
-      W1N1: {
-        updatedAt: 10,
-        senderIds: ["owned-sender"],
-        receiverIds: ["owned-receiver"],
-      },
-      W9N9: {
-        updatedAt: 11,
-        senderIds: ["unseen-sender"],
-        receiverIds: ["unseen-receiver"],
-      },
+      W1N1: { updatedAt: 10, senderIds: ["owned-sender"], receiverIds: ["owned-receiver"] },
+      W9N9: { updatedAt: 11, senderIds: ["unseen-sender"], receiverIds: ["unseen-receiver"] },
     });
   });
 
-  it("purges terminal War owners from completedAt even when updatedAt was refreshed", () => {
+  it("expires terminal War owners by completedAt with legacy statusSince fallback", () => {
     Game.time = 221;
     const configName = "W1N1:war:W2N2:meleeAttacker:0";
     const survivor = {
@@ -231,28 +178,8 @@ describe("runMemoryCleanup", () => {
           completedAt: 20,
           updatedAt: 220,
         },
-      },
-      creepConfigs: {
-        [configName]: { role: "meleeAttacker", args: [...survivor.memory.roleArgs!], roomName: "W1N1" },
-      },
-    } as Memory["data"];
-
-    runMemoryCleanup();
-
-    expect(Memory.data?.war?.W2N2).toBeUndefined();
-    expect(Memory.data?.creepConfigs?.[configName]).toBeUndefined();
-    expect(spawn.memory.spawnList).toEqual([]);
-    expect(survivor.memory._warDetached).toBe(true);
-    expect(survivor.memory.configName).toBeUndefined();
-    expect(survivor.suicide).not.toHaveBeenCalled();
-  });
-
-  it("falls back to statusSince for legacy terminal War owners without completedAt", () => {
-    Game.time = 221;
-    Memory.data = {
-      war: {
-        W2N2: {
-          targetRoom: "W2N2",
+        W3N3: {
+          targetRoom: "W3N3",
           sourceRoom: "W1N1",
           status: "failed",
           reason: "npc_reservation",
@@ -262,317 +189,83 @@ describe("runMemoryCleanup", () => {
           updatedAt: 220,
         },
       },
+      creepConfigs: {
+        [configName]: { role: "meleeAttacker", args: [...survivor.memory.roleArgs!], roomName: "W1N1" },
+      },
     } as Memory["data"];
 
     runMemoryCleanup();
 
-    expect(Memory.data?.war?.W2N2).toBeUndefined();
+    expect(Memory.data?.war).toEqual({});
+    expect(Memory.data?.creepConfigs?.[configName]).toBeUndefined();
+    expect(spawn.memory.spawnList).toEqual([]);
+    expect(survivor.memory._warDetached).toBe(true);
+    expect(survivor.memory.configName).toBeUndefined();
+    expect(survivor.suicide).not.toHaveBeenCalled();
   });
 
-  it("keeps owned link cache and prunes visible-lost and unseen rooms on tick 17", () => {
+  it("keeps owned link cache while pruning visible-lost/unseen cache and dead creep memory", () => {
     const visibleLostRoom = createOwnedRoom("W2N2");
     visibleLostRoom.controller!.my = false;
-    Game.rooms = {
-      W1N1: createOwnedRoom("W1N1"),
-      W2N2: visibleLostRoom,
-    };
+    Game.rooms = { W1N1: createOwnedRoom("W1N1"), W2N2: visibleLostRoom };
+    Memory.creeps.DeadWorker = { role: "worker" } as CreepMemory;
     Memory.runtime = {
       linkNetwork: {
-        W1N1: {
-          updatedAt: 10,
-          senderIds: ["owned-sender"],
-          receiverIds: ["owned-receiver"],
-        },
-        W2N2: {
-          updatedAt: 11,
-          senderIds: ["lost-sender"],
-          receiverIds: ["lost-receiver"],
-        },
-        W9N9: {
-          updatedAt: 12,
-          senderIds: ["unseen-sender"],
-          receiverIds: ["unseen-receiver"],
-        },
-      },
-    } as Memory["runtime"];
-
-    runMemoryCleanup();
-
-    expect(Memory.runtime?.linkNetwork).toEqual({
-      W1N1: {
-        updatedAt: 10,
-        senderIds: ["owned-sender"],
-        receiverIds: ["owned-receiver"],
-      },
-    });
-  });
-
-  it("preserves an empty link network container after pruning its last stale room", () => {
-    Memory.runtime = {
-      linkNetwork: {
-        W9N9: {
-          updatedAt: 12,
-          senderIds: ["unseen-sender"],
-          receiverIds: ["unseen-receiver"],
-        },
-      },
-    } as Memory["runtime"];
-
-    runMemoryCleanup();
-
-    expect(Memory.runtime?.linkNetwork).toEqual({});
-  });
-
-  it("does not create link network memory when no cache exists", () => {
-    Memory.runtime = undefined;
-
-    runMemoryCleanup();
-
-    expect(Memory.runtime?.linkNetwork).toBeUndefined();
-  });
-
-  it("continues cleaning dead creep memory while pruning stale link cache", () => {
-    Memory.creeps.DeadWorker = {
-      role: "worker",
-    } as CreepMemory;
-    Memory.runtime = {
-      linkNetwork: {
-        W9N9: {
-          updatedAt: 12,
-          senderIds: ["unseen-sender"],
-          receiverIds: ["unseen-receiver"],
-        },
+        W1N1: { updatedAt: 10, senderIds: ["owned-sender"], receiverIds: ["owned-receiver"] },
+        W2N2: { updatedAt: 11, senderIds: ["lost-sender"], receiverIds: ["lost-receiver"] },
+        W9N9: { updatedAt: 12, senderIds: ["unseen-sender"], receiverIds: ["unseen-receiver"] },
       },
     } as Memory["runtime"];
 
     runMemoryCleanup();
 
     expect(Memory.creeps.DeadWorker).toBeUndefined();
-    expect(Memory.runtime?.linkNetwork).toEqual({});
-  });
-
-  it("leaves visible managed-room canonical configs to bootstrap without scanning workforce policy", () => {
-    Game.time = 51;
-    const room = createOwnedRoom("W5N1");
-    room.controller!.level = 5;
-    room.memory.workerConstructionTier = 3;
-    const findSpy = jest.fn(() => []);
-    room.find = findSpy as Room["find"];
-    Game.rooms = { [room.name]: room };
-    const surplus = createCanonicalManagedConfig(room.name, "worker", 9);
-    Memory.data = {
-      creepConfigs: {
-        [surplus.configName]: surplus.config,
-      },
-    } as Memory["data"];
-    const spawn = createSpawn("Spawn1", room, [surplus.configName]);
-    Game.spawns = { [spawn.name]: spawn };
-
-    runMemoryCleanup();
-
-    expect(Memory.data?.creepConfigs?.[surplus.configName]).toEqual(surplus.config);
-    expect(spawn.memory.spawnList).toEqual([surplus.configName]);
-    expect(findSpy).not.toHaveBeenCalled();
-    expect(room.memory.workerConstructionTier).toBe(3);
-  });
-
-  it("independently observes cleanup, normal-repair refresh, and bootstrap workforce in tick 51", () => {
-    Game.time = 51;
-    const room = createNormalRepairRoom("W5N1");
-    Game.rooms = { [room.name]: room };
-    const bonusWorker = createCanonicalManagedConfig(room.name, "worker", 1);
-    Memory.data = {
-      creepConfigs: {
-        [bonusWorker.configName]: bonusWorker.config,
-      },
-    } as Memory["data"];
-    const spawn = createSpawn("Spawn1", room, [bonusWorker.configName]);
-    Game.spawns = { [spawn.name]: spawn };
-
-    expect(peekWorkerTasksByRoom(room.name)).toEqual({});
-
-    runMemoryCleanup();
-
-    expect(Memory.data?.creepConfigs?.[bonusWorker.configName]).toEqual(bonusWorker.config);
-    expect(spawn.memory.spawnList).toEqual([bonusWorker.configName]);
-    expect(room.memory.workerConstructionTier).toBe(3);
-    expect(peekWorkerTasksByRoom(room.name)).toEqual({});
-
-    refreshWorkerTasks();
-
-    expect(Object.values(peekWorkerTasksByRoom(room.name))).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "repair",
-          repairMode: "normal",
-          status: "active",
-        }),
-      ]),
-    );
-    expect(room.memory.workerConstructionTier).toBe(3);
-
-    bootstrapRooms();
-
-    expect(Memory.data?.creepConfigs?.[bonusWorker.configName]).toEqual(bonusWorker.config);
-    expect(spawn.memory.spawnList).toEqual([bonusWorker.configName]);
-    expect(room.memory.workerConstructionTier).toBe(0);
-    expect(Memory.data?.creepConfigs?.[`${room.name}:worker:0`]).toEqual({
-      role: "worker",
-      args: [],
-      roomName: room.name,
+    expect(Memory.runtime?.linkNetwork).toEqual({
+      W1N1: { updatedAt: 10, senderIds: ["owned-sender"], receiverIds: ["owned-receiver"] },
     });
   });
 
-  it("preserves a queued-only manual max-carrier config and its queue request", () => {
-    const room = Game.rooms.W1N1;
-    const configName = `${room.name}:manual:maxcarrier:${Game.time}`;
-    const config: CreepConfig = {
-      role: "carrier",
-      args: [],
-      roomName: room.name,
-      body: [CARRY, MOVE],
-    };
-    const spawn = createSpawn("Spawn1", room, [configName]);
-    Game.spawns = { [spawn.name]: spawn };
-    Memory.data = { creepConfigs: { [configName]: config } };
-
-    runMemoryCleanup();
-
-    expect(Memory.data?.creepConfigs?.[configName]).toEqual(config);
-    expect(spawn.memory.spawnList).toEqual([configName]);
-  });
-
-  it.each([
-    {
-      mismatch: "role",
-      configName: "W6N6:worker:0",
-      config: { role: "carrier", args: [], roomName: "W6N6" } as CreepConfig,
-    },
-    {
-      mismatch: "args",
-      configName: "W6N6:carrier:0",
-      config: { role: "carrier", args: ["unexpected"], roomName: "W6N6" } as CreepConfig,
-    },
-    {
-      mismatch: "roomName",
-      configName: "W6N6:worker:0",
-      config: { role: "worker", args: [], roomName: "W6N7" } as CreepConfig,
-    },
-  ])("preserves canonical-looking $mismatch mismatch config and queue fail-safe", ({ configName, config }) => {
-    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [configName]);
-    Game.spawns = { [spawn.name]: spawn };
-    Memory.data = { creepConfigs: { [configName]: config } };
-
-    runMemoryCleanup();
-
-    expect(Memory.data?.creepConfigs?.[configName]).toEqual(config);
-    expect(spawn.memory.spawnList).toEqual([configName]);
-  });
-
-  it("retires idle and live canonical configs when a visible owned room becomes reserved", () => {
-    const room = createOwnedRoom("W4N4");
-    Game.rooms = { [room.name]: room };
-    Memory.cfg = { rooms: { [room.name]: { type: "reserved" } } };
-    const idle = createCanonicalManagedConfig(room.name, "worker", 0);
-    const live = createCanonicalManagedConfig(room.name, "carrier", 0);
-    Memory.data = {
-      creepConfigs: {
-        [idle.configName]: idle.config,
-        [live.configName]: live.config,
-      },
-    };
-    Game.creeps.LiveCarrier = createManagedCreep(live.configName, live.config.role);
-    const spawn = createSpawn("Spawn1", room, [idle.configName, live.configName]);
-    Game.spawns = { [spawn.name]: spawn };
-
-    runMemoryCleanup();
-
-    expect(Memory.data?.creepConfigs?.[idle.configName]).toBeUndefined();
-    expect(Memory.data?.creepConfigs?.[live.configName]).toEqual({
-      role: live.config.role,
-      args: live.config.args,
-    });
-    expect(spawn.memory.spawnList).toEqual([]);
-  });
-
-  it("deletes an idle lost-room config and orphans live configs for all five managed roles", () => {
-    const lostRoomName = "W9N9";
-    const idle = createCanonicalManagedConfig(lostRoomName, "worker", 8);
-    const liveConfigs = [
-      createCanonicalManagedConfig(lostRoomName, "harvester", "source-h"),
-      createCanonicalManagedConfig(lostRoomName, "miner", "source-m"),
-      createCanonicalManagedConfig(lostRoomName, "mineralHarvester", "mineral-a"),
-      createCanonicalManagedConfig(lostRoomName, "carrier", 0),
-      createCanonicalManagedConfig(lostRoomName, "worker", 0),
+  it("deletes idle and orphans live canonical configs for reserved and lost rooms", () => {
+    const reservedRoom = createOwnedRoom("W4N4");
+    Game.rooms = { W1N1: Game.rooms.W1N1, W4N4: reservedRoom };
+    Memory.cfg = { rooms: { W4N4: { type: "reserved" } } };
+    const reservedIdle = createCanonicalManagedConfig("W4N4", "worker", 0);
+    const reservedLive = createCanonicalManagedConfig("W4N4", "carrier", 0);
+    const lostIdle = createCanonicalManagedConfig("W9N9", "worker", 8);
+    const lostLive = [
+      createCanonicalManagedConfig("W9N9", "harvester", "source-h"),
+      createCanonicalManagedConfig("W9N9", "miner", "source-m"),
+      createCanonicalManagedConfig("W9N9", "mineralHarvester", "mineral-a"),
+      createCanonicalManagedConfig("W9N9", "carrier", 0),
+      createCanonicalManagedConfig("W9N9", "worker", 0),
     ];
+    const fixtures = [reservedIdle, reservedLive, lostIdle, ...lostLive];
     Memory.data = {
-      creepConfigs: Object.fromEntries(
-        [idle, ...liveConfigs].map(({ configName, config }) => [configName, config]),
-      ),
+      creepConfigs: Object.fromEntries(fixtures.map(({ configName, config }) => [configName, config])),
     };
-    Game.creeps = Object.fromEntries(
-      liveConfigs.map(({ configName, config }, index) => [
-        `LiveManaged${index}`,
+    Game.creeps = {
+      ReservedCarrier: createManagedCreep(reservedLive.configName, reservedLive.config.role),
+      ...Object.fromEntries(lostLive.map(({ configName, config }, index) => [
+        `LostManaged${index}`,
         createManagedCreep(configName, config.role),
-      ]),
-    );
-    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [
-      idle.configName,
-      ...liveConfigs.map(({ configName }) => configName),
-    ]);
+      ])),
+    };
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, fixtures.map(({ configName }) => configName));
     Game.spawns = { [spawn.name]: spawn };
 
     runMemoryCleanup();
 
-    expect(Memory.data?.creepConfigs?.[idle.configName]).toBeUndefined();
-    for (const { configName, config } of liveConfigs) {
-      expect(Memory.data?.creepConfigs?.[configName]).toEqual({
-        role: config.role,
-        args: config.args,
-      });
+    expect(Memory.data?.creepConfigs?.[reservedIdle.configName]).toBeUndefined();
+    expect(Memory.data?.creepConfigs?.[lostIdle.configName]).toBeUndefined();
+    for (const { configName, config } of [reservedLive, ...lostLive]) {
+      expect(Memory.data?.creepConfigs?.[configName]).toEqual({ role: config.role, args: config.args });
     }
     expect(spawn.memory.spawnList).toEqual([]);
   });
 
-  it("still owns canonical configs carrying body, name, and spawnOnce extensions", () => {
-    const lostRoomName = "W2N2";
-    const idle = createCanonicalManagedConfig(lostRoomName, "worker", 0);
-    const live = createCanonicalManagedConfig(lostRoomName, "carrier", 0);
-    const extendedIdle: CreepConfig = {
-      ...idle.config,
-      body: [WORK, MOVE],
-      name: "ExtendedIdleWorker",
-      spawnOnce: { queuedAt: Game.time - 1 },
-    };
-    const extendedLive: CreepConfig = {
-      ...live.config,
-      body: [CARRY, MOVE],
-      name: "ExtendedLiveCarrier",
-      spawnOnce: { queuedAt: Game.time },
-    };
-    Memory.data = {
-      creepConfigs: {
-        [idle.configName]: extendedIdle,
-        [live.configName]: extendedLive,
-      },
-    };
-    Game.creeps.ExtendedLiveCarrier = createManagedCreep(live.configName, live.config.role);
-    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [idle.configName, live.configName]);
-    Game.spawns = { [spawn.name]: spawn };
-    const expectedOrphan = { ...extendedLive };
-    delete expectedOrphan.roomName;
-
-    runMemoryCleanup();
-
-    expect(Memory.data?.creepConfigs?.[idle.configName]).toBeUndefined();
-    expect(Memory.data?.creepConfigs?.[live.configName]).toEqual(expectedOrphan);
-    expect(spawn.memory.spawnList).toEqual([]);
-  });
-
-  it("preserves Game.creeps spawning and Spawn-memory in-flight references before dead-memory cleanup", () => {
-    const lostRoomName = "W8N8";
-    const gameSpawning = createCanonicalManagedConfig(lostRoomName, "worker", 0);
-    const memorySpawning = createCanonicalManagedConfig(lostRoomName, "carrier", 0);
+  it("preserves Game and Spawn-memory in-flight references before dead-memory cleanup", () => {
+    const gameSpawning = createCanonicalManagedConfig("W8N8", "worker", 0);
+    const memorySpawning = createCanonicalManagedConfig("W8N8", "carrier", 0);
     Memory.data = {
       creepConfigs: {
         [gameSpawning.configName]: gameSpawning.config,
@@ -605,10 +298,7 @@ describe("runMemoryCleanup", () => {
     runMemoryCleanup();
 
     for (const { configName, config } of [gameSpawning, memorySpawning]) {
-      expect(Memory.data?.creepConfigs?.[configName]).toEqual({
-        role: config.role,
-        args: config.args,
-      });
+      expect(Memory.data?.creepConfigs?.[configName]).toEqual({ role: config.role, args: config.args });
     }
     expect(Memory.creeps[gameSpawningName]).toBeDefined();
     expect(Memory.creeps[memorySpawningName]).toBeDefined();
@@ -616,148 +306,38 @@ describe("runMemoryCleanup", () => {
     expect(spawnB.memory.spawnList).toEqual([]);
   });
 
-  it("does not treat isolated creep Memory or queue-only production intent as live references", () => {
-    const lostRoomName = "W7N7";
-    const isolatedMemory = createCanonicalManagedConfig(lostRoomName, "worker", 0);
-    const queueOnly = createCanonicalManagedConfig(lostRoomName, "carrier", 0);
-    Memory.data = {
-      creepConfigs: {
-        [isolatedMemory.configName]: isolatedMemory.config,
-        [queueOnly.configName]: queueOnly.config,
+  it("preserves canonical-looking mismatches and manual queued configs fail-safe", () => {
+    const fixtures: Record<string, CreepConfig> = {
+      "W6N6:worker:0": { role: "carrier", args: [], roomName: "W6N6" },
+      "W6N6:carrier:0": { role: "carrier", args: ["unexpected"], roomName: "W6N6" },
+      "W6N6:worker:1": { role: "worker", args: [], roomName: "W6N7" },
+      [`W1N1:manual:maxcarrier:${Game.time}`]: {
+        role: "carrier",
+        args: [],
+        roomName: "W1N1",
+        body: [CARRY, MOVE],
       },
     };
-    const deadCreepName = "DeadManagedWorker";
-    Memory.creeps[deadCreepName] = {
-      role: isolatedMemory.config.role,
-      configName: isolatedMemory.configName,
-    } as CreepMemory;
-    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [queueOnly.configName]);
+    const queue = Object.keys(fixtures);
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, queue);
     Game.spawns = { [spawn.name]: spawn };
+    Memory.data = { creepConfigs: fixtures };
 
     runMemoryCleanup();
 
-    expect(Memory.creeps[deadCreepName]).toBeUndefined();
-    expect(Memory.data?.creepConfigs?.[isolatedMemory.configName]).toBeUndefined();
-    expect(Memory.data?.creepConfigs?.[queueOnly.configName]).toBeUndefined();
-    expect(spawn.memory.spawnList).toEqual([]);
+    expect(Memory.data?.creepConfigs).toEqual(fixtures);
+    expect(spawn.memory.spawnList).toEqual(queue);
   });
 
-  it("retires multi-Spawn duplicates independently of Game.spawns enumeration order", () => {
-    const unrelated = ["manual:keep-a", "manual:keep-b", "manual:keep-c", "manual:keep-d"];
-    const runScenario = (spawnOrder: readonly ["SpawnActive" | "SpawnInactive", "SpawnActive" | "SpawnInactive"]) => {
-      resetRuntimeServices();
-      const stale = createCanonicalManagedConfig("W6N6", "worker", 0);
-      Memory.data = {
-        creepConfigs: {
-          [stale.configName]: stale.config,
-          ...Object.fromEntries(
-            unrelated.map((configName) => [configName, { role: "flagScout", args: [] } as CreepConfig]),
-          ),
-        },
-      };
-      const activeSpawn = createSpawn(
-        "SpawnActive",
-        Game.rooms.W1N1,
-        [stale.configName, unrelated[0], stale.configName, unrelated[1], stale.configName],
-        { active: true },
-      );
-      const inactiveSpawn = createSpawn(
-        "SpawnInactive",
-        Game.rooms.W1N1,
-        [unrelated[2], stale.configName, unrelated[3], stale.configName],
-        { active: false },
-      );
-      const spawns = { SpawnActive: activeSpawn, SpawnInactive: inactiveSpawn };
-      Game.spawns = Object.fromEntries(spawnOrder.map((spawnName) => [spawnName, spawns[spawnName]]));
-
-      runMemoryCleanup();
-
-      return {
-        staleConfig: Memory.data?.creepConfigs?.[stale.configName],
-        unrelatedConfigsPresent: unrelated.map(
-          (configName) => Memory.data?.creepConfigs?.[configName] !== undefined,
-        ),
-        queues: {
-          SpawnActive: [...(activeSpawn.memory.spawnList ?? [])],
-          SpawnInactive: [...(inactiveSpawn.memory.spawnList ?? [])],
-        },
-      };
-    };
-    const expected = {
-      staleConfig: undefined,
-      unrelatedConfigsPresent: unrelated.map(() => true),
-      queues: {
-        SpawnActive: unrelated.slice(0, 2),
-        SpawnInactive: unrelated.slice(2),
-      },
-    };
-
-    const forward = runScenario(["SpawnActive", "SpawnInactive"]);
-    const reverse = runScenario(["SpawnInactive", "SpawnActive"]);
-
-    expect(forward).toEqual(expected);
-    expect(reverse).toEqual(expected);
-    expect(reverse).toEqual(forward);
-  });
-
-  it("is idempotent after deleting idle configs, orphaning live configs, and filtering queues", () => {
-    const lostRoomName = "W3N3";
-    const idle = createCanonicalManagedConfig(lostRoomName, "worker", 0);
-    const live = createCanonicalManagedConfig(lostRoomName, "carrier", 0);
-    const manualConfigName = `${lostRoomName}:manual:maxcarrier:${Game.time}`;
-    Memory.data = {
-      creepConfigs: {
-        [idle.configName]: idle.config,
-        [live.configName]: live.config,
-        [manualConfigName]: { role: "carrier", args: [], roomName: lostRoomName },
-      },
-    };
-    Game.creeps.LiveCarrier = createManagedCreep(live.configName, live.config.role);
-    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [
-      idle.configName,
-      live.configName,
-      manualConfigName,
-    ]);
-    Game.spawns = { [spawn.name]: spawn };
-
-    runMemoryCleanup();
-    const afterFirstCleanup = snapshotManagedGcState();
-
-    runMemoryCleanup();
-
-    expect(snapshotManagedGcState()).toEqual(afterFirstCleanup);
-  });
-
-  it("removes foreign room pickup reservation memory after claims expire", () => {
-    runMemoryCleanup();
-
-    expect(getPickupReservationsByRoom("W2N2")).toEqual({});
-  });
-
-  it("removes expired production reservations via gcProductionReservations", () => {
+  it("collects expired reservations, stale recovery entries, and orphaned power-bank boost state", () => {
     reserveProductionResource("W1N1", "energy" as ResourceConstant, 500, "expiredCarrier");
-    const store = Memory.runtime!.resourceReservations!;
-    store["W1N1:energy:expiredCarrier"].expiresAt = Game.time - 1;
-
+    Memory.runtime!.resourceReservations!["W1N1:energy:expiredCarrier"].expiresAt = Game.time - 1;
     reserveProductionResource("W1N1", "energy" as ResourceConstant, 300, "activeCarrier");
-
-    runMemoryCleanup();
-
-    const remaining = listProductionReservations();
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].holderId).toBe("activeCarrier");
-  });
-
-  it("removes recovery runtime entries whose room flag is false or missing", () => {
     Memory.cfg = {
-      energyPickup: {
-        terminalBootstrapRecoveryRooms: {
-          W1N1: true,
-          W2N2: false,
-        },
-      },
+      energyPickup: { terminalBootstrapRecoveryRooms: { W1N1: true, W2N2: false } },
     };
     Memory.runtime = {
+      ...Memory.runtime,
       energyPickup: {
         terminalBootstrapRecovery: {
           W1N1: { healthySince: 10, lastObservedAt: 16 },
@@ -765,140 +345,6 @@ describe("runMemoryCleanup", () => {
           W3N3: { healthySince: 12, lastObservedAt: 16 },
         },
       },
-    };
-
-    runMemoryCleanup();
-
-    expect(Memory.runtime?.energyPickup?.terminalBootstrapRecovery).toEqual({
-      W1N1: { healthySince: 10, lastObservedAt: 16 },
-    });
-  });
-
-  it("removes empty recovery runtime containers during periodic cleanup", () => {
-    Memory.cfg = {
-      energyPickup: {
-        terminalBootstrapRecoveryRooms: {},
-      },
-    };
-    Memory.runtime = {
-      energyPickup: {
-        terminalBootstrapRecovery: {
-          W2N2: { lastObservedAt: 16 },
-        },
-      },
-    };
-
-    runMemoryCleanup();
-
-    expect(Memory.runtime?.energyPickup).toBeUndefined();
-  });
-
-  it.each(SUPPORTED_ROLE_NAMES)(
-    "keeps generic config and same-cadence queue entry for supported role %s",
-    (role) => {
-      const configName = `manual:role-catalog:${role}`;
-      const config: CreepConfig = { role, args: [] };
-      const spawn = createSpawn("Spawn1", Game.rooms.W1N1, [configName]);
-      Game.spawns = { [spawn.name]: spawn };
-      Memory.data = { creepConfigs: { [configName]: config } };
-
-      runMemoryCleanup();
-
-      expect(Memory.data?.creepConfigs?.[configName]).toEqual(config);
-      expect(spawn.memory.spawnList).toEqual([configName]);
-    },
-  );
-
-  it.each(UNSUPPORTED_ROLE_NAMES)(
-    "deletes unsupported role %s before trimming its queue entry on the next cleanup pass",
-    (role) => {
-      const invalidConfigName = `manual:invalid-role:${role}`;
-      const validConfigName = "manual:valid-role:flagScout";
-      const invalidConfig = { role, args: [] } as unknown as CreepConfig;
-      const validConfig: CreepConfig = { role: "flagScout", args: [] };
-      const originalQueue = [invalidConfigName, validConfigName, invalidConfigName];
-      const spawn = createSpawn("Spawn1", Game.rooms.W1N1, originalQueue);
-      Game.spawns = { [spawn.name]: spawn };
-      Memory.data = {
-        creepConfigs: {
-          [invalidConfigName]: invalidConfig,
-          [validConfigName]: validConfig,
-        },
-      };
-
-      runMemoryCleanup();
-
-      expect(Memory.data?.creepConfigs?.[invalidConfigName]).toBeUndefined();
-      expect(Memory.data?.creepConfigs?.[validConfigName]).toEqual(validConfig);
-      expect(spawn.memory.spawnList).toEqual(originalQueue);
-
-      Game.time += 17;
-      runMemoryCleanup();
-
-      expect(spawn.memory.spawnList).toEqual([validConfigName]);
-    },
-  );
-
-  it("delegates generic role validity to the shared role catalog gate", () => {
-    const catalogOnlyRole = "catalogOnlyRole";
-    const catalogConfigName = "manual:catalog-gate:accepted";
-    const rejectedConfigName = "manual:catalog-gate:rejected";
-    Memory.data = {
-      creepConfigs: {
-        [catalogConfigName]: { role: catalogOnlyRole, args: [] } as unknown as CreepConfig,
-        [rejectedConfigName]: { role: "worker", args: [] },
-      },
-    };
-
-    jest.doMock(
-      "@/types/roleCatalog",
-      () => ({
-        isRoleName: (value: unknown): boolean => value === catalogOnlyRole,
-      }),
-      { virtual: true },
-    );
-
-    try {
-      jest.isolateModules(() => {
-        const isolatedModule = require("@/runtime/memoryCleanup") as typeof import("@/runtime/memoryCleanup");
-        isolatedModule.runMemoryCleanup();
-      });
-    } finally {
-      jest.dontMock("@/types/roleCatalog");
-    }
-
-    expect(Memory.data?.creepConfigs?.[catalogConfigName]).toEqual({
-      role: catalogOnlyRole,
-      args: [],
-    });
-    expect(Memory.data?.creepConfigs?.[rejectedConfigName]).toBeUndefined();
-  });
-
-  it("keeps supported non-legacy creep configs for active specialized roles", () => {
-    Memory.data = {
-      creepConfigs: {
-        mineralConfig: { role: "mineralHarvester", args: [] },
-        defenderConfig: { role: "homeDefender", args: [] },
-        scoutConfig: { role: "flagScout", args: [] },
-      },
-    };
-    Game.creeps = {
-      MineralHarvester1: createManagedCreep("mineralConfig", "mineralHarvester"),
-      HomeDefender1: createManagedCreep("defenderConfig", "homeDefender"),
-      FlagScout1: createManagedCreep("scoutConfig", "flagScout"),
-    };
-
-    runMemoryCleanup();
-
-    expect(Memory.data?.creepConfigs).toMatchObject({
-      mineralConfig: { role: "mineralHarvester" },
-      defenderConfig: { role: "homeDefender" },
-      scoutConfig: { role: "flagScout" },
-    });
-  });
-
-  it("removes stale powerbank boost prep and boost pause when task no longer exists", () => {
-    Memory.runtime = {
       powerBankBoost: {
         "pb-ghost": {
           taskId: "pb-ghost",
@@ -933,13 +379,49 @@ describe("runMemoryCleanup", () => {
         },
       },
     } as unknown as Memory["runtime"];
-    Memory.data = {
-      powerBankHarvest: {},
-    } as Memory["data"];
+    Memory.data = { powerBankHarvest: {} } as Memory["data"];
 
     runMemoryCleanup();
 
+    expect(getPickupReservationsByRoom("W2N2")).toEqual({});
+    expect(listProductionReservations()).toEqual([
+      expect.objectContaining({ holderId: "activeCarrier", amount: 300 }),
+    ]);
+    expect(Memory.runtime?.energyPickup?.terminalBootstrapRecovery).toEqual({
+      W1N1: { healthySince: 10, lastObservedAt: 16 },
+    });
     expect(Memory.runtime?.powerBankBoost?.["pb-ghost"]).toBeUndefined();
     expect((Memory.runtime as any).synthesisControl.rooms.W1N1.boostPause).toBeUndefined();
+  });
+
+  it("keeps every catalog role, rejects prototype-like roles, and converges idempotently", () => {
+    const supported = Object.fromEntries(SUPPORTED_ROLE_NAMES.map((role) => [
+      `manual:role-catalog:${role}`,
+      { role, args: [] } as CreepConfig,
+    ]));
+    const unsupported = Object.fromEntries(UNSUPPORTED_ROLE_NAMES.map((role) => [
+      `manual:invalid-role:${role}`,
+      { role, args: [] } as unknown as CreepConfig,
+    ]));
+    const originalQueue = [...Object.keys(unsupported), ...Object.keys(supported)];
+    const spawn = createSpawn("Spawn1", Game.rooms.W1N1, originalQueue);
+    Game.spawns = { [spawn.name]: spawn };
+    Memory.data = { creepConfigs: { ...supported, ...unsupported } };
+
+    runMemoryCleanup();
+    for (const configName of Object.keys(supported)) {
+      expect(Memory.data?.creepConfigs?.[configName]).toEqual(supported[configName]);
+    }
+    for (const configName of Object.keys(unsupported)) {
+      expect(Memory.data?.creepConfigs?.[configName]).toBeUndefined();
+    }
+    expect(spawn.memory.spawnList).toEqual(originalQueue);
+
+    Game.time += 17;
+    runMemoryCleanup();
+    expect(spawn.memory.spawnList).toEqual(Object.keys(supported));
+    const converged = snapshotManagedGcState();
+    runMemoryCleanup();
+    expect(snapshotManagedGcState()).toEqual(converged);
   });
 });

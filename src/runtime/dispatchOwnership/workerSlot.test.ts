@@ -24,129 +24,115 @@ function task(roomName: string, localId: string, maxAssignees = 1): WorkerTask {
   };
 }
 
+function resetSlotScenario(): void {
+  clearCreepAssignmentStateForTest();
+  Game.creeps = {};
+}
+
 describe("WorkerSlotClaimPort", () => {
-  beforeEach(() => {
-    clearCreepAssignmentStateForTest();
-    Game.creeps = {};
-  });
+  beforeEach(resetSlotScenario);
+  afterEach(clearCreepAssignmentStateForTest);
 
-  afterEach(() => {
-    clearCreepAssignmentStateForTest();
-  });
-
-  test("acquires one exact slot and rejects a new actor at capacity", () => {
-    const ref = createWorkerDispatchRef("W1N1", "build:site");
-    if (!ref) throw new Error("expected valid ref");
-    const sourceTask = task("W1N1", "build:site");
-
-    expect(workerSlotClaimPort.acquire("Worker1", ref, sourceTask)).toBe(true);
-    expect(workerSlotClaimPort.acquire("Worker2", ref, sourceTask)).toBe(false);
-    expect(sourceTask.assignedCreeps).toEqual(["Worker1"]);
-    expect(readWorkerDispatchBinding("Worker1")).toEqual(ref);
-    expect(ensureCreepAssignmentState("Worker1").taskId).toBe(ref.localId);
+  test("enforces new-actor capacity while healing sticky inverse evidence exactly", () => {
+    resetSlotScenario();
+    const capacityRef = createWorkerDispatchRef("W1N1", "build:capacity");
+    if (!capacityRef) throw new Error("expected valid capacity ref");
+    const capacityTask = task("W1N1", "build:capacity");
+    expect(workerSlotClaimPort.acquire("Worker1", capacityRef, capacityTask)).toBe(true);
+    expect(workerSlotClaimPort.acquire("Worker2", capacityRef, capacityTask)).toBe(false);
+    expect(capacityTask.assignedCreeps).toEqual(["Worker1"]);
+    expect(readWorkerDispatchBinding("Worker1")).toEqual(capacityRef);
     expect(readWorkerDispatchBinding("Worker2")).toBeUndefined();
-  });
 
-  test("reconciles an existing sticky slot after capacity shrink and heals both mirrors", () => {
-    const ref = createWorkerDispatchRef("W1N1", "build:site");
-    if (!ref) throw new Error("expected valid ref");
-    const sourceTask = task("W1N1", "build:site", 1);
-    sourceTask.assignedCreeps = ["Existing"];
-    expect(bindWorkerDispatchBinding("Sticky", ref)).toBe(true);
+    resetSlotScenario();
+    const stickyRef = createWorkerDispatchRef("W1N1", "build:sticky");
+    if (!stickyRef) throw new Error("expected valid sticky ref");
+    const stickyTask = task("W1N1", "build:sticky", 1);
+    stickyTask.assignedCreeps = ["Existing"];
+    expect(bindWorkerDispatchBinding("Sticky", stickyRef)).toBe(true);
     ensureCreepAssignmentState("Sticky").taskId = "drifted";
+    expect(workerSlotClaimPort.reconcile("Sticky", stickyRef, stickyTask)).toBe(true);
+    expect(stickyTask.assignedCreeps).toEqual(["Existing", "Sticky"]);
+    expect(ensureCreepAssignmentState("Sticky").taskId).toBe(stickyRef.localId);
 
-    expect(workerSlotClaimPort.reconcile("Sticky", ref, sourceTask)).toBe(true);
-    expect(sourceTask.assignedCreeps).toEqual(["Existing", "Sticky"]);
-    expect(ensureCreepAssignmentState("Sticky").taskId).toBe(ref.localId);
-  });
-
-  test("does not rewrite an unchanged sticky inverse and still repairs mirror drift", () => {
-    const ref = createWorkerDispatchRef("W1N1", "build:site");
-    if (!ref) throw new Error("expected valid ref");
-    const sourceTask = task("W1N1", "build:site", 1);
-    let assigneeDescriptorWrites = 0;
-    const observedTask = new Proxy(sourceTask, {
+    resetSlotScenario();
+    const stableRef = createWorkerDispatchRef("W1N1", "build:stable");
+    if (!stableRef) throw new Error("expected valid stable ref");
+    const stableTask = task("W1N1", "build:stable", 1);
+    let stableWrites = 0;
+    const observedStableTask = new Proxy(stableTask, {
       defineProperty(target, property, attributes): boolean {
-        if (property === "assignedCreeps") assigneeDescriptorWrites += 1;
+        if (property === "assignedCreeps") stableWrites += 1;
         return Reflect.defineProperty(target, property, attributes);
       },
     });
     Game.creeps.Worker = { name: "Worker" } as Creep;
-    expect(workerSlotClaimPort.acquire("Worker", ref, observedTask)).toBe(true);
-    const stableAssignees = sourceTask.assignedCreeps;
-    assigneeDescriptorWrites = 0;
-
-    workerSlotClaimPort.clamp(ref, observedTask);
-    expect(workerSlotClaimPort.reconcile("Worker", ref, observedTask)).toBe(true);
-
-    expect(assigneeDescriptorWrites).toBe(0);
-    expect(sourceTask.assignedCreeps).toBe(stableAssignees);
-
+    expect(workerSlotClaimPort.acquire("Worker", stableRef, observedStableTask)).toBe(true);
+    const stableAssignees = stableTask.assignedCreeps;
+    stableWrites = 0;
+    workerSlotClaimPort.clamp(stableRef, observedStableTask);
+    expect(workerSlotClaimPort.reconcile("Worker", stableRef, observedStableTask)).toBe(true);
+    expect(stableWrites).toBe(0);
+    expect(stableTask.assignedCreeps).toBe(stableAssignees);
     ensureCreepAssignmentState("Worker").taskId = "drifted";
-    expect(workerSlotClaimPort.reconcile("Worker", ref, observedTask)).toBe(true);
-    expect(assigneeDescriptorWrites).toBe(0);
-    expect(sourceTask.assignedCreeps).toBe(stableAssignees);
-    expect(ensureCreepAssignmentState("Worker").taskId).toBe(ref.localId);
-  });
+    expect(workerSlotClaimPort.reconcile("Worker", stableRef, observedStableTask)).toBe(true);
+    expect(stableWrites).toBe(0);
+    expect(stableTask.assignedCreeps).toBe(stableAssignees);
+    expect(ensureCreepAssignmentState("Worker").taskId).toBe(stableRef.localId);
 
-  test("still rewrites duplicate or missing sticky inverse evidence exactly once", () => {
-    const ref = createWorkerDispatchRef("W1N1", "build:site");
-    if (!ref) throw new Error("expected valid ref");
-    const sourceTask = task("W1N1", "build:site", 1);
-    expect(bindWorkerDispatchBinding("Worker", ref)).toBe(true);
-    let assigneeDescriptorWrites = 0;
-    const observedTask = new Proxy(sourceTask, {
+    resetSlotScenario();
+    const inverseRef = createWorkerDispatchRef("W1N1", "build:inverse");
+    if (!inverseRef) throw new Error("expected valid inverse ref");
+    const inverseTask = task("W1N1", "build:inverse", 1);
+    expect(bindWorkerDispatchBinding("Worker", inverseRef)).toBe(true);
+    let inverseWrites = 0;
+    const observedInverseTask = new Proxy(inverseTask, {
       defineProperty(target, property, attributes): boolean {
-        if (property === "assignedCreeps") assigneeDescriptorWrites += 1;
+        if (property === "assignedCreeps") inverseWrites += 1;
         return Reflect.defineProperty(target, property, attributes);
       },
     });
-
-    sourceTask.assignedCreeps = ["Worker", "Worker"];
-    expect(workerSlotClaimPort.reconcile("Worker", ref, observedTask)).toBe(true);
-    expect(sourceTask.assignedCreeps).toEqual(["Worker"]);
-    expect(assigneeDescriptorWrites).toBe(1);
-
-    sourceTask.assignedCreeps = [];
-    assigneeDescriptorWrites = 0;
-    expect(workerSlotClaimPort.reconcile("Worker", ref, observedTask)).toBe(true);
-    expect(sourceTask.assignedCreeps).toEqual(["Worker"]);
-    expect(assigneeDescriptorWrites).toBe(1);
+    inverseTask.assignedCreeps = ["Worker", "Worker"];
+    expect(workerSlotClaimPort.reconcile("Worker", inverseRef, observedInverseTask)).toBe(true);
+    expect(inverseTask.assignedCreeps).toEqual(["Worker"]);
+    expect(inverseWrites).toBe(1);
+    inverseTask.assignedCreeps = [];
+    inverseWrites = 0;
+    expect(workerSlotClaimPort.reconcile("Worker", inverseRef, observedInverseTask)).toBe(true);
+    expect(inverseTask.assignedCreeps).toEqual(["Worker"]);
+    expect(inverseWrites).toBe(1);
   });
 
-  test("an old expected-ref release cannot clear a newer assignment", () => {
+  test("keeps exact ownership atomic across stale release, CAS failure, accessors, and dead clamp", () => {
+    resetSlotScenario();
     const refA = createWorkerDispatchRef("W1N1", "shared");
     const refB = createWorkerDispatchRef("W2N2", "shared");
-    if (!refA || !refB) throw new Error("expected valid refs");
+    if (!refA || !refB) throw new Error("expected valid stale-release refs");
     const taskA = task("W1N1", "shared");
     const taskB = task("W2N2", "shared");
     expect(workerSlotClaimPort.acquire("Worker", refA, taskA)).toBe(true);
     expect(workerSlotClaimPort.release("Worker", refA, taskA)).toBe(true);
     expect(workerSlotClaimPort.acquire("Worker", refB, taskB)).toBe(true);
-
     expect(workerSlotClaimPort.release("Worker", refA, taskA)).toBe(false);
     expect(readWorkerDispatchBinding("Worker")).toEqual(refB);
     expect(taskB.assignedCreeps).toEqual(["Worker"]);
-  });
 
-  test("rolls the inverse index back when canonical acquire CAS fails", () => {
-    const ref = createWorkerDispatchRef("W1N1", "build:site");
-    if (!ref) throw new Error("expected valid ref");
-    const sourceTask = task("W1N1", "build:site", 2);
-    sourceTask.assignedCreeps = ["Existing"];
+    resetSlotScenario();
+    const casRef = createWorkerDispatchRef("W1N1", "build:cas");
+    if (!casRef) throw new Error("expected valid CAS ref");
+    const casTask = task("W1N1", "build:cas", 2);
+    casTask.assignedCreeps = ["Existing"];
     ensureCreepAssignmentState("Worker").dispatchBindings = {
       worker: { malformed: true } as never,
     };
-
-    expect(workerSlotClaimPort.acquire("Worker", ref, sourceTask)).toBe(false);
-    expect(sourceTask.assignedCreeps).toEqual(["Existing"]);
+    expect(workerSlotClaimPort.acquire("Worker", casRef, casTask)).toBe(false);
+    expect(casTask.assignedCreeps).toEqual(["Existing"]);
     expect(readWorkerDispatchBinding("Worker")).toBeUndefined();
-  });
 
-  test("does not drift either side when an assignee accessor rejects acquire or release", () => {
-    const ref = createWorkerDispatchRef("W1N1", "build:site");
-    if (!ref) throw new Error("expected valid ref");
-    const acquireTask = task("W1N1", "build:site");
+    resetSlotScenario();
+    const accessorRef = createWorkerDispatchRef("W1N1", "build:accessor");
+    if (!accessorRef) throw new Error("expected valid accessor ref");
+    const acquireTask = task("W1N1", "build:accessor");
     const acquireSetter = jest.fn(() => {
       throw new Error("setter must not run");
     });
@@ -156,13 +142,12 @@ describe("WorkerSlotClaimPort", () => {
       enumerable: true,
       configurable: true,
     });
-
-    expect(workerSlotClaimPort.acquire("Worker", ref, acquireTask)).toBe(false);
+    expect(workerSlotClaimPort.acquire("Worker", accessorRef, acquireTask)).toBe(false);
     expect(readWorkerDispatchBinding("Worker")).toBeUndefined();
     expect(acquireSetter).not.toHaveBeenCalled();
 
-    const releaseTask = task("W1N1", "build:site");
-    expect(workerSlotClaimPort.acquire("Worker", ref, releaseTask)).toBe(true);
+    const releaseTask = task("W1N1", "build:accessor");
+    expect(workerSlotClaimPort.acquire("Worker", accessorRef, releaseTask)).toBe(true);
     const retained = ["Worker"];
     const releaseSetter = jest.fn(() => {
       throw new Error("setter must not run");
@@ -173,26 +158,22 @@ describe("WorkerSlotClaimPort", () => {
       enumerable: true,
       configurable: true,
     });
-
-    expect(workerSlotClaimPort.release("Worker", ref, releaseTask)).toBe(false);
-    expect(readWorkerDispatchBinding("Worker")).toEqual(ref);
+    expect(workerSlotClaimPort.release("Worker", accessorRef, releaseTask)).toBe(false);
+    expect(readWorkerDispatchBinding("Worker")).toEqual(accessorRef);
     expect(retained).toEqual(["Worker"]);
     expect(releaseSetter).not.toHaveBeenCalled();
-  });
 
-  test("clamps by exact ref and releases a dead actor without crossing rooms", () => {
-    const refA = createWorkerDispatchRef("W1N1", "shared");
-    const refB = createWorkerDispatchRef("W2N2", "shared");
-    if (!refA || !refB) throw new Error("expected valid refs");
-    const taskA = task("W1N1", "shared", 3);
-    taskA.assignedCreeps = ["WrongRoom", "Dead", "WrongRoom"];
-    expect(bindWorkerDispatchBinding("WrongRoom", refB)).toBe(true);
-    expect(bindWorkerDispatchBinding("Dead", refA)).toBe(true);
-
-    workerSlotClaimPort.clamp(refA, taskA);
-
-    expect(taskA.assignedCreeps).toEqual([]);
-    expect(readWorkerDispatchBinding("WrongRoom")).toEqual(refB);
+    resetSlotScenario();
+    const clampRefA = createWorkerDispatchRef("W1N1", "shared");
+    const clampRefB = createWorkerDispatchRef("W2N2", "shared");
+    if (!clampRefA || !clampRefB) throw new Error("expected valid clamp refs");
+    const clampTask = task("W1N1", "shared", 3);
+    clampTask.assignedCreeps = ["WrongRoom", "Dead", "WrongRoom"];
+    expect(bindWorkerDispatchBinding("WrongRoom", clampRefB)).toBe(true);
+    expect(bindWorkerDispatchBinding("Dead", clampRefA)).toBe(true);
+    workerSlotClaimPort.clamp(clampRefA, clampTask);
+    expect(clampTask.assignedCreeps).toEqual([]);
+    expect(readWorkerDispatchBinding("WrongRoom")).toEqual(clampRefB);
     expect(readWorkerDispatchBinding("Dead")).toBeUndefined();
   });
 });

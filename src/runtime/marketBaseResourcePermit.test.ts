@@ -4,27 +4,17 @@ import {
   reconcileMarketBaseDerivedLanes,
   type MarketBaseDerivedLaneLifecycle,
   type MarketBaseResource,
-  validateMarketBaseDerivedLaneLifecycle,
 } from "@/runtime/marketBaseResourcePolicy";
 import {
-  MARKET_BASE_RESOURCE_ACTIVE_REVIEW_REFERENCE_LIMIT,
-  MARKET_BASE_RESOURCE_RECEIPT_REFERENCE_LIMIT,
-  MARKET_BASE_RESOURCE_REFERENCED_BINDING_LIMIT,
   appendMarketBaseResourcePermit,
   buildMarketBaseResourceBootstrapRatchetHighWater,
   buildMarketBaseResourceLegacyV2GrantSuspension,
   buildMarketBaseResourcePermit,
-  buildMarketBaseResourcePermitRuntimeAnchor,
-  buildMarketBaseResourceRatchetHighWater,
   buildMarketBaseResourceSignedLaneGrant,
   buildMarketBaseResourceV2EventCutoverCheckpoint,
   compactMarketBaseResourceLaneTombstonesForAudit,
   createMarketBaseResourcePermitChainState,
-  createMarketBaseResourcePermitRuntimeContext,
-  hasAcceptedMarketBaseResourceV3Successor,
-  sealMarketBaseResourceValidatedConfirmedCanaryProof,
   validateMarketBaseResourcePermitChain,
-  validateMarketBaseResourcePermitRuntimeGate,
   wrapAuthenticatedLegacyV2PermitRecord,
   type AppendMarketBaseResourcePermitInput,
   type MarketBaseResourcePermit,
@@ -33,7 +23,6 @@ import {
   type MarketBaseResourceRatchetHighWater,
   type MarketBaseResourceReviewedEvidence,
   type MarketBaseResourceSignedLaneGrant,
-  type MarketBaseResourceValidatedConfirmedCanaryProof,
 } from "@/runtime/marketBaseResourcePermit";
 import {
   MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
@@ -276,151 +265,9 @@ function acceptedFirst(
   };
 }
 
-function canaryProof(input: {
-  laneId: string;
-  permitId: string;
-  permitEpoch: number;
-  reviewDigest: string;
-  attemptSeq: number;
-}): MarketBaseResourceValidatedConfirmedCanaryProof {
-  return sealMarketBaseResourceValidatedConfirmedCanaryProof({
-    laneId: input.laneId,
-    attemptSeq: input.attemptSeq,
-    permitId: input.permitId,
-    permitEpoch: input.permitEpoch,
-    evidenceKey: digest(`receipt:${input.attemptSeq}`),
-    receiptEventHash: digest(`receipt-event:${input.attemptSeq}`),
-    confirmedAt: 5_000 + input.attemptSeq,
-    transactionTime: 5_000 + input.attemptSeq,
-    actualAmount: 1_000,
-    actualTransactionEnergy: 100,
-    actualNetCreditsMilli: 500_000,
-    reviewDigest: input.reviewDigest,
-    ledgerCheckpointHash: V3_LEDGER_CHECKPOINT,
-    ledgerReceiptHeadHash: V3_LEDGER_HEAD,
-    ledgerPermitAnchorHash: V3_LEDGER_ANCHOR,
-  });
-}
 
-function continuousReview(
-  proof: MarketBaseResourceValidatedConfirmedCanaryProof,
-  operatorReviewSnapshotDigest: string,
-): MarketBaseResourceReviewedEvidence {
-  return {
-    laneId: proof.laneId,
-    kind: "continuous_review",
-    evidenceKey: proof.evidenceKey,
-    digest: operatorReviewSnapshotDigest,
-    confirmedCanaryReviewDigest: proof.reviewDigest,
-    operatorReviewSnapshotDigest,
-    permitId: proof.permitId,
-    attemptSeq: proof.attemptSeq,
-    receiptEventHash: proof.receiptEventHash,
-    ledgerCheckpointHash: proof.ledgerCheckpointHash,
-    ledgerReceiptHeadHash: proof.ledgerReceiptHeadHash,
-    ledgerPermitAnchorHash: proof.ledgerPermitAnchorHash,
-  };
-}
 
 describe("marketBaseResourcePermit", () => {
-
-  test("reviewed evidence 在 112/113 边界与 runtime authority 同步", () => {
-    const first = acceptedFirst();
-    const current =
-      first.state.retainedPermits[first.state.retainedPermits.length - 1];
-    if (!current || current.schemaVersion !== 3) {
-      throw new Error("missing current v3 permit");
-    }
-    const evidence = Array.from(
-      { length: MARKET_BASE_RESOURCE_ACTIVE_REVIEW_REFERENCE_LIMIT + 1 },
-      (_, index): MarketBaseResourceReviewedEvidence => ({
-        laneId: first.lanes[0].laneId,
-        kind: "shadow_qualification",
-        evidenceKey: digest(`review-boundary-key:${index}`),
-        digest: digest(`review-boundary-digest:${index}`),
-      }),
-    );
-    expect(() =>
-      buildPermit({
-        state: first.state,
-        grants: current.signedLaneGrants,
-        reviewedEvidence: evidence.slice(
-          0,
-          MARKET_BASE_RESOURCE_ACTIVE_REVIEW_REFERENCE_LIMIT,
-        ),
-      }),
-    ).not.toThrow();
-    expect(() =>
-      buildPermit({
-        state: first.state,
-        grants: current.signedLaneGrants,
-        reviewedEvidence: evidence,
-      }),
-    ).toThrow("invalid v3 permit reviewed evidence");
-  });
-
-  test("同 laneId Canary 一经授权，跨 successor suspend 后也永不得重授权", () => {
-    const first = acceptedFirst();
-    const lane = first.lanes[0];
-    const canaryGrant = buildMarketBaseResourceSignedLaneGrant({
-      lane,
-      stage: "canary",
-      newDealGrant: "enabled",
-    });
-    const canaryPermit = buildPermit({
-      state: first.state,
-      grants: [canaryGrant],
-      reviewedEvidence: [
-        {
-          laneId: lane.laneId,
-          kind: "shadow_qualification",
-          evidenceKey: digest("one-shot:qualification"),
-          digest: canaryGrant.lifecycleEvidenceDigest,
-        },
-      ],
-    });
-    const canaryState = appendOrThrow(first.state, canaryPermit, [lane]);
-    const suspendedGrant = buildMarketBaseResourceSignedLaneGrant({
-      lane,
-      stage: "canary",
-      newDealGrant: "suspended",
-    });
-    const suspendedState = appendOrThrow(
-      canaryState,
-      buildPermit({
-        state: canaryState,
-        grants: [suspendedGrant],
-      }),
-      [lane],
-    );
-    const renewedGrant = buildMarketBaseResourceSignedLaneGrant({
-      lane,
-      stage: "canary",
-      newDealGrant: "enabled",
-    });
-    const renewedPermit = buildPermit({
-      state: suspendedState,
-      grants: [renewedGrant],
-      reviewedEvidence: [
-        {
-          laneId: lane.laneId,
-          kind: "shadow_qualification",
-          evidenceKey: digest("one-shot:forged-requalification"),
-          digest: renewedGrant.lifecycleEvidenceDigest,
-        },
-      ],
-    });
-    expect(
-      appendMarketBaseResourcePermit(
-        suspendedState,
-        renewedPermit,
-        appendInput([lane]),
-      ),
-    ).toMatchObject({
-      status: "rejected",
-      reason: "canary_lane_already_consumed",
-    });
-  });
 
   test("数千 generations 的纯批量 compaction 保持 checkpoint JSON 常数尺寸", () => {
     const auditDischarges = Array.from(

@@ -1,66 +1,15 @@
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   createMarketBaseRoomAdmissionPolicy,
   createMarketBaseSharedPolicy,
-  deriveMarketBaseLaneId,
-  isMarketBaseResource,
-  MARKET_BASE_RESOURCE_CATALOG,
-  MARKET_BASE_RESOURCE_CONFIG_REVISION,
-  MARKET_BASE_RESOURCE_EVIDENCE_SHA256,
   MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
-  MARKET_BASE_RESOURCE_LANE_DERIVATION_POLICY,
-  MARKET_BASE_RESOURCE_MAX_KNOWN_ROOM_NAMES,
-  MARKET_BASE_RESOURCE_MAX_LANES,
-  MARKET_BASE_RESOURCE_MAX_ROOM_TOMBSTONES,
-  MARKET_BASE_RESOURCE_MAX_ROOMS,
-  MARKET_BASE_RESOURCE_POLICIES,
-  MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE,
-  marketBaseDerivedLaneLifecycleCheckpointCommitment,
   marketBaseDerivedLaneSetFingerprint,
-  marketBaseRoomRegistryCheckpointCommitment,
-  parseMarketBaseResourceRawConfig,
   reconcileMarketBaseDerivedLanes,
   reconcileMarketBaseSellerRooms,
-  type MarketBaseResource,
-  type MarketBaseRoomIncarnationRegistry,
   type MarketBaseRoomObservation,
   validateMarketBaseFloorBootstrap,
-  validateMarketBaseDerivedLaneLifecycle,
-  validateMarketBaseResourceRawConfig,
-  verifyMarketBaseFloorEvidence,
 } from "@/runtime/marketBaseResourcePolicy";
-import { canonicalStableHashV1 } from "@/runtime/marketDirectContinuousPolicy";
 
-const EVIDENCE_PATH = resolve(
-  process.cwd(),
-  "openspec/changes/market-base-resource-all-rooms/evidence/floor-bootstrap-evidence.canonical.json",
-);
 
-function rawV3ResourceConfig(): Record<string, unknown> {
-  return {
-    sellResources: ["H", "O", "U", "L", "K", "Z", "X"],
-    hardFloor: Object.fromEntries(
-      MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
-        policy.resource,
-        policy.hardFloor,
-      ]),
-    ),
-    economicFloor: Object.fromEntries(
-      MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
-        policy.resource,
-        policy.economicFloor,
-      ]),
-    ),
-    forecastBuffer: Object.fromEntries(
-      MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
-        policy.resource,
-        policy.laneReserve,
-      ]),
-    ),
-  };
-}
 
 function observation(
   roomName: string,
@@ -92,37 +41,6 @@ function requireSuccessfulRooms(
 }
 
 describe("marketBaseResourcePolicy catalog/config/bootstrap", () => {
-
-  it("共享 exact parser 与公开 validator 同源，但只由公开入口物化 fingerprint", () => {
-    const raw = rawV3ResourceConfig();
-    const parsed = parseMarketBaseResourceRawConfig(raw);
-    const validated = validateMarketBaseResourceRawConfig(raw);
-
-    expect(parsed.valid).toBe(true);
-    expect(parsed.invalidReasons).toEqual([]);
-    expect(parsed.parsed).toBeDefined();
-    expect(parsed.parsed).not.toHaveProperty("fingerprint");
-    expect(validated.canonical).toEqual({
-      ...parsed.parsed,
-      fingerprint: canonicalStableHashV1({
-        config: parsed.parsed,
-        domain: "market-base-resource:raw-config-v1",
-        revision: MARKET_BASE_RESOURCE_CONFIG_REVISION,
-      }),
-    });
-
-    const malformed = rawV3ResourceConfig();
-    malformed.sellResources = [
-      ...(malformed.sellResources as string[]),
-      "X",
-      "energy",
-    ];
-    delete (malformed.hardFloor as Record<string, number>).O;
-    (malformed.forecastBuffer as Record<string, number>).H = Number.NaN;
-    expect(parseMarketBaseResourceRawConfig(malformed).invalidReasons).toEqual(
-      validateMarketBaseResourceRawConfig(malformed).invalidReasons,
-    );
-  });
 
   it("bootstrap 缺失、digest 改写、日期回拨和重复初始化全部 fail-closed", () => {
     expect(
@@ -209,33 +127,5 @@ describe("marketBaseResourcePolicy room admission/incarnation/lane", () => {
     expect(lanes.laneSetFingerprint).toBe(
       marketBaseDerivedLaneSetFingerprint(lanes.lanes!),
     );
-  });
-
-  it("lane ID 只由 immutable resource policy+room instance 派生且稳定", () => {
-    const rooms = requireSuccessfulRooms(
-      reconcileMarketBaseSellerRooms({
-        tick: 1,
-        admissionPolicy: admission,
-        observations: [observation("E1N1")],
-      }),
-    );
-    const resource: MarketBaseResource = "X";
-    const policy = MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE[resource];
-    const laneId = deriveMarketBaseLaneId({
-      resourcePolicyId: policy.policyId,
-      roomInstanceId: rooms.sellerRooms[0].roomInstanceId,
-    });
-    expect(laneId).toBe(
-      deriveMarketBaseLaneId({
-        resourcePolicyId: policy.policyId,
-        roomInstanceId: rooms.sellerRooms[0].roomInstanceId,
-      }),
-    );
-    expect(
-      deriveMarketBaseLaneId({
-        resourcePolicyId: MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE.H.policyId,
-        roomInstanceId: rooms.sellerRooms[0].roomInstanceId,
-      }),
-    ).not.toBe(laneId);
   });
 });

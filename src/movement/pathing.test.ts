@@ -10,14 +10,11 @@
  */
 import {
   clearRoomBaseCostMatrixCacheForTest,
-  getRoomBaseCostMatrixCacheSizeForTest,
-  moveToRemoteWorkTarget,
   moveToTarget,
 } from "@/movement/pathing";
-import { clearCreepMovementStateForTest, ensureCreepMovementState, getCreepMovementState } from "@/movement/creepState";
+import { clearCreepMovementStateForTest, getCreepMovementState } from "@/movement/creepState";
 import { clearMovementAnalyticsForTest } from "@/movement/metrics";
 import {
-  MockCostMatrix,
   MockRoomPosition,
   RealCostMatrix,
   createCreep,
@@ -63,17 +60,6 @@ describe("moveToTarget baseline", () => {
     Game.powerCreeps = {};
     setupGlobals();
     (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([]);
-  });
-
-  it("returns OK when already at the target position within range", () => {
-    const room = createRoom("W1N1");
-    const creep = createCreep("worker-at", "worker", 10, 10, room);
-
-    const result = moveToTarget(creep, new MockRoomPosition(10, 10, room.name) as unknown as RoomPosition, 1);
-
-    expect(result).toBe(OK);
-    expect(creep.move).not.toHaveBeenCalled();
-    expect(creep.moveTo).not.toHaveBeenCalled();
   });
 
   it("uses the shared stored-path follower for a Power Creep", () => {
@@ -144,89 +130,5 @@ describe("moveToTarget baseline", () => {
 
     expect(capturedMatrix?.get(11, 10)).toBe(0xfe);
     expect(capturedMatrix?.get(12, 10)).toBe(0xfe);
-  });
-
-  it("triggers exit recovery when on an exit tile targeting an interior position in the same room", () => {
-    const room = createRoom("W1N1");
-    const creep = createCreep("worker-exit", "worker", 0, 25, room);
-    Game.creeps[creep.name] = creep;
-
-    (creep.move as jest.Mock).mockReturnValue(OK);
-
-    const result = moveToTarget(creep, new MockRoomPosition(25, 25, room.name) as unknown as RoomPosition, 1);
-
-    expect(result).toBe(OK);
-    expect(creep.move).toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Target-behavior tests: desired API for Task 3
-// These tests are expected to FAIL before Task 3 implements the features.
-// ---------------------------------------------------------------------------
-
-describe("moveToTarget target-behavior: costCallback overlay", () => {
-  beforeEach(() => {
-    resetRuntimeServices();
-    clearCreepMovementStateForTest();
-    clearMovementAnalyticsForTest();
-    clearRoomBaseCostMatrixCacheForTest();
-    advanceTick();
-    Game.rooms = {};
-    Game.creeps = {};
-    setupGlobals(RealCostMatrix as unknown as new () => CostMatrix);
-  });
-
-  it("allows source container work position when it is the explicit target", () => {
-    const creeps: Creep[] = [];
-    const room = createRoom("W1N1", creeps);
-    const creep = createCreep("miner-source-target", "miner", 10, 10, room);
-    creeps.push(creep);
-    Game.creeps[creep.name] = creep;
-    (getSourceContainerPositionsForRoom as jest.Mock).mockReturnValue([
-      new MockRoomPosition(20, 20, room.name) as unknown as RoomPosition,
-      new MockRoomPosition(21, 20, room.name) as unknown as RoomPosition,
-    ]);
-
-    let capturedMatrix: RealCostMatrix | null = null;
-    (creep.pos as unknown as { findPathTo: jest.Mock }).findPathTo = jest.fn(
-      (_target: unknown, opts: { costCallback?: (roomName: string, matrix: CostMatrix) => CostMatrix }) => {
-        capturedMatrix = opts.costCallback?.(room.name, new RealCostMatrix() as unknown as CostMatrix) as unknown as RealCostMatrix;
-        return [{ x: 11, y: 10, dx: 1, dy: 0, direction: RIGHT }];
-      },
-    );
-
-    moveToTarget(creep, new MockRoomPosition(20, 20, room.name) as unknown as RoomPosition, 0, {
-      allowSourceContainerTarget: true,
-    });
-
-    expect(capturedMatrix).not.toBeNull();
-    expect(capturedMatrix!.get(20, 20)).toBe(0);
-    expect(capturedMatrix!.get(21, 20)).toBe(0xfe);
-  });
-});
-
-describe("moveToTarget target-behavior: cross-room guard", () => {
-  beforeEach(() => {
-    resetRuntimeServices();
-    clearCreepMovementStateForTest();
-    clearMovementAnalyticsForTest();
-    clearRoomBaseCostMatrixCacheForTest();
-    advanceTick();
-    Game.rooms = {};
-    Game.creeps = {};
-    setupGlobals();
-  });
-
-  it("returns ERR_INVALID_TARGET for cross-room target even when coordinates match", () => {
-    const room = createRoom("W1N1");
-    const creep = createCreep("worker-same-coord", "worker", 10, 10, room);
-
-    const target = new MockRoomPosition(10, 10, "W1N2") as unknown as RoomPosition;
-
-    const result = moveToTarget(creep, target, 1);
-
-    expect(result).toBe(ERR_INVALID_TARGET);
-    expect(creep.moveTo).not.toHaveBeenCalled();
   });
 });

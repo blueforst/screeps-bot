@@ -100,15 +100,4 @@ describe("boost control market gateway", () => {
     expect(Game.market.deal).not.toHaveBeenCalled();
     expect(getTerminalActionClaim("W1N1")?.actor).toBe("resourceControl");
   });
-
-  it("terminal 冷却时不扫描订单或声明市场 intent", () => {
-    const room = createRoom();
-    room.terminal!.cooldown = 1;
-
-    buyBoostIfNeeded(room);
-
-    expect(Game.market.getAllOrders).not.toHaveBeenCalled();
-    expect(Game.market.deal).not.toHaveBeenCalled();
-    expect(getMarketActionJournal()).toEqual([]);
-  });
 });

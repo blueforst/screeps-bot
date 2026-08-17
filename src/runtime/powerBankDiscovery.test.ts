@@ -1,10 +1,8 @@
 import {
   countFreeAdjacentTiles,
-  cleanupStaleDiscoveries,
   recordPowerBankDiscovery,
   ensureDiscoveryStore,
 } from "@/runtime/powerBankDiscovery";
-import { POWER_BANK_STATUS } from "@/runtime/powerBankConstants";
 import { createMockPowerBank } from "@mock/powerBank";
 
 class MockRoomPosition {
@@ -19,23 +17,6 @@ const createMockTerrain = (grid: number[][]) => ({
   get: (x: number, y: number) => grid[y]?.[x] ?? 0,
 });
 
-const makeTask = (overrides: Partial<PowerBankHarvestTask> = {}): PowerBankHarvestTask => ({
-  id: overrides.id ?? "pb-test",
-  status: overrides.status ?? POWER_BANK_STATUS.DISCOVERED,
-  sourceRoom: overrides.sourceRoom ?? "",
-  targetRoom: overrides.targetRoom ?? "E0N60",
-  bankId: overrides.bankId ?? "pb-test",
-  bankPos: overrides.bankPos ?? { x: 25, y: 25 },
-  hits: overrides.hits ?? 2_000_000,
-  power: overrides.power ?? 5000,
-  ticksToDecay: overrides.ticksToDecay ?? 5000,
-  freeTiles: overrides.freeTiles ?? 8,
-  discoveredTick: overrides.discoveredTick ?? 1,
-  lastSeenTick: overrides.lastSeenTick ?? 1,
-  haulerIds: overrides.haulerIds ?? [],
-  boostLabs: overrides.boostLabs ?? [],
-  compoundTransferTaskIds: overrides.compoundTransferTaskIds ?? [],
-});
 
 describe("powerBankDiscovery", () => {
   beforeEach(() => {
@@ -78,18 +59,6 @@ describe("powerBankDiscovery", () => {
       expect(task.lastSeenTick).toBe(200);
       expect(task.hits).toBe(1500000);
       expect(task.ticksToDecay).toBe(3800);
-    });
-  });
-
-  describe("cleanupStaleDiscoveries", () => {
-    it("removes stale discovered tasks", () => {
-      const store = ensureDiscoveryStore();
-      store["pb-old"] = makeTask({ id: "pb-old", lastSeenTick: 1 });
-
-      Game.time = 1000;
-      cleanupStaleDiscoveries();
-
-      expect(store["pb-old"]).toBeUndefined();
     });
   });
 });

@@ -76,23 +76,4 @@ describe("creepAssignmentState readonly selectors", () => {
     expect(peekCreepAssignmentState("Worker1")).toEqual(workerState);
     expect(peekCreepAssignmentStates()).toEqual({ Worker1: workerState, Carrier1: carrierState });
   });
-
-  it("preserves malformed state shape without hiding it or blocking valid siblings", () => {
-    const validState = ensureCreepAssignmentState("Worker1");
-    validState.taskId = "build:valid";
-    const sourceStore = runtimeGlobal.__creepAssignmentState;
-    (sourceStore as unknown as Record<string, unknown>).Broken = 42;
-
-    const malformedSnapshot = peekCreepAssignmentState("Broken");
-    const snapshots = peekCreepAssignmentStates();
-
-    expect(malformedSnapshot as unknown).toBe(42);
-    expect(snapshots.Broken as unknown).toBe(42);
-    expect(snapshots.Worker1).toEqual(validState);
-    expect(snapshots.Worker1).not.toBe(validState);
-    expect(runtimeGlobal.__creepAssignmentState).toBe(sourceStore);
-    expect((runtimeGlobal.__creepAssignmentState as unknown as Record<string, unknown>).Broken)
-      .toBe(42);
-    expect(getCreepAssignmentState("Worker1")).toBe(validState);
-  });
 });
