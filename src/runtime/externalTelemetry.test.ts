@@ -1,4 +1,5 @@
 import { clearCreepMovementStateForTest, clearMovementAnalyticsForTest, ensureCreepMovementState, getMovementAnalyticsForTest } from "@/movement";
+import { recordMovementMetric } from "@/movement/metrics";
 import { runExternalTelemetryExport } from "@/runtime/externalTelemetry";
 import { resetCpuMonitorStore } from "@/runtime/cpuMonitor";
 import {
@@ -138,6 +139,160 @@ describe("runExternalTelemetryExport Worker task observation", () => {
   });
 });
 
+describe("runExternalTelemetryExport movement analytics", () => {
+  beforeEach(() => {
+    setupBasicEnv();
+    resetCpuMonitorStore();
+    Memory.analytics = undefined;
+  });
+
+  afterEach(() => {
+    resetCpuMonitorStore();
+    clearMovementAnalyticsForTest();
+  });
+
+  it("exports multi-room segment counters additively in totals and room buckets", () => {
+    recordMovementMetric("pathRequests", "W1N1", 2);
+    recordMovementMetric("multiRoomSearches", "W1N1");
+    recordMovementMetric("multiRoomSegmentHits", "W1N1", 3);
+    recordMovementMetric("multiRoomSegmentInvalidations", "W1N1");
+
+    runExternalTelemetryExport();
+
+    const payload = JSON.parse(RawMemory.segments[42]);
+    expect(payload.version).toBe(2);
+    expect(payload.totals.movement).toMatchObject({
+      pathRequests: 2,
+      multiRoomSearches: 1,
+      multiRoomSegmentHits: 3,
+      multiRoomSegmentInvalidations: 1,
+    });
+    expect(payload.rooms[0].movement).toMatchObject({
+      pathRequests: 2,
+      multiRoomSearches: 1,
+      multiRoomSegmentHits: 3,
+      multiRoomSegmentInvalidations: 1,
+    });
+  });
+
+  it("keeps the existing optional telemetry shape when no movement bucket exists", () => {
+    runExternalTelemetryExport();
+
+    const payload = JSON.parse(RawMemory.segments[42]);
+    expect(payload.version).toBe(2);
+    expect(payload.totals.movement).toBeUndefined();
+    expect(payload.rooms[0].movement).toBeUndefined();
+  });
+
+  it("normalizes a hot-loaded legacy movement snapshot before telemetry reads it", () => {
+    const legacyBucket = {
+      pathRequests: 2,
+      pathCacheHits: 1,
+      pathRepaths: 0,
+      yieldPushes: 0,
+      travelRequests: 4,
+      travelFallbacks: 0,
+      travelRepaths: 0,
+      exitRecoveries: 0,
+      stateClears: 0,
+    };
+    const runtimeGlobal = global as typeof global & { __movementAnalytics?: unknown };
+    runtimeGlobal.__movementAnalytics = {
+      updatedAt: Game.time,
+      totals: { ...legacyBucket },
+      rooms: { W9N9: { ...legacyBucket } },
+    };
+
+    runExternalTelemetryExport();
+
+    const payload = JSON.parse(RawMemory.segments[42]);
+    expect(payload.totals.movement).toMatchObject({
+      pathRequests: 2,
+      multiRoomSearches: 0,
+      multiRoomSegmentHits: 0,
+      multiRoomSegmentInvalidations: 0,
+    });
+    expect(payload.movementRooms.W9N9).toMatchObject({
+      travelRequests: 4,
+      multiRoomSearches: 0,
+      multiRoomSegmentHits: 0,
+      multiRoomSegmentInvalidations: 0,
+    });
+  });
+
+  it("repairs a partially migrated v2 bucket before recording a new metric", () => {
+    const partialBucket = {
+      pathRequests: 0,
+      pathCacheHits: 0,
+      pathRepaths: 0,
+      yieldPushes: 0,
+      travelRequests: 1,
+      travelFallbacks: 0,
+      travelRepaths: 0,
+      exitRecoveries: 0,
+      stateClears: 0,
+    };
+    const runtimeGlobal = global as typeof global & { __movementAnalytics?: unknown };
+    runtimeGlobal.__movementAnalytics = {
+      version: 2,
+      updatedAt: Game.time,
+      totals: { ...partialBucket },
+      rooms: { W9N9: { ...partialBucket } },
+    };
+
+    recordMovementMetric("multiRoomSearches", "W9N9");
+    runExternalTelemetryExport();
+
+    const payload = JSON.parse(RawMemory.segments[42]);
+    expect(payload.totals.movement.multiRoomSearches).toBe(1);
+    expect(payload.movementRooms.W9N9.multiRoomSearches).toBe(1);
+  });
+
+  it("exports at most sixteen deterministic movement buckets including remote rooms", () => {
+    for (let index = 0; index < 18; index += 1) {
+      recordMovementMetric("travelRequests", `W${index}N9`, index + 1);
+    }
+
+    runExternalTelemetryExport();
+
+    const movementRooms = JSON.parse(RawMemory.segments[42]).movementRooms;
+    expect(Object.keys(movementRooms)).toHaveLength(16);
+    expect(movementRooms.W17N9.travelRequests).toBe(18);
+    expect(movementRooms.W2N9.travelRequests).toBe(3);
+    expect(movementRooms.W0N9).toBeUndefined();
+    expect(movementRooms.W1N9).toBeUndefined();
+  });
+
+  it("prioritizes recently active remote rooms over historically large stale buckets", () => {
+    for (let index = 0; index < 16; index += 1) {
+      recordMovementMetric("travelRequests", `W${index}N8`, 1_000 + index);
+    }
+    Game.time += 5;
+    recordMovementMetric("multiRoomSearches", "W99N99");
+
+    runExternalTelemetryExport();
+
+    const movementRooms = JSON.parse(RawMemory.segments[42]).movementRooms;
+    expect(Object.keys(movementRooms)).toHaveLength(16);
+    expect(movementRooms.W99N99.multiRoomSearches).toBe(1);
+    expect(movementRooms.W0N8).toBeUndefined();
+  });
+
+  it("saturates totals and room counters while rejecting non-finite increments", () => {
+    recordMovementMetric("travelRequests", "W9N9");
+    const analytics = getMovementAnalyticsForTest();
+    analytics.totals.multiRoomSegmentHits = Number.MAX_SAFE_INTEGER - 1;
+    analytics.rooms.W9N9.multiRoomSegmentHits = Number.MAX_SAFE_INTEGER - 1;
+
+    recordMovementMetric("multiRoomSegmentHits", "W9N9", 10);
+    recordMovementMetric("multiRoomSegmentHits", "W9N9", Number.POSITIVE_INFINITY);
+    recordMovementMetric("multiRoomSegmentHits", "W9N9", Number.NaN);
+
+    expect(analytics.totals.multiRoomSegmentHits).toBe(Number.MAX_SAFE_INTEGER);
+    expect(analytics.rooms.W9N9.multiRoomSegmentHits).toBe(Number.MAX_SAFE_INTEGER);
+  });
+});
+
 describe("runExternalTelemetryExport cpu monitor v2", () => {
   beforeEach(() => {
     setupBasicEnv();
@@ -272,6 +427,7 @@ describe("runExternalTelemetryExport cpu payload size", () => {
       } as Room;
     }
     Game.rooms = gameRooms;
+    recordMovementMetric("multiRoomSearches", "W99N99", 7);
 
     runExternalTelemetryExport();
 
@@ -282,5 +438,6 @@ describe("runExternalTelemetryExport cpu payload size", () => {
     expect(parsed.version).toBe(2);
     expect(parsed.cpuMonitor).toBeDefined();
     expect(parsed.cpuMonitor.version).toBe(2);
+    expect(parsed.movementRooms.W99N99.multiRoomSearches).toBe(7);
   });
 });

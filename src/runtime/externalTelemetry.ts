@@ -7,6 +7,7 @@ import type {
 } from "@/runtime/cpuMonitor";
 import { getTickContextService } from "@/runtime/runtimeServices";
 import { getCreepMovementState, getMovementAnalytics } from "@/movement";
+import type { MovementMetricBucket } from "@/movement/metrics";
 import {
   getAssignedWorkerTaskId,
   peekWorkerTasksByRoom,
@@ -20,6 +21,7 @@ const MAX_SEGMENT_PAYLOAD_BYTES = 95_000;
 const MAX_DEBUG_CREEPS = 25;
 const MAX_DEBUG_ROUTE_ROOMS = 25;
 const MAX_DEBUG_VISITED_ROOMS = 20;
+const MAX_MOVEMENT_TELEMETRY_ROOMS = 16;
 
 interface RoomCreepTelemetry {
   workerCount: number;
@@ -73,6 +75,9 @@ interface ExternalTelemetryRoomSnapshot {
     travelRequests: number;
     travelFallbacks: number;
     travelRepaths: number;
+    multiRoomSearches: number;
+    multiRoomSegmentHits: number;
+    multiRoomSegmentInvalidations: number;
     exitRecoveries: number;
     stateClears: number;
   };
@@ -158,10 +163,14 @@ interface ExternalTelemetrySnapshot {
       travelRequests: number;
       travelFallbacks: number;
       travelRepaths: number;
+      multiRoomSearches: number;
+      multiRoomSegmentHits: number;
+      multiRoomSegmentInvalidations: number;
       exitRecoveries: number;
       stateClears: number;
     };
   };
+  movementRooms?: Record<string, MovementMetricBucket>;
   debug?: ExternalTelemetryDebugSnapshot;
   cpuMonitor?: CpuMonitorTelemetryPayload;
   rooms: ExternalTelemetryRoomSnapshot[];
@@ -805,10 +814,60 @@ function buildTelemetrySnapshot(sampleInterval: number, segmentId: number): Exte
       activeSpawns: totalActiveSpawns,
       movement: movementAnalytics?.totals,
     },
+    movementRooms: movementAnalytics
+      ? selectMovementTelemetryRooms(movementAnalytics.rooms, movementAnalytics.roomUpdatedAt)
+      : undefined,
     debug,
     cpuMonitor,
     rooms,
   };
+}
+
+function selectMovementTelemetryRooms(
+  rooms: Record<string, MovementMetricBucket>,
+  roomUpdatedAt: Record<string, number>,
+): Record<string, MovementMetricBucket> | undefined {
+  const selected: Array<[string, MovementMetricBucket]> = [];
+  for (const entry of Object.entries(rooms)) {
+    let insertAt = selected.length;
+    for (let index = 0; index < selected.length; index += 1) {
+      if (compareMovementRoomActivity(entry, selected[index], roomUpdatedAt) < 0) {
+        insertAt = index;
+        break;
+      }
+    }
+    if (insertAt >= MAX_MOVEMENT_TELEMETRY_ROOMS && selected.length >= MAX_MOVEMENT_TELEMETRY_ROOMS) {
+      continue;
+    }
+    selected.splice(insertAt, 0, entry);
+    if (selected.length > MAX_MOVEMENT_TELEMETRY_ROOMS) {
+      selected.pop();
+    }
+  }
+  return selected.length > 0 ? Object.fromEntries(selected) : undefined;
+}
+
+function compareMovementRoomActivity(
+  left: [string, MovementMetricBucket],
+  right: [string, MovementMetricBucket],
+  roomUpdatedAt: Record<string, number>,
+): number {
+  const leftUpdatedAt = Number.isFinite(roomUpdatedAt[left[0]]) ? roomUpdatedAt[left[0]] : 0;
+  const rightUpdatedAt = Number.isFinite(roomUpdatedAt[right[0]]) ? roomUpdatedAt[right[0]] : 0;
+  if (leftUpdatedAt !== rightUpdatedAt) {
+    return leftUpdatedAt > rightUpdatedAt ? -1 : 1;
+  }
+  const leftSegmentActivity = left[1].multiRoomSearches + left[1].multiRoomSegmentHits + left[1].multiRoomSegmentInvalidations;
+  const rightSegmentActivity = right[1].multiRoomSearches + right[1].multiRoomSegmentHits + right[1].multiRoomSegmentInvalidations;
+  if (leftSegmentActivity !== rightSegmentActivity) {
+    return leftSegmentActivity > rightSegmentActivity ? -1 : 1;
+  }
+  const leftRequests = left[1].travelRequests + left[1].pathRequests;
+  const rightRequests = right[1].travelRequests + right[1].pathRequests;
+  if (leftRequests !== rightRequests) {
+    return leftRequests > rightRequests ? -1 : 1;
+  }
+  return left[0].localeCompare(right[0]);
 }
 
 function compactPhaseMap(phases: Record<string, number>, limit: number): Record<string, number> {
@@ -899,6 +958,7 @@ function serializeSnapshot(snapshot: ExternalTelemetrySnapshot): string {
     cpu: snapshot.cpu,
     gcl: snapshot.gcl,
     totals: snapshot.totals,
+    movementRooms: snapshot.movementRooms,
     debug: snapshot.debug ? { counts: snapshot.debug.counts, creeps: [], colonization: [], truncated: true } : undefined,
     cpuMonitor: compactCpuMonitorPayload(snapshot.cpuMonitor, 5),
     rooms: [],

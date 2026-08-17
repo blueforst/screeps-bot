@@ -18,6 +18,18 @@ export interface CachedTravelPath {
   generatedAt: number;
 }
 
+export interface MultiRoomTravelSegment {
+  key: string;
+  currentRoom: string;
+  positions: StoredRoomPosition[];
+  transitionIndex: number;
+  cursor: number;
+  reuseTtl: number;
+  generatedAt: number;
+  expiresAt: number;
+  hardExpiresAt: number;
+}
+
 export interface MoveToTargetOptions {
   swampCost?: number;
   plainCost?: number;
@@ -42,6 +54,7 @@ export interface TravelState {
   lastPosKey?: string;
   lastWasExit?: boolean;
   stuckTicks: number;
+  multiRoomSegment?: MultiRoomTravelSegment;
 }
 
 export interface MovePathState {

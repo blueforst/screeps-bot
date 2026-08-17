@@ -9,6 +9,7 @@ import { getSourceContainerPositionsForRoom } from "@/runtime/roomPlannerConstru
 import type {
   CachedTravelPath,
   DynamicRouteCacheEntry,
+  MultiRoomTravelSegment,
   MoveToRoomOptions,
   MoveToTargetOptions,
   StoredRoomPosition,
@@ -18,7 +19,21 @@ import type {
 const DYNAMIC_ROUTE_CACHE_TTL = 25;
 const DYNAMIC_ROUTE_CACHE_MAX = 200;
 const MULTI_ROOM_TRAVEL_MAX_OPS = 10000;
+const MULTI_ROOM_SEGMENT_MIN_REUSE_TTL = 20;
+const MULTI_ROOM_SEGMENT_MAX_REUSE_TTL = 50;
+const MULTI_ROOM_SEGMENT_HARD_TTL = 150;
+const MULTI_ROOM_SEGMENT_MAX_STEPS = 100;
 const dynamicNextRoomCache: Record<string, DynamicRouteCacheEntry> = {};
+let liveRoomSafetyCacheTick = -1;
+let liveRoomSafetyCache: Record<string, boolean> = {};
+
+export function clearRoutingCachesForTest(): void {
+  for (const key of Object.keys(dynamicNextRoomCache)) {
+    delete dynamicNextRoomCache[key];
+  }
+  liveRoomSafetyCacheTick = -1;
+  liveRoomSafetyCache = {};
+}
 
 export function getCurrentColonizationRoute(targetRoom: string, fallbackEncodedRoute?: string): string | undefined {
   const task = Memory.data?.colonization?.[targetRoom];
@@ -57,9 +72,10 @@ export function moveToTargetRoom(
   options: MoveToRoomOptions = {},
 ): ScreepsReturnCode {
   recordMovementMetric("travelRequests", creep.room.name);
+  const movementState = ensureCreepMovementState(creep.name);
 
   if (creep.room.name === targetRoom) {
-    delete ensureCreepMovementState(creep.name).travelState;
+    delete movementState.travelState;
     return OK;
   }
 
@@ -67,7 +83,10 @@ export function moveToTargetRoom(
   const dangerousRooms = getDangerousRoomsForTarget(targetRoom, options.avoidRooms);
   const hasFixedRoute = routeRooms.length > 0;
   const travelState = getTravelState(creep, targetRoom);
-  ensureCreepMovementState(creep.name).pathingRequestedAt = Game.time;
+  if (travelState.multiRoomSegment && travelState.multiRoomSegment.currentRoom !== creep.room.name) {
+    invalidateMultiRoomSegment(travelState, creep.room.name);
+  }
+  movementState.pathingRequestedAt = Game.time;
   const currentPosKey = getPosKey(creep.pos);
   const currentOnExit = isExitTile(creep.pos);
   const repeatedExitTransition = travelState.lastWasExit && currentOnExit && travelState.lastPosKey !== currentPosKey;
@@ -94,12 +113,14 @@ export function moveToTargetRoom(
       const recoveredNextRoom = findDynamicNextRoom(creep.room.name, targetRoom, forwardPreferredRooms, dangerousRooms);
       nextRoom = recoveredNextRoom ?? creep.room.name;
       if (nextRoom === creep.room.name) {
+        invalidateMultiRoomSegment(travelState, creep.room.name);
         updateTravelState(creep, travelState);
         return ERR_NO_PATH;
       }
     }
 
     if (nextRoom !== targetRoom && dangerousRooms.includes(nextRoom)) {
+      invalidateMultiRoomSegment(travelState, creep.room.name);
       updateTravelState(creep, travelState);
       return ERR_NO_PATH;
     }
@@ -107,6 +128,7 @@ export function moveToTargetRoom(
     const dynamicNextRoom = findDynamicNextRoom(creep.room.name, targetRoom, routeRooms, dangerousRooms);
     nextRoom = dynamicNextRoom ?? creep.room.name;
     if (nextRoom === creep.room.name) {
+      invalidateMultiRoomSegment(travelState, creep.room.name);
       updateTravelState(creep, travelState);
       return ERR_NO_PATH;
     }
@@ -124,6 +146,7 @@ export function moveToTargetRoom(
   }
 
   if (nextRoom !== targetRoom && dangerousRooms.includes(nextRoom)) {
+    invalidateMultiRoomSegment(travelState, creep.room.name);
     updateTravelState(creep, travelState);
     return ERR_NO_PATH;
   }
@@ -139,12 +162,43 @@ export function moveToTargetRoom(
   };
 
   const cachedTravelPath = getUsableCachedTravelPath(creep, targetRoom, routeRooms, dangerousRooms, hasFixedRoute);
+  const segmentCachingEnabled = canCacheMultiRoomSegment(moveOptions);
+  let multiRoomSegment: MultiRoomTravelSegment | null = null;
 
   let result: ScreepsReturnCode;
   if (nextRoom !== creep.room.name && (!hasFixedRoute || isAdjacentRoom(creep.room.name, nextRoom))) {
     const exitDirection = creep.room.findExitTo(nextRoom);
     if (typeof exitDirection === "number" && exitDirection >= 1 && exitDirection <= 8) {
       if (isOnExitDirection(creep.pos, exitDirection as DirectionConstant)) {
+        multiRoomSegment = resolveMultiRoomSegmentForRequest(
+          creep,
+          travelState,
+          segmentCachingEnabled,
+          targetRoom,
+          nextRoom,
+          hasFixedRoute,
+          routeRooms,
+          dangerousRooms,
+          moveRange,
+          moveOptions,
+        );
+        if (multiRoomSegment) {
+          const transition = getMultiRoomSegmentTransition(creep, multiRoomSegment, nextRoom);
+          if (transition?.exitDirection === exitDirection) {
+            const segmentResult = measureCreepIntent(() => creep.move(transition.moveDirection));
+            if (isReusableSegmentMoveResult(segmentResult)) {
+              recordMovementMetric("multiRoomSegmentHits", creep.room.name);
+              renewMultiRoomSegment(multiRoomSegment);
+            } else {
+              invalidateMultiRoomSegment(travelState, creep.room.name);
+              multiRoomSegment = null;
+            }
+            updateTravelState(creep, travelState);
+            return segmentResult;
+          }
+          invalidateMultiRoomSegment(travelState, creep.room.name);
+          multiRoomSegment = null;
+        }
         result = measureCreepIntent(() => creep.move(exitDirection as DirectionConstant));
         updateTravelState(creep, travelState);
         return result;
@@ -162,12 +216,46 @@ export function moveToTargetRoom(
       if (cachedTravelPath && travelState.stuckTicks < 2) {
         const cachedPathResult = followCachedTravelPath(creep, cachedTravelPath);
         if (cachedPathResult === OK || cachedPathResult === ERR_TIRED) {
+          invalidateMultiRoomSegment(travelState, creep.room.name);
           updateTravelState(creep, travelState);
           return cachedPathResult;
         }
       }
 
-      const multiRoomResult = moveAlongMultiRoomPath(creep, targetRoom, routeRooms, dangerousRooms, hasFixedRoute, moveRange, moveOptions);
+      multiRoomSegment = resolveMultiRoomSegmentForRequest(
+        creep,
+        travelState,
+        segmentCachingEnabled,
+        targetRoom,
+        nextRoom,
+        hasFixedRoute,
+        routeRooms,
+        dangerousRooms,
+        moveRange,
+        moveOptions,
+      );
+      if (multiRoomSegment) {
+        const segmentResult = followMultiRoomSegment(creep, multiRoomSegment);
+        if (isReusableSegmentMoveResult(segmentResult)) {
+          recordMovementMetric("multiRoomSegmentHits", creep.room.name);
+          renewMultiRoomSegment(multiRoomSegment);
+          updateTravelState(creep, travelState);
+          return segmentResult;
+        }
+        invalidateMultiRoomSegment(travelState, creep.room.name);
+      }
+
+      const multiRoomResult = moveAlongMultiRoomPath(
+        creep,
+        targetRoom,
+        nextRoom,
+        routeRooms,
+        dangerousRooms,
+        hasFixedRoute,
+        moveRange,
+        moveOptions,
+        travelState,
+      );
       if (multiRoomResult !== ERR_NO_PATH) {
         updateTravelState(creep, travelState);
         return multiRoomResult;
@@ -195,6 +283,156 @@ export function getColonizationTravelPathKey(sourceRoom: string, targetRoom: str
   const routePart = routeRooms.join(">");
   const dangerPart = [...new Set(dangerousRooms)].sort().join(">");
   return `${sourceRoom}->${targetRoom}|r:${routePart}|d:${dangerPart}`;
+}
+
+function buildMultiRoomSegmentKey(
+  currentRoom: string,
+  targetRoom: string,
+  nextRoom: string,
+  hasFixedRoute: boolean,
+  routeRooms: string[],
+  dangerousRooms: string[],
+  travelRange: 1 | 3,
+  options: MoveToTargetOptions,
+): string {
+  return JSON.stringify({
+    currentRoom,
+    targetRoom,
+    nextRoom,
+    mode: hasFixedRoute ? "fixed" : "dynamic",
+    routeRooms,
+    dangerousRooms: [...new Set(dangerousRooms)].sort(),
+    travelRange,
+    plainCost: canonicalNumberKey(options.plainCost, 1),
+    swampCost: canonicalNumberKey(options.swampCost, 5),
+    maxRooms: canonicalNumberKey(options.maxRooms, 16),
+    ignoreCreeps: options.ignoreCreeps ?? true,
+    reusePath: normalizeMultiRoomSegmentReusePath(options.reusePath),
+  });
+}
+
+function canCacheMultiRoomSegment(options: MoveToTargetOptions): boolean {
+  return normalizeMultiRoomSegmentReusePath(options.reusePath) > 0 && (options.ignoreCreeps ?? true);
+}
+
+function canonicalNumberKey(value: number | undefined, fallback: number): number | string {
+  const resolved = value ?? fallback;
+  if (Number.isFinite(resolved)) {
+    return resolved;
+  }
+  if (Number.isNaN(resolved)) {
+    return "NaN";
+  }
+  return resolved > 0 ? "+Infinity" : "-Infinity";
+}
+
+function normalizeMultiRoomSegmentReusePath(value: number | undefined): number {
+  const resolved = value ?? 5;
+  if (!Number.isFinite(resolved)) {
+    return 5;
+  }
+  return Math.min(MULTI_ROOM_SEGMENT_MAX_REUSE_TTL, Math.max(0, Math.floor(resolved)));
+}
+
+function getMultiRoomSegmentReuseTtl(options: MoveToTargetOptions): number {
+  return Math.max(MULTI_ROOM_SEGMENT_MIN_REUSE_TTL, normalizeMultiRoomSegmentReusePath(options.reusePath));
+}
+
+function resolveMultiRoomSegmentForRequest(
+  creep: Creep,
+  travelState: TravelState,
+  segmentCachingEnabled: boolean,
+  targetRoom: string,
+  nextRoom: string,
+  hasFixedRoute: boolean,
+  routeRooms: string[],
+  dangerousRooms: string[],
+  travelRange: 1 | 3,
+  options: MoveToTargetOptions,
+): MultiRoomTravelSegment | null {
+  if (!travelState.multiRoomSegment) {
+    return null;
+  }
+  if (!segmentCachingEnabled) {
+    invalidateMultiRoomSegment(travelState, creep.room.name);
+    return null;
+  }
+  const key = buildMultiRoomSegmentKey(
+    creep.room.name,
+    targetRoom,
+    nextRoom,
+    hasFixedRoute,
+    routeRooms,
+    dangerousRooms,
+    travelRange,
+    options,
+  );
+  return getUsableMultiRoomSegment(creep, travelState, key, targetRoom);
+}
+
+function getUsableMultiRoomSegment(
+  creep: Creep,
+  travelState: TravelState,
+  key: string,
+  targetRoom: string,
+): MultiRoomTravelSegment | null {
+  const segment = travelState.multiRoomSegment;
+  if (!segment) {
+    return null;
+  }
+
+  if (
+    travelState.stuckTicks >= 2 ||
+    !Number.isInteger(segment.transitionIndex) ||
+    !Number.isInteger(segment.cursor) ||
+    !Number.isFinite(segment.reuseTtl) ||
+    !Number.isFinite(segment.expiresAt) ||
+    !Number.isFinite(segment.hardExpiresAt) ||
+    segment.key !== key ||
+    segment.currentRoom !== creep.room.name ||
+    segment.expiresAt <= Game.time ||
+    segment.hardExpiresAt <= Game.time ||
+    !isMultiRoomSegmentLiveSafe(segment, targetRoom)
+  ) {
+    invalidateMultiRoomSegment(travelState, creep.room.name);
+    return null;
+  }
+
+  return segment;
+}
+
+function renewMultiRoomSegment(segment: MultiRoomTravelSegment): void {
+  segment.expiresAt = Math.min(segment.hardExpiresAt, Game.time + segment.reuseTtl);
+}
+
+function isMultiRoomSegmentLiveSafe(segment: MultiRoomTravelSegment, targetRoom: string): boolean {
+  if (segment.transitionIndex === -1) {
+    return true;
+  }
+  if (segment.transitionIndex <= 0 || segment.transitionIndex >= segment.positions.length) {
+    return false;
+  }
+  const transitionOrigin = segment.positions[segment.transitionIndex - 1];
+  const transitionStep = segment.positions[segment.transitionIndex];
+  if (
+    transitionOrigin.roomName !== segment.currentRoom ||
+    transitionStep.roomName === segment.currentRoom ||
+    !getValidatedRoomTransition(segment.currentRoom, transitionOrigin, transitionStep)
+  ) {
+    return false;
+  }
+  if (transitionStep.roomName === targetRoom) {
+    return true;
+  }
+  return isLiveTransitionRoomSafe(transitionStep.roomName);
+}
+
+function invalidateMultiRoomSegment(travelState: TravelState, roomName: string): void {
+  if (!travelState.multiRoomSegment) {
+    return;
+  }
+  delete travelState.multiRoomSegment;
+  recordMovementMetric("multiRoomSegmentInvalidations", roomName);
 }
 
 function getUsableCachedTravelPath(
@@ -229,17 +467,43 @@ function getUsableCachedTravelPath(
 }
 
 function followCachedTravelPath(creep: Creep, cachedPath: CachedTravelPath): ScreepsReturnCode {
-  const nextStep = getNextCachedTravelPathStep(creep.pos, cachedPath.positions);
-  if (!nextStep) {
-    return ERR_NO_PATH;
-  }
+  return followStoredTravelPositions(creep, cachedPath.positions);
+}
 
+function followMultiRoomSegment(creep: Creep, segment: MultiRoomTravelSegment): ScreepsReturnCode {
+  const nextStep = getNextMultiRoomSegmentStep(creep.pos, segment);
+  return nextStep ? followStoredTravelStep(creep, nextStep) : ERR_NO_PATH;
+}
+
+interface RoomTransition {
+  exitDirection: DirectionConstant;
+  moveDirection: DirectionConstant;
+}
+
+function getMultiRoomSegmentTransition(
+  creep: Creep,
+  segment: MultiRoomTravelSegment,
+  expectedNextRoom: string,
+): RoomTransition | null {
+  const nextStep = getNextMultiRoomSegmentStep(creep.pos, segment);
+  if (!nextStep || nextStep.roomName !== expectedNextRoom) {
+    return null;
+  }
+  return getValidatedRoomTransition(creep.room.name, creep.pos, nextStep);
+}
+
+function followStoredTravelPositions(creep: Creep, positions: StoredRoomPosition[]): ScreepsReturnCode {
+  const nextStep = getNextCachedTravelPathStep(creep.pos, positions);
+  return nextStep ? followStoredTravelStep(creep, nextStep) : ERR_NO_PATH;
+}
+
+function followStoredTravelStep(creep: Creep, nextStep: StoredRoomPosition): ScreepsReturnCode {
   if (nextStep.roomName !== creep.room.name) {
-    const direction = getExitTransitionDirection(creep.pos, nextStep);
-    if (!direction) {
+    const transition = getValidatedRoomTransition(creep.room.name, creep.pos, nextStep);
+    if (!transition) {
       return ERR_NO_PATH;
     }
-    return measureCreepIntent(() => creep.move(direction));
+    return measureCreepIntent(() => creep.move(transition.moveDirection));
   }
 
   const nextPos = new RoomPosition(nextStep.x, nextStep.y, nextStep.roomName);
@@ -248,6 +512,10 @@ function followCachedTravelPath(creep: Creep, cachedPath: CachedTravelPath): Scr
   }
 
   return moveToAdjacentPosition(creep, nextPos);
+}
+
+function isReusableSegmentMoveResult(result: ScreepsReturnCode): boolean {
+  return result === OK || result === ERR_TIRED || result === ERR_BUSY;
 }
 
 function getNextCachedTravelPathStep(pos: RoomPosition, positions: StoredRoomPosition[]): StoredRoomPosition | null {
@@ -274,33 +542,94 @@ function getNextCachedTravelPathStep(pos: RoomPosition, positions: StoredRoomPos
   return bestRange <= 1 && bestIndex >= 0 ? positions[bestIndex] : null;
 }
 
-function getExitTransitionDirection(pos: RoomPosition, nextStep: StoredRoomPosition): DirectionConstant | null {
-  if (pos.x === 49 && nextStep.x === 0) {
-    return RIGHT;
-  }
-  if (pos.x === 0 && nextStep.x === 49) {
-    return LEFT;
-  }
-  if (pos.y === 49 && nextStep.y === 0) {
-    return BOTTOM;
-  }
-  if (pos.y === 0 && nextStep.y === 49) {
-    return TOP;
+function getNextMultiRoomSegmentStep(
+  pos: RoomPosition,
+  segment: MultiRoomTravelSegment,
+): StoredRoomPosition | null {
+  const positions = segment.positions;
+  const exactStart = Math.max(0, segment.cursor);
+  for (let index = exactStart; index < positions.length; index += 1) {
+    const step = positions[index];
+    if (step.roomName === pos.roomName && step.x === pos.x && step.y === pos.y) {
+      segment.cursor = Math.max(segment.cursor, index);
+      return positions[index + 1] ?? null;
+    }
   }
 
+  let bestIndex = -1;
+  let bestRange = Infinity;
+  for (let index = Math.max(0, segment.cursor + 1); index < positions.length; index += 1) {
+    const step = positions[index];
+    if (step.roomName !== pos.roomName) {
+      continue;
+    }
+    const range = pos.getRangeTo(step.x, step.y);
+    if (range >= bestRange) {
+      continue;
+    }
+    bestRange = range;
+    bestIndex = index;
+  }
+  return bestRange <= 1 && bestIndex >= 0 ? positions[bestIndex] : null;
+}
+
+function getRoomTransition(
+  pos: Pick<RoomPosition, "x" | "y">,
+  nextStep: Pick<StoredRoomPosition, "x" | "y">,
+): RoomTransition | null {
+  if (pos.x === 49 && nextStep.x === 0 && Math.abs(nextStep.y - pos.y) <= 1) {
+    return {
+      exitDirection: RIGHT,
+      moveDirection: nextStep.y < pos.y ? TOP_RIGHT : nextStep.y > pos.y ? BOTTOM_RIGHT : RIGHT,
+    };
+  }
+  if (pos.x === 0 && nextStep.x === 49 && Math.abs(nextStep.y - pos.y) <= 1) {
+    return {
+      exitDirection: LEFT,
+      moveDirection: nextStep.y < pos.y ? TOP_LEFT : nextStep.y > pos.y ? BOTTOM_LEFT : LEFT,
+    };
+  }
+  if (pos.y === 49 && nextStep.y === 0 && Math.abs(nextStep.x - pos.x) <= 1) {
+    return {
+      exitDirection: BOTTOM,
+      moveDirection: nextStep.x < pos.x ? BOTTOM_LEFT : nextStep.x > pos.x ? BOTTOM_RIGHT : BOTTOM,
+    };
+  }
+  if (pos.y === 0 && nextStep.y === 49 && Math.abs(nextStep.x - pos.x) <= 1) {
+    return {
+      exitDirection: TOP,
+      moveDirection: nextStep.x < pos.x ? TOP_LEFT : nextStep.x > pos.x ? TOP_RIGHT : TOP,
+    };
+  }
   return null;
+}
+
+function getValidatedRoomTransition(
+  currentRoom: string,
+  pos: Pick<RoomPosition, "x" | "y">,
+  nextStep: StoredRoomPosition,
+): RoomTransition | null {
+  const transition = getRoomTransition(pos, nextStep);
+  if (!transition) {
+    return null;
+  }
+  const exits = Game.map.describeExits(currentRoom);
+  return exits?.[transition.exitDirection] === nextStep.roomName ? transition : null;
 }
 
 function moveAlongMultiRoomPath(
   creep: Creep,
   targetRoom: string,
+  nextRoom: string,
   routeRooms: string[],
   dangerousRooms: string[],
   hasFixedRoute: boolean,
   range: 1 | 3,
   options: MoveToTargetOptions,
+  travelState: TravelState,
 ): ScreepsReturnCode {
   const targetPos = new RoomPosition(25, 25, targetRoom);
+  recordMovementMetric("multiRoomSearches", creep.room.name);
   const search = measureCreepPathing(() =>
     PathFinder.search(
       creep.pos,
@@ -320,11 +649,84 @@ function moveAlongMultiRoomPath(
   }
 
   const nextPos = search.path[0];
-  if (nextPos.roomName !== creep.room.name || creep.pos.getRangeTo(nextPos) > 1) {
+  if (nextPos.roomName !== creep.room.name || creep.pos.getRangeTo(nextPos) !== 1) {
     return ERR_NO_PATH;
   }
 
+  if (canCacheMultiRoomSegment(options)) {
+    const extracted = extractCurrentRoomSegment(search.path, creep.pos, nextRoom);
+    if (extracted && extracted.positions.length > 0) {
+      const reuseTtl = getMultiRoomSegmentReuseTtl(options);
+      const segment: MultiRoomTravelSegment = {
+        key: buildMultiRoomSegmentKey(
+          creep.room.name,
+          targetRoom,
+          nextRoom,
+          hasFixedRoute,
+          routeRooms,
+          dangerousRooms,
+          range,
+          options,
+        ),
+        currentRoom: creep.room.name,
+        positions: extracted.positions,
+        transitionIndex: extracted.transitionIndex,
+        cursor: -1,
+        reuseTtl,
+        generatedAt: Game.time,
+        expiresAt: Game.time + reuseTtl,
+        hardExpiresAt: Game.time + MULTI_ROOM_SEGMENT_HARD_TTL,
+      };
+      if (isMultiRoomSegmentLiveSafe(segment, targetRoom)) {
+        travelState.multiRoomSegment = segment;
+      }
+    }
+  }
+
   return moveToAdjacentPosition(creep, nextPos);
+}
+
+interface ExtractedMultiRoomSegment {
+  positions: StoredRoomPosition[];
+  transitionIndex: number;
+}
+
+function extractCurrentRoomSegment(
+  path: RoomPosition[],
+  origin: RoomPosition,
+  expectedNextRoom: string,
+): ExtractedMultiRoomSegment | null {
+  const currentRoom = origin.roomName;
+  const positions: StoredRoomPosition[] = [];
+  let transitionIndex = -1;
+  let previous: Pick<RoomPosition, "x" | "y"> = origin;
+  for (const step of path) {
+    if (step.roomName === currentRoom) {
+      const stepRange = Math.max(Math.abs(step.x - previous.x), Math.abs(step.y - previous.y));
+      if (stepRange === 0 || stepRange > 1) {
+        return null;
+      }
+      if (positions.length >= MULTI_ROOM_SEGMENT_MAX_STEPS) {
+        return null;
+      }
+      positions.push({ x: step.x, y: step.y, roomName: step.roomName });
+      previous = step;
+      continue;
+    }
+    if (
+      step.roomName === expectedNextRoom &&
+      positions.length > 0 &&
+      positions.length < MULTI_ROOM_SEGMENT_MAX_STEPS &&
+      getValidatedRoomTransition(currentRoom, previous, { x: step.x, y: step.y, roomName: step.roomName })
+    ) {
+      transitionIndex = positions.length;
+      positions.push({ x: step.x, y: step.y, roomName: step.roomName });
+    } else {
+      return null;
+    }
+    break;
+  }
+  return { positions, transitionIndex };
 }
 
 function createMultiRoomTravelCallback(
@@ -346,10 +748,7 @@ function createMultiRoomTravelCallback(
       return false;
     }
     if (roomName !== creep.room.name && roomName !== targetRoom) {
-      if (Game.map.getRoomStatus(roomName).status !== "normal") {
-        return false;
-      }
-      if (isVisibleRoomDangerous(roomName)) {
+      if (!isLiveTransitionRoomSafe(roomName)) {
         return false;
       }
     }
@@ -427,6 +826,9 @@ function buildMultiRoomTravelMatrix(creep: Creep, roomName: string, options: Mov
 function getTravelState(creep: Creep, targetRoom: string): TravelState {
   const memoryState = ensureCreepMovementState(creep.name).travelState;
   if (!memoryState || memoryState.targetRoom !== targetRoom) {
+    if (memoryState?.multiRoomSegment) {
+      invalidateMultiRoomSegment(memoryState, creep.room.name);
+    }
     return { targetRoom, stuckTicks: 0 };
   }
   return memoryState;
@@ -506,22 +908,21 @@ function setDynamicRouteCache(cacheKey: string, nextRoom: string | null): void {
 
 function hasHostileCombatPresence(room: Room): boolean {
   const roomContext = getTickContextService().getRoomContext(room);
-  const hostileCombatCreeps = (roomContext?.getHostileCreeps() || []).filter(
+  const hasHostileCombatCreep = (roomContext?.getHostileCreeps() || []).some(
     (creep) =>
       creep.getActiveBodyparts(ATTACK) > 0 ||
       creep.getActiveBodyparts(RANGED_ATTACK) > 0 ||
       creep.getActiveBodyparts(HEAL) > 0,
   );
-  if (hostileCombatCreeps.length > 0) {
+  if (hasHostileCombatCreep) {
     return true;
   }
   if ((roomContext?.getHostilePowerCreeps() || []).length > 0) {
     return true;
   }
-  const hostileStructures = (roomContext?.getHostileStructures() || []).filter(
+  return (roomContext?.getHostileStructures() || []).some(
     (structure) => structure.structureType !== STRUCTURE_CONTROLLER && structure.structureType !== STRUCTURE_KEEPER_LAIR,
   );
-  return hostileStructures.length > 0;
 }
 
 function isVisibleRoomDangerous(roomName: string): boolean {
@@ -542,6 +943,20 @@ function isVisibleRoomDangerous(roomName: string): boolean {
     }
   }
   return false;
+}
+
+function isLiveTransitionRoomSafe(roomName: string): boolean {
+  if (liveRoomSafetyCacheTick !== Game.time) {
+    liveRoomSafetyCacheTick = Game.time;
+    liveRoomSafetyCache = {};
+  }
+  const cached = liveRoomSafetyCache[roomName];
+  if (cached !== undefined) {
+    return cached;
+  }
+  const safe = Game.map.getRoomStatus(roomName).status === "normal" && !isVisibleRoomDangerous(roomName);
+  liveRoomSafetyCache[roomName] = safe;
+  return safe;
 }
 
 function findDynamicNextRoom(
@@ -567,10 +982,7 @@ function findDynamicNextRoom(
         if (avoidSet.has(roomName)) {
           return Infinity;
         }
-        if (Game.map.getRoomStatus(roomName).status !== "normal") {
-          return Infinity;
-        }
-        if (isVisibleRoomDangerous(roomName)) {
+        if (!isLiveTransitionRoomSafe(roomName)) {
           return Infinity;
         }
         if (preferredSet.has(roomName)) {

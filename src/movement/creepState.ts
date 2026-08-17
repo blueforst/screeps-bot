@@ -1,5 +1,6 @@
 import type { MovePathState, TravelState, WorkAnchor } from "@/movement/types";
 import { isStandardCreep } from "@/movement/common";
+import { recordMovementMetric } from "@/movement/metrics";
 
 export interface CreepMovementState {
   movePathState?: MovePathState;
@@ -55,6 +56,31 @@ export function clearCreepMovementState(owner: MovementStateOwner): void {
   delete ensureMovementStateStore()[getMovementStateKey(owner)];
 }
 
+function pruneLiveTravelState(state: CreepMovementState, roomName: string): void {
+  const travelState = state.travelState;
+  if (!travelState) {
+    return;
+  }
+  if (travelState.targetRoom === roomName) {
+    delete state.travelState;
+    return;
+  }
+  const segment = travelState.multiRoomSegment;
+  if (
+    segment &&
+    (
+      segment.currentRoom !== roomName ||
+      !Number.isFinite(segment.expiresAt) ||
+      !Number.isFinite(segment.hardExpiresAt) ||
+      segment.expiresAt <= Game.time ||
+      segment.hardExpiresAt <= Game.time
+    )
+  ) {
+    delete travelState.multiRoomSegment;
+    recordMovementMetric("multiRoomSegmentInvalidations", roomName);
+  }
+}
+
 export function pruneDeadCreepMovementState(): number {
   const store = runtimeGlobal.__creepMovementState;
   if (!store) {
@@ -67,10 +93,15 @@ export function pruneDeadCreepMovementState(): number {
       const powerCreepName = key.slice(POWER_CREEP_STATE_PREFIX.length);
       const powerCreep = Game.powerCreeps?.[powerCreepName];
       if (powerCreep?.room && powerCreep.ticksToLive != null) {
+        pruneLiveTravelState(store[key], powerCreep.room.name);
         continue;
       }
-    } else if (Game.creeps[key]) {
-      continue;
+    } else {
+      const creep = Game.creeps[key];
+      if (creep) {
+        pruneLiveTravelState(store[key], creep.room.name);
+        continue;
+      }
     }
 
     delete store[key];
