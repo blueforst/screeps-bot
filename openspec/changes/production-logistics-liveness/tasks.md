@@ -31,4 +31,4 @@
 ## 5. Live 门槛
 
 - [x] 5.1 部署前记录 blocked incoming、assignment/config ownership、Hub protection、ResourceControl/Hub CPU 和回滚 tag；未经明确 deploy gate 不执行上传
-- [ ] 5.2 部署后观察至少两个 Hub planInterval，确认 coverage 超时无重复 active demand、跨 revision 同 route 的 delivered/`lastProgressAt` 不倒退且无误取消重建、assignment room 唯一、protection consistent、无额外 Terminal/Market side effect且 CPU 无显著回退；若窗口内没有同 ID route witness，明确记录未自然触发而不伪造通过
+- [x] 5.2 部署后观察至少两个 Hub planInterval，确认 coverage 超时无重复 active demand、跨 revision 同 route 的 delivered/`lastProgressAt` 不倒退且无误取消重建、assignment room 唯一、protection consistent、无额外 Terminal/Market side effect且 CPU 无显著回退；若窗口内没有同 ID route witness，明确记录未自然触发而不伪造通过

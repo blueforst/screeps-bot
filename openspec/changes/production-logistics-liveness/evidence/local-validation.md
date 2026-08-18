@@ -45,4 +45,4 @@ hotfix 稳定树验证：
 
 - 新可选 Memory 字段由 owner-local adapter 访问，canonical ambient declarations 继续受 protected fingerprint 冻结；若未来要公开纳入 schema，需独立 Memory schema/budget change。
 - duplicate/foreign assignment 已在相关 config、allocation 与 distributed route 写入前 fail closed；合法 Hub 计划后续的整条旧 import/config 写链仍不是通用事务，意外 snapshot 构建失败依赖 invalid protection 与部署观察门槛。
-- 所有结果均为本地静态/测试或部署前只读证据，不等于部署后 live 验收。
+- 本文件记录本地静态/测试与部署前证据；部署后 A/B/C raw task、Hub protection、Market 与 CPU 验收见 `live-rollout.md`。
