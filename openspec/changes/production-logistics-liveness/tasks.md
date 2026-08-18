@@ -12,6 +12,7 @@
 - [x] 2.2 实现唯一 `countsResourceTransferTaskTowardDemand` 判定，并接入 incoming amount index、public helper 与 Synthesis demand-covering pending 计数
 - [x] 2.3 让 automatic merge 跳过 coverage-expired task，并在 reconciliation 中以机器可读 reason 取消过期 receiver-capacity task
 - [x] 2.4 在 ResourceControl 单轮 task contribution/summary 中累计 raw、demand-covering 与 coverage-expired 统计，避免新增逐房全表扫描
+- [x] 2.5 修复 distributed route progress/stale 语义：增量合并保留已交付量与 `lastProgressAt`，零增量健康 commitment 不取消，direct consumer 以已知产品/已知清空/未知三态处理，旧 Hub route/surplus 与 distributed-storage non-T3 surplus 回收，coverage-expired 原因留给 canonical reconciliation
 
 ## 3. Distributed synthesis 单一 assignment 与配置 ownership
 
@@ -30,4 +31,4 @@
 ## 5. Live 门槛
 
 - [x] 5.1 部署前记录 blocked incoming、assignment/config ownership、Hub protection、ResourceControl/Hub CPU 和回滚 tag；未经明确 deploy gate 不执行上传
-- [ ] 5.2 部署后观察至少两个 Hub planInterval，确认 coverage 超时无重复 active demand、assignment room 唯一、protection consistent、无额外 Terminal/Market side effect且 CPU 无显著回退
+- [ ] 5.2 部署后观察至少两个 Hub planInterval，确认 coverage 超时无重复 active demand、跨 revision 同 route 的 delivered/`lastProgressAt` 不倒退且无误取消重建、assignment room 唯一、protection consistent、无额外 Terminal/Market side effect且 CPU 无显著回退；若窗口内没有同 ID route witness，明确记录未自然触发而不伪造通过

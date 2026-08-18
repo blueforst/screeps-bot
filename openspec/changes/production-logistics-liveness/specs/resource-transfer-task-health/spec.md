@@ -26,7 +26,7 @@
 
 ### Requirement: 自动停滞任务过期而 manual 任务保留
 
-使用默认值时，系统必须（MUST）在 automatic pending 任务连续 5,000 tick 没有成功发送、连续 100 tick source-depleted，或连续 500 tick receiver-capacity coverage 无法恢复后取消任务。系统不得（MUST NOT）对 manual 任务应用这三条 automatic 存活期取消规则。automatic merge 必须跳过已经达到任一取消条件的旧 pending task，即使本 tick reconciliation phase 尚未运行。
+使用默认值时，系统必须（MUST）在 automatic pending 任务超过 5,000 tick 没有成功发送、连续达到 100 tick source-depleted，或连续达到 500 tick receiver-capacity coverage 无法恢复后取消任务。系统不得（MUST NOT）对 manual 任务应用这三条 automatic 存活期取消规则。automatic merge 必须跳过已经达到任一取消条件的旧 pending task，即使本 tick reconciliation phase 尚未运行。
 
 #### Scenario: Automatic 无进展超时
 
@@ -35,7 +35,7 @@
 
 #### Scenario: Automatic source-depleted 超时
 
-- **WHEN** automatic pending 任务保持 source-depleted 超过 100 tick
+- **WHEN** automatic pending 任务保持 source-depleted 达到 100 tick
 - **THEN** 系统取消任务，防止其无限预留虚假 incoming supply
 
 #### Scenario: Automatic receiver-capacity coverage 超时

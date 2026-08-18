@@ -1,5 +1,14 @@
 # 部署前只读基线
 
+## Hotfix `2026.8.18-2` 刷新
+
+- 当前线上 bundle：`2026.8.18-1+1f3703e@2026-08-18T06:05:16.085Z`
+- `-2` 首选线上回滚 commit：`1f3703e`；它已通过 assignment/protection/Market/CPU 两周期安全门槛，但仍包含下述 route progress reset，因此只作为热修部署故障时的短期恢复点。
+- 更早已验证 bundle commit：`84a9cb0`。该版本同样包含自 `af1763dd` 起存在的 route overwrite/cancel-recreate 缺陷，不能作为修复该问题的方案。
+- 首轮部署观察边界：A=`73083150`/rev9022、B=`73083200`/rev9023、C=`73083250`/rev9024；三轮均为 7 assignments/7 unique rooms、`invariantViolations=[]`、protection committed/valid/consistent，Market safety violation 为 0，bucket 为 10000。
+- 首轮未通过完整 5.2：同一 LO route 在 B 为 `amount=817/remaining=101`，C 被同 ID 覆盖为 `830/830`；随后又出现取消/重建。`-2` hotfix 必须从新的 A/B/C 重新计两个完整 `planInterval`，不得复用首轮窗口。
+- `-2` live 验收除 Monitor 外必须读取 raw `data.resourceControl.tasks` 与 `runtime.resourceControl.lastActions`；只有出现跨 revision 同 ID route witness 才能宣称 progress 语义已线上触发，否则记录 `not-exercised`。
+
 ## 采集边界
 
 - 采集时间：`2026-08-18T05:47:50.028Z`

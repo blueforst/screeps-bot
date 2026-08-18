@@ -19,6 +19,7 @@ import {
   ensureResourceTransferTaskStore,
   isHealthyReceiverCapacityCommitment,
   isHealthyResourceTransferTaskReservation,
+  type ResourceTransferTask,
   type ResourceTransferTaskAmountIndex,
 } from "@/runtime/logistics/resourceTransferTasks";
 import {
@@ -1796,6 +1797,10 @@ export function wireRouteTransferTasks(
   hubRoomName: string,
   reservePerRoom: number,
   distributedStorage?: boolean,
+  activeAssignments: readonly SynthesisDispatchAssignment[] = [],
+  knownSynthesisRooms: ReadonlySet<string> = new Set(
+    activeAssignments.map(assignment => assignment.roomName),
+  ),
 ): void {
   const directRoutes = routeDecisions.filter(r => r.toRoom !== hubRoomName);
   const hubRoutes = routeDecisions.filter(r => r.toRoom === hubRoomName);
@@ -1907,7 +1912,13 @@ export function wireRouteTransferTasks(
     );
   }
 
-  cancelStaleSynthesisRouteTasks(new Set(plannedRoutes.keys()));
+  cancelStaleSynthesisRouteTasks(
+    new Set(plannedRoutes.keys()),
+    activeAssignments,
+    distributedStorage === true,
+    hubRoomName,
+    knownSynthesisRooms,
+  );
   for (const route of plannedRoutes.values()) {
     upsertSynthesisRouteTask(route.fromRoom, route.toRoom, route.resource, route.amount, route.reason);
   }
@@ -1929,29 +1940,130 @@ function upsertSynthesisRouteTask(
   amount: number,
   reason: string,
 ): void {
-  const taskStore = ensureResourceTransferTaskStore();
-  for (const task of Object.values(taskStore)) {
-    if (
-      task.status === "pending" &&
-      task.origin === "automatic" &&
-      task.fromRoomName === fromRoomName &&
-      task.toRoomName === toRoomName &&
-      task.resource === resource &&
-      task.reason === reason &&
-      countsResourceTransferTaskTowardDemand(task)
-    ) {
-      const normalizedAmount = Math.floor(amount);
-      task.amount = normalizedAmount;
-      task.remainingAmount = normalizedAmount;
-      return;
-    }
-  }
-
+  // The allocation ledger already consumes healthy pending work, so this
+  // decision is an additional uncovered amount. Reuse the canonical automatic
+  // merge path: it increments amount/remaining together, preserves delivered
+  // progress and lastProgressAt, and skips coverage-expired predecessors.
   createAutomaticResourceTransferTask(fromRoomName, toRoomName, resource, amount, reason);
 }
 
-function cancelStaleSynthesisRouteTasks(activeRouteKeys: Set<string>): number {
+interface ActiveSynthesisRouteDemand {
+  byRoom: Map<string, Set<ResourceConstant>>;
+  distributedStorage: boolean;
+  hubRoomName: string;
+  knownRooms: ReadonlySet<string>;
+}
+
+function getActiveSynthesisRouteDemand(
+  activeAssignments: readonly SynthesisDispatchAssignment[],
+  distributedStorage: boolean,
+  hubRoomName: string,
+  knownRooms: ReadonlySet<string>,
+): ActiveSynthesisRouteDemand {
+  const byRoom = new Map<string, Set<ResourceConstant>>();
+  for (const assignment of activeAssignments) {
+    const reagents = getDirectReagents(assignment.product);
+    if (reagents.size > 0) byRoom.set(assignment.roomName, reagents);
+  }
+  return { byRoom, distributedStorage, hubRoomName, knownRooms };
+}
+
+function getEffectiveSynthesisRouteAssignments(
+  plannedAssignments: readonly SynthesisDispatchAssignment[],
+  eligibleRooms: readonly SynthesisRoomCapability[],
+  transferAmounts: ResourceTransferTaskAmountIndex,
+): SynthesisDispatchAssignment[] {
+  const byRoom = new Map(
+    plannedAssignments.map(assignment => [assignment.roomName, assignment]),
+  );
+
+  for (const room of eligibleRooms) {
+    if (byRoom.has(room.roomName)) continue;
+
+    const runtimeRoom = Memory.runtime?.synthesisControl?.rooms?.[room.roomName];
+    const roomCfg = Memory.cfg?.synthesisControl?.rooms?.[room.roomName];
+    let product: ResourceConstant | undefined;
+
+    // A busy or otherwise non-rewriteable room keeps executing its runtime
+    // product even when the new distributed plan deliberately leaves it out.
+    if (!canRewriteSynthesisRoom(room.roomName, runtimeRoom?.stage, transferAmounts)) {
+      product = runtimeRoom?.activeProduct as ResourceConstant | undefined;
+    }
+
+    // The distributed-storage Hub fallback and an enabled retained config can
+    // both be active without appearing in dispatchAssignments. This read runs
+    // after config writes, so it observes the product that will actually run.
+    if (!product && roomCfg?.enabled !== false) {
+      product = roomCfg?.reactions?.[0]?.product;
+    }
+
+    if (!product || !getProductReagentMap()[product]) continue;
+    byRoom.set(room.roomName, {
+      roomName: room.roomName,
+      product,
+      targetAmount: runtimeRoom?.batchSize ?? roomCfg?.reactions?.[0]?.batchSize ?? 0,
+      isHubRoom: false,
+    });
+  }
+
+  return [...byRoom.values()];
+}
+
+function supportsActiveSynthesisRouteDemand(
+  task: ResourceTransferTask,
+  activeDemand: ActiveSynthesisRouteDemand,
+): boolean {
+  if (!countsResourceTransferTaskTowardDemand(task)) return false;
+
+  if (task.reason?.startsWith("synthesis:direct:")) {
+    const activeReagents = activeDemand.byRoom.get(task.toRoomName);
+    // A healthy route is an already-issued quantity commitment. Without
+    // durable consumer provenance, zero incremental demand is not authority to
+    // shrink it. Only a known active product that no longer uses the resource
+    // is reliable direct-route stale evidence.
+    if (activeReagents) return activeReagents.has(task.resource);
+    return !activeDemand.knownRooms.has(task.toRoomName);
+  }
+
+  if (task.reason?.startsWith("synthesis:hub-route:")) {
+    // A hub-route task is the first leg of a staged delivery, so its endpoint
+    // does not identify the downstream synthesis room. Without persistent
+    // consumer provenance, absence from this revision's incremental decisions
+    // is not proof that the first leg is stale. Let completion/liveness TTL
+    // resolve it rather than churning a route that the ledger already consumed.
+    return task.toRoomName === activeDemand.hubRoomName;
+  }
+
+  if (task.reason?.startsWith("synthesis:surplus:")) {
+    // Distributed storage explicitly stops centralizing non-T3 surplus, which
+    // is reliable stale-policy evidence. Other surplus work has no durable
+    // provenance, so let healthy tasks finish rather than churn revisions.
+    if (task.toRoomName !== activeDemand.hubRoomName) {
+      return false;
+    }
+    if (activeDemand.distributedStorage && !T3_TARGETS.includes(task.resource)) {
+      return false;
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function cancelStaleSynthesisRouteTasks(
+  activeRouteKeys: Set<string>,
+  activeAssignments: readonly SynthesisDispatchAssignment[],
+  distributedStorage: boolean,
+  hubRoomName: string,
+  knownSynthesisRooms: ReadonlySet<string>,
+): number {
   const taskStore = ensureResourceTransferTaskStore();
+  const activeDemand = getActiveSynthesisRouteDemand(
+    activeAssignments,
+    distributedStorage,
+    hubRoomName,
+    knownSynthesisRooms,
+  );
   let cancelled = 0;
   for (const task of Object.values(taskStore)) {
     if (
@@ -1961,6 +2073,11 @@ function cancelStaleSynthesisRouteTasks(activeRouteKeys: Set<string>): number {
     ) {
       const key = getSynthesisRouteTaskKey(task.fromRoomName, task.toRoomName, task.resource, task.reason);
       if (activeRouteKeys.has(key)) continue;
+      // ResourceControl owns liveness terminalization and its machine-readable
+      // timeout reason. A missing incremental key must not rewrite that audit
+      // fact to the weaker cancelled_by_replan label earlier in the tick.
+      if (!countsResourceTransferTaskTowardDemand(task)) continue;
+      if (supportsActiveSynthesisRouteDemand(task, activeDemand)) continue;
 
       task.status = "cancelled";
       task.updatedAt = Game.time;
@@ -2240,7 +2357,19 @@ export function wireDistributedSynthesis(
     transferAmounts,
   );
 
-  wireRouteTransferTasks(filteredRouteDecisions, hubRoomName, reservePerRoom, distributedStorage);
+  const effectiveRouteAssignments = getEffectiveSynthesisRouteAssignments(
+    effectiveAssignments,
+    eligibleRooms,
+    transferAmounts,
+  );
+  wireRouteTransferTasks(
+    filteredRouteDecisions,
+    hubRoomName,
+    reservePerRoom,
+    distributedStorage,
+    effectiveRouteAssignments,
+    new Set(eligibleRooms.map(room => room.roomName)),
+  );
 
   return true;
 }

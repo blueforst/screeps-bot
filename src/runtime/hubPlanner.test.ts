@@ -445,6 +445,7 @@ describe("HUB lifecycle integration", () => {
     // A room-level pendingTasks cache may contain unrelated traffic. Reassign
     // decisions must use the current amount index for each missing resource.
     Game.rooms.W4N1 = createIntegrationHubRoom("W4N1", globalInventory);
+    Game.rooms.W7N1 = createIntegrationHubRoom("W7N1", globalInventory);
     (global as any).__runtimeServices = undefined;
     registerRuntimeServices();
     Memory.cfg = {
@@ -466,6 +467,12 @@ describe("HUB lifecycle integration", () => {
           W5N1: {
             enabled: true,
             donorRoomNames: [],
+            reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 100, batchSize: 100 }],
+          },
+          W7N1: {
+            enabled: true,
+            donorRoomNames: [],
+            plannerOwnership: { owner: "hubPlanner", hubRoomName: INTEGRATION_HUB, revision: 5 },
             reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 100, batchSize: 100 }],
           },
         },
@@ -503,6 +510,17 @@ describe("HUB lifecycle integration", () => {
             stage: "loading",
             activeProduct: RESOURCE_HYDROXIDE,
             targetAmount: 100,
+            batchSize: 100,
+            reagentLabIds: [],
+            productLabIds: [],
+            successfulRuns: 0,
+            pendingTasks: 0,
+            lastTransitionAt: Game.time,
+          },
+          W7N1: {
+            stage: "idle",
+            activeProduct: undefined,
+            targetAmount: 0,
             batchSize: 100,
             reagentLabIds: [],
             productLabIds: [],
@@ -611,24 +629,223 @@ describe("HUB lifecycle integration", () => {
       skippedBusyRooms: [],
     });
 
+    (Game.rooms[INTEGRATION_SAT].storage!.store as unknown as Record<string, number>)[RESOURCE_OXYGEN] = 0;
+    (Game.rooms[INTEGRATION_HUB].storage!.store as unknown as Record<string, number>)[RESOURCE_OXYGEN] = 0;
+    (Game.rooms.W4N1.storage!.store as unknown as Record<string, number>)[RESOURCE_HYDROGEN] = 0;
+
+    // The allocation ledger already counts healthy pending route work at the
+    // receiver and subtracts it from the donor, so a new decision for the same
+    // route is incremental demand. Preserve completed progress when merging it.
+    wireRouteTransferTasks([{
+      ...validPlan.routeDecisions[0],
+      resource: RESOURCE_OXYGEN,
+      amount: 100,
+    }], INTEGRATION_HUB, 1000, false);
+    const progressedRouteTask = Object.values(ensureResourceTransferTaskStore()).find(
+      task => task.status === "pending" && task.reason === `synthesis:direct:${RESOURCE_OXYGEN}`,
+    )!;
+    progressedRouteTask.remainingAmount = 40;
+    progressedRouteTask.lastProgressAt = Game.time;
+    progressedRouteTask.updatedAt = Game.time;
+    progressedRouteTask.lastError = "send_code_-6";
+    const deliveredBeforeReplan = progressedRouteTask.amount - progressedRouteTask.remainingAmount;
+    const lastProgressAtBeforeReplan = progressedRouteTask.lastProgressAt;
+    const updatedAtBeforeReplan = progressedRouteTask.updatedAt;
+    Game.time += 1;
+    wireRouteTransferTasks([{
+      ...validPlan.routeDecisions[0],
+      resource: RESOURCE_OXYGEN,
+      amount: 75,
+    }], INTEGRATION_HUB, 1000, false);
+    const progressedRouteTasks = Object.values(ensureResourceTransferTaskStore()).filter(
+      task => task.reason === `synthesis:direct:${RESOURCE_OXYGEN}`,
+    );
+    expect(progressedRouteTasks).toHaveLength(1);
+    expect(progressedRouteTask.amount).toBe(175);
+    expect(progressedRouteTask.remainingAmount).toBe(115);
+    expect(progressedRouteTask.amount - progressedRouteTask.remainingAmount).toBe(deliveredBeforeReplan);
+    expect(progressedRouteTask.lastProgressAt).toBe(lastProgressAtBeforeReplan);
+    expect(progressedRouteTask.updatedAt).toBeGreaterThan(updatedAtBeforeReplan);
+    expect(progressedRouteTask.lastError).toBeUndefined();
+
+    // A zero-delta revision means this healthy pending remainder already
+    // covers the active assignment through effective inventory. It is not a
+    // stale route merely because no new routeDecision was required.
+    const coveredPlan: DistributedSynthesisPlan = {
+      ...validPlan,
+      routeDecisions: [],
+    };
+    synthesisRooms.W4N1 = {
+      enabled: true,
+      donorRoomNames: [],
+      plannerOwnership: { owner: "hubPlanner", hubRoomName: INTEGRATION_HUB, revision: 5 },
+      reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 100, batchSize: 100 }],
+    };
+    Memory.runtime.synthesisControl!.rooms.W4N1 = {
+      stage: "loading",
+      activeProduct: RESOURCE_HYDROXIDE,
+      targetAmount: 100,
+      batchSize: 100,
+      reagentLabIds: [],
+      productLabIds: [],
+      successfulRuns: 0,
+      pendingTasks: 0,
+      lastTransitionAt: Game.time,
+    };
+    Memory.runtime.synthesisControl!.rooms[INTEGRATION_SAT].activeProduct = RESOURCE_HYDROXIDE;
+    const hubFallbackRoute = createAutomaticResourceTransferTask(
+      INTEGRATION_SAT,
+      INTEGRATION_HUB,
+      RESOURCE_OXYGEN,
+      50,
+      `synthesis:direct:${RESOURCE_OXYGEN}`,
+    );
+    const busyContinuityRoute = createAutomaticResourceTransferTask(
+      INTEGRATION_HUB,
+      "W4N1",
+      RESOURCE_HYDROGEN,
+      60,
+      `synthesis:direct:${RESOURCE_HYDROGEN}`,
+    );
+    const clearedRoomRoute = createAutomaticResourceTransferTask(
+      INTEGRATION_HUB,
+      "W7N1",
+      RESOURCE_HYDROGEN,
+      55,
+      `synthesis:direct:${RESOURCE_HYDROGEN}`,
+    );
+    if (
+      typeof hubFallbackRoute === "string" ||
+      typeof busyContinuityRoute === "string" ||
+      typeof clearedRoomRoute === "string"
+    ) {
+      throw new Error("failed_to_create_zero_delta_route_dependencies");
+    }
+    expect(wireDistributedSynthesis(
+      INTEGRATION_HUB,
+      6,
+      [RESOURCE_CATALYZED_GHODIUM_ALKALIDE],
+      1000,
+      1000,
+      globalInventory,
+      [{
+        product: RESOURCE_HYDROXIDE,
+        targetAmount: 100,
+        reagents: [RESOURCE_HYDROGEN, RESOURCE_OXYGEN],
+      }],
+      true,
+      1000,
+      undefined,
+      {},
+      coveredPlan,
+    )).toBe(true);
+    expect(progressedRouteTask).toMatchObject({
+      status: "pending",
+      amount: 175,
+      remainingAmount: 115,
+      lastProgressAt: lastProgressAtBeforeReplan,
+    });
+    expect(hubFallbackRoute.task).toMatchObject({ status: "pending", remainingAmount: 50 });
+    expect(busyContinuityRoute.task).toMatchObject({ status: "pending", remainingAmount: 60 });
+    expect(synthesisRooms.W7N1.reactions).toEqual([]);
+    expect(clearedRoomRoute.task).toMatchObject({
+      status: "cancelled",
+      lastError: "cancelled_by_replan",
+    });
+
     // Coverage-expired route work must not be rewritten back to life before
     // ResourceControl reconciliation. A fresh task is created instead.
-    const oldRouteTask = Object.values(ensureResourceTransferTaskStore()).find(
-      task => task.reason === `synthesis:direct:${RESOURCE_HYDROGEN}`,
-    )!;
+    const oldRouteTask = progressedRouteTask;
     oldRouteTask.blockedReason = "receiver_capacity";
     oldRouteTask.blockedSince = Game.time;
     Game.time += 500;
     wireRouteTransferTasks([{
       ...validPlan.routeDecisions[0],
+      resource: RESOURCE_OXYGEN,
       amount: 175,
     }], INTEGRATION_HUB, 1000, false);
     const routeTasks = Object.values(ensureResourceTransferTaskStore()).filter(
-      task => task.reason === `synthesis:direct:${RESOURCE_HYDROGEN}`,
+      task =>
+        task.fromRoomName === INTEGRATION_HUB &&
+        task.toRoomName === INTEGRATION_SAT &&
+        task.reason === `synthesis:direct:${RESOURCE_OXYGEN}`,
     );
     expect(routeTasks).toHaveLength(2);
-    expect(oldRouteTask.amount).toBe(100);
+    expect(oldRouteTask.amount).toBe(175);
     expect(routeTasks.some(task => task.id !== oldRouteTask.id && task.amount === 175)).toBe(true);
+
+    // An incompatible current product is reliable evidence that the fresh
+    // healthy direct replacement is truly stale. The expired predecessor stays
+    // pending for ResourceControl to record the canonical timeout reason.
+    const transitRoute = createAutomaticResourceTransferTask(
+      INTEGRATION_SAT,
+      INTEGRATION_HUB,
+      RESOURCE_LEMERGIUM,
+      80,
+      `synthesis:hub-route:${RESOURCE_LEMERGIUM}`,
+    );
+    const staleOldHubRoute = createAutomaticResourceTransferTask(
+      INTEGRATION_SAT,
+      "W9N9",
+      RESOURCE_LEMERGIUM,
+      70,
+      `synthesis:hub-route:${RESOURCE_LEMERGIUM}`,
+    );
+    const surplusRoute = createAutomaticResourceTransferTask(
+      INTEGRATION_SAT,
+      INTEGRATION_HUB,
+      RESOURCE_KEANIUM,
+      90,
+      `synthesis:surplus:${RESOURCE_KEANIUM}`,
+    );
+    const staleOldHubSurplus = createAutomaticResourceTransferTask(
+      INTEGRATION_SAT,
+      "W9N9",
+      RESOURCE_CATALYZED_GHODIUM_ALKALIDE,
+      65,
+      `synthesis:surplus:${RESOURCE_CATALYZED_GHODIUM_ALKALIDE}`,
+    );
+    if (
+      typeof transitRoute === "string" ||
+      typeof staleOldHubRoute === "string" ||
+      typeof surplusRoute === "string" ||
+      typeof staleOldHubSurplus === "string"
+    ) {
+      throw new Error("failed_to_create_route_progress_regression_tasks");
+    }
+    wireRouteTransferTasks([], INTEGRATION_HUB, 1000, false, [{
+      ...validPlan.dispatchAssignments[0],
+      product: RESOURCE_ZYNTHIUM_KEANITE,
+    }]);
+    const freshReplacement = routeTasks.find(task => task.id !== oldRouteTask.id)!;
+    expect(oldRouteTask.status).toBe("pending");
+    expect(oldRouteTask.lastError).not.toBe("cancelled_by_replan");
+    expect(freshReplacement).toMatchObject({
+      status: "cancelled",
+      lastError: "cancelled_by_replan",
+    });
+    expect(transitRoute.task).toMatchObject({ status: "pending", remainingAmount: 80 });
+    expect(staleOldHubRoute.task).toMatchObject({
+      status: "cancelled",
+      lastError: "cancelled_by_replan",
+    });
+    expect(surplusRoute.task).toMatchObject({ status: "pending", remainingAmount: 90 });
+    expect(staleOldHubSurplus.task).toMatchObject({
+      status: "cancelled",
+      lastError: "cancelled_by_replan",
+    });
+
+    // distributedStorage=true is reliable policy evidence that non-T3
+    // satellite surplus must no longer be centralized through the Hub.
+    wireRouteTransferTasks([], INTEGRATION_HUB, 1000, true, [{
+      ...validPlan.dispatchAssignments[0],
+      product: RESOURCE_ZYNTHIUM_KEANITE,
+    }]);
+    expect(transitRoute.task).toMatchObject({ status: "pending", remainingAmount: 80 });
+    expect(surplusRoute.task).toMatchObject({
+      status: "cancelled",
+      lastError: "cancelled_by_replan",
+    });
 
     // The defensive validator runs before config, allocation, route, or
     // protection facts are committed. Inject a malformed plan to keep this

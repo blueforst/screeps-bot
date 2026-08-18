@@ -51,3 +51,52 @@ HubPlanner 每次实际写入辅助房或 Hub 房的自动 reaction config 时�
 
 - **WHEN** Monitor 读取没有 liveness/reconcile 字段的旧 runtime
 - **THEN** Monitor 必须继续输出旧字段，并把新字段标记为不可用而不是伪造零违规
+
+### Requirement: Distributed route replan 必须保留已完成进度
+
+分布式合成 allocation ledger 必须（MUST）把健康 pending route 的 `remainingAmount` 计入 receiver inventory 并从 donor inventory 扣除，因此同 route key 的新 route decision 表示尚未被既有 pending 覆盖的增量需求。upsert 必须把该增量同时加入累计 `amount` 与 `remainingAmount`，不得（MUST NOT）把 `remainingAmount` 重置为新 decision amount、改变既有 `amount - remainingAmount` 已交付量，或把 planner refresh 记作实际 transfer progress。本轮 route decisions 只是新增缺口，不是完整 route 期望集合；coverage-healthy pending route 是已经签发的有界数量承诺，不得仅因本轮零增量而缩量或取消。
+
+#### Scenario: 健康 route 已部分完成后出现增量需求
+
+- **WHEN** 同 key 健康 automatic route 已交付一部分、仍有 pending remainder，下一 plan revision 又产生新的正数 route decision
+- **THEN** 系统必须复用原任务并将新 decision 作为增量加入 `amount`/`remainingAmount`，同时保持已交付量与 `lastProgressAt` 不变
+
+#### Scenario: Pending remainder 已覆盖本轮新增缺口
+
+- **WHEN** 健康 direct route 没有出现在本轮增量 decisions，且 receiver 的当前有效产品仍使用该 resource 或产品来源不可可靠判定
+- **THEN** 原任务必须原样保持 pending，不得刷新或取消其 `amount`、`remainingAmount` 与 `lastProgressAt`
+
+#### Scenario: Hub fallback 或 busy 旧产线继续生效
+
+- **WHEN** Hub fallback config 或未入选但不可重写的 busy 旧 config 仍执行使用该 resource 的产品
+- **THEN** 系统必须从实际继续生效的 config/runtime 产品保留该 route，不得因其 room 未出现在本轮 dispatchAssignments 而取消
+
+#### Scenario: Direct route 与当前产品不再兼容
+
+- **WHEN** receiver 的当前 assignment 已切换为不使用旧 route resource 的产品
+- **THEN** 系统必须把该 direct route 以 `cancelled_by_replan` 取消，因为产品不兼容是独立于增量集合的可靠 stale 证据
+
+#### Scenario: Hub-owned room 在本 revision 明确清空
+
+- **WHEN** 可见且 owner-compatible 的 synthesis 房间在本 revision 已安全清空 reaction，当前没有 fallback/busy 产品继续生效
+- **THEN** 该房间是“已知无 consumer”而不是“consumer 未知”，旧健康 direct route 必须以 `cancelled_by_replan` 回收
+
+#### Scenario: Consumer 不可见或归属未知
+
+- **WHEN** direct route 的 receiver 不在本轮可见 owner-compatible 房间集合，且没有可靠产品或清空事实
+- **THEN** 系统不得把未知误判成无 consumer，必须让已签发的健康 remainder 完成或由既有 liveness TTL 退出
+
+#### Scenario: Hub transit route 缺少 consumer provenance
+
+- **WHEN** 健康 `synthesis:hub-route` task 指向当前 Hub、没有出现在本轮增量 decisions，且旧 task 未记录可重验的下游 consumer provenance
+- **THEN** 系统不得仅按 key 缺失取消，必须让任务完成或由既有有界 liveness TTL 退出；若 endpoint 指向旧 Hub，则必须以 `cancelled_by_replan` 回收
+
+#### Scenario: Distributed storage 停止 non-T3 surplus 集中
+
+- **WHEN** `distributedStorage=true` 且旧健康 `synthesis:surplus` task 搬运的是 non-T3 资源，或 surplus endpoint 已不是当前 Hub
+- **THEN** 系统必须以 `cancelled_by_replan` 取消，因为当前 policy/Hub identity 已提供该 route 不再有效的可靠证据；指向当前 Hub 的 T3 或非 distributed-storage surplus 在缺少 provenance 时继续保守完成
+
+#### Scenario: Coverage-expired route 等待 canonical reconciliation
+
+- **WHEN** route 已不再覆盖需求且本轮没有同 key 新增 decision
+- **THEN** Hub replan 不得抢先写入 `cancelled_by_replan`，必须由 ResourceControl reconciliation 保留对应 `automatic_*_timeout` 机器原因

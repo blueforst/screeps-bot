@@ -39,6 +39,10 @@
 
 `reconcileResourceTransferTasks` 在 automatic receiver-capacity coverage 到期后把原任务置为 `cancelled`，原因固定为 `automatic_receiver_capacity_coverage_timeout`；终态记录继续按既有 TTL 保留。automatic task merge 必须跳过已经 coverage-expired 的候选，防止 Hub/Synthesis 在 ResourceControl phase reconciliation 之前把新需求重新累加到即将取消的旧任务。Outgoing 库存保护仍按现有规则计算，不把“需求已允许重规划”误解为同 tick 可释放已 staging 货物。
 
+分布式 synthesis allocation ledger 会把健康 pending route 的 `remainingAmount` 作为 receiver 的有效 inventory，并从 donor inventory 扣除。因此同 route key 在后续 revision 生成的 route decision 是既有 pending 之外的新增缺口，不是新的总目标。route upsert 必须像 automatic merge 一样把该增量同时加入 `amount` 与 `remainingAmount`；不得用 decision amount 覆盖 `remainingAmount`，否则会抹掉尚未发送的承诺或重放已经交付的数量。规划刷新只更新 `updatedAt`/瞬态错误，不得改变 `amount - remainingAmount` 或 `lastProgressAt`，后两者只由真实 send progress 推进。
+
+同理，`plannedRoutes.keys()` 只覆盖本轮新增 route，不能作为完整 stale 集合。P0 把 coverage-healthy pending route 视为已经签发的有界数量承诺：零增量只表示 planner 已把该 remainder 计入有效库存，不授权按新的瞬时库存缩量或取消。direct route 使用三态 consumer 判定：当前有效产品已知且仍使用该 resource 时保留；可见、owner-compatible 房间已由本 revision 明确清空配置，或已知产品不兼容时取消；不可见/foreign 等 consumer 未知时保守执行到完成或既有 liveness TTL。Hub fallback 与未入选 busy 旧产线从实际 config/runtime 恢复为“已知产品”，不会因未出现在 dispatchAssignments 而误取消。`synthesis:hub-route` 第一跳缺少下游 consumer provenance，只有 endpoint 指向旧 Hub 才有可靠 stale 证据。`synthesis:surplus` 只有 endpoint 指向旧 Hub，或 `distributedStorage=true` 且资源为 non-T3 时有可靠 stale policy 证据；其余保守完成。这个策略可能在需求随后缩小时交付原先已经承诺的有界 remainder，但不会因 revision 缺键而取消/重建或重放已交付量；精确缩量与 distributed→fallback/disabled 的合同 amendment 属于后续 TransferContract consumer/policy provenance，不在本 P0 猜测。已经 coverage-expired 的任务由 ResourceControl canonical reconciliation 写入机器可读 timeout reason，Hub replan 不得提前把它降格为 `cancelled_by_replan`。
+
 不选择仅从 incoming 合计中排除而保留旧任务可发送：那会让新旧 donor 在条件恢复后重复交付同一需求。
 
 ### 2. Pending 观测与 demand coverage 使用不同计数
