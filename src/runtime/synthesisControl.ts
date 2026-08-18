@@ -1,9 +1,9 @@
 import {
-  countPendingIncomingResourceTransferTasksByRoom,
-  countPendingOutgoingResourceTransferTasksByRoom,
+  countsResourceTransferTaskTowardDemand,
   createAutomaticResourceTransferTask,
-  getIncomingResourceTransferAmount,
-  getOutgoingResourceTransferAmount,
+  ensureResourceTransferTaskStore,
+  resolveResourceTransferTaskHealthOptions,
+  type ResourceTransferTask,
 } from "@/runtime/logistics/resourceTransferTasks";
 import { limitActionLog } from "@/runtime/actionLog";
 import { runSynthesisTaskPlanningCompatibility } from "@/runtime/synthesisCompatibilityPlanning";
@@ -108,6 +108,75 @@ interface DonorCandidate {
   room: Room;
   sendable: number;
   score: number;
+}
+
+interface SynthesisTransferTaskIndex {
+  getOutgoingAmount(roomName: string, resource: ResourceConstant): number;
+  getPendingOutgoingCount(roomName: string): number;
+  getIncomingAmount(roomName: string, resource: ResourceConstant): number;
+  getDemandCoveringIncomingCount(roomName: string): number;
+  recordAutomaticTask(task: ResourceTransferTask, amountDelta: number): void;
+}
+
+function createSynthesisTransferTaskIndex(): SynthesisTransferTaskIndex {
+  const outgoingByRoom = new Map<string, Map<ResourceConstant, number>>();
+  const pendingOutgoingCountByRoom = new Map<string, number>();
+  const incomingByRoom = new Map<string, Map<ResourceConstant, number>>();
+  const coveringIncomingCountByRoom = new Map<string, number>();
+  const indexedTaskIds = new Set<string>();
+  const healthOptions = resolveResourceTransferTaskHealthOptions();
+
+  const addAmount = (
+    index: Map<string, Map<ResourceConstant, number>>,
+    roomName: string,
+    resource: ResourceConstant,
+    amount: number,
+  ): void => {
+    const byResource = index.get(roomName) ?? new Map<ResourceConstant, number>();
+    byResource.set(resource, (byResource.get(resource) || 0) + amount);
+    index.set(roomName, byResource);
+  };
+
+  const record = (task: ResourceTransferTask, amountDelta: number): void => {
+    if (task.status !== "pending" || amountDelta <= 0) return;
+    const firstContribution = !indexedTaskIds.has(task.id);
+    indexedTaskIds.add(task.id);
+    addAmount(outgoingByRoom, task.fromRoomName, task.resource, amountDelta);
+    if (firstContribution) {
+      pendingOutgoingCountByRoom.set(
+        task.fromRoomName,
+        (pendingOutgoingCountByRoom.get(task.fromRoomName) || 0) + 1,
+      );
+    }
+    if (!countsResourceTransferTaskTowardDemand(task, healthOptions)) return;
+    addAmount(incomingByRoom, task.toRoomName, task.resource, amountDelta);
+    if (firstContribution) {
+      coveringIncomingCountByRoom.set(
+        task.toRoomName,
+        (coveringIncomingCountByRoom.get(task.toRoomName) || 0) + 1,
+      );
+    }
+  };
+
+  for (const task of Object.values(ensureResourceTransferTaskStore())) {
+    record(task, task.remainingAmount);
+  }
+
+  return {
+    getOutgoingAmount(roomName, resource) {
+      return outgoingByRoom.get(roomName)?.get(resource) || 0;
+    },
+    getPendingOutgoingCount(roomName) {
+      return pendingOutgoingCountByRoom.get(roomName) || 0;
+    },
+    getIncomingAmount(roomName, resource) {
+      return incomingByRoom.get(roomName)?.get(resource) || 0;
+    },
+    getDemandCoveringIncomingCount(roomName) {
+      return coveringIncomingCountByRoom.get(roomName) || 0;
+    },
+    recordAutomaticTask: record,
+  };
 }
 
 const DEFAULT_SAMPLE_INTERVAL = 10;
@@ -310,6 +379,7 @@ function selectDonor(
   amount: number,
   donorRoomNames: string[],
   bindings: SynthesisBindingStore,
+  transferTasks: SynthesisTransferTaskIndex,
 ): DonorCandidate | null {
   const binding = getActiveBinding(bindings, targetRoom.name, resource);
   const candidates: DonorCandidate[] = [];
@@ -324,7 +394,7 @@ function selectDonor(
 
     const total = roomResourceAmount(room, resource);
     const reserve = getResourceReserve(room.name, resource);
-    const outgoing = getOutgoingResourceTransferAmount(room.name, resource);
+    const outgoing = transferTasks.getOutgoingAmount(room.name, resource);
     const holderId = `synthesis:${targetRoom.name}:${resource}`;
     const reserved = getReservedProductionAmountExcludingHolder(room.name, resource, holderId);
     const exportable = Math.max(0, total - reserve - outgoing - reserved);
@@ -341,7 +411,7 @@ function selectDonor(
     const scoreAmount = Math.max(1, Math.min(amount, sendable));
     const transferCost = Game.market.calcTransactionCost(scoreAmount, room.name, targetRoom.name);
     const transferCostRatio = transferCost / scoreAmount;
-    const queuePenalty = countPendingOutgoingResourceTransferTasksByRoom(room.name) * 0.6;
+    const queuePenalty = transferTasks.getPendingOutgoingCount(room.name) * 0.6;
     const stickyBonus = binding?.fromRoomName === room.name ? SYNTHESIS_BINDING_STICKY_BONUS : 0;
     const score = sendable / scoreAmount - transferCostRatio * 6 - queuePenalty + stickyBonus;
     candidates.push({ room, sendable, score });
@@ -932,8 +1002,11 @@ function mergeDonorPriority(roomCfg: SynthesisRoomConfig, reactionPlan: Synthesi
   return roomCfg.donorRoomNames;
 }
 
-function countPendingToRoom(roomName: string): number {
-  return countPendingIncomingResourceTransferTasksByRoom(roomName);
+function countPendingToRoom(
+  roomName: string,
+  transferTasks: SynthesisTransferTaskIndex,
+): number {
+  return transferTasks.getDemandCoveringIncomingCount(roomName);
 }
 
 function maybeGenerateSupplyTasks(
@@ -942,6 +1015,7 @@ function maybeGenerateSupplyTasks(
   reactionPlan: SynthesisReactionPlan,
   reagents: [ResourceConstant, ResourceConstant],
   topology: LabTopology,
+  transferTasks: SynthesisTransferTaskIndex,
   runtime: SynthesisRuntimeState,
   actions: string[],
 ): { generated: number; failed: number; missing: Partial<Record<ResourceConstant, number>> } {
@@ -965,14 +1039,21 @@ function maybeGenerateSupplyTasks(
       return sum + lab.store.getUsedCapacity(reagent);
     }, 0);
     const current = roomTransferableAmount(room, reagent) + bufferedInLabs;
-    const incoming = getIncomingResourceTransferAmount(room.name, reagent);
+    const incoming = transferTasks.getIncomingAmount(room.name, reagent);
     const deficit = Math.max(0, needAmount - current - incoming);
     if (deficit <= 0) {
       continue;
     }
 
     missing[reagent] = deficit;
-    const donor = selectDonor(room, reagent, deficit, mergedDonors, runtime.bindings);
+    const donor = selectDonor(
+      room,
+      reagent,
+      deficit,
+      mergedDonors,
+      runtime.bindings,
+      transferTasks,
+    );
     if (!donor) {
       failed += 1;
       actions.push(`synthesis-task-failed:${room.name}:${reagent}:no_donor`);
@@ -998,6 +1079,7 @@ function maybeGenerateSupplyTasks(
       continue;
     }
 
+    transferTasks.recordAutomaticTask(task.task, amount);
     setBinding(runtime.bindings, room.name, reagent, donor.room.name);
     generated += 1;
     actions.push(`synthesis-task-generated:${task.task.id}:${reagent}=${amount}:${donor.room.name}->${room.name}`);
@@ -1036,6 +1118,7 @@ function handleRoom(
   planningTick: boolean,
   runtime: SynthesisRuntimeState,
   actions: string[],
+  transferTasks: SynthesisTransferTaskIndex,
   autoPlan?: SynthesisReactionPlan | null,
 ): { generated: number; failed: number; runs: number } {
   let generated = 0;
@@ -1104,7 +1187,7 @@ function handleRoom(
     runtime.rooms[roomName] = {
       ...roomState,
       stage: reagentCleanupTask ? "unloading" : "idle",
-      pendingTasks: countPendingToRoom(roomName),
+      pendingTasks: countPendingToRoom(roomName, transferTasks),
       reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
       productLabIds: topology.productLabs.map((lab) => lab.id),
       nextReactionAt: undefined,
@@ -1162,7 +1245,7 @@ function handleRoom(
       lastError: undefined,
       loadingSinceTick: undefined,
       nextReactionAt: undefined,
-      pendingTasks: countPendingToRoom(roomName),
+      pendingTasks: countPendingToRoom(roomName, transferTasks),
       reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
       productLabIds: topology.productLabs.map((lab) => lab.id),
     };
@@ -1190,7 +1273,7 @@ function handleRoom(
       cleanupTasks: undefined,
       lastError: "invalid_reaction_product",
       nextReactionAt: undefined,
-      pendingTasks: countPendingToRoom(roomName),
+      pendingTasks: countPendingToRoom(roomName, transferTasks),
       reagentLabIds: topology.reagentLabs.map((lab) => lab.id),
       productLabIds: topology.productLabs.map((lab) => lab.id),
       lastTransitionAt: Game.time,
@@ -1273,7 +1356,16 @@ function handleRoom(
   }
 
   if (planningTick && (stage === "acquiring" || stage === "loading")) {
-    const taskResult = maybeGenerateSupplyTasks(room, roomCfg, activePlan, reagents, topology, runtime, actions);
+    const taskResult = maybeGenerateSupplyTasks(
+      room,
+      roomCfg,
+      activePlan,
+      reagents,
+      topology,
+      transferTasks,
+      runtime,
+      actions,
+    );
     generated += taskResult.generated;
     failed += taskResult.failed;
     roomState.missing = taskResult.missing;
@@ -1360,7 +1452,7 @@ function handleRoom(
     reagentB: reagents[1],
     targetAmount: activePlan.targetAmount,
     batchSize: activePlan.batchSize,
-    pendingTasks: countPendingToRoom(roomName),
+    pendingTasks: countPendingToRoom(roomName, transferTasks),
     reagentLabIds: orderedReagentLabs.map((lab) => lab.id),
     productLabIds: topology.productLabs.map((lab) => lab.id),
     successfulRuns: (roomState.successfulRuns || 0) + runs,
@@ -1498,6 +1590,7 @@ export function runSynthesisControl(): void {
 
   const planningTick = Game.time % cfg.sampleInterval === 0;
   const roomEntries = new Map(Object.entries(cfg.rooms));
+  const transferTasks = createSynthesisTransferTaskIndex();
   const configuredRoomNames = new Set(roomEntries.keys());
   runtime.generatedTaskCount = 0;
   runtime.failedTaskCount = 0;
@@ -1510,6 +1603,7 @@ export function runSynthesisControl(): void {
       planningTick,
       runtime,
       actions,
+      transferTasks,
       null,
     );
     runtime.generatedTaskCount += result.generated;

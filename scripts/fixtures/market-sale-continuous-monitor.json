@@ -252,6 +252,33 @@
     }
   },
   "runtime": {
+    "hub": {
+      "updatedAt": 50003,
+      "status": "idle",
+      "distributedSynthesis": {
+        "blockedTargets": [
+          "XUH2O"
+        ],
+        "invariantViolations": [
+          "duplicate_room_assignment:E7N57:GH2O,XUH2O"
+        ],
+        "configReconcile": {
+          "revision": 17,
+          "refreshedRooms": [
+            "E7N57"
+          ],
+          "clearedRooms": [
+            "E8N57"
+          ],
+          "skippedBusyRooms": [
+            "E9N57"
+          ],
+          "foreignOwnerRooms": [
+            "E3N59"
+          ]
+        }
+      }
+    },
     "resourceControl": {
       "updatedAt": 50003,
       "rooms": {

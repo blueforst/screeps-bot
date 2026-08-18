@@ -75,6 +75,21 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
       receiver_capacity: 2,
     });
     expect(resourceControl.capacityIndexBuildCount).toBe(1);
+    expect(resourceControl.taskSummary).toEqual({
+      pending: 4,
+      manualPending: 1,
+      automaticPending: 3,
+      blockedByReason: {
+        receiver_capacity: 2,
+        source_depleted: 1,
+      },
+      livenessAvailable: true,
+      demandCoveringIncoming: 2,
+      coverageExpiredIncoming: 1,
+      coverageExpiredByReason: {
+        automatic_receiver_capacity_coverage_timeout: 1,
+      },
+    });
 
     expect(resourceControl.rooms).toEqual(
       expect.arrayContaining([
@@ -156,8 +171,9 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
     const fixturePath = resolve(temporaryDirectory, "fixture.json");
     try {
       writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
-      const projected = executeFixture(fixturePath)
-        .payload.memory.marketSaleAutomation.direct.baseResourceV3;
+      const current = executeFixture(fixturePath).payload.memory;
+      const projected =
+        current.marketSaleAutomation.direct.baseResourceV3;
       expect(projected.cpuTrace).toEqual({
         observedAt: 701,
         cpuAfterOuterSession: 6,
@@ -169,9 +185,52 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
         marketFactsDisposition: "read",
       });
       expect(projected.planning.cpuTrace).toEqual(projected.cpuTrace);
+      expect(current.hub.distributedSynthesis).toEqual({
+        livenessAvailable: true,
+        blockedTargets: ["XUH2O"],
+        invariantViolations: [
+          "duplicate_room_assignment:E7N57:GH2O,XUH2O",
+        ],
+        configReconcile: {
+          revision: 17,
+          refreshedRooms: ["E7N57"],
+          clearedRooms: ["E8N57"],
+          skippedBusyRooms: ["E9N57"],
+          foreignOwnerRooms: ["E3N59"],
+        },
+      });
+
+      delete fixture.analytics.hub;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const runtimeOnlyHub = executeFixture(fixturePath).payload.memory.hub;
+      expect(runtimeOnlyHub.available).toBe(false);
+      expect(runtimeOnlyHub.updatedAt).toBeNull();
+      expect(runtimeOnlyHub.distributedSynthesis.livenessAvailable).toBe(true);
     } finally {
       rmSync(temporaryDirectory, { recursive: true, force: true });
     }
+
+    const legacy = readFixtureProjection(
+      "resource-control-monitor.json",
+    ).memory;
+    expect(legacy.resourceControl.taskSummary).toEqual({
+      pending: 1,
+      manualPending: 0,
+      automaticPending: 1,
+      blockedByReason: {
+        receiver_capacity: 1,
+      },
+      livenessAvailable: false,
+      demandCoveringIncoming: null,
+      coverageExpiredIncoming: null,
+      coverageExpiredByReason: null,
+    });
+    expect(legacy.hub.distributedSynthesis).toEqual({
+      livenessAvailable: false,
+      blockedTargets: null,
+      invariantViolations: null,
+      configReconcile: null,
+    });
   });
 });
 
@@ -207,6 +266,27 @@ describe("monitor-service Hub protection projection", () => {
     };
     fixture.runtime.marketSaleAutomation.direct.entries[0]
       .resourceType = oversized;
+    fixture.runtime.hub.distributedSynthesis.invariantViolations =
+      Array.from(
+        { length: 110 },
+        (_, index) => index === 0 ? oversized : `violation:${index}`,
+      );
+    fixture.runtime.hub.distributedSynthesis.configReconcile.refreshedRooms =
+      Array.from({ length: 110 }, (_, index) => `W${index}N1`);
+    fixture.runtime.resourceControl = {
+      taskSummary: {
+        pending: 0,
+        manualPending: 0,
+        automaticPending: 0,
+        blockedByReason: {},
+        demandCoveringIncoming: 0,
+        coverageExpiredIncoming: 1,
+        coverageExpiredByReason: {
+          automatic_receiver_capacity_coverage_timeout: 1,
+          [oversized]: 999,
+        },
+      },
+    };
 
     const temporaryDirectory = mkdtempSync(
       resolve(tmpdir(), "screeps-monitor-bounds-"),
@@ -227,6 +307,21 @@ describe("monitor-service Hub protection projection", () => {
         payload.memory.marketSaleAutomation.direct
           .baseResourceV3;
       expect(hub.protectionAttempt.reason).toHaveLength(256);
+      expect(
+        hub.distributedSynthesis.invariantViolations,
+      ).toHaveLength(100);
+      expect(
+        hub.distributedSynthesis.invariantViolations[0],
+      ).toHaveLength(256);
+      expect(
+        hub.distributedSynthesis.configReconcile.refreshedRooms,
+      ).toHaveLength(100);
+      expect(
+        payload.memory.resourceControl.taskSummary
+          .coverageExpiredByReason,
+      ).toEqual({
+        automatic_receiver_capacity_coverage_timeout: 1,
+      });
       expect(base.roster.accountIdentity).toHaveLength(256);
       expect(base.catalog.resources.values[6]).toHaveLength(
         256,
@@ -236,6 +331,15 @@ describe("monitor-service Hub protection projection", () => {
       expect(
         Object.keys(base.quota.lanes.samples)[0],
       ).toHaveLength(256);
+
+      fixture.runtime.hub.distributedSynthesis.blockedTargets = [123];
+      fixture.runtime.resourceControl.taskSummary.coverageExpiredByReason = {
+        unknown_timeout: 1,
+      };
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const malformed = executeFixture(fixturePath).payload.memory;
+      expect(malformed.hub.distributedSynthesis.livenessAvailable).toBe(false);
+      expect(malformed.resourceControl.taskSummary.livenessAvailable).toBe(false);
 
       const service = spawnSync(
         process.execPath,

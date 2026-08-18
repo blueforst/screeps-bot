@@ -6,10 +6,12 @@
 - priority 由 executor 解析 `reason` 字符串，任务没有稳定的业务优先级字段；
 - source stock 与 receiver headroom 没有跨 tick 的唯一承诺所有者；
 - terminal feed 只按房间+资源聚合，多个 carrier 没有持久 claim，global reset 后只能依赖进程内 board 重建；
-- survival energy 直接 `terminal.send`，与 task send、market action 争用 terminal，却不共享进度账本；
+- survival energy 仍是绕过 transfer-task 进度账本的独立 send proposal；其副作用虽已通过 `marketActionArbiter`，却没有与其他 transfer 共享剩余量/交付进度；
 - automatic task 的 merge/upsert 可能刷新 desired amount，却不能可靠区分需求修订与实际发送进度。
 
-P0 `terminal-headroom-recovery` 负责共享水位、物理 headroom oracle、恢复性 offload 和 legacy staging admission。P1 必须复用这些安全事实，而不是重新定义 pressure/recovery 阈值。
+P0 `terminal-headroom-recovery` 负责共享水位、物理 headroom oracle、恢复性 offload 和 legacy staging admission；`production-logistics-liveness` 负责 automatic incoming 的有界 demand coverage、每合成房单一 assignment 与 Hub-owned config revision/reconcile。P1 必须先复用这两组安全事实，不能把 blocked legacy task 或幽灵合成 assignment 当成 Shadow 真值。
+
+本仓库同时已经具备三条不能重复实现的执行边界：`marketActionArbiter` 是 terminal send/deal 的每房每 tick claim 与 journal；Dispatch Ownership 提供完整 `CarrierDispatchRef`、owner-aware `CarrierTaskBoard` 和 tick-bound `CarrierAmountSlicePort`；Terminal Energy ownership 提供动作 fee/payload 预算。P1 新增的是跨 tick contract/lease/claim 事实与房间级选择，不是第二套 terminal lock、Carrier board 或同 tick amount ledger。
 
 “去中心化”在本项目中是逻辑所有权的去中心化，不是分布式系统共识：所有代码仍在单线程 tick 和共享 Memory 中运行。设计因此不需要 2PC、通用锁服务、event sourcing 或跨 shard 协议，只需要确定性匹配、receiver 单一授权、source 单一执行和可从 Memory 恢复的状态。
 
@@ -21,8 +23,9 @@ flowchart LR
     M --> C["TransferContract<br/>Source Commitment"]
     C --> L["Receiver Agent<br/>CapacityLease"]
     L --> S["Source Agent<br/>Terminal Window"]
-    S --> W["Carrier StageWork Claim"]
-    S --> T["terminal.send / market action"]
+    S --> W["CarrierTaskBoard + StageWorkClaim"]
+    S --> A["既有 marketActionArbiter"]
+    A --> T["terminal.send / market action"]
     T --> R
 ```
 
@@ -45,12 +48,14 @@ flowchart LR
 - 不改变 creep pathing/role 拓扑，不新增跨房 creep 搬运、多跳 terminal saga 或跨 shard 合同。
 - 不重排 `src/main.ts` 的行为阶段；Agent 和 matcher 仍在现有 ResourceControl 阶段内执行。
 - 不改变 console transfer 的调用入口；手工任务仍保持不因自动 TTL 取消、且不自动改道的语义。
+- 不新建 terminal action lock/account claim，不替换 `marketActionArbiter`、Terminal Energy ownership、owner-aware `CarrierTaskBoard`、完整 Dispatch ref 或 `CarrierAmountSlicePort`。
+- 不直接扩展被声明边界测试冻结的 `Memory.cfg/runtime/data/analytics` 根接口；持久合同数据先通过现有 owner 分支下的 versioned adapter 接入，schema 演进另立独立边界变更。
 
 ## Decisions
 
 ### 1. 采用“房间所有权 + 全局纯匹配”的混合架构
 
-每个有 storage/terminal 的房间运行一个逻辑 `RoomLogisticsAgent`，负责发布本房最新事实、receiver lease grant、source terminal action 与本地 staging。全局 matcher 只读取不可变的当轮快照和最新 intents，输出合同候选；它不直接搬运、不调用 terminal，也不能自行授予 receiver 容量。
+每个有 storage/terminal 的房间运行一个逻辑 `RoomLogisticsAgent`，负责发布本房最新事实、receiver lease grant、选择 source terminal proposal 与本地 staging。全局 matcher 只读取不可变的当轮快照和最新 intents，输出合同候选；它不直接搬运、不调用 terminal，也不能自行授予 receiver 容量。Agent 选中的 send/deal 仍必须调用既有 `marketActionArbiter`，由后者维持 terminal claim、account claim 与 action journal 的唯一事实。
 
 选择该方案而不是纯 P2P，是因为 Screeps tick 是单线程共享 Memory：房间间消息与共识只会增加延迟和故障面。选择它而不是继续扩大 ResourceControl，是为了让容量授权和 terminal side effect 各有唯一 owner，并允许 Hub 退化为普通策略 producer。
 
@@ -129,15 +134,15 @@ aging 仅在非硬紧急 class 内按配置逐级提升，永不越过 `survival
 
 ### 6. 每房单一 Agent 仲裁 terminal 与 staging
 
-RoomLogisticsAgent 在现有 ResourceControl 阶段内每房运行一次，并成为 terminal side effect 的唯一入口：
+RoomLogisticsAgent 在现有 ResourceControl 阶段内每房运行一次，并成为合同/market proposal 的唯一选择器；`marketActionArbiter` 仍是 terminal side effect 的唯一执行入口：
 
-- source 侧每个 cooldown/send window 最多选择一个合同；只有它能调用 `terminal.send`；
-- market buy/sell proposal 也必须经同一 Agent 仲裁，避免 `Game.market.deal` 与合同绕开 `terminalBusy`，但 market 定价和阈值保持不变；
+- source 侧每个 cooldown/send window 最多选择一个合同；Agent 只能经 `executeTerminalSend`/`executeTerminalAction` 提交，不能直接调用 `terminal.send`；
+- market buy/sell proposal 也先经同一 Agent 排序；普通 deal 继续使用 `executeMarketDeal`，Prepared Direct 必须完整保留 `claimPreparedDirectMarketClaims` → `executePreparedDirectMarketDeal` → `releasePreparedDirectMarketClaims` 的 requestId、下一 tick 重试与 unknown/throw 保守持有语义，避免合同或市场任一方绕开既有 gateway；market 定价和阈值保持不变；
 - receiver 侧 grant CapacityLease，并发布 P0 物理 headroom；
 - source 侧为当前/下一 send window 生成 `StageWork(contractId, resource, amount)`；
 - Intake/offload 继续复用 P0 的 headroom recovery，计划中的 offload 不提前授权容量。
 
-StageWork claim 持久化到 Memory，至少包含 `contractId`、`workId`、`creepName`、`claimedAmount`、`phase`、`claimedAt`、`leaseUntil`。同一工作全部 active claims 不得超过待 staging 量；carrier 成功取货后进入 `carrying`，成功交付 terminal 后增加 aggregate staged amount 并释放 claim。claim/contract 失效且 creep 已持货时，Agent 必须明确选择：重分配给同资源已获 admission 的工作，或安全退回 storage/terminal；不得落入 generic energy delivery。
+StageWork 以完整 `CarrierDispatchRef` 发布到既有 owner-aware board；StageWork claim 持久化到 Memory，至少包含 `contractId`、完整 work ref、`creepName`、`claimedAmount`、`phase`、`claimedAt`、`leaseUntil`。持久 claim 是跨 tick authority，既有 `CarrierAmountSlicePort` 只在 legacy authority 下继续做同 tick预算；同一 work 任一时刻只能选择一种 authority，不能双重扣量。同一工作全部 active claims 不得超过待 staging 量；carrier 成功取货后进入 `carrying`，成功交付 terminal 后增加 aggregate staged amount并释放 claim。claim/contract失效且 creep 已持货时，Agent 必须明确重分配或安全退回，不得落入 generic energy delivery。
 
 terminal 中同资源是可替代 aggregate，Agent 只保证所有 admitted staging 分配之和不超过实际安全 terminal 库存。同房同资源同轮不得同时 feed/offload。carrier 死亡、claim 过期、board refresh 或 global reset 后，Agent 仅凭 Memory 与 creep/store 事实回收或重建 claim。
 
@@ -153,7 +158,7 @@ Intent、active contract、lease 和 claim 分别建立按 resource、source、t
 
 ### 8. 观测是执行状态的投影，不是第二状态源
 
-`Memory.runtime.logistics` 从 intent/contract/lease/claim store 投影：
+`Memory.runtime.resourceControl.logistics` 从 `Memory.data.resourceControl.logistics` 的 intent/contract/lease/claim store 投影：
 
 - 按 origin/priority/state/blocker 的数量、总 remaining、oldest age 和 p50/p95 状态耗时；
 - source commitment、receiver lease granted/used/expired、same-tick debit；
@@ -170,7 +175,7 @@ monitor 只读这些投影，并兼容字段缺失的 legacy/P0 快照。观测�
 - **[租约囤积导致假满]** cooldown 或低优先级合同可能长期续约 → 只给当前/下一 send window 一个批次，按 progress/TTL 续约，终态立即释放。
 - **[source commitment 与真实库存漂移]** 生产或其他模块可能消耗已承诺资源 → 每次 staging/send 重验 aggregate 保护库存，阻塞或 supersede automatic 合同，不伪造进度。
 - **[staging 资源不可物理标记]** 多合同同资源无法追踪每一单位 → 只做 aggregate allocation 与有界 claim，不设计虚假的逐单位所有权。
-- **[market 绕过单 owner]** 保留旧 market direct action 会重新引入 terminal 竞争 → market 只提交 proposal，由同一 Agent 执行；定价策略不变。
+- **[market 绕过单 owner]** Agent 或旧 market path 直接调用 API 会重新引入 terminal 竞争 → proposal 最终统一进入既有 `marketActionArbiter`，不新造第二套 claim；定价策略不变。
 - **[优先级迁移改变顺序]** 明确的新紧急顺序与隐式历史顺序并不完全一致 → 为每类现有 reason 建立预期 class 的 golden test，shadow 模式逐项确认差异均来自已批准顺序。
 - **[条件式公平仍可能饥饿]** 无限紧急流量可持续压制普通均衡 → 明确只承诺条件式弱公平，并观测 max wait/aging promotion，必要时由业务策略调整配额。
 - **[Memory/CPU 增长]** 合同、lease、claim 和索引增加成本 → 最新状态 intent、有界历史、按资源索引、dirty cadence、candidate budget 和 rollout CPU gate。
@@ -178,11 +183,11 @@ monitor 只读这些投影，并兼容字段缺失的 legacy/P0 快照。观测�
 
 ## Migration Plan
 
-1. **前置**：先完成并验证 `terminal-headroom-recovery`；共享 headroom policy/oracle 是 CapacityLease 的唯一容量来源。
-2. **基础设施关闭态**：加入 versioned stores、显式 priority mapping、contract/lease/claim 单元测试和 feature flags，默认不产生 side effect。
-3. **Shadow**：producer 发布 latest intents，matcher 只输出 comparison/runtime，不创建 active lease、不执行 send；与现有 task/energy/market 决策比较 route、priority、容量和 CPU。
+1. **前置**：完成并验证 `terminal-headroom-recovery` 与 `production-logistics-liveness`；审计 `local-dispatch-ownership` 的实际 bundle/deploy ancestry，消除“未部署”文档漂移，但不重做首次切换。共享 headroom、demand coverage、Hub config ownership 与完整 Carrier ref 是 Shadow 基线。
+2. **基础设施关闭态**：在冻结的 Memory 根声明边界内加入局部 versioned store adapters、显式 priority mapping、contract/lease/claim 单元测试和 feature flags，默认不产生 side effect；terminal proposal adapter 只委托既有 arbiter。
+3. **首个 Shadow**：仅 Synthesis producer 发布 latest-state intent，matcher 只输出 legacy comparator/runtime，不创建 active contract authority、CapacityLease、StageWorkClaim 或 send/deal；逐项比较 donor/route、priority、coverage、headroom 与 CPU。
 4. **单一 authority 迁移**：按 origin/room canary。对每个 legacy task 一次性创建带 `legacyTaskId` 的 contract，保存 `delivered = amount - remaining`，并原子写入 `migratedContractId/executionAuthority=contract`；legacy executor 必须跳过已迁移项，P0 只统计未迁移健康 commitment。
-5. **房间 Agent canary**：先迁移普通自动任务，再迁移 capacity/synthesis/boost，最后把 survival energy direct send、console transfer 和 market action 接入 Agent。每阶段观察至少两个业务周期和 reset fixture。
+5. **房间 Agent canary**：先迁移普通自动任务，再迁移 capacity/synthesis/boost，最后把 survival energy、console transfer 和 market proposal 接入 Agent；所有副作用仍经既有 arbiter。每阶段观察至少两个业务周期和 reset fixture。
 6. **全量启用**：所有跨房发送只经 contract + receiver lease + source Agent，Hub 仅发布策略 intent；保留 legacy read adapter 一个观察窗口。
 7. **清理**：确认无 legacy authority、无回滚需求后，删除 reason-string executor、direct energy send 和房间+资源 legacy staging adapter。
 

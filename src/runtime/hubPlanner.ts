@@ -13,6 +13,7 @@
  */
 
 import {
+  countsResourceTransferTaskTowardDemand,
   createAutomaticResourceTransferTask,
   createResourceTransferTaskAmountIndex,
   ensureResourceTransferTaskStore,
@@ -415,13 +416,9 @@ export function planHubChains(
     candidates.push({ product, targetAmount: amount, reagents });
   }
 
-  // 5. If we have feasible candidates, return them unblocked
-  if (candidates.length > 0) {
-    return { steps: candidates, blocked: false, missingResources: [] };
-  }
-
-  // 6. No candidate has both reagents — find blocking base minerals
-  // Report only bases that block ALL remaining feasible paths
+  // 5. Diagnose eventual base-mineral gaps even when some immediate steps can
+  // still run. A partial candidate set is useful work, but must not erase the
+  // resources that keep the rest of the requested chain uncovered.
   const missingResources: ResourceConstant[] = [];
   for (const base of BASE_MINERALS) {
     const have = available[base] || 0;
@@ -429,6 +426,12 @@ export function planHubChains(
     if (need > have) {
       missingResources.push(base);
     }
+  }
+
+  // 6. If we have feasible candidates, return them unblocked while preserving
+  // the eventual uncovered resource facts for runtime observability.
+  if (candidates.length > 0) {
+    return { steps: candidates, blocked: false, missingResources };
   }
 
   return {
@@ -555,7 +558,7 @@ export function planHubImports(
   for (const task of Object.values(taskStore)) {
     if (
       task.toRoomName === cfg.hubRoomName &&
-      isHealthyResourceTransferTaskReservation(task, "incoming")
+      countsResourceTransferTaskTowardDemand(task)
     ) {
       existingKeys.add(`${task.fromRoomName}:${task.resource}:${task.reason}`);
     }
@@ -800,10 +803,23 @@ export function planHubDistribution(cfg: NonNullable<Memory["cfg"]>["hub"]): str
 
 export function writeSynthesisConfig(
   hubRoomName: string,
+  attemptRevision: number,
   steps: ChainStep[],
   hubInventory: Record<string, number>,
-): void {
-  if (!Memory.cfg) return;
+  transferAmounts: ResourceTransferTaskAmountIndex = createResourceTransferTaskAmountIndex(),
+): HubSynthesisConfigReconcile {
+  const selectedRooms = new Set<string>();
+  const refreshedRooms: string[] = [];
+  const nextStep = steps.length > 0 ? steps[0] : null;
+  if (
+    nextStep &&
+    !isSynthesisRoomAvailableToHubPlanner(hubRoomName, hubRoomName)
+  ) {
+    throw new Error(`foreign_owner_assignment:${hubRoomName}`);
+  }
+  if (!Memory.cfg) {
+    return createConfigReconcileSummary(attemptRevision);
+  }
   if (!Memory.cfg.synthesisControl) {
     Memory.cfg.synthesisControl = {};
   }
@@ -813,34 +829,35 @@ export function writeSynthesisConfig(
     Memory.cfg.synthesisControl.rooms = {};
   }
 
-  const nextStep = steps.length > 0 ? steps[0] : null;
-
   if (!nextStep) {
-    const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
-    if (roomCfg) {
-      roomCfg.reactions = [];
-    }
-    return;
+    return reconcileHubOwnedSynthesisConfigs(
+      hubRoomName,
+      attemptRevision,
+      selectedRooms,
+      refreshedRooms,
+      transferAmounts,
+    );
   }
 
-  if (!Memory.cfg.synthesisControl.rooms[hubRoomName]) {
-    Memory.cfg.synthesisControl.rooms[hubRoomName] = {
-      enabled: true,
-      donorRoomNames: [],
-    };
-  }
-
-  const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
-  roomCfg.enabled = true;
-
-  roomCfg.reactions = [
-    {
+  selectedRooms.add(hubRoomName);
+  const stage = Memory.runtime?.synthesisControl?.rooms?.[hubRoomName]?.stage;
+  if (canRewriteSynthesisRoom(hubRoomName, stage, transferAmounts)) {
+    writeOwnedSynthesisReaction(hubRoomName, hubRoomName, attemptRevision, {
       product: nextStep.product,
       targetAmount: roundUpReactionAmount((hubInventory[nextStep.product] || 0) + nextStep.targetAmount),
       batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(nextStep.targetAmount))),
       donorRoomNames: [],
-    },
-  ];
+    });
+    refreshedRooms.push(hubRoomName);
+  }
+
+  return reconcileHubOwnedSynthesisConfigs(
+    hubRoomName,
+    attemptRevision,
+    selectedRooms,
+    refreshedRooms,
+    transferAmounts,
+  );
 }
 
 /**
@@ -848,10 +865,9 @@ export function writeSynthesisConfig(
  * Preserves lab IDs and all other room config metadata.
  */
 export function clearHubSynthesisReactions(hubRoomName: string): void {
-  const roomCfg = Memory.cfg?.synthesisControl?.rooms?.[hubRoomName];
-  if (roomCfg) {
-    roomCfg.reactions = [];
-  }
+  const transferAmounts = createResourceTransferTaskAmountIndex();
+  if (!canReconcileOwnedSynthesisRoom(hubRoomName, transferAmounts)) return;
+  clearOwnedSynthesisReaction(hubRoomName, hubRoomName);
 }
 
 function computeTotalSatelliteDeficit(
@@ -876,8 +892,13 @@ function computeTotalSatelliteDeficit(
       const satTerminal = satellite.terminal!.store as unknown as Record<string, number>;
       const current = (satStorage[t3] || 0) + (satTerminal[t3] || 0);
 
-      // Count pending incoming for this satellite+resource
-      const pendingIncoming = transferAmounts.getPendingIncoming(satellite.name, t3, "hub:export:");
+      // Only serviceable demand coverage counts toward the satellite reserve;
+      // raw pending remains available separately for audit/physical safety.
+      const pendingIncoming = transferAmounts.getIncoming(
+        satellite.name,
+        t3,
+        "hub:export:",
+      );
 
       const effectiveTotal = current + pendingIncoming;
       const deficit = Math.max(0, reservePerRoom - effectiveTotal);
@@ -953,7 +974,35 @@ export interface DistributedSynthesisPlan {
   routeDecisions: DirectRouteDecision[];
   /** T3 targets that cannot be produced due to insufficient global resources. */
   blockedTargets: ResourceConstant[];
+  /** Base resources still missing after considering all eligible room inventory. */
+  missingResources: ResourceConstant[];
 }
+
+export interface HubSynthesisConfigReconcile {
+  revision: number;
+  refreshedRooms: string[];
+  clearedRooms: string[];
+  skippedBusyRooms: string[];
+  foreignOwnerRooms: string[];
+}
+
+interface HubPlannerOwnership {
+  owner: string;
+  hubRoomName: string;
+  revision: number;
+}
+
+type HubDistributedSynthesisRuntime = NonNullable<
+  NonNullable<NonNullable<Memory["runtime"]>["hub"]>["distributedSynthesis"]
+> & {
+  blockedTargets?: ResourceConstant[];
+  invariantViolations?: string[];
+  configReconcile?: HubSynthesisConfigReconcile;
+};
+
+type HubRuntimeLiveness = NonNullable<NonNullable<Memory["runtime"]>["hub"]> & {
+  distributedSynthesis?: HubDistributedSynthesisRuntime;
+};
 
 /**
  * Compute concurrent chain demand for all configured T3 targets across
@@ -982,7 +1031,9 @@ export function planDistributedSynthesis(
   additionalDemands: Partial<Record<ResourceConstant, number>> = {},
 ): DistributedSynthesisPlan {
   const targetReserve = effectiveTargetReserve ?? hubReservePerCompound;
-  const rooms = getEligibleSynthesisRooms();
+  const rooms = getEligibleSynthesisRooms().filter(room =>
+    isSynthesisRoomAvailableToHubPlanner(room.roomName, hubRoomName)
+  );
   const allResources = [...BASE_MINERALS, ...INTERMEDIATE_COMPOUNDS, ...T3_TARGETS];
 
   // 1. Build per-room effective inventories (with pending transfers and reserves)
@@ -1044,8 +1095,12 @@ export function planDistributedSynthesis(
   const blockedTargets: ResourceConstant[] = [];
 
   const roomOrder = [
-    hubRoomName,
-    ...rooms.filter(r => r.roomName !== hubRoomName).map(r => r.roomName),
+    ...rooms
+      .filter(room => room.roomName === hubRoomName)
+      .map(room => room.roomName),
+    ...rooms
+      .filter(room => room.roomName !== hubRoomName)
+      .map(room => room.roomName),
   ];
 
   // 5a. Cap each step's targetAmount so shared reagents are distributed fairly.
@@ -1172,12 +1227,39 @@ export function planDistributedSynthesis(
     }
   }
 
-  // 6. Blocked targets: only when planHubChains reports global resource shortage
-  if (chainResult.blocked) {
-    blockedTargets.push(...targetCompounds);
+  // 6. Preserve targets with feasible-but-unassigned work (for example when
+  // chain steps outnumber rooms), plus targets whose global base inputs remain
+  // short. One successful assignment must not make the rest look covered.
+  const blockedTargetSet = new Set<ResourceConstant>();
+  for (let i = 0; i < taggedSteps.length; i++) {
+    if (assignedIndices.has(i)) continue;
+    for (const target of taggedSteps[i].possibleTargets) {
+      if ((hubInventory[target] || 0) < targetReserve) {
+        blockedTargetSet.add(target);
+      }
+    }
+  }
+  for (const target of targetCompounds) {
+    if ((hubInventory[target] || 0) >= targetReserve) continue;
+    if (
+      chainResult.missingResources.length === 0
+        ? chainResult.blocked
+        : chainResult.missingResources.some(resource => isReagentInChain(target, resource))
+    ) {
+      blockedTargetSet.add(target);
+    }
+  }
+  for (const target of targetCompounds) {
+    if (blockedTargetSet.has(target)) blockedTargets.push(target);
   }
 
-  return { dispatchAssignments: assignments, allocationLedger: ledger, routeDecisions, blockedTargets };
+  return {
+    dispatchAssignments: assignments,
+    allocationLedger: ledger,
+    routeDecisions,
+    blockedTargets,
+    missingResources: chainResult.missingResources,
+  };
 }
 
 /**
@@ -1236,11 +1318,10 @@ export function scoreRoomForStep(
   const needed = step.targetAmount;
   let score = 0;
 
-  // Heavily penalize rooms that already have an assignment so other rooms
-  // are preferred.  -300 is stronger than the +100 local-reagent bonus,
-  // effectively reserving used rooms as a last resort.
+  // A used room is not a low-scoring fallback: one room can persist only one
+  // active reaction config in a plan revision.
   if (usedRooms?.has(roomName)) {
-    score -= 300;
+    return { roomName, score: Number.NEGATIVE_INFINITY };
   }
 
   if (roomName === hubRoomName) {
@@ -1341,6 +1422,7 @@ function assignStepToRoom(
   if (needed <= 0) return null;
 
   const scored = roomOrder
+    .filter(roomName => !usedRooms.has(roomName))
     .map(r => scoreRoomForStep(r, step, ledger, hubRoomName, roomCapabilities, usedRooms, transferAmounts))
     .sort((a, b) => b.score - a.score);
 
@@ -1436,7 +1518,6 @@ function isMissingInputUnserved(roomName: string, transferAmounts: ResourceTrans
   const roomState = Memory.runtime?.synthesisControl?.rooms?.[roomName];
   const missing = roomState?.missing;
   if (!missing) return false;
-  if ((roomState.pendingTasks ?? 0) > 0) return false;
 
   const deficits = Object.entries(missing)
     .filter(([, deficit]) => (deficit ?? 0) > 0) as Array<[ResourceConstant, number]>;
@@ -1464,6 +1545,240 @@ function shouldSkipStalledActiveProduct(
   const stage = roomState.stage;
   if (stage !== "acquiring" && stage !== "loading") return false;
   return isMissingInputUnserved(roomName, transferAmounts);
+}
+
+type SynthesisControlConfig = NonNullable<NonNullable<Memory["cfg"]>["synthesisControl"]>;
+type SynthesisRoomConfig = NonNullable<SynthesisControlConfig["rooms"]>[string];
+type HubOwnedSynthesisRoomConfig = SynthesisRoomConfig & {
+  plannerOwnership?: HubPlannerOwnership;
+};
+type HubOwnedSynthesisRoomConfigs = Record<string, HubOwnedSynthesisRoomConfig>;
+
+function getHubOwnedSynthesisRoomConfigs(): HubOwnedSynthesisRoomConfigs | undefined {
+  return Memory.cfg?.synthesisControl?.rooms as HubOwnedSynthesisRoomConfigs | undefined;
+}
+
+function boundedSortedRoomNames(roomNames: Iterable<string>): string[] {
+  return [...new Set(roomNames)].sort().slice(0, HUB_RUNTIME_ARRAY_CAP);
+}
+
+function createConfigReconcileSummary(
+  revision: number,
+  refreshedRooms: Iterable<string> = [],
+): HubSynthesisConfigReconcile {
+  return {
+    revision,
+    refreshedRooms: boundedSortedRoomNames(refreshedRooms),
+    clearedRooms: [],
+    skippedBusyRooms: [],
+    foreignOwnerRooms: [],
+  };
+}
+
+function mergeConfigReconcileSummaries(
+  revision: number,
+  summaries: readonly HubSynthesisConfigReconcile[],
+): HubSynthesisConfigReconcile {
+  const refreshedRooms = boundedSortedRoomNames(
+    summaries.flatMap(summary => summary.refreshedRooms),
+  );
+  const clearedRooms = boundedSortedRoomNames(
+    summaries.flatMap(summary => summary.clearedRooms),
+  );
+  const skippedBusyRooms = boundedSortedRoomNames(
+    summaries.flatMap(summary => summary.skippedBusyRooms),
+  );
+  const handledRooms = new Set([
+    ...refreshedRooms,
+    ...clearedRooms,
+    ...skippedBusyRooms,
+  ]);
+  return {
+    revision,
+    refreshedRooms,
+    clearedRooms,
+    skippedBusyRooms,
+    foreignOwnerRooms: boundedSortedRoomNames(
+      summaries
+        .flatMap(summary => summary.foreignOwnerRooms)
+        .filter(roomName => !handledRooms.has(roomName)),
+    ),
+  };
+}
+
+function writeOwnedSynthesisReaction(
+  roomName: string,
+  hubRoomName: string,
+  revision: number,
+  reaction: NonNullable<SynthesisRoomConfig["reactions"]>[number],
+): void {
+  const rooms = getHubOwnedSynthesisRoomConfigs();
+  if (!rooms) return;
+  const current = rooms[roomName] ?? {
+    enabled: true,
+    donorRoomNames: [],
+  };
+  rooms[roomName] = {
+    ...current,
+    enabled: true,
+    reactions: [reaction],
+    plannerOwnership: {
+      owner: "hubPlanner",
+      hubRoomName,
+      revision,
+    },
+  };
+}
+
+function isValidHubPlannerOwnership(
+  ownership: HubPlannerOwnership | undefined,
+  hubRoomName: string,
+): ownership is HubPlannerOwnership {
+  return isStructurallyValidHubPlannerOwnership(ownership) &&
+    ownership.hubRoomName === hubRoomName;
+}
+
+function isStructurallyValidHubPlannerOwnership(
+  ownership: HubPlannerOwnership | undefined,
+): ownership is HubPlannerOwnership {
+  return ownership?.owner === "hubPlanner" &&
+    typeof ownership.hubRoomName === "string" &&
+    ownership.hubRoomName.length > 0 &&
+    Number.isSafeInteger(ownership.revision) &&
+    ownership.revision >= 0;
+}
+
+function isSynthesisRoomAvailableToHubPlanner(
+  roomName: string,
+  hubRoomName: string,
+): boolean {
+  const ownership = getHubOwnedSynthesisRoomConfigs()?.[roomName]?.plannerOwnership;
+  return ownership === undefined || isValidHubPlannerOwnership(ownership, hubRoomName);
+}
+
+function getHubPlannerOwnershipHubRoomNames(): string[] {
+  const hubRoomNames = new Set<string>();
+  for (const roomCfg of Object.values(getHubOwnedSynthesisRoomConfigs() ?? {})) {
+    if (!isStructurallyValidHubPlannerOwnership(roomCfg.plannerOwnership)) continue;
+    hubRoomNames.add(roomCfg.plannerOwnership.hubRoomName);
+  }
+  return [...hubRoomNames].sort();
+}
+
+function getHubPlannerOwnershipHighWater(hubRoomName?: string): number {
+  let highWater = 0;
+  for (const roomCfg of Object.values(getHubOwnedSynthesisRoomConfigs() ?? {})) {
+    const ownership = roomCfg.plannerOwnership;
+    if (!isStructurallyValidHubPlannerOwnership(ownership)) continue;
+    if (hubRoomName !== undefined && ownership.hubRoomName !== hubRoomName) continue;
+    highWater = Math.max(highWater, Math.floor(roomCfg.plannerOwnership.revision));
+  }
+  return highWater;
+}
+
+function getAssignmentInvariantViolations(
+  assignments: readonly SynthesisDispatchAssignment[],
+  hubRoomName: string,
+): string[] {
+  const violations = validateDistributedSynthesisAssignments(assignments);
+  for (const assignment of [...assignments].sort((a, b) => a.roomName.localeCompare(b.roomName))) {
+    if (isSynthesisRoomAvailableToHubPlanner(assignment.roomName, hubRoomName)) continue;
+    violations.push(`foreign_owner_assignment:${assignment.roomName}`);
+  }
+  return [...new Set(violations)].slice(0, HUB_RUNTIME_ARRAY_CAP);
+}
+
+function clearOwnedSynthesisReaction(
+  roomName: string,
+  hubRoomName: string,
+): boolean {
+  const rooms = getHubOwnedSynthesisRoomConfigs();
+  const current = rooms?.[roomName];
+  if (
+    !rooms ||
+    !current ||
+    !isValidHubPlannerOwnership(current.plannerOwnership, hubRoomName)
+  ) {
+    return false;
+  }
+  const { plannerOwnership: _plannerOwnership, ...preserved } = current;
+  rooms[roomName] = {
+    ...preserved,
+    reactions: [],
+  };
+  return true;
+}
+
+function canReconcileOwnedSynthesisRoom(
+  roomName: string,
+  transferAmounts: ResourceTransferTaskAmountIndex,
+): boolean {
+  const stage = Memory.runtime?.synthesisControl?.rooms?.[roomName]?.stage;
+  if (!stage || ACCEPT_REASSIGN_STAGES.has(stage)) return true;
+  // A stale acquiring plan with no serviceable missing input is safe to
+  // release. Loading and all later physical stages remain strictly busy.
+  return stage === "acquiring" && isMissingInputUnserved(roomName, transferAmounts);
+}
+
+function reconcileHubOwnedSynthesisConfigs(
+  hubRoomName: string,
+  revision: number,
+  selectedRooms: ReadonlySet<string>,
+  refreshedRooms: Iterable<string>,
+  transferAmounts: ResourceTransferTaskAmountIndex,
+): HubSynthesisConfigReconcile {
+  const summary = createConfigReconcileSummary(revision, refreshedRooms);
+  const rooms = getHubOwnedSynthesisRoomConfigs();
+  if (!rooms) return summary;
+  const refreshedSet = new Set(summary.refreshedRooms);
+
+  for (const roomName of Object.keys(rooms).sort()) {
+    if (refreshedSet.has(roomName)) continue;
+    const roomCfg = rooms[roomName];
+    const ownership = roomCfg?.plannerOwnership;
+    const hasManagedContent = (roomCfg?.reactions?.length ?? 0) > 0 || ownership !== undefined;
+
+    if (!isValidHubPlannerOwnership(ownership, hubRoomName)) {
+      if (hasManagedContent) summary.foreignOwnerRooms.push(roomName);
+      continue;
+    }
+
+    if (selectedRooms.has(roomName) || ownership.revision >= revision) continue;
+    if (!canReconcileOwnedSynthesisRoom(roomName, transferAmounts)) {
+      summary.skippedBusyRooms.push(roomName);
+      continue;
+    }
+    if (clearOwnedSynthesisReaction(roomName, hubRoomName)) {
+      summary.clearedRooms.push(roomName);
+    }
+  }
+
+  summary.clearedRooms = boundedSortedRoomNames(summary.clearedRooms);
+  summary.skippedBusyRooms = boundedSortedRoomNames(summary.skippedBusyRooms);
+  summary.foreignOwnerRooms = boundedSortedRoomNames(summary.foreignOwnerRooms);
+  return summary;
+}
+
+/** Stable defensive validator for one-active-product-per-room plans. */
+export function validateDistributedSynthesisAssignments(
+  assignments: readonly SynthesisDispatchAssignment[],
+): string[] {
+  const byRoom = new Map<string, ResourceConstant[]>();
+  for (const assignment of assignments) {
+    const products = byRoom.get(assignment.roomName) ?? [];
+    products.push(assignment.product);
+    byRoom.set(assignment.roomName, products);
+  }
+
+  const violations: string[] = [];
+  for (const roomName of [...byRoom.keys()].sort()) {
+    const products = byRoom.get(roomName)!;
+    if (products.length <= 1) continue;
+    violations.push(
+      `duplicate_room_assignment:${roomName}:${[...products].sort().join(",")}`,
+    );
+  }
+  return violations.slice(0, HUB_RUNTIME_ARRAY_CAP);
 }
 
 /**
@@ -1622,7 +1937,8 @@ function upsertSynthesisRouteTask(
       task.fromRoomName === fromRoomName &&
       task.toRoomName === toRoomName &&
       task.resource === resource &&
-      task.reason === reason
+      task.reason === reason &&
+      countsResourceTransferTaskTowardDemand(task)
     ) {
       const normalizedAmount = Math.floor(amount);
       task.amount = normalizedAmount;
@@ -1715,6 +2031,7 @@ function getDirectReagents(product: ResourceConstant | undefined): Set<ResourceC
 
 export function wireDistributedSynthesis(
   hubRoomName: string,
+  attemptRevision: number,
   targetCompounds: ResourceConstant[],
   hubReservePerCompound: number,
   reservePerRoom: number,
@@ -1724,15 +2041,40 @@ export function wireDistributedSynthesis(
   effectiveTargetReserve?: number,
   transferAmounts: ResourceTransferTaskAmountIndex = createResourceTransferTaskAmountIndex(),
   additionalDemands: Partial<Record<ResourceConstant, number>> = {},
+  precomputedPlan?: DistributedSynthesisPlan,
 ): boolean {
-  const eligibleRooms = getEligibleSynthesisRooms();
+  if (precomputedPlan) {
+    const precomputedViolations = getAssignmentInvariantViolations(
+      precomputedPlan.dispatchAssignments,
+      hubRoomName,
+    );
+    if (precomputedViolations.length > 0) {
+      const hubRuntime = Memory.runtime?.hub as HubRuntimeLiveness | undefined;
+      if (hubRuntime) {
+        hubRuntime.distributedSynthesis = {
+          roomCapabilities: {},
+          dispatchAssignments: [],
+          allocationLedger: {},
+          routeDecisions: [],
+          blockedTargets: precomputedPlan.blockedTargets.slice(0, HUB_RUNTIME_ARRAY_CAP),
+          invariantViolations: precomputedViolations,
+          configReconcile: createConfigReconcileSummary(attemptRevision),
+        };
+      }
+      throw new Error(precomputedViolations.join("|"));
+    }
+  }
+
+  const eligibleRooms = getEligibleSynthesisRooms().filter(room =>
+    isSynthesisRoomAvailableToHubPlanner(room.roomName, hubRoomName)
+  );
   const auxRooms = eligibleRooms.filter(r => r.roomName !== hubRoomName);
 
   if (auxRooms.length === 0) {
     return false;
   }
 
-  const plan = planDistributedSynthesis(
+  const plan = precomputedPlan ?? planDistributedSynthesis(
     hubRoomName,
     targetCompounds,
     hubReservePerCompound,
@@ -1743,72 +2085,10 @@ export function wireDistributedSynthesis(
     additionalDemands,
   );
 
-  if (!Memory.runtime?.hub) return true;
-  Memory.runtime.hub.distributedSynthesis = {
-    roomCapabilities: {},
-    dispatchAssignments: plan.dispatchAssignments,
-    allocationLedger: plan.allocationLedger,
-    routeDecisions: plan.routeDecisions,
-  };
-
-  for (const room of eligibleRooms) {
-    Memory.runtime.hub.distributedSynthesis.roomCapabilities![room.roomName] = room;
-  }
-
-  if (!Memory.cfg) return true;
-  if (!Memory.cfg.synthesisControl) {
-    Memory.cfg.synthesisControl = {};
-  }
-  Memory.cfg.synthesisControl.enabled = true;
-  if (!Memory.cfg.synthesisControl.rooms) {
-    Memory.cfg.synthesisControl.rooms = {};
-  }
-
-  for (const assignment of plan.dispatchAssignments) {
-    const roomName = assignment.roomName;
-
-    const stage = Memory.runtime?.synthesisControl?.rooms?.[roomName]?.stage;
-    if (!canRewriteSynthesisRoom(roomName, stage, transferAmounts)) {
-      continue;
-    }
-
-    const reagents = getProductReagentMap()[assignment.product];
-    if (!reagents) continue;
-
-    if (!Memory.cfg.synthesisControl.rooms[roomName]) {
-      Memory.cfg.synthesisControl.rooms[roomName] = {
-        enabled: true,
-        donorRoomNames: [],
-      };
-    }
-
-    const roomCfg = Memory.cfg.synthesisControl.rooms[roomName];
-    roomCfg.enabled = true;
-
-    const roomObj = Game.rooms[roomName];
-    let existingAmount = 0;
-    if (roomObj?.storage) {
-      const s = roomObj.storage.store as unknown as Record<string, number>;
-      existingAmount += (s[assignment.product] || 0);
-    }
-    if (roomObj?.terminal) {
-      const t = roomObj.terminal.store as unknown as Record<string, number>;
-      existingAmount += (t[assignment.product] || 0);
-    }
-
-    roomCfg.reactions = [
-      {
-        product: assignment.product,
-        targetAmount: roundUpReactionAmount(existingAmount + assignment.targetAmount),
-        batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(assignment.targetAmount))),
-        donorRoomNames: [],
-      },
-    ];
-  }
-
-  // Second pass: reconcile busy rooms with dispatch assignments.
-  // Three cases: absent (add), matching (no-op), mismatched (replace).
-  const existing = Memory.runtime.hub.distributedSynthesis.dispatchAssignments;
+  // Prepare the effective plan entirely in local values. Busy-room continuity
+  // may replace a proposed product, but no runtime/config/route fact is
+  // committed until the final assignment set passes the invariant validator.
+  const effectiveAssignments = plan.dispatchAssignments.map(assignment => ({ ...assignment }));
   const mismatches: Array<{ roomName: string; oldProduct: ResourceConstant; actualProduct: ResourceConstant }> = [];
 
   for (const room of eligibleRooms) {
@@ -1819,39 +2099,26 @@ export function wireDistributedSynthesis(
     const activeProduct = runtimeRoom?.activeProduct as ResourceConstant | undefined;
     if (!activeProduct) continue;
 
-    const existingIndex = existing.findIndex(a => a.roomName === room.roomName);
+    const existingIndex = effectiveAssignments.findIndex(a => a.roomName === room.roomName);
 
     if (existingIndex < 0) {
-      // Absent: push runtime product (preserves existing behavior)
-      existing.push({
-        roomName: room.roomName,
-        product: activeProduct,
-        targetAmount: runtimeRoom?.targetAmount ?? 0,
-        isHubRoom: room.roomName === hubRoomName,
-      });
-
-      const reagents = getProductReagentMap()[activeProduct];
-      if (reagents && !Memory.cfg.synthesisControl.rooms[room.roomName]) {
-        Memory.cfg.synthesisControl.rooms[room.roomName] = {
-          enabled: true,
-          donorRoomNames: [],
-        };
-      }
-    } else if (existing[existingIndex].product !== activeProduct) {
-      // Mismatched: planner assigned new product but room is busy with different one
-      const oldProduct = existing[existingIndex].product as ResourceConstant;
+      // The room is executing an older plan that the current revision did not
+      // select. Keep its config in reconcile as skipped-busy; do not turn that
+      // continuity fact back into a new assignment/protection commitment.
+    } else if (effectiveAssignments[existingIndex].product !== activeProduct) {
+      const oldProduct = effectiveAssignments[existingIndex].product as ResourceConstant;
       mismatches.push({ roomName: room.roomName, oldProduct, actualProduct: activeProduct });
 
-      existing[existingIndex] = {
-        ...existing[existingIndex],
+      effectiveAssignments[existingIndex] = {
+        ...effectiveAssignments[existingIndex],
         product: activeProduct,
         targetAmount: runtimeRoom?.targetAmount ?? 0,
       };
     }
-    // else: matching — no change needed
   }
 
-  // Filter stale route decisions for mismatched rooms
+  // Filter stale route decisions for mismatched rooms before validation, but
+  // keep the result local until the assignment invariant succeeds.
   let filteredRouteDecisions = plan.routeDecisions;
   if (mismatches.length > 0) {
     const mismatchMap = new Map(mismatches.map(m => [m.roomName, m]));
@@ -1863,7 +2130,70 @@ export function wireDistributedSynthesis(
       // Drop if resource is old-only direct reagent (not shared with actual product)
       return !(oldReagents.has(route.resource as ResourceConstant) && !actualReagents.has(route.resource as ResourceConstant));
     });
-    Memory.runtime.hub.distributedSynthesis.routeDecisions = filteredRouteDecisions;
+  }
+
+  const invariantViolations = getAssignmentInvariantViolations(effectiveAssignments, hubRoomName);
+  if (invariantViolations.length > 0) {
+    const hubRuntime = Memory.runtime?.hub as HubRuntimeLiveness | undefined;
+    if (hubRuntime) {
+      hubRuntime.distributedSynthesis = {
+        roomCapabilities: {},
+        dispatchAssignments: [],
+        allocationLedger: {},
+        routeDecisions: [],
+        blockedTargets: plan.blockedTargets.slice(0, HUB_RUNTIME_ARRAY_CAP),
+        invariantViolations,
+        configReconcile: createConfigReconcileSummary(attemptRevision),
+      };
+    }
+    throw new Error(invariantViolations.join("|"));
+  }
+
+  const hubRuntime = Memory.runtime?.hub as HubRuntimeLiveness | undefined;
+  if (!hubRuntime) return true;
+  const roomCapabilities: Record<string, SynthesisRoomCapability> = {};
+  for (const room of eligibleRooms) roomCapabilities[room.roomName] = room;
+  hubRuntime.distributedSynthesis = {
+    roomCapabilities,
+    dispatchAssignments: effectiveAssignments,
+    allocationLedger: plan.allocationLedger,
+    routeDecisions: filteredRouteDecisions,
+    blockedTargets: plan.blockedTargets.slice(0, HUB_RUNTIME_ARRAY_CAP),
+    invariantViolations: [],
+  };
+  hubRuntime.missingResources = plan.missingResources.slice(0, HUB_RUNTIME_ARRAY_CAP);
+
+  if (!Memory.cfg) return true;
+  if (!Memory.cfg.synthesisControl) Memory.cfg.synthesisControl = {};
+  Memory.cfg.synthesisControl.enabled = true;
+  if (!Memory.cfg.synthesisControl.rooms) Memory.cfg.synthesisControl.rooms = {};
+
+  const selectedRooms = new Set(effectiveAssignments.map(assignment => assignment.roomName));
+  const refreshedRooms: string[] = [];
+  for (const assignment of effectiveAssignments) {
+    const roomName = assignment.roomName;
+    const stage = Memory.runtime?.synthesisControl?.rooms?.[roomName]?.stage;
+    if (!canRewriteSynthesisRoom(roomName, stage, transferAmounts)) continue;
+    if (!getProductReagentMap()[assignment.product]) continue;
+
+    const roomObj = Game.rooms[roomName];
+    let existingAmount = 0;
+    if (roomObj?.storage) {
+      const storage = roomObj.storage.store as unknown as Record<string, number>;
+      existingAmount += storage[assignment.product] || 0;
+    }
+    if (roomObj?.terminal) {
+      const terminal = roomObj.terminal.store as unknown as Record<string, number>;
+      existingAmount += terminal[assignment.product] || 0;
+    }
+
+    writeOwnedSynthesisReaction(roomName, hubRoomName, attemptRevision, {
+      product: assignment.product,
+      targetAmount: roundUpReactionAmount(existingAmount + assignment.targetAmount),
+      batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(assignment.targetAmount))),
+      donorRoomNames: [],
+    });
+    refreshedRooms.push(roomName);
   }
 
   // Hub-room synthesis config fallback:
@@ -1877,39 +2207,38 @@ export function wireDistributedSynthesis(
   // fallback must not run in that case — otherwise, with empty `steps`, it would
   // clear the just-written hub assignment (e.g. reactions=[] overwriting UH).
   if (distributedStorage) {
-    const hubHasDispatchAssignment = plan.dispatchAssignments.some(a => a.roomName === hubRoomName);
+    const hubHasDispatchAssignment = effectiveAssignments.some(a => a.roomName === hubRoomName);
     if (!hubHasDispatchAssignment) {
+      const nextStep = steps.length > 0 ? steps[0] : null;
+      const hubRoomAvailable = isSynthesisRoomAvailableToHubPlanner(
+        hubRoomName,
+        hubRoomName,
+      );
+      if (nextStep && hubRoomAvailable) selectedRooms.add(hubRoomName);
       const hubStage = Memory.runtime?.synthesisControl?.rooms?.[hubRoomName]?.stage;
-      if (canRewriteSynthesisRoom(hubRoomName, hubStage, transferAmounts)) {
-        const nextStep = steps.length > 0 ? steps[0] : null;
-
-        if (!nextStep) {
-          const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
-          if (roomCfg) {
-            roomCfg.reactions = [];
-          }
-        } else {
-          if (!Memory.cfg.synthesisControl.rooms[hubRoomName]) {
-            Memory.cfg.synthesisControl.rooms[hubRoomName] = {
-              enabled: true,
-              donorRoomNames: [],
-            };
-          }
-
-          const roomCfg = Memory.cfg.synthesisControl.rooms[hubRoomName];
-          roomCfg.enabled = true;
-          roomCfg.reactions = [
-            {
-              product: nextStep.product,
-              targetAmount: roundUpReactionAmount((hubInventory[nextStep.product] || 0) + nextStep.targetAmount),
-              batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(nextStep.targetAmount))),
-              donorRoomNames: [],
-            },
-          ];
-        }
+      if (
+        nextStep &&
+        hubRoomAvailable &&
+        canRewriteSynthesisRoom(hubRoomName, hubStage, transferAmounts)
+      ) {
+        writeOwnedSynthesisReaction(hubRoomName, hubRoomName, attemptRevision, {
+          product: nextStep.product,
+          targetAmount: roundUpReactionAmount((hubInventory[nextStep.product] || 0) + nextStep.targetAmount),
+          batchSize: Math.min(3000, Math.max(5, roundUpReactionAmount(nextStep.targetAmount))),
+          donorRoomNames: [],
+        });
+        refreshedRooms.push(hubRoomName);
       }
     }
   }
+
+  hubRuntime.distributedSynthesis!.configReconcile = reconcileHubOwnedSynthesisConfigs(
+    hubRoomName,
+    attemptRevision,
+    selectedRooms,
+    refreshedRooms,
+    transferAmounts,
+  );
 
   wireRouteTransferTasks(filteredRouteDecisions, hubRoomName, reservePerRoom, distributedStorage);
 
@@ -1928,12 +2257,29 @@ type HubPlanningAttemptResult =
       reason: string;
     };
 
-function resetUncommittedHubProtectionFields(rt: HubRuntimeState): void {
-  rt.distributedSynthesis = {
+function resetUncommittedHubProtectionFields(
+  rt: HubRuntimeState,
+  diagnostics?: HubDistributedSynthesisRuntime,
+): void {
+  const runtime = rt as HubRuntimeLiveness;
+  runtime.distributedSynthesis = {
     roomCapabilities: {},
     dispatchAssignments: [],
     allocationLedger: {},
     routeDecisions: [],
+    blockedTargets: diagnostics?.blockedTargets?.slice(0, HUB_RUNTIME_ARRAY_CAP) ?? [],
+    invariantViolations: diagnostics?.invariantViolations?.slice(0, HUB_RUNTIME_ARRAY_CAP) ?? [],
+    ...(diagnostics?.configReconcile
+      ? {
+          configReconcile: {
+            revision: diagnostics.configReconcile.revision,
+            refreshedRooms: diagnostics.configReconcile.refreshedRooms.slice(0, HUB_RUNTIME_ARRAY_CAP),
+            clearedRooms: diagnostics.configReconcile.clearedRooms.slice(0, HUB_RUNTIME_ARRAY_CAP),
+            skippedBusyRooms: diagnostics.configReconcile.skippedBusyRooms.slice(0, HUB_RUNTIME_ARRAY_CAP),
+            foreignOwnerRooms: diagnostics.configReconcile.foreignOwnerRooms.slice(0, HUB_RUNTIME_ARRAY_CAP),
+          },
+        }
+      : {}),
   };
   rt.marketSellSurplus = {};
 }
@@ -1963,6 +2309,15 @@ export function runHubPlanner(): void {
 
   const protectionRuntime = rt as HubRuntimeState &
     HubRuntimeProtectionExtension;
+  const ownedHubRoomNames = getHubPlannerOwnershipHubRoomNames();
+  const configOwnershipHighWater = getHubPlannerOwnershipHighWater(cfg?.hubRoomName);
+  const runtimeHighWater = Number.isFinite(protectionRuntime.protectionAttemptHighWater)
+    ? Math.max(0, Math.floor(protectionRuntime.protectionAttemptHighWater!))
+    : 0;
+  protectionRuntime.protectionAttemptHighWater = Math.max(
+    runtimeHighWater,
+    configOwnershipHighWater,
+  );
   const protectionConfig = cfg ?? { enabled: false };
   const configObservation = observeHubProtectionConfigIncarnation(
     protectionRuntime,
@@ -1971,14 +2326,34 @@ export function runHubPlanner(): void {
   );
 
   if (cfg?.enabled !== true || !cfg.hubRoomName) {
-    if (cfg?.hubRoomName) clearHubSynthesisReactions(cfg.hubRoomName);
-    if (configObservation.changed) {
+    const cleanupHubRoomNames = cfg?.hubRoomName
+      ? [cfg.hubRoomName]
+      : ownedHubRoomNames;
+    const cleanupCadence = Math.max(1, cfg?.planInterval || HUB_PLAN_INTERVAL);
+    const cleanupDue = cleanupHubRoomNames.length > 0 && Game.time % cleanupCadence === 0;
+    if (configObservation.changed || cleanupDue) {
       const disabledAttempt = beginHubProtectionAttempt(
         protectionRuntime,
         protectionConfig,
         Game.time,
       );
       resetUncommittedHubProtectionFields(rt);
+      if (cleanupHubRoomNames.length > 0) {
+        const transferAmounts = createResourceTransferTaskAmountIndex();
+        (rt as HubRuntimeLiveness).distributedSynthesis!.configReconcile =
+          mergeConfigReconcileSummaries(
+            disabledAttempt.attemptRevision,
+            cleanupHubRoomNames.map(hubRoomName =>
+              reconcileHubOwnedSynthesisConfigs(
+                hubRoomName,
+                disabledAttempt.attemptRevision,
+                new Set(),
+                [],
+                transferAmounts,
+              )
+            ),
+          );
+      }
       publishInvalidHubProtectionSnapshot(
         protectionRuntime,
         disabledAttempt,
@@ -2012,7 +2387,7 @@ export function runHubPlanner(): void {
   let failureReason = "hub_planning_incomplete";
 
   try {
-    const result = runHubPlanningAttempt(cfg, rt);
+    const result = runHubPlanningAttempt(cfg, rt, attempt.attemptRevision);
     if ("reason" in result) {
       failureStatus = "blocked";
       failureReason = result.reason;
@@ -2048,14 +2423,10 @@ export function runHubPlanner(): void {
       error instanceof Error ? error.message : "hub_planning_throw";
     rt.status = "blocked";
     rt.lastError = failureReason;
-    try {
-      clearHubSynthesisReactions(cfg.hubRoomName);
-    } catch {
-      // 下方仍会把 protection snapshot 统一提交为 invalid。
-    }
   } finally {
     if (!published) {
-      resetUncommittedHubProtectionFields(rt);
+      const diagnostics = (rt as HubRuntimeLiveness).distributedSynthesis;
+      resetUncommittedHubProtectionFields(rt, diagnostics);
       publishInvalidHubProtectionSnapshot(
         protectionRuntime,
         attempt,
@@ -2068,39 +2439,49 @@ export function runHubPlanner(): void {
   }
 }
 
+function blockHubPlanningAttempt(
+  cfg: NonNullable<Memory["cfg"]>["hub"],
+  rt: HubRuntimeState,
+  attemptRevision: number,
+  reason: string,
+): HubPlanningAttemptResult {
+  rt.status = "blocked";
+  const transferAmounts = createResourceTransferTaskAmountIndex();
+  (rt as HubRuntimeLiveness).distributedSynthesis!.configReconcile =
+    reconcileHubOwnedSynthesisConfigs(
+      cfg.hubRoomName,
+      attemptRevision,
+      new Set(),
+      [],
+      transferAmounts,
+    );
+  return { valid: false, reason };
+}
+
 function runHubPlanningAttempt(
   cfg: NonNullable<Memory["cfg"]>["hub"],
   rt: HubRuntimeState,
+  attemptRevision: number,
 ): HubPlanningAttemptResult {
   const room = Game.rooms[cfg.hubRoomName];
   if (!room) {
-    rt.status = "blocked";
-    clearHubSynthesisReactions(cfg.hubRoomName);
-    return { valid: false, reason: "hub_room_not_visible" };
+    return blockHubPlanningAttempt(cfg, rt, attemptRevision, "hub_room_not_visible");
   }
 
   if (!room.controller?.my) {
-    rt.status = "blocked";
-    clearHubSynthesisReactions(cfg.hubRoomName);
-    return { valid: false, reason: "hub_room_not_owned" };
+    return blockHubPlanningAttempt(cfg, rt, attemptRevision, "hub_room_not_owned");
   }
 
   if (!room.storage) {
-    rt.status = "blocked";
-    clearHubSynthesisReactions(cfg.hubRoomName);
-    return { valid: false, reason: "hub_storage_missing" };
+    return blockHubPlanningAttempt(cfg, rt, attemptRevision, "hub_storage_missing");
   }
 
   if (!room.terminal) {
-    rt.status = "blocked";
-    clearHubSynthesisReactions(cfg.hubRoomName);
-    return { valid: false, reason: "hub_terminal_missing" };
+    return blockHubPlanningAttempt(cfg, rt, attemptRevision, "hub_terminal_missing");
   }
 
   if (countLabs(room) < 3) {
-    rt.status = "blocked";
-    clearHubSynthesisReactions(cfg.hubRoomName);
-    return { valid: false, reason: "hub_labs_insufficient" };
+    return blockHubPlanningAttempt(cfg, rt, attemptRevision, "hub_labs_insufficient");
   }
 
   const hubInventory: Record<string, number> = {};
@@ -2188,16 +2569,26 @@ function runHubPlanningAttempt(
   const distributedAssignments = distributedPreview?.dispatchAssignments ?? [];
   const distributedCanProceed = distributedAssignments.length > 0;
 
-  rt.missingResources = result.blocked && !distributedCanProceed
-    ? result.missingResources.slice(0, HUB_RUNTIME_ARRAY_CAP)
-    : [];
+  rt.missingResources = (
+    distributedPreview?.missingResources ?? result.missingResources
+  ).slice(0, HUB_RUNTIME_ARRAY_CAP);
 
   if (result.blocked && !distributedCanProceed) {
     rt.status = "blocked";
     rt.activeProduct = "";
     rt.activeStep = 0;
     rt.lastPlanActions = [];
-    clearHubSynthesisReactions(cfg.hubRoomName);
+    const blockedRuntime = rt as HubRuntimeLiveness;
+    blockedRuntime.distributedSynthesis!.blockedTargets = (
+      distributedPreview?.blockedTargets ?? targetCompounds
+    ).slice(0, HUB_RUNTIME_ARRAY_CAP);
+    blockedRuntime.distributedSynthesis!.configReconcile = writeSynthesisConfig(
+      cfg.hubRoomName,
+      attemptRevision,
+      [],
+      hubInventory,
+      transferAmountsAfterImports,
+    );
   } else if (result.steps.length === 0 && !distributedCanProceed) {
     rt.status = "distributing";
     rt.activeProduct = "";
@@ -2220,6 +2611,7 @@ function runHubPlanningAttempt(
 
     const distributed = wireDistributedSynthesis(
       cfg.hubRoomName,
+      attemptRevision,
       targetCompounds2,
       hubReservePerCompound2,
       reservePerRoom2,
@@ -2229,10 +2621,17 @@ function runHubPlanningAttempt(
       chainTarget,
       transferAmountsAfterImports,
       additionalProductionDemands,
+      distributedPreview ?? undefined,
     );
 
     if (!distributed) {
-      writeSynthesisConfig(cfg.hubRoomName, result.steps, hubInventory);
+      (rt as HubRuntimeLiveness).distributedSynthesis!.configReconcile = writeSynthesisConfig(
+        cfg.hubRoomName,
+        attemptRevision,
+        result.steps,
+        hubInventory,
+        transferAmountsAfterImports,
+      );
     }
   }
 

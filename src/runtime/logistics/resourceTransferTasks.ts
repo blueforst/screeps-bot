@@ -11,11 +11,24 @@ export type ResourceTransferTaskBlockedReason =
 export interface ResourceTransferTaskHealthOptions {
   automaticTaskNoProgressTtl: number;
   sourceDepletedGraceTicks: number;
+  receiverCapacityDemandCoverageGraceTicks: number;
 }
+
+type ResourceTransferTaskHealthConfig = {
+  automaticTaskNoProgressTtl?: number;
+  sourceDepletedGraceTicks?: number;
+  receiverCapacityDemandCoverageGraceTicks?: number;
+};
+
+export type ResourceTransferTaskDemandCoverageExpirationReason =
+  | "automatic_no_progress_timeout"
+  | "automatic_source_depleted_timeout"
+  | "automatic_receiver_capacity_coverage_timeout";
 
 export const RESOURCE_TRANSFER_TASK_SCHEMA_VERSION = 2;
 export const DEFAULT_AUTOMATIC_TASK_NO_PROGRESS_TTL = 5_000;
 export const DEFAULT_SOURCE_DEPLETED_GRACE_TICKS = 100;
+export const DEFAULT_RECEIVER_CAPACITY_DEMAND_COVERAGE_GRACE_TICKS = 500;
 
 export interface ResourceTransferTask {
   id: string;
@@ -83,7 +96,12 @@ function inferLegacyTaskOrigin(reason?: string): ResourceTransferTaskOrigin {
 }
 
 export function resolveResourceTransferTaskHealthOptions(): ResourceTransferTaskHealthOptions {
-  const raw = Memory.cfg?.resourceControl?.capacityBalancing;
+  // Memory root declarations are intentionally frozen by the declaration
+  // boundary test. Keep the backward-compatible optional rollout field local
+  // to this adapter instead of widening the canonical root schema.
+  const raw = Memory.cfg?.resourceControl?.capacityBalancing as
+    | ResourceTransferTaskHealthConfig
+    | undefined;
   return {
     automaticTaskNoProgressTtl: normalizeNumber(
       raw?.automaticTaskNoProgressTtl,
@@ -95,6 +113,12 @@ export function resolveResourceTransferTaskHealthOptions(): ResourceTransferTask
       raw?.sourceDepletedGraceTicks,
       DEFAULT_SOURCE_DEPLETED_GRACE_TICKS,
       1,
+      5_000,
+    ),
+    receiverCapacityDemandCoverageGraceTicks: normalizeNumber(
+      raw?.receiverCapacityDemandCoverageGraceTicks,
+      DEFAULT_RECEIVER_CAPACITY_DEMAND_COVERAGE_GRACE_TICKS,
+      50,
       5_000,
     ),
   };
@@ -170,6 +194,9 @@ function findMergeablePendingTask(
   origin: ResourceTransferTaskOrigin,
   reason?: string,
 ): ResourceTransferTask | null {
+  const healthOptions = origin === "automatic"
+    ? resolveResourceTransferTaskHealthOptions()
+    : null;
   for (const task of Object.values(tasks)) {
     if (
       task.status === "pending" &&
@@ -177,7 +204,8 @@ function findMergeablePendingTask(
       task.toRoomName === toRoomName &&
       task.resource === resource &&
       task.origin === origin &&
-      task.reason === reason
+      task.reason === reason &&
+      (origin === "manual" || countsResourceTransferTaskTowardDemand(task, healthOptions!))
     ) {
       return task;
     }
@@ -344,6 +372,64 @@ export function isHealthyResourceTransferTaskReservation(
   return Game.time - task.blockedSince! < sourceDepletedGraceTicks;
 }
 
+/**
+ * Returns the automatic lifecycle reason that makes a pending task stop
+ * covering demand. The helper is mutation-free so Hub/Synthesis planning can
+ * use it before this tick's ResourceControl reconciliation phase.
+ */
+export function getResourceTransferTaskDemandCoverageExpirationReason(
+  task: ResourceTransferTask,
+  options: ResourceTransferTaskHealthOptions = resolveResourceTransferTaskHealthOptions(),
+): ResourceTransferTaskDemandCoverageExpirationReason | null {
+  if (task.status !== "pending" || task.origin !== "automatic") {
+    return null;
+  }
+
+  if (
+    task.blockedReason === "source_depleted" &&
+    Number.isFinite(task.blockedSince) &&
+    Game.time - task.blockedSince! >= options.sourceDepletedGraceTicks
+  ) {
+    return "automatic_source_depleted_timeout";
+  }
+
+  if (
+    task.blockedReason === "receiver_capacity" &&
+    Number.isFinite(task.blockedSince) &&
+    Game.time - task.blockedSince! >= options.receiverCapacityDemandCoverageGraceTicks
+  ) {
+    return "automatic_receiver_capacity_coverage_timeout";
+  }
+
+  if (
+    Number.isFinite(task.lastProgressAt) &&
+    Game.time - task.lastProgressAt > options.automaticTaskNoProgressTtl
+  ) {
+    return "automatic_no_progress_timeout";
+  }
+
+  return null;
+}
+
+/**
+ * Canonical production-demand coverage predicate. Manual pending tasks always
+ * retain operator intent; automatic tasks stop covering demand as soon as a
+ * configured lifecycle limit is reached.
+ */
+export function countsResourceTransferTaskTowardDemand(
+  task: ResourceTransferTask,
+  options: ResourceTransferTaskHealthOptions = resolveResourceTransferTaskHealthOptions(),
+): boolean {
+  if (task.status !== "pending") {
+    return false;
+  }
+  if (task.origin === "manual") {
+    return true;
+  }
+
+  return getResourceTransferTaskDemandCoverageExpirationReason(task, options) === null;
+}
+
 export function isHealthyReceiverCapacityCommitment(
   task: ResourceTransferTask,
   automaticTaskNoProgressTtl?: number,
@@ -379,6 +465,16 @@ export function reconcileResourceTransferTasks(
   const sourceDepletedGraceTicks = Number.isFinite(options.sourceDepletedGraceTicks)
     ? Math.max(0, Math.floor(options.sourceDepletedGraceTicks!))
     : configured.sourceDepletedGraceTicks;
+  const receiverCapacityDemandCoverageGraceTicks = Number.isFinite(
+    options.receiverCapacityDemandCoverageGraceTicks,
+  )
+    ? Math.max(0, Math.floor(options.receiverCapacityDemandCoverageGraceTicks!))
+    : configured.receiverCapacityDemandCoverageGraceTicks;
+  const healthOptions: ResourceTransferTaskHealthOptions = {
+    automaticTaskNoProgressTtl,
+    sourceDepletedGraceTicks,
+    receiverCapacityDemandCoverageGraceTicks,
+  };
 
   let cancelled = 0;
   for (const task of Object.values(ensureResourceTransferTaskStore())) {
@@ -386,18 +482,9 @@ export function reconcileResourceTransferTasks(
       continue;
     }
 
-    if (
-      task.blockedReason === "source_depleted" &&
-      Number.isFinite(task.blockedSince) &&
-      Game.time - task.blockedSince! >= sourceDepletedGraceTicks
-    ) {
-      cancelAutomaticTask(task, "automatic_source_depleted_timeout");
-      cancelled += 1;
-      continue;
-    }
-
-    if (Game.time - task.lastProgressAt > automaticTaskNoProgressTtl) {
-      cancelAutomaticTask(task, "automatic_no_progress_timeout");
+    const expirationReason = getResourceTransferTaskDemandCoverageExpirationReason(task, healthOptions);
+    if (expirationReason) {
+      cancelAutomaticTask(task, expirationReason);
       cancelled += 1;
     }
   }
@@ -454,6 +541,7 @@ export function createResourceTransferTaskAmountIndex(): ResourceTransferTaskAmo
   const outgoingByReason = new Map<string, Map<string, number>>();
   const pendingIncoming = new Map<string, number>();
   const pendingIncomingByReason = new Map<string, Map<string, number>>();
+  const healthOptions = resolveResourceTransferTaskHealthOptions();
 
   for (const task of Object.values(ensureResourceTransferTaskStore())) {
     if (task.status !== "pending") continue;
@@ -471,7 +559,7 @@ export function createResourceTransferTaskAmountIndex(): ResourceTransferTaskAmo
     pendingReasonAmounts.set(reason, (pendingReasonAmounts.get(reason) || 0) + task.remainingAmount);
     pendingIncomingByReason.set(incomingKey, pendingReasonAmounts);
 
-    if (!isHealthyResourceTransferTaskReservation(task, "incoming")) continue;
+    if (!countsResourceTransferTaskTowardDemand(task, healthOptions)) continue;
     incoming.set(incomingKey, (incoming.get(incomingKey) || 0) + task.remainingAmount);
     const reasonAmounts = incomingByReason.get(incomingKey) || new Map<string, number>();
     reasonAmounts.set(reason, (reasonAmounts.get(reason) || 0) + task.remainingAmount);
@@ -496,12 +584,13 @@ export function createResourceTransferTaskAmountIndex(): ResourceTransferTaskAmo
 
 export function getIncomingResourceTransferAmount(roomName: string, resource: ResourceConstant): number {
   let total = 0;
+  const healthOptions = resolveResourceTransferTaskHealthOptions();
   for (const task of Object.values(ensureResourceTransferTaskStore())) {
     if (
       task.status === "pending" &&
       task.toRoomName === roomName &&
       task.resource === resource &&
-      isHealthyResourceTransferTaskReservation(task, "incoming")
+      countsResourceTransferTaskTowardDemand(task, healthOptions)
     ) {
       total += task.remainingAmount;
     }
@@ -531,18 +620,38 @@ export function countPendingIncomingResourceTransferTasksByRoom(roomName: string
   return count;
 }
 
+export function countDemandCoveringIncomingResourceTransferTasksByRoom(roomName: string): number {
+  let count = 0;
+  const healthOptions = resolveResourceTransferTaskHealthOptions();
+  for (const task of Object.values(ensureResourceTransferTaskStore())) {
+    if (
+      task.toRoomName === roomName &&
+      countsResourceTransferTaskTowardDemand(task, healthOptions)
+    ) {
+      count += 1;
+    }
+  }
+
+  return count;
+}
+
 export function cleanupResourceTransferTaskStore(
   ownedRooms: Set<string>,
   terminalTaskTtl: number,
   automaticTaskNoProgressTtl?: number,
   sourceDepletedGraceTicks?: number,
+  receiverCapacityDemandCoverageGraceTicks?: number,
 ): number {
   const tasks = getMemoryService().ensureData().resourceControl?.tasks;
   if (!tasks) {
     return 0;
   }
 
-  reconcileResourceTransferTasks({ automaticTaskNoProgressTtl, sourceDepletedGraceTicks });
+  reconcileResourceTransferTasks({
+    automaticTaskNoProgressTtl,
+    sourceDepletedGraceTicks,
+    receiverCapacityDemandCoverageGraceTicks,
+  });
 
   let removed = 0;
   for (const [taskId, task] of Object.entries(tasks)) {

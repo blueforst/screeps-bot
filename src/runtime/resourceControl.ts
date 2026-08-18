@@ -15,7 +15,10 @@ import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
 import {
   cancelResourceTransferTask,
   clearResourceTransferTaskBlocker,
+  countsResourceTransferTaskTowardDemand,
   createAutomaticResourceTransferTask,
+  DEFAULT_RECEIVER_CAPACITY_DEMAND_COVERAGE_GRACE_TICKS,
+  getResourceTransferTaskDemandCoverageExpirationReason,
   getResourceTransferTaskListSorted,
   isHealthyReceiverCapacityCommitment,
   isHealthyResourceTransferTaskReservation,
@@ -135,6 +138,7 @@ interface ResourceCapacityConfig extends CapacityHeadroomPolicy {
   maxNewTasksPerRun: number;
   automaticTaskNoProgressTtl: number;
   sourceDepletedGraceTicks: number;
+  receiverCapacityDemandCoverageGraceTicks: number;
   t3ReservePerRoom: number;
 }
 
@@ -413,6 +417,8 @@ const DEFAULT_CAPACITY_CONFIG: ResourceCapacityConfig = {
   maxNewTasksPerRun: 5,
   automaticTaskNoProgressTtl: 5_000,
   sourceDepletedGraceTicks: 100,
+  receiverCapacityDemandCoverageGraceTicks:
+    DEFAULT_RECEIVER_CAPACITY_DEMAND_COVERAGE_GRACE_TICKS,
   t3ReservePerRoom: 5_000,
 };
 
@@ -720,6 +726,12 @@ export function normalizeCapacityConfig(
       raw.sourceDepletedGraceTicks,
       DEFAULT_CAPACITY_CONFIG.sourceDepletedGraceTicks,
       1,
+      5_000,
+    ),
+    receiverCapacityDemandCoverageGraceTicks: normalizeNumber(
+      raw.receiverCapacityDemandCoverageGraceTicks,
+      DEFAULT_CAPACITY_CONFIG.receiverCapacityDemandCoverageGraceTicks,
+      50,
       5_000,
     ),
     t3ReservePerRoom: normalizeNumber(
@@ -5336,15 +5348,58 @@ function persistResourceControlState(
     pending: 0,
     manualPending: 0,
     automaticPending: 0,
+    demandCoveringIncoming: 0,
+    coverageExpiredIncoming: 0,
+    coverageExpiredByReason: {} as Partial<
+      Record<
+        NonNullable<
+          ReturnType<
+            typeof getResourceTransferTaskDemandCoverageExpirationReason
+          >
+        >,
+        number
+      >
+    >,
     blockedByReason: {} as Partial<
       Record<NonNullable<ResourceTransferTask["blockedReason"]>, number>
     >,
   };
+  const demandCoverageOptions = {
+    automaticTaskNoProgressTtl:
+      capacityConfig.automaticTaskNoProgressTtl,
+    sourceDepletedGraceTicks: capacityConfig.sourceDepletedGraceTicks,
+    receiverCapacityDemandCoverageGraceTicks:
+      capacityConfig.receiverCapacityDemandCoverageGraceTicks,
+  };
   for (const task of context.tasks) {
+    const expirationReason =
+      getResourceTransferTaskDemandCoverageExpirationReason(
+        task,
+        demandCoverageOptions,
+      ) ||
+      (task.status === "cancelled" &&
+      (
+        task.lastError === "automatic_no_progress_timeout" ||
+        task.lastError === "automatic_source_depleted_timeout" ||
+        task.lastError ===
+          "automatic_receiver_capacity_coverage_timeout"
+      )
+        ? task.lastError
+        : null);
+    if (expirationReason) {
+      taskSummary.coverageExpiredIncoming += 1;
+      taskSummary.coverageExpiredByReason[expirationReason] =
+        (taskSummary.coverageExpiredByReason[expirationReason] || 0) + 1;
+    }
     if (task.status !== "pending") continue;
     taskSummary.pending += 1;
     if (task.origin === "automatic") taskSummary.automaticPending += 1;
     else taskSummary.manualPending += 1;
+    if (
+      countsResourceTransferTaskTowardDemand(task, demandCoverageOptions)
+    ) {
+      taskSummary.demandCoveringIncoming += 1;
+    }
 
     const outgoing = taskHealthByRoom.get(task.fromRoomName);
     const incoming = taskHealthByRoom.get(task.toRoomName);
@@ -5638,6 +5693,8 @@ export function runResourceControl(): void {
     reconcileResourceTransferTasks({
       automaticTaskNoProgressTtl: capacityConfig.automaticTaskNoProgressTtl,
       sourceDepletedGraceTicks: capacityConfig.sourceDepletedGraceTicks,
+      receiverCapacityDemandCoverageGraceTicks:
+        capacityConfig.receiverCapacityDemandCoverageGraceTicks,
     });
   }
   const snapshots = collectResourceControlSnapshots();

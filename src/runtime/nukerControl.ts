@@ -568,7 +568,7 @@ function planCrossRoomGhodiumTransfers(
       plan.ghodiumDeficit -
         plan.carriedGhodium -
         plan.localGhodiumPlanned -
-        transferAmounts.getPendingIncoming(
+        transferAmounts.getIncoming(
           plan.room.name,
           RESOURCE_GHODIUM,
         ),

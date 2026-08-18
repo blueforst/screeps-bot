@@ -27,6 +27,20 @@
         "fee_budget": 1
       },
       "capacityIndexBuildCount": 1,
+      "taskSummary": {
+        "pending": 4,
+        "manualPending": 1,
+        "automaticPending": 3,
+        "blockedByReason": {
+          "receiver_capacity": 2,
+          "source_depleted": 1
+        },
+        "demandCoveringIncoming": 2,
+        "coverageExpiredIncoming": 1,
+        "coverageExpiredByReason": {
+          "automatic_receiver_capacity_coverage_timeout": 1
+        }
+      },
       "rooms": {
         "W1N1": {
           "state": "balanced",

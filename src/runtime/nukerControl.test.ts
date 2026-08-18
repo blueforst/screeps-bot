@@ -11,6 +11,11 @@ import {
   runNukerControl,
 } from "@/runtime/nukerControl";
 import { listProductionReservations } from "@/runtime/resourceReservation";
+import {
+  createAutomaticResourceTransferTask,
+  ensureResourceTransferTaskStore,
+  markResourceTransferTaskBlocked,
+} from "@/runtime/logistics/resourceTransferTasks";
 
 type MutableStore = StoreDefinition & {
   set(resource: ResourceConstant, amount: number): void;
@@ -254,5 +259,46 @@ describe("nukerControl", () => {
     expect(Memory.runtime?.nukerControl?.rooms).toEqual({});
     expect(Memory.runtime?.nukerControl?.ghodiumProductionDemand).toBe(0);
     expect(Memory.runtime?.hub?.needsPlan).toBe(true);
+
+    // A receiver-capacity transfer that has lost demand coverage remains raw
+    // pending for audit, but must not suppress a replacement Nuker shipment.
+    clearCarrierTaskBoardForTest();
+    resetRuntimeServices();
+    Game.rooms = {};
+    Memory.runtime = { hub: { needsPlan: false } };
+    Memory.data = {};
+    const receiver = createRoomScenario({
+      roomName: "W5N1",
+      storageEnergy: 200_000,
+    });
+    const donor = createRoomScenario({
+      roomName: "W6N1",
+      withNuker: false,
+      storageEnergy: 200_000,
+      storageGhodium: 10_000,
+    });
+    const expired = createAutomaticResourceTransferTask(
+      donor.room.name,
+      receiver.room.name,
+      RESOURCE_GHODIUM,
+      5_000,
+      `nuker:${receiver.room.name}:G`,
+    );
+    if (typeof expired === "string") throw new Error(expired);
+    markResourceTransferTaskBlocked(expired.task, "receiver_capacity");
+    Game.time += 500;
+    runNukerControl();
+    const ghodiumTransfers = Object.values(
+      ensureResourceTransferTaskStore(),
+    ).filter(
+      (task) =>
+        task.toRoomName === receiver.room.name &&
+        task.resource === RESOURCE_GHODIUM &&
+        task.reason === `nuker:${receiver.room.name}:G`,
+    );
+    expect(ghodiumTransfers).toHaveLength(2);
+    expect(
+      ghodiumTransfers.some((task) => task.id !== expired.task.id),
+    ).toBe(true);
   });
 });

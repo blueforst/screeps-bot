@@ -13,6 +13,7 @@ const DEFAULT_HISTORY_LIMIT = 200;
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_OUTPUT_PATH = "monitor-data/snapshots.jsonl";
 const RESOURCE_CONTROL_ROUTE_LIMIT = 20;
+const HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT = 100;
 const CONTINUOUS_DIRECT_ENTRY_LIMIT = 20;
 const MARKET_BASE_RESOURCE_CATALOG_LIMIT = 7;
 const MARKET_BASE_RESOURCE_ROSTER_LIMIT = 16;
@@ -740,37 +741,49 @@ function summarizeCpuMonitor(cpuMonitor, fallbackModuleCpu) {
   };
 }
 
-function summarizeHub(hub) {
-  if (!hub || typeof hub !== "object") {
-    return { available: false, updatedAt: null };
+function summarizeHub(hub, runtimeHub) {
+  const analytics = objectOrNull(hub);
+  const runtime = objectOrNull(runtimeHub);
+  if (!analytics) {
+    return {
+      available: false,
+      updatedAt: null,
+      distributedSynthesis: summarizeDistributedSynthesis(
+        runtime?.distributedSynthesis,
+      ),
+    };
   }
+  const source = analytics;
   return {
     available: true,
-    updatedAt: hub.updatedAt ?? null,
-    enabled: hub.enabled ?? false,
-    hubRoomName: hub.hubRoomName ?? "",
-    hubRoomVisible: hub.hubRoomVisible ?? false,
-    status: hub.status ?? null,
-    stage: hub.stage ?? null,
-    activeProduct: hub.activeProduct ?? null,
-    missingResources: Array.isArray(hub.missingResources) ? hub.missingResources : [],
-    lastError: hub.lastError ?? null,
-    needsPlan: hub.needsPlan ?? false,
-    hubStorageEnergy: hub.hubStorageEnergy ?? 0,
-    hubTerminalEnergy: hub.hubTerminalEnergy ?? 0,
-    hubInventory: hub.hubInventory && typeof hub.hubInventory === "object" ? hub.hubInventory : {},
-    pendingImports: hub.pendingImports ?? 0,
-    pendingReclaims: hub.pendingReclaims ?? 0,
-    pendingExports: hub.pendingExports ?? 0,
-    pendingTaskCount: Array.isArray(hub.pendingTasks) ? hub.pendingTasks.length : 0,
-    roomTerminalBlockers: Array.isArray(hub.roomTerminalBlockers) ? hub.roomTerminalBlockers : [],
+    updatedAt: source.updatedAt ?? null,
+    enabled: source.enabled ?? false,
+    hubRoomName: source.hubRoomName ?? "",
+    hubRoomVisible: source.hubRoomVisible ?? false,
+    status: source.status ?? null,
+    stage: source.stage ?? null,
+    activeProduct: source.activeProduct ?? null,
+    missingResources: Array.isArray(source.missingResources) ? source.missingResources : [],
+    lastError: source.lastError ?? null,
+    needsPlan: source.needsPlan ?? false,
+    hubStorageEnergy: source.hubStorageEnergy ?? 0,
+    hubTerminalEnergy: source.hubTerminalEnergy ?? 0,
+    hubInventory: source.hubInventory && typeof source.hubInventory === "object" ? source.hubInventory : {},
+    pendingImports: source.pendingImports ?? 0,
+    pendingReclaims: source.pendingReclaims ?? 0,
+    pendingExports: source.pendingExports ?? 0,
+    pendingTaskCount: Array.isArray(source.pendingTasks) ? source.pendingTasks.length : 0,
+    roomTerminalBlockers: Array.isArray(source.roomTerminalBlockers) ? source.roomTerminalBlockers : [],
     protectionAttempt: summarizeHubProtectionAttempt(
-      hub.protectionAttempt,
+      source.protectionAttempt,
     ),
     committedProtectionMarker:
       summarizeHubCommittedProtectionMarker(
-        hub.committedProtectionMarker,
+        source.committedProtectionMarker,
       ),
+    distributedSynthesis: summarizeDistributedSynthesis(
+      runtime?.distributedSynthesis,
+    ),
   };
 }
 
@@ -804,6 +817,110 @@ function boundedStringOrNull(value) {
   return typeof value === "string"
     ? value.slice(0, OBSERVABILITY_STRING_LIMIT)
     : null;
+}
+
+function summarizeBoundedStringArrayOrNull(value, limit) {
+  if (!Array.isArray(value)) return null;
+  const result = [];
+  const scanLimit = Math.min(value.length, limit);
+  for (let index = 0; index < scanLimit; index += 1) {
+    const entry = value[index];
+    if (typeof entry === "string") {
+      result.push(entry.slice(0, OBSERVABILITY_STRING_LIMIT));
+    }
+  }
+  return result;
+}
+
+function hasValidBoundedStringArrayShape(value, limit) {
+  if (!Array.isArray(value)) return false;
+  const scanLimit = Math.min(value.length, limit);
+  for (let index = 0; index < scanLimit; index += 1) {
+    if (typeof value[index] !== "string") return false;
+  }
+  return true;
+}
+
+function summarizeDistributedSynthesis(value) {
+  const distributed = objectOrNull(value);
+  const reconcile = objectOrNull(
+    distributed?.configReconcile,
+  );
+  const blockedTargets = summarizeBoundedStringArrayOrNull(
+    distributed?.blockedTargets,
+    HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+  );
+  const invariantViolations = summarizeBoundedStringArrayOrNull(
+    distributed?.invariantViolations,
+    HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+  );
+  const revision = finiteNumberOrNull(reconcile?.revision);
+  const refreshedRooms = summarizeBoundedStringArrayOrNull(
+    reconcile?.refreshedRooms,
+    HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+  );
+  const clearedRooms = summarizeBoundedStringArrayOrNull(
+    reconcile?.clearedRooms,
+    HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+  );
+  const skippedBusyRooms = summarizeBoundedStringArrayOrNull(
+    reconcile?.skippedBusyRooms,
+    HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+  );
+  const foreignOwnerRooms = summarizeBoundedStringArrayOrNull(
+    reconcile?.foreignOwnerRooms,
+    HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+  );
+  const livenessAvailable =
+    distributed !== null &&
+    hasValidBoundedStringArrayShape(
+      distributed.blockedTargets,
+      HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+    ) &&
+    hasValidBoundedStringArrayShape(
+      distributed.invariantViolations,
+      HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+    ) &&
+    blockedTargets !== null &&
+    invariantViolations !== null &&
+    reconcile !== null &&
+    revision !== null &&
+    hasValidBoundedStringArrayShape(
+      reconcile.refreshedRooms,
+      HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+    ) &&
+    hasValidBoundedStringArrayShape(
+      reconcile.clearedRooms,
+      HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+    ) &&
+    hasValidBoundedStringArrayShape(
+      reconcile.skippedBusyRooms,
+      HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+    ) &&
+    hasValidBoundedStringArrayShape(
+      reconcile.foreignOwnerRooms,
+      HUB_DISTRIBUTED_SYNTHESIS_ARRAY_LIMIT,
+    ) &&
+    refreshedRooms !== null &&
+    clearedRooms !== null &&
+    skippedBusyRooms !== null &&
+    foreignOwnerRooms !== null;
+
+  return {
+    livenessAvailable,
+    blockedTargets,
+    invariantViolations,
+    configReconcile:
+      reconcile === null
+        ? null
+        : {
+            revision,
+            refreshedRooms,
+            clearedRooms,
+            skippedBusyRooms,
+            foreignOwnerRooms,
+          },
+  };
 }
 
 function finiteNumberWithinOrNull(value, minimum, maximum) {
@@ -981,6 +1098,32 @@ function summarizeCountMapOrNull(value) {
   return summarizeCountMap(value);
 }
 
+function summarizeCoverageExpirationCountMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { value: null, valid: false };
+  }
+  const allowedReasons = new Set([
+    "automatic_no_progress_timeout",
+    "automatic_source_depleted_timeout",
+    "automatic_receiver_capacity_coverage_timeout",
+  ]);
+  const result = {};
+  let ownKeyCount = 0;
+  for (const reason in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, reason)) continue;
+    ownKeyCount += 1;
+    if (ownKeyCount > allowedReasons.size || !allowedReasons.has(reason)) {
+      return { value: result, valid: false };
+    }
+    const count = value[reason];
+    if (typeof count !== "number" || !Number.isFinite(count) || count < 0) {
+      return { value: result, valid: false };
+    }
+    result[reason] = count;
+  }
+  return { value: result, valid: true };
+}
+
 function summarizeCapacityPolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
@@ -1090,11 +1233,31 @@ function summarizeTaskSummary(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
+  const demandCoveringIncoming = finiteNumberOrNull(
+    value.demandCoveringIncoming,
+  );
+  const coverageExpiredIncoming = finiteNumberOrNull(
+    value.coverageExpiredIncoming,
+  );
+  const coverageExpirationSummary = summarizeCoverageExpirationCountMap(
+    value.coverageExpiredByReason,
+  );
+  const coverageExpiredByReason = coverageExpirationSummary.value;
+  const livenessAvailable =
+    demandCoveringIncoming !== null &&
+    demandCoveringIncoming >= 0 &&
+    coverageExpiredIncoming !== null &&
+    coverageExpiredIncoming >= 0 &&
+    coverageExpirationSummary.valid;
   return {
     pending: finiteNumberOrNull(value.pending),
     manualPending: finiteNumberOrNull(value.manualPending),
     automaticPending: finiteNumberOrNull(value.automaticPending),
     blockedByReason: summarizeCountMap(value.blockedByReason),
+    livenessAvailable,
+    demandCoveringIncoming,
+    coverageExpiredIncoming,
+    coverageExpiredByReason,
   };
 }
 
@@ -2999,6 +3162,7 @@ function extractFixtureResourceControlData(parsed) {
   if (!parsed || typeof parsed !== "object") {
     return {
       runtimeResourceControl: null,
+      runtimeHub: null,
       transferTaskStore: null,
       runtimeMarketSaleAutomation: null,
       dataDirectAutomation: null,
@@ -3021,6 +3185,10 @@ function extractFixtureResourceControlData(parsed) {
     runtimeResourceControl:
       runtime && runtime.resourceControl && typeof runtime.resourceControl === "object"
         ? runtime.resourceControl
+        : null,
+    runtimeHub:
+      runtime && runtime.hub && typeof runtime.hub === "object"
+        ? runtime.hub
         : null,
     transferTaskStore:
       dataResourceControl && dataResourceControl.tasks && typeof dataResourceControl.tasks === "object"
@@ -3057,12 +3225,14 @@ async function fetchOptionalMemoryPath(config, shard, path) {
 async function fetchResourceControlData(config, shard) {
   const [
     runtimeResourceControl,
+    runtimeHub,
     transferTaskStore,
     runtimeMarketSaleAutomation,
     dataDirectAutomation,
   ] =
     await Promise.all([
     fetchOptionalMemoryPath(config, shard, "runtime.resourceControl"),
+    fetchOptionalMemoryPath(config, shard, "runtime.hub"),
     fetchOptionalMemoryPath(config, shard, "data.resourceControl.tasks"),
     fetchOptionalMemoryPath(config, shard, "runtime.marketSaleAutomation"),
     fetchOptionalMemoryPath(
@@ -3073,6 +3243,7 @@ async function fetchResourceControlData(config, shard) {
   ]);
   return {
     runtimeResourceControl,
+    runtimeHub,
     transferTaskStore,
     runtimeMarketSaleAutomation,
     dataDirectAutomation,
@@ -3089,6 +3260,7 @@ async function fetchMemorySnapshot(config, options = {}) {
     const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(parsed);
     const {
       runtimeResourceControl,
+      runtimeHub,
       transferTaskStore,
       runtimeMarketSaleAutomation,
       dataDirectAutomation,
@@ -3101,7 +3273,7 @@ async function fetchMemorySnapshot(config, options = {}) {
       summary: summarizeProduction(production),
       cpuMonitor: summarizeCpuMonitor(cpuMonitor, moduleCpu),
       moduleCpu: summarizeModuleCpu(moduleCpu),
-      hub: summarizeHub(hub),
+      hub: summarizeHub(hub, runtimeHub),
       resourceControl: summarizeResourceControl(runtimeResourceControl, transferTaskStore),
       marketSaleAutomation: summarizeMarketSaleAutomation(
         runtimeMarketSaleAutomation,
@@ -3119,16 +3291,18 @@ async function fetchMemorySnapshot(config, options = {}) {
   const summary = summarizeProduction(production);
   const {
     runtimeResourceControl,
+    runtimeHub,
     transferTaskStore,
     runtimeMarketSaleAutomation,
     dataDirectAutomation,
   } = options.includeResourceControl === false
     ? {
-        runtimeResourceControl: null,
-        transferTaskStore: null,
-        runtimeMarketSaleAutomation: null,
-        dataDirectAutomation: null,
-      }
+      runtimeResourceControl: null,
+      runtimeHub: null,
+      transferTaskStore: null,
+      runtimeMarketSaleAutomation: null,
+      dataDirectAutomation: null,
+    }
     : await fetchResourceControlData(config, config.shard);
 
   return {
@@ -3138,7 +3312,7 @@ async function fetchMemorySnapshot(config, options = {}) {
     summary,
     cpuMonitor: summarizeCpuMonitor(cpuMonitor, moduleCpu),
     moduleCpu: summarizeModuleCpu(moduleCpu),
-    hub: summarizeHub(hub),
+    hub: summarizeHub(hub, runtimeHub),
     resourceControl: summarizeResourceControl(runtimeResourceControl, transferTaskStore),
     marketSaleAutomation: summarizeMarketSaleAutomation(
       runtimeMarketSaleAutomation,
@@ -3621,11 +3795,18 @@ async function fetchWithShardFallback(config) {
   if (bestResult) {
     const {
       runtimeResourceControl,
+      runtimeHub,
       transferTaskStore,
       runtimeMarketSaleAutomation,
       dataDirectAutomation,
     } = await fetchResourceControlData(config, bestShardValue);
     bestResult.resourceControl = summarizeResourceControl(runtimeResourceControl, transferTaskStore);
+    bestResult.hub = {
+      ...bestResult.hub,
+      distributedSynthesis: summarizeDistributedSynthesis(
+        runtimeHub?.distributedSynthesis,
+      ),
+    };
     bestResult.marketSaleAutomation = summarizeMarketSaleAutomation(
       runtimeMarketSaleAutomation,
       dataDirectAutomation,

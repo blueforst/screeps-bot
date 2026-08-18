@@ -299,7 +299,18 @@ describe("ordered pipeline integration regression – distributedStorage hub fal
         internalOnly: true,
         distributedStorage: true,
       },
-    };
+      synthesisControl: {
+        enabled: true,
+        rooms: {
+          W3N1: {
+            enabled: true,
+            donorRoomNames: [],
+            plannerOwnership: { owner: "hubPlanner", hubRoomName: "W1N1", revision: 100 },
+            reactions: [{ product: RESOURCE_HYDROXIDE, targetAmount: 100, batchSize: 100 }],
+          },
+        },
+      },
+    } as any;
     Memory.runtime = {
       hub: {
         status: "idle",
@@ -309,6 +320,7 @@ describe("ordered pipeline integration regression – distributedStorage hub fal
         missingResources: [],
         lastPlanActions: [],
         needsPlan: true,
+        protectionAttemptHighWater: 7,
       },
     };
 
@@ -324,11 +336,25 @@ describe("ordered pipeline integration regression – distributedStorage hub fal
     expect(Memory.runtime!.hub!.needsPlan).toBe(false);
 
     // Verify: distributed synthesis is active (aux rooms exist)
-    const dist = Memory.runtime!.hub!.distributedSynthesis;
+    const dist = Memory.runtime!.hub!.distributedSynthesis as typeof Memory.runtime.hub.distributedSynthesis & {
+      blockedTargets?: ResourceConstant[];
+      invariantViolations?: string[];
+      configReconcile?: {
+        revision: number;
+        refreshedRooms: string[];
+        clearedRooms: string[];
+        skippedBusyRooms: string[];
+        foreignOwnerRooms: string[];
+      };
+    };
     expect(dist).toBeDefined();
 
     // Verify: hub room has synthesisControl config written (the fallback path)
-    const hubRoomCfg = Memory.cfg?.synthesisControl?.rooms?.["W1N1"];
+    const hubRoomCfg = Memory.cfg?.synthesisControl?.rooms?.["W1N1"] as
+      | (NonNullable<NonNullable<NonNullable<Memory["cfg"]>["synthesisControl"]>["rooms"]>[string] & {
+          plannerOwnership?: { owner: string; hubRoomName: string; revision: number };
+        })
+      | undefined;
     expect(hubRoomCfg).toBeDefined();
     expect(hubRoomCfg!.enabled).toBe(true);
     expect(hubRoomCfg!.reactions).toBeDefined();
@@ -344,6 +370,20 @@ describe("ordered pipeline integration regression – distributedStorage hub fal
 
     // Hub fallback wrote the reaction matching the active product
     expect(hubReaction.product).toBe(Memory.runtime!.hub!.activeProduct);
+    const attemptRevision = Memory.runtime!.hub!.currentProtectionAttempt!.attemptRevision;
+    expect(attemptRevision).toBe(101);
+    expect(hubRoomCfg!.plannerOwnership).toEqual({
+      owner: "hubPlanner",
+      hubRoomName: "W1N1",
+      revision: attemptRevision,
+    });
+    expect(dist!.invariantViolations).toEqual([]);
+    expect(dist!.blockedTargets).toEqual(expect.any(Array));
+    expect(dist!.configReconcile).toMatchObject({
+      revision: attemptRevision,
+    });
+    expect(dist!.configReconcile!.refreshedRooms).toContain("W1N1");
+    expect(dist!.configReconcile!.clearedRooms).toContain("W3N1");
 
     // ---- Step 2: runSynthesisControl() same tick ----
     Game.time = 1;

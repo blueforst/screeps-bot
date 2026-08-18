@@ -2,7 +2,9 @@
 
 ### Requirement: 每个房间必须只有一个 terminal side-effect owner
 
-每个拥有 terminal 的房间每 tick 必须（MUST）由唯一 RoomLogisticsAgent 仲裁 `terminal.send`、会占用 terminal/cooldown 的 market action 和发送 staging window。其他 producer/executor 不得（MUST NOT）直接产生 terminal side effect；同一 terminal 在一个可用窗口最多执行一个获准动作。
+每个拥有 terminal 的房间每 tick 必须（MUST）由唯一 RoomLogisticsAgent 选择合同、market proposal 和发送 staging window；所有 `terminal.send`/deal 副作用必须继续经过既有 `marketActionArbiter` 的 terminal/account claim 与 journal。系统不得（MUST NOT）新增第二套 terminal lock/claim，其他 producer/executor 也不得直接产生 terminal side effect；同一 terminal 在一个可用窗口最多执行一个获准动作。
+
+普通 market deal 必须继续使用既有普通 deal gateway；Prepared Direct 必须继续使用其专用的 prepare/claim/execute/release gateway，保留 request identity、跨 tick pending 与 unknown/throw 保守持有，RoomLogisticsAgent 不得把它降级成普通 `executeMarketDeal`。
 
 #### Scenario: Survival energy 与普通合同竞争同一 terminal
 
@@ -12,7 +14,7 @@
 #### Scenario: Market 与合同不能双重占用窗口
 
 - **WHEN** 同一房间同时有可执行 sell deal 与 ready TransferContract
-- **THEN** Agent 必须只执行一个 terminal action，并按显式 priority/market policy 记录另一个动作的等待原因
+- **THEN** Agent 必须只向既有 arbiter 提交一个获准 terminal action，并按显式 priority/market policy 记录另一个动作的等待原因
 
 #### Scenario: Market 买入也必须通过本房容量检查
 
@@ -45,12 +47,19 @@ source Agent 只能（MUST）为持有有效 CapacityLease、位于当前或下�
 
 ### Requirement: Carrier claim 必须持久、定量且可回收
 
-每个 StageWork claim 必须（MUST）持久化 contractId、workId、creepName、claimedAmount、phase、claimedAt 和 leaseUntil。全部 active claims 的 amount 不得超过该工作待 staging 数量；claim 必须在成功交付、显式释放、creep 死亡或 lease 过期时回收。进程内 CarrierTaskBoard 不得成为唯一状态源。
+每个 StageWork 必须（MUST）使用完整 `CarrierDispatchRef` 发布到既有 owner-aware `CarrierTaskBoard`；持久 claim 必须保存 contractId、完整 work ref、creepName、claimedAmount、phase、claimedAt 和 leaseUntil。全部 active claims 的 amount 不得超过该工作待 staging 数量；claim 必须在成功交付、显式释放、creep 死亡或 lease 过期时回收。进程内 CarrierTaskBoard 不得成为唯一状态源，也不得建立平行 board。
+
+同一 work 必须（MUST）由唯一 `executionAuthority` 选择持久 StageWorkClaim 或 legacy tick-bound `CarrierAmountSlicePort`。持久 claim 启用后不得再让 amount slice 对同一 work 扣量；未迁移 work 继续保持既有 same-tick commit/release 语义。
 
 #### Scenario: 两个 carrier 不会重复认领同一数量
 
 - **WHEN** StageWork 只剩 1,000 待搬，两个 carrier 在同一 tick 请求任务
 - **THEN** 两个 active claim 的合计不得超过 1,000，后一个 carrier 只能取得剩余量或无任务
+
+#### Scenario: 持久 claim 与 legacy amount slice 不双重计量
+
+- **WHEN** 一个 StageWork 已把 executionAuthority 切换为 contract claim
+- **THEN** Carrier 必须使用完整 ref 从持久 claim 取得预算，`CarrierAmountSlicePort` 不得再为同一 work/step 发放 slice
 
 #### Scenario: Global reset 后恢复 carrying claim
 

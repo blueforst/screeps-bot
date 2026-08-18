@@ -1,7 +1,10 @@
 import { runSynthesisControl, pauseSynthesisForBoost, resumeSynthesisAfterBoost } from "@/runtime/synthesisControl";
 import {
+  countPendingIncomingResourceTransferTasksByRoom,
+  createAutomaticResourceTransferTask,
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
+  markResourceTransferTaskBlocked,
 } from "@/runtime/logistics/resourceTransferTasks";
 
 type RuntimeGlobal = typeof global & {
@@ -120,7 +123,7 @@ describe("runSynthesisControl hub import guard", () => {
     };
   });
 
-  it("creates synthesis transfer for remaining deficit when hub import partially covers", () => {
+  it("creates synthesis transfer for the live deficit while expired capacity tasks remain raw pending", () => {
     const hubRoom = createRoomWithResources({
       name: "W1N1",
       mineralType: RESOURCE_UTRIUM,
@@ -137,6 +140,17 @@ describe("runSynthesisControl hub import guard", () => {
     });
     Game.rooms[hubRoom.name] = hubRoom;
     Game.rooms[donorRoom.name] = donorRoom;
+
+    const expiredResult = createAutomaticResourceTransferTask(
+      donorRoom.name,
+      hubRoom.name,
+      RESOURCE_UTRIUM,
+      400,
+      `synthesis:${hubRoom.name}:${RESOURCE_UTRIUM_HYDRIDE}`,
+    );
+    if (typeof expiredResult === "string") throw new Error("unexpected automatic task creation failure");
+    markResourceTransferTaskBlocked(expiredResult.task, "receiver_capacity");
+    Game.time += 500;
 
     const hubImportResult = createResourceTransferTask(
       donorRoom.name,
@@ -155,9 +169,14 @@ describe("runSynthesisControl hub import guard", () => {
     const synthesisTasks = allTasks.filter(
       (t) => t.status === "pending" && t.reason?.startsWith("synthesis:"),
     );
-    const utriumSynthesisTasks = synthesisTasks.filter((t) => t.resource === RESOURCE_UTRIUM);
-    expect(utriumSynthesisTasks.length).toBe(1);
+    const utriumSynthesisTasks = synthesisTasks.filter(
+      (t) => t.resource === RESOURCE_UTRIUM && t.id !== expiredResult.task.id,
+    );
+    expect(expiredResult.task.amount).toBe(400);
+    expect(utriumSynthesisTasks).toHaveLength(1);
     expect(utriumSynthesisTasks[0].amount).toBe(300);
+    expect(countPendingIncomingResourceTransferTasksByRoom(hubRoom.name)).toBe(4);
+    expect(Memory.runtime!.synthesisControl!.rooms[hubRoom.name].pendingTasks).toBe(3);
   });
 });
 

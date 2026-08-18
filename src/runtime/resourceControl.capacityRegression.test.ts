@@ -5,6 +5,7 @@ import {
 import {
   createAutomaticResourceTransferTask,
   ensureResourceTransferTaskStore,
+  markResourceTransferTaskBlocked,
 } from "@/runtime/logistics/resourceTransferTasks";
 import { runResourceControl } from "@/runtime/resourceControl";
 
@@ -214,7 +215,7 @@ describe("resource control live-like capacity recovery", () => {
     expect(getCarrierTasksByRoom(room.name)).toEqual({});
   });
 
-  it("bootstraps only the full fee when capacity-relief cargo is already in a pressured terminal", () => {
+  it("bootstraps the full capacity-relief fee while retaining coverage-expiry observability", () => {
     const source = createMutableRoom(
       "E3N59",
       { [RESOURCE_ENERGY]: 146_000, [RESOURCE_HYDROGEN]: 840_000 },
@@ -242,9 +243,34 @@ describe("resource control live-like capacity recovery", () => {
     );
     if (typeof created === "string") throw new Error(created);
 
-    Game.time = 10;
+    const expired = createAutomaticResourceTransferTask(
+      source.name,
+      receiver.name,
+      RESOURCE_OXYGEN,
+      100,
+      `synthesis:${receiver.name}:${RESOURCE_HYDROXIDE}`,
+    );
+    if (typeof expired === "string") throw new Error(expired);
+    markResourceTransferTaskBlocked(expired.task, "receiver_capacity");
+
+    Game.time = 510;
     resetRuntimeServices();
     runResourceControl();
+
+    expect(expired.task).toEqual(expect.objectContaining({
+      status: "cancelled",
+      lastError: "automatic_receiver_capacity_coverage_timeout",
+    }));
+    expect(Memory.runtime?.resourceControl?.taskSummary).toEqual(
+      expect.objectContaining({
+        pending: 1,
+        demandCoveringIncoming: 1,
+        coverageExpiredIncoming: 1,
+        coverageExpiredByReason: {
+          automatic_receiver_capacity_coverage_timeout: 1,
+        },
+      }),
+    );
 
     expect(Memory.runtime?.resourceControl?.rooms[source.name]?.staging).toMatchObject({
       admittedAmount: 2_500,
@@ -265,7 +291,7 @@ describe("resource control live-like capacity recovery", () => {
     )).toBe(false);
 
     expect(executeTerminalFeedTasks(source)).toBe(2_000);
-    Game.time = 20;
+    Game.time = 520;
     resetRuntimeServices();
     runResourceControl();
 
