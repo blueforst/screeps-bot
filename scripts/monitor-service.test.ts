@@ -75,6 +75,108 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
       receiver_capacity: 2,
     });
     expect(resourceControl.capacityIndexBuildCount).toBe(1);
+    expect(resourceControl.logistics).toEqual({
+      available: true,
+      livenessAvailable: true,
+      schemaVersion: 1,
+      updatedAt: 2000,
+      expiresAt: 2010,
+      requestedMode: "shadow",
+      effectiveAuthority: "legacy",
+      blocker: null,
+      complete: true,
+      projectionTruncated: false,
+      inScopeByOrigin: {
+        synthesis_room: 1,
+      },
+      outOfScopeByOrigin: {
+        synthesis_distributed_demand: 2,
+      },
+      intent: {
+        total: 1,
+        active: 1,
+        fresh: 1,
+        stale: 0,
+        paired: 1,
+        inputDrift: 0,
+        emitted: 1,
+        dropped: 0,
+        truncated: false,
+      },
+      comparison: {
+        total: 1,
+        matched: 1,
+        different: 0,
+        unresolved: 0,
+        byReason: {
+          equal: 1,
+        },
+        dimensions: {
+          donor: { matched: 1, different: 0, unresolved: 0 },
+          route: { matched: 1, different: 0, unresolved: 0 },
+          priority: { matched: 1, different: 0, unresolved: 0 },
+          demandCoverage: { matched: 1, different: 0, unresolved: 0 },
+          receiverHeadroom: { matched: 1, different: 0, unresolved: 0 },
+          predictedStagingEligibility: {
+            matched: 1,
+            different: 0,
+            unresolved: 0,
+          },
+        },
+        samples: [
+          {
+            intentId: "logistics-intent:synthesis:W1N1:X",
+            status: "equal",
+            reason: "equal",
+            differingDimensions: [],
+            legacySourceRoomName: "W2N1",
+            shadowSourceRoomName: "W2N1",
+            predictedStagingEligibility: "eligible",
+          },
+        ],
+      },
+      matcher: {
+        indexBuilds: 1,
+        candidateEvaluations: 2,
+        transactionCostEvaluations: 2,
+        totalTransactionCostEvaluations: 2,
+        candidateBudget: 128,
+        budgetExhausted: false,
+        continuationCursor: null,
+      },
+      // 这里只证明边界结束时没有可见 Shadow records；瞬时 send/deal
+      // attempt 由本地 disabled-vs-shadow mock gate 验证，不由 live 投影声称。
+      safety: {
+        measurementBoundary: "observable_state_diff_v1",
+        nonLegacyAuthorityRecords: 0,
+        activeContracts: 0,
+        activeLeases: 0,
+        activeClaims: 0,
+        shadowArbiterActorRecords: 0,
+        shadowClaimRecords: 0,
+        shadowJournalRecords: 0,
+        shadowCarrierTaskRecords: 0,
+        shadowReceiverReservationRecords: 0,
+        violations: [],
+      },
+      resources: {
+        dataItems: 4,
+        runtimeItems: 4,
+        dataBytes: 349,
+        runtimeBytes: 1714,
+        totalBytes: 2063,
+        withinLimit: true,
+        observedDataItems: 4,
+        observedDataBytes: 349,
+        observedRuntimeItems: 4,
+        observedRuntimeBytes: 1714,
+      },
+      cpu: {
+        measurementAvailable: true,
+        captureUsed: 0.1,
+        used: 0.35,
+      },
+    });
     expect(resourceControl.taskSummary).toEqual({
       pending: 4,
       manualPending: 1,
@@ -225,6 +327,26 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
       coverageExpiredIncoming: null,
       coverageExpiredByReason: null,
     });
+    expect(legacy.resourceControl.logistics).toEqual({
+      available: false,
+      livenessAvailable: false,
+      schemaVersion: null,
+      updatedAt: null,
+      expiresAt: null,
+      requestedMode: null,
+      effectiveAuthority: null,
+      blocker: null,
+      complete: null,
+      projectionTruncated: null,
+      inScopeByOrigin: null,
+      outOfScopeByOrigin: null,
+      intent: null,
+      comparison: null,
+      matcher: null,
+      safety: null,
+      resources: null,
+      cpu: null,
+    });
     expect(legacy.hub.distributedSynthesis).toEqual({
       livenessAvailable: false,
       blockedTargets: null,
@@ -244,6 +366,13 @@ describe("monitor-service Hub protection projection", () => {
     const fixture = JSON.parse(
       readFileSync(sourcePath, "utf8"),
     ) as Record<string, any>;
+    fixture.analytics.production = {
+      rooms: {
+        W1N1: {
+          latest: { tick: 2000 },
+        },
+      },
+    };
     const oversized = "x".repeat(8_192);
     fixture.analytics.hub.protectionAttempt.reason =
       oversized;
@@ -274,6 +403,7 @@ describe("monitor-service Hub protection projection", () => {
     fixture.runtime.hub.distributedSynthesis.configReconcile.refreshedRooms =
       Array.from({ length: 110 }, (_, index) => `W${index}N1`);
     fixture.runtime.resourceControl = {
+      updatedAt: 2000,
       taskSummary: {
         pending: 0,
         manualPending: 0,
@@ -286,6 +416,72 @@ describe("monitor-service Hub protection projection", () => {
           [oversized]: 999,
         },
       },
+      logistics: JSON.parse(
+        JSON.stringify(
+          (
+            JSON.parse(
+              readFileSync(
+                resolve(
+                  REPO_ROOT,
+                  "scripts/fixtures/resource-control-headroom-monitor.json",
+                ),
+                "utf8",
+              ),
+            ) as Record<string, any>
+          ).runtime.resourceControl.logistics,
+        ),
+      ),
+    };
+    const resourceControlFixture = JSON.parse(
+      readFileSync(
+        resolve(
+          REPO_ROOT,
+          "scripts/fixtures/resource-control-headroom-monitor.json",
+        ),
+        "utf8",
+      ),
+    ) as Record<string, any>;
+    fixture.data.resourceControl = {
+      tasks: {},
+      logistics: JSON.parse(
+        JSON.stringify(
+          resourceControlFixture.data.resourceControl.logistics,
+        ),
+      ),
+    };
+    const validLogistics = JSON.parse(
+      JSON.stringify(
+        fixture.runtime.resourceControl.logistics,
+      ),
+    ) as Record<string, any>;
+    const validDataLogistics = JSON.parse(
+      JSON.stringify(
+        fixture.data.resourceControl.logistics,
+      ),
+    ) as Record<string, any>;
+
+    const refreshRuntimeResourceAttestation = (
+      logistics: Record<string, any>,
+    ): void => {
+      logistics.resources.runtimeItems =
+        logistics.comparison.samples.length +
+        logistics.safety.violations.length +
+        Object.keys(logistics.inScopeByOrigin).length +
+        Object.keys(logistics.outOfScopeByOrigin).length +
+        Object.keys(logistics.comparison.byReason).length;
+      for (let iteration = 0; iteration < 6; iteration += 1) {
+        logistics.resources.runtimeBytes = Buffer.byteLength(
+          JSON.stringify(logistics),
+          "utf8",
+        );
+        logistics.resources.totalBytes =
+          logistics.resources.dataBytes +
+          logistics.resources.runtimeBytes;
+        logistics.resources.withinLimit =
+          logistics.resources.dataBytes <= 16_384 &&
+          logistics.resources.runtimeBytes <= 16_384 &&
+          logistics.resources.totalBytes <= 32_768;
+      }
     };
 
     const temporaryDirectory = mkdtempSync(
@@ -331,6 +527,380 @@ describe("monitor-service Hub protection projection", () => {
       expect(
         Object.keys(base.quota.lanes.samples)[0],
       ).toHaveLength(256);
+
+      const executeLogisticsMutation = (
+        mutate: (logistics: Record<string, any>) => void,
+        refreshAttestation = true,
+      ): Record<string, any> => {
+        const logistics = JSON.parse(
+          JSON.stringify(validLogistics),
+        ) as Record<string, any>;
+        mutate(logistics);
+        if (refreshAttestation) {
+          refreshRuntimeResourceAttestation(logistics);
+        }
+        fixture.runtime.resourceControl.logistics = logistics;
+        fixture.data.resourceControl.logistics = JSON.parse(
+          JSON.stringify(validDataLogistics),
+        );
+        writeFileSync(
+          fixturePath,
+          JSON.stringify(fixture),
+          "utf8",
+        );
+        return executeFixture(fixturePath).payload.memory
+          .resourceControl.logistics;
+      };
+
+      const executeDataLogisticsMutation = (
+        mutate: (logistics: Record<string, any>) => void,
+        refreshAttestation = true,
+      ): Record<string, any> => {
+        const runtimeLogistics = JSON.parse(
+          JSON.stringify(validLogistics),
+        );
+        fixture.runtime.resourceControl.logistics = runtimeLogistics;
+        const dataLogistics = JSON.parse(
+          JSON.stringify(validDataLogistics),
+        ) as Record<string, any>;
+        mutate(dataLogistics);
+        fixture.data.resourceControl.logistics = dataLogistics;
+        if (refreshAttestation) {
+          runtimeLogistics.resources.dataItems =
+            Array.isArray(dataLogistics.i) &&
+            Array.isArray(dataLogistics.o) &&
+            Array.isArray(dataLogistics.f) &&
+            Array.isArray(dataLogistics.p)
+              ? (2 * dataLogistics.i.length) +
+                dataLogistics.o.length +
+                dataLogistics.f.length +
+                dataLogistics.p.length
+              : 0;
+          runtimeLogistics.resources.dataBytes = Buffer.byteLength(
+            JSON.stringify(dataLogistics),
+            "utf8",
+          );
+          refreshRuntimeResourceAttestation(runtimeLogistics);
+        }
+        writeFileSync(
+          fixturePath,
+          JSON.stringify(fixture),
+          "utf8",
+        );
+        return executeFixture(fixturePath).payload.memory
+          .resourceControl.logistics;
+      };
+
+      const currentTickAnalytics = fixture.analytics.production;
+      delete fixture.analytics.production;
+      expect(
+        executeLogisticsMutation(() => {}).livenessAvailable,
+      ).toBe(false);
+      fixture.analytics.production = currentTickAnalytics;
+
+      const dataItemMismatch = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.s.push("zz-producer");
+          logistics.p.push([
+            8, 7, 4, 2000, 2010, 0, 0, 0, 0, 0, 32, 0,
+          ]);
+        },
+        false,
+      );
+      expect(dataItemMismatch.resources).toEqual(
+        expect.objectContaining({
+          dataItems: 4,
+          observedDataItems: 5,
+        }),
+      );
+      expect(dataItemMismatch.livenessAvailable).toBe(false);
+      fixture.data.resourceControl.logistics = JSON.parse(
+        JSON.stringify(validDataLogistics),
+      );
+
+      const malformedWireArity = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.o[0].pop();
+        },
+      );
+      expect(malformedWireArity.resources.dataItems).toBe(
+        malformedWireArity.resources.observedDataItems,
+      );
+      expect(malformedWireArity.resources.dataBytes).toBe(
+        malformedWireArity.resources.observedDataBytes,
+      );
+      expect(malformedWireArity.livenessAvailable).toBe(false);
+      const invalidWireIndex = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.i[0][0] = 999;
+        },
+      );
+      expect(invalidWireIndex.livenessAvailable).toBe(false);
+      const unknownWireEnum = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.i[0][4] = 99;
+        },
+      );
+      expect(unknownWireEnum.livenessAvailable).toBe(false);
+      const negativeWireAmount = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.i[0][8] = -1;
+        },
+      );
+      expect(negativeWireAmount.livenessAvailable).toBe(false);
+      const unknownWireResource = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.s[3] = "not-a-screeps-resource";
+        },
+      );
+      expect(unknownWireResource.livenessAvailable).toBe(false);
+      const cursorBehindGeneration = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.c = 0;
+        },
+      );
+      expect(cursorBehindGeneration.resources.dataBytes).toBe(
+        cursorBehindGeneration.resources.observedDataBytes,
+      );
+      expect(cursorBehindGeneration.livenessAvailable).toBe(false);
+      const missingProducerSnapshot = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.s.pop();
+          logistics.p = [];
+        },
+      );
+      expect(missingProducerSnapshot.livenessAvailable).toBe(false);
+      const mismatchedSnapshotEmission = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.p[0][7] = 2;
+          logistics.p[0][8] = 2;
+        },
+      );
+      expect(mismatchedSnapshotEmission.livenessAvailable).toBe(false);
+      const snapshotExpiryGap = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.p[0][4] = 2009;
+        },
+      );
+      expect(snapshotExpiryGap.livenessAvailable).toBe(false);
+      const discontinuousDecisionOrder = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.o[0][5] = 1;
+        },
+      );
+      expect(discontinuousDecisionOrder.livenessAvailable).toBe(false);
+      const canonicalCodeUnitWire = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.s.push("é");
+          logistics.p.push([
+            8, 7, 4, 2000, 2010, 0, 0, 0, 0, 0, 32, 0,
+          ]);
+        },
+      );
+      expect(canonicalCodeUnitWire.livenessAvailable).toBe(true);
+      const nonCanonicalWire = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.s.push("unused-string");
+        },
+      );
+      expect(nonCanonicalWire.resources.dataBytes).toBe(
+        nonCanonicalWire.resources.observedDataBytes,
+      );
+      expect(nonCanonicalWire.livenessAvailable).toBe(false);
+      const oversizedWireCollection = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.p = Array.from(
+            { length: 33 },
+            () => [...logistics.p[0]],
+          );
+        },
+      );
+      expect(
+        oversizedWireCollection.resources.observedDataItems,
+      ).toBeNull();
+      expect(oversizedWireCollection.livenessAvailable).toBe(false);
+      const oversizedWireBytes = executeDataLogisticsMutation(
+        (logistics) => {
+          logistics.s[0] = "x".repeat(17_000);
+        },
+      );
+      expect(
+        oversizedWireBytes.resources.observedDataBytes,
+      ).toBeGreaterThan(16_384);
+      expect(oversizedWireBytes.livenessAvailable).toBe(false);
+
+      expect(
+        executeLogisticsMutation((logistics) => {
+          logistics.expiresAt = 1999;
+        }).livenessAvailable,
+      ).toBe(false);
+      const unknownEnum = executeLogisticsMutation(
+        (logistics) => {
+          logistics.requestedMode = "mystery";
+        },
+      );
+      expect(unknownEnum.requestedMode).toBeNull();
+      expect(unknownEnum.livenessAvailable).toBe(false);
+      const unknownCountKey = executeLogisticsMutation(
+        (logistics) => {
+          logistics.inScopeByOrigin = {
+            unknown_origin: 1,
+          };
+        },
+      );
+      expect(unknownCountKey.inScopeByOrigin).toEqual({});
+      expect(unknownCountKey.livenessAvailable).toBe(false);
+      const originCountMismatch = executeLogisticsMutation(
+        (logistics) => {
+          logistics.inScopeByOrigin.synthesis_room = 2;
+        },
+      );
+      expect(originCountMismatch.livenessAvailable).toBe(false);
+      const freshnessCountMismatch = executeLogisticsMutation(
+        (logistics) => {
+          logistics.intent.fresh = 0;
+        },
+      );
+      expect(freshnessCountMismatch.livenessAvailable).toBe(false);
+      const comparisonCountMismatch = executeLogisticsMutation(
+        (logistics) => {
+          logistics.intent.active = 0;
+        },
+      );
+      expect(comparisonCountMismatch.livenessAvailable).toBe(false);
+      const fakeDisabledSuccess = executeLogisticsMutation(
+        (logistics) => {
+          logistics.requestedMode = "disabled";
+        },
+      );
+      expect(fakeDisabledSuccess.available).toBe(true);
+      expect(fakeDisabledSuccess.livenessAvailable).toBe(false);
+      const negativeCpu = executeLogisticsMutation(
+        (logistics) => {
+          logistics.cpu.used = -0.01;
+        },
+      );
+      expect(negativeCpu.cpu.used).toBeNull();
+      expect(negativeCpu.livenessAvailable).toBe(false);
+      const oversizedProjection = executeLogisticsMutation(
+        (logistics) => {
+          logistics.resources.dataItems = 161;
+          logistics.resources.dataBytes = 0;
+          logistics.resources.runtimeBytes = 16_385;
+          logistics.resources.totalBytes = 16_385;
+        },
+        false,
+      );
+      expect(oversizedProjection.resources.dataItems).toBeNull();
+      expect(oversizedProjection.resources.runtimeBytes).toBeNull();
+      expect(oversizedProjection.livenessAvailable).toBe(false);
+      const oversizedCombined = executeLogisticsMutation(
+        (logistics) => {
+          logistics.resources.dataBytes = 20_000;
+          logistics.resources.runtimeBytes = 13_000;
+          logistics.resources.totalBytes = 33_000;
+          logistics.resources.withinLimit = false;
+        },
+        false,
+      );
+      expect(oversizedCombined.resources.dataBytes).toBeNull();
+      expect(oversizedCombined.resources.totalBytes).toBeNull();
+      expect(oversizedCombined.livenessAvailable).toBe(false);
+      const observableRecord = executeLogisticsMutation(
+        (logistics) => {
+          logistics.safety.shadowJournalRecords = 1;
+        },
+      );
+      expect(observableRecord.safety.shadowJournalRecords).toBe(1);
+      expect(observableRecord.livenessAvailable).toBe(false);
+      const impossibleActiveContract = executeLogisticsMutation(
+        (logistics) => {
+          logistics.safety.activeContracts = 1;
+        },
+      );
+      expect(impossibleActiveContract.safety.activeContracts).toBe(1);
+      expect(impossibleActiveContract.livenessAvailable).toBe(false);
+      const unknownMeasurementBoundary = executeLogisticsMutation(
+        (logistics) => {
+          logistics.safety.measurementBoundary = "attempt_counter_v1";
+        },
+      );
+      expect(
+        unknownMeasurementBoundary.safety.measurementBoundary,
+      ).toBeNull();
+      expect(unknownMeasurementBoundary.livenessAvailable).toBe(false);
+      const truncatedIntent = executeLogisticsMutation(
+        (logistics) => {
+          logistics.intent.dropped = 1;
+          logistics.intent.truncated = true;
+        },
+      );
+      expect(truncatedIntent.intent).toEqual(
+        expect.objectContaining({
+          dropped: 1,
+          truncated: true,
+        }),
+      );
+      expect(truncatedIntent.livenessAvailable).toBe(false);
+      const exhaustedMatcher = executeLogisticsMutation(
+        (logistics) => {
+          logistics.matcher.candidateEvaluations = 128;
+          logistics.matcher.budgetExhausted = true;
+        },
+      );
+      expect(exhaustedMatcher.matcher.budgetExhausted).toBe(true);
+      expect(exhaustedMatcher.livenessAvailable).toBe(false);
+      const oversizedCostScan = executeLogisticsMutation(
+        (logistics) => {
+          logistics.matcher.transactionCostEvaluations = 4_353;
+          logistics.matcher.totalTransactionCostEvaluations = 4_353;
+        },
+      );
+      expect(
+        oversizedCostScan.matcher.transactionCostEvaluations,
+      ).toBeNull();
+      expect(oversizedCostScan.livenessAvailable).toBe(false);
+      const incompleteProjection = executeLogisticsMutation(
+        (logistics) => {
+          logistics.complete = false;
+          logistics.projectionTruncated = true;
+        },
+      );
+      expect(incompleteProjection.complete).toBe(false);
+      expect(incompleteProjection.projectionTruncated).toBe(true);
+      expect(incompleteProjection.livenessAvailable).toBe(false);
+      const unavailableCpu = executeLogisticsMutation(
+        (logistics) => {
+          logistics.cpu.measurementAvailable = false;
+          logistics.cpu.used = 0;
+        },
+      );
+      expect(unavailableCpu.cpu).toEqual({
+        measurementAvailable: false,
+        captureUsed: 0.1,
+        used: 0,
+      });
+      expect(unavailableCpu.livenessAvailable).toBe(false);
+      const oversizedSafety = executeLogisticsMutation(
+        (logistics) => {
+          logistics.safety.violations = Array.from(
+            { length: 25 },
+            (_, index) => index === 0
+              ? oversized
+              : `logistics-violation:${index}`,
+          );
+        },
+      );
+      expect(oversizedSafety.safety.violations).toHaveLength(20);
+      expect(oversizedSafety.safety.violations[0]).toHaveLength(256);
+      expect(oversizedSafety.livenessAvailable).toBe(false);
+      const malformedSample = executeLogisticsMutation(
+        (logistics) => {
+          logistics.comparison.samples[0].status = "same";
+        },
+      );
+      expect(malformedSample.comparison.samples[0].status).toBeNull();
+      expect(malformedSample.livenessAvailable).toBe(false);
 
       fixture.runtime.hub.distributedSynthesis.blockedTargets = [123];
       fixture.runtime.resourceControl.taskSummary.coverageExpiredByReason = {

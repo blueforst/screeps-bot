@@ -2,12 +2,22 @@
 
 ### Requirement: Producer 必须发布幂等的最新状态型 intent
 
-每个物流 producer 必须（MUST）以稳定 `(producer, demandKey)` 发布最新 offer/demand，并携带唯一 id、kind、room、resource、绝对 desired/available amount、显式 priority class、revision、observedAt、expiresAt 和可选 deadline/固定端点约束。同一个 key 同时最多只能有一个 active revision；系统不得（MUST NOT）把 heartbeat 或相同 revision 重放解释为新需求或实际进度。
+每个物流 producer 必须（MUST）以稳定 `(producer, demandKey)` 发布最新 offer/demand 语义 draft 与 TTL，包括 kind、room、resource、绝对 desired/available amount、显式 priority class 和可选 deadline/固定端点约束。caller 不得（MUST NOT）拥有或选择 id、generation、revision、observedAt、expiresAt；这些生命周期字段必须由 store 物化。同一个 key 同时最多只能有一个 active revision：同一未过期生命周期内的同语义 heartbeat 必须保留 generation/revision 并只单调延长 freshness；语义变化必须由 store 原子写入 revision+1；过期后再次发布或 inactive→active 必须分配新的全局单调 generation 与 intent id，并从新生命周期的 revision 1 开始。heartbeat 不得创建新 commitment、改变 delivered/remaining 或刷新实际进度。
 
-#### Scenario: 相同 revision 重放无副作用
+#### Scenario: 同语义 heartbeat 保留 store revision
 
-- **WHEN** producer 在两个周期发布完全相同的 demandKey、revision 和 desired amount
-- **THEN** 系统必须保留同一 active intent，且不得新增合同、增加 remaining 或刷新 `lastProgressAt`
+- **WHEN** producer 在两个周期为同一 demandKey 发布完全相同的语义 draft 与有效 TTL
+- **THEN** store 必须保留同一 id、generation 和 revision，只单调延长 observedAt/expiresAt freshness，且不得改变绝对需求、新增合同、增加 remaining 或刷新 `lastProgressAt`
+
+#### Scenario: 语义变化由 store 原子递增 revision
+
+- **WHEN** producer 在同一未过期生命周期为同一 demandKey 改变 desired amount、priority、deadline 或端点约束，即使输入对象夹带伪造 revision
+- **THEN** store 必须忽略 caller 对 revision 的选择并将已存 revision 原子加一，不得保留、回退或跳到 caller 指定的 revision
+
+#### Scenario: 过期或重新激活开始新 generation
+
+- **WHEN** intent 已过期后再次发布，或 active=false 的 intent 重新以 active=true 发布
+- **THEN** store 必须分配新的全局单调 generation 与 intent id，并从新生命周期的 revision 1 开始，不得复用旧 identity
 
 #### Scenario: 需求修订保留已交付进度
 
@@ -21,8 +31,74 @@
 
 #### Scenario: 过期 intent 不再匹配
 
-- **WHEN** 当前 tick 已超过 intent.expiresAt 且 producer 未续订 revision
+- **WHEN** 当前 tick 已超过 intent.expiresAt 且 producer 未发布有效 heartbeat 或新语义 draft
 - **THEN** matcher 不得基于该 intent 创建新合同，但必须保留已有合同的可审计状态并按其生命周期处理
+
+### Requirement: 纯 Shadow 必须默认关闭并保持 legacy 唯一执行权
+
+物流模式必须（MUST）为 `disabled | shadow | canary | enabled`，默认及未知 mode/schemaVersion 必须 fail closed 为 `disabled`。纯 `shadow` 中 legacy executor 必须保持每个 demand 的唯一 `executionAuthority`；Shadow 只能写入有界 latest-state intent/comparator/runtime，不得（MUST NOT）创建 active TransferContract、CapacityLease 或 StageWorkClaim，不得修改 legacy task/authority，也不得向 terminal/deal arbiter 新增 actor、claim 或 side effect。legacy 本身的正常 staging/send/deal 不是 Shadow side effect，不得因此被禁止或报告违规。
+
+首片的零新增副作用验收必须（MUST）在相同 fixture 上比较 `disabled` 与 `shadow`：除 `Memory.data.resourceControl.logistics`、`Memory.runtime.resourceControl.logistics` 外，legacy transfer task、CarrierTaskBoard、terminal/account claim 与 journal、receiver reservation、terminal/store 及其他 Memory 投影必须没有可观察差分，terminal.send 与 deal mock 不得出现 Shadow 新增调用。live 投影只可声明 `effectiveAuthority=legacy`、active contract/lease/claim store 为零、无 Logistics Shadow actor/claim/journal 记录与可观察 invariant violation；在没有跨模块 mutator-boundary instrumentation 时，系统不得（MUST NOT）把硬编码零值或净状态相等宣称为已经证明“瞬时发生后又回滚、释放或失败的 attempt 从未发生”。
+
+首个可部署 Shadow 的唯一 in-scope origin 必须是 `synthesis_room`，由 typed `synthesisControl` producer/hook 标记，对应 room reaction legacy reason `synthesis:<room>:<product>`；系统不得（MUST NOT）用 reason 前缀猜测 scope。该 origin 的首片 `priorityClass` 必须为 `production`，并与 legacy rank 2 做语义对照；没有显式 deadlineAt 时不得从 stage/missing/reason 猜测 `deadline`。`synthesis_distributed_demand`（`synthesis:direct:*`、`synthesis:hub-route:*`、`synthesis:resupply:*`）、`synthesis:surplus:*` 和 `auto:synthesis:*` 必须显式投影 `out_of_scope` 与具体 reason，不得进入首片 comparator 的 in-scope coverage 分母或获得 authority。
+
+#### Scenario: Reason 前缀不能扩大首片 scope
+
+- **WHEN** typed Hub producer 产生 `synthesis:direct:X` decision，同轮 typed `synthesisControl` producer 产生 `synthesis:<room>:<product>` decision
+- **THEN** 只有后者必须进入 `synthesis_room` in-scope comparator，前者必须记为 `out_of_scope/synthesis_distributed_demand`
+
+#### Scenario: Room synthesis 不伪造 deadline
+
+- **WHEN** `synthesis_room` demand 没有显式 deadlineAt，但 room 处于 acquiring 或 missing 状态
+- **THEN** Shadow priority 必须仍为 `production`，并将其与 legacy rank 2 判为语义一致，不得升为 `deadline`
+
+#### Scenario: 默认配置不启动 Shadow
+
+- **WHEN** logistics mode 缺失、schemaVersion 不支持或 mode 不在规范枚举中
+- **THEN** 系统必须按 `disabled` 处理，不发布 P1 intent、不运行 comparator、不修改 authority，并投影 fail-closed blocker
+
+#### Scenario: Shadow 不取得执行权
+
+- **WHEN** `synthesis_room` Shadow 候选与 legacy donor/route 一致且所有安全条件成立
+- **THEN** 系统仍只能写 comparator 结果，active contract/lease/claim 必须为零，legacy authority 不变；同 fixture 的 `shadow` 相对 `disabled` 不得产生非 logistics 可观察状态差分，send/deal mock 不得出现新增调用
+
+#### Scenario: 净状态不能伪装成瞬时 attempt 证据
+
+- **WHEN** 首片尚未在 arbiter、CarrierTaskBoard、receiver reservation、authority/contract/lease/claim writer 与 direct send/deal gateway 布设统一 attempt instrumentation
+- **THEN** runtime/monitor 只能报告可观察 authority/store/actor/claim/journal/invariant 状态，不得把零字段或运行后状态相等解释为已经排除中途发生后被回滚、释放或失败的 attempt
+
+#### Scenario: 后续 Synthesis origin 显式排除
+
+- **WHEN** 同一轮出现 distributed direct/hub-route/resupply、surplus 或 compatibility planner decision
+- **THEN** runtime 必须记录其 `out_of_scope` origin/reason 和数量，不得把它们算成首片 in-scope match 或静默遗漏
+
+### Requirement: Synthesis Shadow 必须使用写前冻结输入与精确 legacy 配对
+
+`synthesis_room` producer 必须（MUST）在任何 legacy task create/merge/cancel 之前冻结不可变 intent、room facts、P0 headroom/fee/ready tick 与健康 legacy commitments，并在同轮捕获实际 legacy decision。matcher 必须只读该写前冻结输入。若某调用点只能使用写后任务库，系统只能根据 stable comparison key 与精确 legacy decision/task identity 排除已配对的自身 incoming/outgoing/capacity commitment；不得（MUST NOT）按 reason 前缀、房间+资源或整类 Synthesis 任务宽泛排除。
+
+Shadow comparator 必须比较 donor、route、priority、demand coverage、receiver headroom、`predictedStagingEligibility` 和 CPU。`predictedStagingEligibility` 只是基于冻结 P0 admission 输入的预测，不是实际 staging、StageWork、lease 或 claim 证据。
+
+Shadow 输入/结果必须（MUST）只写入独立 logistics owner 分支，不得（MUST NOT）修改 `synthesisControl.rooms[].missing`、donor bindings、`hub.needsPlan`、legacy pending/action 投影或任何被生产/market 读取的旧事实。
+
+#### Scenario: 写前冻结防止新 legacy task 自我遮蔽
+
+- **WHEN** `synthesis_room` 在本轮为缺口创建或 merge legacy task
+- **THEN** matcher 必须使用 legacy 写入前的 demand/commitment/headroom 事实，新 task 不得让 Shadow 需求伪装为已覆盖
+
+#### Scenario: 写后回退只精确排除配对任务
+
+- **WHEN** 某调用点必须从已包含本轮 legacy 写入的 task store 构建 comparator 输入
+- **THEN** 系统必须只排除 stable comparison key 指向的精确 legacy task/delta，其他同房同资源 commitment 仍必须参与安全计算
+
+#### Scenario: predicted staging 不产生实际工作
+
+- **WHEN** Shadow 候选在冻结 P0 输入下被判定可预装
+- **THEN** runtime 可记录 `predictedStagingEligibility=true`，但不得创建 Carrier task、StageWork、CapacityLease、claim 或容量 reservation
+
+#### Scenario: Shadow 投影不污染生产输入
+
+- **WHEN** Shadow matcher 计算出与 legacy 不同的 donor 或 residual demand
+- **THEN** 差异只能写入 logistics comparator DTO，不得修改 synthesis missing/binding、触发 Hub 重规划或让 market 把 Shadow residual 当真实缺口
 
 ### Requirement: 房间物流事实必须新鲜且来自安全物理状态
 
@@ -141,7 +217,9 @@ TransferContract 必须（MUST）持久化身份、不可变路线、显式 prio
 
 ### Requirement: Legacy 迁移必须保证单一执行权和可回滚
 
-系统必须（MUST）以 versioned、幂等迁移把 legacy resource-transfer task 映射为合同，并为每个需求保存唯一 `executionAuthority`。迁移、legacy skip 标记和合同创建必须原子完成；同一需求不得（MUST NOT）同时由 legacy executor 与 RoomLogisticsAgent 执行或重复扣减容量。survival energy、Hub/Synthesis/PowerBank/capacity producer 和 console transfer 最终都必须经过合同账本。
+系统必须（MUST）以 versioned、幂等迁移把 legacy resource-transfer task 映射为合同，并为每个需求保存唯一 `executionAuthority`。迁移、legacy skip 标记和合同创建必须原子完成；同一需求不得（MUST NOT）同时由 legacy executor 与 RoomLogisticsAgent 执行或重复扣减容量。`canary` 必须同时以不可变 contract origin 和 sourceRoom 命中 allowlist，不得仅因 targetRoom 命中就转移 authority。survival energy、Hub/Synthesis/PowerBank/capacity producer 和 console transfer 最终都必须经过合同账本。
+
+回滚必须（MUST）使用带 requestId、scope.origins、scope.sourceRooms 和持久 phase 的 versioned request，phase 单向为 `requested -> quiescing -> materializing_legacy -> restoring_legacy_authority -> completed`，可进入 `failed` 并以同 requestId 幂等重试。global reset 不得遗失请求或把未完成 phase 伪造为 completed。
 
 #### Scenario: 部分完成任务只迁移剩余量
 
@@ -153,6 +231,16 @@ TransferContract 必须（MUST）持久化身份、不可变路线、显式 prio
 - **WHEN** global reset 后迁移器再次看到同一个 legacyTaskId
 - **THEN** 系统必须复用已有合同或迁移标记，不得创建第二个 active 合同
 
+#### Scenario: Canary 必须同时命中 origin 与 sourceRoom
+
+- **WHEN** canary allowlist 包含 `synthesis_room` 和 sourceRoom A，而两个同 origin 候选分别从 A 与 B 发送到同一 targetRoom
+- **THEN** 只有 sourceRoom A 的需求可转移为 contract authority，B 必须继续由 legacy 执行，targetRoom 相同不得扩大 canary
+
+#### Scenario: Retarget 不重新命中 canary
+
+- **WHEN** 一个未命中 sourceRoom canary 的 demand 发生 receiver retarget，新 targetRoom 处于其他 canary 路线
+- **THEN** 系统必须仍按原 demand 的不可变 origin/sourceRoom 保留 legacy authority，不得借 retarget 切换执行权
+
 #### Scenario: survival energy 不再绕过合同
 
 - **WHEN** 房间产生生存 energy deficit 且合同模式已对该 origin 启用
@@ -163,9 +251,21 @@ TransferContract 必须（MUST）持久化身份、不可变路线、显式 prio
 - **WHEN** 合同模式回滚，active 合同 committed=10,000、delivered=6,000、remaining=4,000
 - **THEN** 系统必须只物化 remaining=4,000 的 legacy task，终止合同 authority 并释放 lease/claim
 
+#### Scenario: Global reset 后续跑回滚 phase
+
+- **WHEN** 回滚 request 已在 `materializing_legacy` 幂等物化了部分 remainder 时发生 global reset
+- **THEN** 系统必须从同 requestId/phase 恢复，复用已物化的 legacy identity，不得重放 delivered、创建重复 task 或提前标记 completed
+
 ### Requirement: 合同控制面必须提供有界观测
 
-系统必须（MUST）投影 intent/contract 的 origin、priority、state、blocker、remaining、oldest age、状态耗时、source commitment、route cost、aging/budget skip、幂等与数量守恒违规，以及 matcher candidate evaluation/continuation 指标。终态详情必须有界保留，monitor 必须兼容没有这些字段的旧快照。
+系统必须（MUST）投影 mode/schemaVersion、Shadow in-scope/out-of-scope、legacy 配对率、donor/route/priority/coverage/headroom/predicted-staging 差异 reason、`effectiveAuthority`、active contract/lease/claim store 数量、可观察 actor/claim/journal/invariant 状态，以及 intent/contract 的 origin、priority、state、blocker、remaining、oldest age、状态耗时、source commitment、route cost、aging/budget skip、幂等与数量守恒违规和 matcher candidate evaluation/continuation 指标。终态详情必须有界保留，monitor 必须兼容没有这些字段的旧快照。只有接入对应 mutator-boundary instrumentation 后，字段才可被称为跨模块 attempt 计数；首片不得用声明常量代替该证据。
+
+首个纯 Shadow 必须（MUST）在剔除至少 10 个 warmup 可观测 tick 后，以部署前同口径基线收集至少 100 个连续 measured tick。包含 Shadow 成本的 ResourceControl phase post p95 CPU 必须不超过 pre p95 的 110%；`Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 的 UTF-8 JSON 序列化字节数合计必须在每个 measured tick 不超过 32 KiB。
+
+#### Scenario: Shadow 独立 CPU 和 Memory 门槛
+
+- **WHEN** `synthesis_room`-only Shadow 部署并完成 10 warmup + 100 连续 measured tick，期间 deploy tag 稳定且无 reset/人工 mutation
+- **THEN** post p95 必须 `<= pre p95 * 1.10`，每个 measured tick 的 logistics data+runtime 必须 `<= 32768 bytes`；本地 disabled-vs-shadow 差分与 send/deal mock 必须无新增可观察 mutation/call，live 必须持续为 `effectiveAuthority=legacy`、active contract/lease/claim store 为零、无 Logistics Shadow actor/claim/journal 记录和可观察 invariant violation，且不得把这些净状态扩张为未布设探针的瞬时 attempt 证明
 
 #### Scenario: 能定位长期无进展合同
 

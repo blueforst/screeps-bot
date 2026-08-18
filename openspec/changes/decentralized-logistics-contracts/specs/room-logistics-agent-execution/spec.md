@@ -2,9 +2,24 @@
 
 ### Requirement: 每个房间必须只有一个 terminal side-effect owner
 
-每个拥有 terminal 的房间每 tick 必须（MUST）由唯一 RoomLogisticsAgent 选择合同、market proposal 和发送 staging window；所有 `terminal.send`/deal 副作用必须继续经过既有 `marketActionArbiter` 的 terminal/account claim 与 journal。系统不得（MUST NOT）新增第二套 terminal lock/claim，其他 producer/executor 也不得直接产生 terminal side effect；同一 terminal 在一个可用窗口最多执行一个获准动作。
+当某 scope 进入 `canary/enabled` contract authority 时，每个拥有 terminal 的房间每 tick 必须（MUST）由唯一 RoomLogisticsAgent 选择合同、market proposal 和发送 staging window；所有 `terminal.send`/deal 副作用必须继续经过既有 `marketActionArbiter` 的 terminal/account claim 与 journal。系统不得（MUST NOT）新增第二套 terminal lock/claim，其他 producer/executor 也不得直接产生 terminal side effect；同一 terminal 在一个可用窗口最多执行一个获准动作。在 `disabled/shadow` 中 legacy 仍是唯一执行 owner，RoomLogisticsAgent 只可提供只读房间事实/预测，不得选择或提交 contract/market side effect。
 
 普通 market deal 必须继续使用既有普通 deal gateway；Prepared Direct 必须继续使用其专用的 prepare/claim/execute/release gateway，保留 request identity、跨 tick pending 与 unknown/throw 保守持有，RoomLogisticsAgent 不得把它降级成普通 `executeMarketDeal`。
+
+#### Scenario: Shadow 不新增 terminal owner 或动作
+
+- **WHEN** `synthesis_room` Shadow 预测出 ready route，同 tick legacy executor 也可能正常提交 terminal action
+- **THEN** Shadow 必须保持 `effectiveAuthority=legacy`、active contract/lease/claim store 为零且无归属于 Logistics Shadow 的新 arbiter actor/claim/journal；同 fixture 的 disabled-vs-shadow 差分不得出现非 logistics 可观察状态变化，send/deal mock 不得出现 Shadow 新增调用，legacy 动作不得被归因为 Shadow action
+
+#### Scenario: 首片不伪造瞬时 attempt 证明
+
+- **WHEN** 首片 runtime 只有可观察 store/claim/journal 投影而没有跨模块 mutator-boundary instrumentation
+- **THEN** monitor 不得把硬编码零值、已释放 claim 或净状态相等报告为“side-effect attempt 从未发生”；该强结论必须等待对应 gateway/writer instrumentation
+
+#### Scenario: Predicted staging eligibility 不是 StageWork
+
+- **WHEN** Shadow comparator 报告 `predictedStagingEligibility=true`
+- **THEN** RoomLogisticsAgent 不得因该预测创建 StageWork、Carrier task、aggregate staged allocation 或 claim
 
 #### Scenario: Survival energy 与普通合同竞争同一 terminal
 
@@ -135,7 +150,7 @@ RoomLogisticsAgent 必须（MUST）在 global reset、board refresh 或代码重
 #### Scenario: 固定 fixture 的 CPU 回归受控
 
 - **WHEN** 在相同 live-like fixture 上比较 P0 与合同模式的 ResourceControl p95 CPU
-- **THEN** 合同模式目标不得超过 P0 10%，且测试/观测必须证明每房 Agent 没有各自全表扫描全部 intents/contracts
+- **THEN** 合同模式目标不得高于 P0 基线的 110%（增幅不超过 10%），且测试/观测必须证明每房 Agent 没有各自全表扫描全部 intents/contracts
 
 #### Scenario: 旧 monitor 快照保持兼容
 

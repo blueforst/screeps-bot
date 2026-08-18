@@ -1,8 +1,23 @@
 import {
+  cleanupResourceTransferTaskStore,
   createResourceTransferTask,
 } from "@/runtime/logistics/resourceTransferTasks";
 import * as resourceTransferTaskModule from "@/runtime/logistics/resourceTransferTasks";
+import {
+  cleanupLogisticsControlStore,
+  ensureLogisticsControlStore,
+  getLogisticsControlStoreUsage,
+  LOGISTICS_CONTROL_DATA_LIMIT_BYTES,
+  mapLegacyTransferOrigin,
+  mapLegacyTransferPriority,
+  peekLogisticsControlStore,
+  replaceLatestLogisticsDemandsForProducer,
+  replaceLogisticsRoomFacts,
+  resolveLogisticsControlConfig,
+  resolveLogisticsExecutionAuthority,
+} from "@/runtime/logistics/logisticsControl";
 import { registerRuntimeServices } from "@/runtime/runtimeServices";
+import { runMemoryCleanup } from "@/runtime/memoryCleanup";
 
 type CreatedTask = Exclude<ReturnType<typeof createResourceTransferTask>, string>["task"];
 type TaskHealthApi = {
@@ -67,6 +82,20 @@ describe("resource transfer task health v2", () => {
   });
 
   it("creates console-compatible manual tasks that retain demand coverage and normalizes receiver grace", () => {
+    expect(resolveLogisticsControlConfig()).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      mode: "disabled",
+      canaryScopes: [],
+      valid: true,
+    }));
+    Memory.cfg = { resourceControl: 7 } as unknown as Memory["cfg"];
+    expect(resolveLogisticsControlConfig()).toEqual(expect.objectContaining({
+      mode: "disabled",
+      valid: false,
+      issue: "malformed",
+    }));
+    Memory.cfg = undefined;
+
     const result = createResourceTransferTask("W1N1", "W2N1", RESOURCE_ENERGY, 500, "operator-request");
     if (typeof result === "string") throw new Error("unexpected task creation failure");
 
@@ -107,6 +136,102 @@ describe("resource transfer task health v2", () => {
     expect(taskHealthApi.resolveResourceTransferTaskHealthOptions().receiverCapacityDemandCoverageGraceTicks).toBe(50);
     capacityBalancing.receiverCapacityDemandCoverageGraceTicks = 50_001;
     expect(taskHealthApi.resolveResourceTransferTaskHealthOptions().receiverCapacityDemandCoverageGraceTicks).toBe(5_000);
+
+    Memory.cfg = {
+      resourceControl: {
+        logistics: {
+          schemaVersion: 1,
+          mode: "canary",
+          canaryScopes: [
+            { origin: "synthesis_room", sourceRoomName: "W1N1" },
+            { origin: "capacity_relief", sourceRoomName: "W2N2" },
+          ],
+        },
+      },
+    } as unknown as Memory["cfg"];
+    const canary = resolveLogisticsControlConfig();
+    expect(canary).toEqual(expect.objectContaining({
+      mode: "canary",
+      canaryScopes: [
+        { origin: "capacity_relief", sourceRoomName: "W2N2" },
+        { origin: "synthesis_room", sourceRoomName: "W1N1" },
+      ],
+      valid: true,
+    }));
+    expect(resolveLogisticsExecutionAuthority(canary, "synthesis_room", "W1N1")).toEqual(expect.objectContaining({
+      requestedAuthority: "legacy",
+      effectiveAuthority: "legacy",
+      reason: "backend_unavailable",
+    }));
+    expect(resolveLogisticsExecutionAuthority(canary, "synthesis_room", "W1N1", true)).toEqual(expect.objectContaining({
+      requestedAuthority: "contract",
+      effectiveAuthority: "contract",
+      reason: "contract_requested",
+    }));
+    expect(resolveLogisticsExecutionAuthority(canary, "capacity_relief", "W1N1", true).reason).toBe(
+      "outside_canary_scope",
+    );
+
+    Memory.cfg = {
+      resourceControl: {
+        logistics: {
+          schemaVersion: 1,
+          mode: "enabled",
+          canaryScopes: [],
+          rollbackRequest: {
+            schemaVersion: 1,
+            requestId: "rollback-1",
+            requestedAt: Game.time,
+            targetAuthority: "legacy",
+            reason: "operator safety rollback",
+            scope: {
+              origins: ["synthesis_room"],
+              sourceRooms: ["W1N1"],
+            },
+            phase: "requested",
+            updatedAt: Game.time,
+          },
+        },
+      },
+    } as unknown as Memory["cfg"];
+    const rollback = resolveLogisticsControlConfig();
+    expect(resolveLogisticsExecutionAuthority(rollback, "synthesis_room", "W1N1", true)).toEqual(expect.objectContaining({
+      requestedAuthority: "legacy",
+      reason: "rollback_requested",
+      rollbackRequestId: "rollback-1",
+    }));
+    expect(resolveLogisticsExecutionAuthority(rollback, "capacity_relief", "W1N1", true).requestedAuthority).toBe(
+      "contract",
+    );
+
+    const unknownConfigBefore = JSON.stringify({
+      resourceControl: { logistics: { schemaVersion: 99, mode: "enabled", opaque: "keep" } },
+    });
+    Memory.cfg = JSON.parse(unknownConfigBefore) as Memory["cfg"];
+    expect(resolveLogisticsControlConfig()).toEqual(expect.objectContaining({
+      mode: "disabled",
+      valid: false,
+      issue: "unsupported_schema",
+    }));
+    expect(JSON.stringify(Memory.cfg)).toBe(unknownConfigBefore);
+
+    expect(mapLegacyTransferPriority("manual", "manual:operator")).toBe("operator");
+    expect(mapLegacyTransferPriority("automatic", "energy-support")).toBe("survival_energy");
+    expect(mapLegacyTransferPriority("automatic", "capacity:relief:H", { capacityEmergency: true })).toBe(
+      "capacity_emergency",
+    );
+    expect(mapLegacyTransferPriority("automatic", "capacity:relief:H")).toBe("capacity_pressure");
+    expect(mapLegacyTransferPriority("automatic", "synthesis:W1N1:OH")).toBe("production");
+    expect(mapLegacyTransferPriority("automatic", "hub:export:H")).toBe("balance");
+    expect(mapLegacyTransferPriority("automatic", "market:sell:H")).toBe("market");
+    expect(mapLegacyTransferPriority("automatic", "synthesis:W1N1:OH", { deadlineAt: Game.time })).toBe(
+      "deadline",
+    );
+    expect(mapLegacyTransferOrigin("automatic", "synthesis:W1N1:OH")).toBe("synthesis_room");
+    expect(mapLegacyTransferOrigin("automatic", "synthesis:hub-route:OH")).toBe(
+      "synthesis_distributed_demand",
+    );
+    expect(mapLegacyTransferOrigin("automatic", "auto:synthesis:W1N1:H")).toBe("synthesis_compatibility");
   });
 
   it("migrates legacy tasks and applies automatic demand-coverage lifecycle boundaries", () => {
@@ -279,5 +404,578 @@ describe("resource transfer task health v2", () => {
     expect(stalledResult.task.lastError).toBe(
       "automatic_no_progress_timeout",
     );
+
+    Memory.data = undefined;
+    Game.time = 9_000;
+    const legacySibling = createResourceTransferTask(
+      "W1N1",
+      "W2N1",
+      RESOURCE_HYDROGEN,
+      25,
+      "operator-sibling",
+    );
+    if (typeof legacySibling === "string") throw new Error("unexpected sibling task creation failure");
+    const ensured = ensureLogisticsControlStore();
+    expect(ensured).toEqual(expect.objectContaining({ ok: true, created: true }));
+    if (!ensured.ok) return;
+    expect(Object.keys(ensured.store).sort()).toEqual([
+      "cursor",
+      "generation",
+      "latestIntents",
+      "producerSnapshots",
+      "roomFacts",
+      "schemaVersion",
+      "synthesisObservations",
+    ]);
+
+    const producer = "__proto__";
+    const demandKey = "constructor:toString";
+    const draft = {
+      demandKey,
+      origin: "synthesis_room" as const,
+      targetRoomName: "W2N1",
+      resource: RESOURCE_HYDROGEN,
+      desiredAmount: 100,
+      priorityClass: "production" as const,
+      fixedSourceRoomNames: ["W1N1"],
+      ttl: 2,
+      active: true,
+      product: RESOURCE_HYDROXIDE,
+      maxBatch: 500,
+    };
+    const first = replaceLatestLogisticsDemandsForProducer(producer, [draft], [{
+      demandKey,
+      inputFingerprint: "input-fingerprint-1",
+      localAmount: 10,
+      incomingAmount: 20,
+      uncoveredAmount: 70,
+      decisionOrder: 0,
+      comparableReason: "comparable",
+      legacyDecision: "created",
+      legacyPriorityRank: 2,
+      legacyPriorityClass: "production",
+      legacySourceRoomName: "W1N1",
+      legacyAmount: 25,
+      legacyTaskId: legacySibling.task.id,
+      legacyAddedAmount: 25,
+      legacyRemainingBefore: 0,
+      legacyFeeDelta: 1,
+    }], { totalCount: 2, overflowCount: 1, ttl: 2 });
+    expect(first).toEqual(expect.objectContaining({ ok: true }));
+    if (!first.ok) return;
+    expect(first.entries[0]).toEqual(expect.objectContaining({
+      producer,
+      demandKey,
+      generation: 1,
+      revision: 1,
+      firstObservedAt: 9_000,
+      desiredAmount: 100,
+      expiresAt: 9_002,
+    }));
+    const firstStore = peekLogisticsControlStore();
+    expect(firstStore).toEqual(expect.objectContaining({ ok: true }));
+    if (!firstStore.ok) return;
+    expect(Object.values(firstStore.store.producerSnapshots)).toEqual([
+      expect.objectContaining({
+        producer,
+        observedAt: 9_000,
+        expiresAt: 9_002,
+        total: 2,
+        emitted: 1,
+        dropped: 1,
+        limit: 32,
+        truncated: true,
+      }),
+    ]);
+    const smallExpandedSemantic = JSON.stringify(firstStore.store);
+    const smallExpanded = JSON.parse(smallExpandedSemantic) as Record<string, unknown>;
+    expect(Buffer.byteLength(JSON.stringify(smallExpanded), "utf8"))
+      .toBeLessThanOrEqual(LOGISTICS_CONTROL_DATA_LIMIT_BYTES);
+    (Memory.data!.resourceControl as unknown as { logistics: unknown }).logistics = smallExpanded;
+    expect(peekLogisticsControlStore()).toEqual(expect.objectContaining({ ok: true }));
+    expect(ensureLogisticsControlStore()).toEqual(expect.objectContaining({
+      ok: true,
+      created: false,
+    }));
+    const smallMigratedRaw = (Memory.data!.resourceControl as unknown as {
+      logistics: { wireFormat?: unknown };
+    }).logistics;
+    expect(smallMigratedRaw.wireFormat).toBe("compact-v1");
+    const smallMigrated = peekLogisticsControlStore();
+    expect(smallMigrated).toEqual(expect.objectContaining({ ok: true }));
+    if (!smallMigrated.ok) return;
+    expect(JSON.stringify(smallMigrated.store)).toBe(smallExpandedSemantic);
+
+    Game.time = 9_001;
+    const heartbeat = replaceLatestLogisticsDemandsForProducer(producer, [draft], [{
+      demandKey,
+      inputFingerprint: "input-fingerprint-2",
+      localAmount: 15,
+      incomingAmount: 20,
+      uncoveredAmount: 65,
+      decisionOrder: 0,
+      comparableReason: "expected_policy_difference",
+      legacyDecision: "merged",
+      legacyPriorityRank: 2,
+      legacyPriorityClass: "production",
+    }]);
+    expect(heartbeat).toEqual(expect.objectContaining({ ok: true }));
+    if (!heartbeat.ok) return;
+    expect(heartbeat.entries[0]).toEqual(expect.objectContaining({
+      generation: 1,
+      revision: 1,
+      firstObservedAt: 9_000,
+      observedAt: 9_001,
+      expiresAt: 9_003,
+    }));
+    const heartbeatStore = peekLogisticsControlStore();
+    expect(heartbeatStore).toEqual(expect.objectContaining({ ok: true }));
+    if (!heartbeatStore.ok) return;
+    expect(Object.values(heartbeatStore.store.synthesisObservations)).toEqual([
+      expect.objectContaining({
+        intentId: heartbeat.entries[0].id,
+        inputFingerprint: "input-fingerprint-2",
+        localAmount: 15,
+      }),
+    ]);
+
+    Game.time = 9_002;
+    const changed = replaceLatestLogisticsDemandsForProducer(producer, [{ ...draft, desiredAmount: 150 }]);
+    expect(changed).toEqual(expect.objectContaining({ ok: true }));
+    if (!changed.ok) return;
+    expect(changed.entries[0]).toEqual(expect.objectContaining({
+      generation: 1,
+      revision: 2,
+      firstObservedAt: 9_000,
+    }));
+    const inactive = replaceLatestLogisticsDemandsForProducer(producer, [{ ...draft, active: false }]);
+    expect(inactive).toEqual(expect.objectContaining({ ok: true }));
+    if (!inactive.ok) return;
+    expect(inactive.entries[0]).toEqual(expect.objectContaining({ generation: 1, revision: 3, active: false }));
+
+    Game.time = 9_003;
+    const reappeared = replaceLatestLogisticsDemandsForProducer(producer, [draft]);
+    expect(reappeared).toEqual(expect.objectContaining({ ok: true }));
+    if (!reappeared.ok) return;
+    expect(reappeared.entries[0]).toEqual(expect.objectContaining({
+      generation: 2,
+      revision: 1,
+      firstObservedAt: 9_003,
+    }));
+    Game.time = 9_006;
+    const expiredHeartbeat = replaceLatestLogisticsDemandsForProducer(producer, [draft]);
+    expect(expiredHeartbeat).toEqual(expect.objectContaining({ ok: true }));
+    if (!expiredHeartbeat.ok) return;
+    expect(expiredHeartbeat.entries[0]).toEqual(expect.objectContaining({
+      generation: 3,
+      revision: 1,
+      firstObservedAt: 9_006,
+      observedAt: 9_006,
+    }));
+    const expiredIntentId = expiredHeartbeat.entries[0].id;
+    const rotationDrafts = Array.from({ length: 32 }, (_, index) => ({
+      demandKey: index.toString(36),
+      origin: "synthesis_room" as const,
+      targetRoomName: "W2N1",
+      resource: RESOURCE_HYDROGEN,
+      desiredAmount: 1,
+      priorityClass: "production" as const,
+      ttl: 2,
+    }));
+    const rotated = replaceLatestLogisticsDemandsForProducer(producer, rotationDrafts);
+    expect(rotated).toEqual(expect.objectContaining({ ok: true }));
+    if (!rotated.ok) return;
+    expect(rotated.entries).toHaveLength(32);
+    const rotatedStore = peekLogisticsControlStore();
+    expect(rotatedStore).toEqual(expect.objectContaining({ ok: true }));
+    if (!rotatedStore.ok) return;
+    expect(rotatedStore.store.cursor).toBe(35);
+    expect(Object.keys(rotatedStore.store.generation).some((key) => {
+      const decoded = JSON.parse(key) as unknown[];
+      return decoded[2] === demandKey;
+    })).toBe(false);
+    const afterTombstoneEviction = replaceLatestLogisticsDemandsForProducer(producer, [draft]);
+    expect(afterTombstoneEviction).toEqual(expect.objectContaining({ ok: true }));
+    if (!afterTombstoneEviction.ok) return;
+    expect(afterTombstoneEviction.entries[0]).toEqual(expect.objectContaining({
+      generation: 36,
+      revision: 1,
+      firstObservedAt: 9_006,
+    }));
+    expect(afterTombstoneEviction.entries[0].id).not.toBe(expiredIntentId);
+    const compactResources: ResourceConstant[] = [
+      RESOURCE_ENERGY,
+      RESOURCE_HYDROGEN,
+      RESOURCE_OXYGEN,
+      RESOURCE_UTRIUM,
+      RESOURCE_LEMERGIUM,
+      RESOURCE_KEANIUM,
+      RESOURCE_ZYNTHIUM,
+      RESOURCE_CATALYST,
+    ];
+    const compactDrafts = Array.from({ length: 16 }, (_, index) => index === 0
+      ? draft
+      : {
+          ...draft,
+          demandKey: `fixture-${index.toString().padStart(2, "0")}`,
+          targetRoomName: `W${(index % 8) + 1}N1`,
+          resource: compactResources[index % compactResources.length],
+        });
+    const compactFacts = Array.from({ length: 8 }, (_, index) => ({
+      roomName: `W${index + 1}N1`,
+      epochRevision: "fixture-epoch:9006",
+      epochFingerprint: "fixture-fingerprint:9006",
+      ttl: 30,
+      owned: true,
+      hasStorage: true,
+      hasTerminal: true,
+      terminalReachable: true,
+      terminalReadyAt: Game.time + index,
+      capacityState: "normal" as const,
+      receiverEligible: true,
+      receiverStorageHeadroom: 50_000,
+      receiverTerminalHeadroom: 60_000,
+      terminalStagingFreeCapacity: 40_000,
+      transferBatchSize: 10_000,
+      actionEnergyBudget: 20_000,
+      terminalActionEnergyAmount: 10_000,
+      resources: compactResources.map((resource, resourceIndex) => ({
+        resource,
+        sourceAvailableAmount: 10_000 + resourceIndex,
+        sourceTerminalAmount: 5_000 + resourceIndex,
+        receiverResourceHeadroom: 60_000 - resourceIndex,
+      })),
+    }));
+    const compact = replaceLatestLogisticsDemandsForProducer(
+      producer,
+      compactDrafts,
+      compactDrafts.map((entry, index) => ({
+        demandKey: entry.demandKey,
+        inputFingerprint: `synthesis-shadow/v1:${index.toString(16).padStart(8, "0")}:100`,
+        localAmount: index,
+        incomingAmount: index * 2,
+        uncoveredAmount: Math.max(0, entry.desiredAmount - index * 3),
+        decisionOrder: index,
+        comparableReason: "comparable",
+        legacyDecision: "created",
+        legacyPriorityRank: 2,
+        legacyPriorityClass: "production",
+        legacySourceRoomName: `W${((index + 1) % 8) + 1}N1`,
+        legacyAmount: 10 + index,
+        legacyTaskId: `fixture-task-${index}`,
+        legacyAddedAmount: 10 + index,
+        legacyRemainingBefore: index,
+        legacyFeeDelta: index,
+      })),
+      {
+        totalCount: 16,
+        overflowCount: 0,
+        ttl: 30,
+        epochRevision: "fixture-epoch:9006",
+        epochFingerprint: "fixture-fingerprint:9006",
+        captureCpuUsed: 1.25,
+        indexBuildCount: 1,
+        roomFacts: compactFacts,
+      },
+    );
+    expect(compact).toEqual(expect.objectContaining({ ok: true }));
+    if (!compact.ok) return;
+    expect(compact.entries).toHaveLength(16);
+    const compactStore = peekLogisticsControlStore();
+    expect(compactStore).toEqual(expect.objectContaining({ ok: true }));
+    if (!compactStore.ok) return;
+    const compactUsage = getLogisticsControlStoreUsage(compactStore.store);
+    expect(compactUsage.utf8Bytes).toBe(5_043);
+    expect(compactUsage.utf8Bytes).toBeLessThanOrEqual(LOGISTICS_CONTROL_DATA_LIMIT_BYTES);
+    expect(compactUsage.utf8Bytes).toBeLessThanOrEqual(12_000);
+    expect(Object.values(compactStore.store.producerSnapshots)).toEqual([
+      expect.objectContaining({
+        total: 16,
+        emitted: 16,
+        dropped: 0,
+        truncated: false,
+      }),
+    ]);
+    const compactSemantic = JSON.stringify(compactStore.store);
+    const expandedFixture = JSON.parse(compactSemantic) as Record<string, unknown>;
+    expect(Buffer.byteLength(JSON.stringify(expandedFixture), "utf8"))
+      .toBeGreaterThan(LOGISTICS_CONTROL_DATA_LIMIT_BYTES);
+    (Memory.data!.resourceControl as unknown as { logistics: unknown }).logistics = expandedFixture;
+    expect(peekLogisticsControlStore()).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "malformed_store",
+    }));
+    expect(ensureLogisticsControlStore()).toEqual(expect.objectContaining({ ok: true }));
+    const migratedCompact = peekLogisticsControlStore();
+    expect(migratedCompact).toEqual(expect.objectContaining({ ok: true }));
+    if (!migratedCompact.ok) return;
+    expect(JSON.stringify(migratedCompact.store)).toBe(compactSemantic);
+    const rawCompact = (Memory.data!.resourceControl as unknown as { logistics: Record<string, unknown> }).logistics;
+    expect(rawCompact.wireFormat).toBe("compact-v1");
+    expect(Buffer.byteLength(JSON.stringify(rawCompact), "utf8")).toBe(5_043);
+    expect(Object.keys(rawCompact).sort()).toEqual([
+      "c", "f", "i", "o", "p", "s", "schemaVersion", "wireFormat",
+    ]);
+    Memory.data = JSON.parse(JSON.stringify(Memory.data)) as Memory["data"];
+    resetRuntimeServices();
+    registerRuntimeServices();
+    const compactRoundTrip = peekLogisticsControlStore();
+    expect(compactRoundTrip).toEqual(expect.objectContaining({ ok: true }));
+    if (!compactRoundTrip.ok) return;
+    expect(JSON.stringify(compactRoundTrip.store)).toBe(compactSemantic);
+    const restoredAfterCompact = replaceLatestLogisticsDemandsForProducer(producer, [draft]);
+    expect(restoredAfterCompact).toEqual(expect.objectContaining({ ok: true }));
+    if (!restoredAfterCompact.ok) return;
+    expect(restoredAfterCompact.entries[0]).toEqual(expect.objectContaining({
+      generation: 36,
+      revision: 1,
+      firstObservedAt: 9_006,
+    }));
+    expect(
+      replaceLatestLogisticsDemandsForProducer(
+        "too-many",
+        Array.from({ length: 33 }, (_, index) => ({ ...draft, demandKey: `demand-${index}` })),
+      ),
+    ).toEqual({ ok: false, reason: "invalid_producer_or_count" });
+
+    const factDraft = {
+      roomName: "W1N1",
+      epochRevision: "test-epoch:9006",
+      epochFingerprint: "test-fingerprint:9006",
+      ttl: 2,
+      owned: true,
+      hasStorage: true,
+      hasTerminal: true,
+      terminalReachable: true,
+      terminalReadyAt: Game.time,
+      capacityState: "normal" as const,
+      receiverEligible: true,
+      receiverStorageHeadroom: 50_000,
+      receiverTerminalHeadroom: 60_000,
+      terminalStagingFreeCapacity: 40_000,
+      transferBatchSize: 10_000,
+      actionEnergyBudget: 10_000,
+      terminalActionEnergyAmount: 5_000,
+      resources: [{
+        resource: RESOURCE_HYDROGEN,
+        sourceAvailableAmount: 5_000,
+        sourceTerminalAmount: 1_000,
+        receiverResourceHeadroom: 60_000,
+      }],
+    };
+    const facts = replaceLogisticsRoomFacts([factDraft]);
+    expect(facts).toEqual(expect.objectContaining({ ok: true }));
+    if (!facts.ok) return;
+    expect(facts.entries[0]).toEqual(expect.objectContaining({ revision: 2, expiresAt: 9_008 }));
+    Game.time = 9_007;
+    const factHeartbeat = replaceLogisticsRoomFacts([factDraft]);
+    expect(factHeartbeat).toEqual(expect.objectContaining({ ok: true }));
+    if (!factHeartbeat.ok) return;
+    expect(factHeartbeat.entries[0]).toEqual(expect.objectContaining({
+      revision: 2,
+      observedAt: 9_007,
+      expiresAt: 9_009,
+    }));
+
+    const serializedData = JSON.stringify(Memory.data);
+    Memory.data = JSON.parse(serializedData) as Memory["data"];
+    resetRuntimeServices();
+    registerRuntimeServices();
+    const afterReset = peekLogisticsControlStore();
+    expect(afterReset).toEqual(expect.objectContaining({ ok: true }));
+    if (!afterReset.ok) return;
+    expect(Object.values(afterReset.store.latestIntents)).toEqual([
+      expect.objectContaining({ producer, demandKey, generation: 36, revision: 1 }),
+    ]);
+    const resetHeartbeat = replaceLatestLogisticsDemandsForProducer(producer, [draft]);
+    expect(resetHeartbeat).toEqual(expect.objectContaining({ ok: true }));
+    if (!resetHeartbeat.ok) return;
+    expect(resetHeartbeat.entries[0]).toEqual(expect.objectContaining({ generation: 36, revision: 1 }));
+    const writerInvariantBefore = JSON.stringify(Memory.data);
+    expect(replaceLatestLogisticsDemandsForProducer(producer, [{
+      ...draft,
+      active: "yes" as unknown as boolean,
+    }])).toEqual({ ok: false, reason: "invalid_draft" });
+    expect(replaceLatestLogisticsDemandsForProducer(
+      producer,
+      [draft, { ...draft, demandKey: "duplicate-order" }],
+      [
+        {
+          demandKey,
+          inputFingerprint: "duplicate-order:0",
+          localAmount: 0,
+          incomingAmount: 0,
+          uncoveredAmount: 100,
+          decisionOrder: 0,
+          comparableReason: "comparable",
+          legacyDecision: "no_donor",
+          legacyPriorityRank: 2,
+          legacyPriorityClass: "production",
+        },
+        {
+          demandKey: "duplicate-order",
+          inputFingerprint: "duplicate-order:1",
+          localAmount: 0,
+          incomingAmount: 0,
+          uncoveredAmount: 100,
+          decisionOrder: 0,
+          comparableReason: "comparable",
+          legacyDecision: "no_donor",
+          legacyPriorityRank: 2,
+          legacyPriorityClass: "production",
+        },
+      ],
+    )).toEqual({ ok: false, reason: "duplicate_observation_order" });
+    expect(JSON.stringify(Memory.data)).toBe(writerInvariantBefore);
+
+    const knownV1Data = JSON.stringify(Memory.data);
+    let rawLogistics = (Memory.data!.resourceControl as unknown as {
+      logistics: { schemaVersion: number; c: number; p: unknown[] };
+    }).logistics;
+    rawLogistics.c = Number.MAX_SAFE_INTEGER;
+    const cursorOverflowBefore = JSON.stringify(Memory.data);
+    expect(replaceLatestLogisticsDemandsForProducer(producer, [{
+      ...draft,
+      demandKey: "cursor-overflow",
+    }])).toEqual({ ok: false, reason: "generation_cursor_overflow" });
+    expect(JSON.stringify(Memory.data)).toBe(cursorOverflowBefore);
+
+    Memory.data = JSON.parse(knownV1Data) as Memory["data"];
+    rawLogistics = (Memory.data!.resourceControl as unknown as {
+      logistics: { schemaVersion: number; c: number; p: unknown[] };
+    }).logistics;
+    rawLogistics.c = 0;
+    const regressedCursorBefore = JSON.stringify(Memory.data);
+    expect(peekLogisticsControlStore()).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "malformed_store",
+    }));
+    expect(ensureLogisticsControlStore()).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "malformed_store",
+    }));
+    expect(JSON.stringify(Memory.data)).toBe(regressedCursorBefore);
+
+    Memory.data = JSON.parse(knownV1Data) as Memory["data"];
+    rawLogistics = (Memory.data!.resourceControl as unknown as {
+      logistics: { schemaVersion: number; c: number; p: unknown[] };
+    }).logistics;
+    rawLogistics.p = [];
+    const missingSnapshotBefore = JSON.stringify(Memory.data);
+    expect(peekLogisticsControlStore()).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "malformed_store",
+    }));
+    expect(ensureLogisticsControlStore()).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "malformed_store",
+    }));
+    expect(JSON.stringify(Memory.data)).toBe(missingSnapshotBefore);
+
+    Memory.data = JSON.parse(knownV1Data) as Memory["data"];
+    rawLogistics = (Memory.data!.resourceControl as unknown as {
+      logistics: { schemaVersion: number; c: number; p: unknown[] };
+    }).logistics;
+    rawLogistics.schemaVersion = 99;
+    const unknownStoreBefore = JSON.stringify(Memory.data);
+    expect(ensureLogisticsControlStore()).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "unsupported_schema",
+      schemaVersion: 99,
+    }));
+    expect(JSON.stringify(Memory.data)).toBe(unknownStoreBefore);
+
+    Memory.data = JSON.parse(knownV1Data) as Memory["data"];
+    resetRuntimeServices();
+    registerRuntimeServices();
+    const taskAfterReset = Memory.data!.resourceControl!.tasks![legacySibling.task.id];
+    taskAfterReset.status = "done";
+    taskAfterReset.remainingAmount = 0;
+    taskAfterReset.updatedAt = Game.time - 1;
+    expect(cleanupResourceTransferTaskStore(new Set(["W1N1", "W2N1"]), 0)).toBe(1);
+    expect(Memory.data?.resourceControl?.tasks).toEqual({});
+    expect(peekLogisticsControlStore()).toEqual(expect.objectContaining({ ok: true }));
+    const mixedExpiry = replaceLatestLogisticsDemandsForProducer(producer, [
+      draft,
+      { ...draft, demandKey: "long-lived-sibling", ttl: 20 },
+    ]);
+    expect(mixedExpiry).toEqual(expect.objectContaining({ ok: true }));
+    if (!mixedExpiry.ok) return;
+    expect(mixedExpiry.entries).toHaveLength(2);
+
+    Game.time = 9_010;
+    expect(cleanupLogisticsControlStore(new Set(["W1N1", "W2N1"]))).toBe(4);
+    const cleaned = peekLogisticsControlStore();
+    expect(cleaned).toEqual(expect.objectContaining({ ok: true }));
+    if (cleaned.ok) {
+      expect(cleaned.store.latestIntents).toEqual({});
+      expect(cleaned.store.roomFacts).toEqual({});
+      expect(cleaned.store.synthesisObservations).toEqual({});
+      expect(cleaned.store.producerSnapshots).toEqual({});
+    }
+    expect(peekLogisticsControlStore()).toEqual(expect.objectContaining({ ok: true }));
+    const emptySnapshot = replaceLatestLogisticsDemandsForProducer(
+      producer,
+      [],
+      [],
+      { totalCount: 0, overflowCount: 0, ttl: 1 },
+    );
+    expect(emptySnapshot).toEqual(expect.objectContaining({ ok: true }));
+    Game.time = 9_012;
+    expect(cleanupLogisticsControlStore(new Set(["W1N1", "W2N1"]))).toBe(1);
+    const afterEmptySnapshotTtl = peekLogisticsControlStore();
+    expect(afterEmptySnapshotTtl).toEqual(expect.objectContaining({ ok: true }));
+    if (afterEmptySnapshotTtl.ok) {
+      expect(afterEmptySnapshotTtl.store.producerSnapshots).toEqual({});
+    }
+
+    Game.time = 9_020;
+    Memory.runtime = {
+      resourceControl: {
+        updatedAt: Game.time,
+        rooms: {},
+        lastActions: [],
+        lastMarketActions: [],
+        logistics: { schemaVersion: 1, mode: "shadow" },
+      },
+    } as unknown as Memory["runtime"];
+    runMemoryCleanup();
+    expect((Memory.runtime?.resourceControl as unknown as { logistics?: unknown })?.logistics).toEqual({
+      schemaVersion: 1,
+      mode: "shadow",
+    });
+
+    const compactOverflowBefore = JSON.stringify(Memory.data);
+    const compactStringOverflow = replaceLatestLogisticsDemandsForProducer(
+      producer,
+      Array.from({ length: 17 }, (_, intentIndex) => ({
+        ...draft,
+        demandKey: `string-table-overflow-${intentIndex}`,
+        fixedSourceRoomNames: Array.from(
+          { length: 32 },
+          (__, roomIndex) => `W${100 + intentIndex * 32 + roomIndex}N1`,
+        ),
+      })),
+    );
+    expect(compactStringOverflow).toEqual({ ok: false, reason: "compact_wire_invalid" });
+    expect(JSON.stringify(Memory.data)).toBe(compactOverflowBefore);
+    expect(peekLogisticsControlStore()).toEqual(expect.objectContaining({ ok: true }));
+
+    const sortedFixedSources = replaceLatestLogisticsDemandsForProducer(producer, [{
+      ...draft,
+      demandKey: "canonical-fixed-sources",
+      fixedSourceRoomNames: ["W1N1", "W2N1"],
+    }]);
+    expect(sortedFixedSources).toEqual(expect.objectContaining({ ok: true }));
+    const rawCanonicalStore = (Memory.data!.resourceControl as unknown as {
+      logistics: { i: unknown[][] };
+    }).logistics;
+    const fixedSourceIndexes = rawCanonicalStore.i[0][14];
+    if (!Array.isArray(fixedSourceIndexes)) throw new Error("missing compact fixed-source indexes");
+    rawCanonicalStore.i[0][14] = [...fixedSourceIndexes].reverse();
+    expect(peekLogisticsControlStore()).toEqual(expect.objectContaining({
+      ok: false,
+      reason: "malformed_store",
+    }));
   });
 });

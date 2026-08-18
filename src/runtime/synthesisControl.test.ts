@@ -1,18 +1,43 @@
-import { runSynthesisControl, pauseSynthesisForBoost, resumeSynthesisAfterBoost } from "@/runtime/synthesisControl";
+import {
+  getLastSynthesisTransferTaskIndexDiagnostics,
+  runSynthesisControl,
+  pauseSynthesisForBoost,
+  resumeSynthesisAfterBoost,
+} from "@/runtime/synthesisControl";
 import {
   countPendingIncomingResourceTransferTasksByRoom,
   createAutomaticResourceTransferTask,
   createResourceTransferTask,
   ensureResourceTransferTaskStore,
+  getResourceTransferTaskListSorted,
   markResourceTransferTaskBlocked,
 } from "@/runtime/logistics/resourceTransferTasks";
+import {
+  SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+  peekLogisticsControlStore,
+} from "@/runtime/logistics/logisticsControl";
+import {
+  clearCarrierTaskBoardForTest,
+  peekCarrierTaskBoard,
+} from "@/runtime/carrierTaskBoard";
+import {
+  clearLocalCarrierDestinationCapacityForTest,
+  getLocalCarrierDestinationCapacityObservation,
+} from "@/runtime/localCarrierDestinationCapacity";
+import {
+  clearMarketActionArbiterForTest,
+  getMarketAccountClaim,
+  getMarketActionJournal,
+  getTerminalActionClaims,
+} from "@/runtime/marketActionArbiter";
+import { runResourceControl } from "@/runtime/resourceControl";
 
 type RuntimeGlobal = typeof global & {
   __runtimeServices?: unknown;
 };
 
 type GameWithPartialMarket = Omit<Game, "market"> & {
-  market: {
+  market: Partial<Market> & {
     calcTransactionCost: (amount: number, fromRoom: string, toRoom: string) => number;
   };
 };
@@ -64,6 +89,7 @@ function createRoomWithResources(options: {
       id: `${options.name}-terminal`,
       structureType: STRUCTURE_TERMINAL,
       cooldown: 0,
+      send: jest.fn(() => OK),
       store: {
         getUsedCapacity: (resource?: ResourceConstant) => {
           if (resource && resource in terminalResources) {
@@ -93,6 +119,193 @@ function createRoomWithResources(options: {
   return room;
 }
 
+function captureSynthesisShadowAuthorityBoundaryState(rooms: readonly Room[]): {
+  readonly terminalSendCalls: number;
+  readonly marketDealCalls: number;
+  readonly state: unknown;
+} {
+  const resourceTasks = getResourceTransferTaskListSorted()
+    .map((task) => ({ ...task }))
+    .sort((left, right) => {
+      const leftKey = JSON.stringify([
+        left.fromRoomName,
+        left.toRoomName,
+        left.resource,
+        left.reason ?? null,
+        left.origin,
+        left.createdAt,
+        left.amount,
+      ]);
+      const rightKey = JSON.stringify([
+        right.fromRoomName,
+        right.toRoomName,
+        right.resource,
+        right.reason ?? null,
+        right.origin,
+        right.createdAt,
+        right.amount,
+      ]);
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+  const taskIdAliases = resourceTasks
+    .map((task, index) => [task.id, `resource-task-${index}`] as const)
+    .sort((left, right) => right[0].length - left[0].length);
+  const normalizeTaskIdentity = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      return taskIdAliases.reduce(
+        (normalized, [taskId, alias]) => normalized.split(taskId).join(alias),
+        value,
+      );
+    }
+    if (Array.isArray(value)) return value.map(normalizeTaskIdentity);
+    if (value === null || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+      normalizeTaskIdentity(key) as string,
+      normalizeTaskIdentity(entry),
+    ]));
+  };
+  const memory = JSON.parse(JSON.stringify(Memory)) as {
+    data?: { resourceControl?: { logistics?: unknown } };
+    runtime?: { resourceControl?: { logistics?: unknown } };
+  };
+  if (memory.data?.resourceControl) delete memory.data.resourceControl.logistics;
+  if (memory.runtime?.resourceControl) delete memory.runtime.resourceControl.logistics;
+
+  const terminalSendCalls = rooms.reduce(
+    (count, room) =>
+      count + ((room.terminal?.send as jest.Mock | undefined)?.mock.calls.length ?? 0),
+    0,
+  );
+  const marketDealCalls = ((Game.market.deal as jest.Mock | undefined)?.mock.calls.length ?? 0);
+  const state = {
+    resourceTasks,
+    synthesis: memory.runtime && "synthesisControl" in memory.runtime
+      ? memory.runtime.synthesisControl
+      : undefined,
+    carrierBoard: peekCarrierTaskBoard(),
+    terminalClaims: getTerminalActionClaims(),
+    marketAccountClaim: getMarketAccountClaim(),
+    marketJournal: getMarketActionJournal(),
+    receiverReservations: rooms.flatMap((room) =>
+      [room.storage, room.terminal]
+        .filter((structure): structure is StructureStorage | StructureTerminal => !!structure)
+        .map((structure) =>
+          getLocalCarrierDestinationCapacityObservation(room.name, structure.id),
+        ),
+    ),
+    structures: rooms.map((room) => ({
+      roomName: room.name,
+      terminalCooldown: room.terminal?.cooldown,
+      storageTotal: room.storage?.store.getUsedCapacity() ?? 0,
+      terminalTotal: room.terminal?.store.getUsedCapacity() ?? 0,
+      resources: RESOURCES_ALL.map((resource) => ({
+        resource,
+        storage: room.storage?.store.getUsedCapacity(resource) ?? 0,
+        terminal: room.terminal?.store.getUsedCapacity(resource) ?? 0,
+      })).filter((entry) => entry.storage > 0 || entry.terminal > 0),
+    })),
+    memory,
+  };
+  return {
+    terminalSendCalls,
+    marketDealCalls,
+    state: normalizeTaskIdentity(state),
+  };
+}
+
+function runSynthesisResourceControlAuthorityTwin(
+  mode: "disabled" | "shadow",
+): ReturnType<typeof captureSynthesisShadowAuthorityBoundaryState> {
+  clearCarrierTaskBoardForTest();
+  clearMarketActionArbiterForTest();
+  clearLocalCarrierDestinationCapacityForTest();
+  resetRuntimeServices();
+  Game.time = 10;
+  Memory.cfg = {
+    synthesisControl: {
+      enabled: true,
+      sampleInterval: 10,
+      rooms: {
+        W1N1: {
+          reactions: [{ product: RESOURCE_UTRIUM_HYDRIDE, targetAmount: 5_000 }],
+        },
+      },
+    },
+    resourceControl: {
+      enabled: true,
+      sampleInterval: 10,
+      market: { enabled: false },
+      rooms: {
+        W2N1: { transferBatchSize: 300 },
+      },
+    },
+  };
+  (Memory.cfg.resourceControl as unknown as {
+    logistics: { schemaVersion: 1; mode: "disabled" | "shadow"; canaryScopes: [] };
+  }).logistics = { schemaVersion: 1, mode, canaryScopes: [] };
+  Memory.runtime = undefined;
+  Memory.rooms = {};
+  Memory.data = undefined;
+  Game.spawns = {};
+  (Game as unknown as { cpu: { getUsed(): number } }).cpu = { getUsed: () => 0 };
+  (Game as GameWithPartialMarket).market = {
+    calcTransactionCost: jest.fn((amount: number) => amount),
+    getAllOrders: jest.fn(() => []),
+    deal: jest.fn(() => OK),
+  };
+
+  const hubRoom = createRoomWithResources({
+    name: "W1N1",
+    mineralType: RESOURCE_UTRIUM,
+    storageEnergy: 300_000,
+  });
+  const donorRoom = createRoomWithResources({
+    name: "W2N1",
+    mineralType: RESOURCE_HYDROGEN,
+    storageEnergy: 300_000,
+    terminalResources: {
+      [RESOURCE_UTRIUM]: 5_000,
+      [RESOURCE_HYDROGEN]: 5_000,
+    },
+  });
+  Game.rooms = { [hubRoom.name]: hubRoom, [donorRoom.name]: donorRoom };
+
+  const mergeResult = createAutomaticResourceTransferTask(
+    donorRoom.name,
+    hubRoom.name,
+    RESOURCE_HYDROGEN,
+    100,
+    `synthesis:${hubRoom.name}:${RESOURCE_UTRIUM_HYDRIDE}`,
+  );
+  if (typeof mergeResult === "string") throw new Error("unexpected merge seed task failure");
+  const expiredResult = createAutomaticResourceTransferTask(
+    donorRoom.name,
+    hubRoom.name,
+    RESOURCE_UTRIUM,
+    400,
+    `synthesis:${hubRoom.name}:${RESOURCE_UTRIUM_HYDRIDE}`,
+  );
+  if (typeof expiredResult === "string") throw new Error("unexpected expired seed task failure");
+  markResourceTransferTaskBlocked(expiredResult.task, "receiver_capacity");
+  Game.time += 500;
+  const hubImportResult = createResourceTransferTask(
+    donorRoom.name,
+    hubRoom.name,
+    RESOURCE_UTRIUM,
+    200,
+    `hub:import:${RESOURCE_UTRIUM}`,
+  );
+  if (typeof hubImportResult === "string") throw new Error("unexpected hub import seed failure");
+
+  runSynthesisControl();
+  runResourceControl();
+
+  // mode 是唯一实验输入；归一化后只允许两个 logistics owner 分支不同。
+  (Memory.cfg.resourceControl as unknown as { logistics: { mode: "shadow" } })
+    .logistics.mode = "shadow";
+  return captureSynthesisShadowAuthorityBoundaryState([hubRoom, donorRoom]);
+}
+
 describe("runSynthesisControl hub import guard", () => {
   beforeEach(() => {
     resetRuntimeServices();
@@ -112,18 +325,38 @@ describe("runSynthesisControl hub import guard", () => {
           },
         },
       },
+      resourceControl: {
+        enabled: true,
+        sampleInterval: 10,
+        rooms: {
+          W2N1: {
+            transferBatchSize: 300,
+          },
+        },
+      },
+    };
+    (Memory.cfg.resourceControl as unknown as {
+      logistics: { schemaVersion: 1; mode: "shadow"; canaryScopes: [] };
+    }).logistics = {
+      schemaVersion: 1,
+      mode: "shadow",
+      canaryScopes: [],
     };
     Memory.runtime = undefined;
     Memory.rooms = {};
     Memory.data = undefined;
     Game.rooms = {};
     Game.spawns = {};
+    (Game as unknown as { cpu: { getUsed(): number } }).cpu = {
+      getUsed: () => 0,
+    };
     (Game as GameWithPartialMarket).market = {
       calcTransactionCost: () => 0,
     };
   });
 
   it("creates synthesis transfer for the live deficit while expired capacity tasks remain raw pending", () => {
+    (Game as GameWithPartialMarket).market.calcTransactionCost = (amount) => amount;
     const hubRoom = createRoomWithResources({
       name: "W1N1",
       mineralType: RESOURCE_UTRIUM,
@@ -140,6 +373,15 @@ describe("runSynthesisControl hub import guard", () => {
     });
     Game.rooms[hubRoom.name] = hubRoom;
     Game.rooms[donorRoom.name] = donorRoom;
+
+    const mergeResult = createAutomaticResourceTransferTask(
+      donorRoom.name,
+      hubRoom.name,
+      RESOURCE_HYDROGEN,
+      100,
+      `synthesis:${hubRoom.name}:${RESOURCE_UTRIUM_HYDRIDE}`,
+    );
+    if (typeof mergeResult === "string") throw new Error("unexpected merge seed task creation failure");
 
     const expiredResult = createAutomaticResourceTransferTask(
       donorRoom.name,
@@ -163,6 +405,12 @@ describe("runSynthesisControl hub import guard", () => {
 
     runSynthesisControl();
 
+    expect(getLastSynthesisTransferTaskIndexDiagnostics()).toEqual({
+      storeScanCount: 0,
+      reusedInputCount: 1,
+      mergeSnapshotLookupCount: 2,
+    });
+
     const tasks = ensureResourceTransferTaskStore();
     const allTasks = Object.values(tasks);
 
@@ -175,8 +423,175 @@ describe("runSynthesisControl hub import guard", () => {
     expect(expiredResult.task.amount).toBe(400);
     expect(utriumSynthesisTasks).toHaveLength(1);
     expect(utriumSynthesisTasks[0].amount).toBe(300);
+    expect(mergeResult.task.amount).toBe(500);
+    expect(mergeResult.task.remainingAmount).toBe(500);
     expect(countPendingIncomingResourceTransferTasksByRoom(hubRoom.name)).toBe(4);
     expect(Memory.runtime!.synthesisControl!.rooms[hubRoom.name].pendingTasks).toBe(3);
+
+    const shadow = peekLogisticsControlStore();
+    expect(shadow).toEqual(expect.objectContaining({ ok: true }));
+    if (!shadow.ok) return;
+    const intents = Object.values(shadow.store.latestIntents).filter(
+      (intent) => intent.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    );
+    const observations = Object.values(shadow.store.synthesisObservations).filter(
+      (observation) => observation.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    );
+    expect(intents).toHaveLength(2);
+    expect(observations).toHaveLength(2);
+    expect(observations.map((observation) => observation.decisionOrder).sort((a, b) => a - b))
+      .toEqual([0, 1]);
+    const publishedSnapshot = Object.values(shadow.store.producerSnapshots).find(
+      (snapshot) => snapshot.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    );
+    expect(publishedSnapshot).toEqual(expect.objectContaining({
+      producer: SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+      observedAt: 510,
+      expiresAt: 540,
+      epochRevision: expect.stringContaining("synthesis-room-epoch/v1:510:"),
+      epochFingerprint: expect.stringContaining("synthesis-room-epoch/v1:"),
+      captureCpuUsed: expect.any(Number),
+      indexBuildCount: 1,
+      total: 2,
+      emitted: 2,
+      dropped: 0,
+      limit: 32,
+      truncated: false,
+    }));
+    expect(publishedSnapshot!.captureCpuUsed).toBeGreaterThanOrEqual(0);
+    expect(Object.values(shadow.store.roomFacts)).toHaveLength(2);
+    expect(Object.values(shadow.store.roomFacts).every((fact) =>
+      fact.epochRevision === publishedSnapshot!.epochRevision
+      && fact.epochFingerprint === publishedSnapshot!.epochFingerprint
+      && fact.observedAt === publishedSnapshot!.observedAt
+    )).toBe(true);
+
+    const utriumIntent = intents.find((intent) => intent.resource === RESOURCE_UTRIUM)!;
+    const hydrogenIntent = intents.find((intent) => intent.resource === RESOURCE_HYDROGEN)!;
+    const utriumObservation = observations.find((entry) => entry.intentId === utriumIntent.id)!;
+    const hydrogenObservation = observations.find((entry) => entry.intentId === hydrogenIntent.id)!;
+    expect(utriumIntent).toEqual(expect.objectContaining({
+      active: true,
+      desiredAmount: 500,
+      priorityClass: "production",
+      revision: 1,
+      observedAt: 510,
+    }));
+    expect(utriumObservation).toEqual(expect.objectContaining({
+      localAmount: 0,
+      incomingAmount: 200,
+      uncoveredAmount: 300,
+      legacyDecision: "created",
+      legacyPriorityRank: 2,
+      legacyPriorityClass: "production",
+      legacyTaskId: utriumSynthesisTasks[0].id,
+      legacyAmount: 300,
+      legacyAddedAmount: 300,
+      legacyRemainingBefore: 0,
+      legacyFeeDelta: 300,
+    }));
+    expect(utriumObservation.inputFingerprint).toMatch(/^synthesis-shadow\/v1:/);
+    expect(hydrogenIntent).toEqual(expect.objectContaining({
+      active: true,
+      desiredAmount: 500,
+      revision: 1,
+      observedAt: 510,
+    }));
+    expect(hydrogenObservation).toEqual(expect.objectContaining({
+      localAmount: 0,
+      incomingAmount: 100,
+      uncoveredAmount: 400,
+      legacyDecision: "merged",
+      legacyTaskId: mergeResult.task.id,
+      legacyAmount: 400,
+      legacyAddedAmount: 400,
+      legacyRemainingBefore: 100,
+      // ResourceControl only commits one 300-unit fee batch: 300 - 100, not the 400 added amount.
+      legacyFeeDelta: 200,
+    }));
+
+    Game.time = 520;
+    runSynthesisControl();
+    const coveredShadow = peekLogisticsControlStore();
+    expect(coveredShadow).toEqual(expect.objectContaining({ ok: true }));
+    if (!coveredShadow.ok) return;
+    const coveredIntents = Object.values(coveredShadow.store.latestIntents).filter(
+      (intent) => intent.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    );
+    const coveredObservations = Object.values(coveredShadow.store.synthesisObservations).filter(
+      (observation) => observation.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    );
+    expect(coveredIntents).toHaveLength(2);
+    expect(coveredIntents.every(
+      (intent) => intent.active && intent.revision === 1 && intent.observedAt === 520,
+    )).toBe(true);
+    expect(coveredObservations).toHaveLength(2);
+    expect(coveredObservations.every(
+      (observation) => observation.incomingAmount === 500
+        && observation.uncoveredAmount === 0
+        && observation.legacyDecision === "no_op"
+        && observation.legacyAddedAmount === 0
+        && observation.legacyFeeDelta === 0,
+    )).toBe(true);
+    expect(Object.values(coveredShadow.store.producerSnapshots).find(
+      (snapshot) => snapshot.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    )).toEqual(expect.objectContaining({
+      observedAt: 520,
+      total: 2,
+      emitted: 2,
+      dropped: 0,
+      truncated: false,
+    }));
+    expect(Object.values(ensureResourceTransferTaskStore())).toHaveLength(4);
+    expect(mergeResult.task.amount).toBe(500);
+
+    Memory.cfg.resourceControl!.sampleInterval = 15;
+    Game.time = 530;
+    runSynthesisControl();
+    expect(getLastSynthesisTransferTaskIndexDiagnostics()).toEqual({
+      storeScanCount: 1,
+      reusedInputCount: 0,
+      mergeSnapshotLookupCount: 0,
+    });
+    const misalignedShadow = peekLogisticsControlStore();
+    expect(misalignedShadow).toEqual(expect.objectContaining({ ok: true }));
+    if (!misalignedShadow.ok) return;
+    expect(Object.values(misalignedShadow.store.latestIntents)).toHaveLength(2);
+    expect(Object.values(misalignedShadow.store.producerSnapshots)[0])
+      .toEqual(expect.objectContaining({ observedAt: 520, total: 2 }));
+
+    Memory.cfg.synthesisControl!.rooms!.W1N1.reactions = [];
+    Game.time = 540;
+    runSynthesisControl();
+    const withdrawnShadow = peekLogisticsControlStore();
+    expect(withdrawnShadow).toEqual(expect.objectContaining({ ok: true }));
+    if (!withdrawnShadow.ok) return;
+    expect(Object.values(withdrawnShadow.store.latestIntents).filter(
+      (intent) => intent.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    )).toHaveLength(0);
+    expect(Object.values(withdrawnShadow.store.synthesisObservations).filter(
+      (observation) => observation.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    )).toHaveLength(0);
+    expect(Object.values(withdrawnShadow.store.producerSnapshots).find(
+      (snapshot) => snapshot.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+    )).toEqual(expect.objectContaining({
+      observedAt: 540,
+      total: 0,
+      emitted: 0,
+      dropped: 0,
+      truncated: false,
+    }));
+    expect(withdrawnShadow.store.roomFacts).toEqual({});
+    expect(Object.values(ensureResourceTransferTaskStore())).toHaveLength(4);
+    expect(mergeResult.task.amount).toBe(500);
+
+    const disabledAuthorityTwin = runSynthesisResourceControlAuthorityTwin("disabled");
+    const shadowAuthorityTwin = runSynthesisResourceControlAuthorityTwin("shadow");
+    expect(shadowAuthorityTwin.state).toEqual(disabledAuthorityTwin.state);
+    expect(shadowAuthorityTwin.terminalSendCalls).toBe(
+      disabledAuthorityTwin.terminalSendCalls,
+    );
+    expect(shadowAuthorityTwin.marketDealCalls).toBe(disabledAuthorityTwin.marketDealCalls);
   });
 });
 

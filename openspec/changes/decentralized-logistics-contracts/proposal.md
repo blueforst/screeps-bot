@@ -1,6 +1,6 @@
 ## Why
 
-当前跨房物流由 Hub、Synthesis、PowerBank、容量均衡和生存能量等 producer 分别计算并由 ResourceControl 集中执行，任务缺少显式优先级、容量租约、执行所有权和可恢复 staging 账本，导致重复承诺、长期阻塞、单 receiver 集中与 Hub 容量耦合。`terminal-headroom-recovery` 恢复物理容量后，还必须先由 `production-logistics-liveness` 消除失效 incoming 假覆盖、重复合成房 assignment 和无 owner 配置漂移；只有这两层 P0 成为可信基线后，才进入合同 Shadow。
+当前跨房物流由 Hub、Synthesis、PowerBank、容量均衡和生存能量等 producer 分别计算并由 ResourceControl 集中执行，任务缺少显式优先级、容量租约、执行所有权和可恢复 staging 账本，导致重复承诺、长期阻塞、单 receiver 集中与 Hub 容量耦合。`production-logistics-liveness` 必须先消除失效 incoming 假覆盖、重复合成房 assignment 和无 owner 配置漂移；`terminal-headroom-recovery` 的共享 oracle、本地回归和冻结 Memory 边界是纯只读 Shadow 的可用基线，其 6.4 线上恢复周期验收则是任何 contract authority canary 之前必须关闭的独立门槛。
 
 ## What Changes
 
@@ -10,7 +10,11 @@
 - 每个房间由唯一 LogisticsAgent 选择 staging、send 与 market proposal，但所有 terminal/deal 副作用继续提交给既有 `marketActionArbiter`，不新建第二套 terminal lock/claim；receiver 侧只有该 Agent 可授予 CapacityLease。
 - Carrier 工作继续发布到既有 owner-aware `CarrierTaskBoard`，以完整 `CarrierDispatchRef` 标识；持久 StageWorkClaim 只补跨 tick carrying/恢复语义，并与现有 tick-bound `CarrierAmountSlicePort` 通过单一 `executionAuthority` 隔离。
 - 用显式 priority class、aging、deadline 和 per-source 公平调度替代 reason 字符串解析；全局 send budget 仅作为 CPU/安全护栏，不能成为固定的跨房公平瓶颈。
-- 第一实现切片只让 Synthesis 发布 latest-state intent，并以纯 Shadow comparator 对照 legacy route/priority/capacity 结果；不创建 active lease/contract authority，也不发送。后续再通过 feature flag 和兼容适配器按 origin/room 迁移。
+- 配置默认为 `disabled`；第一实现切片只允许 `synthesis_room` 发布 latest-state intent，即 room reaction 的 legacy `synthesis:<room>:<product>` reagent demand，并以纯 `shadow` comparator 对照 legacy donor/route/priority/coverage/headroom/预测 staging eligibility 结果。`synthesis_distributed_demand`（`direct/hub-route/resupply`）、`synthesis:surplus:*` 和 `auto:synthesis:*` 兼容 planner 都属后续 Shadow 扩展，首片必须将它们以机器可读 `out_of_scope` 投影而不得静默遗漏。
+- Synthesis 必须在写入 legacy task 前冻结不可变的 intent/房间事实输入，并捕获实际 legacy decision；若只能在写入后比较，只允许用稳定 decision/task identity 精确排除已配对的自身 commitment，不得按 reason 前缀或房间+资源宽泛排除。
+- 纯 Shadow 中 legacy 仍是唯一 `executionAuthority`；Shadow 只可写入有界 intent/comparator/runtime 投影，不创建 active contract、CapacityLease 或 StageWorkClaim，不修改 legacy task/授权，不向 terminal/deal arbiter 新增 actor、claim 或 side effect。首片以相同 fixture 的 `disabled`/`shadow` 可观察状态差分及 send/deal mock 调用差分验收：除 `Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 外，legacy task、CarrierTaskBoard、arbiter claim/journal、receiver reservation、terminal/store 和其他 Memory 投影必须一致，send/deal mock 不得出现 Shadow 新增调用。legacy 自身的正常 send/deal 仍被允许，不得被误记为 Shadow side effect。
+- 后续 `canary` 只能按 `(origin, sourceRoom)` 双重 allowlist 转移单一执行权，不允许只按 targetRoom 开启；回滚也不是瞬时布尔开关，而是带 requestId、scope 和可恢复 phase 的持久请求，global reset 后必须续跑当前阶段。
+- 首个 Shadow 线上门槛为剔除 warmup 后至少 100 个连续可观测 tick：包含 Shadow 成本的同口径 ResourceControl phase p95 CPU 不得高于部署前基线 110%（增幅不超过 10%），`Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 的 UTF-8 JSON 序列化字节数合计不得超过 32 KiB；live 投影还必须持续显示 `effectiveAuthority=legacy`、active contract/lease/claim store 为零、无归属于 Logistics Shadow 的 arbiter actor/claim/journal 记录和可观察 invariant violation。首片没有跨模块瞬时 attempt instrumentation，这些证据不得被表述为能够发现已经回滚、释放或失败且未留下状态的 attempt。
 - 在三项核心能力内增加 intent/contract/lease/claim 的运行时观测、状态耗时、吞吐、公平性、安全不变量和 CPU 指标，并覆盖 global reset、部分完成、cooldown、租约过期和孤儿货物恢复。
 
 ## Capabilities

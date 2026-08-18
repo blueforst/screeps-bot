@@ -4,6 +4,8 @@
 
 CapacityLease 必须（MUST）仅由目标房间的 RoomLogisticsAgent grant、renew、consume 或 release。每个 lease 必须绑定唯一 contractId、receiverRoom、resource、amount、epoch、grantedAt、expiresAt 和 state，不得（MUST NOT）转让给另一合同或由 source/matcher 自行声明成功。
 
+纯 `shadow` 不是 lease authority；即使 matcher 预测 receiver 容量充足，也不得（MUST NOT）创建 active CapacityLease、扣减 receiver reservation 或把预测写成 grant/renew/consume 事实。任何 authority canary 只能在 `terminal-headroom-recovery` 6.4 live gate 完成后开始。
+
 #### Scenario: Source 不能自授容量
 
 - **WHEN** matcher 找到候选路线，但 receiver Agent 尚未批准 lease
@@ -13,6 +15,16 @@ CapacityLease 必须（MUST）仅由目标房间的 RoomLogisticsAgent grant、r
 
 - **WHEN** 合同 A 的 lease 仍 active，合同 B 引用相同 lease id 或 epoch
 - **THEN** receiver Agent 必须拒绝合同 B，且记录 lease ownership invariant violation
+
+#### Scenario: Shadow headroom 预测不授予 lease
+
+- **WHEN** `synthesis_room` Shadow 候选的 receiver 具有足够 P0 安全 headroom
+- **THEN** runtime 可投影容量预测，但 active lease 与 Shadow receiver reservation 必须为零，legacy commitment 仍是容量事实
+
+#### Scenario: Terminal headroom live gate 之前 canary fail closed
+
+- **WHEN** 纯 Shadow 已通过而 `terminal-headroom-recovery` 6.4 尚未完成
+- **THEN** rollout 必须保持 contract/lease authority 关闭，不得因 Shadow 差异可解释就授予任何 CapacityLease
 
 ### Requirement: Lease 总量不得超过 P0 安全可接收容量
 

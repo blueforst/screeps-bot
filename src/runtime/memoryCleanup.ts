@@ -6,6 +6,7 @@ import { isOwnedManagedRoom } from "@/runtime/roomTypes";
 import { cleanupCarrierTaskBoard } from "@/runtime/carrierTaskBoard";
 import { cleanupPickupReservationStore } from "@/runtime/energyPickupReservation";
 import { cleanupResourceTransferTaskStore } from "@/runtime/logistics/resourceTransferTasks";
+import { cleanupLogisticsControlStore } from "@/runtime/logistics/logisticsControl";
 import { pruneLinkNetworkRuntime } from "@/runtime/linkNetworkMemory";
 import { cleanupWorkerTaskBoard } from "@/runtime/workerTaskPool";
 import { gcProductionReservations } from "@/runtime/resourceReservation";
@@ -266,9 +267,14 @@ function cleanupResourceControlMemory(ownedRooms: Set<string>): number {
     }
   }
 
+  const logistics = (
+    Memory.runtime.resourceControl as unknown as { logistics?: unknown }
+  ).logistics;
+
   if (
     Object.keys(Memory.runtime.resourceControl.rooms).length === 0 &&
-    (!synthesisBindings || Object.keys(synthesisBindings).length === 0)
+    (!synthesisBindings || Object.keys(synthesisBindings).length === 0) &&
+    logistics === undefined
   ) {
     delete Memory.runtime.resourceControl;
   }
@@ -685,6 +691,7 @@ export function runMemoryCleanup(): void {
   cleanupCrossShardColonizationMemory(ownedRooms);
   cleanupRescueMemory(ownedRooms);
   cleanupResourceControlTaskMemory(ownedRooms);
+  cleanupLogisticsControlStore(ownedRooms);
   cleanupWorkerTaskBoardMemory(ownedRooms);
   cleanupCarrierTaskBoardMemory(ownedRooms);
   cleanupTowerCombatMemory(ownedRooms);

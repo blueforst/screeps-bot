@@ -2,6 +2,7 @@ import {
   listCarrierDispatchEntriesByRoom,
   listCarrierTasksByRoom,
   listCarrierTasksForProducer,
+  peekCarrierTasksByRoom,
   pruneCarrierTasksForProducer,
   replaceCarrierTasksForProducerRoom,
   type CarrierTaskDispatchClass,
@@ -41,6 +42,35 @@ import {
   type ReceiverCapacityLedger,
 } from "@/runtime/logistics/receiverCapacityLedger";
 import {
+  LOGISTICS_CONTROL_STORE_LIMIT,
+  LOGISTICS_RUNTIME_SCHEMA_VERSION,
+  SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+  getLogisticsControlStoreUsage,
+  mapLegacyTransferOrigin,
+  peekLogisticsControlStore,
+  resolveLogisticsControlConfig,
+  type LatestLogisticsDemandV1,
+  type LogisticsProducerSnapshotV1,
+  type LogisticsRolloutOrigin,
+  type SynthesisLogisticsObservationV1,
+} from "@/runtime/logistics/logisticsControl";
+import {
+  SYNTHESIS_SHADOW_DEFAULT_CANDIDATE_BUDGET,
+  SYNTHESIS_SHADOW_MAX_COMPARISON_SAMPLES,
+  SYNTHESIS_SHADOW_MAX_ROOM_FACTS,
+  runSynthesisLogisticsShadow,
+  type SynthesisShadowComparisonClassification,
+  type SynthesisShadowComparisonSample,
+  type SynthesisShadowDemandObservation,
+  type SynthesisShadowDifference,
+  type SynthesisShadowLegacyDecisionObservation,
+  type SynthesisShadowMatcherResult,
+  type SynthesisShadowPredictedStagingEligibility,
+  type SynthesisShadowRoomFact,
+  type SynthesisShadowRouteFact,
+  type SynthesisShadowUnresolvedReason,
+} from "@/runtime/logistics/synthesisLogisticsShadow";
+import {
   getMemoryService,
   getTickContextService,
 } from "@/runtime/runtimeServices";
@@ -58,11 +88,15 @@ import {
   declareMarketActionIntent,
   executeMarketDeal,
   executeTerminalSend,
+  getMarketAccountClaim,
+  getMarketActionJournal,
   getTerminalActionClaims,
 } from "@/runtime/marketActionArbiter";
 import {
   canTerminalSendPreserveMarketSaleExposure,
+  compileLiveMarketSaleTerminalExposureIndex,
   getTerminalAmountOutsideMarketSaleExposure,
+  getTerminalAmountsOutsideMarketSaleExposure,
 } from "@/runtime/marketSaleExposure";
 import { deriveMarketBaseResourceCanonicalReadinessAuthorization } from "@/runtime/marketBaseResourceAutomation";
 import { getLocalCarrierDestinationCommittedAmount } from "@/runtime/localCarrierDestinationCapacity";
@@ -227,6 +261,7 @@ interface ResourceControlTransferContext {
   outgoingFeeByTaskId: Map<string, number>;
   healthyIncomingEnergyRooms: Set<string>;
   healthyIncomingEnergyRoomRefCount: Map<string, number>;
+  reservedProductionByRoomResource: Map<string, number>;
   carrierProductionByRoomResource: Map<string, number>;
   existingTerminalOffloadCreatedAtByRoomTaskId: Map<
     string,
@@ -257,6 +292,9 @@ interface ResourceControlTaskContributionIndexProbe {
   initialTaskCount: number;
   syncCount: number;
   contributionEvaluationCount: number;
+  productionReservationScanCount: number;
+  productionReservationRecordCount: number;
+  invalidProductionReservationCount: number;
 }
 
 interface TerminalStagingBatch {
@@ -354,6 +392,147 @@ interface TerminalStagingAttempt {
   suppressedReason?: TerminalStagingSuppressionReason;
 }
 
+type LogisticsShadowDimension =
+  | "donor"
+  | "route"
+  | "priority"
+  | "demandCoverage"
+  | "receiverHeadroom"
+  | "predictedStagingEligibility";
+
+type LogisticsShadowComparisonReason =
+  | "equal"
+  | SynthesisShadowComparisonClassification
+  | SynthesisShadowUnresolvedReason;
+
+type LogisticsShadowRuntimeBlocker =
+  | "mode_disabled"
+  | "config_invalid"
+  | "store_missing"
+  | "store_invalid"
+  | "input_unavailable"
+  | "matcher_unavailable";
+
+interface LogisticsShadowRuntimeComparisonSampleV1 {
+  intentId: string;
+  status: "equal" | "different" | "unresolved";
+  reason: LogisticsShadowComparisonReason;
+  differingDimensions: LogisticsShadowDimension[];
+  predictedStagingEligibility: SynthesisShadowPredictedStagingEligibility;
+  legacySourceRoomName?: string;
+  shadowSourceRoomName?: string;
+}
+
+interface LogisticsShadowDimensionSummaryV1 {
+  matched: number;
+  different: number;
+  unresolved: number;
+}
+
+interface ResourceControlLogisticsRuntimeV1 {
+  schemaVersion: 1;
+  updatedAt: number;
+  expiresAt: number;
+  requestedMode: "disabled" | "shadow" | "canary" | "enabled";
+  effectiveAuthority: "legacy";
+  available: boolean;
+  complete: boolean;
+  projectionTruncated: boolean;
+  blocker?: LogisticsShadowRuntimeBlocker;
+  inScopeByOrigin: Partial<Record<LogisticsRolloutOrigin, number>>;
+  outOfScopeByOrigin: Partial<Record<LogisticsRolloutOrigin, number>>;
+  intent: {
+    total: number;
+    active: number;
+    fresh: number;
+    stale: number;
+    paired: number;
+    inputDrift: number;
+    emitted: number;
+    dropped: number;
+    truncated: boolean;
+  };
+  comparison: {
+    total: number;
+    matched: number;
+    different: number;
+    unresolved: number;
+    byReason: Partial<Record<LogisticsShadowComparisonReason, number>>;
+    dimensions: Record<
+      LogisticsShadowDimension,
+      LogisticsShadowDimensionSummaryV1
+    >;
+    samples: LogisticsShadowRuntimeComparisonSampleV1[];
+  };
+  matcher: {
+    indexBuilds: number;
+    candidateEvaluations: number;
+    transactionCostEvaluations: number;
+    totalTransactionCostEvaluations: number;
+    candidateBudget: number;
+    budgetExhausted: boolean;
+    continuationCursor?: string;
+  };
+  safety: {
+    measurementBoundary: "observable_state_diff_v1";
+    nonLegacyAuthorityRecords: number;
+    activeContracts: number;
+    activeLeases: number;
+    activeClaims: number;
+    shadowArbiterActorRecords: number;
+    shadowClaimRecords: number;
+    shadowJournalRecords: number;
+    shadowCarrierTaskRecords: number;
+    shadowReceiverReservationRecords: number;
+    violations: string[];
+  };
+  resources: {
+    dataItems: number;
+    runtimeItems: number;
+    dataBytes: number;
+    runtimeBytes: number;
+    totalBytes: number;
+    withinLimit: boolean;
+  };
+  cpu: {
+    measurementAvailable: boolean;
+    captureUsed: number;
+    used: number;
+  };
+}
+
+interface LogisticsShadowSelfExclusion {
+  outgoingByRoomResource: Map<string, number>;
+  incomingByRoomResource: Map<string, number>;
+  incomingByRoom: Map<string, number>;
+  feeByRoom: Map<string, number>;
+}
+
+interface LogisticsShadowCapturedSourceFacts {
+  actionEnergyBudgetByRoom: ReadonlyMap<string, number>;
+  sourceAvailableByRoomResource: ReadonlyMap<string, number>;
+  terminalOutsideExposureByRoomResource: ReadonlyMap<string, number>;
+}
+
+interface LogisticsShadowInputRecord {
+  intent: LatestLogisticsDemandV1;
+  observation?: SynthesisLogisticsObservationV1;
+  inputRevision: string;
+  inputDrift: boolean;
+}
+
+const LOGISTICS_SHADOW_DIMENSIONS: readonly LogisticsShadowDimension[] = [
+  "donor",
+  "route",
+  "priority",
+  "demandCoverage",
+  "receiverHeadroom",
+  "predictedStagingEligibility",
+];
+const LOGISTICS_SHADOW_MEMORY_LIMIT_BYTES = 32_768;
+const LOGISTICS_SHADOW_RUNTIME_LIMIT_BYTES = 16_384;
+const LOGISTICS_SHADOW_MAX_VIOLATIONS = 20;
+
 const MAX_RECENT_CAPACITY_RELIEF_ROUTES = 20;
 
 export interface ResourceControlSnapshot {
@@ -371,6 +550,8 @@ export interface ResourceControlSnapshot {
   energyExportStart: number;
   terminalEnergyReserve: number;
   transferBatchSize: number;
+  terminalCooldown?: number;
+  storageResourceAmounts?: Partial<Record<ResourceConstant, number>>;
   terminalResourceAmounts?: Partial<Record<ResourceConstant, number>>;
   nativeMineralType?: MineralConstant;
   canMineNative: boolean;
@@ -796,6 +977,10 @@ export function getResourceControlSampleInterval(): number {
   return normalizeInterval(Memory.cfg?.resourceControl?.sampleInterval);
 }
 
+export function isResourceControlFullPlanningTick(): boolean {
+  return Game.time % getResourceControlSampleInterval() === 0;
+}
+
 function resolveState(
   storageEnergy: number,
   config: ResourceControlRoomConfig,
@@ -809,7 +994,9 @@ function resolveState(
   return "balanced";
 }
 
-export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
+export function collectResourceControlSnapshots(
+  capturedResources?: readonly ResourceConstant[],
+): ResourceControlSnapshot[] {
   const rooms = getTickContextService()
     .getMyRooms()
     .filter((room) => !!room.terminal);
@@ -825,11 +1012,24 @@ export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
     const storageFreeCapacity = room.storage?.store.getFreeCapacity() || 0;
     const terminalUsedCapacity = room.terminal?.store.getUsedCapacity() || 0;
     const terminalFreeCapacity = room.terminal?.store.getFreeCapacity() || 0;
-    const terminalResourceAmounts: Partial<Record<ResourceConstant, number>> =
-      {};
-    for (const resource of RESOURCES_ALL) {
+    const storageResourceAmounts: Partial<
+      Record<ResourceConstant, number>
+    > = {};
+    const terminalResourceAmounts: Partial<
+      Record<ResourceConstant, number>
+    > = {};
+    const snapshotResources = capturedResources ?? RESOURCES_ALL;
+    for (const resource of snapshotResources) {
       terminalResourceAmounts[resource] =
-        room.terminal?.store.getUsedCapacity(resource) || 0;
+        resource === RESOURCE_ENERGY
+          ? terminalEnergy
+          : room.terminal?.store.getUsedCapacity(resource) || 0;
+      if (capturedResources) {
+        storageResourceAmounts[resource] =
+          resource === RESOURCE_ENERGY
+            ? storageEnergy
+            : room.storage?.store.getUsedCapacity(resource) || 0;
+      }
     }
     const previousCapacityState =
       Memory.runtime?.resourceControl?.rooms?.[room.name]?.capacityState;
@@ -861,6 +1061,12 @@ export function collectResourceControlSnapshots(): ResourceControlSnapshot[] {
       terminalEnergyReserve: config.terminalEnergyReserve,
       transferBatchSize: config.transferBatchSize,
       terminalResourceAmounts,
+      ...(capturedResources
+        ? {
+            terminalCooldown: room.terminal?.cooldown || 0,
+            storageResourceAmounts,
+          }
+        : {}),
       nativeMineralType: mineral?.mineralType,
       canMineNative: !!mineral && !!extractor,
       mineralFloor: config.mineralFloor,
@@ -890,6 +1096,16 @@ function setTerminalResourceAmount(
   snapshot.terminalResourceAmounts[resource] = Math.max(0, Math.floor(amount));
 }
 
+function getStorageResourceAmount(
+  snapshot: ResourceControlSnapshot,
+  resource: ResourceConstant,
+): number {
+  const projected = snapshot.storageResourceAmounts?.[resource];
+  return typeof projected === "number"
+    ? projected
+    : snapshot.storage?.store.getUsedCapacity(resource) || 0;
+}
+
 function getStock(
   snapshot: ResourceControlSnapshot,
   resource: ResourceConstant,
@@ -898,7 +1114,7 @@ function getStock(
     return snapshot.storageEnergy + snapshot.terminalEnergy;
   }
   return (
-    (snapshot.storage?.store.getUsedCapacity(resource) || 0) +
+    getStorageResourceAmount(snapshot, resource) +
     getTerminalResourceAmount(snapshot, resource)
   );
 }
@@ -962,6 +1178,7 @@ export function createResourceControlTransferContext(
   snapshots: ResourceControlSnapshot[],
   capacityConfig: ResourceCapacityConfig,
   buildCounter: ResourceControlCapacityIndexBuildCounter,
+  options: { readonlyCarrierBoard?: boolean } = {},
 ): ResourceControlTransferContext {
   buildCounter.count += 1;
   const tasks = getResourceTransferTaskListSorted();
@@ -975,6 +1192,7 @@ export function createResourceControlTransferContext(
   const outgoingFeeByTaskId = new Map<string, number>();
   const healthyIncomingEnergyRooms = new Set<string>();
   const healthyIncomingEnergyRoomRefCount = new Map<string, number>();
+  const reservedProductionByRoomResource = new Map<string, number>();
   const carrierProductionByRoomResource = new Map<string, number>();
   const existingTerminalOffloadCreatedAtByRoomTaskId = new Map<
     string,
@@ -997,7 +1215,30 @@ export function createResourceControlTransferContext(
     initialTaskCount: tasks.length,
     syncCount: 0,
     contributionEvaluationCount: 0,
+    productionReservationScanCount: 1,
+    productionReservationRecordCount: 0,
+    invalidProductionReservationCount: 0,
   };
+  const productionReservations = listProductionReservations();
+  taskContributionIndex.productionReservationRecordCount =
+    productionReservations.length;
+  for (const reservation of productionReservations) {
+    if (reservation.expiresAt < Game.time) continue;
+    const key = roomResourceKey(reservation.roomName, reservation.resource);
+    if (
+      !Number.isSafeInteger(reservation.amount) ||
+      reservation.amount <= 0
+    ) {
+      taskContributionIndex.invalidProductionReservationCount += 1;
+    }
+    const previousAmount = reservedProductionByRoomResource.has(key)
+      ? reservedProductionByRoomResource.get(key)!
+      : 0;
+    reservedProductionByRoomResource.set(
+      key,
+      previousAmount + reservation.amount,
+    );
+  }
   const marketEnergyReadinessByRoom = new Map<
     string,
     MarketTerminalEnergyReadinessObservation
@@ -1039,7 +1280,10 @@ export function createResourceControlTransferContext(
       snapshot.roomName,
       createTerminalStagingObservation(),
     );
-    for (const task of listCarrierTasksByRoom(snapshot.roomName)) {
+    const carrierTasks = options.readonlyCarrierBoard
+      ? peekCarrierTasksByRoom(snapshot.roomName).map((entry) => entry.task)
+      : listCarrierTasksByRoom(snapshot.roomName);
+    for (const task of carrierTasks) {
       if (
         task.producer === RESOURCE_CONTROL_TERMINAL_FEED_PRODUCER &&
         task.type === "terminal_offload"
@@ -1078,6 +1322,7 @@ export function createResourceControlTransferContext(
     outgoingFeeByTaskId,
     healthyIncomingEnergyRooms,
     healthyIncomingEnergyRoomRefCount,
+    reservedProductionByRoomResource,
     carrierProductionByRoomResource,
     existingTerminalOffloadCreatedAtByRoomTaskId,
     previousTerminalFreeCapacityByRoom,
@@ -1266,11 +1511,11 @@ function getProductionCommitmentAmount(
   resource: ResourceConstant,
   context: ResourceControlTransferContext,
 ): number {
+  const key = roomResourceKey(roomName, resource);
+  const reserved = context.reservedProductionByRoomResource.get(key);
   return (
-    getReservedProductionAmount(roomName, resource) +
-    (context.carrierProductionByRoomResource.get(
-      roomResourceKey(roomName, resource),
-    ) || 0)
+    (reserved === undefined ? 0 : reserved) +
+    (context.carrierProductionByRoomResource.get(key) || 0)
   );
 }
 
@@ -1510,8 +1755,10 @@ function getTerminalActionEnergyBudget(
   snapshot: ResourceControlSnapshot,
   context: ResourceControlTransferContext,
   excludeTaskId?: string,
+  terminalEnergyOutsideMarketExposureOverride?: number,
 ): number {
   const terminalEnergyOutsideMarketExposure =
+    terminalEnergyOutsideMarketExposureOverride ??
     getTerminalAmountOutsideMarketSaleExposure(
       snapshot.terminal,
       RESOURCE_ENERGY,
@@ -2036,7 +2283,7 @@ function getMovableResourceAmount(
     const structureStock =
       location === "terminal"
         ? getTerminalResourceAmount(snapshot, resource)
-        : snapshot.storage?.store.getUsedCapacity(resource) || 0;
+        : getStorageResourceAmount(snapshot, resource);
     return Math.min(
       structureStock,
       getTerminalActionEnergyBudget(snapshot, context, excludeTaskId),
@@ -2063,7 +2310,7 @@ function getMovableResourceAmount(
   const structureStock =
     location === "terminal"
       ? getTerminalResourceAmount(snapshot, resource)
-      : snapshot.storage?.store.getUsedCapacity(resource) || 0;
+      : getStorageResourceAmount(snapshot, resource);
   return Math.min(structureStock, movableTotal);
 }
 
@@ -2094,6 +2341,1774 @@ function getTotalMovableResourceAmount(
         excludeTaskId,
       ),
   );
+}
+
+function readLogisticsShadowCpuUsed(): number | undefined {
+  try {
+    const used = Game.cpu?.getUsed?.();
+    return typeof used === "number" && Number.isFinite(used) && used >= 0
+      ? used
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function logisticsShadowHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+function safeSerializedLength(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string"
+      ? utf8ByteLength(serialized)
+      : LOGISTICS_SHADOW_MEMORY_LIMIT_BYTES + 1;
+  } catch {
+    return LOGISTICS_SHADOW_MEMORY_LIMIT_BYTES + 1;
+  }
+}
+
+function isLogisticsShadowActor(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    (value === "resourceControl:logistics-shadow" ||
+      value.startsWith("resourceControl:logistics-shadow:"))
+  );
+}
+
+function getObservableRecordValues(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (isPlainRecord(value)) return Object.values(value);
+  return [];
+}
+
+function isObservableAuthorityRecordActive(value: unknown): boolean {
+  if (!isPlainRecord(value)) return true;
+  const status = value.status;
+  return ![
+    "cancelled",
+    "completed",
+    "done",
+    "expired",
+    "released",
+    "revoked",
+  ].includes(typeof status === "string" ? status : "");
+}
+
+function countObservableNonLegacyAuthorityRecords(
+  collections: readonly unknown[][],
+): number {
+  let count = 0;
+  for (const records of collections) {
+    for (const record of records) {
+      if (
+        isPlainRecord(record) &&
+        typeof record.effectiveAuthority === "string" &&
+        record.effectiveAuthority !== "legacy"
+      ) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function recordLogisticsShadowSafetyViolation(
+  projection: ResourceControlLogisticsRuntimeV1,
+  violation: string,
+): void {
+  if (
+    projection.safety.violations.length < LOGISTICS_SHADOW_MAX_VIOLATIONS &&
+    !projection.safety.violations.includes(violation)
+  ) {
+    projection.safety.violations.push(violation);
+  }
+}
+
+/**
+ * 只统计 Shadow 边界结束时仍可见、且可归因到 Shadow actor/authority 的记录。
+ * terminal.send/deal 的瞬时调用由 A/B mock 门禁证明；这里不声称捕获失败后回滚的
+ * attempt，也不为测量而创建 carrier board 或 authority store。
+ */
+function projectLogisticsShadowObservableRecords(
+  projection: ResourceControlLogisticsRuntimeV1,
+  context: ResourceControlTransferContext,
+): void {
+  const rawLogistics = (
+    Memory.data?.resourceControl as unknown as { logistics?: unknown } | undefined
+  )?.logistics;
+  const authorityStore = isPlainRecord(rawLogistics)
+    ? rawLogistics
+    : undefined;
+  const contractRecords = getObservableRecordValues(authorityStore?.contracts);
+  const leaseRecords = getObservableRecordValues(authorityStore?.leases);
+  const claimRecords = getObservableRecordValues(authorityStore?.claims);
+  const receiverReservationRecords = getObservableRecordValues(
+    authorityStore?.receiverReservations,
+  );
+  const authorityCollections = [
+    contractRecords,
+    leaseRecords,
+    claimRecords,
+    receiverReservationRecords,
+  ];
+
+  projection.safety.nonLegacyAuthorityRecords =
+    countObservableNonLegacyAuthorityRecords(authorityCollections);
+  projection.safety.activeContracts =
+    contractRecords.filter(isObservableAuthorityRecordActive).length;
+  projection.safety.activeLeases =
+    leaseRecords.filter(isObservableAuthorityRecordActive).length;
+  projection.safety.activeClaims =
+    claimRecords.filter(isObservableAuthorityRecordActive).length;
+
+  const terminalClaims = getTerminalActionClaims();
+  const marketAccountClaim = getMarketAccountClaim();
+  const visibleClaims = [
+    ...terminalClaims,
+    ...(marketAccountClaim ? [marketAccountClaim] : []),
+  ];
+  projection.safety.shadowClaimRecords = visibleClaims.filter((claim) =>
+    isPlainRecord(claim) && isLogisticsShadowActor(claim.actor),
+  ).length;
+
+  const journal = getMarketActionJournal();
+  projection.safety.shadowJournalRecords = journal.filter((entry) =>
+    isLogisticsShadowActor(entry.actor),
+  ).length;
+  projection.safety.shadowArbiterActorRecords = new Set([
+    ...visibleClaims
+      .filter(isPlainRecord)
+      .map((claim) => claim.actor)
+      .filter(isLogisticsShadowActor),
+    ...journal
+      .map((entry) => entry.actor)
+      .filter(isLogisticsShadowActor),
+  ]).size;
+
+  let shadowCarrierTaskRecords = 0;
+  for (const roomName of [...context.snapshotByRoom.keys()]
+    .sort()
+    .slice(0, SYNTHESIS_SHADOW_MAX_ROOM_FACTS)) {
+    for (const { task } of peekCarrierTasksByRoom(roomName)) {
+      if (isLogisticsShadowActor(task.producer)) {
+        shadowCarrierTaskRecords += 1;
+      }
+    }
+  }
+  projection.safety.shadowCarrierTaskRecords = shadowCarrierTaskRecords;
+  projection.safety.shadowReceiverReservationRecords =
+    receiverReservationRecords.filter(
+      (record) =>
+        isPlainRecord(record) &&
+        (isLogisticsShadowActor(record.actor) ||
+          isLogisticsShadowActor(record.producer)),
+    ).length;
+
+  if (
+    projection.safety.nonLegacyAuthorityRecords > 0 ||
+    projection.safety.activeContracts > 0 ||
+    projection.safety.activeLeases > 0 ||
+    projection.safety.activeClaims > 0 ||
+    projection.safety.shadowArbiterActorRecords > 0 ||
+    projection.safety.shadowClaimRecords > 0 ||
+    projection.safety.shadowJournalRecords > 0 ||
+    projection.safety.shadowCarrierTaskRecords > 0 ||
+    projection.safety.shadowReceiverReservationRecords > 0
+  ) {
+    recordLogisticsShadowSafetyViolation(
+      projection,
+      "observable_shadow_authority_record",
+    );
+    projection.available = false;
+    projection.complete = false;
+    projection.blocker = "input_unavailable";
+  }
+}
+
+function createLogisticsShadowDimensionSummary(): Record<
+  LogisticsShadowDimension,
+  LogisticsShadowDimensionSummaryV1
+> {
+  return {
+    donor: { matched: 0, different: 0, unresolved: 0 },
+    route: { matched: 0, different: 0, unresolved: 0 },
+    priority: { matched: 0, different: 0, unresolved: 0 },
+    demandCoverage: { matched: 0, different: 0, unresolved: 0 },
+    receiverHeadroom: { matched: 0, different: 0, unresolved: 0 },
+    predictedStagingEligibility: {
+      matched: 0,
+      different: 0,
+      unresolved: 0,
+    },
+  };
+}
+
+function createEmptyLogisticsShadowRuntime(
+  requestedMode: ResourceControlLogisticsRuntimeV1["requestedMode"],
+  blocker: LogisticsShadowRuntimeBlocker,
+): ResourceControlLogisticsRuntimeV1 {
+  return {
+    schemaVersion: LOGISTICS_RUNTIME_SCHEMA_VERSION,
+    updatedAt: Game.time,
+    expiresAt: Game.time + getResourceControlSampleInterval() * 2,
+    requestedMode,
+    effectiveAuthority: "legacy",
+    available: false,
+    complete: false,
+    projectionTruncated: false,
+    blocker,
+    inScopeByOrigin: {},
+    outOfScopeByOrigin: {},
+    intent: {
+      total: 0,
+      active: 0,
+      fresh: 0,
+      stale: 0,
+      paired: 0,
+      inputDrift: 0,
+      emitted: 0,
+      dropped: 0,
+      truncated: false,
+    },
+    comparison: {
+      total: 0,
+      matched: 0,
+      different: 0,
+      unresolved: 0,
+      byReason: {},
+      dimensions: createLogisticsShadowDimensionSummary(),
+      samples: [],
+    },
+    matcher: {
+      indexBuilds: 0,
+      candidateEvaluations: 0,
+      transactionCostEvaluations: 0,
+      totalTransactionCostEvaluations: 0,
+      candidateBudget: SYNTHESIS_SHADOW_DEFAULT_CANDIDATE_BUDGET,
+      budgetExhausted: false,
+    },
+    safety: {
+      measurementBoundary: "observable_state_diff_v1",
+      nonLegacyAuthorityRecords: 0,
+      activeContracts: 0,
+      activeLeases: 0,
+      activeClaims: 0,
+      shadowArbiterActorRecords: 0,
+      shadowClaimRecords: 0,
+      shadowJournalRecords: 0,
+      shadowCarrierTaskRecords: 0,
+      shadowReceiverReservationRecords: 0,
+      violations: [],
+    },
+    resources: {
+      dataItems: 0,
+      runtimeItems: 0,
+      dataBytes: 0,
+      runtimeBytes: 0,
+      totalBytes: 0,
+      withinLimit: true,
+    },
+    cpu: { measurementAvailable: false, captureUsed: 0, used: 0 },
+  };
+}
+
+function countLogisticsShadowRuntimeItems(
+  projection: ResourceControlLogisticsRuntimeV1,
+): number {
+  return (
+    projection.comparison.samples.length +
+    projection.safety.violations.length +
+    Object.keys(projection.inScopeByOrigin).length +
+    Object.keys(projection.outOfScopeByOrigin).length +
+    Object.keys(projection.comparison.byReason).length
+  );
+}
+
+function countLogisticsShadowDataItems(): number {
+  const read = peekLogisticsControlStore();
+  if (read.ok === false) return 0;
+  return getLogisticsControlStoreUsage(read.store).itemCount;
+}
+
+function finalizeLogisticsShadowRuntime(
+  projection: ResourceControlLogisticsRuntimeV1,
+  cpuStartedAt: number | undefined,
+): ResourceControlLogisticsRuntimeV1 {
+  const rawLogistics = (
+    Memory.data?.resourceControl as unknown as { logistics?: unknown } | undefined
+  )?.logistics;
+  const storeRead = peekLogisticsControlStore();
+  const storeUsage = storeRead.ok
+    ? getLogisticsControlStoreUsage(storeRead.store)
+    : undefined;
+  projection.resources.dataItems =
+    storeUsage?.itemCount ?? countLogisticsShadowDataItems();
+  projection.resources.dataBytes = storeUsage?.utf8Bytes ?? (
+    rawLogistics === undefined ? 0 : safeSerializedLength(rawLogistics)
+  );
+  projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
+    projection,
+  );
+  const cpuFinishedAt = readLogisticsShadowCpuUsed();
+  projection.cpu.measurementAvailable =
+    cpuStartedAt !== undefined && cpuFinishedAt !== undefined;
+  projection.cpu.used = projection.cpu.measurementAvailable
+    ? Math.max(
+        0,
+        Math.round(
+          (projection.cpu.captureUsed + cpuFinishedAt! - cpuStartedAt!) *
+            1_000,
+        ) / 1_000,
+      )
+    : 0;
+  if (!projection.cpu.measurementAvailable) {
+    projection.available = false;
+    projection.complete = false;
+    projection.blocker = "input_unavailable";
+    if (
+      projection.safety.violations.length < LOGISTICS_SHADOW_MAX_VIOLATIONS
+    ) {
+      projection.safety.violations.push("cpu_measurement_unavailable");
+    }
+    projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
+      projection,
+    );
+  }
+
+  const updateLengths = (): void => {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const previousRuntimeBytes = projection.resources.runtimeBytes;
+      const previousTotalBytes = projection.resources.totalBytes;
+      projection.resources.runtimeBytes = safeSerializedLength(projection);
+      projection.resources.totalBytes =
+        projection.resources.dataBytes + projection.resources.runtimeBytes;
+      projection.resources.withinLimit =
+        projection.resources.runtimeBytes <=
+          LOGISTICS_SHADOW_RUNTIME_LIMIT_BYTES &&
+        projection.resources.totalBytes <= LOGISTICS_SHADOW_MEMORY_LIMIT_BYTES;
+      if (
+        projection.resources.runtimeBytes === previousRuntimeBytes &&
+        projection.resources.totalBytes === previousTotalBytes
+      ) {
+        break;
+      }
+    }
+  };
+
+  updateLengths();
+  let projectionTrimmed = false;
+  while (
+    !projection.resources.withinLimit &&
+    projection.comparison.samples.length > 0
+  ) {
+    projection.comparison.samples.pop();
+    projectionTrimmed = true;
+    projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
+      projection,
+    );
+    updateLengths();
+  }
+  while (
+    !projection.resources.withinLimit &&
+    projection.safety.violations.length > 0
+  ) {
+    projection.safety.violations.pop();
+    projectionTrimmed = true;
+    projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
+      projection,
+    );
+    updateLengths();
+  }
+  if (projectionTrimmed) {
+    projection.complete = false;
+    projection.projectionTruncated = true;
+    updateLengths();
+  }
+  if (!projection.resources.withinLimit) {
+    const minimal = createEmptyLogisticsShadowRuntime(
+      projection.requestedMode,
+      "input_unavailable",
+    );
+    minimal.projectionTruncated = true;
+    minimal.safety.violations = ["logistics_memory_limit"];
+    minimal.resources.dataItems = projection.resources.dataItems;
+    minimal.resources.dataBytes = projection.resources.dataBytes;
+    minimal.resources.runtimeItems = countLogisticsShadowRuntimeItems(minimal);
+    minimal.cpu = projection.cpu;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      minimal.resources.runtimeBytes = safeSerializedLength(minimal);
+      minimal.resources.totalBytes =
+        minimal.resources.dataBytes + minimal.resources.runtimeBytes;
+      minimal.resources.withinLimit =
+        minimal.resources.runtimeBytes <= LOGISTICS_SHADOW_RUNTIME_LIMIT_BYTES &&
+        minimal.resources.totalBytes <= LOGISTICS_SHADOW_MEMORY_LIMIT_BYTES;
+    }
+    return minimal;
+  }
+  return projection;
+}
+
+function addLogisticsOriginCount(
+  target: Partial<Record<LogisticsRolloutOrigin, number>>,
+  origin: LogisticsRolloutOrigin,
+): void {
+  target[origin] = (target[origin] || 0) + 1;
+}
+
+function mapLogisticsShadowDifferences(
+  differences: readonly SynthesisShadowDifference[],
+): LogisticsShadowDimension[] {
+  const dimensions = new Set<LogisticsShadowDimension>();
+  for (const difference of differences) {
+    if (difference === "source") dimensions.add("donor");
+    if (difference === "target" || difference === "amount") {
+      dimensions.add("route");
+    }
+    if (
+      difference === "ready" ||
+      difference === "cost" ||
+      difference === "blocker"
+    ) {
+      dimensions.add("route");
+    }
+    if (difference === "priority") dimensions.add("priority");
+    if (difference === "coverage") dimensions.add("demandCoverage");
+    if (difference === "capacity") dimensions.add("receiverHeadroom");
+    if (difference === "staging") {
+      dimensions.add("predictedStagingEligibility");
+    }
+    if (difference === "legacy_missing" || difference === "shadow_missing") {
+      dimensions.add("donor");
+      dimensions.add("route");
+    }
+  }
+  return LOGISTICS_SHADOW_DIMENSIONS.filter((dimension) =>
+    dimensions.has(dimension),
+  );
+}
+
+function getLogisticsShadowComparisonReason(
+  sample: SynthesisShadowComparisonSample,
+  producerReason?: LogisticsShadowComparisonReason,
+): LogisticsShadowComparisonReason {
+  if (producerReason) return producerReason;
+  if (sample.status === "equal") return "equal";
+  if (sample.status === "unresolved") {
+    return sample.unresolvedReason || "input_unavailable";
+  }
+  return sample.classification || "expected_policy_difference";
+}
+
+function getShadowPredictedStagingEligibility(
+  sample: SynthesisShadowComparisonSample,
+): SynthesisShadowPredictedStagingEligibility {
+  return sample.shadow?.predictedStagingEligibility || "unknown";
+}
+
+function projectLogisticsShadowComparisons(
+  result: SynthesisShadowMatcherResult,
+  producerReasonByComparisonKey: ReadonlyMap<
+    string,
+    LogisticsShadowComparisonReason
+  > = new Map(),
+): Pick<ResourceControlLogisticsRuntimeV1, "comparison" | "matcher"> {
+  const dimensions = createLogisticsShadowDimensionSummary();
+  const byReason: Partial<Record<LogisticsShadowComparisonReason, number>> = {};
+  const samples: LogisticsShadowRuntimeComparisonSampleV1[] = [];
+  for (const comparison of result.comparisons) {
+    const reason = getLogisticsShadowComparisonReason(
+      comparison,
+      producerReasonByComparisonKey.get(comparison.comparisonKey),
+    );
+    byReason[reason] = (byReason[reason] || 0) + 1;
+    const differingDimensions = mapLogisticsShadowDifferences(
+      comparison.differences,
+    );
+    for (const dimension of LOGISTICS_SHADOW_DIMENSIONS) {
+      const summary = dimensions[dimension];
+      if (comparison.status === "unresolved") summary.unresolved += 1;
+      else if (differingDimensions.includes(dimension)) summary.different += 1;
+      else summary.matched += 1;
+    }
+    if (samples.length < SYNTHESIS_SHADOW_MAX_COMPARISON_SAMPLES) {
+      samples.push({
+        intentId: comparison.comparisonKey.slice(0, 256),
+        status: comparison.status,
+        reason,
+        differingDimensions,
+        predictedStagingEligibility:
+          getShadowPredictedStagingEligibility(comparison),
+        ...(comparison.legacy?.route?.sourceRoom
+          ? { legacySourceRoomName: comparison.legacy.route.sourceRoom }
+          : {}),
+        ...(comparison.shadow && "sourceRoom" in comparison.shadow
+          ? { shadowSourceRoomName: comparison.shadow.sourceRoom }
+          : {}),
+      });
+    }
+  }
+  return {
+    comparison: {
+      total: result.metrics.comparisonCount,
+      matched: result.metrics.equalCount,
+      different: result.metrics.differentCount,
+      unresolved: result.metrics.unresolvedCount,
+      byReason,
+      dimensions,
+      samples,
+    },
+    matcher: {
+      indexBuilds: 1,
+      candidateEvaluations: result.metrics.candidateEvaluations,
+      transactionCostEvaluations: result.metrics.transactionCostEvaluations,
+      totalTransactionCostEvaluations:
+        result.metrics.totalTransactionCostEvaluations,
+      candidateBudget: result.metrics.candidateBudget,
+      budgetExhausted: result.metrics.candidateBudgetExhausted,
+      // 首片尚未持久化完整 residual/fold；不得把短 token 伪装为可恢复 cursor。
+    },
+  };
+}
+
+function addLogisticsShadowAmount(
+  target: Map<string, number>,
+  key: string,
+  amount: number,
+): void {
+  if (amount <= 0) return;
+  target.set(key, (target.get(key) || 0) + amount);
+}
+
+function createLogisticsShadowSelfExclusion(): LogisticsShadowSelfExclusion {
+  return {
+    outgoingByRoomResource: new Map<string, number>(),
+    incomingByRoomResource: new Map<string, number>(),
+    incomingByRoom: new Map<string, number>(),
+    feeByRoom: new Map<string, number>(),
+  };
+}
+
+function getLogisticsShadowInputRevision(
+  intent: LatestLogisticsDemandV1,
+): string {
+  return `${intent.id}@${intent.revision}`;
+}
+
+function validateAndRecordLogisticsShadowSelfExclusion(
+  record: LogisticsShadowInputRecord,
+  context: ResourceControlTransferContext,
+  selfExclusion: LogisticsShadowSelfExclusion,
+  claimedTaskIds: Set<string>,
+): boolean {
+  const { intent, observation } = record;
+  if (!observation) return false;
+  if (
+    observation.intentId !== intent.id ||
+    observation.producer !== intent.producer ||
+    observation.demandKey !== intent.demandKey ||
+    observation.observedAt !== intent.observedAt ||
+    observation.observedAt !== Game.time ||
+    observation.comparableReason !== "comparable" ||
+    observation.legacyPriorityRank !== 2 ||
+    observation.legacyPriorityClass !== "production" ||
+    intent.priorityClass !== "production" ||
+    !intent.product ||
+    intent.demandKey !==
+      JSON.stringify([
+        "synthesis_room/v1",
+        intent.targetRoomName,
+        intent.product,
+        intent.resource,
+      ]) ||
+    observation.uncoveredAmount !==
+      Math.max(
+        0,
+        intent.desiredAmount -
+          observation.localAmount -
+          observation.incomingAmount,
+      )
+  ) {
+    return false;
+  }
+
+  const addedAmount = observation.legacyAddedAmount || 0;
+  const feeDelta = observation.legacyFeeDelta || 0;
+  const remainingBefore = observation.legacyRemainingBefore || 0;
+  if (!Number.isSafeInteger(addedAmount) || addedAmount < 0) return false;
+  if (!Number.isSafeInteger(feeDelta) || feeDelta < 0) return false;
+  if (!Number.isSafeInteger(remainingBefore) || remainingBefore < 0) {
+    return false;
+  }
+  if (addedAmount === 0) {
+    const validNoOp =
+      observation.legacyDecision === "no_op" &&
+      observation.uncoveredAmount === 0;
+    const validNoDonor =
+      observation.legacyDecision === "no_donor" &&
+      observation.uncoveredAmount > 0;
+    return (
+      (validNoOp || validNoDonor) &&
+      feeDelta === 0 &&
+      observation.legacyTaskId === undefined &&
+      observation.legacySourceRoomName === undefined &&
+      observation.legacyAmount === 0 &&
+      remainingBefore === 0
+    );
+  }
+  if (
+    (observation.legacyDecision !== "created" &&
+      observation.legacyDecision !== "merged") ||
+    observation.legacyAmount !== addedAmount ||
+    !observation.legacyTaskId ||
+    !observation.legacySourceRoomName ||
+    claimedTaskIds.has(observation.legacyTaskId)
+  ) {
+    return false;
+  }
+  const task = context.taskById.get(observation.legacyTaskId);
+  const source = context.snapshotByRoom.get(observation.legacySourceRoomName);
+  if (
+    !task ||
+    !source ||
+    task.status !== "pending" ||
+    task.origin !== "automatic" ||
+    task.updatedAt !== Game.time ||
+    task.fromRoomName !== observation.legacySourceRoomName ||
+    task.toRoomName !== intent.targetRoomName ||
+    task.resource !== intent.resource ||
+    task.reason !==
+      `synthesis:${intent.targetRoomName}:${intent.product}` ||
+    (observation.legacyDecision === "created" && remainingBefore !== 0) ||
+    (observation.legacyDecision === "created" &&
+      task.createdAt !== Game.time) ||
+    (observation.legacyDecision === "merged" && remainingBefore <= 0) ||
+    task.remainingAmount !== remainingBefore + addedAmount
+  ) {
+    return false;
+  }
+  const contribution = context.taskContributionById.get(task.id);
+  if (
+    contribution?.outgoingAmount !== task.remainingAmount ||
+    contribution.incomingAmount !== task.remainingAmount
+  ) {
+    return false;
+  }
+  const beforeBatch = Math.min(source.transferBatchSize, remainingBefore);
+  const afterBatch = Math.min(source.transferBatchSize, task.remainingAmount);
+  const beforeFee = beforeBatch > 0
+    ? Game.market.calcTransactionCost(
+        beforeBatch,
+        task.fromRoomName,
+        task.toRoomName,
+      )
+    : 0;
+  const afterFee = afterBatch > 0
+    ? Game.market.calcTransactionCost(
+        afterBatch,
+        task.fromRoomName,
+        task.toRoomName,
+      )
+    : 0;
+  const expectedFeeDelta = Math.max(0, afterFee - beforeFee);
+  if (
+    feeDelta !== expectedFeeDelta ||
+    (context.outgoingFeeByTaskId.get(task.id) || 0) !== afterFee
+  ) {
+    return false;
+  }
+
+  claimedTaskIds.add(task.id);
+  addLogisticsShadowAmount(
+    selfExclusion.outgoingByRoomResource,
+    roomResourceKey(task.fromRoomName, task.resource),
+    addedAmount,
+  );
+  addLogisticsShadowAmount(
+    selfExclusion.incomingByRoomResource,
+    roomResourceKey(task.toRoomName, task.resource),
+    addedAmount,
+  );
+  addLogisticsShadowAmount(
+    selfExclusion.incomingByRoom,
+    task.toRoomName,
+    addedAmount,
+  );
+  addLogisticsShadowAmount(
+    selfExclusion.feeByRoom,
+    task.fromRoomName,
+    feeDelta,
+  );
+  return true;
+}
+
+function getLogisticsShadowReceiverHeadroom(
+  snapshot: ResourceControlSnapshot,
+  resource: ResourceConstant,
+  context: ResourceControlTransferContext,
+  selfExclusion: LogisticsShadowSelfExclusion,
+  localCommitmentByTargetId?: ReadonlyMap<string, number>,
+): {
+  storage: number;
+  terminal: number;
+  resource: number;
+} {
+  const availability = context.receiverCapacityLedger.getAvailability(
+    snapshot.roomName,
+    resource,
+  );
+  const totalDelta =
+    selfExclusion.incomingByRoom.get(snapshot.roomName) || 0;
+  const resourceDelta =
+    selfExclusion.incomingByRoomResource.get(
+      roomResourceKey(snapshot.roomName, resource),
+    ) || 0;
+  const storageLocalCommitment = snapshot.storage
+    ? localCommitmentByTargetId?.get(snapshot.storage.id) ??
+      getLocalCarrierDestinationCommittedAmount(snapshot.storage.id)
+    : 0;
+  const terminalLocalCommitment =
+    localCommitmentByTargetId?.get(snapshot.terminal.id) ??
+    getLocalCarrierDestinationCommittedAmount(snapshot.terminal.id);
+  const previousTotalCommitted = Math.max(
+    0,
+    availability.totalCommitted - totalDelta,
+  );
+  const previousResourceCommitted = Math.max(
+    0,
+    availability.resourceCommitted - resourceDelta,
+  );
+  return {
+    storage: Math.max(
+      0,
+      availability.storageSafeCapacity -
+        previousTotalCommitted -
+        availability.reservationTotal -
+        storageLocalCommitment,
+    ),
+    terminal: Math.max(
+      0,
+      availability.terminalTotalSafeCapacity -
+        previousTotalCommitted -
+        availability.reservationTotal -
+        terminalLocalCommitment,
+    ),
+    resource: Math.max(
+      0,
+      availability.terminalResourceFreeCapacity -
+        previousResourceCommitted -
+        availability.reservationResource -
+        terminalLocalCommitment,
+    ),
+  };
+}
+
+function createLogisticsShadowRoomFacts(
+  snapshots: ResourceControlSnapshot[],
+  resources: readonly ResourceConstant[],
+  epochRevision: string,
+  epochFingerprint: string,
+  capacityConfig: ResourceCapacityConfig,
+  context: ResourceControlTransferContext,
+  selfExclusion: LogisticsShadowSelfExclusion,
+  localCommitmentByTargetId?: ReadonlyMap<string, number>,
+  capturedSourceFacts?: LogisticsShadowCapturedSourceFacts,
+): SynthesisShadowRoomFact[] {
+  const provisional = snapshots.map((snapshot): SynthesisShadowRoomFact => {
+    const receiverBaseline = getLogisticsShadowReceiverHeadroom(
+      snapshot,
+      resources[0] || RESOURCE_ENERGY,
+      context,
+      selfExclusion,
+      localCommitmentByTargetId,
+    );
+    const outgoingEnergyDelta =
+      selfExclusion.outgoingByRoomResource.get(
+        roomResourceKey(snapshot.roomName, RESOURCE_ENERGY),
+      ) || 0;
+    const actionEnergyBudget =
+      (capturedSourceFacts?.actionEnergyBudgetByRoom.get(snapshot.roomName) ??
+        getTerminalActionEnergyBudget(snapshot, context)) +
+      outgoingEnergyDelta +
+      (selfExclusion.feeByRoom.get(snapshot.roomName) || 0);
+    const terminalEnergyOutsideMarketExposure =
+      capturedSourceFacts?.terminalOutsideExposureByRoomResource.get(
+        roomResourceKey(snapshot.roomName, RESOURCE_ENERGY),
+      ) ??
+      getTerminalAmountOutsideMarketSaleExposure(
+        snapshot.terminal,
+        RESOURCE_ENERGY,
+        snapshot.roomName,
+      );
+    const terminalActionEnergyAmount = Math.min(
+      actionEnergyBudget,
+      terminalEnergyOutsideMarketExposure,
+    );
+    const terminalReadyAt =
+      Game.time + Math.max(
+        0,
+        Math.floor(
+          snapshot.terminalCooldown ?? snapshot.terminal.cooldown ?? 0,
+        ),
+      );
+    const { feedCapacity } = getTerminalLogisticsCapacityPlan(
+      snapshot,
+      capacityConfig,
+    );
+    const terminalLocalCommitment =
+      localCommitmentByTargetId?.get(snapshot.terminal.id) ??
+      getLocalCarrierDestinationCommittedAmount(snapshot.terminal.id);
+    return {
+      roomName: snapshot.roomName,
+      epochRevision,
+      epochFingerprint,
+      revision: `pending:${Game.time}`,
+      observedAt: Game.time,
+      expiresAt: Game.time + Math.max(30, getResourceControlSampleInterval() * 2),
+      owned: true,
+      hasStorage: !!snapshot.storage,
+      hasTerminal: true,
+      terminalReachable: true,
+      terminalReadyAt,
+      transferBatchSize: snapshot.transferBatchSize,
+      capacityState: snapshot.capacityState,
+      receiverEligible: isReceiverAdmissionEligible(
+        snapshot.storageFreeCapacity,
+        snapshot.terminalFreeCapacity,
+        snapshot.capacityState,
+        capacityConfig,
+      ),
+      receiverStorageHeadroom: receiverBaseline.storage,
+      receiverTerminalHeadroom: receiverBaseline.terminal,
+      terminalStagingFreeCapacity: Math.max(
+        0,
+        feedCapacity - terminalLocalCommitment,
+      ),
+      actionEnergyBudget,
+      terminalActionEnergyAmount,
+      resources: resources.map((resource) => {
+        const receiver = getLogisticsShadowReceiverHeadroom(
+          snapshot,
+          resource,
+          context,
+          selfExclusion,
+          localCommitmentByTargetId,
+        );
+        const policyAvailableAmount =
+          (capturedSourceFacts?.sourceAvailableByRoomResource.get(
+            roomResourceKey(snapshot.roomName, resource),
+          ) ??
+            getTotalMovableResourceAmount(
+              snapshot,
+              resource,
+              capacityConfig,
+              context,
+            )) +
+          (selfExclusion.outgoingByRoomResource.get(
+            roomResourceKey(snapshot.roomName, resource),
+          ) || 0) +
+          (resource === RESOURCE_ENERGY
+            ? selfExclusion.feeByRoom.get(snapshot.roomName) || 0
+            : 0);
+        const terminalOutsideMarketExposure =
+          resource === RESOURCE_ENERGY
+            ? terminalActionEnergyAmount
+            : capturedSourceFacts?.terminalOutsideExposureByRoomResource.get(
+                roomResourceKey(snapshot.roomName, resource),
+              ) ??
+              getTerminalAmountOutsideMarketSaleExposure(
+                snapshot.terminal,
+                resource,
+                snapshot.roomName,
+              );
+        const sourceAvailableAmount = resource === RESOURCE_ENERGY
+          ? policyAvailableAmount
+          : Math.min(
+              policyAvailableAmount,
+              getStorageResourceAmount(snapshot, resource) +
+                terminalOutsideMarketExposure,
+            );
+        return {
+          resource,
+          sourceAvailableAmount,
+          sourceTerminalAmount: Math.min(
+            sourceAvailableAmount,
+            terminalOutsideMarketExposure,
+          ),
+          receiverResourceHeadroom: receiver.resource,
+        };
+      }),
+    };
+  });
+  return provisional;
+}
+
+export type SynthesisShadowEpochCaptureFailureReason =
+  | "cpu_unavailable"
+  | "shadow_unavailable"
+  | "not_planning_tick"
+  | "no_rooms"
+  | "tick_changed"
+  | "already_built"
+  | "invalid_resources";
+
+export interface SynthesisShadowEpochRoomFactBuildSuccess {
+  readonly ok: true;
+  readonly epochRevision: string;
+  readonly epochFingerprint: string;
+  readonly observedAt: number;
+  readonly expiresAt: number;
+  readonly captureCpuUsed: number;
+  readonly indexBuildCount: 1;
+  readonly roomFacts: readonly SynthesisShadowRoomFact[];
+}
+
+export type SynthesisShadowEpochRoomFactBuildResult =
+  | SynthesisShadowEpochRoomFactBuildSuccess
+  | {
+      readonly ok: false;
+      readonly reason: SynthesisShadowEpochCaptureFailureReason;
+    };
+
+export interface SynthesisShadowEpochCaptureSession {
+  readonly ok: true;
+  readonly observedAt: number;
+  readonly epochRevision: string;
+  readonly tasks: readonly Readonly<ResourceTransferTask>[];
+  buildRoomFacts(
+    resources: readonly ResourceConstant[],
+  ): SynthesisShadowEpochRoomFactBuildResult;
+}
+
+export type SynthesisShadowEpochCaptureResult =
+  | SynthesisShadowEpochCaptureSession
+  | {
+      readonly ok: false;
+      readonly reason: SynthesisShadowEpochCaptureFailureReason;
+    };
+
+function canonicalizeSynthesisShadowEpochFacts(
+  resources: readonly ResourceConstant[],
+  facts: readonly SynthesisShadowRoomFact[],
+): string {
+  return JSON.stringify({
+    resources: [...resources].sort(),
+    rooms: [...facts]
+      .sort((left, right) => left.roomName.localeCompare(right.roomName))
+      .map((room) => ({
+        roomName: room.roomName,
+        observedAt: room.observedAt,
+        expiresAt: room.expiresAt,
+        owned: room.owned,
+        hasStorage: room.hasStorage,
+        hasTerminal: room.hasTerminal,
+        terminalReachable: room.terminalReachable,
+        terminalReadyAt: room.terminalReadyAt,
+        transferBatchSize: room.transferBatchSize,
+        capacityState: room.capacityState,
+        receiverEligible: room.receiverEligible,
+        receiverStorageHeadroom: room.receiverStorageHeadroom,
+        receiverTerminalHeadroom: room.receiverTerminalHeadroom,
+        terminalStagingFreeCapacity: room.terminalStagingFreeCapacity,
+        actionEnergyBudget: room.actionEnergyBudget,
+        terminalActionEnergyAmount: room.terminalActionEnergyAmount,
+        resources: [...room.resources]
+          .sort((left, right) => left.resource.localeCompare(right.resource))
+          .map((resource) => ({ ...resource })),
+      })),
+  });
+}
+
+/**
+ * 在 Synthesis 写任何 legacy task 前冻结一次 P0 ResourceControl 索引。
+ * session 只闭包持有本 tick 的数值索引；后续 build 不重新扫描 task store。
+ */
+export function beginSynthesisShadowEpochCapture(
+  demandResources: readonly ResourceConstant[],
+): SynthesisShadowEpochCaptureResult {
+  const logisticsConfig = resolveLogisticsControlConfig();
+  if (
+    Memory.cfg?.resourceControl?.enabled === false ||
+    !logisticsConfig.valid ||
+    logisticsConfig.mode !== "shadow"
+  ) {
+    return { ok: false, reason: "shadow_unavailable" };
+  }
+  if (!isResourceControlFullPlanningTick()) {
+    return { ok: false, reason: "not_planning_tick" };
+  }
+  const normalizedDemandResources = [...new Set(demandResources)].sort();
+  if (
+    normalizedDemandResources.length === 0 ||
+    normalizedDemandResources.length > LOGISTICS_CONTROL_STORE_LIMIT ||
+    normalizedDemandResources.some((resource) =>
+      !RESOURCES_ALL.includes(resource),
+    )
+  ) {
+    return { ok: false, reason: "invalid_resources" };
+  }
+  const capturedResources = [
+    ...new Set([...normalizedDemandResources, RESOURCE_ENERGY]),
+  ].sort();
+  const cpuStartedAt = readLogisticsShadowCpuUsed();
+  if (cpuStartedAt === undefined) {
+    return { ok: false, reason: "cpu_unavailable" };
+  }
+  const observedAt = Game.time;
+  const snapshots = collectResourceControlSnapshots(capturedResources);
+  if (snapshots.length === 0) return { ok: false, reason: "no_rooms" };
+  const capacityConfig = resolveCapacityConfig();
+  const buildCounter: ResourceControlCapacityIndexBuildCounter = { count: 0 };
+  const context = createResourceControlTransferContext(
+    snapshots,
+    capacityConfig,
+    buildCounter,
+    { readonlyCarrierBoard: true },
+  );
+  if (
+    buildCounter.count !== 1 ||
+    context.taskContributionIndex.invalidProductionReservationCount > 0
+  ) {
+    return { ok: false, reason: "invalid_resources" };
+  }
+  const frozenTasks = context.tasks.map((task) =>
+    Object.freeze({ ...task }) as Readonly<ResourceTransferTask>,
+  );
+  const localCommitmentByTargetId = new Map<string, number>();
+  const actionEnergyBudgetByRoom = new Map<string, number>();
+  const sourceAvailableByRoomResource = new Map<string, number>();
+  const terminalOutsideExposureByRoomResource = new Map<string, number>();
+  const marketExposureIndex = compileLiveMarketSaleTerminalExposureIndex();
+  for (const snapshot of snapshots) {
+    if (snapshot.storage) {
+      localCommitmentByTargetId.set(
+        snapshot.storage.id,
+        getLocalCarrierDestinationCommittedAmount(snapshot.storage.id),
+      );
+    }
+    localCommitmentByTargetId.set(
+      snapshot.terminal.id,
+      getLocalCarrierDestinationCommittedAmount(snapshot.terminal.id),
+    );
+    const terminalAmountsOutsideExposure =
+      getTerminalAmountsOutsideMarketSaleExposure(
+        snapshot.terminal,
+        capturedResources,
+        marketExposureIndex,
+        {
+          roomName: snapshot.roomName,
+          storedAmounts: snapshot.terminalResourceAmounts,
+        },
+      );
+    for (const resource of capturedResources) {
+      terminalOutsideExposureByRoomResource.set(
+        roomResourceKey(snapshot.roomName, resource),
+        terminalAmountsOutsideExposure.get(resource) || 0,
+      );
+    }
+    const terminalEnergyOutsideMarketExposure =
+      terminalOutsideExposureByRoomResource.get(
+        roomResourceKey(snapshot.roomName, RESOURCE_ENERGY),
+      ) || 0;
+    const actionEnergyBudget = getTerminalActionEnergyBudget(
+      snapshot,
+      context,
+      undefined,
+      terminalEnergyOutsideMarketExposure,
+    );
+    actionEnergyBudgetByRoom.set(snapshot.roomName, actionEnergyBudget);
+    terminalOutsideExposureByRoomResource.set(
+      roomResourceKey(snapshot.roomName, RESOURCE_ENERGY),
+      Math.min(actionEnergyBudget, terminalEnergyOutsideMarketExposure),
+    );
+    for (const resource of capturedResources) {
+      sourceAvailableByRoomResource.set(
+        roomResourceKey(snapshot.roomName, resource),
+        resource === RESOURCE_ENERGY
+          ? actionEnergyBudget
+          : getTotalMovableResourceAmount(
+              snapshot,
+              resource,
+              capacityConfig,
+              context,
+            ),
+      );
+    }
+  }
+  const capturedSourceFacts: LogisticsShadowCapturedSourceFacts = {
+    actionEnergyBudgetByRoom,
+    sourceAvailableByRoomResource,
+    terminalOutsideExposureByRoomResource,
+  };
+  const cpuCapturedAt = readLogisticsShadowCpuUsed();
+  if (cpuCapturedAt === undefined) {
+    return { ok: false, reason: "cpu_unavailable" };
+  }
+  const beginCpuUsed = Math.max(0, cpuCapturedAt - cpuStartedAt);
+  const epochRevision = `synthesis-room-epoch/v1:${observedAt}:${
+    logisticsShadowHash(
+      snapshots
+        .map((snapshot) => snapshot.roomName)
+        .sort()
+        .join("|"),
+    )
+  }`;
+  let built = false;
+  return {
+    ok: true,
+    observedAt,
+    epochRevision,
+    tasks: Object.freeze(frozenTasks),
+    buildRoomFacts(
+      resources: readonly ResourceConstant[],
+    ): SynthesisShadowEpochRoomFactBuildResult {
+      if (built) return { ok: false, reason: "already_built" };
+      built = true;
+      if (Game.time !== observedAt) {
+        return { ok: false, reason: "tick_changed" };
+      }
+      const normalizedResources = [...new Set(resources)].sort();
+      if (
+        normalizedResources.length > LOGISTICS_CONTROL_STORE_LIMIT ||
+        normalizedResources.some((resource) =>
+          !normalizedDemandResources.includes(resource),
+        )
+      ) {
+        return { ok: false, reason: "invalid_resources" };
+      }
+      const buildCpuStartedAt = readLogisticsShadowCpuUsed();
+      if (buildCpuStartedAt === undefined) {
+        return { ok: false, reason: "cpu_unavailable" };
+      }
+      const provisional = normalizedResources.length === 0
+        ? []
+        : createLogisticsShadowRoomFacts(
+            snapshots,
+            normalizedResources,
+            epochRevision,
+            "pending",
+            capacityConfig,
+            context,
+            createLogisticsShadowSelfExclusion(),
+            localCommitmentByTargetId,
+            capturedSourceFacts,
+          );
+      const epochFingerprint = `synthesis-room-epoch/v1:${
+        logisticsShadowHash(
+          canonicalizeSynthesisShadowEpochFacts(
+            normalizedResources,
+            provisional,
+          ),
+        )
+      }`;
+      const roomFacts = provisional.map((room) => ({
+        ...room,
+        epochFingerprint,
+        revision: `${room.roomName}@${epochRevision}`,
+        resources: room.resources.map((resource) => ({ ...resource })),
+      }));
+      const buildCpuFinishedAt = readLogisticsShadowCpuUsed();
+      if (buildCpuFinishedAt === undefined) {
+        return { ok: false, reason: "cpu_unavailable" };
+      }
+      const captureCpuUsed = Math.max(
+        0,
+        Math.round(
+          (beginCpuUsed + buildCpuFinishedAt - buildCpuStartedAt) * 1_000,
+        ) / 1_000,
+      );
+      return {
+        ok: true,
+        epochRevision,
+        epochFingerprint,
+        observedAt,
+        expiresAt:
+          observedAt + Math.max(30, getResourceControlSampleInterval() * 2),
+        captureCpuUsed,
+        indexBuildCount: 1,
+        roomFacts,
+      };
+    },
+  };
+}
+
+function findSynthesisProducerSnapshot(
+  snapshots: Readonly<Record<string, LogisticsProducerSnapshotV1>>,
+): LogisticsProducerSnapshotV1 | undefined {
+  return Object.values(snapshots).find(
+    (snapshot) => snapshot.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+  );
+}
+
+function buildSynthesisShadowDemand(
+  record: LogisticsShadowInputRecord,
+  epochRevision: string,
+  epochFingerprint: string,
+  context: ResourceControlTransferContext,
+): SynthesisShadowDemandObservation {
+  const { intent, observation } = record;
+  const target = context.snapshotByRoom.get(intent.targetRoomName);
+  const minimumBatchAmount = intent.minBatch ?? 1;
+  const maximumBatchAmount =
+    intent.maxBatch ?? target?.transferBatchSize ?? DEFAULT_ROOM_CONFIG.transferBatchSize;
+  return {
+    comparisonKey: intent.id,
+    demandKey: intent.demandKey,
+    origin: "synthesis_room",
+    epochRevision,
+    epochFingerprint,
+    revision: record.inputRevision,
+    inputFingerprint:
+      observation?.inputFingerprint || `missing:${intent.id}`,
+    targetRoom: intent.targetRoomName,
+    resource: intent.resource,
+    ...(intent.product ? { product: intent.product } : {}),
+    desiredAmount: intent.desiredAmount,
+    localAmount: observation?.localAmount || 0,
+    healthyIncomingAmount: observation?.incomingAmount || 0,
+    minimumBatchAmount,
+    maximumBatchAmount,
+    priorityClass: intent.priorityClass,
+    firstObservedAt: intent.firstObservedAt,
+    observedAt: intent.observedAt,
+    expiresAt: intent.expiresAt,
+    ...(intent.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: intent.deadlineAt }),
+    ...(intent.fixedSourceRoomNames
+      ? { allowedSourceRooms: intent.fixedSourceRoomNames }
+      : {}),
+  };
+}
+
+function getSynthesisShadowRoomResourceFact(
+  room: SynthesisShadowRoomFact,
+  resource: ResourceConstant,
+): SynthesisShadowRoomFact["resources"][number] | undefined {
+  return room.resources.find((entry) => entry.resource === resource);
+}
+
+function buildSynthesisShadowLegacyRoute(
+  record: LogisticsShadowInputRecord,
+  roomFactByName: ReadonlyMap<string, SynthesisShadowRoomFact>,
+): SynthesisShadowRouteFact | undefined {
+  const { intent, observation } = record;
+  const sourceRoomName = observation?.legacySourceRoomName;
+  const amount = observation?.legacyAmount || 0;
+  if (
+    !sourceRoomName ||
+    amount <= 0 ||
+    (observation?.legacyDecision !== "created" &&
+      observation?.legacyDecision !== "merged")
+  ) {
+    return undefined;
+  }
+  const source = roomFactByName.get(sourceRoomName);
+  const receiver = roomFactByName.get(intent.targetRoomName);
+  const sourceResource = source
+    ? getSynthesisShadowRoomResourceFact(source, intent.resource)
+    : undefined;
+  const receiverResource = receiver
+    ? getSynthesisShadowRoomResourceFact(receiver, intent.resource)
+    : undefined;
+  if (!source || !receiver || !sourceResource || !receiverResource) {
+    return undefined;
+  }
+  const remainingBefore = observation.legacyRemainingBefore || 0;
+  const actionAmount = Math.max(
+    0,
+    Math.min(remainingBefore + amount, source.transferBatchSize) -
+      Math.min(remainingBefore, source.transferBatchSize),
+  );
+  const transactionCost = observation.legacyFeeDelta || 0;
+  const requiredEnergy =
+    transactionCost +
+    (intent.resource === RESOURCE_ENERGY ? actionAmount : 0);
+  const energyCommitmentAmount =
+    transactionCost +
+    (intent.resource === RESOURCE_ENERGY ? amount : 0);
+  const terminalFeeAmount = Math.min(
+    transactionCost,
+    source.terminalActionEnergyAmount,
+  );
+  const terminalPayloadEnergy = intent.resource === RESOURCE_ENERGY
+    ? Math.max(0, source.terminalActionEnergyAmount - terminalFeeAmount)
+    : Number.MAX_SAFE_INTEGER;
+  const terminalAllocatedAmount = Math.min(
+    actionAmount,
+    sourceResource.sourceTerminalAmount,
+    terminalPayloadEnergy,
+  );
+  const stagingRequiredAmount = actionAmount - terminalAllocatedAmount;
+  const terminalEnergyAllocatedAmount =
+    terminalFeeAmount +
+    (intent.resource === RESOURCE_ENERGY ? terminalAllocatedAmount : 0);
+  const feeStagingRequiredAmount = transactionCost - terminalFeeAmount;
+  const receiverEligible =
+    receiver.receiverEligible &&
+    receiver.receiverStorageHeadroom >= amount &&
+    receiver.receiverTerminalHeadroom >= amount &&
+    receiverResource.receiverResourceHeadroom >= amount;
+  const stagingEligible =
+    sourceResource.sourceAvailableAmount >= amount &&
+    source.actionEnergyBudget >= energyCommitmentAmount &&
+    source.terminalStagingFreeCapacity >=
+      stagingRequiredAmount + feeStagingRequiredAmount;
+  const coveredAmount =
+    (observation?.localAmount || 0) +
+    (observation?.incomingAmount || 0) +
+    amount;
+  return {
+    sourceRoom: sourceRoomName,
+    targetRoom: intent.targetRoomName,
+    resource: intent.resource,
+    amount,
+    actionAmount,
+    priorityClass: observation!.legacyPriorityClass,
+    coverage: coveredAmount >= intent.desiredAmount ? "covered" : "partial",
+    capacity: receiverEligible ? "eligible" : "blocked",
+    predictedStagingEligibility: stagingEligible ? "eligible" : "blocked",
+    terminalReadyAt: source.terminalReadyAt,
+    transactionCost,
+    requiredEnergy,
+    energyCommitmentAmount,
+    terminalAllocatedAmount,
+    stagingRequiredAmount,
+    terminalEnergyAllocatedAmount,
+    feeStagingRequiredAmount,
+    stableKey: `${sourceRoomName}\u0000${intent.targetRoomName}\u0000${intent.resource}\u0000${intent.id}`,
+  };
+}
+
+function buildSynthesisShadowLegacyDecision(
+  record: LogisticsShadowInputRecord,
+  epochRevision: string,
+  epochFingerprint: string,
+  roomFactByName: ReadonlyMap<string, SynthesisShadowRoomFact>,
+): SynthesisShadowLegacyDecisionObservation | undefined {
+  const { intent, observation } = record;
+  if (!observation) return undefined;
+  const route = buildSynthesisShadowLegacyRoute(record, roomFactByName);
+  const inputRevision = record.inputDrift
+    ? `${record.inputRevision}:drift`
+    : record.inputRevision;
+  const inputFingerprint = record.inputDrift
+    ? `drift:${observation.inputFingerprint}`
+    : observation.inputFingerprint;
+  const coveredAmount = observation.localAmount + observation.incomingAmount;
+  const coverage = coveredAmount >= intent.desiredAmount
+    ? "covered" as const
+    : observation.incomingAmount > 0
+      ? "partial" as const
+      : "none" as const;
+  const blocker = observation.legacyDecision === "no_op"
+    ? "demand_already_covered"
+    : observation.legacyDecision === "no_donor"
+      ? "no_donor"
+      : "malformed_input";
+  const base = {
+    comparisonKey: intent.id,
+    epochRevision,
+    epochFingerprint,
+    inputRevision,
+    inputFingerprint,
+    observedAt: observation.observedAt,
+  };
+  if (route) {
+    const source = roomFactByName.get(route.sourceRoom);
+    if (!source) return undefined;
+    return {
+      ...base,
+      kind: "route",
+      route,
+      actionBasis:
+        observation.legacyDecision === "created"
+          ? "standalone"
+          : "merge_delta",
+      remainingBefore: observation.legacyRemainingBefore || 0,
+      transferBatchSize: source.transferBatchSize,
+    };
+  }
+  return {
+    ...base,
+    kind: "none",
+    blocker,
+    coverage,
+    capacity: "unknown",
+    predictedStagingEligibility: "unknown",
+  };
+}
+
+function cloneSynthesisShadowRoomFactMap(
+  facts: readonly SynthesisShadowRoomFact[],
+): Map<string, SynthesisShadowRoomFact> {
+  return new Map(
+    facts.map((room) => [
+      room.roomName,
+      {
+        ...room,
+        resources: room.resources.map((resource) => ({ ...resource })),
+      },
+    ] as const),
+  );
+}
+
+function applyLegacyDecisionToShadowRoomFacts(
+  record: LogisticsShadowInputRecord,
+  decision: SynthesisShadowLegacyDecisionObservation | undefined,
+  roomFactByName: Map<string, SynthesisShadowRoomFact>,
+): void {
+  const observation = record.observation;
+  const addedAmount = observation?.legacyAddedAmount || 0;
+  const sourceRoomName = observation?.legacySourceRoomName;
+  const route = decision?.route;
+  if (
+    record.inputDrift ||
+    !sourceRoomName ||
+    addedAmount <= 0 ||
+    !route
+  ) {
+    return;
+  }
+  const source = roomFactByName.get(sourceRoomName);
+  const receiver = roomFactByName.get(record.intent.targetRoomName);
+  if (!source || !receiver) return;
+  const sourceResources = source.resources.map((resource) =>
+    resource.resource === record.intent.resource
+      ? {
+          ...resource,
+          sourceAvailableAmount: Math.max(
+            0,
+            resource.sourceAvailableAmount - addedAmount,
+          ),
+          sourceTerminalAmount: Math.min(
+            Math.max(
+              0,
+              resource.sourceTerminalAmount - route.terminalAllocatedAmount,
+            ),
+            Math.max(0, resource.sourceAvailableAmount - addedAmount),
+          ),
+        }
+      : { ...resource },
+  );
+  const energyOwnershipDelta =
+    (record.intent.resource === RESOURCE_ENERGY ? addedAmount : 0) +
+    (observation?.legacyFeeDelta || 0);
+  const nextActionEnergyBudget = Math.max(
+    0,
+    source.actionEnergyBudget - energyOwnershipDelta,
+  );
+  roomFactByName.set(sourceRoomName, {
+    ...source,
+    actionEnergyBudget: nextActionEnergyBudget,
+    terminalActionEnergyAmount: Math.min(
+      Math.max(
+        0,
+        source.terminalActionEnergyAmount -
+          route.terminalEnergyAllocatedAmount,
+      ),
+      nextActionEnergyBudget,
+    ),
+    terminalStagingFreeCapacity: Math.max(
+      0,
+      source.terminalStagingFreeCapacity -
+        route.stagingRequiredAmount -
+        route.feeStagingRequiredAmount,
+    ),
+    resources: sourceResources,
+  });
+  roomFactByName.set(record.intent.targetRoomName, {
+    ...receiver,
+    receiverStorageHeadroom: Math.max(
+      0,
+      receiver.receiverStorageHeadroom - addedAmount,
+    ),
+    receiverTerminalHeadroom: Math.max(
+      0,
+      receiver.receiverTerminalHeadroom - addedAmount,
+    ),
+    resources: receiver.resources.map((resource) =>
+      resource.resource === record.intent.resource
+        ? {
+            ...resource,
+            receiverResourceHeadroom: Math.max(
+              0,
+              resource.receiverResourceHeadroom - addedAmount,
+            ),
+          }
+        : { ...resource },
+    ),
+  });
+}
+
+function buildResourceControlLogisticsShadow(
+  context: ResourceControlTransferContext,
+): ResourceControlLogisticsRuntimeV1 {
+  const cpuStartedAt = readLogisticsShadowCpuUsed();
+  const config = resolveLogisticsControlConfig();
+  const disabled = createEmptyLogisticsShadowRuntime(
+    config.mode,
+    !config.valid ? "config_invalid" : "mode_disabled",
+  );
+  if (!config.valid || config.mode === "disabled") {
+    return finalizeLogisticsShadowRuntime(disabled, cpuStartedAt);
+  }
+  if (config.mode !== "shadow") {
+    disabled.blocker = "matcher_unavailable";
+    return finalizeLogisticsShadowRuntime(disabled, cpuStartedAt);
+  }
+
+  const read = peekLogisticsControlStore();
+  if (read.ok === false) {
+    disabled.blocker = read.reason === "missing" ? "store_missing" : "store_invalid";
+    return finalizeLogisticsShadowRuntime(disabled, cpuStartedAt);
+  }
+  const store = read.store;
+  const projection = createEmptyLogisticsShadowRuntime(config.mode, "input_unavailable");
+  const producerSnapshot = findSynthesisProducerSnapshot(store.producerSnapshots);
+  projection.intent.total = producerSnapshot?.total || 0;
+  projection.intent.emitted = producerSnapshot?.emitted || 0;
+  projection.intent.dropped = producerSnapshot?.dropped || 0;
+  projection.intent.truncated = producerSnapshot?.truncated || false;
+
+  const observations = store.synthesisObservations;
+  const inputs: LogisticsShadowInputRecord[] = [];
+  for (const intent of Object.values(store.latestIntents)) {
+    const inScope =
+      intent.producer === SYNTHESIS_ROOM_LOGISTICS_PRODUCER &&
+      intent.origin === "synthesis_room";
+    addLogisticsOriginCount(
+      inScope ? projection.inScopeByOrigin : projection.outOfScopeByOrigin,
+      intent.origin,
+    );
+    if (!inScope) continue;
+    const stale = intent.expiresAt < Game.time || intent.observedAt > Game.time;
+    if (stale) projection.intent.stale += 1;
+    else projection.intent.fresh += 1;
+    if (!intent.active) continue;
+    projection.intent.active += 1;
+    inputs.push({
+      intent,
+      observation: observations[intent.id],
+      inputRevision: getLogisticsShadowInputRevision(intent),
+      inputDrift: false,
+    });
+  }
+  inputs.sort((left, right) => {
+    const leftOrder = left.observation?.decisionOrder ?? Number.MAX_SAFE_INTEGER;
+    const rightOrder = right.observation?.decisionOrder ?? Number.MAX_SAFE_INTEGER;
+    return leftOrder - rightOrder || left.intent.id.localeCompare(right.intent.id);
+  });
+
+  const selfExclusion = createLogisticsShadowSelfExclusion();
+  const claimedTaskIds = new Set<string>();
+  for (const record of inputs) {
+    const paired = validateAndRecordLogisticsShadowSelfExclusion(
+      record,
+      context,
+      selfExclusion,
+      claimedTaskIds,
+    );
+    record.inputDrift = !paired;
+    if (paired) projection.intent.paired += 1;
+    if (record.inputDrift) projection.intent.inputDrift += 1;
+  }
+  // Legacy reason 只用于 out-of-scope 观测标签；只有通过精确
+  // task identity 校验的 typed decision 才能从该统计中排除。
+  for (const task of context.tasks) {
+    if (task.status !== "pending" || claimedTaskIds.has(task.id)) continue;
+    addLogisticsOriginCount(
+      projection.outOfScopeByOrigin,
+      mapLegacyTransferOrigin(task.origin, task.reason),
+    );
+  }
+
+  const epochRevision =
+    producerSnapshot?.epochRevision || "missing-synthesis-room-epoch";
+  const epochFingerprint =
+    producerSnapshot?.epochFingerprint || "missing-synthesis-room-fingerprint";
+  const matcherFacts: SynthesisShadowRoomFact[] = Object.values(
+    store.roomFacts,
+  ).map((fact) => ({
+    roomName: fact.roomName,
+    epochRevision: fact.epochRevision,
+    epochFingerprint: fact.epochFingerprint,
+    revision: `${fact.id}@${fact.revision}`,
+    observedAt: fact.observedAt,
+    expiresAt: fact.expiresAt,
+    owned: fact.owned,
+    hasStorage: fact.hasStorage,
+    hasTerminal: fact.hasTerminal,
+    terminalReachable: fact.terminalReachable,
+    terminalReadyAt: fact.terminalReadyAt,
+    transferBatchSize: fact.transferBatchSize,
+    capacityState: fact.capacityState,
+    receiverEligible: fact.receiverEligible,
+    receiverStorageHeadroom: fact.receiverStorageHeadroom,
+    receiverTerminalHeadroom: fact.receiverTerminalHeadroom,
+    terminalStagingFreeCapacity: fact.terminalStagingFreeCapacity,
+    actionEnergyBudget: fact.actionEnergyBudget,
+    terminalActionEnergyAmount: fact.terminalActionEnergyAmount,
+    resources: fact.resources.map((resource) => ({ ...resource })),
+  }));
+  const demandedResources = new Set(
+    inputs.map((entry) => entry.intent.resource),
+  );
+  const emptyEpoch =
+    inputs.length === 0 &&
+    matcherFacts.length === 0 &&
+    producerSnapshot?.total === 0 &&
+    producerSnapshot.emitted === 0 &&
+    producerSnapshot.dropped === 0 &&
+    !producerSnapshot.truncated;
+  const populatedEpochFactsValid =
+    matcherFacts.length > 0 &&
+    matcherFacts.length <= SYNTHESIS_SHADOW_MAX_ROOM_FACTS &&
+    matcherFacts.length === context.snapshotByRoom.size &&
+    matcherFacts.every(
+      (fact) =>
+        context.snapshotByRoom.has(fact.roomName) &&
+        fact.epochRevision === epochRevision &&
+        fact.epochFingerprint === epochFingerprint &&
+        fact.observedAt === producerSnapshot?.observedAt &&
+        fact.expiresAt >= Game.time &&
+        [...demandedResources].every((resource) =>
+          fact.resources.some((entry) => entry.resource === resource),
+        ),
+    );
+  const factTokenValid =
+    !!producerSnapshot &&
+    producerSnapshot.observedAt === Game.time &&
+    producerSnapshot.expiresAt >= Game.time &&
+    producerSnapshot.indexBuildCount === 1 &&
+    (emptyEpoch || populatedEpochFactsValid);
+
+  const roomFactByName = cloneSynthesisShadowRoomFactMap(matcherFacts);
+  const demands = inputs.map((record) =>
+    buildSynthesisShadowDemand(
+      record,
+      epochRevision,
+      epochFingerprint,
+      context,
+    ),
+  );
+  const legacyDecisions: SynthesisShadowLegacyDecisionObservation[] = [];
+  for (const record of inputs) {
+    const decision = buildSynthesisShadowLegacyDecision(
+        record,
+        epochRevision,
+        epochFingerprint,
+        roomFactByName,
+      );
+    if (decision) legacyDecisions.push(decision);
+    applyLegacyDecisionToShadowRoomFacts(
+      record,
+      decision,
+      roomFactByName,
+    );
+  }
+  const result = runSynthesisLogisticsShadow({
+    now: Game.time,
+    inputRevision: epochRevision,
+    inputFingerprint: epochFingerprint,
+    costModelRevision: "Game.market.calcTransactionCost:v1",
+    demands,
+    rooms: matcherFacts,
+    legacyDecisions,
+    candidateBudget: SYNTHESIS_SHADOW_DEFAULT_CANDIDATE_BUDGET,
+    transactionCost: (amount, sourceRoom, targetRoom) =>
+      Game.market.calcTransactionCost(amount, sourceRoom, targetRoom),
+  });
+  const producerReasonByComparisonKey = new Map<
+    string,
+    LogisticsShadowComparisonReason
+  >();
+  for (const { intent, observation } of inputs) {
+    const reason = observation?.comparableReason;
+    if (
+      reason === "expected_policy_difference" ||
+      reason === "legacy_unpaired" ||
+      reason === "shadow_unpaired" ||
+      reason === "unsafe_candidate" ||
+      reason === "input_unavailable"
+    ) {
+      producerReasonByComparisonKey.set(intent.id, reason);
+    }
+  }
+  const compared = projectLogisticsShadowComparisons(
+    result,
+    producerReasonByComparisonKey,
+  );
+  projection.comparison = compared.comparison;
+  projection.matcher = compared.matcher;
+  projection.matcher.indexBuilds = producerSnapshot?.indexBuildCount || 0;
+  projection.cpu.captureUsed = producerSnapshot?.captureCpuUsed || 0;
+  projection.available = factTokenValid;
+  projectLogisticsShadowObservableRecords(projection, context);
+  const inScopeIntentCount = Object.values(projection.inScopeByOrigin).reduce(
+    (total, count) => total + (count || 0),
+    0,
+  );
+  const comparisonReasonCount = Object.values(
+    projection.comparison.byReason,
+  ).reduce((total, count) => total + (count || 0), 0);
+  const dimensionCountsMatch = LOGISTICS_SHADOW_DIMENSIONS.every(
+    (dimension) => {
+      const summary = projection.comparison.dimensions[dimension];
+      return (
+        summary.matched + summary.different + summary.unresolved ===
+        projection.comparison.total
+      );
+    },
+  );
+  if (
+    (!projection.intent.truncated &&
+      inScopeIntentCount !== projection.intent.total) ||
+    projection.intent.fresh + projection.intent.stale !==
+      projection.intent.emitted ||
+    projection.comparison.total !== projection.intent.active ||
+    comparisonReasonCount !== projection.comparison.total ||
+    !dimensionCountsMatch
+  ) {
+    projection.safety.violations.push("shadow_projection_count_mismatch");
+  }
+  projection.complete =
+    result.complete &&
+    result.metrics.unresolvedCount === 0 &&
+    !producerSnapshot?.truncated &&
+    (producerSnapshot?.dropped || 0) === 0 &&
+    !!producerSnapshot &&
+    producerSnapshot.observedAt === Game.time &&
+    factTokenValid &&
+    projection.safety.violations.length === 0;
+  if (projection.complete) delete projection.blocker;
+  else projection.blocker = "input_unavailable";
+  return finalizeLogisticsShadowRuntime(projection, cpuStartedAt);
 }
 
 function getCapacityReliefRecoveryGap(
@@ -5288,6 +7303,7 @@ function persistResourceControlState(
   capacityConfig: ResourceCapacityConfig,
   synthesisBindings?: SynthesisBindingStore,
   capacityReliefRoutes: CapacityReliefRoute[] = [],
+  logisticsProjection?: ResourceControlLogisticsRuntimeV1,
 ): void {
   const runtime = getMemoryService().ensureRuntime();
   const previousResourceControl = runtime.resourceControl;
@@ -5435,7 +7451,7 @@ function persistResourceControlState(
         (suppressedStagingCount[typedReason] || 0) + (count || 0);
     }
   }
-  runtime.resourceControl = {
+  const nextResourceControl = {
     updatedAt: Game.time,
     capacityIndexBuildCount,
     taskContributionIndex: { ...context.taskContributionIndex },
@@ -5548,6 +7564,12 @@ function persistResourceControlState(
     recentCapacityReliefRoutes,
     synthesisBindings: synthesisBindings || previousBindings || {},
   };
+  if (logisticsProjection) {
+    Object.assign(nextResourceControl, { logistics: logisticsProjection });
+  }
+  runtime.resourceControl = nextResourceControl as NonNullable<
+    Memory["runtime"]
+  >["resourceControl"];
 }
 
 type ResourceControlRuntimeWithMarketReadiness = {
@@ -5660,6 +7682,29 @@ function persistMarketTerminalEnergyReadinessProjection(
   >["resourceControl"];
 }
 
+function persistUnavailableResourceControlLogistics(
+  blocker: LogisticsShadowRuntimeBlocker,
+): void {
+  const cpuStartedAt = readLogisticsShadowCpuUsed();
+  const config = resolveLogisticsControlConfig();
+  const projection = finalizeLogisticsShadowRuntime(
+    createEmptyLogisticsShadowRuntime(config.mode, blocker),
+    cpuStartedAt,
+  );
+  const runtime = getMemoryService().ensureRuntime();
+  const mutableRuntime = (runtime.resourceControl as unknown as
+    ResourceControlRuntimeWithMarketReadiness | undefined) || {
+    updatedAt: Game.time,
+    rooms: {},
+    lastActions: [],
+    lastMarketActions: [],
+  };
+  mutableRuntime.logistics = projection;
+  runtime.resourceControl = mutableRuntime as unknown as NonNullable<
+    Memory["runtime"]
+  >["resourceControl"];
+}
+
 export function runResourceControl(): void {
   const cfg = Memory.cfg?.resourceControl;
   if (cfg?.enabled === false) {
@@ -5668,11 +7713,31 @@ export function runResourceControl(): void {
       new Set<string>(),
     );
     clearMarketTerminalEnergyReadinessProjection();
+    persistUnavailableResourceControlLogistics("mode_disabled");
     return;
   }
 
   const interval = normalizeInterval(cfg?.sampleInterval);
   const fullPlanningTick = Game.time % interval === 0;
+  const logisticsConfig = resolveLogisticsControlConfig();
+  const previousLogistics = (
+    Memory.runtime?.resourceControl as unknown as {
+      logistics?: { requestedMode?: unknown };
+    } | undefined
+  )?.logistics;
+  if (
+    !fullPlanningTick &&
+    previousLogistics?.requestedMode === "shadow" &&
+    (!logisticsConfig.valid || logisticsConfig.mode !== "shadow")
+  ) {
+    persistUnavailableResourceControlLogistics(
+      !logisticsConfig.valid
+        ? "config_invalid"
+        : logisticsConfig.mode === "disabled"
+          ? "mode_disabled"
+          : "matcher_unavailable",
+    );
+  }
   const readinessAuthorization =
     readMarketTerminalEnergyReadinessAuthorization();
   const shouldReconcileRevokedReadiness =
@@ -5704,6 +7769,7 @@ export function runResourceControl(): void {
       new Set<string>(),
     );
     clearMarketTerminalEnergyReadinessProjection();
+    persistUnavailableResourceControlLogistics("input_unavailable");
     return;
   }
 
@@ -5716,6 +7782,11 @@ export function runResourceControl(): void {
     capacityConfig,
     capacityIndexBuildCounter,
   );
+  const logisticsProjection = fullPlanningTick
+    ? buildResourceControlLogisticsShadow(
+        context,
+      )
+    : undefined;
 
   const terminalBusy = new Set(
     getTerminalActionClaims().map((claim) => claim.roomName),
@@ -5793,6 +7864,7 @@ export function runResourceControl(): void {
     capacityConfig,
     undefined,
     capacityReliefRoutes,
+    logisticsProjection,
   );
   if (!readinessAuthorization.ok) {
     markMarketTerminalEnergyPreloadTasksRevoked();

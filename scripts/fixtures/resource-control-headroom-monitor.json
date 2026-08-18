@@ -2,7 +2,13 @@
   "rooms": {},
   "analytics": {
     "production": {
-      "rooms": {}
+      "rooms": {
+        "W1N1": {
+          "latest": {
+            "tick": 2000
+          }
+        }
+      }
     }
   },
   "runtime": {
@@ -27,6 +33,119 @@
         "fee_budget": 1
       },
       "capacityIndexBuildCount": 1,
+      "logistics": {
+        "schemaVersion": 1,
+        "updatedAt": 2000,
+        "expiresAt": 2010,
+        "requestedMode": "shadow",
+        "effectiveAuthority": "legacy",
+        "available": true,
+        "complete": true,
+        "projectionTruncated": false,
+        "inScopeByOrigin": {
+          "synthesis_room": 1
+        },
+        "outOfScopeByOrigin": {
+          "synthesis_distributed_demand": 2
+        },
+        "intent": {
+          "total": 1,
+          "active": 1,
+          "fresh": 1,
+          "stale": 0,
+          "paired": 1,
+          "inputDrift": 0,
+          "emitted": 1,
+          "dropped": 0,
+          "truncated": false
+        },
+        "comparison": {
+          "total": 1,
+          "matched": 1,
+          "different": 0,
+          "unresolved": 0,
+          "byReason": {
+            "equal": 1
+          },
+          "dimensions": {
+            "donor": {
+              "matched": 1,
+              "different": 0,
+              "unresolved": 0
+            },
+            "route": {
+              "matched": 1,
+              "different": 0,
+              "unresolved": 0
+            },
+            "priority": {
+              "matched": 1,
+              "different": 0,
+              "unresolved": 0
+            },
+            "demandCoverage": {
+              "matched": 1,
+              "different": 0,
+              "unresolved": 0
+            },
+            "receiverHeadroom": {
+              "matched": 1,
+              "different": 0,
+              "unresolved": 0
+            },
+            "predictedStagingEligibility": {
+              "matched": 1,
+              "different": 0,
+              "unresolved": 0
+            }
+          },
+          "samples": [
+            {
+              "intentId": "logistics-intent:synthesis:W1N1:X",
+              "status": "equal",
+              "reason": "equal",
+              "differingDimensions": [],
+              "legacySourceRoomName": "W2N1",
+              "shadowSourceRoomName": "W2N1",
+              "predictedStagingEligibility": "eligible"
+            }
+          ]
+        },
+        "matcher": {
+          "indexBuilds": 1,
+          "candidateEvaluations": 2,
+          "transactionCostEvaluations": 2,
+          "totalTransactionCostEvaluations": 2,
+          "candidateBudget": 128,
+          "budgetExhausted": false
+        },
+        "safety": {
+          "measurementBoundary": "observable_state_diff_v1",
+          "nonLegacyAuthorityRecords": 0,
+          "activeContracts": 0,
+          "activeLeases": 0,
+          "activeClaims": 0,
+          "shadowArbiterActorRecords": 0,
+          "shadowClaimRecords": 0,
+          "shadowJournalRecords": 0,
+          "shadowCarrierTaskRecords": 0,
+          "shadowReceiverReservationRecords": 0,
+          "violations": []
+        },
+        "resources": {
+          "dataItems": 4,
+          "runtimeItems": 4,
+          "dataBytes": 349,
+          "runtimeBytes": 1714,
+          "totalBytes": 2063,
+          "withinLimit": true
+        },
+        "cpu": {
+          "measurementAvailable": true,
+          "captureUsed": 0.1,
+          "used": 0.35
+        }
+      },
       "taskSummary": {
         "pending": 4,
         "manualPending": 1,
@@ -179,7 +298,32 @@
   "data": {
     "resourceControl": {
       "taskSchemaVersion": 2,
-      "tasks": {}
+      "tasks": {},
+      "logistics": {
+        "schemaVersion": 1,
+        "wireFormat": "compact-v1",
+        "s": [
+          "synthesisControl:room",
+          "synthesis:W1N1:X",
+          "W1N1",
+          "X",
+          "fingerprint:2000",
+          "W2N1",
+          "task:synthesis:W1N1:X",
+          "revision:2000"
+        ],
+        "i": [
+          [0, 1, 1, 1, 2, 1, 2, 3, 100, 4, 1999, 2000, 2010, null, null, null, null, 3]
+        ],
+        "o": [
+          [0, 4, 0, 0, 100, 0, 2000, 0, 0, 2, 4, 5, 100, 6, 100, null, null]
+        ],
+        "f": [],
+        "p": [
+          [0, 7, 4, 2000, 2010, 0.1, 1, 1, 1, 0, 32, 0]
+        ],
+        "c": 1
+      }
     }
   }
 }

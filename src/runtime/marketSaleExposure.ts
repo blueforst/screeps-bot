@@ -12,6 +12,31 @@ export interface MarketSaleTerminalExposure {
   blocked: boolean;
 }
 
+/**
+ * 一次解析后的市场实物暴露只读视图。
+ *
+ * 该视图刻意不缓存同 tick 的 carrier/send in-flight 领取量；调用方可在一个
+ * 只读规划 epoch 内复用这里冻结的市场账本，但最终可用量仍须在查询时读取
+ * 当前 in-flight 状态。
+ */
+export interface CompiledMarketSaleTerminalExposureIndex {
+  get(
+    roomName: string,
+    resourceType: ResourceConstant,
+  ): MarketSaleTerminalExposure;
+}
+
+export interface TerminalAmountsOutsideMarketSaleExposureOptions {
+  readonly roomName?: string;
+  /**
+   * 已冻结的 Terminal 库存。传入后，缺失资源 fail-closed 为 0，不回退读取
+   * live store；这允许上层复用同一个库存 epoch，避免重复全资源扫描。
+   */
+  readonly storedAmounts?: Readonly<
+    Partial<Record<ResourceConstant, number>>
+  >;
+}
+
 export interface TerminalAmountOutsideMarketSaleExposureClaim {
   amount: number;
   release(): void;
@@ -22,6 +47,11 @@ export interface TerminalSendOutsideMarketSaleExposureClaim {
 }
 
 type UnknownRecord = Record<string, unknown>;
+
+interface MutableCompiledExposure {
+  reservedAmount: number;
+  blocked: boolean;
+}
 
 interface TerminalAmountInspection {
   availableAmount: number;
@@ -222,6 +252,201 @@ function hasBlockingDirectQuarantine(
   return !quarantine || quarantineKeys.length > 0;
 }
 
+function compiledExposureKey(
+  roomName: string,
+  resourceType: ResourceConstant,
+): string {
+  return JSON.stringify([roomName, resourceType]);
+}
+
+function getOrCreateCompiledExposure(
+  exposures: Map<string, MutableCompiledExposure>,
+  key: string,
+): MutableCompiledExposure {
+  const current = exposures.get(key);
+  if (current) return current;
+  const created: MutableCompiledExposure = {
+    reservedAmount: 0,
+    blocked: false,
+  };
+  exposures.set(key, created);
+  return created;
+}
+
+function addCompiledExposure(
+  exposures: Map<string, MutableCompiledExposure>,
+  key: string,
+  value: unknown,
+): void {
+  const current = getOrCreateCompiledExposure(exposures, key);
+  const next = addExposure(current, value);
+  current.reservedAmount = next.reservedAmount;
+  current.blocked = next.blocked;
+}
+
+function blockCompiledExposurePair(
+  exposures: Map<string, MutableCompiledExposure>,
+  key: string,
+): void {
+  getOrCreateCompiledExposure(exposures, key).blocked = true;
+}
+
+function createCompiledExposureIndex(
+  exposures: ReadonlyMap<string, MutableCompiledExposure>,
+  globalBlocked: boolean,
+): CompiledMarketSaleTerminalExposureIndex {
+  return Object.freeze({
+    get(
+      roomName: string,
+      resourceType: ResourceConstant,
+    ): MarketSaleTerminalExposure {
+      const current = exposures.get(
+        compiledExposureKey(roomName, resourceType),
+      );
+      return Object.freeze({
+        reservedAmount: current?.reservedAmount || 0,
+        blocked: globalBlocked || current?.blocked === true,
+      });
+    },
+  });
+}
+
+/**
+ * 一次解析 Maker、pending create、Direct WAL 与 quarantine，并生成可复用的
+ * room/resource 查询索引。
+ *
+ * 解析顺序、局部/全局 blocked 边界及损坏记录前缀的 reservedAmount 与旧的
+ * 单 tuple 扫描完全一致。索引不引用输入对象，返回后输入发生变化不会污染
+ * 当前规划 epoch。
+ */
+export function compileMarketSaleTerminalExposureIndex(
+  automationData: unknown,
+  directStrategyActive = true,
+): CompiledMarketSaleTerminalExposureIndex {
+  const exposures = new Map<string, MutableCompiledExposure>();
+  const haltedBeforeDirect = new Set<string>();
+  const finish = (globalBlocked: boolean) =>
+    createCompiledExposureIndex(exposures, globalBlocked);
+
+  if (automationData === undefined) return finish(false);
+  if (!isRecord(automationData)) return finish(true);
+  if (
+    hasBlockingDirectQuarantine(
+      automationData,
+      directStrategyActive,
+    )
+  ) {
+    return finish(true);
+  }
+
+  const managedOrders = automationData.managedOrders;
+  if (!isRecord(managedOrders)) return finish(true);
+  for (const managed of Object.values(managedOrders)) {
+    if (
+      !isRecord(managed) ||
+      !isValidRoomName(managed.roomName) ||
+      !isValidResourceType(managed.resourceType)
+    ) {
+      return finish(true);
+    }
+    addCompiledExposure(
+      exposures,
+      compiledExposureKey(managed.roomName, managed.resourceType),
+      managed.remainingExposure,
+    );
+  }
+
+  const pendingCreate = automationData.pendingCreate;
+  if (pendingCreate !== undefined) {
+    if (!isRecord(pendingCreate) || !isRecord(pendingCreate.tuple)) {
+      return finish(true);
+    }
+    const tuple = pendingCreate.tuple;
+    if (
+      !isValidRoomName(tuple.roomName) ||
+      !isValidResourceType(tuple.resourceType)
+    ) {
+      return finish(true);
+    }
+    const key = compiledExposureKey(tuple.roomName, tuple.resourceType);
+    if (tuple.type !== ORDER_SELL) {
+      // 旧实现只会让与 pending tuple 精确匹配的查询提前返回；其它 tuple
+      // 仍须继续读取 Direct exposure。
+      blockCompiledExposurePair(exposures, key);
+      haltedBeforeDirect.add(key);
+    } else {
+      addCompiledExposure(exposures, key, pendingCreate.exposure);
+    }
+  }
+
+  const pendingDirectDeals = automationData.pendingDirectDeals;
+  if (pendingDirectDeals === undefined) return finish(false);
+  if (!isRecord(pendingDirectDeals)) return finish(true);
+  for (const pending of Object.values(pendingDirectDeals)) {
+    if (!isRecord(pending)) return finish(true);
+    const pendingRoomName = readAliasedField(
+      pending,
+      "canaryRoomName",
+      "roomName",
+    );
+    const pendingResource = readAliasedField(
+      pending,
+      "resource",
+      "resourceType",
+    );
+    if (
+      !isValidRoomName(pendingRoomName) ||
+      !isValidResourceType(pendingResource)
+    ) {
+      return finish(true);
+    }
+    if (
+      pending.status !== "prepared" &&
+      pending.status !== "submitted" &&
+      pending.status !== "reconcile_gap"
+    ) {
+      return finish(true);
+    }
+
+    const resourceKey = compiledExposureKey(
+      pendingRoomName,
+      pendingResource,
+    );
+    if (!haltedBeforeDirect.has(resourceKey)) {
+      addCompiledExposure(
+        exposures,
+        resourceKey,
+        readAliasedField(pending, "dealAmount", "amount"),
+      );
+    }
+    const energyKey = compiledExposureKey(
+      pendingRoomName,
+      RESOURCE_ENERGY,
+    );
+    if (!haltedBeforeDirect.has(energyKey)) {
+      addCompiledExposure(
+        exposures,
+        energyKey,
+        pending.transactionEnergy,
+      );
+    }
+  }
+
+  return finish(false);
+}
+
+export function compileLiveMarketSaleTerminalExposureIndex(): CompiledMarketSaleTerminalExposureIndex {
+  const config = Memory.cfg?.marketSaleAutomation;
+  const directStrategyActive =
+    config?.mode === "direct" ||
+    (config?.mode === "shadow" &&
+      config?.shadowStrategy === "direct");
+  return compileMarketSaleTerminalExposureIndex(
+    Memory.data?.marketSaleAutomation,
+    directStrategyActive,
+  );
+}
+
 /**
  * 汇总一个精确 room/resource 对的 Maker 与 Direct 实物暴露量。
  *
@@ -351,6 +576,66 @@ function getTerminalReservationKey(
     ? `id:${id}`
     : `room:${roomName}`;
   return `${terminalKey}:${resourceType}`;
+}
+
+/**
+ * 以同一个 compiled 市场账本批量查询任意有界资源集合。
+ *
+ * 市场 exposure 只解析一次；同 tick in-flight 则在每次调用时重新读取，所以
+ * 该 API 只能减少只读解析成本，不会放宽 claim/send 的实时安全边界。
+ */
+export function getTerminalAmountsOutsideMarketSaleExposure(
+  terminal: StructureTerminal,
+  resources: readonly ResourceConstant[],
+  exposureIndex: CompiledMarketSaleTerminalExposureIndex,
+  options: TerminalAmountsOutsideMarketSaleExposureOptions = {},
+): ReadonlyMap<ResourceConstant, number> {
+  const result = new Map<ResourceConstant, number>();
+  const uniqueResources = [...new Set(resources)];
+  const roomName = options.roomName ?? (
+    terminal as StructureTerminal & { room?: Room }
+  ).room?.name;
+  if (!roomName) {
+    for (const resource of uniqueResources) result.set(resource, 0);
+    return result;
+  }
+
+  syncReservationTick();
+  for (const resource of uniqueResources) {
+    const exposure = exposureIndex.get(roomName, resource);
+    if (exposure.blocked) {
+      result.set(resource, 0);
+      continue;
+    }
+
+    const stored = options.storedAmounts === undefined
+      ? terminal.store.getUsedCapacity(resource)
+      : Object.prototype.hasOwnProperty.call(
+          options.storedAmounts,
+          resource,
+        )
+        ? options.storedAmounts[resource]
+        : 0;
+    if (typeof stored !== "number" || !Number.isFinite(stored) || stored <= 0) {
+      result.set(resource, 0);
+      continue;
+    }
+
+    const reservationKey = getTerminalReservationKey(
+      terminal,
+      roomName,
+      resource,
+    );
+    const inFlightAmount = inFlightTerminalAmounts.get(reservationKey) || 0;
+    result.set(
+      resource,
+      Math.max(
+        0,
+        Math.floor(stored) - exposure.reservedAmount - inFlightAmount,
+      ),
+    );
+  }
+  return result;
 }
 
 function inspectTerminalAmountOutsideMarketSaleExposure(

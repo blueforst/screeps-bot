@@ -666,10 +666,14 @@ export function cleanupResourceTransferTaskStore(
   }
 
   if (Object.keys(tasks).length === 0) {
-    getMemoryService().ensureData().resourceControl = {
-      taskSchemaVersion: RESOURCE_TRANSFER_TASK_SCHEMA_VERSION,
-      tasks: {},
-    };
+    // ResourceControl owns sibling logistics state under the same persistent
+    // branch. Keep cleanup scoped to the legacy task fields so an empty task
+    // store cannot erase a versioned shadow/contract adapter.
+    const resourceControl = getMemoryService().ensureData().resourceControl;
+    if (resourceControl) {
+      resourceControl.taskSchemaVersion = RESOURCE_TRANSFER_TASK_SCHEMA_VERSION;
+      resourceControl.tasks = {};
+    }
   }
 
   return removed;
