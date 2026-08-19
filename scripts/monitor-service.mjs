@@ -231,6 +231,7 @@ Options:
   --history-limit <n>             In-memory history length (default: 200)
   --request-timeout-ms <ms>       API request timeout (default: 15000)
   --no-http                       Disable HTTP server mode
+  --lean-memory                   Skip gate-irrelevant path reads (hub, direct market data) to save API quota
   --memory-fixture <path>         Load memory from JSON file instead of API (for testing)
   --help                          Show this help
 
@@ -273,6 +274,10 @@ function parseArgs(argv) {
     }
     if (arg === "--no-http") {
       args.noHttp = true;
+      continue;
+    }
+    if (arg === "--lean-memory") {
+      args.leanMemory = true;
       continue;
     }
 
@@ -472,6 +477,7 @@ async function resolveConfig(args) {
   return {
     once: args.once,
     noHttp: args.noHttp,
+    leanMemory: args.leanMemory === true,
     token,
     baseUrl,
     memoryIntervalMs,
@@ -6111,13 +6117,19 @@ async function fetchResourceControlData(config, shard) {
   ] =
     await Promise.all([
     fetchCoherentResourceControlPair(readMemoryPath),
-    fetchOptionalMemoryPath(config, shard, "runtime.hub"),
+    // --lean-memory skips gate-irrelevant path reads (hub analytics and the
+    // direct-market data store) so long captures fit the daily API quota.
+    config.leanMemory
+      ? null
+      : await fetchOptionalMemoryPath(config, shard, "runtime.hub"),
     fetchOptionalMemoryPath(config, shard, "runtime.marketSaleAutomation"),
-    fetchOptionalMemoryPath(
-      config,
-      shard,
-      "data.marketSaleAutomation.directAutomation",
-    ),
+    config.leanMemory
+      ? null
+      : await fetchOptionalMemoryPath(
+          config,
+          shard,
+          "data.marketSaleAutomation.directAutomation",
+        ),
   ]);
   const {
     transferTaskStore,
@@ -6902,7 +6914,7 @@ async function main() {
 
   const config = await resolveConfig(args);
   console.log(
-    `[monitor] base=${config.baseUrl} shard=${config.shard ?? "auto"} memoryInterval=${config.memoryIntervalMs}ms segment=${config.segmentId ?? "off"} output=${config.outputPath ?? "off"} memoryFixture=${config.memoryFixture ?? "off"}`,
+    `[monitor] base=${config.baseUrl} shard=${config.shard ?? "auto"} memoryInterval=${config.memoryIntervalMs}ms segment=${config.segmentId ?? "off"} output=${config.outputPath ?? "off"} memoryFixture=${config.memoryFixture ?? "off"} leanMemory=${config.leanMemory}`,
   );
 
   if (config.once) {
