@@ -89,4 +89,4 @@ git diff --check
   PASS
 ```
 
-两路最终独立审查在固定 hash 上均结论为 `P0=0`、`P1=0`。本候选部署后仍保持 disabled；实际 deploy tag、bundle hash 与 disabled live 核验另记部署证据。任何再次启用 Shadow 都需要新的明确授权，并从新 bundle 重新执行完整 10 + 100 tick 窗口，旧失败窗口不得沿用。
+两路最终独立审查在固定 hash 上均结论为 `P0=0`、`P1=0`。本候选部署后仍保持 disabled；实际 deploy tag、bundle hash 与 disabled live 核验见 `shadow-v2-disabled-deployment.md`。任何再次启用 Shadow 都需要新的明确授权，并从新 bundle 重新执行完整 10 + 100 tick 窗口，旧失败窗口不得沿用。
