@@ -96,3 +96,7 @@ market safetyViolationCount=0
 ```
 
 结论：Shadow v2 已成功重新激活，当前没有即时回滚条件；但前两个 warmup CPU 点均显著高于冻结的 `4.589860` 门槛，属于强预警而非通过证据。8.5a、9.1a、9.4 继续保持未完成；必须从本 bundle 重新取得完整 10 warmup + 100 measured 同 tick 样本，方可做正式结论。
+
+## 后续 v2 10+100 gate 结果（2026-08-19）
+
+本 bundle 的完整 10 warmup + 100 measured 窗口（tick `73111180..73112270`）已于同日完成：可观察 safety、Memory、bucket、结构配对与差异因果全部通过，但正式 CPU p95 `8.398820` 超出上限 `4.589860`（94/100 超标），9.4 判定失败；mode 已于 tick `73113300` 回退 `disabled`（operation `6a85a773fd36790013669c27`）。完整数值、新增 `receiver_capacity` causal code 记录与回退证据见 `shadow-v2-100-sample-failure.md`；冻结明细见 `shadow-v2-100-sample-metrics.tsv`。重新开启 Shadow 需要用户再次明确授权并按新 bundle 从零重跑。
