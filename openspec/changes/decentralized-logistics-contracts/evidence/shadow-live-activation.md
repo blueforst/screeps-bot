@@ -50,3 +50,49 @@ CPU Monitor tick `73087620` 的 ResourceControl phase 为 `2.995784`，bucket `1
 本记录只证明 Shadow 激活与首个 epoch；后续已完成 10 warmup + 100 measured telemetry epochs，但正式 CPU 下界 p95 超过 110% 上限，且 v1 差异投影与 Monitor coherent-read 语义不足，因此 8.5a、9.1a、9.4 继续保持未完成，不授权 `canary/enabled`。完整数值与差异复核见 `shadow-live-100-sample-failure.md`。
 
 mode 已于 tick `73089100` 回退为 `disabled`，console operation 为 `6a84532996c1fe0013ce8993`；验证配置为 `{canaryScopes:[],schemaVersion:1,mode:"disabled"}`，runtime 为 `requestedMode=disabled`、`effectiveAuthority=legacy`、`blocker=mode_disabled`，可观察 safety 继续为零。后续修复 bundle 必须重新冻结同口径基线并从零重跑 10 warmup + 100 measured，不得拼接或倒填本窗口。
+
+## Shadow v2 重新激活（2026-08-19）
+
+- 用户重新明确授权：开启 Shadow；未授权 `canary/enabled`。
+- shard：`shard1`；console probe 在 tick `73104918` 确认 console 实际执行于 shard1。
+- 当前 deploy tag：`2026.8.19-1+eb26197@2026-08-19T04:40:18.525Z`。
+- console operation：`6a8536dc6b4b63001398a025`，服务返回 `ok=1`、`insertedCount=1`。
+- 写入保留现有 logistics 兄弟字段并强制 `schemaVersion=1`、`mode="shadow"`；随后 Memory API 精确读回：
+
+```json
+{"canaryScopes":[],"schemaVersion":1,"mode":"shadow"}
+```
+
+首个完整 v2 epoch 为 tick `73104940`：
+
+- `available/livenessAvailable/complete=true`，`snapshotAttestationMatched=true`，无 blocker、截断、torn read 或 inconclusive。
+- 12/12 intents 全部 active、fresh、paired、emitted；stale/inputDrift/dropped/unresolved 均为 0。
+- comparison 为 `8 equal + 4 expected_policy_difference`；causal code 为 `route_rank=1`、`source_protection=3`，没有 unsafe 或 unresolved。
+- matcher `indexBuilds=1`、`candidateEvaluations=48`、`budgetExhausted=false`。
+- data/runtime 合计 `14,698B`，`withinLimit=true`。
+- CPU v2：producer `6.826`、consumer `3.172`、outer ResourceControl `6.944637`、正式 `gateUsed=13.770637`；bucket `10000`。
+
+第二个只读确认 epoch 为 tick `73104970`：
+
+- 12/12 intents 继续 fresh、paired，0 unresolved；comparison 为 `9 equal + 3 expected_policy_difference`，三项 causal code 均为 `source_protection`。
+- matcher 继续单索引、无 budget exhaustion；Memory 合计降至 `13,766B`。
+- CPU v2：producer `4.554`、consumer `1.860`、outer ResourceControl `5.055408`、`gateUsed=9.609408`；bucket `10000`。
+
+两个 epoch 的 `effectiveAuthority` 均为 legacy，以下可观察记录持续为零：
+
+```text
+nonLegacyAuthorityRecords=0
+activeContracts=0
+activeLeases=0
+activeClaims=0
+shadowArbiterActorRecords=0
+shadowClaimRecords=0
+shadowJournalRecords=0
+shadowCarrierTaskRecords=0
+shadowReceiverReservationRecords=0
+violations=[]
+terminalClaims=[]
+market safetyViolationCount=0
+```
+
+结论：Shadow v2 已成功重新激活，当前没有即时回滚条件；但前两个 warmup CPU 点均显著高于冻结的 `4.589860` 门槛，属于强预警而非通过证据。8.5a、9.1a、9.4 继续保持未完成；必须从本 bundle 重新取得完整 10 warmup + 100 measured 同 tick 样本，方可做正式结论。
