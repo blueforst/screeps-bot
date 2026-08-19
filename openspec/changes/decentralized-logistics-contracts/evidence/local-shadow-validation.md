@@ -54,8 +54,39 @@ git diff --check
 
 - ResourceControl 没有跨 tick 持久化 matcher continuation；3.4 不完成。
 - writer/codec 的精确 16,384/16,385 全矩阵与部分 reader 负例仍不足；8.4a 不完成。
-- 尚未启用线上 Shadow，也未完成剔除 10 warmup 后 100 measured tick；8.5a、9.1a、9.4 不完成。
+- 本地候选验收当时尚未启用线上 Shadow；后续 live 已取得 10 warmup + 100 measured，但 CPU 与因果/coherent-read 门槛失败，详见 `shadow-live-100-sample-failure.md`。8.5a、9.1a、9.4 仍不完成。
 - `terminal-headroom-recovery` 6.4 未完成，任何 contract/lease/claim/Agent authority canary 必须 fail closed。
 - 本地 safety 证据证明相同 fixture 的可观察最终状态与 send/deal mock 无新增调用；它不声称捕捉未 instrument、随后回滚/释放/失败的瞬时 attempt。
 
-部署前 ResourceControl pre-p95 已另行冻结在 `pre-shadow-baseline.md`。部署本 bundle 不等于修改 live config；只有用户另行明确授权后，才可把 live logistics mode 从默认 disabled 改为 shadow 并开始 10+100 tick 验收。
+部署前 ResourceControl pre-p95 已另行冻结在 `pre-shadow-baseline.md`。部署本 bundle 本身没有修改 live config；用户后续另行授权了 Shadow 激活，失败后已于 tick `73089100` 回退为 disabled。
+
+## Shadow v2 修复候选（2026-08-19）
+
+- 候选版本：`2026.8.19-1`。
+- live 配置继续保持 `mode="disabled"`；本候选只修复观测、归因与 fail-closed 边界，不授权重新启用 Shadow。
+- cfg/data 继续使用 schema v1（data wire 为 `compact-v1`）；runtime projection 升为 schema v2，runtime v1 仅兼容展示且不得进入新的 10 warmup + 100 measured gate。
+- CPU v2 要求 exact 五字段 `{attributionVersion,sampleTick,measurementAvailable,producerUsed,consumerUsed}`，并要求同 tick producer seal 与 `measurementAvailable=true`；正式 gate 只使用 CPU Monitor history 中同 tick 的 outer ResourceControl 加 `producerUsed`。
+- coherent Memory 读取固定使用 `R1 -> D -> R2`，仅允许一次完整 bounded retry；同 epoch byte mismatch 始终 fail closed。
+- bounded causal trace 现在保留 outcome、receiver 与 candidate 证据；所有 material different/unresolved 必须进入样本，否则 projection 不完整且 fail closed。
+- exact-store 同 tick cache 只暴露独立冻结的已验证语义图；缺 producer meter、重复/NaN task、异常 quote、非法 reservation 与 malformed Carrier 均 fail closed。
+
+冻结工作树的提交前门禁：
+
+```text
+npx tsc -p tsconfig.build.json --noEmit
+npx tsc --noEmit
+  PASS
+
+npm run test:budget
+  Test Suites: 167 passed, 167 total
+  Tests:       500 passed, 500 total
+  JEST_TEST_BUDGET=PASSED
+
+npm run build
+npx openspec validate decentralized-logistics-contracts --strict
+node --check scripts/monitor-service.mjs
+git diff --check
+  PASS
+```
+
+两路最终独立审查在固定 hash 上均结论为 `P0=0`、`P1=0`。本候选部署后仍保持 disabled；实际 deploy tag、bundle hash 与 disabled live 核验另记部署证据。任何再次启用 Shadow 都需要新的明确授权，并从新 bundle 重新执行完整 10 + 100 tick 窗口，旧失败窗口不得沿用。

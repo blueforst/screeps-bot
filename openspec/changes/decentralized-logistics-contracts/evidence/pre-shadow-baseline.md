@@ -38,7 +38,7 @@ receiverExcludedByReason={terminal_headroom:1}
 - 总 CPU 平均：`94.2224299118`
 - bucket：`10000`（93 样本平均 `9998.62`，最低 `9872` 来自部署初始化样本）
 
-Shadow live gate 使用相同 shard、稳定 tag、剔除 warmup 后至少 100 个连续可观测 tick。ResourceControl/Shadow p95 不得高于本次可比部署前窗口 10%，bucket 不得持续下降；`Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 序列化合计硬上限为 32 KiB。
+Shadow live gate 使用相同 shard、稳定 tag、剔除 warmup 后至少 100 个连续可观测 tick。disabled 基线中 Shadow `producerUsed=0`，因此本文件冻结的 outer ResourceControl phase 就是 pre `gateUsed`；post 必须按 `gateUsed=完整 ResourceControl phase+producerUsed` 计算，不能再次加入已经包含在 outer phase 内的 `consumerUsed`。post p95 不得高于本次可比部署前窗口 10%，bucket 不得持续下降；`Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 序列化合计硬上限为 32 KiB。
 
 部署前 runtime/data 均没有 `resourceControl.logistics`，Monitor 不得把字段缺失投影成空成功。
 

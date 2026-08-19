@@ -2,6 +2,7 @@ import {
   clearCarrierTaskBoardForTest,
   getCarrierTasksByRoom,
   peekCarrierTaskBoard,
+  replaceCarrierTasksForProducerRoom,
 } from "@/runtime/carrierTaskBoard";
 import {
   createAutomaticResourceTransferTask,
@@ -18,15 +19,21 @@ import {
   runSynthesisLogisticsShadow,
   SYNTHESIS_SHADOW_MAX_TRANSACTION_COST_EVALUATIONS_PER_CANDIDATE,
   type SynthesisShadowContinuation,
+  type SynthesisShadowLegacyDecisionObservation,
   type SynthesisShadowMatcherInput,
   type SynthesisShadowMatcherResult,
   type SynthesisShadowRoomFact,
 } from "@/runtime/logistics/synthesisLogisticsShadow";
+import { measureLogisticsShadowCpu } from "@/runtime/logistics/logisticsShadowCpu";
 import {
   claimLocalCarrierDestinationCapacity,
   clearLocalCarrierDestinationCapacityForTest,
   getLocalCarrierDestinationCapacityObservation,
 } from "@/runtime/localCarrierDestinationCapacity";
+import {
+  releaseProductionReservation,
+  reserveProductionResource,
+} from "@/runtime/resourceReservation";
 import {
   clearMarketActionArbiterForTest,
   getMarketAccountClaim,
@@ -582,9 +589,59 @@ describe("resource control live-like capacity recovery", () => {
     const baselineRoomFact = baselineFacts.roomFacts.find(
       (fact) => fact.roomName === reservationRoom.name,
     )!;
-    expect(baselineRoomFact.resources.find(
+    const baselineHydrogenAvailable = baselineRoomFact.resources.find(
       (entry) => entry.resource === RESOURCE_HYDROGEN,
-    )!.sourceAvailableAmount).toBeGreaterThan(0);
+    )!.sourceAvailableAmount;
+    expect(baselineHydrogenAvailable).toBeGreaterThan(0);
+    reserveProductionResource(
+      reservationRoom.name,
+      RESOURCE_HYDROGEN,
+      1_000,
+      "capacity-regression:shadow-capture",
+    );
+    replaceCarrierTasksForProducerRoom(
+      "capacity-regression:shadow-capture",
+      reservationRoom.name,
+      [{
+        id: "production-commitment",
+        type: "lab_supply",
+        priority: 100,
+        steps: [{
+          id: "hydrogen-to-lab",
+          resource: RESOURCE_HYDROGEN,
+          amount: 2_000,
+          fromKind: "storage",
+          toKind: "lab",
+          fromId: reservationRoom.storage!.id,
+          toId: "capacity-regression-lab" as Id<StructureLab>,
+        }],
+      }],
+    );
+    const committedCapture = beginSynthesisShadowEpochCapture([
+      RESOURCE_HYDROGEN,
+      RESOURCE_UTRIUM,
+    ]);
+    if (committedCapture.ok === false) throw new Error(committedCapture.reason);
+    const committedFacts = committedCapture.buildRoomFacts([
+      RESOURCE_HYDROGEN,
+      RESOURCE_UTRIUM,
+    ]);
+    if (committedFacts.ok === false) throw new Error(committedFacts.reason);
+    expect(committedFacts.roomFacts.find(
+      (fact) => fact.roomName === reservationRoom.name,
+    )!.resources.find(
+      (entry) => entry.resource === RESOURCE_HYDROGEN,
+    )!.sourceAvailableAmount).toBe(baselineHydrogenAvailable - 3_000);
+    releaseProductionReservation(
+      reservationRoom.name,
+      RESOURCE_HYDROGEN,
+      "capacity-regression:shadow-capture",
+    );
+    replaceCarrierTasksForProducerRoom(
+      "capacity-regression:shadow-capture",
+      reservationRoom.name,
+      [],
+    );
     const logisticsBeforeInvalidCapture = JSON.stringify(
       (Memory.data?.resourceControl as unknown as { logistics?: unknown })
         ?.logistics,
@@ -622,6 +679,82 @@ describe("resource control live-like capacity recovery", () => {
       (Memory.data?.resourceControl as unknown as { logistics?: unknown })
         ?.logistics,
     )).toBe(logisticsBeforeInvalidCapture);
+    (Memory.runtime as unknown as {
+      resourceReservations: Record<string, unknown>;
+    }).resourceReservations = {};
+
+    const taskStore = ensureResourceTransferTaskStore();
+    const malformedTaskBase = {
+      id: "capacity-regression:malformed-task",
+      resource: RESOURCE_HYDROGEN,
+      fromRoomName: reservationRoom.name,
+      toRoomName: "W84N1",
+      amount: 100,
+      remainingAmount: 100,
+      status: "pending" as const,
+      createdAt: Game.time,
+      updatedAt: Game.time,
+      origin: "automatic" as const,
+      lastProgressAt: Game.time,
+      reason: "synthesis:W84N1:OH",
+    };
+    taskStore["malformed-a"] = { ...malformedTaskBase };
+    taskStore["malformed-b"] = { ...malformedTaskBase };
+    expect(beginSynthesisShadowEpochCapture([
+      RESOURCE_HYDROGEN,
+    ])).toEqual({ ok: false, reason: "invalid_resources" });
+    delete taskStore["malformed-b"];
+    taskStore["malformed-a"].remainingAmount = Number.NaN;
+    expect(beginSynthesisShadowEpochCapture([
+      RESOURCE_HYDROGEN,
+    ])).toEqual({ ok: false, reason: "invalid_resources" });
+    taskStore["malformed-a"].remainingAmount = 100;
+    const transactionCostMock = Game.market.calcTransactionCost as jest.Mock;
+    const previousTransactionCostImplementation =
+      transactionCostMock.getMockImplementation();
+    transactionCostMock.mockImplementation(() => Number.NaN);
+    expect(beginSynthesisShadowEpochCapture([
+      RESOURCE_HYDROGEN,
+    ])).toEqual({ ok: false, reason: "invalid_resources" });
+    if (previousTransactionCostImplementation) {
+      transactionCostMock.mockImplementation(
+        previousTransactionCostImplementation,
+      );
+    } else {
+      transactionCostMock.mockRestore();
+    }
+    delete taskStore["malformed-a"];
+
+    replaceCarrierTasksForProducerRoom(
+      "capacity-regression:malformed-carrier",
+      reservationRoom.name,
+      [{
+        id: "malformed-production-commitment",
+        type: "factory_supply",
+        priority: 100,
+        steps: [{
+          id: "malformed-step",
+          resource: RESOURCE_HYDROGEN,
+          amount: 100,
+          fromKind: "terminal",
+          toKind: "factory",
+          fromId: reservationRoom.terminal!.id,
+          toId: "capacity-regression-factory" as Id<StructureFactory>,
+        }],
+      }],
+    );
+    const malformedCarrierTask = Object.values(
+      getCarrierTasksByRoom(reservationRoom.name),
+    ).find((task) => task.id === "malformed-production-commitment")!;
+    (malformedCarrierTask.steps[0] as { amount: number }).amount = Number.NaN;
+    expect(beginSynthesisShadowEpochCapture([
+      RESOURCE_HYDROGEN,
+    ])).toEqual({ ok: false, reason: "invalid_resources" });
+    replaceCarrierTasksForProducerRoom(
+      "capacity-regression:malformed-carrier",
+      reservationRoom.name,
+      [],
+    );
 
     const disabledTwin = runResourceControlAuthorityTwin("disabled");
     const shadowTwin = runResourceControlAuthorityTwin("shadow");
@@ -888,6 +1021,9 @@ describe("resource control live-like capacity recovery", () => {
 
     const shadowSendCalls = (source.terminal!.send as jest.Mock).mock.calls.length;
     const shadowDealCalls = (Game.market.deal as jest.Mock).mock.calls.length;
+    // This fixture invokes producer primitives directly instead of running
+    // SynthesisControl; seal that artificial producer pass before its consumer.
+    measureLogisticsShadowCpu("producer", () => undefined);
     resetRuntimeServices();
     runResourceControl();
     expect((source.terminal!.send as jest.Mock).mock.calls).toHaveLength(
@@ -931,7 +1067,24 @@ describe("resource control live-like capacity recovery", () => {
           comparison: {
             total: number;
             unresolved: number;
-            samples: Array<{ status: string; reason: string }>;
+            samples: Array<{
+              status: string;
+              reason: string;
+              targetRoomName: string;
+              resource: ResourceConstant;
+              decisionDelta: string;
+              direction: string;
+              causalCode: string;
+              legacy?: { kind: string; sourceRoomName?: string };
+              shadow?: { kind: string; reason?: string };
+              candidate?: {
+                evaluatedCount: number;
+                feasibleCount: number;
+                rejectedCount: number;
+                rejectionCounts: Array<[string, number]>;
+                legacySource?: { disposition: string; rejection?: string };
+              };
+            }>;
           };
           safety: {
             measurementBoundary: string;
@@ -979,7 +1132,34 @@ describe("resource control live-like capacity recovery", () => {
     expect(Memory.runtime?.resourceControl?.rooms[source.name]?.capacityState)
       .toBe("emergency");
     expect(logistics!.comparison.samples).toEqual([
-      expect.objectContaining({ reason: "unsafe_candidate" }),
+      expect.objectContaining({
+        reason: "expected_policy_difference",
+        targetRoomName: shadowReceiver.name,
+        resource: RESOURCE_KEANIUM,
+        decisionDelta: "legacy_only_route",
+        direction: "shadow_more_conservative",
+        causalCode: "source_protection",
+        legacy: expect.objectContaining({
+          kind: "route",
+          sourceRoomName: source.name,
+        }),
+        shadow: expect.objectContaining({
+          kind: "unmatched",
+          reason: "source_protection",
+        }),
+        candidate: expect.objectContaining({
+          evaluatedCount: 3,
+          feasibleCount: 0,
+          rejectedCount: 3,
+          rejectionCounts: expect.arrayContaining([
+            ["source_protection", 2],
+          ]),
+          legacySource: expect.objectContaining({
+            disposition: "rejected",
+            rejection: "source_protection",
+          }),
+        }),
+      }),
     ]);
     const logisticsStore = peekLogisticsControlStore();
     expect(logisticsStore).toEqual(expect.objectContaining({ ok: true }));
@@ -1069,6 +1249,7 @@ describe("resource control live-like capacity recovery", () => {
         roomFacts: coveredEpoch.roomFacts,
       },
     )).toEqual(expect.objectContaining({ ok: true }));
+    measureLogisticsShadowCpu("producer", () => undefined);
     resetRuntimeServices();
     runResourceControl();
 
@@ -1140,19 +1321,36 @@ describe("resource control live-like capacity recovery", () => {
       Memory.runtime?.resourceControl as unknown as {
         logistics?: {
           available: boolean;
+          blocker?: string;
           complete: boolean;
           intent: { total: number; emitted: number };
           comparison: { total: number };
-          cpu: { captureUsed: number };
+          safety: { violations: string[] };
+          cpu: {
+            attributionVersion: number;
+            sampleTick: number;
+            measurementAvailable: boolean;
+            producerUsed: number;
+            consumerUsed: number;
+          };
         };
       } | undefined
     )?.logistics;
     expect(emptyLogistics).toEqual(expect.objectContaining({
-      available: true,
-      complete: true,
+      available: false,
+      blocker: "input_unavailable",
+      complete: false,
       intent: expect.objectContaining({ total: 0, emitted: 0 }),
       comparison: expect.objectContaining({ total: 0 }),
-      cpu: expect.objectContaining({ captureUsed: emptyFacts.captureCpuUsed }),
+      safety: expect.objectContaining({
+        violations: expect.arrayContaining(["cpu_measurement_unavailable"]),
+      }),
+      cpu: expect.objectContaining({
+        attributionVersion: 2,
+        sampleTick: 530,
+        measurementAvailable: false,
+        producerUsed: 0,
+      }),
     }));
 
     Game.time = 540;
@@ -1238,6 +1436,8 @@ describe("resource control live-like capacity recovery", () => {
           comparison: {
             unresolved: number;
             byReason: Record<string, number>;
+            byCausalCode: Record<string, number>;
+            samples: Array<{ producerReason?: string; reason: string }>;
           };
         };
       } | undefined
@@ -1248,9 +1448,19 @@ describe("resource control live-like capacity recovery", () => {
       comparison: expect.objectContaining({
         unresolved: 2,
         byReason: expect.objectContaining({
-          input_unavailable: 1,
-          legacy_unpaired: 1,
+          input_drift: 2,
         }),
+        byCausalCode: expect.objectContaining({ input_drift: 2 }),
+        samples: expect.arrayContaining([
+          expect.objectContaining({
+            reason: "input_drift",
+            producerReason: "legacy_unpaired",
+          }),
+          expect.objectContaining({
+            reason: "input_drift",
+            producerReason: "input_unavailable",
+          }),
+        ]),
       }),
     }));
     delete (Memory.data as unknown as { marketSaleAutomation?: unknown })
@@ -1425,6 +1635,45 @@ describe("resource control live-like capacity recovery", () => {
       ],
       transactionCost: () => 0,
     };
+    const makeLegacyRouteDecision = (
+      demand: SynthesisShadowMatcherInput["demands"][number],
+      sourceRoom: string,
+      amount = demand.maximumBatchAmount,
+      capacity: "eligible" | "blocked" = "eligible",
+      staging: "eligible" | "blocked" = "eligible",
+    ): SynthesisShadowLegacyDecisionObservation => ({
+      comparisonKey: demand.comparisonKey,
+      epochRevision: demand.epochRevision,
+      epochFingerprint: demand.epochFingerprint,
+      inputRevision: demand.revision,
+      inputFingerprint: demand.inputFingerprint,
+      observedAt: 100,
+      kind: "route",
+      actionBasis: "standalone",
+      remainingBefore: 0,
+      transferBatchSize: 100,
+      route: {
+        sourceRoom,
+        targetRoom: demand.targetRoom,
+        resource: demand.resource,
+        amount,
+        actionAmount: amount,
+        priorityClass: demand.priorityClass,
+        coverage: amount >= demand.desiredAmount ? "covered" : "partial",
+        capacity,
+        predictedStagingEligibility: staging,
+        terminalReadyAt: 100,
+        transactionCost: 0,
+        requiredEnergy: 0,
+        energyCommitmentAmount: 0,
+        terminalAllocatedAmount: amount,
+        stagingRequiredAmount: 0,
+        terminalEnergyAllocatedAmount: 0,
+        feeStagingRequiredAmount: 0,
+        stableKey:
+          `${sourceRoom}\u0000${demand.targetRoom}\u0000${demand.resource}\u0000${demand.comparisonKey}`,
+      },
+    });
     const monolithic = runSynthesisLogisticsShadow({
       ...baseMatcherInput,
       candidateBudget: 256,
@@ -1522,8 +1771,292 @@ describe("resource control live-like capacity recovery", () => {
     const rejectedPaged = runPagedShadowMatcher(rejectedInput, 1);
     expect(rejectedPaged.unmatched).toEqual(rejectedMonolithic.unmatched);
     expect(rejectedMonolithic.unmatched).toEqual([
-      expect.objectContaining({ reason: "source_protection" }),
+      expect.objectContaining({
+        reason: "source_protection",
+        candidateTrace: {
+          donorCount: 4,
+          evaluatedCount: 4,
+          feasibleCount: 0,
+          rejectedCount: 4,
+          selectedRejection: "source_protection",
+          rejectionCounts: [
+            ["source_protection", 2],
+            ["source_not_allowed", 1],
+            ["same_room", 1],
+          ],
+          receiver: {
+            kind: "present",
+            receiverEligible: true,
+            storageHeadroom: 100,
+            terminalHeadroom: 100,
+            resourceHeadroom: 100,
+          },
+        },
+      }),
     ]);
+    const blockedDemand = rejectedInput.demands[0];
+    const legacyRouteShadowVeto = runSynthesisLogisticsShadow({
+      ...rejectedInput,
+      legacyDecisions: [makeLegacyRouteDecision(blockedDemand, "A")],
+      candidateBudget: 256,
+    });
+    expect(legacyRouteShadowVeto.comparisons).toEqual([
+      expect.objectContaining({
+        status: "different",
+        classification: "expected_policy_difference",
+        differences: ["shadow_missing"],
+        shadow: expect.objectContaining({
+          reason: "source_protection",
+          candidateTrace: expect.objectContaining({
+            legacySource: {
+              sourceRoom: "A",
+              disposition: "rejected",
+              rejection: "source_protection",
+            },
+          }),
+        }),
+      }),
+    ]);
+    expect(runPagedShadowMatcher({
+      ...rejectedInput,
+      legacyDecisions: [makeLegacyRouteDecision(blockedDemand, "A")],
+    }, 1).unmatched).toEqual(legacyRouteShadowVeto.unmatched);
+
+    const receiverVetoDemand = makeDemand(
+      "receiver-veto",
+      "T",
+      xResource,
+      60,
+      ["A"],
+    );
+    const receiverVetoRooms: SynthesisShadowRoomFact[] = [
+      createShadowMatcherRoom("A", [{
+        resource: xResource,
+        sourceAvailableAmount: 100,
+        sourceTerminalAmount: 100,
+        receiverResourceHeadroom: 100,
+      }]),
+      {
+        ...createShadowMatcherRoom("T", [{
+          resource: xResource,
+          sourceAvailableAmount: 0,
+          sourceTerminalAmount: 0,
+          receiverResourceHeadroom: 100,
+        }]),
+        receiverEligible: false,
+      },
+    ];
+    const legacyNoRoute = {
+      comparisonKey: receiverVetoDemand.comparisonKey,
+      epochRevision: receiverVetoDemand.epochRevision,
+      epochFingerprint: receiverVetoDemand.epochFingerprint,
+      inputRevision: receiverVetoDemand.revision,
+      inputFingerprint: receiverVetoDemand.inputFingerprint,
+      observedAt: 100,
+      kind: "none" as const,
+      blocker: "no_donor" as const,
+      coverage: "none" as const,
+      capacity: "unknown" as const,
+      predictedStagingEligibility: "unknown" as const,
+    };
+    const bothNoRoute = runSynthesisLogisticsShadow({
+      ...baseMatcherInput,
+      demands: [receiverVetoDemand],
+      rooms: receiverVetoRooms,
+      legacyDecisions: [legacyNoRoute],
+      candidateBudget: 256,
+    });
+    expect(bothNoRoute.comparisons).toEqual([
+      expect.objectContaining({
+        status: "different",
+        classification: "expected_policy_difference",
+        differences: ["capacity", "blocker"],
+        shadow: expect.objectContaining({
+          reason: "receiver_capacity",
+          candidateTrace: {
+            donorCount: 2,
+            evaluatedCount: 2,
+            feasibleCount: 0,
+            rejectedCount: 2,
+            selectedRejection: "receiver_capacity",
+            rejectionCounts: [
+              ["receiver_capacity", 1],
+              ["same_room", 1],
+            ],
+            receiver: {
+              kind: "present",
+              receiverEligible: false,
+              storageHeadroom: 100,
+              terminalHeadroom: 100,
+              resourceHeadroom: 100,
+            },
+          },
+        }),
+      }),
+    ]);
+    expect(bothNoRoute.comparisons[0].classification).not.toBe(
+      "unsafe_candidate",
+    );
+
+    const shadowOnlyRoute = runSynthesisLogisticsShadow({
+      ...baseMatcherInput,
+      demands: [receiverVetoDemand],
+      rooms: receiverVetoRooms.map((room) => ({
+        ...room,
+        receiverEligible: true,
+      })),
+      legacyDecisions: [{
+        ...legacyNoRoute,
+        blocker: "receiver_capacity",
+        capacity: "blocked",
+      }],
+      candidateBudget: 256,
+    });
+    expect(shadowOnlyRoute.comparisons).toEqual([
+      expect.objectContaining({
+        status: "different",
+        classification: "legacy_unpaired",
+        differences: ["legacy_missing"],
+        shadow: expect.objectContaining({
+          sourceRoom: "A",
+          candidateTrace: expect.objectContaining({
+            feasibleCount: 1,
+            topSourceRoom: "A",
+          }),
+        }),
+      }),
+    ]);
+
+    const rankDemand = makeDemand("rank-difference", "T1", xResource);
+    const traceTransactionCost = jest.fn(() => 0);
+    const rankInput: SynthesisShadowMatcherInput = {
+      ...baseMatcherInput,
+      demands: [rankDemand],
+      legacyDecisions: [makeLegacyRouteDecision(rankDemand, "B")],
+      transactionCost: traceTransactionCost,
+    };
+    const rankDifference = runSynthesisLogisticsShadow({
+      ...rankInput,
+      candidateBudget: 256,
+    });
+    expect(rankDifference.comparisons).toEqual([
+      expect.objectContaining({
+        status: "different",
+        classification: "expected_policy_difference",
+        differences: ["source"],
+        shadow: expect.objectContaining({
+          sourceRoom: "A",
+          candidateTrace: {
+            donorCount: 4,
+            evaluatedCount: 4,
+            feasibleCount: 2,
+            rejectedCount: 2,
+            rejectionCounts: [
+              ["source_not_allowed", 1],
+              ["same_room", 1],
+            ],
+            topSourceRoom: "A",
+            legacySource: {
+              sourceRoom: "B",
+              disposition: "feasible_lower_rank",
+            },
+            receiver: {
+              kind: "present",
+              receiverEligible: true,
+              storageHeadroom: 100,
+              terminalHeadroom: 100,
+              resourceHeadroom: 100,
+            },
+          },
+        }),
+      }),
+    ]);
+    expect(traceTransactionCost).toHaveBeenCalledTimes(
+      rankDifference.metrics.transactionCostEvaluations,
+    );
+    expect(runPagedShadowMatcher(rankInput, 1).decisions).toEqual(
+      rankDifference.decisions,
+    );
+    const rankTracePage = runSynthesisLogisticsShadow({
+      ...rankInput,
+      candidateBudget: 2,
+    });
+    expect(rankTracePage.continuation).toEqual(expect.objectContaining({
+      schemaVersion: 2,
+      partialLegacySourceEvaluation: {
+        sourceRoom: "B",
+        outcome: "feasible",
+      },
+    }));
+    const tamperedRankTrace = {
+      ...rankTracePage.continuation!,
+      partialLegacySourceEvaluation: {
+        sourceRoom: "B",
+        outcome: "rejected" as const,
+        rejection: "source_protection" as const,
+      },
+    };
+    expect(runSynthesisLogisticsShadow({
+      ...rankInput,
+      candidateBudget: 2,
+      continuation: tamperedRankTrace,
+    }).metrics.continuationInvalidated).toBe(true);
+
+    const boundedDonorNames = Array.from(
+      { length: 15 },
+      (_, index) => `D${index.toString().padStart(2, "0")}`,
+    );
+    const boundedDemand = makeDemand(
+      "bounded-rejections",
+      "T16",
+      xResource,
+      60,
+      boundedDonorNames,
+    );
+    const boundedInput: SynthesisShadowMatcherInput = {
+      ...baseMatcherInput,
+      demands: [boundedDemand],
+      rooms: [
+        ...boundedDonorNames.map((roomName) =>
+          createShadowMatcherRoom(roomName, [{
+            resource: xResource,
+            sourceAvailableAmount: 0,
+            sourceTerminalAmount: 0,
+            receiverResourceHeadroom: 100,
+          }])
+        ),
+        createShadowMatcherRoom("T16", [{
+          resource: xResource,
+          sourceAvailableAmount: 0,
+          sourceTerminalAmount: 0,
+          receiverResourceHeadroom: 100,
+        }]),
+      ],
+      transactionCost: jest.fn(() => 0),
+    };
+    const boundedRejections = runSynthesisLogisticsShadow({
+      ...boundedInput,
+      candidateBudget: 256,
+    });
+    expect(boundedRejections.unmatched).toEqual([
+      expect.objectContaining({
+        reason: "source_protection",
+        candidateTrace: expect.objectContaining({
+          donorCount: 16,
+          evaluatedCount: 16,
+          feasibleCount: 0,
+          rejectedCount: 16,
+          selectedRejection: "source_protection",
+          rejectionCounts: [
+            ["source_protection", 15],
+            ["same_room", 1],
+          ],
+        }),
+      }),
+    ]);
+    expect(runPagedShadowMatcher(boundedInput, 1).unmatched).toEqual(
+      boundedRejections.unmatched,
+    );
 
     const yResource = RESOURCE_ZYNTHIUM;
     const sharedReceiver = runSynthesisLogisticsShadow({

@@ -3,7 +3,7 @@ import { getMemoryService } from "@/runtime/runtimeServices";
 
 export const LOGISTICS_CFG_SCHEMA_VERSION = 1 as const;
 export const LOGISTICS_DATA_SCHEMA_VERSION = 1 as const;
-export const LOGISTICS_RUNTIME_SCHEMA_VERSION = 1 as const;
+export const LOGISTICS_RUNTIME_SCHEMA_VERSION = 2 as const;
 export const LOGISTICS_CONTROL_STORE_LIMIT = 32;
 export const LOGISTICS_CONTROL_DATA_LIMIT_BYTES = 16_384;
 export const LOGISTICS_COMPACT_WIRE_FORMAT = "compact-v1" as const;
@@ -421,6 +421,34 @@ export type LogisticsControlStoreRead =
   | { readonly ok: true; readonly store: Readonly<LogisticsControlStoreV1> }
   | LogisticsControlStoreReadFailure;
 
+export interface LogisticsControlExactStoreReadSuccess {
+  readonly ok: true;
+  readonly store: Readonly<LogisticsControlStoreV1>;
+  readonly usage: LogisticsControlStoreUsage;
+  readonly readSource:
+    | "same_tick_validated_artifact"
+    | "strict_compact"
+    | "strict_expanded";
+  /** Bounded identity for pairing reads; exact mutation checks use the full private token. */
+  readonly artifactToken: string;
+}
+
+export type LogisticsControlExactStoreRead =
+  | LogisticsControlExactStoreReadSuccess
+  | LogisticsControlStoreReadFailure;
+
+export interface LogisticsControlCodecDiagnostics {
+  readonly encodePasses: number;
+  readonly decodePasses: number;
+  readonly wireSerializePasses: number;
+  readonly strictReads: number;
+  readonly artifactFastReads: number;
+  readonly artifactFallbacks: number;
+  readonly attachSuccesses: number;
+  readonly roomFactEpochShortCircuits: number;
+  readonly roomFactSemanticComparisons: number;
+}
+
 export type EnsureLogisticsControlStoreResult =
   | { readonly ok: true; readonly store: LogisticsControlStoreV1; readonly created: boolean }
   | LogisticsControlStoreReadFailure;
@@ -431,6 +459,52 @@ export type ReplaceLogisticsRecordsResult<T> =
 
 type UnknownRecord = Record<string, unknown>;
 type ResourceControlOwnerWithLogistics = UnknownRecord & { logistics?: unknown };
+
+interface LogisticsControlValidatedArtifact {
+  readonly tick: number;
+  readonly owner: ResourceControlOwnerWithLogistics;
+  readonly raw: LogisticsControlCompactWireV1;
+  readonly exactToken: string;
+  readonly artifactToken: string;
+  readonly store: LogisticsControlStoreV1;
+  readonly usage: LogisticsControlStoreUsage;
+}
+
+interface LogisticsControlPreparedCommit {
+  readonly wire: LogisticsControlCompactWireV1;
+  readonly exactToken: string;
+  readonly artifactToken: string;
+  readonly store: LogisticsControlStoreV1;
+  readonly usage: LogisticsControlStoreUsage;
+}
+
+interface LogisticsControlCommitFailure {
+  readonly ok: false;
+  readonly reason:
+    | "store_invariant"
+    | "data_byte_limit"
+    | "compact_wire_invalid";
+}
+
+type LogisticsControlCommitResult =
+  | { readonly ok: true; readonly artifact: LogisticsControlValidatedArtifact }
+  | LogisticsControlCommitFailure;
+
+const logisticsControlCodecDiagnostics: {
+  -readonly [Key in keyof LogisticsControlCodecDiagnostics]: number;
+} = {
+  encodePasses: 0,
+  decodePasses: 0,
+  wireSerializePasses: 0,
+  strictReads: 0,
+  artifactFastReads: 0,
+  artifactFallbacks: 0,
+  attachSuccesses: 0,
+  roomFactEpochShortCircuits: 0,
+  roomFactSemanticComparisons: 0,
+};
+
+let sameTickValidatedArtifact: LogisticsControlValidatedArtifact | undefined;
 
 function isRecord(value: unknown): value is UnknownRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -495,15 +569,48 @@ function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-function serializedUtf8ByteLength(value: unknown): number {
+function serializeLogisticsWire(value: unknown): string | null {
+  logisticsControlCodecDiagnostics.wireSerializePasses += 1;
   try {
     const serialized = JSON.stringify(value);
-    return typeof serialized === "string"
-      ? utf8ByteLength(serialized)
-      : LOGISTICS_CONTROL_DATA_LIMIT_BYTES + 1;
+    return typeof serialized === "string" ? serialized : null;
   } catch {
-    return LOGISTICS_CONTROL_DATA_LIMIT_BYTES + 1;
+    return null;
   }
+}
+
+function inspectSerializedLogisticsWire(
+  serialized: string,
+  format: string,
+): { readonly utf8Bytes: number; readonly artifactToken: string } {
+  let utf8Bytes = 0;
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < serialized.length; index += 1) {
+    const code = serialized.charCodeAt(index);
+    hash ^= code;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+    if (code <= 0x7f) {
+      utf8Bytes += 1;
+    } else if (code <= 0x7ff) {
+      utf8Bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < serialized.length) {
+      const next = serialized.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        hash ^= next;
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+        utf8Bytes += 4;
+        index += 1;
+      } else {
+        utf8Bytes += 3;
+      }
+    } else {
+      utf8Bytes += 3;
+    }
+  }
+  return {
+    utf8Bytes,
+    artifactToken: `${format}:${serialized.length.toString(36)}:${hash.toString(36)}`,
+  };
 }
 
 function collectionCount(value: unknown): number {
@@ -511,8 +618,9 @@ function collectionCount(value: unknown): number {
   return ownKeys(value)?.length ?? 0;
 }
 
-export function getLogisticsControlStoreUsage(
+function logisticsControlStoreUsageFromBytes(
   store: Readonly<LogisticsControlStoreV1>,
+  utf8Bytes: number,
 ): LogisticsControlStoreUsage {
   const latestIntentCount = collectionCount(store.latestIntents);
   const roomFactCount = collectionCount(store.roomFacts);
@@ -520,7 +628,7 @@ export function getLogisticsControlStoreUsage(
   const producerSnapshotCount = collectionCount(store.producerSnapshots);
   const generationCount = collectionCount(store.generation);
   return {
-    utf8Bytes: serializedUtf8ByteLength(encodeCompactLogisticsStore(store)),
+    utf8Bytes,
     itemCount:
       latestIntentCount
       + roomFactCount
@@ -533,6 +641,32 @@ export function getLogisticsControlStoreUsage(
     producerSnapshotCount,
     generationCount,
   };
+}
+
+export function getLogisticsControlCodecDiagnostics(): LogisticsControlCodecDiagnostics {
+  return { ...logisticsControlCodecDiagnostics };
+}
+
+export function resetLogisticsControlCodecDiagnosticsForTest(): void {
+  for (const key of Object.keys(logisticsControlCodecDiagnostics) as (keyof LogisticsControlCodecDiagnostics)[]) {
+    logisticsControlCodecDiagnostics[key] = 0;
+  }
+}
+
+export function clearLogisticsControlValidatedArtifactForTest(): void {
+  sameTickValidatedArtifact = undefined;
+}
+
+export function getLogisticsControlStoreUsage(
+  store: Readonly<LogisticsControlStoreV1>,
+): LogisticsControlStoreUsage {
+  const serialized = serializeLogisticsWire(encodeCompactLogisticsStore(store));
+  return logisticsControlStoreUsageFromBytes(
+    store,
+    serialized === null
+      ? LOGISTICS_CONTROL_DATA_LIMIT_BYTES + 1
+      : utf8ByteLength(serialized),
+  );
 }
 
 function cloneRecord<T>(source: Record<string, T>): Record<string, T> {
@@ -696,6 +830,7 @@ function compactEnumValue<T extends string>(values: readonly T[], index: unknown
 function encodeCompactLogisticsStore(
   store: Readonly<LogisticsControlStoreV1>,
 ): LogisticsControlCompactWireV1 {
+  logisticsControlCodecDiagnostics.encodePasses += 1;
   const strings: string[] = [];
   const stringIndexes = new Map<string, number>();
   const intern = (value: string): number => {
@@ -824,6 +959,7 @@ function encodeCompactLogisticsStore(
 }
 
 function decodeCompactLogisticsStore(raw: UnknownRecord): LogisticsControlStoreV1 | null {
+  logisticsControlCodecDiagnostics.decodePasses += 1;
   const rawStrings = ownValue(raw, "s");
   const rawIntents = ownValue(raw, "i");
   const rawObservations = ownValue(raw, "o");
@@ -1090,37 +1226,99 @@ function readResourceControlOwner(): ResourceControlOwnerWithLogistics | undefin
   return isRecord(owner) ? owner : null;
 }
 
-function encodeValidatedCompactLogisticsStore(
+function prepareValidatedCompactLogisticsStore(
   store: Readonly<LogisticsControlStoreV1>,
-): LogisticsControlCompactWireV1 | null {
+): LogisticsControlPreparedCommit | LogisticsControlCommitFailure {
+  if (!hasValidBoundedStoreEntriesSemantic(store as unknown as UnknownRecord)) {
+    return { ok: false, reason: "store_invariant" };
+  }
   const wire = encodeCompactLogisticsStore(store);
   if (
     wire.s.length > LOGISTICS_COMPACT_STRING_LIMIT
     || wire.s.some((value) => !isNonEmptyBoundedString(value, 512))
-    || serializedUtf8ByteLength(wire) > LOGISTICS_CONTROL_DATA_LIMIT_BYTES
-  ) return null;
+  ) return { ok: false, reason: "compact_wire_invalid" };
+  const exactToken = serializeLogisticsWire(wire);
+  if (exactToken === null) return { ok: false, reason: "compact_wire_invalid" };
+  const identity = inspectSerializedLogisticsWire(exactToken, LOGISTICS_COMPACT_WIRE_FORMAT);
+  if (identity.utf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES) {
+    return { ok: false, reason: "data_byte_limit" };
+  }
   const decoded = decodeCompactLogisticsStore(wire as unknown as UnknownRecord);
-  if (
-    !decoded
-    || !hasValidBoundedStoreEntries(decoded as unknown as UnknownRecord)
-    || JSON.stringify(wire) !== JSON.stringify(encodeCompactLogisticsStore(decoded))
-  ) return null;
-  return wire;
+  if (!decoded || !hasValidBoundedStoreEntriesSemantic(decoded as unknown as UnknownRecord)) {
+    return { ok: false, reason: "compact_wire_invalid" };
+  }
+  const canonicalToken = serializeLogisticsWire(encodeCompactLogisticsStore(decoded));
+  if (canonicalToken === null || exactToken !== canonicalToken) {
+    return { ok: false, reason: "compact_wire_invalid" };
+  }
+  try {
+    freezeLogisticsControlArtifactStore(decoded);
+  } catch {
+    return { ok: false, reason: "compact_wire_invalid" };
+  }
+  const usage = Object.freeze(
+    logisticsControlStoreUsageFromBytes(decoded, identity.utf8Bytes),
+  );
+  return {
+    wire,
+    exactToken,
+    artifactToken: identity.artifactToken,
+    store: decoded,
+    usage,
+  };
+}
+
+/**
+ * Artifact semantics are detached from the compact Memory wire. Freeze the
+ * entire decoded graph before caching/exposing it so a same-tick reader cannot
+ * mutate the semantic view while the raw attestation token remains unchanged.
+ * Writer drafts are encoded first and are never frozen by this boundary.
+ */
+function freezeLogisticsControlArtifactStore(
+  store: LogisticsControlStoreV1,
+): void {
+  const visited = new WeakSet<object>();
+  const freeze = (value: unknown): void => {
+    if (value === null || typeof value !== "object" || visited.has(value)) return;
+    visited.add(value);
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  };
+  freeze(store);
 }
 
 function attachLogisticsStore(
   owner: ResourceControlOwnerWithLogistics,
   store: LogisticsControlStoreV1,
-): boolean {
-  const wire = encodeValidatedCompactLogisticsStore(store);
-  if (!wire) return false;
-  Object.defineProperty(owner, "logistics", {
-    value: wire,
-    enumerable: true,
-    configurable: true,
-    writable: true,
-  });
-  return true;
+): LogisticsControlCommitResult {
+  const prepared = prepareValidatedCompactLogisticsStore(store);
+  if ("ok" in prepared) return prepared;
+  sameTickValidatedArtifact = undefined;
+  try {
+    Object.defineProperty(owner, "logistics", {
+      value: prepared.wire,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  } catch {
+    return { ok: false, reason: "compact_wire_invalid" };
+  }
+  if (ownValue(owner, "logistics") !== prepared.wire) {
+    return { ok: false, reason: "compact_wire_invalid" };
+  }
+  const artifact: LogisticsControlValidatedArtifact = {
+    tick: Game.time,
+    owner,
+    raw: prepared.wire,
+    exactToken: prepared.exactToken,
+    artifactToken: prepared.artifactToken,
+    store: prepared.store,
+    usage: prepared.usage,
+  };
+  sameTickValidatedArtifact = artifact;
+  logisticsControlCodecDiagnostics.attachSuccesses += 1;
+  return { ok: true, artifact };
 }
 
 function createEmptyStore(): LogisticsControlStoreV1 {
@@ -1144,7 +1342,7 @@ function isStoreCollectionsShape(value: UnknownRecord): boolean {
     && isSafeTick(ownValue(value, "cursor"));
 }
 
-function hasValidBoundedStoreEntries(value: UnknownRecord): boolean {
+function hasValidBoundedStoreEntriesSemantic(value: UnknownRecord): boolean {
   const latestIntents = ownValue(value, "latestIntents");
   const roomFacts = ownValue(value, "roomFacts");
   const synthesisObservations = ownValue(value, "synthesisObservations");
@@ -1237,15 +1435,42 @@ function hasValidBoundedStoreEntries(value: UnknownRecord): boolean {
     const entry = generationValue(ownValue(generation, key));
     if (!decodeIntentBaseKey(key) || !entry || entry.value > cursor) return false;
   }
-  return getLogisticsControlStoreUsage(value as unknown as LogisticsControlStoreV1).utf8Bytes
-    <= LOGISTICS_CONTROL_DATA_LIMIT_BYTES;
+  return true;
 }
 
-export function peekLogisticsControlStore(): LogisticsControlStoreRead {
+export function readLogisticsControlStoreExact(): LogisticsControlExactStoreRead {
   const owner = readResourceControlOwner();
+  const raw = owner && ownValue(owner, "logistics");
+  let serialized: string | null | undefined;
+  const artifact = sameTickValidatedArtifact;
+  if (
+    artifact
+    && owner !== undefined
+    && owner !== null
+    && isRecord(raw)
+    && artifact.tick === Game.time
+    && artifact.owner === owner
+    && (artifact.raw as unknown) === raw
+  ) {
+    serialized = serializeLogisticsWire(raw);
+    if (serialized !== null && serialized === artifact.exactToken) {
+      logisticsControlCodecDiagnostics.artifactFastReads += 1;
+      return {
+        ok: true,
+        store: artifact.store,
+        usage: artifact.usage,
+        readSource: "same_tick_validated_artifact",
+        artifactToken: artifact.artifactToken,
+      };
+    }
+  }
+  if (artifact) {
+    logisticsControlCodecDiagnostics.artifactFallbacks += 1;
+    sameTickValidatedArtifact = undefined;
+  }
+  logisticsControlCodecDiagnostics.strictReads += 1;
   if (owner === undefined) return { ok: false, reason: "missing" };
   if (owner === null) return { ok: false, reason: "malformed_owner" };
-  const raw = ownValue(owner, "logistics");
   if (raw === undefined) return { ok: false, reason: "missing" };
   if (!isRecord(raw)) return { ok: false, reason: "malformed_store" };
   const schemaVersion = ownValue(raw, "schemaVersion");
@@ -1254,30 +1479,70 @@ export function peekLogisticsControlStore(): LogisticsControlStoreRead {
   }
   const wireFormat = ownValue(raw, "wireFormat");
   if (wireFormat !== undefined) {
-    if (
-      wireFormat !== LOGISTICS_COMPACT_WIRE_FORMAT
-      || serializedUtf8ByteLength(raw) > LOGISTICS_CONTROL_DATA_LIMIT_BYTES
-    ) {
+    if (wireFormat !== LOGISTICS_COMPACT_WIRE_FORMAT) {
+      return { ok: false, reason: "malformed_store", schemaVersion };
+    }
+    serialized ??= serializeLogisticsWire(raw);
+    if (serialized === null) {
+      return { ok: false, reason: "malformed_store", schemaVersion };
+    }
+    const identity = inspectSerializedLogisticsWire(serialized, LOGISTICS_COMPACT_WIRE_FORMAT);
+    if (identity.utf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES) {
       return { ok: false, reason: "malformed_store", schemaVersion };
     }
     const decoded = decodeCompactLogisticsStore(raw);
-    if (
-      !decoded
-      || !hasValidBoundedStoreEntries(decoded as unknown as UnknownRecord)
-      || JSON.stringify(raw) !== JSON.stringify(encodeCompactLogisticsStore(decoded))
-    ) {
+    if (!decoded || !hasValidBoundedStoreEntriesSemantic(decoded as unknown as UnknownRecord)) {
       return { ok: false, reason: "malformed_store", schemaVersion };
     }
-    return { ok: true, store: decoded };
+    const canonicalToken = serializeLogisticsWire(encodeCompactLogisticsStore(decoded));
+    if (canonicalToken === null || serialized !== canonicalToken) {
+      return { ok: false, reason: "malformed_store", schemaVersion };
+    }
+    return {
+      ok: true,
+      store: decoded,
+      usage: logisticsControlStoreUsageFromBytes(decoded, identity.utf8Bytes),
+      readSource: "strict_compact",
+      artifactToken: identity.artifactToken,
+    };
   }
+  serialized ??= serializeLogisticsWire(raw);
+  if (serialized === null) {
+    return { ok: false, reason: "malformed_store", schemaVersion };
+  }
+  const identity = inspectSerializedLogisticsWire(serialized, "expanded-v1");
   if (
-    serializedUtf8ByteLength(raw) > LOGISTICS_CONTROL_DATA_LIMIT_BYTES
+    identity.utf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES
     || !isStoreCollectionsShape(raw)
-    || !hasValidBoundedStoreEntries(raw)
+    || !hasValidBoundedStoreEntriesSemantic(raw)
   ) {
     return { ok: false, reason: "malformed_store", schemaVersion };
   }
-  return { ok: true, store: raw as unknown as LogisticsControlStoreV1 };
+  const store = raw as unknown as LogisticsControlStoreV1;
+  const compactToken = serializeLogisticsWire(encodeCompactLogisticsStore(store));
+  const compactUtf8Bytes = compactToken === null
+    ? LOGISTICS_CONTROL_DATA_LIMIT_BYTES + 1
+    : utf8ByteLength(compactToken);
+  if (
+    compactToken === null
+    || compactUtf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES
+  ) {
+    return { ok: false, reason: "malformed_store", schemaVersion };
+  }
+  return {
+    ok: true,
+    store,
+    usage: logisticsControlStoreUsageFromBytes(store, compactUtf8Bytes),
+    readSource: "strict_expanded",
+    artifactToken: identity.artifactToken,
+  };
+}
+
+export function peekLogisticsControlStore(): LogisticsControlStoreRead {
+  const read = readLogisticsControlStoreExact();
+  return read.ok
+    ? { ok: true, store: read.store }
+    : read;
 }
 
 export function ensureLogisticsControlStore(): EnsureLogisticsControlStoreResult {
@@ -1287,14 +1552,15 @@ export function ensureLogisticsControlStore(): EnsureLogisticsControlStoreResult
     const raw = owner && ownValue(owner, "logistics");
     if (owner && isRecord(raw) && ownValue(raw, "wireFormat") === undefined) {
       const migrated = current.store as LogisticsControlStoreV1;
-      if (!attachLogisticsStore(owner, migrated)) {
+      const committed = attachLogisticsStore(owner, migrated);
+      if (!committed.ok) {
         return {
           ok: false,
           reason: "malformed_store",
           schemaVersion: LOGISTICS_DATA_SCHEMA_VERSION,
         };
       }
-      return { ok: true, store: migrated, created: false };
+      return { ok: true, store: committed.artifact.store, created: false };
     }
     return { ok: true, store: current.store as LogisticsControlStoreV1, created: false };
   }
@@ -1330,11 +1596,9 @@ export function ensureLogisticsControlStore(): EnsureLogisticsControlStoreResult
           generation: (generation ?? createRecord<LogisticsGenerationV1>()) as Record<string, LogisticsGenerationV1>,
           cursor: (cursor ?? 0) as number,
         };
-        if (!hasValidBoundedStoreEntries(repaired as unknown as UnknownRecord)) {
-          return current;
-        }
-        if (!attachLogisticsStore(owner, repaired)) return current;
-        return { ok: true, store: repaired, created: false };
+        const committed = attachLogisticsStore(owner, repaired);
+        if (!committed.ok) return current;
+        return { ok: true, store: committed.artifact.store, created: false };
       }
     }
   }
@@ -1352,10 +1616,11 @@ export function ensureLogisticsControlStore(): EnsureLogisticsControlStoreResult
     return peekLogisticsControlStore() as EnsureLogisticsControlStoreResult;
   }
   const store = createEmptyStore();
-  if (!attachLogisticsStore(owner, store)) {
+  const committed = attachLogisticsStore(owner, store);
+  if (!committed.ok) {
     return { ok: false, reason: "malformed_store", schemaVersion: LOGISTICS_DATA_SCHEMA_VERSION };
   }
-  return { ok: true, store, created: true };
+  return { ok: true, store: committed.artifact.store, created: true };
 }
 
 function parseRollbackRequest(raw: unknown): LogisticsRollbackRequestV1 | undefined {
@@ -2074,17 +2339,10 @@ export function replaceLatestLogisticsDemandsForProducer(
     };
   };
   const nextStore = buildNextStore();
-  if (getLogisticsControlStoreUsage(nextStore).utf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES) {
-    return { ok: false, reason: "data_byte_limit" };
-  }
-  if (!hasValidBoundedStoreEntries(nextStore as unknown as UnknownRecord)) {
-    return { ok: false, reason: "store_invariant" };
-  }
   const owner = readResourceControlOwner();
   if (!owner) return { ok: false, reason: "owner_unavailable" };
-  if (!attachLogisticsStore(owner, nextStore)) {
-    return { ok: false, reason: "compact_wire_invalid" };
-  }
+  const committed = attachLogisticsStore(owner, nextStore);
+  if (committed.ok === false) return { ok: false, reason: committed.reason };
   return { ok: true, entries: published };
 }
 
@@ -2267,18 +2525,29 @@ function buildRoomFactReplacement(
     const semantic = normalizeRoomFactDraft(draft);
     if (!semantic) return { ok: false, reason: "invalid_draft" };
     const current = store.roomFacts[key];
-    const sameSemantic = isRoomFactRecord(current)
-      && roomFactSemanticSignature(current) === roomFactSemanticSignature(semantic);
-    const observedAt = sameSemantic && isRoomFactRecord(current)
+    const validCurrent = isRoomFactRecord(current);
+    let sameSemantic = false;
+    if (validCurrent) {
+      if (
+        current.epochRevision !== semantic.epochRevision
+        || current.epochFingerprint !== semantic.epochFingerprint
+      ) {
+        logisticsControlCodecDiagnostics.roomFactEpochShortCircuits += 1;
+      } else {
+        logisticsControlCodecDiagnostics.roomFactSemanticComparisons += 1;
+        sameSemantic = roomFactSemanticSignature(current) === roomFactSemanticSignature(semantic);
+      }
+    }
+    const observedAt = sameSemantic && validCurrent
       ? Math.max(current.observedAt, Game.time)
       : Game.time;
-    const expiresAt = sameSemantic && isRoomFactRecord(current)
+    const expiresAt = sameSemantic && validCurrent
       ? Math.max(current.expiresAt, Game.time + normalizeTtl(draft.ttl))
       : Game.time + normalizeTtl(draft.ttl);
     const next: LogisticsRoomFactV1 = {
       ...semantic,
       id: key,
-      revision: isRoomFactRecord(current) ? (sameSemantic ? current.revision : current.revision + 1) : 1,
+      revision: validCurrent ? (sameSemantic ? current.revision : current.revision + 1) : 1,
       observedAt,
       expiresAt,
     };
@@ -2311,17 +2580,10 @@ export function replaceLogisticsRoomFacts(
     generation: ensured.store.generation,
     cursor: ensured.store.cursor,
   };
-  if (getLogisticsControlStoreUsage(nextStore).utf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES) {
-    return { ok: false, reason: "data_byte_limit" };
-  }
-  if (!hasValidBoundedStoreEntries(nextStore as unknown as UnknownRecord)) {
-    return { ok: false, reason: "store_invariant" };
-  }
   const owner = readResourceControlOwner();
   if (!owner) return { ok: false, reason: "owner_unavailable" };
-  if (!attachLogisticsStore(owner, nextStore)) {
-    return { ok: false, reason: "compact_wire_invalid" };
-  }
+  const committed = attachLogisticsStore(owner, nextStore);
+  if (committed.ok === false) return { ok: false, reason: committed.reason };
   return { ok: true, entries: replacement.entries };
 }
 
@@ -2416,7 +2678,6 @@ export function cleanupLogisticsControlStore(
     generation,
     cursor: store.cursor,
   };
-  if (!hasValidBoundedStoreEntries(cleanedStore as unknown as UnknownRecord)) return 0;
-  if (!attachLogisticsStore(owner, cleanedStore)) return 0;
+  if (!attachLogisticsStore(owner, cleanedStore).ok) return 0;
   return removed;
 }

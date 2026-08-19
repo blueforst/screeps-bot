@@ -40,14 +40,14 @@ import {
 import {
   createReceiverCapacityLedger,
   type ReceiverCapacityLedger,
+  type ReceiverCapacityAvailability,
 } from "@/runtime/logistics/receiverCapacityLedger";
 import {
   LOGISTICS_CONTROL_STORE_LIMIT,
   LOGISTICS_RUNTIME_SCHEMA_VERSION,
   SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
-  getLogisticsControlStoreUsage,
   mapLegacyTransferOrigin,
-  peekLogisticsControlStore,
+  readLogisticsControlStoreExact,
   resolveLogisticsControlConfig,
   type LatestLogisticsDemandV1,
   type LogisticsProducerSnapshotV1,
@@ -61,6 +61,11 @@ import {
   runSynthesisLogisticsShadow,
   type SynthesisShadowComparisonClassification,
   type SynthesisShadowComparisonSample,
+  type SynthesisShadowCandidateRejection,
+  type SynthesisShadowCandidateTrace,
+  type SynthesisShadowCapacity,
+  type SynthesisShadowCoverage,
+  type SynthesisShadowDecision,
   type SynthesisShadowDemandObservation,
   type SynthesisShadowDifference,
   type SynthesisShadowLegacyDecisionObservation,
@@ -68,8 +73,15 @@ import {
   type SynthesisShadowPredictedStagingEligibility,
   type SynthesisShadowRoomFact,
   type SynthesisShadowRouteFact,
+  type SynthesisShadowUnmatchedReason,
+  type SynthesisShadowUnmatchedDemand,
   type SynthesisShadowUnresolvedReason,
 } from "@/runtime/logistics/synthesisLogisticsShadow";
+import {
+  measureLogisticsShadowCpu,
+  peekLogisticsShadowCpuSnapshot,
+  type LogisticsShadowCpuSnapshotV2,
+} from "@/runtime/logistics/logisticsShadowCpu";
 import {
   getMemoryService,
   getTickContextService,
@@ -278,6 +290,27 @@ interface ResourceControlTransferContext {
   >;
 }
 
+type ResourceControlCommitmentReadContext = Pick<
+  ResourceControlTransferContext,
+  | "taskById"
+  | "snapshotByRoom"
+  | "healthyOutgoingByRoomResource"
+  | "outgoingFeeByRoom"
+  | "outgoingFeeByTaskId"
+  | "reservedProductionByRoomResource"
+  | "carrierProductionByRoomResource"
+> & {
+  receiverCapacityLedger: Pick<ReceiverCapacityLedger, "getAvailability">;
+};
+
+interface SynthesisShadowCaptureContext
+  extends ResourceControlCommitmentReadContext {
+  readonly tasks: ResourceTransferTask[];
+  readonly indexBuildCount: 1;
+  readonly productionReservationScanCount: 1;
+  readonly invalidRecordCount: number;
+}
+
 interface ResourceControlTransferTaskContribution {
   readonly outgoingKey?: string;
   readonly outgoingAmount?: number;
@@ -405,6 +438,65 @@ type LogisticsShadowComparisonReason =
   | SynthesisShadowComparisonClassification
   | SynthesisShadowUnresolvedReason;
 
+type LogisticsShadowDecisionDelta =
+  | "same_route"
+  | "different_route"
+  | "both_no_route"
+  | "legacy_only_route"
+  | "shadow_only_route"
+  | "input_unavailable";
+
+type LogisticsShadowDifferenceDirection =
+  | "same"
+  | "shadow_more_conservative"
+  | "shadow_more_permissive"
+  | "policy_difference"
+  | "input_unavailable";
+
+type LogisticsShadowCausalCode =
+  | "matched"
+  | "route_rank"
+  | "route_fact_difference"
+  | "legacy_blocker"
+  | "input_unavailable"
+  | SynthesisShadowUnmatchedReason
+  | SynthesisShadowUnresolvedReason;
+
+interface LogisticsShadowRuntimeRouteOutcomeV2 {
+  kind: "route";
+  sourceRoomName: string;
+  coverage: SynthesisShadowCoverage;
+  capacity: SynthesisShadowCapacity;
+  staging: SynthesisShadowPredictedStagingEligibility;
+  amount: number;
+  actionAmount: number;
+  feeAmount: number;
+  terminalReadyAt: number;
+  requiredEnergy: number;
+  energyCommitmentAmount: number;
+  terminalAllocatedAmount: number;
+  stagingRequiredAmount: number;
+  terminalEnergyAllocatedAmount: number;
+  feeStagingRequiredAmount: number;
+}
+
+interface LogisticsShadowRuntimeLegacyNoneOutcomeV2 {
+  kind: "none";
+  blocker: SynthesisShadowUnmatchedReason;
+  coverage: SynthesisShadowCoverage;
+  capacity: SynthesisShadowCapacity;
+  staging: SynthesisShadowPredictedStagingEligibility;
+}
+
+interface LogisticsShadowRuntimeShadowUnmatchedOutcomeV2 {
+  kind: "unmatched";
+  reason: SynthesisShadowUnmatchedReason;
+  coverage: SynthesisShadowCoverage;
+  capacity: SynthesisShadowCapacity;
+  staging: SynthesisShadowPredictedStagingEligibility;
+  uncoveredAmount: number;
+}
+
 type LogisticsShadowRuntimeBlocker =
   | "mode_disabled"
   | "config_invalid"
@@ -413,14 +505,24 @@ type LogisticsShadowRuntimeBlocker =
   | "input_unavailable"
   | "matcher_unavailable";
 
-interface LogisticsShadowRuntimeComparisonSampleV1 {
+interface LogisticsShadowRuntimeComparisonSampleV2 {
   intentId: string;
+  targetRoomName: string;
+  resource: ResourceConstant;
   status: "equal" | "different" | "unresolved";
   reason: LogisticsShadowComparisonReason;
+  producerReason?: LogisticsShadowComparisonReason;
+  decisionDelta: LogisticsShadowDecisionDelta;
+  direction: LogisticsShadowDifferenceDirection;
+  causalCode: LogisticsShadowCausalCode;
   differingDimensions: LogisticsShadowDimension[];
-  predictedStagingEligibility: SynthesisShadowPredictedStagingEligibility;
-  legacySourceRoomName?: string;
-  shadowSourceRoomName?: string;
+  legacy?:
+    | LogisticsShadowRuntimeRouteOutcomeV2
+    | LogisticsShadowRuntimeLegacyNoneOutcomeV2;
+  shadow?:
+    | LogisticsShadowRuntimeRouteOutcomeV2
+    | LogisticsShadowRuntimeShadowUnmatchedOutcomeV2;
+  candidate?: SynthesisShadowCandidateTrace;
 }
 
 interface LogisticsShadowDimensionSummaryV1 {
@@ -429,8 +531,8 @@ interface LogisticsShadowDimensionSummaryV1 {
   unresolved: number;
 }
 
-interface ResourceControlLogisticsRuntimeV1 {
-  schemaVersion: 1;
+interface ResourceControlLogisticsRuntimeV2 {
+  schemaVersion: 2;
   updatedAt: number;
   expiresAt: number;
   requestedMode: "disabled" | "shadow" | "canary" | "enabled";
@@ -458,11 +560,15 @@ interface ResourceControlLogisticsRuntimeV1 {
     different: number;
     unresolved: number;
     byReason: Partial<Record<LogisticsShadowComparisonReason, number>>;
+    byDecisionDelta: Partial<Record<LogisticsShadowDecisionDelta, number>>;
+    byCausalCode: Partial<Record<LogisticsShadowCausalCode, number>>;
     dimensions: Record<
       LogisticsShadowDimension,
       LogisticsShadowDimensionSummaryV1
     >;
-    samples: LogisticsShadowRuntimeComparisonSampleV1[];
+    sampled: number;
+    detailsDropped: number;
+    samples: LogisticsShadowRuntimeComparisonSampleV2[];
   };
   matcher: {
     indexBuilds: number;
@@ -495,9 +601,11 @@ interface ResourceControlLogisticsRuntimeV1 {
     withinLimit: boolean;
   };
   cpu: {
+    attributionVersion: 2;
+    sampleTick: number;
     measurementAvailable: boolean;
-    captureUsed: number;
-    used: number;
+    producerUsed: number;
+    consumerUsed: number;
   };
 }
 
@@ -532,6 +640,7 @@ const LOGISTICS_SHADOW_DIMENSIONS: readonly LogisticsShadowDimension[] = [
 const LOGISTICS_SHADOW_MEMORY_LIMIT_BYTES = 32_768;
 const LOGISTICS_SHADOW_RUNTIME_LIMIT_BYTES = 16_384;
 const LOGISTICS_SHADOW_MAX_VIOLATIONS = 20;
+const LOGISTICS_SHADOW_CAUSAL_SAMPLE_LIMIT = 8;
 
 const MAX_RECENT_CAPACITY_RELIEF_ROUTES = 20;
 
@@ -1348,6 +1457,350 @@ export function createResourceControlTransferContext(
   return context;
 }
 
+/**
+ * 写前 Shadow 只需要不可变 commitment/headroom 读模型，不需要 executor
+ * 的 staging/recovery/market-readiness bookkeeping。这里让 task、reservation
+ * 与 Carrier board 各只经过一次只读 pass；正式 ResourceControl phase 仍会
+ * 在后续 production phases 之后重建完整 context，绝不复用这份写前状态执行。
+ */
+function isValidSynthesisShadowCaptureTask(
+  value: unknown,
+): value is ResourceTransferTask {
+  if (!isPlainRecord(value)) return false;
+  const amount = value.amount;
+  const remainingAmount = value.remainingAmount;
+  const status = value.status;
+  const origin = value.origin;
+  return (
+    typeof value.id === "string" && value.id.length > 0 &&
+    typeof value.fromRoomName === "string" && value.fromRoomName.length > 0 &&
+    typeof value.toRoomName === "string" && value.toRoomName.length > 0 &&
+    value.fromRoomName !== value.toRoomName &&
+    typeof value.resource === "string" &&
+    RESOURCES_ALL.includes(value.resource as ResourceConstant) &&
+    Number.isSafeInteger(amount) && (amount as number) > 0 &&
+    Number.isSafeInteger(remainingAmount) &&
+    (remainingAmount as number) >= 0 &&
+    (remainingAmount as number) <= (amount as number) &&
+    (status === "pending" || status === "done" ||
+      status === "cancelled" || status === "failed") &&
+    (origin === "manual" || origin === "automatic") &&
+    Number.isSafeInteger(value.createdAt) && (value.createdAt as number) >= 0 &&
+    Number.isSafeInteger(value.updatedAt) && (value.updatedAt as number) >= 0 &&
+    Number.isSafeInteger(value.lastProgressAt) &&
+    (value.lastProgressAt as number) >= 0 &&
+    (value.reason === undefined || typeof value.reason === "string") &&
+    (value.lastError === undefined || typeof value.lastError === "string") &&
+    (value.blockedReason === undefined ||
+      value.blockedReason === "receiver_capacity" ||
+      value.blockedReason === "source_depleted" ||
+      value.blockedReason === "insufficient_terminal_resource_or_fee") &&
+    (value.blockedSince === undefined ||
+      (Number.isSafeInteger(value.blockedSince) &&
+        (value.blockedSince as number) >= 0))
+  );
+}
+
+function createSynthesisShadowCaptureContext(
+  snapshots: ResourceControlSnapshot[],
+  capacityConfig: ResourceCapacityConfig,
+  buildCounter: ResourceControlCapacityIndexBuildCounter,
+): SynthesisShadowCaptureContext {
+  buildCounter.count += 1;
+  let taskReadFailed = false;
+  let tasks: ResourceTransferTask[] = [];
+  try {
+    tasks = getResourceTransferTaskListSorted();
+  } catch {
+    taskReadFailed = true;
+  }
+  const snapshotByRoom = new Map(
+    snapshots.map((snapshot) => [snapshot.roomName, snapshot] as const),
+  );
+  const healthyOutgoingByRoomResource = new Map<string, number>();
+  const healthyIncomingByRoomResource = new Map<string, number>();
+  const healthyIncomingTotalByRoom = new Map<string, number>();
+  const outgoingFeeByRoom = new Map<string, number>();
+  const outgoingFeeByTaskId = new Map<string, number>();
+  const reservedProductionByRoomResource = new Map<string, number>();
+  const carrierProductionByRoomResource = new Map<string, number>();
+  let invalidRecordCount = taskReadFailed ? 1 : 0;
+  const seenTaskIds = new Set<string>();
+  const validTasks: ResourceTransferTask[] = [];
+  for (const task of tasks as unknown[]) {
+    if (
+      !isValidSynthesisShadowCaptureTask(task) ||
+      seenTaskIds.has(task.id)
+    ) {
+      invalidRecordCount += 1;
+      continue;
+    }
+    seenTaskIds.add(task.id);
+    validTasks.push(task);
+  }
+  const taskById = new Map(
+    validTasks.map((task) => [task.id, task] as const),
+  );
+
+  let productionReservations: ReturnType<typeof listProductionReservations> = [];
+  try {
+    productionReservations = listProductionReservations();
+  } catch {
+    invalidRecordCount += 1;
+  }
+  for (const reservation of productionReservations as readonly unknown[]) {
+    if (
+      !isPlainRecord(reservation) ||
+      typeof reservation.roomName !== "string" ||
+      reservation.roomName.length === 0 ||
+      typeof reservation.resource !== "string" ||
+      !RESOURCES_ALL.includes(reservation.resource as ResourceConstant) ||
+      typeof reservation.holderId !== "string" ||
+      reservation.holderId.length === 0 ||
+      !Number.isSafeInteger(reservation.updatedAt) ||
+      !Number.isSafeInteger(reservation.expiresAt) ||
+      (reservation.updatedAt as number) < 0 ||
+      (reservation.expiresAt as number) < 0 ||
+      !Number.isSafeInteger(reservation.amount) ||
+      (reservation.amount as number) <= 0
+    ) {
+      invalidRecordCount += 1;
+      continue;
+    }
+    if ((reservation.expiresAt as number) < Game.time) continue;
+    const key = roomResourceKey(
+      reservation.roomName,
+      reservation.resource as ResourceConstant,
+    );
+    reservedProductionByRoomResource.set(
+      key,
+      (reservedProductionByRoomResource.get(key) || 0) +
+        (reservation.amount as number),
+    );
+  }
+
+  for (const snapshot of snapshots) {
+    let carrierEntries: readonly unknown[];
+    try {
+      carrierEntries = peekCarrierTasksByRoom(snapshot.roomName) as readonly unknown[];
+    } catch {
+      invalidRecordCount += 1;
+      continue;
+    }
+    for (const entry of carrierEntries) {
+      if (!isPlainRecord(entry)) {
+        invalidRecordCount += 1;
+        continue;
+      }
+      const task = entry.task;
+      if (!isPlainRecord(task) || typeof task.type !== "string") {
+        invalidRecordCount += 1;
+        continue;
+      }
+      if (task.type !== "lab_supply" && task.type !== "factory_supply") {
+        continue;
+      }
+      if (!Array.isArray(task.steps)) {
+        invalidRecordCount += 1;
+        continue;
+      }
+      const productionSteps: Array<{
+        fromKind: "storage" | "terminal";
+        resource: ResourceConstant;
+        amount: number;
+      }> = [];
+      let taskValid = true;
+      for (const step of task.steps) {
+        if (!isPlainRecord(step)) {
+          taskValid = false;
+          break;
+        }
+        if (step.fromKind !== "storage" && step.fromKind !== "terminal") {
+          continue;
+        }
+        if (
+          typeof step.resource !== "string" ||
+          !RESOURCES_ALL.includes(step.resource as ResourceConstant) ||
+          !Number.isSafeInteger(step.amount) ||
+          (step.amount as number) <= 0
+        ) {
+          taskValid = false;
+          break;
+        }
+        productionSteps.push({
+          fromKind: step.fromKind,
+          resource: step.resource as ResourceConstant,
+          amount: step.amount as number,
+        });
+      }
+      if (!taskValid) {
+        invalidRecordCount += 1;
+        continue;
+      }
+      for (const step of productionSteps) {
+        const key = roomResourceKey(snapshot.roomName, step.resource);
+        carrierProductionByRoomResource.set(
+          key,
+          (carrierProductionByRoomResource.get(key) || 0) + step.amount,
+        );
+      }
+    }
+  }
+
+  for (const task of validTasks) {
+    if (isHealthyResourceTransferTaskReservation(task, "outgoing")) {
+      const outgoingKey = roomResourceKey(task.fromRoomName, task.resource);
+      adjustIndexedAmount(
+        healthyOutgoingByRoomResource,
+        outgoingKey,
+        task.remainingAmount,
+      );
+      const source = snapshotByRoom.get(task.fromRoomName);
+      const batchAmount = source
+        ? Math.min(source.transferBatchSize, task.remainingAmount)
+        : 0;
+      if (batchAmount > 0) {
+        let fee: number;
+        try {
+          fee = Game.market.calcTransactionCost(
+            batchAmount,
+            task.fromRoomName,
+            task.toRoomName,
+          );
+        } catch {
+          invalidRecordCount += 1;
+          continue;
+        }
+        if (!Number.isSafeInteger(fee) || fee < 0) {
+          invalidRecordCount += 1;
+          continue;
+        }
+        if (fee > 0) {
+          adjustIndexedAmount(outgoingFeeByRoom, task.fromRoomName, fee);
+          outgoingFeeByTaskId.set(task.id, fee);
+        }
+      }
+    }
+    const source = snapshotByRoom.get(task.fromRoomName);
+    const receiver = snapshotByRoom.get(task.toRoomName);
+    if (
+      !source?.storage ||
+      !receiver?.storage ||
+      !isHealthyReceiverCapacityCommitment(
+        task,
+        capacityConfig.automaticTaskNoProgressTtl,
+      )
+    ) {
+      continue;
+    }
+    const amount = Math.max(0, Math.floor(task.remainingAmount));
+    if (amount <= 0) continue;
+    const incomingKey = roomResourceKey(task.toRoomName, task.resource);
+    adjustIndexedAmount(healthyIncomingByRoomResource, incomingKey, amount);
+    adjustIndexedAmount(healthyIncomingTotalByRoom, task.toRoomName, amount);
+  }
+
+  const receiverCapacityLedger: Pick<
+    ReceiverCapacityLedger,
+    "getAvailability"
+  > = {
+    getAvailability(
+      roomName: string,
+      resource: ResourceConstant,
+    ): ReceiverCapacityAvailability {
+      const snapshot = snapshotByRoom.get(roomName);
+      if (!snapshot?.storage) {
+        return {
+          roomName,
+          resource,
+          storageSafeCapacity: 0,
+          terminalTotalSafeCapacity: 0,
+          terminalResourceFreeCapacity: 0,
+          totalCommitted: 0,
+          resourceCommitted: 0,
+          reservationTotal: 0,
+          reservationResource: 0,
+          ownedReservationTotal: 0,
+          ownedReservationResource: 0,
+          excludedTaskAmount: 0,
+          storageRemaining: 0,
+          terminalTotalRemaining: 0,
+          terminalResourceRemaining: 0,
+          available: 0,
+        };
+      }
+      const storageSafeCapacity = Math.max(
+        0,
+        Math.floor(snapshot.storageFreeCapacity) -
+          capacityConfig.storagePressureFreeCapacity,
+      );
+      const terminalTotalSafeCapacity = Math.max(
+        0,
+        Math.floor(snapshot.terminalFreeCapacity) -
+          capacityConfig.terminalPressureFreeCapacity,
+      );
+      const terminalResourceFreeCapacity = Math.max(
+        0,
+        Math.floor(getReceiverTerminalFreeCapacity(snapshot, resource)),
+      );
+      const totalCommitted =
+        healthyIncomingTotalByRoom.get(roomName) || 0;
+      const resourceCommitted =
+        healthyIncomingByRoomResource.get(roomResourceKey(roomName, resource)) ||
+        0;
+      const storageRemaining = Math.max(
+        0,
+        storageSafeCapacity - totalCommitted,
+      );
+      const terminalTotalRemaining = Math.max(
+        0,
+        terminalTotalSafeCapacity - totalCommitted,
+      );
+      const terminalResourceRemaining = Math.max(
+        0,
+        terminalResourceFreeCapacity - resourceCommitted,
+      );
+      return {
+        roomName,
+        resource,
+        storageSafeCapacity,
+        terminalTotalSafeCapacity,
+        terminalResourceFreeCapacity,
+        totalCommitted,
+        resourceCommitted,
+        reservationTotal: 0,
+        reservationResource: 0,
+        ownedReservationTotal: 0,
+        ownedReservationResource: 0,
+        excludedTaskAmount: 0,
+        storageRemaining,
+        terminalTotalRemaining,
+        terminalResourceRemaining,
+        available: Math.min(
+          storageRemaining,
+          terminalTotalRemaining,
+          terminalResourceRemaining,
+        ),
+      };
+    },
+  };
+
+  return {
+    tasks: validTasks,
+    taskById,
+    snapshotByRoom,
+    receiverCapacityLedger,
+    healthyOutgoingByRoomResource,
+    outgoingFeeByRoom,
+    outgoingFeeByTaskId,
+    reservedProductionByRoomResource,
+    carrierProductionByRoomResource,
+    indexBuildCount: 1,
+    productionReservationScanCount: 1,
+    invalidRecordCount,
+  };
+}
+
 function adjustIndexedAmount(
   index: Map<string, number>,
   key: string,
@@ -1496,7 +1949,7 @@ function syncResourceControlTransferTask(
 
 function getOutgoingTransactionFeeReserve(
   snapshot: ResourceControlSnapshot,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
   excludeTaskId?: string,
 ): number {
   return Math.max(
@@ -1509,7 +1962,7 @@ function getOutgoingTransactionFeeReserve(
 function getProductionCommitmentAmount(
   roomName: string,
   resource: ResourceConstant,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
 ): number {
   const key = roomResourceKey(roomName, resource);
   const reserved = context.reservedProductionByRoomResource.get(key);
@@ -1753,7 +2206,7 @@ function getEnergyBalancingSurplus(
  */
 function getTerminalActionEnergyBudget(
   snapshot: ResourceControlSnapshot,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
   excludeTaskId?: string,
   terminalEnergyOutsideMarketExposureOverride?: number,
 ): number {
@@ -2234,7 +2687,7 @@ function getReceiverReceivableCapacity(
 function getHealthyOutgoingCommitment(
   roomName: string,
   resource: ResourceConstant,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
   excludeTaskId?: string,
 ): number {
   let total =
@@ -2258,7 +2711,7 @@ function getProtectedResourceAmount(
   snapshot: ResourceControlSnapshot,
   resource: ResourceConstant,
   config: ResourceCapacityConfig,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
   excludeTaskId?: string,
 ): number {
   let safetyFloor = snapshot.mineralFloor[resource] || 0;
@@ -2276,7 +2729,7 @@ function getMovableResourceAmount(
   resource: ResourceConstant,
   location: "storage" | "terminal",
   config: ResourceCapacityConfig,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
   excludeTaskId?: string,
 ): number {
   if (resource === RESOURCE_ENERGY) {
@@ -2318,7 +2771,7 @@ function getTotalMovableResourceAmount(
   snapshot: ResourceControlSnapshot,
   resource: ResourceConstant,
   config: ResourceCapacityConfig,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
   excludeTaskId?: string,
 ): number {
   if (resource === RESOURCE_ENERGY) {
@@ -2439,7 +2892,7 @@ function countObservableNonLegacyAuthorityRecords(
 }
 
 function recordLogisticsShadowSafetyViolation(
-  projection: ResourceControlLogisticsRuntimeV1,
+  projection: ResourceControlLogisticsRuntimeV2,
   violation: string,
 ): void {
   if (
@@ -2456,7 +2909,7 @@ function recordLogisticsShadowSafetyViolation(
  * attempt，也不为测量而创建 carrier board 或 authority store。
  */
 function projectLogisticsShadowObservableRecords(
-  projection: ResourceControlLogisticsRuntimeV1,
+  projection: ResourceControlLogisticsRuntimeV2,
   context: ResourceControlTransferContext,
 ): void {
   const rawLogistics = (
@@ -2570,9 +3023,9 @@ function createLogisticsShadowDimensionSummary(): Record<
 }
 
 function createEmptyLogisticsShadowRuntime(
-  requestedMode: ResourceControlLogisticsRuntimeV1["requestedMode"],
+  requestedMode: ResourceControlLogisticsRuntimeV2["requestedMode"],
   blocker: LogisticsShadowRuntimeBlocker,
-): ResourceControlLogisticsRuntimeV1 {
+): ResourceControlLogisticsRuntimeV2 {
   return {
     schemaVersion: LOGISTICS_RUNTIME_SCHEMA_VERSION,
     updatedAt: Game.time,
@@ -2602,7 +3055,11 @@ function createEmptyLogisticsShadowRuntime(
       different: 0,
       unresolved: 0,
       byReason: {},
+      byDecisionDelta: {},
+      byCausalCode: {},
       dimensions: createLogisticsShadowDimensionSummary(),
+      sampled: 0,
+      detailsDropped: 0,
       samples: [],
     },
     matcher: {
@@ -2634,94 +3091,126 @@ function createEmptyLogisticsShadowRuntime(
       totalBytes: 0,
       withinLimit: true,
     },
-    cpu: { measurementAvailable: false, captureUsed: 0, used: 0 },
+    cpu: {
+      attributionVersion: 2,
+      sampleTick: Game.time,
+      measurementAvailable: false,
+      producerUsed: 0,
+      consumerUsed: 0,
+    },
   };
 }
 
 function countLogisticsShadowRuntimeItems(
-  projection: ResourceControlLogisticsRuntimeV1,
+  projection: ResourceControlLogisticsRuntimeV2,
 ): number {
+  const rejectionTupleCount = projection.comparison.samples.reduce(
+    (total, sample) =>
+      total + (sample.candidate?.rejectionCounts.length || 0),
+    0,
+  );
   return (
     projection.comparison.samples.length +
+    rejectionTupleCount +
     projection.safety.violations.length +
     Object.keys(projection.inScopeByOrigin).length +
     Object.keys(projection.outOfScopeByOrigin).length +
-    Object.keys(projection.comparison.byReason).length
+    Object.keys(projection.comparison.byReason).length +
+    Object.keys(projection.comparison.byDecisionDelta).length +
+    Object.keys(projection.comparison.byCausalCode).length
   );
 }
 
-function countLogisticsShadowDataItems(): number {
-  const read = peekLogisticsControlStore();
-  if (read.ok === false) return 0;
-  return getLogisticsControlStoreUsage(read.store).itemCount;
+function stabilizeLogisticsShadowRuntimeLengths(
+  projection: ResourceControlLogisticsRuntimeV2,
+): void {
+  projection.comparison.sampled = projection.comparison.samples.length;
+  projection.comparison.detailsDropped = Math.max(
+    0,
+    projection.comparison.total - projection.comparison.sampled,
+  );
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const previousRuntimeBytes = projection.resources.runtimeBytes;
+    const previousTotalBytes = projection.resources.totalBytes;
+    projection.resources.runtimeBytes = safeSerializedLength(projection);
+    projection.resources.totalBytes =
+      projection.resources.dataBytes + projection.resources.runtimeBytes;
+    projection.resources.withinLimit =
+      projection.resources.runtimeBytes <=
+        LOGISTICS_SHADOW_RUNTIME_LIMIT_BYTES &&
+      projection.resources.totalBytes <= LOGISTICS_SHADOW_MEMORY_LIMIT_BYTES;
+    if (
+      projection.resources.runtimeBytes === previousRuntimeBytes &&
+      projection.resources.totalBytes === previousTotalBytes
+    ) {
+      break;
+    }
+  }
+}
+
+function applyLogisticsShadowCpuAttribution(
+  projection: ResourceControlLogisticsRuntimeV2,
+  snapshot: Readonly<LogisticsShadowCpuSnapshotV2> | undefined,
+  selfObservationOnly = false,
+): ResourceControlLogisticsRuntimeV2 {
+  const valid = !!snapshot &&
+    snapshot.attributionVersion === 2 &&
+    snapshot.sampleTick === Game.time &&
+    snapshot.measurementAvailable &&
+    Number.isFinite(snapshot.producerUsed) &&
+    snapshot.producerUsed >= 0 &&
+    Number.isFinite(snapshot.consumerUsed) &&
+    snapshot.consumerUsed >= 0;
+  projection.cpu = {
+    attributionVersion: 2,
+    sampleTick: Game.time,
+    measurementAvailable: valid,
+    producerUsed: valid
+      ? Math.round(snapshot!.producerUsed * 1_000) / 1_000
+      : 0,
+    consumerUsed: valid
+      ? Math.round(snapshot!.consumerUsed * 1_000) / 1_000
+      : 0,
+  };
+  if (!valid) {
+    projection.available = false;
+    projection.complete = false;
+    projection.blocker = "input_unavailable";
+    if (
+      projection.safety.violations.length < LOGISTICS_SHADOW_MAX_VIOLATIONS &&
+      !projection.safety.violations.includes("cpu_measurement_unavailable")
+    ) {
+      projection.safety.violations.push("cpu_measurement_unavailable");
+    }
+  }
+  projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
+    projection,
+  );
+  stabilizeLogisticsShadowRuntimeLengths(projection);
+  if (selfObservationOnly && projection.resources.withinLimit) {
+    return projection;
+  }
+  return projection.resources.withinLimit
+    ? projection
+    : finalizeLogisticsShadowRuntime(projection);
 }
 
 function finalizeLogisticsShadowRuntime(
-  projection: ResourceControlLogisticsRuntimeV1,
-  cpuStartedAt: number | undefined,
-): ResourceControlLogisticsRuntimeV1 {
+  projection: ResourceControlLogisticsRuntimeV2,
+): ResourceControlLogisticsRuntimeV2 {
   const rawLogistics = (
     Memory.data?.resourceControl as unknown as { logistics?: unknown } | undefined
   )?.logistics;
-  const storeRead = peekLogisticsControlStore();
-  const storeUsage = storeRead.ok
-    ? getLogisticsControlStoreUsage(storeRead.store)
-    : undefined;
-  projection.resources.dataItems =
-    storeUsage?.itemCount ?? countLogisticsShadowDataItems();
+  const storeRead = readLogisticsControlStoreExact();
+  const storeUsage = storeRead.ok ? storeRead.usage : undefined;
+  projection.resources.dataItems = storeUsage?.itemCount ?? 0;
   projection.resources.dataBytes = storeUsage?.utf8Bytes ?? (
     rawLogistics === undefined ? 0 : safeSerializedLength(rawLogistics)
   );
   projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
     projection,
   );
-  const cpuFinishedAt = readLogisticsShadowCpuUsed();
-  projection.cpu.measurementAvailable =
-    cpuStartedAt !== undefined && cpuFinishedAt !== undefined;
-  projection.cpu.used = projection.cpu.measurementAvailable
-    ? Math.max(
-        0,
-        Math.round(
-          (projection.cpu.captureUsed + cpuFinishedAt! - cpuStartedAt!) *
-            1_000,
-        ) / 1_000,
-      )
-    : 0;
-  if (!projection.cpu.measurementAvailable) {
-    projection.available = false;
-    projection.complete = false;
-    projection.blocker = "input_unavailable";
-    if (
-      projection.safety.violations.length < LOGISTICS_SHADOW_MAX_VIOLATIONS
-    ) {
-      projection.safety.violations.push("cpu_measurement_unavailable");
-    }
-    projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
-      projection,
-    );
-  }
-
-  const updateLengths = (): void => {
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      const previousRuntimeBytes = projection.resources.runtimeBytes;
-      const previousTotalBytes = projection.resources.totalBytes;
-      projection.resources.runtimeBytes = safeSerializedLength(projection);
-      projection.resources.totalBytes =
-        projection.resources.dataBytes + projection.resources.runtimeBytes;
-      projection.resources.withinLimit =
-        projection.resources.runtimeBytes <=
-          LOGISTICS_SHADOW_RUNTIME_LIMIT_BYTES &&
-        projection.resources.totalBytes <= LOGISTICS_SHADOW_MEMORY_LIMIT_BYTES;
-      if (
-        projection.resources.runtimeBytes === previousRuntimeBytes &&
-        projection.resources.totalBytes === previousTotalBytes
-      ) {
-        break;
-      }
-    }
-  };
-
-  updateLengths();
+  stabilizeLogisticsShadowRuntimeLengths(projection);
   let projectionTrimmed = false;
   while (
     !projection.resources.withinLimit &&
@@ -2732,7 +3221,7 @@ function finalizeLogisticsShadowRuntime(
     projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
       projection,
     );
-    updateLengths();
+    stabilizeLogisticsShadowRuntimeLengths(projection);
   }
   while (
     !projection.resources.withinLimit &&
@@ -2743,12 +3232,12 @@ function finalizeLogisticsShadowRuntime(
     projection.resources.runtimeItems = countLogisticsShadowRuntimeItems(
       projection,
     );
-    updateLengths();
+    stabilizeLogisticsShadowRuntimeLengths(projection);
   }
   if (projectionTrimmed) {
     projection.complete = false;
     projection.projectionTruncated = true;
-    updateLengths();
+    stabilizeLogisticsShadowRuntimeLengths(projection);
   }
   if (!projection.resources.withinLimit) {
     const minimal = createEmptyLogisticsShadowRuntime(
@@ -2815,9 +3304,7 @@ function mapLogisticsShadowDifferences(
 
 function getLogisticsShadowComparisonReason(
   sample: SynthesisShadowComparisonSample,
-  producerReason?: LogisticsShadowComparisonReason,
 ): LogisticsShadowComparisonReason {
-  if (producerReason) return producerReason;
   if (sample.status === "equal") return "equal";
   if (sample.status === "unresolved") {
     return sample.unresolvedReason || "input_unavailable";
@@ -2825,27 +3312,235 @@ function getLogisticsShadowComparisonReason(
   return sample.classification || "expected_policy_difference";
 }
 
-function getShadowPredictedStagingEligibility(
+function projectLogisticsShadowRouteOutcome(
+  route: SynthesisShadowRouteFact,
+): LogisticsShadowRuntimeRouteOutcomeV2 {
+  return {
+    kind: "route",
+    sourceRoomName: route.sourceRoom,
+    coverage: route.coverage,
+    capacity: route.capacity,
+    staging: route.predictedStagingEligibility,
+    amount: route.amount,
+    actionAmount: route.actionAmount,
+    feeAmount: route.transactionCost,
+    terminalReadyAt: route.terminalReadyAt,
+    requiredEnergy: route.requiredEnergy,
+    energyCommitmentAmount: route.energyCommitmentAmount,
+    terminalAllocatedAmount: route.terminalAllocatedAmount,
+    stagingRequiredAmount: route.stagingRequiredAmount,
+    terminalEnergyAllocatedAmount: route.terminalEnergyAllocatedAmount,
+    feeStagingRequiredAmount: route.feeStagingRequiredAmount,
+  };
+}
+
+function isSynthesisShadowRouteDecision(
+  value: SynthesisShadowDecision | SynthesisShadowUnmatchedDemand,
+): value is SynthesisShadowDecision {
+  return "sourceRoom" in value;
+}
+
+function projectLogisticsShadowCandidateTrace(
+  trace: SynthesisShadowCandidateTrace,
+): SynthesisShadowCandidateTrace {
+  return {
+    donorCount: trace.donorCount,
+    evaluatedCount: trace.evaluatedCount,
+    feasibleCount: trace.feasibleCount,
+    rejectedCount: trace.rejectedCount,
+    ...(trace.selectedRejection
+      ? { selectedRejection: trace.selectedRejection }
+      : {}),
+    rejectionCounts: trace.rejectionCounts.map(
+      ([reason, count]) => [reason, count] as const,
+    ),
+    ...(trace.topSourceRoom
+      ? { topSourceRoom: trace.topSourceRoom }
+      : {}),
+    ...(trace.legacySource
+      ? {
+          legacySource: {
+            sourceRoom: trace.legacySource.sourceRoom,
+            disposition: trace.legacySource.disposition,
+            ...(trace.legacySource.rejection
+              ? { rejection: trace.legacySource.rejection }
+              : {}),
+          },
+        }
+      : {}),
+    receiver: trace.receiver.kind === "missing"
+      ? { kind: "missing" }
+      : {
+          kind: "present",
+          receiverEligible: trace.receiver.receiverEligible,
+          storageHeadroom: trace.receiver.storageHeadroom,
+          terminalHeadroom: trace.receiver.terminalHeadroom,
+          resourceHeadroom: trace.receiver.resourceHeadroom,
+        },
+  };
+}
+
+function getLogisticsShadowDecisionDelta(
   sample: SynthesisShadowComparisonSample,
-): SynthesisShadowPredictedStagingEligibility {
-  return sample.shadow?.predictedStagingEligibility || "unknown";
+): LogisticsShadowDecisionDelta {
+  const legacyRoute = sample.legacy?.kind === "route"
+    ? sample.legacy.route
+    : undefined;
+  const shadowRoute = sample.shadow && isSynthesisShadowRouteDecision(sample.shadow)
+    ? sample.shadow
+    : undefined;
+  const shadowUnmatched = sample.shadow && !isSynthesisShadowRouteDecision(sample.shadow)
+    ? sample.shadow
+    : undefined;
+  if (legacyRoute && shadowRoute) {
+    return legacyRoute.sourceRoom === shadowRoute.sourceRoom &&
+        legacyRoute.targetRoom === shadowRoute.targetRoom &&
+        legacyRoute.resource === shadowRoute.resource
+      ? "same_route"
+      : "different_route";
+  }
+  if (legacyRoute && shadowUnmatched) return "legacy_only_route";
+  if (sample.legacy?.kind === "none" && shadowRoute) {
+    return "shadow_only_route";
+  }
+  if (sample.legacy?.kind === "none" && shadowUnmatched) {
+    return "both_no_route";
+  }
+  return "input_unavailable";
+}
+
+function getLogisticsShadowDifferenceDirection(
+  sample: SynthesisShadowComparisonSample,
+  decisionDelta: LogisticsShadowDecisionDelta,
+): LogisticsShadowDifferenceDirection {
+  if (sample.status === "unresolved" || decisionDelta === "input_unavailable") {
+    return "input_unavailable";
+  }
+  if (sample.status === "equal") return "same";
+  if (decisionDelta === "legacy_only_route") {
+    return "shadow_more_conservative";
+  }
+  if (decisionDelta === "shadow_only_route") {
+    return "shadow_more_permissive";
+  }
+  return "policy_difference";
+}
+
+function getLogisticsShadowCausalCode(
+  sample: SynthesisShadowComparisonSample,
+  decisionDelta: LogisticsShadowDecisionDelta,
+): LogisticsShadowCausalCode {
+  if (sample.status === "unresolved") {
+    return sample.unresolvedReason || "input_unavailable";
+  }
+  if (sample.status === "equal") return "matched";
+  if (sample.shadow && !isSynthesisShadowRouteDecision(sample.shadow)) {
+    return sample.shadow.reason;
+  }
+  if (
+    sample.legacy?.kind === "route" &&
+    sample.shadow &&
+    isSynthesisShadowRouteDecision(sample.shadow)
+  ) {
+    return decisionDelta === "different_route" ||
+        sample.legacy.route.sourceRoom !== sample.shadow.sourceRoom
+      ? "route_rank"
+      : "route_fact_difference";
+  }
+  if (sample.legacy?.kind === "none") {
+    return sample.legacy.blocker || "legacy_blocker";
+  }
+  return "route_fact_difference";
+}
+
+function projectLogisticsShadowComparisonSample(
+  comparison: SynthesisShadowComparisonSample,
+  intent: LatestLogisticsDemandV1,
+  producerReason?: LogisticsShadowComparisonReason,
+): LogisticsShadowRuntimeComparisonSampleV2 {
+  const reason = getLogisticsShadowComparisonReason(comparison);
+  const decisionDelta = getLogisticsShadowDecisionDelta(comparison);
+  const legacy = comparison.legacy?.kind === "route"
+    ? projectLogisticsShadowRouteOutcome(comparison.legacy.route)
+    : comparison.legacy?.kind === "none"
+      ? {
+          kind: "none" as const,
+          blocker: comparison.legacy.blocker,
+          coverage: comparison.legacy.coverage,
+          capacity: comparison.legacy.capacity,
+          staging: comparison.legacy.predictedStagingEligibility,
+        }
+      : undefined;
+  let shadow:
+    | LogisticsShadowRuntimeRouteOutcomeV2
+    | LogisticsShadowRuntimeShadowUnmatchedOutcomeV2
+    | undefined;
+  if (comparison.shadow) {
+    shadow = isSynthesisShadowRouteDecision(comparison.shadow)
+      ? projectLogisticsShadowRouteOutcome(comparison.shadow)
+      : {
+          kind: "unmatched",
+          reason: comparison.shadow.reason,
+          coverage: comparison.shadow.coverage,
+          capacity: comparison.shadow.capacity,
+          staging: comparison.shadow.predictedStagingEligibility,
+          uncoveredAmount: comparison.shadow.uncoveredAmount,
+        };
+  }
+  return {
+    intentId: comparison.comparisonKey.slice(0, 256),
+    targetRoomName: intent.targetRoomName,
+    resource: intent.resource,
+    status: comparison.status,
+    reason,
+    ...(producerReason ? { producerReason } : {}),
+    decisionDelta,
+    direction: getLogisticsShadowDifferenceDirection(
+      comparison,
+      decisionDelta,
+    ),
+    causalCode: getLogisticsShadowCausalCode(comparison, decisionDelta),
+    differingDimensions: mapLogisticsShadowDifferences(
+      comparison.differences,
+    ),
+    ...(legacy ? { legacy } : {}),
+    ...(shadow ? { shadow } : {}),
+    ...(comparison.shadow?.candidateTrace
+      ? {
+          candidate: projectLogisticsShadowCandidateTrace(
+            comparison.shadow.candidateTrace,
+          ),
+        }
+      : {}),
+  };
+}
+
+function logisticsShadowSamplePriority(
+  sample: LogisticsShadowRuntimeComparisonSampleV2,
+): number {
+  if (sample.reason === "unsafe_candidate") return 0;
+  if (sample.status === "unresolved" || sample.reason === "input_unavailable") {
+    return 1;
+  }
+  if (sample.status === "different") return 2;
+  return 3;
 }
 
 function projectLogisticsShadowComparisons(
   result: SynthesisShadowMatcherResult,
+  intentById: ReadonlyMap<string, LatestLogisticsDemandV1>,
   producerReasonByComparisonKey: ReadonlyMap<
     string,
     LogisticsShadowComparisonReason
   > = new Map(),
-): Pick<ResourceControlLogisticsRuntimeV1, "comparison" | "matcher"> {
+): Pick<ResourceControlLogisticsRuntimeV2, "comparison" | "matcher"> {
   const dimensions = createLogisticsShadowDimensionSummary();
   const byReason: Partial<Record<LogisticsShadowComparisonReason, number>> = {};
-  const samples: LogisticsShadowRuntimeComparisonSampleV1[] = [];
+  const byDecisionDelta: Partial<Record<LogisticsShadowDecisionDelta, number>> = {};
+  const byCausalCode: Partial<Record<LogisticsShadowCausalCode, number>> = {};
+  const allSamples: LogisticsShadowRuntimeComparisonSampleV2[] = [];
   for (const comparison of result.comparisons) {
-    const reason = getLogisticsShadowComparisonReason(
-      comparison,
-      producerReasonByComparisonKey.get(comparison.comparisonKey),
-    );
+    const reason = getLogisticsShadowComparisonReason(comparison);
     byReason[reason] = (byReason[reason] || 0) + 1;
     const differingDimensions = mapLogisticsShadowDifferences(
       comparison.differences,
@@ -2856,23 +3551,31 @@ function projectLogisticsShadowComparisons(
       else if (differingDimensions.includes(dimension)) summary.different += 1;
       else summary.matched += 1;
     }
-    if (samples.length < SYNTHESIS_SHADOW_MAX_COMPARISON_SAMPLES) {
-      samples.push({
-        intentId: comparison.comparisonKey.slice(0, 256),
-        status: comparison.status,
-        reason,
-        differingDimensions,
-        predictedStagingEligibility:
-          getShadowPredictedStagingEligibility(comparison),
-        ...(comparison.legacy?.route?.sourceRoom
-          ? { legacySourceRoomName: comparison.legacy.route.sourceRoom }
-          : {}),
-        ...(comparison.shadow && "sourceRoom" in comparison.shadow
-          ? { shadowSourceRoomName: comparison.shadow.sourceRoom }
-          : {}),
-      });
-    }
+    const intent = intentById.get(comparison.comparisonKey);
+    if (!intent) continue;
+    const sample = projectLogisticsShadowComparisonSample(
+      comparison,
+      intent,
+      producerReasonByComparisonKey.get(comparison.comparisonKey),
+    );
+    byDecisionDelta[sample.decisionDelta] =
+      (byDecisionDelta[sample.decisionDelta] || 0) + 1;
+    byCausalCode[sample.causalCode] =
+      (byCausalCode[sample.causalCode] || 0) + 1;
+    allSamples.push(sample);
   }
+  allSamples.sort((left, right) =>
+    logisticsShadowSamplePriority(left) -
+      logisticsShadowSamplePriority(right) ||
+    left.intentId.localeCompare(right.intentId),
+  );
+  const samples = allSamples.slice(
+    0,
+    Math.min(
+      SYNTHESIS_SHADOW_MAX_COMPARISON_SAMPLES,
+      LOGISTICS_SHADOW_CAUSAL_SAMPLE_LIMIT,
+    ),
+  );
   return {
     comparison: {
       total: result.metrics.comparisonCount,
@@ -2880,7 +3583,11 @@ function projectLogisticsShadowComparisons(
       different: result.metrics.differentCount,
       unresolved: result.metrics.unresolvedCount,
       byReason,
+      byDecisionDelta,
+      byCausalCode,
       dimensions,
+      sampled: samples.length,
+      detailsDropped: Math.max(0, result.metrics.comparisonCount - samples.length),
       samples,
     },
     matcher: {
@@ -3070,7 +3777,7 @@ function validateAndRecordLogisticsShadowSelfExclusion(
 function getLogisticsShadowReceiverHeadroom(
   snapshot: ResourceControlSnapshot,
   resource: ResourceConstant,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
   selfExclusion: LogisticsShadowSelfExclusion,
   localCommitmentByTargetId?: ReadonlyMap<string, number>,
 ): {
@@ -3134,7 +3841,7 @@ function createLogisticsShadowRoomFacts(
   epochRevision: string,
   epochFingerprint: string,
   capacityConfig: ResourceCapacityConfig,
-  context: ResourceControlTransferContext,
+  context: ResourceControlCommitmentReadContext,
   selfExclusion: LogisticsShadowSelfExclusion,
   localCommitmentByTargetId?: ReadonlyMap<string, number>,
   capturedSourceFacts?: LogisticsShadowCapturedSourceFacts,
@@ -3364,7 +4071,6 @@ export function beginSynthesisShadowEpochCapture(
   }
   const normalizedDemandResources = [...new Set(demandResources)].sort();
   if (
-    normalizedDemandResources.length === 0 ||
     normalizedDemandResources.length > LOGISTICS_CONTROL_STORE_LIMIT ||
     normalizedDemandResources.some((resource) =>
       !RESOURCES_ALL.includes(resource),
@@ -3384,15 +4090,16 @@ export function beginSynthesisShadowEpochCapture(
   if (snapshots.length === 0) return { ok: false, reason: "no_rooms" };
   const capacityConfig = resolveCapacityConfig();
   const buildCounter: ResourceControlCapacityIndexBuildCounter = { count: 0 };
-  const context = createResourceControlTransferContext(
+  const context = createSynthesisShadowCaptureContext(
     snapshots,
     capacityConfig,
     buildCounter,
-    { readonlyCarrierBoard: true },
   );
   if (
     buildCounter.count !== 1 ||
-    context.taskContributionIndex.invalidProductionReservationCount > 0
+    context.indexBuildCount !== 1 ||
+    context.productionReservationScanCount !== 1 ||
+    context.invalidRecordCount > 0
   ) {
     return { ok: false, reason: "invalid_resources" };
   }
@@ -3868,25 +4575,24 @@ function applyLegacyDecisionToShadowRoomFacts(
 
 function buildResourceControlLogisticsShadow(
   context: ResourceControlTransferContext,
-): ResourceControlLogisticsRuntimeV1 {
-  const cpuStartedAt = readLogisticsShadowCpuUsed();
+): ResourceControlLogisticsRuntimeV2 {
   const config = resolveLogisticsControlConfig();
   const disabled = createEmptyLogisticsShadowRuntime(
     config.mode,
     !config.valid ? "config_invalid" : "mode_disabled",
   );
   if (!config.valid || config.mode === "disabled") {
-    return finalizeLogisticsShadowRuntime(disabled, cpuStartedAt);
+    return disabled;
   }
   if (config.mode !== "shadow") {
     disabled.blocker = "matcher_unavailable";
-    return finalizeLogisticsShadowRuntime(disabled, cpuStartedAt);
+    return disabled;
   }
 
-  const read = peekLogisticsControlStore();
+  const read = readLogisticsControlStoreExact();
   if (read.ok === false) {
     disabled.blocker = read.reason === "missing" ? "store_missing" : "store_invalid";
-    return finalizeLogisticsShadowRuntime(disabled, cpuStartedAt);
+    return disabled;
   }
   const store = read.store;
   const projection = createEmptyLogisticsShadowRuntime(config.mode, "input_unavailable");
@@ -4062,12 +4768,25 @@ function buildResourceControlLogisticsShadow(
   }
   const compared = projectLogisticsShadowComparisons(
     result,
+    new Map(inputs.map(({ intent }) => [intent.id, intent] as const)),
     producerReasonByComparisonKey,
   );
   projection.comparison = compared.comparison;
   projection.matcher = compared.matcher;
   projection.matcher.indexBuilds = producerSnapshot?.indexBuildCount || 0;
-  projection.cpu.captureUsed = producerSnapshot?.captureCpuUsed || 0;
+  const sampledMaterialComparisons = projection.comparison.samples.filter(
+    (sample) => sample.status !== "equal",
+  ).length;
+  if (
+    sampledMaterialComparisons !==
+      projection.comparison.different + projection.comparison.unresolved
+  ) {
+    projection.projectionTruncated = true;
+    recordLogisticsShadowSafetyViolation(
+      projection,
+      "shadow_causal_details_truncated",
+    );
+  }
   projection.available = factTokenValid;
   projectLogisticsShadowObservableRecords(projection, context);
   const inScopeIntentCount = Object.values(projection.inScopeByOrigin).reduce(
@@ -4076,6 +4795,12 @@ function buildResourceControlLogisticsShadow(
   );
   const comparisonReasonCount = Object.values(
     projection.comparison.byReason,
+  ).reduce((total, count) => total + (count || 0), 0);
+  const comparisonDeltaCount = Object.values(
+    projection.comparison.byDecisionDelta,
+  ).reduce((total, count) => total + (count || 0), 0);
+  const comparisonCauseCount = Object.values(
+    projection.comparison.byCausalCode,
   ).reduce((total, count) => total + (count || 0), 0);
   const dimensionCountsMatch = LOGISTICS_SHADOW_DIMENSIONS.every(
     (dimension) => {
@@ -4093,6 +4818,11 @@ function buildResourceControlLogisticsShadow(
       projection.intent.emitted ||
     projection.comparison.total !== projection.intent.active ||
     comparisonReasonCount !== projection.comparison.total ||
+    comparisonDeltaCount !== projection.comparison.total ||
+    comparisonCauseCount !== projection.comparison.total ||
+    projection.comparison.sampled !== projection.comparison.samples.length ||
+    projection.comparison.sampled + projection.comparison.detailsDropped !==
+      projection.comparison.total ||
     !dimensionCountsMatch
   ) {
     projection.safety.violations.push("shadow_projection_count_mismatch");
@@ -4108,7 +4838,7 @@ function buildResourceControlLogisticsShadow(
     projection.safety.violations.length === 0;
   if (projection.complete) delete projection.blocker;
   else projection.blocker = "input_unavailable";
-  return finalizeLogisticsShadowRuntime(projection, cpuStartedAt);
+  return projection;
 }
 
 function getCapacityReliefRecoveryGap(
@@ -7303,7 +8033,7 @@ function persistResourceControlState(
   capacityConfig: ResourceCapacityConfig,
   synthesisBindings?: SynthesisBindingStore,
   capacityReliefRoutes: CapacityReliefRoute[] = [],
-  logisticsProjection?: ResourceControlLogisticsRuntimeV1,
+  logisticsProjection?: ResourceControlLogisticsRuntimeV2,
 ): void {
   const runtime = getMemoryService().ensureRuntime();
   const previousResourceControl = runtime.resourceControl;
@@ -7685,11 +8415,9 @@ function persistMarketTerminalEnergyReadinessProjection(
 function persistUnavailableResourceControlLogistics(
   blocker: LogisticsShadowRuntimeBlocker,
 ): void {
-  const cpuStartedAt = readLogisticsShadowCpuUsed();
   const config = resolveLogisticsControlConfig();
   const projection = finalizeLogisticsShadowRuntime(
     createEmptyLogisticsShadowRuntime(config.mode, blocker),
-    cpuStartedAt,
   );
   const runtime = getMemoryService().ensureRuntime();
   const mutableRuntime = (runtime.resourceControl as unknown as
@@ -7782,10 +8510,42 @@ export function runResourceControl(): void {
     capacityConfig,
     capacityIndexBuildCounter,
   );
+  const producerCpuBeforeConsumer = peekLogisticsShadowCpuSnapshot("producer");
+  const nonShadowZeroCpuAttribution: LogisticsShadowCpuSnapshotV2 = {
+    attributionVersion: 2,
+    sampleTick: Game.time,
+    measurementAvailable: true,
+    producerUsed: 0,
+    consumerUsed: 0,
+  };
   const logisticsProjection = fullPlanningTick
-    ? buildResourceControlLogisticsShadow(
-        context,
-      )
+    ? (() => {
+        // The measured pass includes projection, byte fixed-point and trim
+        // using the producer-sealed provisional attribution. Shadow must have
+        // completed a real producer segment in this tick; a prior consumer-only
+        // state (or no state) cannot be reinterpreted as a valid zero producer.
+        const measuredProjection = measureLogisticsShadowCpu("consumer", () => {
+          const projection = finalizeLogisticsShadowRuntime(
+            buildResourceControlLogisticsShadow(context),
+          );
+          return applyLogisticsShadowCpuAttribution(
+            projection,
+            projection.requestedMode === "shadow"
+              ? producerCpuBeforeConsumer
+              : producerCpuBeforeConsumer ?? nonShadowZeroCpuAttribution,
+          );
+        });
+        // The outer seal writes only the final consumer scalar and refreshes
+        // its own byte attestation; recursively timing that write has no finite
+        // fixpoint. Keep a missing Shadow producer seal unavailable here too.
+        return applyLogisticsShadowCpuAttribution(
+          measuredProjection,
+          measuredProjection.requestedMode === "shadow"
+            ? peekLogisticsShadowCpuSnapshot("producer")
+            : peekLogisticsShadowCpuSnapshot(),
+          true,
+        );
+      })()
     : undefined;
 
   const terminalBusy = new Set(

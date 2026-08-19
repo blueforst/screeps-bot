@@ -16,6 +16,7 @@ import {
   type LogisticsPriorityClass,
   type SynthesisLogisticsObservationDraft,
 } from "@/runtime/logistics/logisticsControl";
+import { measureLogisticsShadowCpu } from "@/runtime/logistics/logisticsShadowCpu";
 import { limitActionLog } from "@/runtime/actionLog";
 import { runSynthesisTaskPlanningCompatibility } from "@/runtime/synthesisCompatibilityPlanning";
 import { recordFixedCpuAction } from "@/runtime/cpuPhaseProfiler";
@@ -220,20 +221,23 @@ function createSynthesisTransferTaskIndex(
       );
     }
     if (!countsResourceTransferTaskTowardDemand(task, healthOptions)) return;
-    if (enableMergeSnapshots && task.origin === "automatic" && task.reason) {
-      const key = automaticMergeSnapshotKey(
-        task.fromRoomName,
-        task.toRoomName,
-        task.resource,
-        task.reason,
-      );
-      const current = mergeableAutomaticTaskByKey.get(key);
-      if (!current || current.taskId === task.id) {
-        mergeableAutomaticTaskByKey.set(key, {
-          taskId: task.id,
-          remainingAmount: task.remainingAmount,
-        });
-      }
+    if (enableMergeSnapshots) {
+      measureLogisticsShadowCpu("producer", () => {
+        if (task.origin !== "automatic" || !task.reason) return;
+        const key = automaticMergeSnapshotKey(
+          task.fromRoomName,
+          task.toRoomName,
+          task.resource,
+          task.reason,
+        );
+        const current = mergeableAutomaticTaskByKey.get(key);
+        if (!current || current.taskId === task.id) {
+          mergeableAutomaticTaskByKey.set(key, {
+            taskId: task.id,
+            remainingAmount: task.remainingAmount,
+          });
+        }
+      });
     }
     addAmount(incomingByRoom, task.toRoomName, task.resource, amountDelta);
     if (firstContribution) {
@@ -1230,7 +1234,7 @@ function maybeGenerateSupplyTasks(
     const deficit = Math.max(0, needAmount - current - incoming);
     const reason = `synthesis:${room.name}:${reactionPlan.product}`;
     const shadowDemand = shadowBatch
-      ? (() => {
+      ? measureLogisticsShadowCpu("producer", () => {
           const demandKey = synthesisLogisticsDemandKey(room.name, reactionPlan.product, reagent);
           const priorityClass: LogisticsPriorityClass = mapLegacyTransferPriority("automatic", reason);
           const fixedSourceRoomNames = [...new Set(mergedDonors)].sort();
@@ -1249,38 +1253,40 @@ function maybeGenerateSupplyTasks(
             ...(fixedSourceRoomNames.length === 0 ? {} : { fixedSourceRoomNames }),
           };
           return { demandKey, priorityClass, fixedSourceRoomNames, demand };
-        })()
+        })
       : null;
     if (deficit <= 0) {
       if (shadowDemand) {
-        appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
-          demandKey: shadowDemand.demandKey,
-          inputFingerprint: fingerprintSynthesisLogisticsInput([
-            "synthesis_room/v1",
-            Game.time,
-            shadowDemand.demandKey,
-            needAmount,
-            current,
-            incoming,
-            deficit,
-            shadowDemand.fixedSourceRoomNames,
-            null,
-            0,
-            reason,
-            shadowDemand.priorityClass,
-            SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-          ]),
-          localAmount: current,
-          incomingAmount: incoming,
-          uncoveredAmount: deficit,
-          comparableReason: "comparable",
-          legacyDecision: "no_op",
-          legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-          legacyPriorityClass: shadowDemand.priorityClass,
-          legacyAmount: 0,
-          legacyAddedAmount: 0,
-          legacyRemainingBefore: 0,
-          legacyFeeDelta: 0,
+        measureLogisticsShadowCpu("producer", () => {
+          appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
+            demandKey: shadowDemand.demandKey,
+            inputFingerprint: fingerprintSynthesisLogisticsInput([
+              "synthesis_room/v1",
+              Game.time,
+              shadowDemand.demandKey,
+              needAmount,
+              current,
+              incoming,
+              deficit,
+              shadowDemand.fixedSourceRoomNames,
+              null,
+              0,
+              reason,
+              shadowDemand.priorityClass,
+              SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
+            ]),
+            localAmount: current,
+            incomingAmount: incoming,
+            uncoveredAmount: deficit,
+            comparableReason: "comparable",
+            legacyDecision: "no_op",
+            legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
+            legacyPriorityClass: shadowDemand.priorityClass,
+            legacyAmount: 0,
+            legacyAddedAmount: 0,
+            legacyRemainingBefore: 0,
+            legacyFeeDelta: 0,
+          });
         });
       }
       continue;
@@ -1297,34 +1303,36 @@ function maybeGenerateSupplyTasks(
     );
     if (!donor) {
       if (shadowDemand) {
-        appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
-          demandKey: shadowDemand.demandKey,
-          inputFingerprint: fingerprintSynthesisLogisticsInput([
-            "synthesis_room/v1",
-            Game.time,
-            shadowDemand.demandKey,
-            needAmount,
-            current,
-            incoming,
-            deficit,
-            shadowDemand.fixedSourceRoomNames,
-            null,
-            0,
-            reason,
-            shadowDemand.priorityClass,
-            SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-          ]),
-          localAmount: current,
-          incomingAmount: incoming,
-          uncoveredAmount: deficit,
-          comparableReason: "comparable",
-          legacyDecision: "no_donor",
-          legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-          legacyPriorityClass: shadowDemand.priorityClass,
-          legacyAmount: 0,
-          legacyAddedAmount: 0,
-          legacyRemainingBefore: 0,
-          legacyFeeDelta: 0,
+        measureLogisticsShadowCpu("producer", () => {
+          appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
+            demandKey: shadowDemand.demandKey,
+            inputFingerprint: fingerprintSynthesisLogisticsInput([
+              "synthesis_room/v1",
+              Game.time,
+              shadowDemand.demandKey,
+              needAmount,
+              current,
+              incoming,
+              deficit,
+              shadowDemand.fixedSourceRoomNames,
+              null,
+              0,
+              reason,
+              shadowDemand.priorityClass,
+              SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
+            ]),
+            localAmount: current,
+            incomingAmount: incoming,
+            uncoveredAmount: deficit,
+            comparableReason: "comparable",
+            legacyDecision: "no_donor",
+            legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
+            legacyPriorityClass: shadowDemand.priorityClass,
+            legacyAmount: 0,
+            legacyAddedAmount: 0,
+            legacyRemainingBefore: 0,
+            legacyFeeDelta: 0,
+          });
         });
       }
       failed += 1;
@@ -1336,9 +1344,53 @@ function maybeGenerateSupplyTasks(
     const amount = Math.min(deficit, donor.sendable, reactionPlan.batchSize);
     if (amount <= 0) {
       if (shadowDemand) {
-        appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
-          demandKey: shadowDemand.demandKey,
-          inputFingerprint: fingerprintSynthesisLogisticsInput([
+        measureLogisticsShadowCpu("producer", () => {
+          appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
+            demandKey: shadowDemand.demandKey,
+            inputFingerprint: fingerprintSynthesisLogisticsInput([
+              "synthesis_room/v1",
+              Game.time,
+              shadowDemand.demandKey,
+              needAmount,
+              current,
+              incoming,
+              deficit,
+              shadowDemand.fixedSourceRoomNames,
+              donor.room.name,
+              donor.sendable,
+              0,
+              reason,
+              shadowDemand.priorityClass,
+              SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
+            ]),
+            localAmount: current,
+            incomingAmount: incoming,
+            uncoveredAmount: deficit,
+            comparableReason: "input_unavailable",
+            legacyDecision: "no_op",
+            legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
+            legacyPriorityClass: shadowDemand.priorityClass,
+            legacySourceRoomName: donor.room.name,
+            legacyAmount: 0,
+            legacyAddedAmount: 0,
+            legacyRemainingBefore: 0,
+            legacyFeeDelta: 0,
+          });
+        });
+      }
+      continue;
+    }
+
+    const shadowLegacyInput = shadowDemand
+      ? measureLogisticsShadowCpu("producer", () => {
+          const mergeTargetBefore = transferTasks.getMergeableAutomaticTaskSnapshot(
+            donor.room.name,
+            room.name,
+            reagent,
+            reason,
+          );
+          const legacyRemainingBefore = mergeTargetBefore?.remainingAmount || 0;
+          const inputFingerprint = fingerprintSynthesisLogisticsInput([
             "synthesis_room/v1",
             Game.time,
             shadowDemand.demandKey,
@@ -1349,64 +1401,26 @@ function maybeGenerateSupplyTasks(
             shadowDemand.fixedSourceRoomNames,
             donor.room.name,
             donor.sendable,
-            0,
+            donor.score,
+            amount,
+            mergeTargetBefore?.taskId ?? null,
+            legacyRemainingBefore,
+            resolveResourceControlTransferBatchSize(donor.room.name),
+            getLegacyOutgoingFeeCommitment(
+              donor.room.name,
+              room.name,
+              legacyRemainingBefore,
+            ),
             reason,
             shadowDemand.priorityClass,
             SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-          ]),
-          localAmount: current,
-          incomingAmount: incoming,
-          uncoveredAmount: deficit,
-          comparableReason: "input_unavailable",
-          legacyDecision: "no_op",
-          legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-          legacyPriorityClass: shadowDemand.priorityClass,
-          legacySourceRoomName: donor.room.name,
-          legacyAmount: 0,
-          legacyAddedAmount: 0,
-          legacyRemainingBefore: 0,
-          legacyFeeDelta: 0,
-        });
-      }
-      continue;
-    }
-
-    const mergeTargetBefore = shadowDemand
-      ? transferTasks.getMergeableAutomaticTaskSnapshot(
-          donor.room.name,
-          room.name,
-          reagent,
-          reason,
-        )
-      : null;
-    const legacyRemainingBefore = mergeTargetBefore?.remainingAmount || 0;
-    const inputFingerprint = shadowDemand
-      ? fingerprintSynthesisLogisticsInput([
-          "synthesis_room/v1",
-          Game.time,
-          shadowDemand.demandKey,
-          needAmount,
-          current,
-          incoming,
-          deficit,
-          shadowDemand.fixedSourceRoomNames,
-          donor.room.name,
-          donor.sendable,
-          donor.score,
-          amount,
-          mergeTargetBefore?.taskId ?? null,
-          legacyRemainingBefore,
-          resolveResourceControlTransferBatchSize(donor.room.name),
-          getLegacyOutgoingFeeCommitment(
-            donor.room.name,
-            room.name,
-            legacyRemainingBefore,
-          ),
-          reason,
-          shadowDemand.priorityClass,
-          SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-        ])
+          ]);
+          return { mergeTargetBefore, legacyRemainingBefore, inputFingerprint };
+        })
       : undefined;
+    const mergeTargetBefore = shadowLegacyInput?.mergeTargetBefore ?? null;
+    const legacyRemainingBefore = shadowLegacyInput?.legacyRemainingBefore || 0;
+    const inputFingerprint = shadowLegacyInput?.inputFingerprint;
 
     const task = createAutomaticResourceTransferTask(
       donor.room.name,
@@ -1417,21 +1431,23 @@ function maybeGenerateSupplyTasks(
     );
     if (typeof task === "string") {
       if (shadowDemand && inputFingerprint) {
-        appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
-          demandKey: shadowDemand.demandKey,
-          inputFingerprint,
-          localAmount: current,
-          incomingAmount: incoming,
-          uncoveredAmount: deficit,
-          comparableReason: "legacy_unpaired",
-          legacyDecision: "failed",
-          legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-          legacyPriorityClass: shadowDemand.priorityClass,
-          legacySourceRoomName: donor.room.name,
-          legacyAmount: amount,
-          legacyAddedAmount: 0,
-          legacyRemainingBefore,
-          legacyFeeDelta: 0,
+        measureLogisticsShadowCpu("producer", () => {
+          appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
+            demandKey: shadowDemand.demandKey,
+            inputFingerprint,
+            localAmount: current,
+            incomingAmount: incoming,
+            uncoveredAmount: deficit,
+            comparableReason: "legacy_unpaired",
+            legacyDecision: "failed",
+            legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
+            legacyPriorityClass: shadowDemand.priorityClass,
+            legacySourceRoomName: donor.room.name,
+            legacyAmount: amount,
+            legacyAddedAmount: 0,
+            legacyRemainingBefore,
+            legacyFeeDelta: 0,
+          });
         });
       }
       failed += 1;
@@ -1440,36 +1456,38 @@ function maybeGenerateSupplyTasks(
     }
 
     if (shadowDemand && inputFingerprint) {
-      const exactRemainingBefore = mergeTargetBefore?.taskId === task.task.id
-        ? mergeTargetBefore.remainingAmount
-        : 0;
-      const exactAddedAmount = Math.max(0, task.task.remainingAmount - exactRemainingBefore);
-      const exactLegacyFeeBefore = getLegacyOutgoingFeeCommitment(
-        donor.room.name,
-        room.name,
-        exactRemainingBefore,
-      );
-      const legacyFeeAfter = getLegacyOutgoingFeeCommitment(
-        donor.room.name,
-        room.name,
-        task.task.remainingAmount,
-      );
-      appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
-        demandKey: shadowDemand.demandKey,
-        inputFingerprint,
-        localAmount: current,
-        incomingAmount: incoming,
-        uncoveredAmount: deficit,
-        comparableReason: "comparable",
-        legacyDecision: mergeTargetBefore?.taskId === task.task.id ? "merged" : "created",
-        legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
-        legacyPriorityClass: shadowDemand.priorityClass,
-        legacySourceRoomName: donor.room.name,
-        legacyAmount: amount,
-        legacyTaskId: task.task.id,
-        legacyAddedAmount: exactAddedAmount,
-        legacyRemainingBefore: exactRemainingBefore,
-        legacyFeeDelta: Math.max(0, legacyFeeAfter - exactLegacyFeeBefore),
+      measureLogisticsShadowCpu("producer", () => {
+        const exactRemainingBefore = mergeTargetBefore?.taskId === task.task.id
+          ? mergeTargetBefore.remainingAmount
+          : 0;
+        const exactAddedAmount = Math.max(0, task.task.remainingAmount - exactRemainingBefore);
+        const exactLegacyFeeBefore = getLegacyOutgoingFeeCommitment(
+          donor.room.name,
+          room.name,
+          exactRemainingBefore,
+        );
+        const legacyFeeAfter = getLegacyOutgoingFeeCommitment(
+          donor.room.name,
+          room.name,
+          task.task.remainingAmount,
+        );
+        appendSynthesisLogisticsShadowRecord(shadowBatch, shadowDemand.demand, {
+          demandKey: shadowDemand.demandKey,
+          inputFingerprint,
+          localAmount: current,
+          incomingAmount: incoming,
+          uncoveredAmount: deficit,
+          comparableReason: "comparable",
+          legacyDecision: mergeTargetBefore?.taskId === task.task.id ? "merged" : "created",
+          legacyPriorityRank: SYNTHESIS_LEGACY_TRANSFER_PRIORITY_RANK,
+          legacyPriorityClass: shadowDemand.priorityClass,
+          legacySourceRoomName: donor.room.name,
+          legacyAmount: amount,
+          legacyTaskId: task.task.id,
+          legacyAddedAmount: exactAddedAmount,
+          legacyRemainingBefore: exactRemainingBefore,
+          legacyFeeDelta: Math.max(0, legacyFeeAfter - exactLegacyFeeBefore),
+        });
       });
     }
 
@@ -1995,36 +2013,27 @@ export function runSynthesisControl(): void {
     return;
   }
 
-  const captureResources = [...new Set(
-    Object.values(cfg.rooms)
-      .filter((room) => room.enabled)
-      .flatMap((room) => room.reactions)
-      .flatMap((reaction) => getProductReagents(reaction.product) ?? []),
-  )].sort();
-  const epochCapture = planningTick
-    && shadowEnabled
-    && resourceControlPlanningTick
-    && captureResources.length > 0
-    ? beginSynthesisShadowEpochCapture(captureResources)
-    : undefined;
-  if (
-    planningTick
-    && shadowEnabled
-    && resourceControlPlanningTick
-    && captureResources.length === 0
-  ) {
-    withdrawSynthesisLogisticsShadow();
-  }
   const shadowBatch: SynthesisLogisticsShadowBatch | undefined =
-    epochCapture?.ok
-      ? {
-          ttl: resolveSynthesisLogisticsTtl(cfg.sampleInterval),
-          epochCapture,
-          demands: [],
-          observations: [],
-          totalCount: 0,
-          overflowCount: 0,
-        }
+    planningTick && shadowEnabled && resourceControlPlanningTick
+      ? measureLogisticsShadowCpu("producer", () => {
+          const captureResources = [...new Set(
+            Object.values(cfg.rooms)
+              .filter((room) => room.enabled)
+              .flatMap((room) => room.reactions)
+              .flatMap((reaction) => getProductReagents(reaction.product) ?? []),
+          )].sort();
+          const epochCapture = beginSynthesisShadowEpochCapture(captureResources);
+          return epochCapture.ok
+            ? {
+                ttl: resolveSynthesisLogisticsTtl(cfg.sampleInterval),
+                epochCapture,
+                demands: [],
+                observations: [],
+                totalCount: 0,
+                overflowCount: 0,
+              }
+            : undefined;
+        })
       : undefined;
   const roomEntries = new Map(Object.entries(cfg.rooms));
   const transferTasks = createSynthesisTransferTaskIndex(
@@ -2056,33 +2065,35 @@ export function runSynthesisControl(): void {
   runtime.updatedAt = Game.time;
   runtime.lastActions = limitActionLog(actions);
   if (shadowBatch) {
-    const factBuild = shadowBatch.epochCapture.buildRoomFacts(
-      [...new Set(shadowBatch.demands.map((demand) => demand.resource))].sort(),
-    );
-    if (factBuild.ok) {
-      replaceLatestLogisticsDemandsForProducer(
-        SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
-        shadowBatch.demands,
-        shadowBatch.observations,
-        {
-          totalCount: shadowBatch.totalCount,
-          overflowCount: shadowBatch.overflowCount,
-          ttl: Math.max(shadowBatch.ttl, factBuild.expiresAt - factBuild.observedAt),
-          epochRevision: factBuild.epochRevision,
-          epochFingerprint: factBuild.epochFingerprint,
-          captureCpuUsed: factBuild.captureCpuUsed,
-          indexBuildCount: factBuild.indexBuildCount,
-          roomFacts: factBuild.roomFacts.map(({
-            revision: _revision,
-            observedAt,
-            expiresAt,
-            ...fact
-          }) => ({
-            ...fact,
-            ttl: Math.max(1, expiresAt - observedAt),
-          })),
-        },
+    measureLogisticsShadowCpu("producer", () => {
+      const factBuild = shadowBatch.epochCapture.buildRoomFacts(
+        [...new Set(shadowBatch.demands.map((demand) => demand.resource))].sort(),
       );
-    }
+      if (factBuild.ok) {
+        replaceLatestLogisticsDemandsForProducer(
+          SYNTHESIS_ROOM_LOGISTICS_PRODUCER,
+          shadowBatch.demands,
+          shadowBatch.observations,
+          {
+            totalCount: shadowBatch.totalCount,
+            overflowCount: shadowBatch.overflowCount,
+            ttl: Math.max(shadowBatch.ttl, factBuild.expiresAt - factBuild.observedAt),
+            epochRevision: factBuild.epochRevision,
+            epochFingerprint: factBuild.epochFingerprint,
+            captureCpuUsed: factBuild.captureCpuUsed,
+            indexBuildCount: factBuild.indexBuildCount,
+            roomFacts: factBuild.roomFacts.map(({
+              revision: _revision,
+              observedAt,
+              expiresAt,
+              ...fact
+            }) => ({
+              ...fact,
+              ttl: Math.max(1, expiresAt - observedAt),
+            })),
+          },
+        );
+      }
+    });
   }
 }

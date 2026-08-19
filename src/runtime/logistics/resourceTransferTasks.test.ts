@@ -4,15 +4,19 @@ import {
 } from "@/runtime/logistics/resourceTransferTasks";
 import * as resourceTransferTaskModule from "@/runtime/logistics/resourceTransferTasks";
 import {
+  clearLogisticsControlValidatedArtifactForTest,
   cleanupLogisticsControlStore,
   ensureLogisticsControlStore,
+  getLogisticsControlCodecDiagnostics,
   getLogisticsControlStoreUsage,
   LOGISTICS_CONTROL_DATA_LIMIT_BYTES,
   mapLegacyTransferOrigin,
   mapLegacyTransferPriority,
   peekLogisticsControlStore,
+  readLogisticsControlStoreExact,
   replaceLatestLogisticsDemandsForProducer,
   replaceLogisticsRoomFacts,
+  resetLogisticsControlCodecDiagnosticsForTest,
   resolveLogisticsControlConfig,
   resolveLogisticsExecutionAuthority,
 } from "@/runtime/logistics/logisticsControl";
@@ -75,6 +79,8 @@ describe("resource transfer task health v2", () => {
   beforeEach(() => {
     resetRuntimeServices();
     registerRuntimeServices();
+    clearLogisticsControlValidatedArtifactForTest();
+    resetLogisticsControlCodecDiagnosticsForTest();
     Game.time = 100;
     Memory.cfg = undefined;
     Memory.data = undefined;
@@ -646,6 +652,7 @@ describe("resource transfer task health v2", () => {
         receiverResourceHeadroom: 60_000 - resourceIndex,
       })),
     }));
+    resetLogisticsControlCodecDiagnosticsForTest();
     const compact = replaceLatestLogisticsDemandsForProducer(
       producer,
       compactDrafts,
@@ -681,9 +688,23 @@ describe("resource transfer task health v2", () => {
     expect(compact).toEqual(expect.objectContaining({ ok: true }));
     if (!compact.ok) return;
     expect(compact.entries).toHaveLength(16);
-    const compactStore = peekLogisticsControlStore();
+    const compactStore = readLogisticsControlStoreExact();
     expect(compactStore).toEqual(expect.objectContaining({ ok: true }));
     if (!compactStore.ok) return;
+    expect(compactStore.readSource).toBe("same_tick_validated_artifact");
+    expect(compactStore.artifactToken.length).toBeLessThan(64);
+    expect(compactStore.usage.utf8Bytes).toBe(5_043);
+    expect(getLogisticsControlCodecDiagnostics()).toEqual({
+      encodePasses: 2,
+      decodePasses: 1,
+      wireSerializePasses: 4,
+      strictReads: 0,
+      artifactFastReads: 2,
+      artifactFallbacks: 0,
+      attachSuccesses: 1,
+      roomFactEpochShortCircuits: 0,
+      roomFactSemanticComparisons: 0,
+    });
     const compactUsage = getLogisticsControlStoreUsage(compactStore.store);
     expect(compactUsage.utf8Bytes).toBe(5_043);
     expect(compactUsage.utf8Bytes).toBeLessThanOrEqual(LOGISTICS_CONTROL_DATA_LIMIT_BYTES);
@@ -697,6 +718,35 @@ describe("resource transfer task health v2", () => {
       }),
     ]);
     const compactSemantic = JSON.stringify(compactStore.store);
+    const compactIntent = Object.values(compactStore.store.latestIntents)[0];
+    expect(Object.isFrozen(compactStore.store)).toBe(true);
+    expect(Object.isFrozen(compactStore.store.latestIntents)).toBe(true);
+    expect(Object.isFrozen(compactIntent)).toBe(true);
+    expect(Object.isFrozen(compactStore.usage)).toBe(true);
+    expect(Reflect.set(
+      compactStore.store as unknown as Record<string, unknown>,
+      "cursor",
+      compactStore.store.cursor + 1,
+    )).toBe(false);
+    expect(Reflect.set(
+      compactIntent as unknown as Record<string, unknown>,
+      "desiredAmount",
+      999_999,
+    )).toBe(false);
+    expect(Reflect.set(
+      compactStore.usage as unknown as Record<string, unknown>,
+      "utf8Bytes",
+      0,
+    )).toBe(false);
+    const immutableArtifactRead = readLogisticsControlStoreExact();
+    expect(immutableArtifactRead).toEqual(expect.objectContaining({
+      ok: true,
+      readSource: "same_tick_validated_artifact",
+      artifactToken: compactStore.artifactToken,
+      usage: compactStore.usage,
+    }));
+    if (!immutableArtifactRead.ok) return;
+    expect(JSON.stringify(immutableArtifactRead.store)).toBe(compactSemantic);
     const expandedFixture = JSON.parse(compactSemantic) as Record<string, unknown>;
     expect(Buffer.byteLength(JSON.stringify(expandedFixture), "utf8"))
       .toBeGreaterThan(LOGISTICS_CONTROL_DATA_LIMIT_BYTES);
@@ -716,12 +766,23 @@ describe("resource transfer task health v2", () => {
     expect(Object.keys(rawCompact).sort()).toEqual([
       "c", "f", "i", "o", "p", "s", "schemaVersion", "wireFormat",
     ]);
+    resetLogisticsControlCodecDiagnosticsForTest();
     Memory.data = JSON.parse(JSON.stringify(Memory.data)) as Memory["data"];
     resetRuntimeServices();
     registerRuntimeServices();
-    const compactRoundTrip = peekLogisticsControlStore();
+    const compactRoundTrip = readLogisticsControlStoreExact();
     expect(compactRoundTrip).toEqual(expect.objectContaining({ ok: true }));
     if (!compactRoundTrip.ok) return;
+    expect(compactRoundTrip.readSource).toBe("strict_compact");
+    expect(getLogisticsControlCodecDiagnostics()).toEqual(expect.objectContaining({
+      encodePasses: 1,
+      decodePasses: 1,
+      wireSerializePasses: 2,
+      strictReads: 1,
+      artifactFastReads: 0,
+      artifactFallbacks: 1,
+      attachSuccesses: 0,
+    }));
     expect(JSON.stringify(compactRoundTrip.store)).toBe(compactSemantic);
     const restoredAfterCompact = replaceLatestLogisticsDemandsForProducer(producer, [draft]);
     expect(restoredAfterCompact).toEqual(expect.objectContaining({ ok: true }));
@@ -763,18 +824,54 @@ describe("resource transfer task health v2", () => {
         receiverResourceHeadroom: 60_000,
       }],
     };
+    const roomFactCounterBefore = getLogisticsControlCodecDiagnostics();
     const facts = replaceLogisticsRoomFacts([factDraft]);
     expect(facts).toEqual(expect.objectContaining({ ok: true }));
     if (!facts.ok) return;
+    const changedRoomFactCounter = getLogisticsControlCodecDiagnostics();
+    expect(changedRoomFactCounter.roomFactEpochShortCircuits)
+      .toBe(roomFactCounterBefore.roomFactEpochShortCircuits + 1);
+    expect(changedRoomFactCounter.roomFactSemanticComparisons)
+      .toBe(roomFactCounterBefore.roomFactSemanticComparisons);
     expect(facts.entries[0]).toEqual(expect.objectContaining({ revision: 2, expiresAt: 9_008 }));
     Game.time = 9_007;
     const factHeartbeat = replaceLogisticsRoomFacts([factDraft]);
     expect(factHeartbeat).toEqual(expect.objectContaining({ ok: true }));
     if (!factHeartbeat.ok) return;
+    expect(getLogisticsControlCodecDiagnostics().roomFactSemanticComparisons)
+      .toBe(changedRoomFactCounter.roomFactSemanticComparisons + 1);
     expect(factHeartbeat.entries[0]).toEqual(expect.objectContaining({
       revision: 2,
       observedAt: 9_007,
       expiresAt: 9_009,
+    }));
+
+    resetLogisticsControlCodecDiagnosticsForTest();
+    Game.time = 9_008;
+    const tickRolloverRead = readLogisticsControlStoreExact();
+    expect(tickRolloverRead).toEqual(expect.objectContaining({
+      ok: true,
+      readSource: "strict_compact",
+    }));
+    expect(getLogisticsControlCodecDiagnostics()).toEqual(expect.objectContaining({
+      strictReads: 1,
+      artifactFastReads: 0,
+      artifactFallbacks: 1,
+    }));
+    Game.time = 9_007;
+    expect(replaceLogisticsRoomFacts([factDraft])).toEqual(expect.objectContaining({ ok: true }));
+
+    resetLogisticsControlCodecDiagnosticsForTest();
+    clearLogisticsControlValidatedArtifactForTest();
+    const globalResetRead = readLogisticsControlStoreExact();
+    expect(globalResetRead).toEqual(expect.objectContaining({
+      ok: true,
+      readSource: "strict_compact",
+    }));
+    expect(getLogisticsControlCodecDiagnostics()).toEqual(expect.objectContaining({
+      strictReads: 1,
+      artifactFastReads: 0,
+      artifactFallbacks: 0,
     }));
 
     const serializedData = JSON.stringify(Memory.data);
@@ -832,6 +929,7 @@ describe("resource transfer task health v2", () => {
     let rawLogistics = (Memory.data!.resourceControl as unknown as {
       logistics: { schemaVersion: number; c: number; p: unknown[] };
     }).logistics;
+    resetLogisticsControlCodecDiagnosticsForTest();
     rawLogistics.c = Number.MAX_SAFE_INTEGER;
     const cursorOverflowBefore = JSON.stringify(Memory.data);
     expect(replaceLatestLogisticsDemandsForProducer(producer, [{
@@ -839,6 +937,15 @@ describe("resource transfer task health v2", () => {
       demandKey: "cursor-overflow",
     }])).toEqual({ ok: false, reason: "generation_cursor_overflow" });
     expect(JSON.stringify(Memory.data)).toBe(cursorOverflowBefore);
+    expect(getLogisticsControlCodecDiagnostics()).toEqual(expect.objectContaining({
+      encodePasses: 1,
+      decodePasses: 1,
+      wireSerializePasses: 2,
+      strictReads: 1,
+      artifactFastReads: 0,
+      artifactFallbacks: 1,
+      attachSuccesses: 0,
+    }));
 
     Memory.data = JSON.parse(knownV1Data) as Memory["data"];
     rawLogistics = (Memory.data!.resourceControl as unknown as {

@@ -128,6 +128,61 @@ export type SynthesisShadowUnmatchedReason =
   | "malformed_input"
   | "stale_intent";
 
+export type SynthesisShadowLegacySourceDisposition =
+  | "selected"
+  | "feasible_lower_rank"
+  | "rejected"
+  | "not_candidate"
+  | "not_evaluated";
+
+export interface SynthesisShadowLegacySourceCandidateTrace {
+  sourceRoom: string;
+  disposition: SynthesisShadowLegacySourceDisposition;
+  rejection?: SynthesisShadowCandidateRejection;
+}
+
+export type SynthesisShadowReceiverTrace =
+  | {
+      kind: "present";
+      receiverEligible: boolean;
+      storageHeadroom: number;
+      terminalHeadroom: number;
+      resourceHeadroom: number;
+    }
+  | { kind: "missing" };
+
+export type SynthesisShadowCandidateRejectionCount = readonly [
+  reason: SynthesisShadowCandidateRejection,
+  count: number,
+];
+
+/**
+ * Bounded explanation captured while the matcher is already evaluating this
+ * intent. It never performs an additional room read or transaction-cost quote.
+ */
+export interface SynthesisShadowCandidateTrace {
+  donorCount: number;
+  evaluatedCount: number;
+  feasibleCount: number;
+  rejectedCount: number;
+  /** REJECTION_ORDER-selected cause for an unmatched candidate set. */
+  selectedRejection?: SynthesisShadowCandidateRejection;
+  /** Sparse positive counts in canonical REJECTION_ORDER. */
+  rejectionCounts: readonly SynthesisShadowCandidateRejectionCount[];
+  /** The matcher-selected source (rank 1), when a feasible route exists. */
+  topSourceRoom?: string;
+  /** How the legacy source ranked under the same frozen Shadow inputs. */
+  legacySource?: SynthesisShadowLegacySourceCandidateTrace;
+  /** Receiver residual at the start of this intent, before its route is applied. */
+  receiver: SynthesisShadowReceiverTrace;
+}
+
+export interface SynthesisShadowPartialLegacySourceEvaluation {
+  sourceRoom: string;
+  outcome: "feasible" | "rejected";
+  rejection?: SynthesisShadowCandidateRejection;
+}
+
 export interface SynthesisShadowDemandObservation {
   /** Stable producer-scoped key used to pair shadow and legacy observations. */
   comparisonKey: string;
@@ -268,6 +323,7 @@ export interface SynthesisShadowDecision extends SynthesisShadowRouteFact {
   inputRevision: string;
   inputFingerprint: string;
   observedAt: number;
+  candidateTrace: SynthesisShadowCandidateTrace;
 }
 
 export interface SynthesisShadowUnmatchedDemand {
@@ -284,6 +340,7 @@ export interface SynthesisShadowUnmatchedDemand {
   capacity: SynthesisShadowCapacity;
   predictedStagingEligibility: SynthesisShadowPredictedStagingEligibility;
   reason: SynthesisShadowUnmatchedReason;
+  candidateTrace: SynthesisShadowCandidateTrace;
 }
 
 export interface SynthesisShadowComparisonSample {
@@ -329,7 +386,7 @@ export interface SynthesisShadowResidualProjection {
 }
 
 export interface SynthesisShadowContinuation {
-  schemaVersion: 1;
+  schemaVersion: 2;
   /** Bounded integrity checksum of every checkpoint field below. */
   checkpointFingerprint: string;
   inputRevision: string;
@@ -344,6 +401,7 @@ export interface SynthesisShadowContinuation {
   partialRejectionCounts: Partial<
     Record<SynthesisShadowCandidateRejection, number>
   >;
+  partialLegacySourceEvaluation?: SynthesisShadowPartialLegacySourceEvaluation;
   completedDecisions: SynthesisShadowDecision[];
   completedUnmatched: SynthesisShadowUnmatchedDemand[];
   residual: SynthesisShadowResidualProjection;
@@ -1055,10 +1113,173 @@ function cloneRejectionCounts(
   return clone;
 }
 
+function rejectionCountEntries(
+  counts: Partial<Record<SynthesisShadowCandidateRejection, number>>,
+): SynthesisShadowCandidateRejectionCount[] {
+  const entries: SynthesisShadowCandidateRejectionCount[] = [];
+  for (const reason of REJECTION_ORDER) {
+    const count = counts[reason] || 0;
+    if (count > 0) entries.push([reason, count]);
+  }
+  return entries;
+}
+
+function cloneReceiverTrace(
+  receiver: SynthesisShadowReceiverTrace,
+): SynthesisShadowReceiverTrace {
+  return receiver.kind === "missing"
+    ? { kind: "missing" }
+    : {
+        kind: "present",
+        receiverEligible: receiver.receiverEligible,
+        storageHeadroom: receiver.storageHeadroom,
+        terminalHeadroom: receiver.terminalHeadroom,
+        resourceHeadroom: receiver.resourceHeadroom,
+      };
+}
+
+function captureReceiverTrace(
+  demand: PreparedDemand,
+  prepared: PreparedInput,
+  projection: MutableProjection,
+): SynthesisShadowReceiverTrace {
+  const room = prepared.rooms.get(demand.observation.targetRoom);
+  const receiver = projection.receivers.get(demand.observation.targetRoom);
+  if (!room || !receiver) return { kind: "missing" };
+  return {
+    kind: "present",
+    receiverEligible: room.receiverEligible,
+    storageHeadroom: receiver.storageHeadroom,
+    terminalHeadroom: receiver.terminalHeadroom,
+    resourceHeadroom:
+      receiver.resources.get(demand.observation.resource) || 0,
+  };
+}
+
+function clonePartialLegacySourceEvaluation(
+  value: SynthesisShadowPartialLegacySourceEvaluation | undefined,
+): SynthesisShadowPartialLegacySourceEvaluation | undefined {
+  if (!value) return undefined;
+  return {
+    sourceRoom: value.sourceRoom,
+    outcome: value.outcome,
+    ...(value.rejection ? { rejection: value.rejection } : {}),
+  };
+}
+
+function buildLegacySourceTrace(
+  legacy: SynthesisShadowLegacyDecisionObservation | undefined,
+  donors: readonly SynthesisShadowRoomFact[],
+  evaluatedCount: number,
+  topSourceRoom: string | undefined,
+  evaluation: SynthesisShadowPartialLegacySourceEvaluation | undefined,
+): SynthesisShadowLegacySourceCandidateTrace | undefined {
+  if (!legacy || legacy.kind !== "route") return undefined;
+  const sourceRoom = legacy.route.sourceRoom;
+  const donorIndex = donors.findIndex((donor) => donor.roomName === sourceRoom);
+  if (donorIndex < 0) {
+    return { sourceRoom, disposition: "not_candidate" };
+  }
+  if (donorIndex >= evaluatedCount || !evaluation) {
+    return { sourceRoom, disposition: "not_evaluated" };
+  }
+  if (evaluation.outcome === "rejected") {
+    return {
+      sourceRoom,
+      disposition: "rejected",
+      ...(evaluation.rejection ? { rejection: evaluation.rejection } : {}),
+    };
+  }
+  return {
+    sourceRoom,
+    disposition:
+      topSourceRoom === sourceRoom ? "selected" : "feasible_lower_rank",
+  };
+}
+
+function buildCandidateTrace(
+  demand: PreparedDemand,
+  prepared: PreparedInput,
+  projection: MutableProjection,
+  donors: readonly SynthesisShadowRoomFact[],
+  evaluatedCount: number,
+  rejectionCounts: Partial<
+    Record<SynthesisShadowCandidateRejection, number>
+  >,
+  topRoute: SynthesisShadowRouteFact | undefined,
+  legacy: SynthesisShadowLegacyDecisionObservation | undefined,
+  legacySourceEvaluation:
+    | SynthesisShadowPartialLegacySourceEvaluation
+    | undefined,
+  selectedRejection?: SynthesisShadowCandidateRejection,
+): SynthesisShadowCandidateTrace {
+  const canonicalRejections = rejectionCountEntries(rejectionCounts);
+  const rejectedCount = canonicalRejections.reduce(
+    (total, [, count]) => total + count,
+    0,
+  );
+  const feasibleCount = Math.max(0, evaluatedCount - rejectedCount);
+  const topSourceRoom = topRoute?.sourceRoom;
+  const legacySource = buildLegacySourceTrace(
+    legacy,
+    donors,
+    evaluatedCount,
+    topSourceRoom,
+    legacySourceEvaluation,
+  );
+  return {
+    donorCount: donors.length,
+    evaluatedCount,
+    feasibleCount,
+    rejectedCount,
+    ...(selectedRejection ? { selectedRejection } : {}),
+    rejectionCounts: canonicalRejections,
+    ...(topSourceRoom ? { topSourceRoom } : {}),
+    ...(legacySource ? { legacySource } : {}),
+    receiver: captureReceiverTrace(demand, prepared, projection),
+  };
+}
+
+function cloneCandidateTrace(
+  trace: SynthesisShadowCandidateTrace,
+): SynthesisShadowCandidateTrace {
+  return {
+    donorCount: trace.donorCount,
+    evaluatedCount: trace.evaluatedCount,
+    feasibleCount: trace.feasibleCount,
+    rejectedCount: trace.rejectedCount,
+    ...(trace.selectedRejection
+      ? { selectedRejection: trace.selectedRejection }
+      : {}),
+    rejectionCounts: trace.rejectionCounts.map(
+      ([reason, count]) => [reason, count] as const,
+    ),
+    ...(trace.topSourceRoom ? { topSourceRoom: trace.topSourceRoom } : {}),
+    ...(trace.legacySource
+      ? {
+          legacySource: {
+            sourceRoom: trace.legacySource.sourceRoom,
+            disposition: trace.legacySource.disposition,
+            ...(trace.legacySource.rejection
+              ? { rejection: trace.legacySource.rejection }
+              : {}),
+          },
+        }
+      : {}),
+    receiver: cloneReceiverTrace(trace.receiver),
+  };
+}
+
 function isRejectionCountMap(
   value: Partial<Record<SynthesisShadowCandidateRejection, number>> | undefined,
 ): boolean {
-  if (!value || typeof value !== "object") return false;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !hasOnlyOwnKeys(value, REJECTION_ORDER)
+  ) {
+    return false;
+  }
   return REJECTION_ORDER.every((reason) => {
     const count = value[reason];
     return count === undefined || isNonNegativeSafeInteger(count);
@@ -1491,6 +1712,7 @@ function makeUnmatched(
   input: SynthesisShadowMatcherInput,
   demand: PreparedDemand,
   reason: SynthesisShadowUnmatchedReason,
+  candidateTrace: SynthesisShadowCandidateTrace,
 ): SynthesisShadowUnmatchedDemand {
   const target = demand.observation.targetRoom;
   const isCapacityBlock =
@@ -1512,6 +1734,7 @@ function makeUnmatched(
     capacity: isCapacityBlock ? "blocked" : "unknown",
     predictedStagingEligibility: isStagingBlock ? "blocked" : "unknown",
     reason,
+    candidateTrace: cloneCandidateTrace(candidateTrace),
   };
 }
 
@@ -1519,6 +1742,7 @@ function makeDecision(
   input: SynthesisShadowMatcherInput,
   demand: PreparedDemand,
   route: SynthesisShadowRouteFact,
+  candidateTrace: SynthesisShadowCandidateTrace,
 ): SynthesisShadowDecision {
   return {
     ...cloneRouteFact(route),
@@ -1528,6 +1752,7 @@ function makeDecision(
     inputRevision: demand.observation.revision,
     inputFingerprint: demand.observation.inputFingerprint,
     observedAt: input.now,
+    candidateTrace: cloneCandidateTrace(candidateTrace),
   };
 }
 
@@ -1567,6 +1792,7 @@ function cloneDecision(
     inputRevision: decision.inputRevision,
     inputFingerprint: decision.inputFingerprint,
     observedAt: decision.observedAt,
+    candidateTrace: cloneCandidateTrace(decision.candidateTrace),
   };
 }
 
@@ -1587,6 +1813,7 @@ function cloneUnmatched(
     capacity: unmatched.capacity,
     predictedStagingEligibility: unmatched.predictedStagingEligibility,
     reason: unmatched.reason,
+    candidateTrace: cloneCandidateTrace(unmatched.candidateTrace),
   };
 }
 
@@ -1614,6 +1841,36 @@ function routeFingerprintFields(route: SynthesisShadowRouteFact): unknown[] {
     route.terminalEnergyAllocatedAmount,
     route.feeStagingRequiredAmount,
     route.stableKey,
+  ];
+}
+
+function candidateTraceFingerprintFields(
+  trace: SynthesisShadowCandidateTrace,
+): unknown[] {
+  return [
+    trace.donorCount,
+    trace.evaluatedCount,
+    trace.feasibleCount,
+    trace.rejectedCount,
+    trace.selectedRejection || null,
+    trace.rejectionCounts.map(([reason, count]) => [reason, count]),
+    trace.topSourceRoom || null,
+    trace.legacySource
+      ? [
+          trace.legacySource.sourceRoom,
+          trace.legacySource.disposition,
+          trace.legacySource.rejection || null,
+        ]
+      : null,
+    trace.receiver.kind === "missing"
+      ? ["missing"]
+      : [
+          "present",
+          trace.receiver.receiverEligible,
+          trace.receiver.storageHeadroom,
+          trace.receiver.terminalHeadroom,
+          trace.receiver.resourceHeadroom,
+        ],
   ];
 }
 
@@ -1652,6 +1909,13 @@ function computeContinuationFingerprint(
       REJECTION_ORDER.map((reason) =>
         continuation.partialRejectionCounts[reason] || 0
       ),
+      continuation.partialLegacySourceEvaluation
+        ? [
+            continuation.partialLegacySourceEvaluation.sourceRoom,
+            continuation.partialLegacySourceEvaluation.outcome,
+            continuation.partialLegacySourceEvaluation.rejection || null,
+          ]
+        : null,
       continuation.completedDecisions.map((decision) => [
         decision.comparisonKey,
         decision.demandKey,
@@ -1660,6 +1924,7 @@ function computeContinuationFingerprint(
         decision.inputFingerprint,
         decision.observedAt,
         routeFingerprintFields(decision),
+        candidateTraceFingerprintFields(decision.candidateTrace),
       ]),
       continuation.completedUnmatched.map((unmatched) => [
         unmatched.comparisonKey,
@@ -1675,6 +1940,7 @@ function computeContinuationFingerprint(
         unmatched.capacity,
         unmatched.predictedStagingEligibility,
         unmatched.reason,
+        candidateTraceFingerprintFields(unmatched.candidateTrace),
       ]),
       continuation.residual.sources.map((source) => [
         source.roomName,
@@ -1715,6 +1981,199 @@ function isUnmatchedReason(value: unknown): value is SynthesisShadowUnmatchedRea
     value === "malformed_input" ||
     value === "stale_intent" ||
     REJECTION_ORDER.includes(value as SynthesisShadowCandidateRejection);
+}
+
+function isCandidateRejection(
+  value: unknown,
+): value is SynthesisShadowCandidateRejection {
+  return REJECTION_ORDER.includes(value as SynthesisShadowCandidateRejection);
+}
+
+function hasOnlyOwnKeys(
+  value: object,
+  allowed: readonly string[],
+): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
+function isPartialLegacySourceEvaluation(
+  value: unknown,
+): value is SynthesisShadowPartialLegacySourceEvaluation | undefined {
+  if (value === undefined) return true;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !hasOnlyOwnKeys(value, ["sourceRoom", "outcome", "rejection"])
+  ) {
+    return false;
+  }
+  const evaluation = value as SynthesisShadowPartialLegacySourceEvaluation;
+  if (
+    !isBoundedString(evaluation.sourceRoom, SYNTHESIS_SHADOW_MAX_NAME_LENGTH) ||
+    (evaluation.outcome !== "feasible" && evaluation.outcome !== "rejected")
+  ) {
+    return false;
+  }
+  return evaluation.outcome === "rejected"
+    ? isCandidateRejection(evaluation.rejection)
+    : evaluation.rejection === undefined;
+}
+
+function readCandidateTraceRejectionCounts(
+  trace: SynthesisShadowCandidateTrace,
+): Partial<Record<SynthesisShadowCandidateRejection, number>> | null {
+  if (
+    !Array.isArray(trace.rejectionCounts) ||
+    trace.rejectionCounts.length > REJECTION_ORDER.length
+  ) {
+    return null;
+  }
+  const counts: Partial<Record<SynthesisShadowCandidateRejection, number>> = {};
+  let previousIndex = -1;
+  for (const entry of trace.rejectionCounts) {
+    if (!Array.isArray(entry) || entry.length !== 2) return null;
+    const [reason, count] = entry;
+    const reasonIndex = REJECTION_ORDER.indexOf(reason);
+    if (
+      reasonIndex <= previousIndex ||
+      !isPositiveSafeInteger(count)
+    ) {
+      return null;
+    }
+    counts[reason] = count;
+    previousIndex = reasonIndex;
+  }
+  return counts;
+}
+
+function candidateTraceMatchesDemand(
+  trace: SynthesisShadowCandidateTrace,
+  completed: SynthesisShadowDecision | SynthesisShadowUnmatchedDemand,
+  demand: PreparedDemand,
+  donors: readonly SynthesisShadowRoomFact[],
+  prepared: PreparedInput,
+  projection: MutableProjection,
+  legacy: SynthesisShadowLegacyDecisionObservation | undefined,
+  skipsCandidates: boolean,
+): boolean {
+  if (
+    !trace ||
+    typeof trace !== "object" ||
+    !hasOnlyOwnKeys(trace, [
+      "donorCount",
+      "evaluatedCount",
+      "feasibleCount",
+      "rejectedCount",
+      "selectedRejection",
+      "rejectionCounts",
+      "topSourceRoom",
+      "legacySource",
+      "receiver",
+    ]) ||
+    !isNonNegativeSafeInteger(trace.donorCount) ||
+    trace.donorCount !== donors.length ||
+    !isNonNegativeSafeInteger(trace.evaluatedCount) ||
+    trace.evaluatedCount > trace.donorCount ||
+    !isNonNegativeSafeInteger(trace.feasibleCount) ||
+    !isNonNegativeSafeInteger(trace.rejectedCount) ||
+    trace.feasibleCount + trace.rejectedCount !== trace.evaluatedCount ||
+    trace.evaluatedCount !== (skipsCandidates ? 0 : donors.length) ||
+    (trace.selectedRejection !== undefined &&
+      !isCandidateRejection(trace.selectedRejection)) ||
+    (trace.topSourceRoom !== undefined &&
+      !isBoundedString(trace.topSourceRoom, SYNTHESIS_SHADOW_MAX_NAME_LENGTH))
+  ) {
+    return false;
+  }
+  const rejectionCounts = readCandidateTraceRejectionCounts(trace);
+  if (
+    !rejectionCounts ||
+    countRejections(rejectionCounts) !== trace.rejectedCount ||
+    !trace.receiver ||
+    typeof trace.receiver !== "object" ||
+    !hasOnlyOwnKeys(
+      trace.receiver,
+      trace.receiver.kind === "missing"
+        ? ["kind"]
+        : [
+            "kind",
+            "receiverEligible",
+            "storageHeadroom",
+            "terminalHeadroom",
+            "resourceHeadroom",
+          ],
+    ) ||
+    JSON.stringify(trace.receiver) !==
+      JSON.stringify(captureReceiverTrace(demand, prepared, projection))
+  ) {
+    return false;
+  }
+
+  const isDecision = "sourceRoom" in completed;
+  if (isDecision) {
+    if (
+      trace.feasibleCount <= 0 ||
+      trace.topSourceRoom !== completed.sourceRoom ||
+      trace.selectedRejection !== undefined
+    ) {
+      return false;
+    }
+  } else {
+    if (trace.feasibleCount !== 0 || trace.topSourceRoom !== undefined) {
+      return false;
+    }
+    const expectedSelected = isCandidateRejection(completed.reason)
+      ? completed.reason
+      : undefined;
+    if (trace.selectedRejection !== expectedSelected) return false;
+    if (
+      expectedSelected &&
+      selectUnmatchedReason(rejectionCounts) !== expectedSelected
+    ) {
+      return false;
+    }
+  }
+
+  const legacySource = trace.legacySource;
+  if (!legacy || legacy.kind !== "route") {
+    return legacySource === undefined;
+  }
+  if (
+    !legacySource ||
+    typeof legacySource !== "object" ||
+    !hasOnlyOwnKeys(legacySource, [
+      "sourceRoom",
+      "disposition",
+      "rejection",
+    ]) ||
+    legacySource.sourceRoom !== legacy.route.sourceRoom
+  ) {
+    return false;
+  }
+  const donorIndex = donors.findIndex(
+    (donor) => donor.roomName === legacy.route.sourceRoom,
+  );
+  if (legacySource.disposition === "not_candidate") {
+    return donorIndex < 0 && legacySource.rejection === undefined;
+  }
+  if (legacySource.disposition === "not_evaluated") {
+    return donorIndex >= trace.evaluatedCount &&
+      legacySource.rejection === undefined;
+  }
+  if (donorIndex < 0 || donorIndex >= trace.evaluatedCount) return false;
+  if (legacySource.disposition === "selected") {
+    return trace.topSourceRoom === legacySource.sourceRoom &&
+      legacySource.rejection === undefined;
+  }
+  if (legacySource.disposition === "feasible_lower_rank") {
+    return trace.feasibleCount >= 2 &&
+      trace.topSourceRoom !== legacySource.sourceRoom &&
+      legacySource.rejection === undefined;
+  }
+  return legacySource.disposition === "rejected" &&
+    isCandidateRejection(legacySource.rejection) &&
+    (rejectionCounts[legacySource.rejection] || 0) > 0;
 }
 
 function completedIdentityMatchesDemand(
@@ -1787,6 +2246,7 @@ function routeMatchesDemand(
 function validateContinuation(
   input: SynthesisShadowMatcherInput,
   prepared: PreparedInput,
+  legacy: SynthesisShadowLegacyIndex,
   continuation: SynthesisShadowContinuation,
 ): ContinuationValidationResult | null {
   if (
@@ -1795,7 +2255,7 @@ function validateContinuation(
     !continuation.residual ||
     !Array.isArray(continuation.residual.sources) ||
     !Array.isArray(continuation.residual.receivers) ||
-    continuation.schemaVersion !== 1 ||
+    continuation.schemaVersion !== 2 ||
     typeof continuation.checkpointFingerprint !== "string" ||
     continuation.checkpointFingerprint.length !== 16 ||
     !isBoundedString(
@@ -1832,7 +2292,10 @@ function validateContinuation(
       continuation.totalCandidateEvaluations *
         SYNTHESIS_SHADOW_MAX_TRANSACTION_COST_EVALUATIONS_PER_CANDIDATE ||
     !isRejectionCountMap(continuation.rejectionCounts) ||
-    !isRejectionCountMap(continuation.partialRejectionCounts)
+    !isRejectionCountMap(continuation.partialRejectionCounts) ||
+    !isPartialLegacySourceEvaluation(
+      continuation.partialLegacySourceEvaluation,
+    )
   ) {
     return null;
   }
@@ -1934,6 +2397,20 @@ function validateContinuation(
       }
       expectedCandidateEvaluations += demandDonors.length;
     }
+    if (
+      !candidateTraceMatchesDemand(
+        completed.candidateTrace,
+        completed,
+        demand,
+        demandDonors,
+        prepared,
+        replayed,
+        legacy.index.get(demand.observation.comparisonKey),
+        skipsCandidates,
+      )
+    ) {
+      return null;
+    }
     if ("sourceRoom" in completed && !applyRouteToProjection(completed, replayed)) {
       return null;
     }
@@ -1947,6 +2424,32 @@ function validateContinuation(
       nextDemand,
       donors.slice(0, continuation.nextDonorIndex),
     )
+  ) {
+    return null;
+  }
+  const nextLegacy = legacy.index.get(nextDemand.observation.comparisonKey);
+  const nextLegacySource = nextLegacy?.kind === "route"
+    ? nextLegacy.route.sourceRoom
+    : undefined;
+  const nextLegacyDonorIndex = nextLegacySource
+    ? donors.findIndex((donor) => donor.roomName === nextLegacySource)
+    : -1;
+  const partialLegacySourceEvaluation =
+    continuation.partialLegacySourceEvaluation;
+  const partialLegacyEvaluationExpected =
+    nextLegacyDonorIndex >= 0 &&
+    nextLegacyDonorIndex < continuation.nextDonorIndex;
+  if (
+    partialLegacyEvaluationExpected !== !!partialLegacySourceEvaluation ||
+    (partialLegacySourceEvaluation &&
+      (partialLegacySourceEvaluation.sourceRoom !== nextLegacySource ||
+        (partialLegacySourceEvaluation.outcome === "rejected" &&
+          (!partialLegacySourceEvaluation.rejection ||
+            (continuation.partialRejectionCounts[
+              partialLegacySourceEvaluation.rejection
+            ] || 0) <= 0)) ||
+        (partialLegacySourceEvaluation.outcome === "feasible" &&
+          !continuation.partialBest)))
   ) {
     return null;
   }
@@ -2086,13 +2589,15 @@ function isLegacyRouteObservationMalformed(
       route.feeStagingRequiredAmount !== 0);
 }
 
-function buildLegacyIndex(
-  legacyDecisions: readonly SynthesisShadowLegacyDecisionObservation[],
-): {
+interface SynthesisShadowLegacyIndex {
   index: Map<string, SynthesisShadowLegacyDecisionObservation>;
   malformedKeys: Set<string>;
   globalMalformed: boolean;
-} {
+}
+
+function buildLegacyIndex(
+  legacyDecisions: readonly SynthesisShadowLegacyDecisionObservation[],
+): SynthesisShadowLegacyIndex {
   const index = new Map<string, SynthesisShadowLegacyDecisionObservation>();
   const malformedKeys = new Set<string>();
   let globalMalformed = legacyDecisions.length > SYNTHESIS_SHADOW_MAX_INTENTS;
@@ -2222,48 +2727,36 @@ function classifyDifference(
   legacy: SynthesisShadowLegacyDecisionObservation,
   shadow: SynthesisShadowDecision | SynthesisShadowUnmatchedDemand,
 ): SynthesisShadowComparisonClassification {
-  if (legacy.kind === "none" && "sourceRoom" in shadow) {
-    return legacy.capacity === "blocked" ||
-      legacy.predictedStagingEligibility === "blocked"
-      ? "unsafe_candidate"
-      : "legacy_unpaired";
+  // An unmatched Shadow outcome proposes no action and therefore cannot be an
+  // unsafe candidate. Its exact veto remains available in candidateTrace.
+  if (!("sourceRoom" in shadow)) {
+    return "expected_policy_difference";
   }
-  if (legacy.kind === "route" && !("sourceRoom" in shadow)) {
-    return legacy.route?.capacity === "blocked" ||
-      legacy.route?.predictedStagingEligibility === "blocked" ||
-      shadow.capacity === "blocked" ||
-      shadow.predictedStagingEligibility === "blocked"
-      ? "unsafe_candidate"
-      : "shadow_unpaired";
-  }
-  if (
-    legacy.kind === "none" &&
-    !("sourceRoom" in shadow) &&
-    (legacy.capacity === "blocked" ||
-      legacy.predictedStagingEligibility === "blocked" ||
-      shadow.capacity === "blocked" ||
-      shadow.predictedStagingEligibility === "blocked")
-  ) {
+  const receiver = shadow.candidateTrace.receiver;
+  const conflictsWithFrozenSafety =
+    shadow.capacity !== "eligible" ||
+    shadow.predictedStagingEligibility !== "eligible" ||
+    receiver.kind !== "present" ||
+    !receiver.receiverEligible ||
+    receiver.storageHeadroom < shadow.amount ||
+    receiver.terminalHeadroom < shadow.amount ||
+    receiver.resourceHeadroom < shadow.amount;
+  if (conflictsWithFrozenSafety) {
     return "unsafe_candidate";
   }
-  if (
-    legacy.route?.capacity === "blocked" ||
-    legacy.route?.predictedStagingEligibility === "blocked"
-  ) {
-    return "unsafe_candidate";
-  }
+  if (legacy.kind === "none") return "legacy_unpaired";
   return "expected_policy_difference";
 }
 
 function buildComparisons(
   input: SynthesisShadowMatcherInput,
   prepared: PreparedInput,
+  legacy: SynthesisShadowLegacyIndex,
   decisions: readonly SynthesisShadowDecision[],
   unmatched: readonly SynthesisShadowUnmatchedDemand[],
   complete: boolean,
   globalUnresolved?: SynthesisShadowUnresolvedReason,
 ): { samples: SynthesisShadowComparisonSample[]; total: number; equal: number; different: number; unresolved: number } {
-  const legacy = buildLegacyIndex(input.legacyDecisions || []);
   const decisionsByKey = new Map(decisions.map((entry) => [entry.comparisonKey, entry] as const));
   const unmatchedByKey = new Map(unmatched.map((entry) => [entry.comparisonKey, entry] as const));
   const samples: SynthesisShadowComparisonSample[] = [];
@@ -2420,6 +2913,7 @@ export function runSynthesisLogisticsShadow(
 ): SynthesisShadowMatcherResult {
   const candidateBudget = normalizeCandidateBudget(input.candidateBudget);
   const prepared = prepareInput(input);
+  const legacy = buildLegacyIndex(input.legacyDecisions || []);
   let projection = createProjection(prepared.rooms);
   let decisions: SynthesisShadowDecision[] = [];
   let unmatched: SynthesisShadowUnmatchedDemand[] = [];
@@ -2433,6 +2927,9 @@ export function runSynthesisLogisticsShadow(
   let partialRejectionCounts: Partial<
     Record<SynthesisShadowCandidateRejection, number>
   > = {};
+  let partialLegacySourceEvaluation:
+    | SynthesisShadowPartialLegacySourceEvaluation
+    | undefined;
   let continuationUsed = false;
   let continuationInvalidated = false;
   const globalInvalid =
@@ -2441,7 +2938,7 @@ export function runSynthesisLogisticsShadow(
   if (input.continuation) {
     const restored = globalInvalid
       ? null
-      : validateContinuation(input, prepared, input.continuation);
+      : validateContinuation(input, prepared, legacy, input.continuation);
     if (restored) {
       projection = restored.projection;
       decisions = input.continuation.completedDecisions.map(cloneDecision);
@@ -2459,6 +2956,9 @@ export function runSynthesisLogisticsShadow(
         : undefined;
       partialRejectionCounts = cloneRejectionCounts(
         input.continuation.partialRejectionCounts,
+      );
+      partialLegacySourceEvaluation = clonePartialLegacySourceEvaluation(
+        input.continuation.partialLegacySourceEvaluation,
       );
       continuationUsed = true;
     } else {
@@ -2478,35 +2978,76 @@ export function runSynthesisLogisticsShadow(
       demandIndex += 1
     ) {
       const demand = prepared.demands[demandIndex];
+      const donors = buildDonors(demand, prepared);
+      const legacyDecision = legacy.index.get(
+        demand.observation.comparisonKey,
+      );
+      const candidateTraceWithoutEvaluation = (
+        reason?: SynthesisShadowCandidateRejection,
+      ): SynthesisShadowCandidateTrace => buildCandidateTrace(
+        demand,
+        prepared,
+        projection,
+        donors,
+        0,
+        {},
+        undefined,
+        legacyDecision,
+        undefined,
+        reason,
+      );
       if (demand.malformed) {
-        unmatched.push(makeUnmatched(input, demand, "malformed_input"));
+        unmatched.push(makeUnmatched(
+          input,
+          demand,
+          "malformed_input",
+          candidateTraceWithoutEvaluation(),
+        ));
         nextDonorIndex = 0;
         partialBest = undefined;
         partialRejectionCounts = {};
+        partialLegacySourceEvaluation = undefined;
         continue;
       }
       if (demand.stale) {
-        unmatched.push(makeUnmatched(input, demand, "stale_intent"));
+        unmatched.push(makeUnmatched(
+          input,
+          demand,
+          "stale_intent",
+          candidateTraceWithoutEvaluation(),
+        ));
         nextDonorIndex = 0;
         partialBest = undefined;
         partialRejectionCounts = {};
+        partialLegacySourceEvaluation = undefined;
         continue;
       }
       if (demand.uncoveredAmount <= 0) {
-        unmatched.push(makeUnmatched(input, demand, "demand_already_covered"));
+        unmatched.push(makeUnmatched(
+          input,
+          demand,
+          "demand_already_covered",
+          candidateTraceWithoutEvaluation(),
+        ));
         nextDonorIndex = 0;
         partialBest = undefined;
         partialRejectionCounts = {};
+        partialLegacySourceEvaluation = undefined;
         continue;
       }
 
-      const donors = buildDonors(demand, prepared);
       if (donors.length > SYNTHESIS_SHADOW_MAX_DONORS_PER_INTENT) {
         donorLimitExceeded = true;
-        unmatched.push(makeUnmatched(input, demand, "donor_limit_exceeded"));
+        unmatched.push(makeUnmatched(
+          input,
+          demand,
+          "donor_limit_exceeded",
+          candidateTraceWithoutEvaluation(),
+        ));
         nextDonorIndex = 0;
         partialBest = undefined;
         partialRejectionCounts = {};
+        partialLegacySourceEvaluation = undefined;
         continue;
       }
 
@@ -2526,7 +3067,7 @@ export function runSynthesisLogisticsShadow(
             SynthesisShadowContinuation,
             "checkpointFingerprint"
           > = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             inputRevision: input.inputRevision,
             inputFingerprint: input.inputFingerprint,
             costModelRevision: input.costModelRevision,
@@ -2539,6 +3080,14 @@ export function runSynthesisLogisticsShadow(
               ? { partialBest: cloneRouteFact(partialBest) }
               : {}),
             partialRejectionCounts: cloneRejectionCounts(localRejections),
+            ...(partialLegacySourceEvaluation
+              ? {
+                  partialLegacySourceEvaluation:
+                    clonePartialLegacySourceEvaluation(
+                      partialLegacySourceEvaluation,
+                    )!,
+                }
+              : {}),
             completedDecisions: decisions.map(cloneDecision),
             completedUnmatched: unmatched.map(cloneUnmatched),
             residual: snapshotProjection(projection),
@@ -2569,7 +3118,27 @@ export function runSynthesisLogisticsShadow(
         if (evaluated.rejection) {
           incrementRejection(localRejections, evaluated.rejection);
           incrementRejection(rejectionCounts, evaluated.rejection);
+          if (
+            legacyDecision?.kind === "route" &&
+            legacyDecision.route.sourceRoom === donors[donorIndex].roomName
+          ) {
+            partialLegacySourceEvaluation = {
+              sourceRoom: donors[donorIndex].roomName,
+              outcome: "rejected",
+              rejection: evaluated.rejection,
+            };
+          }
           continue;
+        }
+        if (
+          evaluated.route &&
+          legacyDecision?.kind === "route" &&
+          legacyDecision.route.sourceRoom === donors[donorIndex].roomName
+        ) {
+          partialLegacySourceEvaluation = {
+            sourceRoom: donors[donorIndex].roomName,
+            outcome: "feasible",
+          };
         }
         if (
           evaluated.route &&
@@ -2582,27 +3151,60 @@ export function runSynthesisLogisticsShadow(
 
       if (candidateBudgetExhausted) break;
       if (partialBest) {
+        const candidateTrace = buildCandidateTrace(
+          demand,
+          prepared,
+          projection,
+          donors,
+          donors.length,
+          localRejections,
+          partialBest,
+          legacyDecision,
+          partialLegacySourceEvaluation,
+        );
         if (!applyRouteToProjection(partialBest, projection)) {
-          unmatched.push(makeUnmatched(input, demand, "malformed_input"));
+          unmatched.push(makeUnmatched(
+            input,
+            demand,
+            "malformed_input",
+            candidateTrace,
+          ));
         } else {
-          decisions.push({
-            ...partialBest,
-            comparisonKey: demand.observation.comparisonKey,
-            demandKey: demand.observation.demandKey,
-            origin: demand.observation.origin,
-            inputRevision: demand.observation.revision,
-            inputFingerprint: demand.observation.inputFingerprint,
-            observedAt: input.now,
-          });
+          decisions.push(makeDecision(
+            input,
+            demand,
+            partialBest,
+            candidateTrace,
+          ));
         }
       } else {
+        const selectedRejection = selectUnmatchedReason(localRejections);
         unmatched.push(
-          makeUnmatched(input, demand, selectUnmatchedReason(localRejections)),
+          makeUnmatched(
+            input,
+            demand,
+            selectedRejection,
+            buildCandidateTrace(
+              demand,
+              prepared,
+              projection,
+              donors,
+              donors.length,
+              localRejections,
+              undefined,
+              legacyDecision,
+              partialLegacySourceEvaluation,
+              isCandidateRejection(selectedRejection)
+                ? selectedRejection
+                : undefined,
+            ),
+          ),
         );
       }
       nextDonorIndex = 0;
       partialBest = undefined;
       partialRejectionCounts = {};
+      partialLegacySourceEvaluation = undefined;
     }
   }
 
@@ -2622,6 +3224,7 @@ export function runSynthesisLogisticsShadow(
   const comparisons = buildComparisons(
     input,
     prepared,
+    legacy,
     complete ? decisions : [],
     complete ? unmatched : [],
     complete,

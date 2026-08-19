@@ -78,6 +78,8 @@ Room agent 生成新的 automatic offer 时可以使用 energy/mineral/T3 等业
 
 首片在 `Memory.data.resourceControl.logistics` 中的 raw 表示固定为 `schemaVersion: 1`、`wireFormat: "compact-v1"` 的 canonical tuple wire：顶层只包含有序字符串表、intent/observation/room-fact/producer-snapshot tuples 与全局 lifecycle cursor。该 wire 只是当前 latest-state Shadow store 的内部持久编码，不是通用压缩日志、事件流或公开领域模型；模块对 caller/consumer 暴露的 decoded DTO、store-owned generation/revision 与 comparator 语义保持不变。
 
+版本边界必须分开：`Memory.cfg.resourceControl.logistics` control 和上述 data wire 继续使用 `schemaVersion:1`，不随观测升级而改写；因 CPU 归因与差异因果投影改变，`Memory.runtime.resourceControl.logistics` 从本次修复起固定为 `schemaVersion:2`。runtime v1 只能作为旧窗口的历史兼容展示，不能成为新 10+100 的 liveness 样本或 CPU gate 真值。
+
 codec 必须严格校验 tuple arity、string/intent index、enum index、非负安全整数、全局 cursor 不低于任何 active generation、集合唯一性/排序与 canonical re-encode；未知 wire、非 canonical tuple 或任何越界输入均 fail closed。旧 expanded-v1 只有在完整语义校验和 compact 编码均成功时才能原子迁移，迁移失败不得覆盖原值。任何 writer/cleanup 必须先对最终 raw compact wire 计算 UTF-8 JSON 字节数，只有 `<= 16 KiB` 才可 attach；不得靠部分 attach、提高上限或静默剪尾伪造成功。固定 8 rooms、16 intents、16 observations、8 unique demand resources 且每房包含全部 8 resource facts 的 live-like fixture，canonical raw 实测为 5,043 bytes，必须作为容量回归保留。
 
 ### 2A. 首个 Synthesis Shadow 使用写前冻结输入与精确 legacy 配对
@@ -91,6 +93,8 @@ codec 必须严格校验 tuple arity、string/intent index、enum index、非负
 matcher 只读写前冻结输入。如果某调用点无法在写前冻结，必须依靠 stable comparison key 与精确 legacy decision/task identity 排除已配对任务的自身 incoming/outgoing/capacity commitment；按 reason 前缀、房间+资源或“所有 Synthesis task”宽泛排除会隐藏真实竞争，明确禁止。
 
 Shadow comparator 的规范维度为 donor、route、priority、demand coverage、receiver headroom、`predictedStagingEligibility` 和 CPU。`predictedStagingEligibility` 只表示在冻结 P0 admission 输入下候选批次是否预计可预装；它不是 StageWork、CapacityLease、Carrier claim 或实际 staging 证据。每个不一致必须使用有界的机器 reason，区分 `expected_policy_difference`、`legacy_unpaired`、`shadow_unpaired`、`out_of_scope`、`unsafe_candidate` 和 `input_unavailable`。
+
+差异 reason 必须是因果投影，而不只是结果标签。每个 bounded sample 至少携带 `decisionDelta`，legacy 与 Shadow 各自的 route/unmatched outcome、amount/action/fee、capacity/staging 结果，intent 起点的 receiver eligibility/headroom，以及候选 evaluated/feasible/rejected 计数。当且仅当 legacy outcome 为 route 时，sample 必须携带与 legacy sourceRoom 一致的 source disposition（`selected/feasible_lower_rank/rejected/not_candidate/not_evaluated`）；legacy no-route 时该字段必须 absent/null，表示 not applicable，不能伪造候选状态。已知 hard veto 必须投影精确 rejection；只有产生 material decision delta 且方向为 `shadow_more_conservative` 时才归入 `expected_policy_difference`，双方 no-route 且 blocker/coverage/capacity/staging 全等时必须为 `equal`。只有 Shadow 实际提出路线且该路线与冻结 safety evidence 冲突时才允许 `unsafe_candidate`。`shadow=unmatched` 或双方均无路线不得标为 unsafe；缺少主因，或 legacy route 缺少对应 disposition 时，必须投影 `input_unavailable`/unresolved 并阻断 live gate，不能依靠事后读取其他 runtime 字段补解释。
 
 Shadow 只能把输入与结果写到独立 owner 分支 `Memory.data.resourceControl.logistics`/`Memory.runtime.resourceControl.logistics`；不得写入 `synthesisControl.rooms[].missing`、donor `bindings`、`hub.needsPlan`、legacy `pendingTasks/lastActions` 或任何被生产/market 读取的旧投影，观测不能成为反馈调度输入。
 
@@ -190,13 +194,25 @@ Intent、active contract、lease 和 claim 分别建立按 resource、source、t
 
 候选评估使用可配置上限和 continuation cursor；缓存 source-target 距离/交易费因子；terminal cooldown 期间不重复尝试 send。终态合同只保留有界审计窗口或聚合统计，详细 action history 使用 ring buffer。
 
-在固定 live-like fixture 上，合同模式 ResourceControl p95 CPU 目标不得高于 P0 基线的 110%（增幅不超过 10%），且不得新增每房全表扫描。线上 rollout 以变更前约 3.224 的 ResourceControl 120-tick 平均值作为参考，但以同一部署前后的可比采样决定是否回滚。
+在固定 live-like fixture 上，合同模式 CPU gate 的 p95 目标不得高于 P0 基线的 110%（增幅不超过 10%），且不得新增每房全表扫描。线上 rollout 以变更前约 3.224 的 ResourceControl 120-tick 平均值作为参考，但以同一部署前后的可比采样决定是否回滚。
 
-纯 Shadow 使用与执行态分离的强制门槛：部署/global reset 后先剔除至少 10 个 warmup 可观测 tick，再收集至少 100 个连续、main/telemetry 完成、deploy tag 稳定且无人工 mutation 的 measured tick。包含 Shadow 成本的同口径 ResourceControl phase p95 CPU 必须 `post <= pre * 1.10`，Shadow 子模块 CPU 另行投影用于归因；`Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 的 UTF-8 JSON 序列化字节数合计必须始终不超过 32 KiB；last 20 measured tick 的 bucket median 不得比 first 20 低 500 以上。不得用合同模式未触发或世界负载不同来放宽这一 Shadow 门槛。
+纯 Shadow CPU 使用三层显式归因：
+
+- `producerUsed`：同 tick Synthesis phase 中所有仅因 Shadow 发生的分段之和，包括写前 capture/index/market exposure/room facts、交错 demand/fingerprint/legacy observation/额外 merge/fee，以及 latest-store reconcile/encode/attach；不得包含普通 Synthesis donor/task/Carrier 工作；
+- `consumerUsed`：同 tick `runResourceControl` 内 Shadow store decode、精确配对、matcher、comparison/safety/runtime projection 与 byte trimming 的子区间；它已经包含在外层 ResourceControl phase 中；
+- `shadowUsed=producerUsed+consumerUsed`：仅用于定位 Shadow 自身成本；正式 rollout 样本固定为 `gateUsed=cpuMonitor.resourceControlPhase+producerUsed`。不得计算 `outer+consumerUsed` 或 `outer+shadowUsed`，否则会重复计入 consumer。
+
+`consumerUsed` 的计量闭包必须覆盖带 provisional attribution 的完整 projection、UTF-8 fixed-point 与超限裁剪。闭包结束后只允许执行一次不可递归的自观测 seal：写入本次最终 `consumerUsed` 标量并刷新由该标量自身引起的 runtime byte attestation；这一步不能被递归计入自身，但仍被完整 outer ResourceControl phase 覆盖。除最终读钟、归因标量和这一次 fixed-point seal 外，不得把任何 matcher、投影、裁剪或 store 工作移出 consumer 计量边界。
+
+归因由 module-local、tick-bound segmented meter 累加，并只在既有 logistics runtime owner 分支持久化 v2 `cpu`。正式 post 样本的 `cpu` 必须且只能包含 `{attributionVersion,sampleTick,measurementAvailable,producerUsed,consumerUsed}`，且 `attributionVersion=2`、`measurementAvailable=true`；字段缺失、额外字段、不可用测量或 runtime v1 均不得进入 10+100/CPU gate。不得为了归因向 CPU Monitor analytics phases 新增第三个 Shadow owner。正式 gate 从 CPU Monitor history 中找到 tick 与 runtime attribution `sampleTick`、logistics `updatedAt` 完全相同的 outer `resourceControl`，再与该 runtime `producerUsed` 相加；不得从 `summary.latestTick` 或不同 tick 拼接。旧 `{captureUsed,used}` 漏掉交错 producer/publish 分段，只保留兼容展示，不再作为 gate 真值。
+
+纯 Shadow 使用与执行态分离的强制门槛：部署/global reset 后先剔除至少 10 个 warmup 可观测 tick，再收集至少 100 个连续、main/telemetry 完成、deploy tag 稳定且无人工 mutation 的 measured tick。每个已接纳样本必须满足 attribution `sampleTick`、logistics `updatedAt` 与 CPU Monitor history 中选定的 outer ResourceControl sample tick 一致；disabled 基线中 `producerUsed=0`，post 窗口使用上述 `gateUsed`，其 p95 必须 `post <= pre * 1.10`。`Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 的 UTF-8 JSON 序列化字节数合计必须始终不超过 32 KiB；last 20 measured tick 的 bucket median 不得比 first 20 低 500 以上。不得用合同模式未触发或世界负载不同来放宽这一 Shadow 门槛。
+
+任何改变 `producerUsed/consumerUsed` 覆盖范围、差异因果字段或 coherent snapshot 选样规则的新 bundle 都会改变样本语义。修复部署后必须重新冻结同口径 disabled 基线并从零执行至少 10 warmup + 100 measured tick；旧窗口、修复前字段和修复后样本不得拼接，也不得用更完整的新投影事后追认旧差异或旧 CPU 窗口通过。
 
 ### 8. 观测是执行状态的投影，不是第二状态源
 
-`Memory.runtime.resourceControl.logistics` 从 `Memory.data.resourceControl.logistics` 的 intent/contract/lease/claim store 投影：
+`Memory.runtime.resourceControl.logistics` 以 `schemaVersion:2` 从 `Memory.data.resourceControl.logistics` 的 intent/contract/lease/claim store 投影；data/cfg 的 `schemaVersion:1` 不变：
 
 - 当前 mode/schemaVersion、Shadow in-scope/out-of-scope origin 计数、legacy 配对率、各 comparator 维度的 match/difference reason 与 `predictedStagingEligibility`；
 - 按 origin/priority/state/blocker 的数量、总 remaining、oldest age 和 p50/p95 状态耗时；
@@ -207,6 +223,8 @@ Intent、active contract、lease 和 claim 分别建立按 resource、source、t
 - 首片 Shadow 的 `effectiveAuthority`、active contract/lease/claim store 数量、可观察的新 arbiter actor/claim/journal 与 invariant violation，matcher candidate evaluations、索引构建次数、Memory 项数/字节和模块 CPU。
 
 monitor 只读这些投影，并兼容字段缺失的 legacy/P0 快照。观测不得被 matcher 或 Agent 反向读取作为调度事实。
+
+Monitor 读取 data/runtime 时必须组成 coherent snapshot：runtime epoch 使用 `runtime.resourceControl.logistics.updatedAt`，data epoch 使用 compact `p` 中唯一 `synthesisControl:room` producer snapshot 的 `observedAt`，两者必须相等，且 runtime attested `resources.dataBytes` 必须等于该 data logistics 的实际 UTF-8 JSON bytes。配对成功后仍必须通过既有 compact canonical、producer total/emitted/dropped/truncated 与完整性校验；这里的 attestation 不引入额外 runtime producer 字段。每轮使用固定 bracket `R1 -> D -> R2`，D 能与 R1/R2 任一端配对时采用对应端；初始 bracket 只有在跨 epoch 且无法配对时，才允许再执行且仅执行一轮完整的 `R1' -> D' -> R2'`。协议不得循环或递归，硬上限为 4 次 runtime 与 2 次 data 读取。若第二轮仍跨 epoch 且无法配对，则标记 `snapshotIncoherent=true`、`inconclusive=true`、`snapshotAttestationMatched=false` 并使 liveness fail closed，同时投影 `coherenceRetryCount/initialEpochSkew`；若任一 bracket 内所有可读的 R1/D/R2 epoch 相同、即没有 epoch skew，但 bytes 仍不等，则这是稳定 attestation failure，必须以 `snapshotIncoherent=false/inconclusive=false/snapshotAttestationMatched=false` 直接 fail closed，不得启动下一轮或伪装成 torn read。CPU gate 另行要求 attribution/CPU/runtime tick 完全相同；analytics path 暂时落后时只能重读或丢弃该样本，不能把不同 tick 相加。
 
 首片“零 authority/零新增副作用”的验收证据分为本地差分与 live 投影两层。本地测试必须在相同 fixture 上分别运行 `disabled` 与 `shadow`，初始化会 `ensure/sync` 的 reader 后，对 legacy transfer task、owner-aware CarrierTaskBoard、terminal/account claim 与 journal、已知 endpoint 的 receiver reservation、terminal/store 以及除两个 logistics owner 分支外的 Memory 做规范化差分；terminal.send 与 `Game.market.deal` mock 的调用增量必须为零。live 只声明可观察结果：`effectiveAuthority=legacy`、active contract/lease/claim store 为零、无 Logistics Shadow actor/claim/journal 记录、无可观察 invariant violation。因为本切片没有在 market arbiter、CarrierTaskBoard、receiver reservation、authority/contract/lease/claim writer 与 direct send/deal gateway 上布设统一的瞬时 attempt 探针，所以 hard-coded 零值或净状态不构成“从未发生后又回滚/释放/失败的 attempt”的证明；若后续需要该强结论，必须在执行态 adapter 任务中增加跨模块 mutator-boundary instrumentation，不能倒填首片 live 证据。
 

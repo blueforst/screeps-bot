@@ -20,10 +20,15 @@ const RESOURCE_CONTROL_LOGISTICS_DATA_BYTE_LIMIT = 16_384;
 const RESOURCE_CONTROL_LOGISTICS_RUNTIME_BYTE_LIMIT = 16_384;
 const RESOURCE_CONTROL_LOGISTICS_DATA_ITEM_LIMIT = 160;
 const RESOURCE_CONTROL_LOGISTICS_RUNTIME_ITEM_LIMIT = 128;
+const RESOURCE_CONTROL_LOGISTICS_RUNTIME_V2_ITEM_LIMIT = 200;
 const RESOURCE_CONTROL_LOGISTICS_STORE_LIMIT = 32;
 const RESOURCE_CONTROL_LOGISTICS_COMPACT_STRING_LIMIT = 512;
+const RESOURCE_CONTROL_LOGISTICS_SYNTHESIS_PRODUCER =
+  "synthesisControl:room";
 const RESOURCE_CONTROL_LOGISTICS_CANDIDATE_BUDGET_LIMIT = 256;
+const RESOURCE_CONTROL_LOGISTICS_MAX_BATCH_AMOUNT = 50_000;
 const RESOURCE_CONTROL_LOGISTICS_INDEX_BUILD_LIMIT = 1;
+const RESOURCE_CONTROL_LOGISTICS_CAUSAL_SAMPLE_LIMIT = 8;
 const RESOURCE_CONTROL_LOGISTICS_COST_EVALUATIONS_PER_CANDIDATE_LIMIT = 17;
 const RESOURCE_CONTROL_LOGISTICS_COST_EVALUATIONS_PER_RUN_LIMIT = 4_352;
 const RESOURCE_CONTROL_LOGISTICS_COST_EVALUATIONS_PER_EPOCH_LIMIT = 8_704;
@@ -110,6 +115,69 @@ const RESOURCE_CONTROL_LOGISTICS_STAGING_ELIGIBILITY = new Set([
   "eligible",
   "blocked",
   "unknown",
+]);
+const RESOURCE_CONTROL_LOGISTICS_COVERAGE = new Set([
+  "covered",
+  "partial",
+  "none",
+  "unknown",
+]);
+const RESOURCE_CONTROL_LOGISTICS_DECISION_DELTAS = new Set([
+  "same_route",
+  "different_route",
+  "both_no_route",
+  "legacy_only_route",
+  "shadow_only_route",
+  "input_unavailable",
+]);
+const RESOURCE_CONTROL_LOGISTICS_DIFFERENCE_DIRECTIONS = new Set([
+  "same",
+  "shadow_more_conservative",
+  "shadow_more_permissive",
+  "policy_difference",
+  "input_unavailable",
+]);
+const RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTION_ORDER = [
+  "stale_receiver_fact",
+  "invalid_receiver_endpoint",
+  "receiver_capacity",
+  "stale_source_fact",
+  "invalid_source_endpoint",
+  "source_protection",
+  "fee_budget",
+  "staging_capacity",
+  "terminal_readiness",
+  "transaction_cost_unavailable",
+  "source_not_allowed",
+  "same_room",
+  "below_minimum_batch",
+];
+const RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTIONS = new Set(
+  RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTION_ORDER,
+);
+const RESOURCE_CONTROL_LOGISTICS_UNMATCHED_REASONS = new Set([
+  ...RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTION_ORDER,
+  "demand_already_covered",
+  "no_donor",
+  "donor_limit_exceeded",
+  "malformed_input",
+  "stale_intent",
+]);
+const RESOURCE_CONTROL_LOGISTICS_CAUSAL_CODES = new Set([
+  "matched",
+  "route_rank",
+  "route_fact_difference",
+  "legacy_blocker",
+  "input_unavailable",
+  ...RESOURCE_CONTROL_LOGISTICS_UNMATCHED_REASONS,
+  ...RESOURCE_CONTROL_LOGISTICS_UNRESOLVED_REASONS,
+]);
+const RESOURCE_CONTROL_LOGISTICS_LEGACY_SOURCE_DISPOSITIONS = new Set([
+  "selected",
+  "feasible_lower_rank",
+  "rejected",
+  "not_candidate",
+  "not_evaluated",
 ]);
 const RESOURCE_CONTROL_LOGISTICS_COMPACT_WIRE_KEYS = [
   "schemaVersion",
@@ -859,6 +927,45 @@ function summarizeCpuMonitor(cpuMonitor, fallbackModuleCpu) {
     latest: null,
     summary: null,
   };
+}
+
+function buildResourceControlCpuPhaseEvidence(cpuMonitor) {
+  const byTick = new Map();
+  const ambiguousTicks = new Set();
+  if (
+    !cpuMonitor ||
+    typeof cpuMonitor !== "object" ||
+    cpuMonitor.version !== 2
+  ) {
+    return { byTick, ambiguousTicks };
+  }
+  const entries = [
+    ...(Array.isArray(cpuMonitor.history)
+      ? cpuMonitor.history.slice(-DEFAULT_HISTORY_LIMIT)
+      : []),
+    ...(cpuMonitor.latest && typeof cpuMonitor.latest === "object"
+      ? [cpuMonitor.latest]
+      : []),
+  ];
+  for (const entry of entries) {
+    const tick = nonNegativeSafeIntegerOrNull(entry?.tick);
+    const phases = objectOrNull(entry?.phases);
+    const resourceControlUsed = finiteNumberWithinOrNull(
+      phases?.resourceControl,
+      0,
+      Number.MAX_VALUE,
+    );
+    if (tick === null || resourceControlUsed === null) continue;
+    if (
+      byTick.has(tick) &&
+      byTick.get(tick) !== resourceControlUsed
+    ) {
+      ambiguousTicks.add(tick);
+      continue;
+    }
+    byTick.set(tick, resourceControlUsed);
+  }
+  return { byTick, ambiguousTicks };
 }
 
 function summarizeHub(hub, runtimeHub) {
@@ -1894,7 +2001,18 @@ function summarizeLogisticsDimension(value) {
   };
 }
 
-function summarizeLogisticsComparisonSample(value) {
+function isScreepsRoomName(value) {
+  return typeof value === "string" &&
+    /^[WE]\d+[NS]\d+$/.test(value);
+}
+
+function positiveSafeIntegerOrNull(value, maximum = Number.MAX_SAFE_INTEGER) {
+  return Number.isSafeInteger(value) && value > 0 && value <= maximum
+    ? value
+    : null;
+}
+
+function summarizeLogisticsComparisonSampleV1(value) {
   const sample = objectOrNull(value);
   if (!sample) return { value: null, valid: false };
   const intentId = boundedStringOrNull(sample.intentId);
@@ -1972,22 +2090,1028 @@ function summarizeLogisticsComparisonSample(value) {
   };
 }
 
-function summarizeLogisticsComparisonSamples(value) {
+function summarizeLogisticsRouteOutcomeV2(value) {
+  const route = objectOrNull(value);
+  if (!route || route.kind !== "route") {
+    return { value: null, valid: false };
+  }
+  const sourceRoomName = isScreepsRoomName(route.sourceRoomName)
+    ? route.sourceRoomName
+    : null;
+  const coverage = RESOURCE_CONTROL_LOGISTICS_COVERAGE.has(route.coverage)
+    ? route.coverage
+    : null;
+  const capacity = RESOURCE_CONTROL_LOGISTICS_STAGING_ELIGIBILITY.has(
+    route.capacity,
+  )
+    ? route.capacity
+    : null;
+  const staging = RESOURCE_CONTROL_LOGISTICS_STAGING_ELIGIBILITY.has(
+    route.staging,
+  )
+    ? route.staging
+    : null;
+  const amount = positiveSafeIntegerOrNull(route.amount);
+  const actionAmount = nonNegativeSafeIntegerOrNull(route.actionAmount);
+  const feeAmount = nonNegativeSafeIntegerOrNull(route.feeAmount);
+  const terminalReadyAt = nonNegativeSafeIntegerOrNull(
+    route.terminalReadyAt,
+  );
+  const requiredEnergy = nonNegativeSafeIntegerOrNull(
+    route.requiredEnergy,
+  );
+  const energyCommitmentAmount = nonNegativeSafeIntegerOrNull(
+    route.energyCommitmentAmount,
+  );
+  const terminalAllocatedAmount = nonNegativeSafeIntegerOrNull(
+    route.terminalAllocatedAmount,
+  );
+  const stagingRequiredAmount = nonNegativeSafeIntegerOrNull(
+    route.stagingRequiredAmount,
+  );
+  const terminalEnergyAllocatedAmount = nonNegativeSafeIntegerOrNull(
+    route.terminalEnergyAllocatedAmount,
+  );
+  const feeStagingRequiredAmount = nonNegativeSafeIntegerOrNull(
+    route.feeStagingRequiredAmount,
+  );
+  return {
+    value: {
+      kind: "route",
+      sourceRoomName,
+      coverage,
+      capacity,
+      staging,
+      amount,
+      actionAmount,
+      feeAmount,
+      terminalReadyAt,
+      requiredEnergy,
+      energyCommitmentAmount,
+      terminalAllocatedAmount,
+      stagingRequiredAmount,
+      terminalEnergyAllocatedAmount,
+      feeStagingRequiredAmount,
+    },
+    valid:
+      hasOnlyAllowedOwnKeys(route, new Set([
+        "kind",
+        "sourceRoomName",
+        "coverage",
+        "capacity",
+        "staging",
+        "amount",
+        "actionAmount",
+        "feeAmount",
+        "terminalReadyAt",
+        "requiredEnergy",
+        "energyCommitmentAmount",
+        "terminalAllocatedAmount",
+        "stagingRequiredAmount",
+        "terminalEnergyAllocatedAmount",
+        "feeStagingRequiredAmount",
+      ])) &&
+      sourceRoomName !== null &&
+      coverage !== null &&
+      (coverage === "covered" || coverage === "partial") &&
+      capacity !== null &&
+      staging !== null &&
+      amount !== null &&
+      actionAmount !== null &&
+      actionAmount <= amount &&
+      feeAmount !== null &&
+      terminalReadyAt !== null &&
+      requiredEnergy !== null &&
+      energyCommitmentAmount !== null &&
+      energyCommitmentAmount >= requiredEnergy &&
+      terminalAllocatedAmount !== null &&
+      stagingRequiredAmount !== null &&
+      terminalAllocatedAmount + stagingRequiredAmount === actionAmount &&
+      terminalEnergyAllocatedAmount !== null &&
+      terminalEnergyAllocatedAmount <= requiredEnergy &&
+      feeStagingRequiredAmount !== null &&
+      feeStagingRequiredAmount <= feeAmount,
+  };
+}
+
+function summarizeLogisticsLegacyOutcomeV2(value) {
+  const outcome = objectOrNull(value);
+  if (!outcome) return { value: null, valid: false };
+  if (outcome.kind === "route") {
+    return summarizeLogisticsRouteOutcomeV2(outcome);
+  }
+  const blocker = RESOURCE_CONTROL_LOGISTICS_UNMATCHED_REASONS.has(
+    outcome.blocker,
+  )
+    ? outcome.blocker
+    : null;
+  const coverage = RESOURCE_CONTROL_LOGISTICS_COVERAGE.has(
+    outcome.coverage,
+  )
+    ? outcome.coverage
+    : null;
+  const capacity = RESOURCE_CONTROL_LOGISTICS_STAGING_ELIGIBILITY.has(
+    outcome.capacity,
+  )
+    ? outcome.capacity
+    : null;
+  const staging = RESOURCE_CONTROL_LOGISTICS_STAGING_ELIGIBILITY.has(
+    outcome.staging,
+  )
+    ? outcome.staging
+    : null;
+  return {
+    value: {
+      kind: outcome.kind === "none" ? "none" : null,
+      blocker,
+      coverage,
+      capacity,
+      staging,
+    },
+    valid:
+      outcome.kind === "none" &&
+      hasOnlyAllowedOwnKeys(outcome, new Set([
+        "kind",
+        "blocker",
+        "coverage",
+        "capacity",
+        "staging",
+      ])) &&
+      blocker !== null &&
+      coverage !== null &&
+      capacity !== null &&
+      staging !== null,
+  };
+}
+
+function summarizeLogisticsShadowOutcomeV2(value) {
+  const outcome = objectOrNull(value);
+  if (!outcome) return { value: null, valid: false };
+  if (outcome.kind === "route") {
+    return summarizeLogisticsRouteOutcomeV2(outcome);
+  }
+  const reason = RESOURCE_CONTROL_LOGISTICS_UNMATCHED_REASONS.has(
+    outcome.reason,
+  )
+    ? outcome.reason
+    : null;
+  const coverage = RESOURCE_CONTROL_LOGISTICS_COVERAGE.has(
+    outcome.coverage,
+  )
+    ? outcome.coverage
+    : null;
+  const capacity = RESOURCE_CONTROL_LOGISTICS_STAGING_ELIGIBILITY.has(
+    outcome.capacity,
+  )
+    ? outcome.capacity
+    : null;
+  const staging = RESOURCE_CONTROL_LOGISTICS_STAGING_ELIGIBILITY.has(
+    outcome.staging,
+  )
+    ? outcome.staging
+    : null;
+  const uncoveredAmount = nonNegativeSafeIntegerOrNull(
+    outcome.uncoveredAmount,
+  );
+  return {
+    value: {
+      kind: outcome.kind === "unmatched" ? "unmatched" : null,
+      reason,
+      coverage,
+      capacity,
+      staging,
+      uncoveredAmount,
+    },
+    valid:
+      outcome.kind === "unmatched" &&
+      hasOnlyAllowedOwnKeys(outcome, new Set([
+        "kind",
+        "reason",
+        "coverage",
+        "capacity",
+        "staging",
+        "uncoveredAmount",
+      ])) &&
+      reason !== null &&
+      coverage !== null &&
+      capacity !== null &&
+      staging !== null &&
+      uncoveredAmount !== null,
+  };
+}
+
+function summarizeLogisticsCandidateTraceV2(value) {
+  const candidate = objectOrNull(value);
+  if (!candidate) {
+    return { value: null, valid: false, rejectionTupleCount: 0 };
+  }
+  const donorCount = nonNegativeSafeIntegerOrNull(
+    candidate.donorCount,
+    RESOURCE_CONTROL_LOGISTICS_STORE_LIMIT / 2,
+  );
+  const evaluatedCount = nonNegativeSafeIntegerOrNull(
+    candidate.evaluatedCount,
+    RESOURCE_CONTROL_LOGISTICS_STORE_LIMIT / 2,
+  );
+  const feasibleCount = nonNegativeSafeIntegerOrNull(
+    candidate.feasibleCount,
+    RESOURCE_CONTROL_LOGISTICS_STORE_LIMIT / 2,
+  );
+  const rejectedCount = nonNegativeSafeIntegerOrNull(
+    candidate.rejectedCount,
+    RESOURCE_CONTROL_LOGISTICS_STORE_LIMIT / 2,
+  );
+  const selectedRejection = candidate.selectedRejection === undefined
+    ? null
+    : RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTIONS.has(
+        candidate.selectedRejection,
+      )
+      ? candidate.selectedRejection
+      : undefined;
+  const rejectionCounts = [];
+  let rejectionCountsValid = Array.isArray(candidate.rejectionCounts) &&
+    candidate.rejectionCounts.length <=
+      RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTION_ORDER.length;
+  let previousRejectionIndex = -1;
+  let rejectionTotal = 0;
+  for (const tuple of Array.isArray(candidate.rejectionCounts)
+    ? candidate.rejectionCounts
+    : []) {
+    if (!Array.isArray(tuple) || tuple.length !== 2) {
+      rejectionCountsValid = false;
+      continue;
+    }
+    const [reason, rawCount] = tuple;
+    const reasonIndex =
+      RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTION_ORDER.indexOf(
+        reason,
+      );
+    const count = positiveSafeIntegerOrNull(rawCount);
+    if (reasonIndex <= previousRejectionIndex || count === null) {
+      rejectionCountsValid = false;
+      continue;
+    }
+    previousRejectionIndex = reasonIndex;
+    rejectionTotal += count;
+    rejectionCounts.push([reason, count]);
+  }
+
+  const topSourceRoom = candidate.topSourceRoom === undefined
+    ? null
+    : isScreepsRoomName(candidate.topSourceRoom)
+      ? candidate.topSourceRoom
+      : undefined;
+  const legacySourceRecord = candidate.legacySource === undefined
+    ? null
+    : objectOrNull(candidate.legacySource);
+  let legacySource = null;
+  let legacySourceValid = candidate.legacySource === undefined;
+  if (legacySourceRecord) {
+    const sourceRoom = isScreepsRoomName(legacySourceRecord.sourceRoom)
+      ? legacySourceRecord.sourceRoom
+      : null;
+    const disposition =
+      RESOURCE_CONTROL_LOGISTICS_LEGACY_SOURCE_DISPOSITIONS.has(
+        legacySourceRecord.disposition,
+      )
+        ? legacySourceRecord.disposition
+        : null;
+    const rejection = legacySourceRecord.rejection === undefined
+      ? null
+      : RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTIONS.has(
+          legacySourceRecord.rejection,
+        )
+        ? legacySourceRecord.rejection
+        : undefined;
+    legacySource = { sourceRoom, disposition, rejection };
+    legacySourceValid =
+      hasOnlyAllowedOwnKeys(legacySourceRecord, new Set([
+        "sourceRoom",
+        "disposition",
+        "rejection",
+      ])) &&
+      sourceRoom !== null &&
+      disposition !== null &&
+      rejection !== undefined &&
+      (disposition === "rejected"
+        ? rejection !== null
+        : rejection === null);
+  }
+
+  const receiverRecord = objectOrNull(candidate.receiver);
+  let receiver = null;
+  let receiverValid = false;
+  if (receiverRecord?.kind === "missing") {
+    receiver = { kind: "missing" };
+    receiverValid = hasOnlyAllowedOwnKeys(
+      receiverRecord,
+      new Set(["kind"]),
+    );
+  } else if (receiverRecord?.kind === "present") {
+    const receiverEligible = booleanOrNull(
+      receiverRecord.receiverEligible,
+    );
+    const storageHeadroom = nonNegativeSafeIntegerOrNull(
+      receiverRecord.storageHeadroom,
+    );
+    const terminalHeadroom = nonNegativeSafeIntegerOrNull(
+      receiverRecord.terminalHeadroom,
+    );
+    const resourceHeadroom = nonNegativeSafeIntegerOrNull(
+      receiverRecord.resourceHeadroom,
+    );
+    receiver = {
+      kind: "present",
+      receiverEligible,
+      storageHeadroom,
+      terminalHeadroom,
+      resourceHeadroom,
+    };
+    receiverValid = hasOnlyAllowedOwnKeys(receiverRecord, new Set([
+      "kind",
+      "receiverEligible",
+      "storageHeadroom",
+      "terminalHeadroom",
+      "resourceHeadroom",
+    ])) &&
+      receiverEligible !== null &&
+      storageHeadroom !== null &&
+      terminalHeadroom !== null &&
+      resourceHeadroom !== null;
+  }
+  const countAccountingValid =
+    donorCount !== null &&
+    evaluatedCount !== null &&
+    feasibleCount !== null &&
+    rejectedCount !== null &&
+    evaluatedCount <= donorCount &&
+    feasibleCount + rejectedCount === evaluatedCount &&
+    rejectionTotal === rejectedCount;
+  return {
+    value: {
+      donorCount,
+      evaluatedCount,
+      feasibleCount,
+      rejectedCount,
+      selectedRejection:
+        selectedRejection === undefined ? null : selectedRejection,
+      rejectionCounts,
+      topSourceRoom: topSourceRoom === undefined ? null : topSourceRoom,
+      legacySource,
+      receiver,
+    },
+    valid:
+      hasOnlyAllowedOwnKeys(candidate, new Set([
+        "donorCount",
+        "evaluatedCount",
+        "feasibleCount",
+        "rejectedCount",
+        "selectedRejection",
+        "rejectionCounts",
+        "topSourceRoom",
+        "legacySource",
+        "receiver",
+      ])) &&
+      countAccountingValid &&
+      selectedRejection !== undefined &&
+      (selectedRejection === null ||
+        rejectionCounts[0]?.[0] === selectedRejection) &&
+      rejectionCountsValid &&
+      topSourceRoom !== undefined &&
+      legacySourceValid &&
+      receiverValid,
+    rejectionTupleCount: rejectionCounts.length,
+  };
+}
+
+function summarizeLogisticsComparisonSampleV2(value) {
+  const sample = objectOrNull(value);
+  if (!sample) {
+    return { value: null, valid: false, rejectionTupleCount: 0 };
+  }
+  const intentId = boundedStringOrNull(sample.intentId);
+  const targetRoomName = isScreepsRoomName(sample.targetRoomName)
+    ? sample.targetRoomName
+    : null;
+  const resource = RESOURCE_CONTROL_LOGISTICS_RESOURCES.has(sample.resource)
+    ? sample.resource
+    : null;
+  const status = RESOURCE_CONTROL_LOGISTICS_SAMPLE_STATUSES.has(sample.status)
+    ? sample.status
+    : null;
+  const reason = RESOURCE_CONTROL_LOGISTICS_COMPARISON_REASONS.has(sample.reason)
+    ? sample.reason
+    : null;
+  const producerReason = sample.producerReason === undefined
+    ? null
+    : RESOURCE_CONTROL_LOGISTICS_DIFFERENCE_REASONS.has(
+        sample.producerReason,
+      )
+      ? sample.producerReason
+      : undefined;
+  const decisionDelta = RESOURCE_CONTROL_LOGISTICS_DECISION_DELTAS.has(
+    sample.decisionDelta,
+  )
+    ? sample.decisionDelta
+    : null;
+  const direction = RESOURCE_CONTROL_LOGISTICS_DIFFERENCE_DIRECTIONS.has(
+    sample.direction,
+  )
+    ? sample.direction
+    : null;
+  const causalCode = RESOURCE_CONTROL_LOGISTICS_CAUSAL_CODES.has(
+    sample.causalCode,
+  )
+    ? sample.causalCode
+    : null;
+  const differingDimensions = summarizeStrictBoundedStringArray(
+    sample.differingDimensions,
+    new Set(RESOURCE_CONTROL_LOGISTICS_DIMENSIONS),
+  );
+  const legacy = sample.legacy === undefined
+    ? { value: null, valid: true }
+    : summarizeLogisticsLegacyOutcomeV2(sample.legacy);
+  const shadow = sample.shadow === undefined
+    ? { value: null, valid: true }
+    : summarizeLogisticsShadowOutcomeV2(sample.shadow);
+  const candidate = sample.candidate === undefined
+    ? { value: null, valid: true, rejectionTupleCount: 0 }
+    : summarizeLogisticsCandidateTraceV2(sample.candidate);
+
+  const statusReasonValid =
+    (status === "equal" &&
+      reason === "equal" &&
+      differingDimensions.value?.length === 0) ||
+    (status === "different" &&
+      RESOURCE_CONTROL_LOGISTICS_DIFFERENCE_REASONS.has(reason) &&
+      (differingDimensions.value?.length ?? 0) > 0) ||
+    (status === "unresolved" &&
+      (RESOURCE_CONTROL_LOGISTICS_UNRESOLVED_REASONS.has(reason) ||
+        reason === "input_unavailable"));
+  const legacyKind = legacy.value?.kind ?? null;
+  const shadowKind = shadow.value?.kind ?? null;
+  const deltaValid =
+    (decisionDelta === "same_route" &&
+      legacyKind === "route" &&
+      shadowKind === "route" &&
+      legacy.value.sourceRoomName === shadow.value.sourceRoomName) ||
+    (decisionDelta === "different_route" &&
+      legacyKind === "route" &&
+      shadowKind === "route" &&
+      legacy.value.sourceRoomName !== shadow.value.sourceRoomName) ||
+    (decisionDelta === "both_no_route" &&
+      legacyKind === "none" && shadowKind === "unmatched") ||
+    (decisionDelta === "legacy_only_route" &&
+      legacyKind === "route" && shadowKind === "unmatched") ||
+    (decisionDelta === "shadow_only_route" &&
+      legacyKind === "none" && shadowKind === "route") ||
+    (decisionDelta === "input_unavailable" &&
+      status === "unresolved");
+  const routeEndpointValid =
+    (legacyKind !== "route" ||
+      (legacy.value.sourceRoomName !== targetRoomName &&
+        legacy.value.amount <=
+          RESOURCE_CONTROL_LOGISTICS_MAX_BATCH_AMOUNT)) &&
+    (shadowKind !== "route" ||
+      (shadow.value.sourceRoomName !== targetRoomName &&
+        shadow.value.amount <=
+          RESOURCE_CONTROL_LOGISTICS_MAX_BATCH_AMOUNT &&
+        shadow.value.actionAmount > 0 &&
+        shadow.value.capacity === "eligible" &&
+        shadow.value.staging === "eligible"));
+  const directionValid =
+    (status === "equal" && direction === "same") ||
+    (status === "unresolved" && direction === "input_unavailable") ||
+    (status === "different" &&
+      ((decisionDelta === "legacy_only_route" &&
+        direction === "shadow_more_conservative") ||
+       (decisionDelta === "shadow_only_route" &&
+        direction === "shadow_more_permissive") ||
+       (!["legacy_only_route", "shadow_only_route"].includes(
+          decisionDelta,
+        ) && direction === "policy_difference")));
+  const shadowReceiver = candidate.value?.receiver;
+  const shadowConflictsWithFrozenSafety = shadowKind === "route" && (
+    shadow.value.capacity !== "eligible" ||
+    shadow.value.staging !== "eligible" ||
+    shadowReceiver?.kind !== "present" ||
+    shadowReceiver.receiverEligible !== true ||
+    shadowReceiver.storageHeadroom < shadow.value.amount ||
+    shadowReceiver.terminalHeadroom < shadow.value.amount ||
+    shadowReceiver.resourceHeadroom < shadow.value.amount
+  );
+  const expectedDifferenceReason = (() => {
+    if (status !== "different") return null;
+    if (shadowKind === "unmatched") {
+      return "expected_policy_difference";
+    }
+    if (shadowKind !== "route" || legacy.value === null) return null;
+    if (shadowConflictsWithFrozenSafety) return "unsafe_candidate";
+    if (legacyKind === "none") return "legacy_unpaired";
+    if (legacyKind === "route") {
+      return "expected_policy_difference";
+    }
+    return null;
+  })();
+  const classificationValid = status !== "different" ||
+    reason === expectedDifferenceReason;
+  const causalValid =
+    (status === "equal" && causalCode === "matched") ||
+    (status === "unresolved" && causalCode === reason) ||
+    (status === "different" && shadowKind === "unmatched" &&
+      causalCode === shadow.value.reason) ||
+    (status === "different" && legacyKind === "route" &&
+      shadowKind === "route" &&
+      ((decisionDelta === "different_route" && causalCode === "route_rank") ||
+        (decisionDelta === "same_route" &&
+          causalCode === "route_fact_difference"))) ||
+    (status === "different" && legacyKind === "none" &&
+      shadowKind === "route" &&
+      causalCode === legacy.value.blocker);
+  const expectedVisibleDimensions = (() => {
+    const expected = new Set();
+    if (status === "unresolved" || status === "equal") return expected;
+    if (
+      (legacyKind === "route" && shadowKind === "unmatched") ||
+      (legacyKind === "none" && shadowKind === "route")
+    ) {
+      expected.add("donor");
+      expected.add("route");
+      return expected;
+    }
+    if (legacyKind === "route" && shadowKind === "route") {
+      if (legacy.value.sourceRoomName !== shadow.value.sourceRoomName) {
+        expected.add("donor");
+      }
+      if (
+        legacy.value.amount !== shadow.value.amount ||
+        legacy.value.actionAmount !== shadow.value.actionAmount ||
+        legacy.value.terminalReadyAt !== shadow.value.terminalReadyAt ||
+        legacy.value.feeAmount !== shadow.value.feeAmount ||
+        legacy.value.requiredEnergy !== shadow.value.requiredEnergy ||
+        legacy.value.energyCommitmentAmount !==
+          shadow.value.energyCommitmentAmount
+      ) {
+        expected.add("route");
+      }
+      if (legacy.value.coverage !== shadow.value.coverage) {
+        expected.add("demandCoverage");
+      }
+      if (legacy.value.capacity !== shadow.value.capacity) {
+        expected.add("receiverHeadroom");
+      }
+      if (
+        legacy.value.staging !== shadow.value.staging ||
+        legacy.value.terminalAllocatedAmount !==
+          shadow.value.terminalAllocatedAmount ||
+        legacy.value.stagingRequiredAmount !==
+          shadow.value.stagingRequiredAmount ||
+        legacy.value.terminalEnergyAllocatedAmount !==
+          shadow.value.terminalEnergyAllocatedAmount ||
+        legacy.value.feeStagingRequiredAmount !==
+          shadow.value.feeStagingRequiredAmount
+      ) {
+        expected.add("predictedStagingEligibility");
+      }
+      return expected;
+    }
+    if (legacyKind === "none" && shadowKind === "unmatched") {
+      if (legacy.value.blocker !== shadow.value.reason) {
+        expected.add("route");
+      }
+      if (legacy.value.coverage !== shadow.value.coverage) {
+        expected.add("demandCoverage");
+      }
+      if (legacy.value.capacity !== shadow.value.capacity) {
+        expected.add("receiverHeadroom");
+      }
+      if (legacy.value.staging !== shadow.value.staging) {
+        expected.add("predictedStagingEligibility");
+      }
+    }
+    return expected;
+  })();
+  const visibleDimensions = (differingDimensions.value || [])
+    .filter((dimension) => dimension !== "priority");
+  const outcomeDimensionsValid =
+    visibleDimensions.length === expectedVisibleDimensions.size &&
+    visibleDimensions.every((dimension) =>
+      expectedVisibleDimensions.has(dimension));
+  const candidateAlignmentValid =
+    (shadowKind === null && candidate.value === null) ||
+    (shadowKind === "route" &&
+      candidate.value !== null &&
+      candidate.value.feasibleCount > 0 &&
+      candidate.value.selectedRejection === null &&
+      candidate.value.topSourceRoom === shadow.value.sourceRoomName) ||
+    (shadowKind === "unmatched" &&
+      candidate.value !== null &&
+      candidate.value.feasibleCount === 0 &&
+      candidate.value.topSourceRoom === null &&
+      (RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTIONS.has(
+        shadow.value.reason,
+      )
+        ? candidate.value.selectedRejection === shadow.value.reason
+        : candidate.value.selectedRejection === null));
+  const shadowReceiverEvidenceValid = shadowKind !== "route" || (
+    candidate.value?.receiver?.kind === "present" &&
+    candidate.value.receiver.receiverEligible === true &&
+    candidate.value.receiver.storageHeadroom >= shadow.value.amount &&
+    candidate.value.receiver.terminalHeadroom >= shadow.value.amount &&
+    candidate.value.receiver.resourceHeadroom >= shadow.value.amount
+  );
+  const noCandidateReasons = new Set([
+    "malformed_input",
+    "stale_intent",
+    "demand_already_covered",
+    "donor_limit_exceeded",
+  ]);
+  const candidateEvaluationValid = candidate.value === null || (
+    shadowKind === "unmatched" &&
+      noCandidateReasons.has(shadow.value.reason)
+      ? candidate.value.evaluatedCount === 0
+      : candidate.value.evaluatedCount === candidate.value.donorCount
+  );
+  const unmatchedCandidateCanonical = shadowKind !== "unmatched" ||
+    candidate.value === null ||
+    (shadow.value.reason === "no_donor"
+      ? candidate.value.donorCount === 0 &&
+        candidate.value.evaluatedCount === 0 &&
+        candidate.value.rejectedCount === 0 &&
+        candidate.value.rejectionCounts.length === 0
+      : noCandidateReasons.has(shadow.value.reason)
+        ? candidate.value.evaluatedCount === 0 &&
+          candidate.value.feasibleCount === 0 &&
+          candidate.value.rejectedCount === 0 &&
+          candidate.value.rejectionCounts.length === 0
+        : RESOURCE_CONTROL_LOGISTICS_CANDIDATE_REJECTIONS.has(
+            shadow.value.reason,
+          ) &&
+          candidate.value.donorCount > 0 &&
+          candidate.value.evaluatedCount === candidate.value.donorCount &&
+          candidate.value.rejectedCount === candidate.value.donorCount);
+  const legacySource = candidate.value?.legacySource;
+  const legacyDispositionValid = legacySource === null ||
+    legacySource === undefined ||
+    (legacySource.disposition === "selected"
+      ? legacySource.sourceRoom === candidate.value.topSourceRoom &&
+        legacySource.rejection === null &&
+        candidate.value.feasibleCount > 0
+      : legacySource.disposition === "feasible_lower_rank"
+        ? candidate.value.topSourceRoom !== null &&
+          legacySource.sourceRoom !== candidate.value.topSourceRoom &&
+          legacySource.rejection === null &&
+          candidate.value.feasibleCount >= 2
+        : legacySource.disposition === "rejected"
+          ? legacySource.rejection !== null &&
+            legacySource.sourceRoom !== candidate.value.topSourceRoom &&
+            candidate.value.rejectionCounts.some(
+              ([rejection]) => rejection === legacySource.rejection,
+            )
+          : legacySource.disposition === "not_evaluated"
+            ? candidate.value.evaluatedCount < candidate.value.donorCount &&
+              legacySource.sourceRoom !== candidate.value.topSourceRoom
+            : legacySource.disposition === "not_candidate" &&
+              legacySource.sourceRoom !== candidate.value.topSourceRoom &&
+              legacySource.rejection === null);
+  const legacyTraceValid = candidate.value === null ||
+    (legacyKind === "route"
+      ? legacySource?.sourceRoom === legacy.value.sourceRoomName &&
+        legacyDispositionValid
+      : legacySource === null);
+  const routeEnergyAccountingValid = (outcome) => {
+    if (outcome?.kind !== "route" || resource === null) return true;
+    const payloadEnergy = resource === "energy";
+    return outcome.requiredEnergy ===
+        outcome.feeAmount + (payloadEnergy ? outcome.actionAmount : 0) &&
+      outcome.energyCommitmentAmount ===
+        outcome.feeAmount + (payloadEnergy ? outcome.amount : 0) &&
+      outcome.terminalEnergyAllocatedAmount +
+        outcome.feeStagingRequiredAmount +
+        (payloadEnergy ? outcome.stagingRequiredAmount : 0) ===
+          outcome.requiredEnergy;
+  };
+  const legacyZeroActionValid = legacyKind !== "route" ||
+    legacy.value.actionAmount !== 0 || (
+      legacy.value.feeAmount === 0 &&
+      legacy.value.requiredEnergy === 0 &&
+      legacy.value.terminalAllocatedAmount === 0 &&
+      legacy.value.stagingRequiredAmount === 0 &&
+      legacy.value.terminalEnergyAllocatedAmount === 0 &&
+      legacy.value.feeStagingRequiredAmount === 0
+    );
+  const unmatchedOutcomeCanonical = shadowKind !== "unmatched" || (() => {
+    const capacityBlocked = new Set([
+      "receiver_capacity",
+      "stale_receiver_fact",
+      "invalid_receiver_endpoint",
+    ]).has(shadow.value.reason);
+    const stagingBlocked = shadow.value.reason === "staging_capacity";
+    const capacityValid = shadow.value.capacity ===
+      (capacityBlocked ? "blocked" : "unknown");
+    const stagingValid = shadow.value.staging ===
+      (stagingBlocked ? "blocked" : "unknown");
+    if (!capacityValid || !stagingValid) return false;
+    if (shadow.value.reason === "demand_already_covered") {
+      return shadow.value.uncoveredAmount === 0 &&
+        shadow.value.coverage === "covered";
+    }
+    if (shadow.value.reason === "malformed_input") {
+      return shadow.value.uncoveredAmount === 0 &&
+        shadow.value.coverage === "unknown";
+    }
+    if (shadow.value.reason === "stale_intent") return true;
+    return shadow.value.uncoveredAmount > 0 &&
+      (shadow.value.coverage === "none" ||
+        shadow.value.coverage === "partial");
+  })();
+  const unmatchedReceiverTraceCanonical = shadowKind !== "unmatched" ||
+    candidate.value === null || (() => {
+      const receiver = candidate.value.receiver;
+      if (shadow.value.reason === "invalid_receiver_endpoint") {
+        return receiver?.kind === "present";
+      }
+      if (shadow.value.reason === "receiver_capacity") {
+        return receiver?.kind === "present" && (
+          receiver.receiverEligible === false ||
+          receiver.storageHeadroom === 0 ||
+          receiver.terminalHeadroom === 0 ||
+          receiver.resourceHeadroom === 0
+        );
+      }
+      return true;
+    })();
+  const unsafeValid = reason !== "unsafe_candidate" ||
+    (status === "different" &&
+      shadowKind === "route" &&
+      shadowConflictsWithFrozenSafety);
+  const outcomesSemanticallyEqual = () => {
+    if (legacyKind === "route" && shadowKind === "route") {
+      return [
+        "sourceRoomName",
+        "coverage",
+        "capacity",
+        "staging",
+        "amount",
+        "actionAmount",
+        "feeAmount",
+        "terminalReadyAt",
+        "requiredEnergy",
+        "energyCommitmentAmount",
+        "terminalAllocatedAmount",
+        "stagingRequiredAmount",
+        "terminalEnergyAllocatedAmount",
+        "feeStagingRequiredAmount",
+      ].every((key) => legacy.value[key] === shadow.value[key]);
+    }
+    if (legacyKind === "none" && shadowKind === "unmatched") {
+      return legacy.value.blocker === shadow.value.reason &&
+        legacy.value.coverage === shadow.value.coverage &&
+        legacy.value.capacity === shadow.value.capacity &&
+        legacy.value.staging === shadow.value.staging;
+    }
+    return false;
+  };
+  const outcomeEqualityValid =
+    status !== "equal" ||
+    outcomesSemanticallyEqual();
+  return {
+    value: {
+      intentId,
+      targetRoomName,
+      resource,
+      status,
+      reason,
+      producerReason:
+        producerReason === undefined ? null : producerReason,
+      decisionDelta,
+      direction,
+      causalCode,
+      differingDimensions: differingDimensions.value,
+      legacy: legacy.value,
+      shadow: shadow.value,
+      candidate: candidate.value,
+    },
+    valid:
+      hasOnlyAllowedOwnKeys(sample, new Set([
+        "intentId",
+        "targetRoomName",
+        "resource",
+        "status",
+        "reason",
+        "producerReason",
+        "decisionDelta",
+        "direction",
+        "causalCode",
+        "differingDimensions",
+        "legacy",
+        "shadow",
+        "candidate",
+      ])) &&
+      typeof sample.intentId === "string" &&
+      sample.intentId.length > 0 &&
+      sample.intentId.length <= OBSERVABILITY_STRING_LIMIT &&
+      targetRoomName !== null &&
+      resource !== null &&
+      status !== null &&
+      reason !== null &&
+      producerReason !== undefined &&
+      decisionDelta !== null &&
+      direction !== null &&
+      causalCode !== null &&
+      differingDimensions.valid &&
+      statusReasonValid &&
+      legacy.valid &&
+      shadow.valid &&
+      candidate.valid &&
+      deltaValid &&
+      routeEndpointValid &&
+      directionValid &&
+      classificationValid &&
+      causalValid &&
+      outcomeDimensionsValid &&
+      candidateAlignmentValid &&
+      shadowReceiverEvidenceValid &&
+      candidateEvaluationValid &&
+      unmatchedCandidateCanonical &&
+      legacyTraceValid &&
+      routeEnergyAccountingValid(legacy.value) &&
+      routeEnergyAccountingValid(shadow.value) &&
+      legacyZeroActionValid &&
+      unmatchedOutcomeCanonical &&
+      unmatchedReceiverTraceCanonical &&
+      unsafeValid &&
+      outcomeEqualityValid,
+    rejectionTupleCount: candidate.rejectionTupleCount,
+  };
+}
+
+function summarizeLogisticsComparisonSamples(value, schemaVersion) {
   if (!Array.isArray(value)) return { value: null, valid: false };
   const result = [];
-  let valid = value.length <= RESOURCE_CONTROL_LOGISTICS_ARRAY_LIMIT;
-  for (const rawSample of value.slice(0, RESOURCE_CONTROL_LOGISTICS_ARRAY_LIMIT)) {
-    const sample = summarizeLogisticsComparisonSample(rawSample);
+  const sampleLimit = schemaVersion === 2
+    ? RESOURCE_CONTROL_LOGISTICS_CAUSAL_SAMPLE_LIMIT
+    : RESOURCE_CONTROL_LOGISTICS_ARRAY_LIMIT;
+  let valid = value.length <= sampleLimit;
+  let rejectionTupleCount = 0;
+  for (const rawSample of value.slice(0, sampleLimit)) {
+    const sample = schemaVersion === 2
+      ? summarizeLogisticsComparisonSampleV2(rawSample)
+      : summarizeLogisticsComparisonSampleV1(rawSample);
     if (!sample.valid) valid = false;
     if (sample.value !== null) result.push(sample.value);
+    rejectionTupleCount += sample.rejectionTupleCount || 0;
   }
-  return { value: result, valid };
+  if (schemaVersion === 2) {
+    const priority = (sample) => {
+      if (sample.reason === "unsafe_candidate") return 0;
+      if (sample.status === "unresolved" ||
+          sample.reason === "input_unavailable") return 1;
+      if (sample.status === "different") return 2;
+      return 3;
+    };
+    for (let index = 1; index < result.length; index += 1) {
+      const previous = result[index - 1];
+      const current = result[index];
+      if (
+        priority(previous) > priority(current) ||
+        (priority(previous) === priority(current) &&
+          previous.intentId.localeCompare(current.intentId) >= 0)
+      ) {
+        valid = false;
+      }
+    }
+  }
+  return { value: result, valid, rejectionTupleCount };
+}
+
+function summarizeLogisticsCpu(
+  value,
+  schemaVersion,
+  updatedAt,
+  snapshotCoherence,
+  cpuPhaseEvidence,
+) {
+  const cpuRecord = objectOrNull(value);
+  if (!cpuRecord) return { value: null, valid: false };
+  if (schemaVersion !== 2) {
+    const measurementAvailable = booleanOrNull(
+      cpuRecord.measurementAvailable,
+    );
+    const captureUsed = finiteNumberWithinOrNull(
+      cpuRecord.captureUsed,
+      0,
+      Number.MAX_VALUE,
+    );
+    const used = finiteNumberWithinOrNull(
+      cpuRecord.used,
+      0,
+      Number.MAX_VALUE,
+    );
+    return {
+      value: {
+        measurementAvailable,
+        captureUsed,
+        used,
+        cpuGateEligible: false,
+        gateInconclusive: true,
+      },
+      valid:
+        hasOnlyAllowedOwnKeys(
+          cpuRecord,
+          new Set(["measurementAvailable", "captureUsed", "used"]),
+        ) &&
+        measurementAvailable === true &&
+        captureUsed !== null &&
+        used !== null &&
+        used >= captureUsed,
+    };
+  }
+
+  const attributionVersion = cpuRecord.attributionVersion === 2
+    ? 2
+    : null;
+  const sampleTick = nonNegativeSafeIntegerOrNull(cpuRecord.sampleTick);
+  const measurementAvailable = booleanOrNull(
+    cpuRecord.measurementAvailable,
+  );
+  const producerUsed = finiteNumberWithinOrNull(
+    cpuRecord.producerUsed,
+    0,
+    Number.MAX_VALUE,
+  );
+  const consumerUsed = finiteNumberWithinOrNull(
+    cpuRecord.consumerUsed,
+    0,
+    Number.MAX_VALUE,
+  );
+  const rawValid = hasOnlyAllowedOwnKeys(
+    cpuRecord,
+    new Set([
+      "attributionVersion",
+      "sampleTick",
+      "measurementAvailable",
+      "producerUsed",
+      "consumerUsed",
+    ]),
+  ) &&
+    attributionVersion === 2 &&
+    sampleTick !== null &&
+    measurementAvailable === true &&
+    producerUsed !== null &&
+    consumerUsed !== null;
+  const tickAligned = rawValid && sampleTick === updatedAt;
+  const phaseAmbiguous = tickAligned &&
+    cpuPhaseEvidence?.ambiguousTicks?.has(sampleTick);
+  const outerResourceControlUsed = tickAligned && !phaseAmbiguous
+    ? cpuPhaseEvidence?.byTick?.get(sampleTick) ?? null
+    : null;
+  const coherentSnapshot =
+    snapshotCoherence?.attestationMatched === true &&
+    snapshotCoherence?.snapshotIncoherent !== true &&
+    snapshotCoherence?.inconclusive !== true;
+  const consumerWithinOuter =
+    outerResourceControlUsed !== null &&
+    consumerUsed !== null &&
+    consumerUsed <= outerResourceControlUsed;
+  const cpuGateEligible = rawValid &&
+    coherentSnapshot &&
+    tickAligned &&
+    outerResourceControlUsed !== null &&
+    consumerWithinOuter;
+  const gateInconclusive = rawValid &&
+    (!coherentSnapshot || !tickAligned ||
+      outerResourceControlUsed === null);
+  return {
+    value: {
+      attributionVersion,
+      sampleTick,
+      measurementAvailable,
+      producerUsed,
+      consumerUsed,
+      shadowUsed: producerUsed !== null && consumerUsed !== null
+        ? producerUsed + consumerUsed
+        : null,
+      outerResourceControlUsed,
+      gateUsed: outerResourceControlUsed !== null && producerUsed !== null
+        ? outerResourceControlUsed + producerUsed
+        : null,
+      cpuGateEligible,
+      gateInconclusive,
+    },
+    valid: rawValid,
+  };
 }
 
 function missingLogisticsSummary() {
   return {
     available: false,
     livenessAvailable: false,
+    snapshotIncoherent: false,
+    inconclusive: false,
+    snapshotAttestationMatched: false,
+    coherenceRetryCount: 0,
+    initialEpochSkew: false,
     schemaVersion: null,
     updatedAt: null,
     expiresAt: null,
@@ -2011,6 +3135,8 @@ function summarizeResourceControlLogistics(
   value,
   dataLogistics,
   currentTick,
+  snapshotCoherence = null,
+  cpuPhaseEvidence = null,
 ) {
   const logistics = objectOrNull(value);
   if (!logistics) return missingLogisticsSummary();
@@ -2035,7 +3161,10 @@ function summarizeResourceControlLogistics(
     "cpu",
   ]));
 
-  const schemaVersion = logistics.schemaVersion === 1 ? 1 : null;
+  const schemaVersion =
+    logistics.schemaVersion === 1 || logistics.schemaVersion === 2
+      ? logistics.schemaVersion
+      : null;
   const updatedAt = nonNegativeSafeIntegerOrNull(logistics.updatedAt);
   const expiresAt = nonNegativeSafeIntegerOrNull(logistics.expiresAt);
   const requestedMode = RESOURCE_CONTROL_LOGISTICS_MODES.has(
@@ -2137,6 +3266,12 @@ function summarizeResourceControlLogistics(
     intent.inputDrift <= intent.active &&
     intent.emitted === intent.total &&
     inScopeTotal === intent.total &&
+    (schemaVersion !== 2 || (
+      (inScope.value?.synthesis_room || 0) === intent.total &&
+      Object.entries(inScope.value || {}).every(
+        ([origin, count]) => origin === "synthesis_room" || count === 0,
+      )
+    )) &&
     intent.fresh + intent.stale === intent.emitted &&
     intent.dropped === 0 &&
     intent.truncated === false;
@@ -2147,6 +3282,20 @@ function summarizeResourceControlLogistics(
     RESOURCE_CONTROL_LOGISTICS_COMPARISON_REASONS,
     RESOURCE_CONTROL_LOGISTICS_INTENT_LIMIT,
   );
+  const byDecisionDelta = schemaVersion === 2
+    ? summarizeClosedNonNegativeIntegerMap(
+        comparisonRecord?.byDecisionDelta,
+        RESOURCE_CONTROL_LOGISTICS_DECISION_DELTAS,
+        RESOURCE_CONTROL_LOGISTICS_INTENT_LIMIT,
+      )
+    : { value: null, valid: true };
+  const byCausalCode = schemaVersion === 2
+    ? summarizeClosedNonNegativeIntegerMap(
+        comparisonRecord?.byCausalCode,
+        RESOURCE_CONTROL_LOGISTICS_CAUSAL_CODES,
+        RESOURCE_CONTROL_LOGISTICS_INTENT_LIMIT,
+      )
+    : { value: null, valid: true };
   const dimensionsRecord = objectOrNull(comparisonRecord?.dimensions);
   const dimensions = {};
   let dimensionsValid =
@@ -2164,6 +3313,7 @@ function summarizeResourceControlLogistics(
   }
   const samples = summarizeLogisticsComparisonSamples(
     comparisonRecord?.samples,
+    schemaVersion,
   );
   const comparison = comparisonRecord
     ? {
@@ -2184,7 +3334,25 @@ function summarizeResourceControlLogistics(
           RESOURCE_CONTROL_LOGISTICS_INTENT_LIMIT,
         ),
         byReason: byReason.value,
+        ...(schemaVersion === 2
+          ? {
+              byDecisionDelta: byDecisionDelta.value,
+              byCausalCode: byCausalCode.value,
+            }
+          : {}),
         dimensions,
+        ...(schemaVersion === 2
+          ? {
+              sampled: nonNegativeSafeIntegerOrNull(
+                comparisonRecord.sampled,
+                RESOURCE_CONTROL_LOGISTICS_CAUSAL_SAMPLE_LIMIT,
+              ),
+              detailsDropped: nonNegativeSafeIntegerOrNull(
+                comparisonRecord.detailsDropped,
+                RESOURCE_CONTROL_LOGISTICS_INTENT_LIMIT,
+              ),
+            }
+          : {}),
         samples: samples.value,
       }
     : null;
@@ -2200,17 +3368,177 @@ function summarizeResourceControlLogistics(
     }
     return counts;
   }, {});
+  const sampleDecisionDeltaCounts = sampleValues.reduce(
+    (counts, sample) => {
+      if (sample.decisionDelta !== undefined &&
+          sample.decisionDelta !== null) {
+        counts[sample.decisionDelta] =
+          (counts[sample.decisionDelta] || 0) + 1;
+      }
+      return counts;
+    },
+    {},
+  );
+  const sampleCausalCodeCounts = sampleValues.reduce(
+    (counts, sample) => {
+      if (sample.causalCode !== undefined && sample.causalCode !== null) {
+        counts[sample.causalCode] =
+          (counts[sample.causalCode] || 0) + 1;
+      }
+      return counts;
+    },
+    {},
+  );
+  const comparisonAllowedKeys = schemaVersion === 2
+    ? new Set([
+        "total",
+        "matched",
+        "different",
+        "unresolved",
+        "byReason",
+        "byDecisionDelta",
+        "byCausalCode",
+        "dimensions",
+        "sampled",
+        "detailsDropped",
+        "samples",
+      ])
+    : new Set([
+        "total",
+        "matched",
+        "different",
+        "unresolved",
+        "byReason",
+        "dimensions",
+        "samples",
+      ]);
+  const reasonCounts = byReason.value || {};
+  const differenceExclusiveCount = [
+    "expected_policy_difference",
+    "legacy_unpaired",
+    "shadow_unpaired",
+    "unsafe_candidate",
+  ].reduce((sum, reason) => sum + (reasonCounts[reason] || 0), 0);
+  const unresolvedExclusiveCount = [
+    "input_drift",
+    "stale_intent",
+    "candidate_budget_exhausted",
+    "legacy_observation_missing",
+    "malformed_input",
+    "input_limit_exceeded",
+  ].reduce((sum, reason) => sum + (reasonCounts[reason] || 0), 0);
+  const sharedInputUnavailableCount =
+    reasonCounts.input_unavailable || 0;
+  const differentInputUnavailableCount =
+    (comparison?.different ?? 0) - differenceExclusiveCount;
+  const reasonStatusAccountingValid =
+    (reasonCounts.equal || 0) === comparison?.matched &&
+    differenceExclusiveCount <= (comparison?.different ?? -1) &&
+    unresolvedExclusiveCount <= (comparison?.unresolved ?? -1) &&
+    sharedInputUnavailableCount ===
+      ((comparison?.different ?? -1) - differenceExclusiveCount) +
+      ((comparison?.unresolved ?? -1) - unresolvedExclusiveCount);
+  const samplePriorityCounts = sampleValues.reduce(
+    (counts, sample) => {
+      const priority = sample.reason === "unsafe_candidate"
+        ? 0
+        : sample.status === "unresolved" ||
+            sample.reason === "input_unavailable"
+          ? 1
+          : sample.status === "different"
+            ? 2
+            : 3;
+      counts[priority] += 1;
+      return counts;
+    },
+    [0, 0, 0, 0],
+  );
+  let remainingSampleSlots = comparison?.sampled ?? 0;
+  const expectedSamplePriorityCounts = [
+    reasonCounts.unsafe_candidate || 0,
+    (comparison?.unresolved || 0) + differentInputUnavailableCount,
+    (comparison?.different || 0) -
+      differentInputUnavailableCount -
+      (reasonCounts.unsafe_candidate || 0),
+    comparison?.matched || 0,
+  ].map((count) => {
+    const sampled = Math.min(Math.max(0, count), remainingSampleSlots);
+    remainingSampleSlots -= sampled;
+    return sampled;
+  });
+  const canonicalSamplePrefixValid =
+    comparison?.sampled === Math.min(
+      comparison?.total ?? Number.MAX_SAFE_INTEGER,
+      RESOURCE_CONTROL_LOGISTICS_CAUSAL_SAMPLE_LIMIT,
+    ) &&
+    samplePriorityCounts.every(
+      (count, index) => count === expectedSamplePriorityCounts[index],
+    );
+  const sampledMaterialCount = sampleValues.filter(
+    (sample) => sample.status !== "equal",
+  ).length;
+  const sampledEqualCount = sampleValues.length - sampledMaterialCount;
+  const materialDetailsComplete =
+    sampledMaterialCount ===
+      (comparison?.different ?? -1) + (comparison?.unresolved ?? -1) &&
+    comparison?.detailsDropped ===
+      (comparison?.matched ?? -1) - sampledEqualCount;
+  const materialReasonAggregatesExact =
+    [...RESOURCE_CONTROL_LOGISTICS_COMPARISON_REASONS].every(
+      (reason) =>
+        (byReason.value?.[reason] || 0) ===
+          (sampleReasonCounts[reason] || 0) +
+          (reason === "equal" ? (comparison?.detailsDropped || 0) : 0),
+    );
+  const materialCausalAggregatesExact =
+    [...RESOURCE_CONTROL_LOGISTICS_CAUSAL_CODES].every(
+      (code) =>
+        (byCausalCode.value?.[code] || 0) ===
+          (sampleCausalCodeCounts[code] || 0) +
+          (code === "matched" ? (comparison?.detailsDropped || 0) : 0),
+    );
+  const materialDecisionDeltaAggregatesExact = [
+    "different_route",
+    "legacy_only_route",
+    "shadow_only_route",
+    "input_unavailable",
+  ].every(
+    (delta) =>
+      (byDecisionDelta.value?.[delta] || 0) ===
+        (sampleDecisionDeltaCounts[delta] || 0),
+  );
+  const v2ComparisonValid = schemaVersion !== 2 || (
+    byDecisionDelta.valid &&
+    byCausalCode.valid &&
+    Object.values(byDecisionDelta.value || {}).reduce(
+      (sum, count) => sum + count,
+      0,
+    ) === comparison?.total &&
+    Object.values(byCausalCode.value || {}).reduce(
+      (sum, count) => sum + count,
+      0,
+    ) === comparison?.total &&
+    comparison?.sampled === sampleValues.length &&
+    comparison?.sampled + comparison?.detailsDropped ===
+      comparison?.total &&
+    Object.entries(sampleDecisionDeltaCounts).every(
+      ([delta, count]) =>
+        count <= (byDecisionDelta.value?.[delta] || 0),
+    ) &&
+    Object.entries(sampleCausalCodeCounts).every(
+      ([code, count]) =>
+        count <= (byCausalCode.value?.[code] || 0),
+    ) &&
+    reasonStatusAccountingValid &&
+    canonicalSamplePrefixValid &&
+    materialDetailsComplete &&
+    materialReasonAggregatesExact &&
+    materialCausalAggregatesExact &&
+    materialDecisionDeltaAggregatesExact
+  );
   const comparisonValid =
     comparison !== null &&
-    hasOnlyAllowedOwnKeys(comparisonRecord, new Set([
-      "total",
-      "matched",
-      "different",
-      "unresolved",
-      "byReason",
-      "dimensions",
-      "samples",
-    ])) &&
+    hasOnlyAllowedOwnKeys(comparisonRecord, comparisonAllowedKeys) &&
     comparison.total !== null &&
     comparison.matched !== null &&
     comparison.different !== null &&
@@ -2226,7 +3554,26 @@ function summarizeResourceControlLogistics(
     dimensionsValid &&
     RESOURCE_CONTROL_LOGISTICS_DIMENSIONS.every((dimensionName) => {
       const dimension = dimensions[dimensionName];
+      const sampledDimension = sampleValues.reduce(
+        (counts, sample) => {
+          if (sample.status === "unresolved") counts.unresolved += 1;
+          else if (sample.differingDimensions?.includes(dimensionName)) {
+            counts.different += 1;
+          } else counts.matched += 1;
+          return counts;
+        },
+        { matched: 0, different: 0, unresolved: 0 },
+      );
       return dimension &&
+        dimension.unresolved === comparison.unresolved &&
+        dimension.different <= comparison.different &&
+        (schemaVersion === 2
+          ? dimension.matched ===
+              sampledDimension.matched + comparison.detailsDropped &&
+            dimension.different === sampledDimension.different
+          : dimension.matched >= sampledDimension.matched &&
+            dimension.different >= sampledDimension.different) &&
+        dimension.unresolved >= sampledDimension.unresolved &&
         dimension.matched + dimension.different + dimension.unresolved ===
           comparison.total;
     }) &&
@@ -2239,7 +3586,8 @@ function summarizeResourceControlLogistics(
     sampleStatusCounts.unresolved <= comparison.unresolved &&
     Object.entries(sampleReasonCounts).every(
       ([reason, count]) => count <= (byReason.value?.[reason] || 0),
-    );
+    ) &&
+    v2ComparisonValid;
 
   const matcherRecord = objectOrNull(logistics.matcher);
   const continuationCursor = matcherRecord?.continuationCursor;
@@ -2277,6 +3625,11 @@ function summarizeResourceControlLogistics(
             : null,
       }
     : null;
+  const sampledCandidateEvaluations = sampleValues.reduce(
+    (total, sample) =>
+      total + (sample.candidate?.evaluatedCount || 0),
+    0,
+  );
   const matcherValid =
     matcher !== null &&
     hasOnlyAllowedOwnKeys(matcherRecord, new Set([
@@ -2299,6 +3652,11 @@ function summarizeResourceControlLogistics(
         RESOURCE_CONTROL_LOGISTICS_COST_EVALUATIONS_PER_CANDIDATE_LIMIT &&
     matcher.totalTransactionCostEvaluations >=
       matcher.transactionCostEvaluations &&
+    (schemaVersion !== 2 || (
+      matcher.candidateEvaluations >= sampledCandidateEvaluations &&
+      (comparison?.total > RESOURCE_CONTROL_LOGISTICS_CAUSAL_SAMPLE_LIMIT ||
+        matcher.candidateEvaluations === sampledCandidateEvaluations)
+    )) &&
     matcher.budgetExhausted !== null &&
     matcher.budgetExhausted === false &&
     continuationCursorValid;
@@ -2364,7 +3722,9 @@ function summarizeResourceControlLogistics(
         ),
         runtimeItems: nonNegativeSafeIntegerOrNull(
           resourceRecord.runtimeItems,
-          RESOURCE_CONTROL_LOGISTICS_RUNTIME_ITEM_LIMIT,
+          schemaVersion === 2
+            ? RESOURCE_CONTROL_LOGISTICS_RUNTIME_V2_ITEM_LIMIT
+            : RESOURCE_CONTROL_LOGISTICS_RUNTIME_ITEM_LIMIT,
         ),
         dataBytes: nonNegativeSafeIntegerOrNull(
           resourceRecord.dataBytes,
@@ -2385,10 +3745,15 @@ function summarizeResourceControlLogistics(
     : null;
   const expectedRuntimeItems =
     sampleValues.length +
+    (schemaVersion === 2 ? samples.rejectionTupleCount : 0) +
     (violations.value?.length || 0) +
     Object.keys(inScope.value || {}).length +
     Object.keys(outOfScope.value || {}).length +
-    Object.keys(byReason.value || {}).length;
+    Object.keys(byReason.value || {}).length +
+    (schemaVersion === 2
+      ? Object.keys(byDecisionDelta.value || {}).length +
+        Object.keys(byCausalCode.value || {}).length
+      : 0);
   const observedRuntimeBytes = serializedUtf8ByteLengthOrNull(logistics);
   if (resources) {
     resources.observedRuntimeItems = expectedRuntimeItems;
@@ -2413,38 +3778,22 @@ function summarizeResourceControlLogistics(
     resources.totalBytes === resources.dataBytes + resources.runtimeBytes &&
     resources.withinLimit === true;
 
-  const cpuRecord = objectOrNull(logistics.cpu);
-  const cpu = cpuRecord
-    ? {
-        measurementAvailable: booleanOrNull(
-          cpuRecord.measurementAvailable,
-        ),
-        captureUsed: finiteNumberWithinOrNull(
-          cpuRecord.captureUsed,
-          0,
-          Number.MAX_VALUE,
-        ),
-        used: finiteNumberWithinOrNull(
-          cpuRecord.used,
-          0,
-          Number.MAX_VALUE,
-        ),
-      }
-    : null;
-  const cpuValid =
-    cpu !== null &&
-    hasOnlyAllowedOwnKeys(
-      cpuRecord,
-      new Set(["measurementAvailable", "captureUsed", "used"]),
-    ) &&
-    cpu.measurementAvailable === true &&
-    cpu.captureUsed !== null &&
-    cpu.used !== null &&
-    cpu.used >= cpu.captureUsed;
+  const cpuSummary = summarizeLogisticsCpu(
+    logistics.cpu,
+    schemaVersion,
+    updatedAt,
+    snapshotCoherence,
+    cpuPhaseEvidence,
+  );
+  const cpu = cpuSummary.value;
+  const cpuValid = cpuSummary.valid;
 
   const livenessAvailable =
+    snapshotCoherence?.snapshotIncoherent !== true &&
+    snapshotCoherence?.inconclusive !== true &&
+    snapshotCoherence?.attestationMatched === true &&
     topShapeValid &&
-    schemaVersion === 1 &&
+    schemaVersion !== null &&
     updatedAt !== null &&
     expiresAt !== null &&
     Number.isSafeInteger(currentTick) &&
@@ -2453,6 +3802,7 @@ function summarizeResourceControlLogistics(
     currentTick <= expiresAt &&
     requestedMode !== null &&
     requestedMode !== "disabled" &&
+    (schemaVersion !== 2 || requestedMode === "shadow") &&
     effectiveAuthority === "legacy" &&
     blockerValid &&
     availabilityValid &&
@@ -2462,16 +3812,33 @@ function summarizeResourceControlLogistics(
     inScope.valid &&
     outOfScope.valid &&
     intentValid &&
+    intent.paired === intent.active &&
+    intent.inputDrift === 0 &&
     comparisonValid &&
+    comparison.unresolved === 0 &&
     matcherValid &&
+    matcher.indexBuilds === RESOURCE_CONTROL_LOGISTICS_INDEX_BUILD_LIMIT &&
+    (comparison.byReason?.input_unavailable || 0) === 0 &&
     safetyValid &&
     zeroObservableRecords &&
     resourcesValid &&
     cpuValid;
+  if (cpu && schemaVersion === 2) {
+    cpu.cpuGateEligible = cpu.cpuGateEligible && livenessAvailable;
+  }
 
   return {
     available: rawAvailable,
     livenessAvailable,
+    snapshotIncoherent:
+      snapshotCoherence?.snapshotIncoherent === true,
+    inconclusive: snapshotCoherence?.inconclusive === true,
+    snapshotAttestationMatched:
+      snapshotCoherence?.attestationMatched === true,
+    coherenceRetryCount:
+      snapshotCoherence?.retryCount === 1 ? 1 : 0,
+    initialEpochSkew:
+      snapshotCoherence?.initialEpochSkew === true,
     schemaVersion,
     updatedAt,
     expiresAt,
@@ -2496,6 +3863,8 @@ function summarizeResourceControl(
   transferTaskStore,
   dataLogistics,
   currentTick,
+  snapshotCoherence = null,
+  cpuPhaseEvidence = null,
 ) {
   const runtime =
     runtimeResourceControl && typeof runtimeResourceControl === "object" && !Array.isArray(runtimeResourceControl)
@@ -2587,6 +3956,8 @@ function summarizeResourceControl(
       runtime?.logistics,
       dataLogistics,
       currentTick,
+      snapshotCoherence,
+      cpuPhaseEvidence,
     ),
     pendingTaskCount: pendingTasks.length,
     pendingTasks,
@@ -4443,6 +5814,47 @@ function extractFixtureResourceControlData(parsed) {
   };
 }
 
+function createFixtureMemoryPathReader(parsed) {
+  const fixtureReadSequences = objectOrNull(
+    objectOrNull(parsed)?.__monitorMemoryPathReads,
+  );
+  const sequenceIndexes = new Map();
+  const reader = async (path) => {
+    const sequence = fixtureReadSequences?.[path];
+    if (Array.isArray(sequence) && sequence.length > 0) {
+      const index = sequenceIndexes.get(path) || 0;
+      if (index >= sequence.length) {
+        throw new Error(
+          `Fixture memory read sequence exhausted for ${path}`,
+        );
+      }
+      sequenceIndexes.set(path, index + 1);
+      return sequence[index];
+    }
+    let current = parsed;
+    for (const part of path.split(".")) {
+      current = objectOrNull(current)?.[part];
+      if (current === undefined) return null;
+    }
+    return current ?? null;
+  };
+  reader.assertExhausted = () => {
+    for (const [path, sequence] of Object.entries(
+      fixtureReadSequences || {},
+    )) {
+      if (
+        Array.isArray(sequence) &&
+        (sequenceIndexes.get(path) || 0) !== sequence.length
+      ) {
+        throw new Error(
+          `Fixture memory read sequence not exhausted for ${path}`,
+        );
+      }
+    }
+  };
+  return reader;
+}
+
 async function fetchOptionalMemoryPath(config, shard, path) {
   try {
     const { payload } = await fetchApiJson(config, "/api/user/memory", { shard, path });
@@ -4452,18 +5864,254 @@ async function fetchOptionalMemoryPath(config, shard, path) {
   }
 }
 
-async function fetchResourceControlData(config, shard) {
-  const [
+const COHERENT_LOGISTICS_SNAPSHOT = Object.freeze({
+  snapshotIncoherent: false,
+  inconclusive: false,
+  attestationMatched: true,
+  retryCount: 0,
+  initialEpochSkew: false,
+});
+
+const UNVERIFIED_LOGISTICS_SNAPSHOT = Object.freeze({
+  ...COHERENT_LOGISTICS_SNAPSHOT,
+  attestationMatched: false,
+});
+
+function extractResourceControlLogistics(value) {
+  const resourceControl = objectOrNull(value);
+  return objectOrNull(resourceControl?.logistics);
+}
+
+function extractLogisticsRuntimeEpoch(runtimeResourceControl) {
+  const logistics = extractResourceControlLogistics(
     runtimeResourceControl,
-    runtimeHub,
+  );
+  return nonNegativeSafeIntegerOrNull(logistics?.updatedAt);
+}
+
+function extractLogisticsDataEpoch(dataResourceControl) {
+  const logistics = extractResourceControlLogistics(
     dataResourceControl,
+  );
+  const strings = logistics?.s;
+  const snapshots = logistics?.p;
+  if (!Array.isArray(strings) || !Array.isArray(snapshots)) {
+    return null;
+  }
+  let producerEpoch = null;
+  for (const snapshot of snapshots) {
+    if (!Array.isArray(snapshot)) continue;
+    const producerIndex = nonNegativeSafeIntegerOrNull(
+      snapshot[0],
+      strings.length - 1,
+    );
+    if (
+      producerIndex === null ||
+      strings[producerIndex] !==
+        RESOURCE_CONTROL_LOGISTICS_SYNTHESIS_PRODUCER
+    ) {
+      continue;
+    }
+    const observedAt = nonNegativeSafeIntegerOrNull(snapshot[3]);
+    if (observedAt === null || producerEpoch !== null) return null;
+    producerEpoch = observedAt;
+  }
+  return producerEpoch;
+}
+
+function logisticsPairMatchesAttestation(
+  runtimeResourceControl,
+  dataResourceControl,
+) {
+  const runtimeLogistics = extractResourceControlLogistics(
+    runtimeResourceControl,
+  );
+  const dataLogistics = extractResourceControlLogistics(
+    dataResourceControl,
+  );
+  if (
+    runtimeLogistics?.available !== true ||
+    !dataLogistics
+  ) {
+    return false;
+  }
+  const runtimeEpoch = extractLogisticsRuntimeEpoch(
+    runtimeResourceControl,
+  );
+  const dataEpoch = extractLogisticsDataEpoch(dataResourceControl);
+  const attestedBytes = nonNegativeSafeIntegerOrNull(
+    objectOrNull(runtimeLogistics.resources)?.dataBytes,
+  );
+  const observedBytes = serializedUtf8ByteLengthOrNull(dataLogistics);
+  return runtimeEpoch !== null &&
+    dataEpoch === runtimeEpoch &&
+    attestedBytes !== null &&
+    observedBytes === attestedBytes;
+}
+
+function selectCoherentLogisticsRuntime(
+  firstRuntimeResourceControl,
+  dataResourceControl,
+  secondRuntimeResourceControl,
+) {
+  // Prefer the newer endpoint of the bracket. If data belongs to R1, retaining
+  // that historical pair is still coherent and safer than mixing it with R2.
+  if (
+    logisticsPairMatchesAttestation(
+      secondRuntimeResourceControl,
+      dataResourceControl,
+    )
+  ) {
+    return secondRuntimeResourceControl;
+  }
+  if (
+    logisticsPairMatchesAttestation(
+      firstRuntimeResourceControl,
+      dataResourceControl,
+    )
+  ) {
+    return firstRuntimeResourceControl;
+  }
+  return null;
+}
+
+function logisticsSnapshotEpochSkew(
+  firstRuntimeResourceControl,
+  dataResourceControl,
+  secondRuntimeResourceControl,
+) {
+  const readableEpochs = [
+    extractLogisticsRuntimeEpoch(firstRuntimeResourceControl),
+    extractLogisticsDataEpoch(dataResourceControl),
+    extractLogisticsRuntimeEpoch(secondRuntimeResourceControl),
+  ].filter((epoch) => epoch !== null);
+  return readableEpochs.length >= 2 &&
+    new Set(readableEpochs).size > 1;
+}
+
+async function fetchCoherentResourceControlPair(readMemoryPath) {
+  const firstRuntimeResourceControl = await readMemoryPath(
+    "runtime.resourceControl",
+  );
+  const firstDataResourceControl = await readMemoryPath(
+    "data.resourceControl",
+  );
+
+  // Every observation is a full R1-D-R2 bracket, including the common case
+  // where R1 and D already appear to match. Otherwise a write immediately
+  // after D could be mistaken for a coherent latest snapshot.
+  const secondRuntimeResourceControl = await readMemoryPath(
+    "runtime.resourceControl",
+  );
+  const initialEpochSkew = logisticsSnapshotEpochSkew(
+    firstRuntimeResourceControl,
+    firstDataResourceControl,
+    secondRuntimeResourceControl,
+  );
+  const initialCoherentRuntime = selectCoherentLogisticsRuntime(
+    firstRuntimeResourceControl,
+    firstDataResourceControl,
+    secondRuntimeResourceControl,
+  );
+  if (initialCoherentRuntime) {
+    return {
+      runtimeResourceControl: initialCoherentRuntime,
+      dataResourceControl: firstDataResourceControl,
+      snapshotCoherence: {
+        ...COHERENT_LOGISTICS_SNAPSHOT,
+        initialEpochSkew,
+      },
+    };
+  }
+  if (
+    extractResourceControlLogistics(firstRuntimeResourceControl)
+      ?.available !== true &&
+    extractResourceControlLogistics(secondRuntimeResourceControl)
+      ?.available !== true
+  ) {
+    return {
+      runtimeResourceControl: secondRuntimeResourceControl ||
+        firstRuntimeResourceControl,
+      dataResourceControl: firstDataResourceControl,
+      snapshotCoherence: UNVERIFIED_LOGISTICS_SNAPSHOT,
+    };
+  }
+
+  // A stable R1-D-R2 epoch proves a real same-epoch attestation failure.
+  // Retrying it would hide corruption, so preserve strict fail-closed output.
+  if (!initialEpochSkew) {
+    return {
+      runtimeResourceControl: secondRuntimeResourceControl,
+      dataResourceControl: firstDataResourceControl,
+      snapshotCoherence: UNVERIFIED_LOGISTICS_SNAPSHOT,
+    };
+  }
+
+  // Exactly one bounded retry is permitted after an observed epoch crossing.
+  const retryFirstRuntimeResourceControl = await readMemoryPath(
+    "runtime.resourceControl",
+  );
+  const retryDataResourceControl = await readMemoryPath(
+    "data.resourceControl",
+  );
+  const retrySecondRuntimeResourceControl = await readMemoryPath(
+    "runtime.resourceControl",
+  );
+  const retryCoherentRuntime = selectCoherentLogisticsRuntime(
+    retryFirstRuntimeResourceControl,
+    retryDataResourceControl,
+    retrySecondRuntimeResourceControl,
+  );
+  if (retryCoherentRuntime) {
+    return {
+      runtimeResourceControl: retryCoherentRuntime,
+      dataResourceControl: retryDataResourceControl,
+      snapshotCoherence: {
+        ...COHERENT_LOGISTICS_SNAPSHOT,
+        retryCount: 1,
+        initialEpochSkew: true,
+      },
+    };
+  }
+
+  const retryEpochSkew = logisticsSnapshotEpochSkew(
+    retryFirstRuntimeResourceControl,
+    retryDataResourceControl,
+    retrySecondRuntimeResourceControl,
+  );
+  return {
+    runtimeResourceControl: retrySecondRuntimeResourceControl,
+    dataResourceControl: retryDataResourceControl,
+    snapshotCoherence: {
+      snapshotIncoherent: retryEpochSkew,
+      inconclusive: retryEpochSkew,
+      attestationMatched: false,
+      retryCount: 1,
+      initialEpochSkew: true,
+    },
+  };
+}
+
+function extractResourceControlDataStore(dataResourceControl) {
+  const data = objectOrNull(dataResourceControl);
+  return {
+    transferTaskStore: objectOrNull(data?.tasks),
+    dataResourceControlLogistics: objectOrNull(data?.logistics),
+  };
+}
+
+async function fetchResourceControlData(config, shard) {
+  const readMemoryPath = (path) =>
+    fetchOptionalMemoryPath(config, shard, path);
+  const [
+    resourceControlPair,
+    runtimeHub,
     runtimeMarketSaleAutomation,
     dataDirectAutomation,
   ] =
     await Promise.all([
-    fetchOptionalMemoryPath(config, shard, "runtime.resourceControl"),
+    fetchCoherentResourceControlPair(readMemoryPath),
     fetchOptionalMemoryPath(config, shard, "runtime.hub"),
-    fetchOptionalMemoryPath(config, shard, "data.resourceControl"),
     fetchOptionalMemoryPath(config, shard, "runtime.marketSaleAutomation"),
     fetchOptionalMemoryPath(
       config,
@@ -4471,27 +6119,19 @@ async function fetchResourceControlData(config, shard) {
       "data.marketSaleAutomation.directAutomation",
     ),
   ]);
+  const {
+    transferTaskStore,
+    dataResourceControlLogistics,
+  } = extractResourceControlDataStore(
+    resourceControlPair.dataResourceControl,
+  );
   return {
-    runtimeResourceControl,
+    runtimeResourceControl:
+      resourceControlPair.runtimeResourceControl,
     runtimeHub,
-    transferTaskStore:
-      dataResourceControl &&
-      typeof dataResourceControl === "object" &&
-      !Array.isArray(dataResourceControl) &&
-      dataResourceControl.tasks &&
-      typeof dataResourceControl.tasks === "object" &&
-      !Array.isArray(dataResourceControl.tasks)
-        ? dataResourceControl.tasks
-        : null,
-    dataResourceControlLogistics:
-      dataResourceControl &&
-      typeof dataResourceControl === "object" &&
-      !Array.isArray(dataResourceControl) &&
-      dataResourceControl.logistics &&
-      typeof dataResourceControl.logistics === "object" &&
-      !Array.isArray(dataResourceControl.logistics)
-        ? dataResourceControl.logistics
-        : null,
+    transferTaskStore,
+    dataResourceControlLogistics,
+    snapshotCoherence: resourceControlPair.snapshotCoherence,
     runtimeMarketSaleAutomation,
     dataDirectAutomation,
   };
@@ -4505,17 +6145,31 @@ async function fetchMemorySnapshot(config, options = {}) {
     const parsed = JSON.parse(raw);
     const rateLimit = { limit: "?", remaining: "?", reset: "?" };
     const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(parsed);
+    const fixtureResourceControl =
+      extractFixtureResourceControlData(parsed);
     const {
-      runtimeResourceControl,
       runtimeHub,
-      transferTaskStore,
-      dataResourceControlLogistics,
       runtimeMarketSaleAutomation,
       dataDirectAutomation,
-    } = extractFixtureResourceControlData(parsed);
+    } = fixtureResourceControl;
+    const fixtureMemoryPathReader =
+      createFixtureMemoryPathReader(parsed);
+    const resourceControlPair =
+      await fetchCoherentResourceControlPair(
+        fixtureMemoryPathReader,
+      );
+    fixtureMemoryPathReader.assertExhausted();
+    const {
+      transferTaskStore,
+      dataResourceControlLogistics,
+    } = extractResourceControlDataStore(
+      resourceControlPair.dataResourceControl,
+    );
     const summary = summarizeProduction(production);
+    const cpuPhaseEvidence =
+      buildResourceControlCpuPhaseEvidence(cpuMonitor);
 
-    return {
+    const snapshot = {
       source: "memory",
       fetchedAt: new Date().toISOString(),
       rateLimit,
@@ -4524,16 +6178,23 @@ async function fetchMemorySnapshot(config, options = {}) {
       moduleCpu: summarizeModuleCpu(moduleCpu),
       hub: summarizeHub(hub, runtimeHub),
       resourceControl: summarizeResourceControl(
-        runtimeResourceControl,
+        resourceControlPair.runtimeResourceControl,
         transferTaskStore,
         dataResourceControlLogistics,
         summary.latestTick,
+        resourceControlPair.snapshotCoherence,
+        cpuPhaseEvidence,
       ),
       marketSaleAutomation: summarizeMarketSaleAutomation(
         runtimeMarketSaleAutomation,
         dataDirectAutomation,
       ),
     };
+    Object.defineProperty(snapshot, "_resourceControlCpuPhaseEvidence", {
+      value: cpuPhaseEvidence,
+      enumerable: false,
+    });
+    return snapshot;
   }
 
   const { payload, rateLimit } = await fetchApiJson(config, "/api/user/memory", {
@@ -4543,11 +6204,14 @@ async function fetchMemorySnapshot(config, options = {}) {
   const memoryOrProduction = parseMemoryBody(payload);
   const { production, moduleCpu, cpuMonitor, hub } = extractAnalyticsData(memoryOrProduction);
   const summary = summarizeProduction(production);
+  const cpuPhaseEvidence =
+    buildResourceControlCpuPhaseEvidence(cpuMonitor);
   const {
     runtimeResourceControl,
     runtimeHub,
     transferTaskStore,
     dataResourceControlLogistics,
+    snapshotCoherence,
     runtimeMarketSaleAutomation,
     dataDirectAutomation,
   } = options.includeResourceControl === false
@@ -4556,12 +6220,13 @@ async function fetchMemorySnapshot(config, options = {}) {
       runtimeHub: null,
       transferTaskStore: null,
       dataResourceControlLogistics: null,
+      snapshotCoherence: UNVERIFIED_LOGISTICS_SNAPSHOT,
       runtimeMarketSaleAutomation: null,
       dataDirectAutomation: null,
     }
     : await fetchResourceControlData(config, config.shard);
 
-  return {
+  const snapshot = {
     source: "memory",
     fetchedAt: new Date().toISOString(),
     rateLimit,
@@ -4574,12 +6239,19 @@ async function fetchMemorySnapshot(config, options = {}) {
       transferTaskStore,
       dataResourceControlLogistics,
       summary.latestTick,
+      snapshotCoherence,
+      cpuPhaseEvidence,
     ),
     marketSaleAutomation: summarizeMarketSaleAutomation(
       runtimeMarketSaleAutomation,
       dataDirectAutomation,
     ),
   };
+  Object.defineProperty(snapshot, "_resourceControlCpuPhaseEvidence", {
+    value: cpuPhaseEvidence,
+    enumerable: false,
+  });
+  return snapshot;
 }
 
 function extractDeployTime(lastDeployTag) {
@@ -5059,6 +6731,7 @@ async function fetchWithShardFallback(config) {
       runtimeHub,
       transferTaskStore,
       dataResourceControlLogistics,
+      snapshotCoherence,
       runtimeMarketSaleAutomation,
       dataDirectAutomation,
     } = await fetchResourceControlData(config, bestShardValue);
@@ -5067,6 +6740,8 @@ async function fetchWithShardFallback(config) {
       transferTaskStore,
       dataResourceControlLogistics,
       bestTick >= 0 ? bestTick : null,
+      snapshotCoherence,
+      bestResult._resourceControlCpuPhaseEvidence,
     );
     bestResult.hub = {
       ...bestResult.hub,

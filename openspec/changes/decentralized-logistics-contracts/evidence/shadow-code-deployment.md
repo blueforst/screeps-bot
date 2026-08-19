@@ -20,4 +20,4 @@
 
 上传后只发起了一次 shard1 Monitor 只读请求，Screeps API 返回 HTTP 429、remaining 0。请求随即停止；没有使用服务返回的绕过限流入口，也没有重试或更换凭据。
 
-因此本记录能证明部署工具成功写入 remote `default` 分支和上传 bundle 的本地身份，但暂不能证明该 tag 已在某个具体游戏 tick 被执行，也不能把 9.4 的 live Shadow 门槛标记为完成。待正常限流窗口恢复后，再以一次低频只读查询确认 tag；启用 Shadow 仍须独立授权。
+因此部署当时只能证明工具成功写入 remote `default` 分支和上传 bundle 的本地身份。后续 live 已确认 tag、在用户独立授权后激活 Shadow，并完成 10 warmup + 100 measured 窗口；该窗口因 CPU 与因果/coherent-read 门槛失败，详见 `shadow-live-100-sample-failure.md`。当前 mode 已回退为 disabled，9.4 仍未完成。

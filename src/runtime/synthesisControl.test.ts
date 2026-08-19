@@ -17,6 +17,12 @@ import {
   peekLogisticsControlStore,
 } from "@/runtime/logistics/logisticsControl";
 import {
+  getLogisticsShadowCpuDiagnosticsForTest,
+  measureLogisticsShadowCpu,
+  peekLogisticsShadowCpuSnapshot,
+  resetLogisticsShadowCpuForTest,
+} from "@/runtime/logistics/logisticsShadowCpu";
+import {
   clearCarrierTaskBoardForTest,
   peekCarrierTaskBoard,
 } from "@/runtime/carrierTaskBoard";
@@ -215,10 +221,22 @@ function captureSynthesisShadowAuthorityBoundaryState(rooms: readonly Room[]): {
 
 function runSynthesisResourceControlAuthorityTwin(
   mode: "disabled" | "shadow",
-): ReturnType<typeof captureSynthesisShadowAuthorityBoundaryState> {
+): ReturnType<typeof captureSynthesisShadowAuthorityBoundaryState> & {
+  readonly synthesisProducerCpu: ReturnType<
+    typeof peekLogisticsShadowCpuSnapshot
+  >;
+  readonly synthesisProducerCpuDiagnostics: ReturnType<
+    typeof getLogisticsShadowCpuDiagnosticsForTest
+  >;
+  readonly producerCpu: ReturnType<typeof peekLogisticsShadowCpuSnapshot>;
+  readonly producerCpuDiagnostics: ReturnType<
+    typeof getLogisticsShadowCpuDiagnosticsForTest
+  >;
+} {
   clearCarrierTaskBoardForTest();
   clearMarketActionArbiterForTest();
   clearLocalCarrierDestinationCapacityForTest();
+  resetLogisticsShadowCpuForTest();
   resetRuntimeServices();
   Game.time = 10;
   Memory.cfg = {
@@ -247,7 +265,13 @@ function runSynthesisResourceControlAuthorityTwin(
   Memory.rooms = {};
   Memory.data = undefined;
   Game.spawns = {};
-  (Game as unknown as { cpu: { getUsed(): number } }).cpu = { getUsed: () => 0 };
+  let cpuUsed = 0;
+  (Game as unknown as { cpu: { getUsed(): number } }).cpu = {
+    getUsed: () => {
+      cpuUsed += 0.125;
+      return cpuUsed;
+    },
+  };
   (Game as GameWithPartialMarket).market = {
     calcTransactionCost: jest.fn((amount: number) => amount),
     getAllOrders: jest.fn(() => []),
@@ -298,16 +322,28 @@ function runSynthesisResourceControlAuthorityTwin(
   if (typeof hubImportResult === "string") throw new Error("unexpected hub import seed failure");
 
   runSynthesisControl();
+  const synthesisProducerCpu = peekLogisticsShadowCpuSnapshot();
+  const synthesisProducerCpuDiagnostics =
+    getLogisticsShadowCpuDiagnosticsForTest();
   runResourceControl();
+  const producerCpu = peekLogisticsShadowCpuSnapshot();
+  const producerCpuDiagnostics = getLogisticsShadowCpuDiagnosticsForTest();
 
   // mode 是唯一实验输入；归一化后只允许两个 logistics owner 分支不同。
   (Memory.cfg.resourceControl as unknown as { logistics: { mode: "shadow" } })
     .logistics.mode = "shadow";
-  return captureSynthesisShadowAuthorityBoundaryState([hubRoom, donorRoom]);
+  return {
+    ...captureSynthesisShadowAuthorityBoundaryState([hubRoom, donorRoom]),
+    synthesisProducerCpu,
+    synthesisProducerCpuDiagnostics,
+    producerCpu,
+    producerCpuDiagnostics,
+  };
 }
 
 describe("runSynthesisControl hub import guard", () => {
   beforeEach(() => {
+    resetLogisticsShadowCpuForTest();
     resetRuntimeServices();
     Game.time = 10;
     Memory.cfg = {
@@ -580,6 +616,7 @@ describe("runSynthesisControl hub import guard", () => {
       emitted: 0,
       dropped: 0,
       truncated: false,
+      indexBuildCount: 1,
     }));
     expect(withdrawnShadow.store.roomFacts).toEqual({});
     expect(Object.values(ensureResourceTransferTaskStore())).toHaveLength(4);
@@ -592,6 +629,136 @@ describe("runSynthesisControl hub import guard", () => {
       disabledAuthorityTwin.terminalSendCalls,
     );
     expect(shadowAuthorityTwin.marketDealCalls).toBe(disabledAuthorityTwin.marketDealCalls);
+    expect(disabledAuthorityTwin.synthesisProducerCpu).toBeUndefined();
+    expect(disabledAuthorityTwin.synthesisProducerCpuDiagnostics).toBeUndefined();
+    expect(shadowAuthorityTwin.synthesisProducerCpu).toEqual(expect.objectContaining({
+      attributionVersion: 2,
+      sampleTick: 510,
+      measurementAvailable: true,
+      producerUsed: expect.any(Number),
+      consumerUsed: 0,
+    }));
+    expect(shadowAuthorityTwin.synthesisProducerCpu!.producerUsed).toBeGreaterThan(0);
+    expect(shadowAuthorityTwin.synthesisProducerCpuDiagnostics).toEqual({
+      sampleTick: 510,
+      measurementAvailable: true,
+      producerSegmentCount: 12,
+      consumerSegmentCount: 0,
+    });
+    expect(disabledAuthorityTwin.producerCpu).toEqual(expect.objectContaining({
+      producerUsed: 0,
+      consumerUsed: expect.any(Number),
+    }));
+    expect(disabledAuthorityTwin.producerCpuDiagnostics).toEqual(expect.objectContaining({
+      producerSegmentCount: 0,
+      consumerSegmentCount: 1,
+    }));
+    expect(shadowAuthorityTwin.producerCpu).toEqual(expect.objectContaining({
+      producerUsed: shadowAuthorityTwin.synthesisProducerCpu!.producerUsed,
+      consumerUsed: expect.any(Number),
+    }));
+
+    // 同 segment 嵌套只由最外层计量；抛错仍通过 finally 守恒结算。
+    resetLogisticsShadowCpuForTest();
+    Game.time = 900;
+    const cpuReadings = [0, 1, 2, 4, 5, 8];
+    (Game as unknown as { cpu: { getUsed(): number } }).cpu = {
+      getUsed: jest.fn(() => cpuReadings.shift()!),
+    };
+    measureLogisticsShadowCpu("producer", () => {
+      measureLogisticsShadowCpu("producer", () => undefined);
+    });
+    measureLogisticsShadowCpu("producer", () => undefined);
+    expect(() => measureLogisticsShadowCpu("producer", () => {
+      throw new Error("producer-meter-test");
+    })).toThrow("producer-meter-test");
+    expect(peekLogisticsShadowCpuSnapshot()).toEqual({
+      attributionVersion: 2,
+      sampleTick: 900,
+      measurementAvailable: true,
+      producerUsed: 6,
+      consumerUsed: 0,
+    });
+
+    Game.time = 901;
+    expect(peekLogisticsShadowCpuSnapshot()).toBeUndefined();
+    const backwardsReadings = [5, 4];
+    (Game as unknown as { cpu: { getUsed(): number } }).cpu = {
+      getUsed: () => backwardsReadings.shift()!,
+    };
+    measureLogisticsShadowCpu("producer", () => undefined);
+    expect(peekLogisticsShadowCpuSnapshot()).toEqual({
+      attributionVersion: 2,
+      sampleTick: 901,
+      measurementAvailable: false,
+      producerUsed: 0,
+      consumerUsed: 0,
+    });
+
+    Game.time = 902;
+    (Game as unknown as { cpu: { getUsed(): number } }).cpu = {
+      getUsed: () => {
+        throw new Error("cpu-clock-unavailable");
+      },
+    };
+    expect(measureLogisticsShadowCpu("producer", () => "work-preserved"))
+      .toBe("work-preserved");
+    expect(peekLogisticsShadowCpuSnapshot()).toEqual({
+      attributionVersion: 2,
+      sampleTick: 902,
+      measurementAvailable: false,
+      producerUsed: 0,
+      consumerUsed: 0,
+    });
+
+    resetLogisticsShadowCpuForTest();
+    Game.time = 903;
+    const inFlightReadings = [0, 1];
+    (Game as unknown as { cpu: { getUsed(): number } }).cpu = {
+      getUsed: () => inFlightReadings.shift()!,
+    };
+    let inFlightSnapshot: ReturnType<typeof peekLogisticsShadowCpuSnapshot>;
+    measureLogisticsShadowCpu("producer", () => {
+      inFlightSnapshot = peekLogisticsShadowCpuSnapshot();
+    });
+    expect(inFlightSnapshot!).toBeUndefined();
+    expect(peekLogisticsShadowCpuSnapshot()).toEqual(expect.objectContaining({
+      measurementAvailable: true,
+      producerUsed: 1,
+    }));
+    Game.time = Number.NaN;
+    expect(measureLogisticsShadowCpu("producer", () => "tick-unavailable"))
+      .toBe("tick-unavailable");
+    Game.time = 903;
+    expect(peekLogisticsShadowCpuSnapshot()).toEqual(expect.objectContaining({
+      measurementAvailable: false,
+    }));
+
+    resetLogisticsShadowCpuForTest();
+    Game.time = 904;
+    const interSegmentBackwardsReadings = [5, 6, 4, 5];
+    (Game as unknown as { cpu: { getUsed(): number } }).cpu = {
+      getUsed: () => interSegmentBackwardsReadings.shift()!,
+    };
+    measureLogisticsShadowCpu("producer", () => undefined);
+    measureLogisticsShadowCpu("producer", () => undefined);
+    expect(peekLogisticsShadowCpuSnapshot()).toEqual(expect.objectContaining({
+      measurementAvailable: false,
+    }));
+
+    resetLogisticsShadowCpuForTest();
+    Game.time = 905;
+    const overlappingReadings = [0, 1];
+    (Game as unknown as { cpu: { getUsed(): number } }).cpu = {
+      getUsed: () => overlappingReadings.shift()!,
+    };
+    measureLogisticsShadowCpu("producer", () => {
+      measureLogisticsShadowCpu("consumer", () => undefined);
+    });
+    expect(peekLogisticsShadowCpuSnapshot()).toEqual(expect.objectContaining({
+      measurementAvailable: false,
+      consumerUsed: 0,
+    }));
   });
 });
 
@@ -599,6 +766,7 @@ describe("synthesis boost pause/resume contract", () => {
   const ROOM = "W1N1";
 
   beforeEach(() => {
+    resetLogisticsShadowCpuForTest();
     resetRuntimeServices();
     Game.time = 100;
     Memory.cfg = {

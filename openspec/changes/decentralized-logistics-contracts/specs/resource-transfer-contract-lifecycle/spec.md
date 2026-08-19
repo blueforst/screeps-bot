@@ -78,6 +78,8 @@
 
 Shadow comparator 必须比较 donor、route、priority、demand coverage、receiver headroom、`predictedStagingEligibility` 和 CPU。`predictedStagingEligibility` 只是基于冻结 P0 admission 输入的预测，不是实际 staging、StageWork、lease 或 claim 证据。
 
+每个 bounded comparison sample 必须（MUST）携带可由冻结输入验证的 `decisionDelta`、legacy outcome、Shadow outcome、intent 起点 receiver eligibility/headroom、candidate evaluated/feasible/rejected 与 canonical rejection counts。当且仅当 legacy outcome 为 route 时，sample 必须携带与该 sourceRoom 一致的 disposition，且值只能为 `selected/feasible_lower_rank/rejected/not_candidate/not_evaluated`；legacy no-route 时 disposition 必须 absent/null，表示 not applicable。差异必须给出方向与精确主因；Shadow 因已知 hard veto 没有生成路线且相对 legacy 存在 material decision delta 时，必须标为更保守的 `expected_policy_difference`，不得标为 `unsafe_candidate`；双方 no-route 且 blocker/coverage/capacity/staging 全等时必须标为 `equal`。只有 Shadow 实际提出路线且该路线与冻结 safety evidence 冲突时，才允许使用 `unsafe_candidate`。缺少主因，或 legacy route 缺少对应 disposition 时，必须标为 `input_unavailable`/unresolved 并阻断 live gate，不得依靠事后读取其他房间投影追认差异可解释。
+
 Shadow 输入/结果必须（MUST）只写入独立 logistics owner 分支，不得（MUST NOT）修改 `synthesisControl.rooms[].missing`、donor bindings、`hub.needsPlan`、legacy pending/action 投影或任何被生产/market 读取的旧事实。
 
 #### Scenario: 写前冻结防止新 legacy task 自我遮蔽
@@ -99,6 +101,21 @@ Shadow 输入/结果必须（MUST）只写入独立 logistics owner 分支，不
 
 - **WHEN** Shadow matcher 计算出与 legacy 不同的 donor 或 residual demand
 - **THEN** 差异只能写入 logistics comparator DTO，不得修改 synthesis missing/binding、触发 Hub 重规划或让 market 把 Shadow residual 当真实缺口
+
+#### Scenario: 存在 material delta 的更保守 no-route 不是 unsafe candidate
+
+- **WHEN** legacy 仍有路线而 Shadow 因冻结 receiver headroom hard veto 不生成路线，或双方都无路线但 blocker/coverage/capacity/staging 存在 material delta
+- **THEN** comparator 必须投影 `shadow_more_conservative`、精确 rejection 与双方 outcome，并归类为可解释的 `expected_policy_difference`；`shadow=unmatched` 或 `both_no_route` 均不得标为 `unsafe_candidate`
+
+#### Scenario: 完全一致的双方 no-route 是 equal
+
+- **WHEN** legacy 与 Shadow 都没有路线，且 blocker、coverage、capacity 与 staging outcome 全部一致
+- **THEN** comparator 必须标为 `equal`，不得仅因 Shadow 内部执行过 hard-veto 检查就制造 difference 或 `unsafe_candidate`
+
+#### Scenario: 缺少候选拒绝因果时不能闭环
+
+- **WHEN** legacy 选择了 donor/route、Shadow 没有路线，但 runtime 没有保留与 legacy sourceRoom 一致的 disposition 或 Shadow exact rejection
+- **THEN** 该差异必须为 `input_unavailable`/unresolved，live gate 必须失败，不得仅凭 `unresolved=0` 的聚合计数或下一 tick 的房间事实判定已解释
 
 ### Requirement: 房间物流事实必须新鲜且来自安全物理状态
 
@@ -258,14 +275,35 @@ TransferContract 必须（MUST）持久化身份、不可变路线、显式 prio
 
 ### Requirement: 合同控制面必须提供有界观测
 
-系统必须（MUST）投影 mode/schemaVersion、Shadow in-scope/out-of-scope、legacy 配对率、donor/route/priority/coverage/headroom/predicted-staging 差异 reason、`effectiveAuthority`、active contract/lease/claim store 数量、可观察 actor/claim/journal/invariant 状态，以及 intent/contract 的 origin、priority、state、blocker、remaining、oldest age、状态耗时、source commitment、route cost、aging/budget skip、幂等与数量守恒违规和 matcher candidate evaluation/continuation 指标。终态详情必须有界保留，monitor 必须兼容没有这些字段的旧快照。只有接入对应 mutator-boundary instrumentation 后，字段才可被称为跨模块 attempt 计数；首片不得用声明常量代替该证据。
+系统必须（MUST）投影 mode/schemaVersion、Shadow in-scope/out-of-scope、legacy 配对率、donor/route/priority/coverage/headroom/predicted-staging 差异 reason 与上述因果字段、`effectiveAuthority`、active contract/lease/claim store 数量、可观察 actor/claim/journal/invariant 状态，以及 intent/contract 的 origin、priority、state、blocker、remaining、oldest age、状态耗时、source commitment、route cost、aging/budget skip、幂等与数量守恒违规和 matcher candidate evaluation/continuation 指标。cfg control 与 compact data wire 必须继续使用 `schemaVersion:1`，data wire 继续为 `compact-v1`；包含新 CPU 归因与因果投影的 runtime 必须使用 `schemaVersion:2`。monitor 必须兼容 runtime v1 旧快照，但只能将其用于历史展示，绝不能把它计为新的 10+100 accepted sample 或正式 CPU gate 真值。终态详情必须有界保留。只有接入对应 mutator-boundary instrumentation 后，字段才可被称为跨模块 attempt 计数；首片不得用声明常量代替该证据。
 
-首个纯 Shadow 必须（MUST）在剔除至少 10 个 warmup 可观测 tick 后，以部署前同口径基线收集至少 100 个连续 measured tick。包含 Shadow 成本的 ResourceControl phase post p95 CPU 必须不超过 pre p95 的 110%；`Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 的 UTF-8 JSON 序列化字节数合计必须在每个 measured tick 不超过 32 KiB。
+首个纯 Shadow 必须（MUST）以 module-local、tick-bound segmented meter 分别计量同 tick Synthesis 中所有仅由 Shadow 引入的 `producerUsed`，以及 ResourceControl 内 Shadow decode/match/project 子区间 `consumerUsed`，并只在既有 logistics runtime owner 分支持久化 v2 `cpu`。正式 post 样本的 `cpu` 必须（MUST）且只能包含 `{attributionVersion,sampleTick,measurementAvailable,producerUsed,consumerUsed}`；其中 `attributionVersion` 必须为 `2`、`measurementAvailable` 必须为 `true`，其余数值必须有限、非负且 `sampleTick` 必须与 runtime epoch 相同。任何缺失或额外字段、不可用测量、runtime v1 `captureUsed/used` 都必须使该样本 gate-ineligible。不得向 CPU Monitor analytics phases 新增第三个 Shadow owner。`shadowUsed=producerUsed+consumerUsed` 只用于归因。正式 CPU gate 必须从 CPU Monitor history 选择与 runtime attribution `sampleTick`、logistics `updatedAt` 完全相同的 outer ResourceControl phase，并计算 `gateUsed=完整 ResourceControl phase+producerUsed`；不得从 `summary.latestTick` 或不同 tick 拼接，且 `consumerUsed` 已包含在完整 ResourceControl phase 中，禁止再次相加。legacy `captureUsed/used` 只能兼容展示，不得作为新 gate 真值。
+
+`consumerUsed` 的闭包必须（MUST）覆盖 provisional attribution 下的完整 Shadow runtime projection、UTF-8 fixed-point 与超限裁剪。闭包结束后只允许一次不可递归的 self-observation seal，用来写最终 `consumerUsed` 标量并刷新该标量自身造成的 byte attestation；除最终读钟、归因标量与这一次 seal 外，matcher、投影、裁剪和 store 工作均不得移出 consumer 计量边界。该 seal 仍包含在完整 outer ResourceControl phase 中。
+
+Monitor 必须（MUST）只接纳 coherent snapshot：runtime logistics `updatedAt` 必须等于 compact `p` 中唯一 `synthesisControl:room` producer snapshot 的 `observedAt`，runtime attested `dataBytes` 必须等于 data logistics 的实际 UTF-8 JSON bytes；配对后仍必须通过既有 compact canonical、producer total/emitted/dropped/truncated 与完整性校验，不新增 runtime producer attestation 字段。每轮必须使用固定 bracket `R1 -> D -> R2`；初始 bracket 跨 epoch且无法配对时，只允许再执行一轮完整 `R1' -> D' -> R2'`，不得循环/递归，硬上限为 4 次 runtime 与 2 次 data 读取。第二轮仍跨 epoch且无法配对必须投影 `snapshotIncoherent/inconclusive/snapshotAttestationMatched=false` 与 retry/skew 并 fail closed；任一 bracket 内所有可读 R1/D/R2 epoch 相同、没有 epoch skew但 byte mismatch 时，必须以 `snapshotIncoherent=false/inconclusive=false/snapshotAttestationMatched=false` 作为 attestation failure 直接 fail closed且不得启动下一轮。CPU gate 还必须满足 CPU history `sampleTick=runtime.updatedAt=attribution.sampleTick`，不得组合不同 tick 的 outer phase 与 producer attribution。
+
+首个纯 Shadow 必须（MUST）在剔除至少 10 个 warmup 可观测 tick 后，以部署前同口径基线收集至少 100 个连续 measured tick。post `gateUsed` p95 必须不超过 pre p95 的 110%；`Memory.data.resourceControl.logistics` 与 `Memory.runtime.resourceControl.logistics` 的 UTF-8 JSON 序列化字节数合计必须在每个 measured tick 不超过 32 KiB。任何改变 CPU attribution、差异因果投影或 coherent-read 选样语义的新 bundle 都必须重新冻结同口径基线并从零重跑 10 warmup + 100 measured；修复前后样本不得拼接，旧差异也不得事后追认为通过。
+
+#### Scenario: Runtime v1 只能历史展示
+
+- **WHEN** Monitor 读取到旧 `schemaVersion:1` logistics runtime，即使旧字段结构完整且旧 `captureUsed/used` 可显示
+- **THEN** Monitor 也只能显示历史信息，必须把该记录排除在新的 10+100 accepted samples 与正式 CPU gate 之外，不得迁移或推导成 runtime v2
+
+#### Scenario: Runtime v2 CPU 记录必须 exact 且可用
+
+- **WHEN** `schemaVersion:2` runtime 的 `cpu` 缺少五个规范字段之一、包含任何额外字段、`attributionVersion != 2` 或 `measurementAvailable != true`
+- **THEN** 该记录必须 gate-ineligible，不得贡献 `gateUsed` 或 measured tick
 
 #### Scenario: Shadow 独立 CPU 和 Memory 门槛
 
 - **WHEN** `synthesis_room`-only Shadow 部署并完成 10 warmup + 100 连续 measured tick，期间 deploy tag 稳定且无 reset/人工 mutation
-- **THEN** post p95 必须 `<= pre p95 * 1.10`，每个 measured tick 的 logistics data+runtime 必须 `<= 32768 bytes`；本地 disabled-vs-shadow 差分与 send/deal mock 必须无新增可观察 mutation/call，live 必须持续为 `effectiveAuthority=legacy`、active contract/lease/claim store 为零、无 Logistics Shadow actor/claim/journal 记录和可观察 invariant violation，且不得把这些净状态扩张为未布设探针的瞬时 attempt 证明
+- **THEN** 每个样本必须 coherent 且同 tick，post `gateUsed=outer ResourceControl phase+producerUsed` p95 必须 `<= pre p95 * 1.10`，每个 measured tick 的 logistics data+runtime 必须 `<= 32768 bytes`；本地 disabled-vs-shadow 差分与 send/deal mock 必须无新增可观察 mutation/call，live 必须持续为 `effectiveAuthority=legacy`、active contract/lease/claim store 为零、无 Logistics Shadow actor/claim/journal 记录和可观察 invariant violation，且不得把这些净状态扩张为未布设探针的瞬时 attempt 证明
+
+#### Scenario: 归因或因果投影升级后必须重跑
+
+- **WHEN** 新 bundle 补全 producer 分段、改变 `producerUsed/consumerUsed` 定义、增加 comparator 因果字段或修复 coherent-read 选样
+- **THEN** 旧 10+100 窗口不得与新样本拼接或倒填通过；系统必须在新 bundle 上重新剔除至少 10 warmup，并收集至少 100 个连续 measured tick
 
 #### Scenario: 能定位长期无进展合同
 

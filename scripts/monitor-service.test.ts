@@ -78,6 +78,11 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
     expect(resourceControl.logistics).toEqual({
       available: true,
       livenessAvailable: true,
+      snapshotIncoherent: false,
+      inconclusive: false,
+      snapshotAttestationMatched: true,
+      coherenceRetryCount: 0,
+      initialEpochSkew: false,
       schemaVersion: 1,
       updatedAt: 2000,
       expiresAt: 2010,
@@ -175,6 +180,8 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
         measurementAvailable: true,
         captureUsed: 0.1,
         used: 0.35,
+        cpuGateEligible: false,
+        gateInconclusive: true,
       },
     });
     expect(resourceControl.taskSummary).toEqual({
@@ -330,6 +337,11 @@ describe("monitor-service ResourceControl terminal headroom projection", () => {
     expect(legacy.resourceControl.logistics).toEqual({
       available: false,
       livenessAvailable: false,
+      snapshotIncoherent: false,
+      inconclusive: false,
+      snapshotAttestationMatched: false,
+      coherenceRetryCount: 0,
+      initialEpochSkew: false,
       schemaVersion: null,
       updatedAt: null,
       expiresAt: null,
@@ -463,12 +475,26 @@ describe("monitor-service Hub protection projection", () => {
     const refreshRuntimeResourceAttestation = (
       logistics: Record<string, any>,
     ): void => {
+      const rejectionTupleCount = logistics.comparison.samples.reduce(
+        (total: number, sample: Record<string, any>) =>
+          total + (Array.isArray(sample.candidate?.rejectionCounts)
+            ? sample.candidate.rejectionCounts.length
+            : 0),
+        0,
+      );
       logistics.resources.runtimeItems =
         logistics.comparison.samples.length +
+        rejectionTupleCount +
         logistics.safety.violations.length +
         Object.keys(logistics.inScopeByOrigin).length +
         Object.keys(logistics.outOfScopeByOrigin).length +
-        Object.keys(logistics.comparison.byReason).length;
+        Object.keys(logistics.comparison.byReason).length +
+        Object.keys(
+          logistics.comparison.byDecisionDelta || {},
+        ).length +
+        Object.keys(
+          logistics.comparison.byCausalCode || {},
+        ).length;
       for (let iteration = 0; iteration < 6; iteration += 1) {
         logistics.resources.runtimeBytes = Buffer.byteLength(
           JSON.stringify(logistics),
@@ -483,6 +509,149 @@ describe("monitor-service Hub protection projection", () => {
           logistics.resources.totalBytes <= 32_768;
       }
     };
+
+    const createLogisticsEpochPair = (
+      epoch: number,
+    ): {
+      runtimeResourceControl: Record<string, any>;
+      dataResourceControl: Record<string, any>;
+    } => {
+      const dataResourceControl = JSON.parse(
+        JSON.stringify(fixture.data.resourceControl),
+      ) as Record<string, any>;
+      const dataLogistics = dataResourceControl.logistics;
+      dataLogistics.i[0][10] = epoch;
+      dataLogistics.i[0][11] = epoch;
+      dataLogistics.i[0][12] = epoch + 10;
+      dataLogistics.o[0][6] = epoch;
+      dataLogistics.p[0][3] = epoch;
+      dataLogistics.p[0][4] = epoch + 10;
+
+      const runtimeResourceControl = JSON.parse(
+        JSON.stringify(fixture.runtime.resourceControl),
+      ) as Record<string, any>;
+      runtimeResourceControl.updatedAt = epoch;
+      runtimeResourceControl.logistics.updatedAt = epoch;
+      runtimeResourceControl.logistics.expiresAt = epoch + 10;
+      runtimeResourceControl.logistics.resources.dataBytes =
+        Buffer.byteLength(JSON.stringify(dataLogistics), "utf8");
+      refreshRuntimeResourceAttestation(
+        runtimeResourceControl.logistics,
+      );
+      return { runtimeResourceControl, dataResourceControl };
+    };
+
+    const createV2Logistics = (): Record<string, any> => {
+      const logistics = JSON.parse(
+        JSON.stringify(validLogistics),
+      ) as Record<string, any>;
+      logistics.schemaVersion = 2;
+      logistics.comparison = {
+        total: 1,
+        matched: 1,
+        different: 0,
+        unresolved: 0,
+        byReason: { equal: 1 },
+        byDecisionDelta: { same_route: 1 },
+        byCausalCode: { matched: 1 },
+        dimensions: logistics.comparison.dimensions,
+        sampled: 1,
+        detailsDropped: 0,
+        samples: [
+          {
+            intentId: "logistics-intent:synthesis:W1N1:X",
+            targetRoomName: "W1N1",
+            resource: "X",
+            status: "equal",
+            reason: "equal",
+            decisionDelta: "same_route",
+            direction: "same",
+            causalCode: "matched",
+            differingDimensions: [],
+            legacy: {
+              kind: "route",
+              sourceRoomName: "W2N1",
+              coverage: "covered",
+              capacity: "eligible",
+              staging: "eligible",
+              amount: 100,
+              actionAmount: 100,
+              feeAmount: 5,
+              terminalReadyAt: 2000,
+              requiredEnergy: 5,
+              energyCommitmentAmount: 5,
+              terminalAllocatedAmount: 80,
+              stagingRequiredAmount: 20,
+              terminalEnergyAllocatedAmount: 3,
+              feeStagingRequiredAmount: 2,
+            },
+            shadow: {
+              kind: "route",
+              sourceRoomName: "W2N1",
+              coverage: "covered",
+              capacity: "eligible",
+              staging: "eligible",
+              amount: 100,
+              actionAmount: 100,
+              feeAmount: 5,
+              terminalReadyAt: 2000,
+              requiredEnergy: 5,
+              energyCommitmentAmount: 5,
+              terminalAllocatedAmount: 80,
+              stagingRequiredAmount: 20,
+              terminalEnergyAllocatedAmount: 3,
+              feeStagingRequiredAmount: 2,
+            },
+            candidate: {
+              donorCount: 2,
+              evaluatedCount: 2,
+              feasibleCount: 1,
+              rejectedCount: 1,
+              rejectionCounts: [["source_protection", 1]],
+              topSourceRoom: "W2N1",
+              legacySource: {
+                sourceRoom: "W2N1",
+                disposition: "selected",
+              },
+              receiver: {
+                kind: "present",
+                receiverEligible: true,
+                storageHeadroom: 140000,
+                terminalHeadroom: 100000,
+                resourceHeadroom: 100000,
+              },
+            },
+          },
+        ],
+      };
+      logistics.cpu = {
+        attributionVersion: 2,
+        sampleTick: 2000,
+        measurementAvailable: true,
+        producerUsed: 1,
+        consumerUsed: 0.75,
+      };
+      refreshRuntimeResourceAttestation(logistics);
+      return logistics;
+    };
+
+    const cpuEntryAt = (
+      tick: number,
+      resourceControlUsed: number,
+    ): Record<string, any> => ({
+      tick,
+      shard: "shard1",
+      totalUsed: 10,
+      bucket: 10000,
+      limit: 120,
+      tickLimit: 500,
+      phases: { resourceControl: resourceControlUsed },
+      fixedActionCounts: {},
+      untracked: 0,
+      emaTotalUsed: 10,
+      rooms: {},
+      heap: null,
+    });
 
     const temporaryDirectory = mkdtempSync(
       resolve(tmpdir(), "screeps-monitor-bounds-"),
@@ -527,6 +696,588 @@ describe("monitor-service Hub protection projection", () => {
       expect(
         Object.keys(base.quota.lanes.samples)[0],
       ).toHaveLength(256);
+
+      const cpu2000 = cpuEntryAt(2000, 4);
+      const validV2Logistics = createV2Logistics();
+      fixture.runtime.resourceControl.logistics = validV2Logistics;
+      fixture.analytics.cpuMonitor = {
+        version: 2,
+        updatedAt: 2000,
+        sampleInterval: 10,
+        historyLimit: 120,
+        latest: cpu2000,
+        history: [cpu2000],
+        summary: null,
+      };
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const v2Projection = executeFixture(fixturePath).payload.memory
+        .resourceControl.logistics;
+      expect(v2Projection).toEqual(
+        expect.objectContaining({
+          schemaVersion: 2,
+          livenessAvailable: true,
+          snapshotAttestationMatched: true,
+          comparison: expect.objectContaining({
+            byDecisionDelta: { same_route: 1 },
+            byCausalCode: { matched: 1 },
+            sampled: 1,
+            detailsDropped: 0,
+          }),
+          cpu: {
+            attributionVersion: 2,
+            sampleTick: 2000,
+            measurementAvailable: true,
+            producerUsed: 1,
+            consumerUsed: 0.75,
+            shadowUsed: 1.75,
+            outerResourceControlUsed: 4,
+            gateUsed: 5,
+            cpuGateEligible: true,
+            gateInconclusive: false,
+          },
+        }),
+      );
+      expect(v2Projection.comparison.samples[0]).toEqual(
+        expect.objectContaining({
+          reason: "equal",
+          producerReason: null,
+          decisionDelta: "same_route",
+          direction: "same",
+          causalCode: "matched",
+          legacy: expect.objectContaining({ kind: "route" }),
+          shadow: expect.objectContaining({ kind: "route" }),
+          candidate: expect.objectContaining({
+            rejectedCount: 1,
+            rejectionCounts: [["source_protection", 1]],
+          }),
+        }),
+      );
+
+      const missingReceiverProof = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      missingReceiverProof.comparison.samples[0]
+        .candidate.receiver.receiverEligible = false;
+      refreshRuntimeResourceAttestation(missingReceiverProof);
+      fixture.runtime.resourceControl.logistics = missingReceiverProof;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      expect(
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.livenessAvailable,
+      ).toBe(false);
+
+      const impossibleRouteCoverage = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      impossibleRouteCoverage.comparison.samples[0].legacy.coverage =
+        "unknown";
+      impossibleRouteCoverage.comparison.samples[0].shadow.coverage =
+        "unknown";
+      refreshRuntimeResourceAttestation(impossibleRouteCoverage);
+      fixture.runtime.resourceControl.logistics =
+        impossibleRouteCoverage;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      expect(
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.livenessAvailable,
+      ).toBe(false);
+
+      const equalBothNoRoute = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      equalBothNoRoute.comparison.byDecisionDelta = {
+        both_no_route: 1,
+      };
+      const bothNoRouteSample =
+        equalBothNoRoute.comparison.samples[0];
+      bothNoRouteSample.decisionDelta = "both_no_route";
+      bothNoRouteSample.legacy = {
+        kind: "none",
+        blocker: "no_donor",
+        coverage: "none",
+        capacity: "unknown",
+        staging: "unknown",
+      };
+      bothNoRouteSample.shadow = {
+        kind: "unmatched",
+        reason: "no_donor",
+        coverage: "none",
+        capacity: "unknown",
+        staging: "unknown",
+        uncoveredAmount: 100,
+      };
+      bothNoRouteSample.candidate = {
+        donorCount: 0,
+        evaluatedCount: 0,
+        feasibleCount: 0,
+        rejectedCount: 0,
+        rejectionCounts: [],
+        receiver: { kind: "missing" },
+      };
+      equalBothNoRoute.matcher.candidateEvaluations = 0;
+      equalBothNoRoute.matcher.transactionCostEvaluations = 0;
+      equalBothNoRoute.matcher.totalTransactionCostEvaluations = 0;
+      refreshRuntimeResourceAttestation(equalBothNoRoute);
+      fixture.runtime.resourceControl.logistics = equalBothNoRoute;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const equalBothNoRouteProjection =
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics;
+      expect(equalBothNoRouteProjection.livenessAvailable).toBe(true);
+      expect(
+        equalBothNoRouteProjection.comparison.samples[0],
+      ).toEqual(expect.objectContaining({
+        status: "equal",
+        decisionDelta: "both_no_route",
+        legacy: expect.objectContaining({ coverage: "none" }),
+        shadow: expect.objectContaining({ coverage: "none" }),
+      }));
+
+      const impossibleNoDonorCapacity = JSON.parse(
+        JSON.stringify(equalBothNoRoute),
+      ) as Record<string, any>;
+      impossibleNoDonorCapacity.comparison.samples[0].shadow.capacity =
+        "blocked";
+      refreshRuntimeResourceAttestation(impossibleNoDonorCapacity);
+      fixture.runtime.resourceControl.logistics =
+        impossibleNoDonorCapacity;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      expect(
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.livenessAvailable,
+      ).toBe(false);
+
+      const unequalBothNoRoute = JSON.parse(
+        JSON.stringify(equalBothNoRoute),
+      ) as Record<string, any>;
+      unequalBothNoRoute.comparison.samples[0].shadow.coverage =
+        "partial";
+      refreshRuntimeResourceAttestation(unequalBothNoRoute);
+      fixture.runtime.resourceControl.logistics = unequalBothNoRoute;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      expect(
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.livenessAvailable,
+      ).toBe(false);
+
+      const changedConsumer = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      changedConsumer.cpu.consumerUsed = 2;
+      refreshRuntimeResourceAttestation(changedConsumer);
+      fixture.runtime.resourceControl.logistics = changedConsumer;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const changedConsumerCpu = executeFixture(fixturePath).payload.memory
+        .resourceControl.logistics.cpu;
+      expect(changedConsumerCpu).toEqual(
+        expect.objectContaining({
+          shadowUsed: 3,
+          gateUsed: 5,
+          cpuGateEligible: true,
+        }),
+      );
+
+      const consumerOutsideOuter = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      consumerOutsideOuter.cpu.consumerUsed = 5;
+      refreshRuntimeResourceAttestation(consumerOutsideOuter);
+      fixture.runtime.resourceControl.logistics = consumerOutsideOuter;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const consumerOutsideOuterCpu =
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.cpu;
+      expect(consumerOutsideOuterCpu).toEqual(
+        expect.objectContaining({
+          shadowUsed: 6,
+          outerResourceControlUsed: 4,
+          gateUsed: 5,
+          cpuGateEligible: false,
+          gateInconclusive: false,
+        }),
+      );
+
+      const cpuWithLegacyField = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      cpuWithLegacyField.cpu.captureUsed = 1;
+      refreshRuntimeResourceAttestation(cpuWithLegacyField);
+      fixture.runtime.resourceControl.logistics = cpuWithLegacyField;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const nonExactCpuProjection =
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics;
+      expect(nonExactCpuProjection.livenessAvailable).toBe(false);
+      expect(nonExactCpuProjection.cpu.cpuGateEligible).toBe(false);
+
+      const cpu1999 = cpuEntryAt(1999, 99);
+      fixture.runtime.resourceControl.logistics = validV2Logistics;
+      fixture.analytics.cpuMonitor = {
+        ...fixture.analytics.cpuMonitor,
+        updatedAt: 1999,
+        latest: cpu1999,
+        history: [cpu1999],
+      };
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const missingSameTickCpu = executeFixture(fixturePath).payload.memory
+        .resourceControl.logistics;
+      expect(missingSameTickCpu.livenessAvailable).toBe(true);
+      expect(missingSameTickCpu.cpu).toEqual(
+        expect.objectContaining({
+          sampleTick: 2000,
+          outerResourceControlUsed: null,
+          gateUsed: null,
+          cpuGateEligible: false,
+          gateInconclusive: true,
+        }),
+      );
+
+      const mismatchedSampleTick = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      mismatchedSampleTick.cpu.sampleTick = 1999;
+      refreshRuntimeResourceAttestation(mismatchedSampleTick);
+      fixture.runtime.resourceControl.logistics = mismatchedSampleTick;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const mismatchedSampleTickCpu =
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.cpu;
+      expect(mismatchedSampleTickCpu).toEqual(
+        expect.objectContaining({
+          sampleTick: 1999,
+          outerResourceControlUsed: null,
+          gateUsed: null,
+          cpuGateEligible: false,
+          gateInconclusive: true,
+        }),
+      );
+
+      fixture.analytics.cpuMonitor = {
+        version: 2,
+        updatedAt: 2000,
+        sampleInterval: 10,
+        historyLimit: 120,
+        latest: cpu2000,
+        history: [cpu2000],
+        summary: null,
+      };
+      const producerReasonOnly = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      producerReasonOnly.comparison.samples[0].producerReason =
+        "unsafe_candidate";
+      refreshRuntimeResourceAttestation(producerReasonOnly);
+      fixture.runtime.resourceControl.logistics = producerReasonOnly;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const producerReasonProjection =
+        executeFixture(fixturePath).payload.memory
+          .resourceControl.logistics;
+      expect(producerReasonProjection.livenessAvailable).toBe(true);
+      expect(producerReasonProjection.comparison.samples[0]).toEqual(
+        expect.objectContaining({
+          reason: "equal",
+          producerReason: "unsafe_candidate",
+          causalCode: "matched",
+        }),
+      );
+
+      const nonCanonicalRejections = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      const candidate =
+        nonCanonicalRejections.comparison.samples[0].candidate;
+      candidate.rejectedCount = 2;
+      candidate.rejectionCounts = [
+        ["source_protection", 1],
+        ["receiver_capacity", 1],
+      ];
+      refreshRuntimeResourceAttestation(nonCanonicalRejections);
+      fixture.runtime.resourceControl.logistics =
+        nonCanonicalRejections;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      expect(
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.livenessAvailable,
+      ).toBe(false);
+
+      const legacyBlockedShadowSafe = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      const unsafeRouteSample =
+        legacyBlockedShadowSafe.comparison.samples[0];
+      legacyBlockedShadowSafe.comparison.matched = 0;
+      legacyBlockedShadowSafe.comparison.different = 1;
+      legacyBlockedShadowSafe.comparison.byReason = {
+        expected_policy_difference: 1,
+      };
+      legacyBlockedShadowSafe.comparison.byCausalCode = {
+        route_fact_difference: 1,
+      };
+      legacyBlockedShadowSafe.comparison.dimensions.receiverHeadroom = {
+        matched: 0,
+        different: 1,
+        unresolved: 0,
+      };
+      unsafeRouteSample.status = "different";
+      unsafeRouteSample.reason = "expected_policy_difference";
+      unsafeRouteSample.direction = "policy_difference";
+      unsafeRouteSample.causalCode = "route_fact_difference";
+      unsafeRouteSample.differingDimensions = [
+        "receiverHeadroom",
+      ];
+      unsafeRouteSample.legacy.capacity = "blocked";
+      refreshRuntimeResourceAttestation(legacyBlockedShadowSafe);
+      fixture.runtime.resourceControl.logistics = legacyBlockedShadowSafe;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const legacyBlockedProjection =
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics;
+      expect(legacyBlockedProjection.livenessAvailable).toBe(true);
+      expect(
+        legacyBlockedProjection.comparison.samples[0].reason,
+      ).toBe("expected_policy_difference");
+
+      const legacyBlockedFalselyUnsafe = JSON.parse(
+        JSON.stringify(legacyBlockedShadowSafe),
+      ) as Record<string, any>;
+      legacyBlockedFalselyUnsafe.comparison.byReason = {
+        unsafe_candidate: 1,
+      };
+      legacyBlockedFalselyUnsafe.comparison.samples[0].reason =
+        "unsafe_candidate";
+      refreshRuntimeResourceAttestation(legacyBlockedFalselyUnsafe);
+      fixture.runtime.resourceControl.logistics =
+        legacyBlockedFalselyUnsafe;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      expect(
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.livenessAvailable,
+      ).toBe(false);
+
+      const legacyNoneShadowSafe = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      const legacyNoneSample =
+        legacyNoneShadowSafe.comparison.samples[0];
+      legacyNoneShadowSafe.comparison.matched = 0;
+      legacyNoneShadowSafe.comparison.different = 1;
+      legacyNoneShadowSafe.comparison.byReason = {
+        legacy_unpaired: 1,
+      };
+      legacyNoneShadowSafe.comparison.byDecisionDelta = {
+        shadow_only_route: 1,
+      };
+      legacyNoneShadowSafe.comparison.byCausalCode = {
+        no_donor: 1,
+      };
+      for (const dimensionName of ["donor", "route"]) {
+        legacyNoneShadowSafe.comparison.dimensions[dimensionName] = {
+          matched: 0,
+          different: 1,
+          unresolved: 0,
+        };
+      }
+      legacyNoneSample.status = "different";
+      legacyNoneSample.reason = "legacy_unpaired";
+      legacyNoneSample.decisionDelta = "shadow_only_route";
+      legacyNoneSample.direction = "shadow_more_permissive";
+      legacyNoneSample.causalCode = "no_donor";
+      legacyNoneSample.differingDimensions = ["donor", "route"];
+      legacyNoneSample.legacy = {
+        kind: "none",
+        blocker: "no_donor",
+        coverage: "none",
+        capacity: "blocked",
+        staging: "unknown",
+      };
+      delete legacyNoneSample.candidate.legacySource;
+      refreshRuntimeResourceAttestation(legacyNoneShadowSafe);
+      fixture.runtime.resourceControl.logistics = legacyNoneShadowSafe;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const legacyNoneProjection =
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics;
+      expect(legacyNoneProjection.livenessAvailable).toBe(true);
+      expect(legacyNoneProjection.comparison.samples[0]).toEqual(
+        expect.objectContaining({
+          reason: "legacy_unpaired",
+          shadow: expect.objectContaining({ kind: "route" }),
+        }),
+      );
+
+      const unsafeUnmatched = JSON.parse(
+        JSON.stringify(validV2Logistics),
+      ) as Record<string, any>;
+      const unsafeSample = unsafeUnmatched.comparison.samples[0];
+      unsafeUnmatched.comparison.matched = 0;
+      unsafeUnmatched.comparison.different = 1;
+      unsafeUnmatched.comparison.byReason = { unsafe_candidate: 1 };
+      unsafeUnmatched.comparison.byDecisionDelta = {
+        legacy_only_route: 1,
+      };
+      unsafeUnmatched.comparison.byCausalCode = {
+        receiver_capacity: 1,
+      };
+      for (const dimension of Object.values(
+        unsafeUnmatched.comparison.dimensions,
+      ) as Array<Record<string, number>>) {
+        dimension.matched = 0;
+        dimension.different = 1;
+      }
+      unsafeSample.status = "different";
+      unsafeSample.reason = "unsafe_candidate";
+      unsafeSample.decisionDelta = "legacy_only_route";
+      unsafeSample.direction = "shadow_more_conservative";
+      unsafeSample.causalCode = "receiver_capacity";
+      unsafeSample.differingDimensions = ["route"];
+      unsafeSample.shadow = {
+        kind: "unmatched",
+        reason: "receiver_capacity",
+        coverage: "none",
+        capacity: "blocked",
+        staging: "unknown",
+        uncoveredAmount: 100,
+      };
+      unsafeSample.candidate.feasibleCount = 0;
+      unsafeSample.candidate.rejectedCount = 2;
+      unsafeSample.candidate.rejectionCounts = [
+        ["receiver_capacity", 1],
+        ["source_protection", 1],
+      ];
+      delete unsafeSample.candidate.topSourceRoom;
+      refreshRuntimeResourceAttestation(unsafeUnmatched);
+      fixture.runtime.resourceControl.logistics = unsafeUnmatched;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      expect(
+        executeFixture(fixturePath).payload.memory.resourceControl
+          .logistics.livenessAvailable,
+      ).toBe(false);
+
+      fixture.runtime.resourceControl.logistics = validLogistics;
+      delete fixture.analytics.cpuMonitor;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+
+      const epoch1997 = createLogisticsEpochPair(1997);
+      const epoch1998 = createLogisticsEpochPair(1998);
+      const epoch1999 = createLogisticsEpochPair(1999);
+      const epoch2000 = createLogisticsEpochPair(2000);
+
+      fixture.__monitorMemoryPathReads = {
+        "runtime.resourceControl": [
+          epoch1997.runtimeResourceControl,
+          epoch1997.runtimeResourceControl,
+        ],
+        "data.resourceControl": [
+          epoch1997.dataResourceControl,
+        ],
+      };
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const normalBracketSnapshot =
+        executeFixture(fixturePath).payload.memory
+          .resourceControl.logistics;
+      expect(normalBracketSnapshot).toEqual(
+        expect.objectContaining({
+          updatedAt: 1997,
+          livenessAvailable: true,
+          snapshotIncoherent: false,
+          inconclusive: false,
+          snapshotAttestationMatched: true,
+          coherenceRetryCount: 0,
+          initialEpochSkew: false,
+        }),
+      );
+
+      fixture.__monitorMemoryPathReads = {
+        "runtime.resourceControl": [
+          epoch1997.runtimeResourceControl,
+          epoch1997.runtimeResourceControl,
+          epoch1998.runtimeResourceControl,
+          epoch1998.runtimeResourceControl,
+        ],
+        "data.resourceControl": [
+          epoch1998.dataResourceControl,
+          epoch1998.dataResourceControl,
+        ],
+      };
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const recoveredCoherentSnapshot =
+        executeFixture(fixturePath).payload.memory
+          .resourceControl.logistics;
+      expect(recoveredCoherentSnapshot).toEqual(
+        expect.objectContaining({
+          updatedAt: 1998,
+          livenessAvailable: true,
+          snapshotIncoherent: false,
+          inconclusive: false,
+          snapshotAttestationMatched: true,
+          coherenceRetryCount: 1,
+          initialEpochSkew: true,
+        }),
+      );
+
+      fixture.__monitorMemoryPathReads = {
+        "runtime.resourceControl": [
+          epoch1997.runtimeResourceControl,
+          epoch1997.runtimeResourceControl,
+          epoch1999.runtimeResourceControl,
+          epoch1999.runtimeResourceControl,
+        ],
+        "data.resourceControl": [
+          epoch1998.dataResourceControl,
+          epoch2000.dataResourceControl,
+        ],
+      };
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const persistentlyTornSnapshot =
+        executeFixture(fixturePath).payload.memory
+          .resourceControl.logistics;
+      expect(persistentlyTornSnapshot).toEqual(
+        expect.objectContaining({
+          updatedAt: 1999,
+          livenessAvailable: false,
+          snapshotIncoherent: true,
+          inconclusive: true,
+          snapshotAttestationMatched: false,
+          coherenceRetryCount: 1,
+          initialEpochSkew: true,
+        }),
+      );
+
+      const sameEpochUnattestedData = JSON.parse(
+        JSON.stringify(epoch2000.dataResourceControl),
+      ) as Record<string, any>;
+      sameEpochUnattestedData.logistics.s[0] =
+        "differentControl:room";
+      fixture.__monitorMemoryPathReads = {
+        "runtime.resourceControl": [
+          epoch2000.runtimeResourceControl,
+          epoch2000.runtimeResourceControl,
+        ],
+        "data.resourceControl": [sameEpochUnattestedData],
+      };
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
+      const sameEpochAttestationFailure =
+        executeFixture(fixturePath).payload.memory
+          .resourceControl.logistics;
+      expect(sameEpochAttestationFailure).toEqual(
+        expect.objectContaining({
+          updatedAt: 2000,
+          livenessAvailable: false,
+          snapshotIncoherent: false,
+          inconclusive: false,
+          snapshotAttestationMatched: false,
+          coherenceRetryCount: 0,
+          initialEpochSkew: false,
+        }),
+      );
+      expect(
+        sameEpochAttestationFailure.resources.dataBytes,
+      ).toBe(
+        sameEpochAttestationFailure.resources.observedDataBytes,
+      );
+
+      delete fixture.__monitorMemoryPathReads;
+      writeFileSync(fixturePath, JSON.stringify(fixture), "utf8");
 
       const executeLogisticsMutation = (
         mutate: (logistics: Record<string, any>) => void,
@@ -611,6 +1362,15 @@ describe("monitor-service Hub protection projection", () => {
         expect.objectContaining({
           dataItems: 4,
           observedDataItems: 5,
+        }),
+      );
+      expect(dataItemMismatch).toEqual(
+        expect.objectContaining({
+          snapshotIncoherent: false,
+          inconclusive: false,
+          snapshotAttestationMatched: false,
+          coherenceRetryCount: 0,
+          initialEpochSkew: false,
         }),
       );
       expect(dataItemMismatch.livenessAvailable).toBe(false);
@@ -879,6 +1639,8 @@ describe("monitor-service Hub protection projection", () => {
         measurementAvailable: false,
         captureUsed: 0.1,
         used: 0,
+        cpuGateEligible: false,
+        gateInconclusive: true,
       });
       expect(unavailableCpu.livenessAvailable).toBe(false);
       const oversizedSafety = executeLogisticsMutation(

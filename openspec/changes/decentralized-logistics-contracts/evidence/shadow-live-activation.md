@@ -45,8 +45,8 @@ Memory：data `2,430B`、runtime `2,556B`、合计 `4,986B`，`withinLimit=true`
 
 CPU Monitor tick `73087620` 的 ResourceControl phase 为 `2.995784`，bucket `10000`。该单点低于冻结的 pre-p95 `4.172600` 与 110% 上限 `4.589860`，但单点不构成 p95 门槛证明。
 
-## 尚未完成的 live gate
+## 后续 live gate 结果
 
-本次记录证明 mode 已生效、首个 epoch 完整、execution authority 未变化且可观察副作用记录为零。它不替代剔除 10 warmup 后至少 100 个连续 measured CPU 样本：8.5a、9.1a、9.4 继续保持未完成，也不授权 `canary/enabled`。
+本记录只证明 Shadow 激活与首个 epoch；后续已完成 10 warmup + 100 measured telemetry epochs，但正式 CPU 下界 p95 超过 110% 上限，且 v1 差异投影与 Monitor coherent-read 语义不足，因此 8.5a、9.1a、9.4 继续保持未完成，不授权 `canary/enabled`。完整数值与差异复核见 `shadow-live-100-sample-failure.md`。
 
-若任何后续门槛失败，最小回退是把同一配置的 `mode` 设回 `disabled`；本次未执行回退。
+mode 已于 tick `73089100` 回退为 `disabled`，console operation 为 `6a84532996c1fe0013ce8993`；验证配置为 `{canaryScopes:[],schemaVersion:1,mode:"disabled"}`，runtime 为 `requestedMode=disabled`、`effectiveAuthority=legacy`、`blocker=mode_disabled`，可观察 safety 继续为零。后续修复 bundle 必须重新冻结同口径基线并从零重跑 10 warmup + 100 measured，不得拼接或倒填本窗口。
