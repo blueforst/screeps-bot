@@ -41,6 +41,11 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 
 ## 已知残留（记录为后续项，非阻断）
 
-1. **观察标签细分**（审查建议）：arbiter 被占且 safeCandidates 为空的周期可与"有候选仅等待"区分（如 wait_no_opportunity），避免纯 wait 周期计入 qualified 证据质量。
+1. ~~**观察标签细分**~~（**已落地**，2026.8.20-11，commit 4a4cf19）：arbiter 被占且无安全候选的周期细分为 `wait_no_opportunity`（周期仍累计保证 qualified 推进，evidence digest 可辨识证据质量）。
 2. **marketSale 与 RC 阶段时序**：marketSale 紧随 RC 执行使 arbiter 空窗稀少；如需提高真实成交频率，应在调度层评估时序（受 AGENTS.md 主循环顺序约束，需独立论证）。
-3. **v3 scope core CPU**（每 full tick ~13.5）：56 lane 的 scope 重建/哈希成本，独立优化项。
+3. **v3 scope core CPU**（每 full tick ~13.5）：56 lane 的 scope 重建含 ~300 次 canonicalStableHashV1；这些 fingerprint 进入 ledger/permit 权威合同，削减或缓存它们等于变更 canonical 语义，风险高于常规优化——保留为独立设计议题。
+
+## 晋级验收安排（持续观察）
+
+- 修复后实测速率 ~89 tick/周期（56 lane 轮转采样），100 周期 qualified 预计修复后 ~6.7 小时；tick 73135056 时全部 lane 已达 9 周期（跨部署连续，completeCycles 持久于 Memory.data）。
+- 已设置一次性定时验收（400 分钟后）：读 live 直方图/stages/confirmedCanaries，结果追加至本文档"live 验证"章节；若出现新 blocker 如实记录并定位（只读，不改 src）。
