@@ -3815,23 +3815,41 @@ function toContinuousRuntimeCandidates(
           ...context,
           config: dispatchConfig,
         };
-  return candidates.map((candidate) => ({
-    roomName: candidate.roomName,
-    resourceType: candidate.resourceType,
-    historyTrusted: candidate.directHistoryTrusted === true,
-    historyFloor: candidate.historyFloor,
-    ratchetFloor: candidate.ratchetFloor,
-    effectiveNetFloor: candidate.effectiveNetFloor,
-    effectiveEnergyShadowPrice: candidate.effectiveEnergyShadowPrice,
-    energyShadowObservedAt: candidate.energyShadowObservedAt,
-    energyShadowComponents: candidate.energyShadowComponents,
-    capacityState: candidate.capacityState,
-    isHubRoom: candidate.isHubRoom,
-    rejectionReasons: directCandidateRejectionReasons(
-      candidateContext,
-      candidate,
+  // continuous full read 要求候选严格落在执行表 scope 内，任何表外键都会
+  // 以 continuous_candidate_scope_unknown 将整轮规划 fail-closed。上游
+  // compose 按 protection ledger 全量产出候选（live 为 8 房 × 7 base
+  // 资源），而执行表只有少数 lane——不过滤曾让规划连续 38 万 tick 零
+  // 成交。表内 lane 缺候选时 automation 侧本就不在 scope 检查处 fail
+  // （由 energy shadow evidence 检查兜底），因此过滤不改变缺失维度
+  // 的语义，只是把 join 后的多余候选挡在规划之外。
+  const executionScope = new Set(
+    MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE.flatMap((entry) =>
+      entry.allowedRoomNames.map(
+        (roomName) => `${roomName}:${entry.resourceType}`,
+      ),
     ),
-  }));
+  );
+  return candidates
+    .filter((candidate) =>
+      executionScope.has(`${candidate.roomName}:${candidate.resourceType}`),
+    )
+    .map((candidate) => ({
+      roomName: candidate.roomName,
+      resourceType: candidate.resourceType,
+      historyTrusted: candidate.directHistoryTrusted === true,
+      historyFloor: candidate.historyFloor,
+      ratchetFloor: candidate.ratchetFloor,
+      effectiveNetFloor: candidate.effectiveNetFloor,
+      effectiveEnergyShadowPrice: candidate.effectiveEnergyShadowPrice,
+      energyShadowObservedAt: candidate.energyShadowObservedAt,
+      energyShadowComponents: candidate.energyShadowComponents,
+      capacityState: candidate.capacityState,
+      isHubRoom: candidate.isHubRoom,
+      rejectionReasons: directCandidateRejectionReasons(
+        candidateContext,
+        candidate,
+      ),
+    }));
 }
 
 function toMarketBaseResourceRuntimeCandidates(
