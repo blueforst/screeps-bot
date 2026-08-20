@@ -83,7 +83,10 @@ function isClearExitTile(room: Room, x: number, y: number): boolean {
   )) {
     return false;
   }
-  return pos.lookFor(LOOK_CREEPS).length === 0;
+  if (pos.lookFor(LOOK_CREEPS).length > 0 || pos.lookFor(LOOK_POWER_CREEPS).length > 0) {
+    return false;
+  }
+  return true;
 }
 
 function getSpawnBirthPositions(spawn: StructureSpawn): RoomPosition[] {
@@ -119,31 +122,34 @@ const BIRTH_TILE_DELTAS: readonly (readonly [number, number])[] = [
 ];
 
 /**
- * 出生位被已出生 creep 占据会让 Spawning 冻结到移开为止。
- * 孵化期间向挡位 creep 下达一步让位指令：目标格取 blocker 自身
- * 周围的可走邻格（排除任一出生格），避免把 blocker 推进另一条
- * 出生路线。指令经 memory 传递并在 creep work 入口优先消费——
- * spawn.work 先于 creep.work 执行，直接 creep.move() 会被挡位
- * creep 随后执行的自身移动逻辑覆盖；同时保留一次直接 move，
- * 覆盖停摆（无逻辑）creep 的场景。
+ * 出生位被已出生 creep / PowerCreep 占据会让 Spawning 冻结到移开为止。
+ * PowerCreep 不在 LOOK_CREEPS 里，但同样占据出生格——现场证据（W1N57
+ * Spawn6 冻结 2.4 天）表明 operator 站在唯一可用出生格时孵化永久冻结，
+ * 因此两类挡位者都必须处理。指令经 memory 传递并在各自 work 入口优先
+ * 消费——spawn.work 先于 creep/powerCreep 逻辑执行，直接 move() 会被
+ * 挡位者随后执行的自身移动逻辑覆盖；同时保留一次直接 move，覆盖停摆
+ * （无逻辑）挡位者的场景。
  */
 function directBlockingCreepsOffSpawn(spawn: StructureSpawn): void {
   const birthPositions = getSpawnBirthPositions(spawn);
-  const blockers = birthPositions.flatMap((pos) => pos.lookFor(LOOK_CREEPS));
+  const blockers: Array<Creep | PowerCreep> = birthPositions.flatMap((pos) => [
+    ...pos.lookFor(LOOK_CREEPS),
+    ...pos.lookFor(LOOK_POWER_CREEPS),
+  ]);
   if (blockers.length === 0) {
     return;
   }
   const birthKeys = new Set(birthPositions.map((pos) => `${pos.x}:${pos.y}`));
-  for (const creep of blockers) {
+  for (const blocker of blockers) {
     const exit = DEFAULT_EXIT_DIRECTIONS.find((direction) => {
       const [dx, dy] = EXIT_DIRECTION_DELTAS[direction];
-      const x = creep.pos.x + dx;
-      const y = creep.pos.y + dy;
-      return !birthKeys.has(`${x}:${y}`) && isClearExitTile(creep.room, x, y);
+      const x = blocker.pos.x + dx;
+      const y = blocker.pos.y + dy;
+      return !birthKeys.has(`${x}:${y}`) && isClearExitTile(blocker.room, x, y);
     });
     if (exit) {
-      creep.memory._spawnYield = { dir: exit, tick: Game.time };
-      creep.move(exit);
+      blocker.memory._spawnYield = { dir: exit, tick: Game.time };
+      blocker.move(exit);
     }
   }
 }

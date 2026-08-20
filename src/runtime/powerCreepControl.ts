@@ -575,6 +575,17 @@ function trySpawnPowerCreep(powerCreep: PowerCreep, room: Room): void {
 }
 
 function runPowerCreep(powerCreep: PowerCreep): void {
+  // spawn 让位指令优先：powerCreep 的任务逻辑（movePowerCreepToTarget）
+  // 会覆盖 spawn 侧的直接 move，本 tick 让出出生位一步并跳过任务行为。
+  // 指令带 tick，过期即忽略并清除。
+  const spawnYield = powerCreep.memory._spawnYield;
+  if (spawnYield) {
+    delete powerCreep.memory._spawnYield;
+    if (Game.time - spawnYield.tick >= 0 && Game.time - spawnYield.tick <= 2) {
+      powerCreep.move(spawnYield.dir);
+      return;
+    }
+  }
   const homeRoomName = resolvePowerCreepHomeRoomName(powerCreep);
   if (!homeRoomName) {
     return;

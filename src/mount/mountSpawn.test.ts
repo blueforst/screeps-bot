@@ -189,6 +189,17 @@ describe("mountSpawn", () => {
         memory: blockerMemory,
         get room() { return blockerRoom.room; },
       } as unknown as Creep;
+      // PowerCreep 不在 LOOK_CREEPS 里但同样占据出生格：W1N57 现场证据
+      // 表明 operator 站在出生格会让孵化永久冻结，必须被让位逻辑覆盖。
+      const powerCreepMove = jest.fn(() => OK);
+      const powerCreepMemory: Record<string, unknown> = {};
+      const powerCreepPos = { x: 25, y: 24 };
+      const powerCreepObj = {
+        move: powerCreepMove,
+        pos: powerCreepPos,
+        memory: powerCreepMemory,
+        get room() { return blockerRoom.room; },
+      } as unknown as PowerCreep;
       const makePos = (
         x: number,
         y: number,
@@ -202,6 +213,9 @@ describe("mountSpawn", () => {
           }
           if (type === LOOK_CREEPS && x === blockerPos.x && y === blockerPos.y) {
             return [blocker];
+          }
+          if (type === LOOK_POWER_CREEPS && x === powerCreepPos.x && y === powerCreepPos.y) {
+            return [powerCreepObj];
           }
           return [];
         },
@@ -220,7 +234,8 @@ describe("mountSpawn", () => {
 
       // 默认 spawn：出生位 = spawn 8 邻格（spawn 自身格不可落 creep）。
       // blocker 站在 RIGHT 邻格 (26,25)：其邻格中出生格外的第一个可走
-      // 方向是 TOP_RIGHT (27,24) → 让向 TOP_RIGHT 并下达 memory 指令。
+      // 方向是 TOP_RIGHT (27,24)；powerCreep 站 TOP 邻格 (25,24) 同样
+      // 挡位，让向出生格外的 TOP (25,23)。两者均收到 memory 指令。
       blockerPos.x = 26;
       const openRoom = makeRoom("E1N57", () => "plain");
       blockerRoom.room = openRoom;
@@ -229,19 +244,26 @@ describe("mountSpawn", () => {
       prototype.work.call(openSpawn);
       expect(blockerMove).toHaveBeenCalledWith(TOP_RIGHT);
       expect(blockerMemory._spawnYield).toEqual({ dir: TOP_RIGHT, tick: Game.time });
+      expect(powerCreepMove).toHaveBeenCalledWith(TOP);
+      expect(powerCreepMemory._spawnYield).toEqual({ dir: TOP, tick: Game.time });
       expect(openSpawn.spawnCreep).not.toHaveBeenCalled();
 
-      // 默认 spawn：blocker 站在 spawn 自身格 (25,25) 不挡出生位，不发指令。
+      // 默认 spawn：blocker 站在 spawn 自身格 (25,25) 不挡出生位；
+      // powerCreep 仍挡 (25,24)，只让 powerCreep。
       blockerMove.mockClear();
+      powerCreepMove.mockClear();
       blockerPos.x = 25;
       const centerSpawn = makeSpawningSpawn("Spawn1", openRoom);
       Object.setPrototypeOf(centerSpawn, prototype);
       prototype.work.call(centerSpawn);
       expect(blockerMove).not.toHaveBeenCalled();
+      expect(powerCreepMove).toHaveBeenCalledWith(TOP);
 
-      // Spawn20：出生位 = TOP 邻格 (25,24)；blocker 站在出生位上，
-      // 其 TOP (25,23) 为墙，其余邻格可走 → 让向 TOP_RIGHT（不会推回出生位）。
+      // Spawn20：出生位 = TOP 邻格 (25,24)；blocker 与 powerCreep 同在
+      // 出生位上，其 TOP (25,23) 为墙，其余邻格可走 → 两者都让向
+      // TOP_RIGHT（不会推回出生位）。
       blockerMove.mockClear();
+      powerCreepMove.mockClear();
       blockerPos.y = 24;
       const spawn20Room = makeRoom("E5N59", (x, y) => (y === 23 && x === 25 ? "wall" : "plain"));
       blockerRoom.room = spawn20Room;
@@ -249,9 +271,11 @@ describe("mountSpawn", () => {
       Object.setPrototypeOf(spawn20, prototype);
       prototype.work.call(spawn20);
       expect(blockerMove).toHaveBeenCalledWith(TOP_RIGHT);
+      expect(powerCreepMove).toHaveBeenCalledWith(TOP_RIGHT);
 
       // Spawn20：出生位四周全墙 → 不发指令。
       blockerMove.mockClear();
+      powerCreepMove.mockClear();
       const walledSpawn20Room = makeRoom(
         "E5N59",
         (x, y) => (y === 25 || (y === 24 && (x === 24 || x === 26)) || y === 23) ? "wall" : "plain",
@@ -261,6 +285,7 @@ describe("mountSpawn", () => {
       Object.setPrototypeOf(walledSpawn20, prototype);
       prototype.work.call(walledSpawn20);
       expect(blockerMove).not.toHaveBeenCalled();
+      expect(powerCreepMove).not.toHaveBeenCalled();
     }
   });
 });

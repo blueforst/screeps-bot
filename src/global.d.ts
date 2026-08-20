@@ -673,6 +673,7 @@ declare global {
     regenSourceIds?: string[];
     nextRegenSourceIndex?: number;
     lastControlTick?: number;
+    _spawnYield?: { dir: DirectionConstant; tick: number };
   }
 
   interface RoomMemory {
