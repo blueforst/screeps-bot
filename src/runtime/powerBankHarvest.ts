@@ -92,9 +92,22 @@ function getTaskConfigNames(task: PowerBankHarvestTask): string[] {
   const prefix = `${task.sourceRoom}:powerbank:${task.targetRoom}:`;
   const all = getCreepConfigService().list(prefix);
   const allowLegacy = canUseLegacyTaskScope(task);
-  return Object.entries(all)
-    .filter(([, config]) => config.taskId === task.id || (config.taskId === undefined && allowLegacy))
-    .map(([name]) => name);
+  const names = new Set(
+    Object.entries(all)
+      .filter(([, config]) => config.taskId === task.id || (config.taskId === undefined && allowLegacy))
+      .map(([name]) => name),
+  );
+
+  // 同一 bank 中止后重新发现可能改选 sourceRoom；旧源房名下仍挂着本任务
+  // taskId 的配置必须保持可达，否则 hauling/terminal 清理永远扫不到它们，
+  // 孵化器又会为这些孤儿配置无限重排（出生即自杀烧能量循环）。
+  for (const [name, config] of Object.entries(getCreepConfigService().list())) {
+    if (config.taskId === task.id) {
+      names.add(name);
+    }
+  }
+
+  return [...names];
 }
 
 function getCombatGeneration(task: PowerBankHarvestTask, index: number): number {

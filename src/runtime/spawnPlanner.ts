@@ -8,7 +8,7 @@ import { getCreepConfigService, getMemoryService, getTickContextService } from "
 import { getSafeZone } from "@/runtime/safeZone";
 import { isInsideSafeZone } from "@/runtime/safeZoneHelpers";
 import { isRcl8MaintenanceUpgraderConfig } from "@/runtime/upgraderPolicy";
-import { getPowerBankConfigName } from "@/runtime/powerBankConstants";
+import { getPowerBankConfigName, POWER_BANK_STATUS } from "@/runtime/powerBankConstants";
 import { reconcileSpawnQueueOwnership } from "@/runtime/spawnQueueOwnership";
 import type { CreepConfig } from "@/types/system";
 
@@ -376,6 +376,97 @@ function shouldPreSpawnReserver(
   );
 
   return soonestDying.ticksToLive <= threshold;
+}
+
+const POWER_BANK_COMBAT_RETIRED_STATUSES: ReadonlySet<string> = new Set([
+  POWER_BANK_STATUS.HAULING,
+  POWER_BANK_STATUS.COMPLETE,
+  POWER_BANK_STATUS.FAILED,
+  POWER_BANK_STATUS.ABORTED,
+]);
+
+function stripConfigFromAllSpawnQueues(configName: string): void {
+  const tickContext = getTickContextService();
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      if (spawn.memory.spawnList?.includes(configName)) {
+        spawn.memory.spawnList = spawn.memory.spawnList.filter((item) => item !== configName);
+      }
+    }
+  }
+}
+
+function isConfigActivelySpawning(configName: string): boolean {
+  const creepMemory = Memory.creeps || {};
+  const tickContext = getTickContextService();
+  for (const room of tickContext.getMyRooms()) {
+    for (const spawn of tickContext.getSpawnsByRoom(room.name)) {
+      if (spawn.spawning && creepMemory[spawn.spawning.name]?.configName === configName) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * 孵化器侧兜底：任务不再需要 combat creep（hauling/终态/任务消失），或配置
+ * 挂在已换源的旧源房名下（同 bank 重新发现后改选 sourceRoom）时，禁止重排
+ * 并清掉孤儿配置与队列残留，阻断“排队→孵化→出生即自杀→再排队”的烧能量
+ * 死循环。有活体/孵化中的 creep 时保留配置，等其自然消亡后下一轮清理。
+ * 手动创建的无 taskId combat 配置同样会被清理——这类 creep 出生后本就走
+ * role 端孤儿退役逻辑自杀，语义保持一致。
+ */
+function pruneRetiredPowerBankCombatConfig(configName: string, context?: SpawnPlanningContext): void {
+  stripConfigFromAllSpawnQueues(configName);
+  if (getConfigCreeps(configName, context).length > 0) return;
+  if (isConfigActivelySpawning(configName)) return;
+  getCreepConfigService().remove(configName);
+}
+
+function shouldQueuePowerBankCombatConfig(
+  configName: string,
+  config: CreepConfig,
+  context?: SpawnPlanningContext,
+): boolean {
+  const task = config.taskId ? Memory.data?.powerBankHarvest?.[config.taskId] : undefined;
+  if (
+    !config.taskId ||
+    !task ||
+    POWER_BANK_COMBAT_RETIRED_STATUSES.has(task.status) ||
+    config.roomName !== task.sourceRoom
+  ) {
+    pruneRetiredPowerBankCombatConfig(configName, context);
+    return false;
+  }
+
+  // 与 shouldQueueConfig 的防御模式跳过保持一致：防御模式下不再为出房作
+  // 战角色排队（任务侧会在后续 tick 转终态并走 prune 分支）。
+  if (config.roomName && shouldSkipConfigInDefenseMode(config)) {
+    return false;
+  }
+
+  return getConfigCreeps(configName, context).length === 0;
+}
+
+function queuePowerBankCombatConfig(
+  spawns: StructureSpawn[],
+  configName: string,
+  config: CreepConfig,
+  context: SpawnPlanningContext,
+): void {
+  if (!shouldQueuePowerBankCombatConfig(configName, config, context)) {
+    return;
+  }
+
+  if (isConfigQueuedInSpawns(spawns, configName) || isConfigSpawning(configName, context)) {
+    return;
+  }
+
+  const targetSpawn = selectLeastLoadedSpawn(spawns);
+  if (targetSpawn) {
+    queueConfig(targetSpawn, configName);
+  }
 }
 
 function shouldQueueConfig(
@@ -949,6 +1040,11 @@ export function scheduleSpawnTasks(): void {
 
     if (config.role === "powerBankHauler") {
       queuePowerBankHaulerConfig(spawnsByRoom.get(config.roomName) ?? [], configName, config, planningContext);
+      continue;
+    }
+
+    if (config.role === "powerBankAttacker" || config.role === "powerBankHealer") {
+      queuePowerBankCombatConfig(spawnsByRoom.get(config.roomName) ?? [], configName, config, planningContext);
       continue;
     }
 

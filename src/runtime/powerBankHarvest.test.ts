@@ -652,4 +652,68 @@ describe("powerBankHarvest", () => {
       });
     }
   });
+
+  it("hauling cleanup removes combat configs left under a previous source room", () => {
+    setupSourceRoom();
+    setupTargetRoom();
+    const staleRoom = setupOwnedRoom(SECONDARY_SOURCE_ROOM);
+    const staleSpawn = Game.spawns[`${SECONDARY_SOURCE_ROOM}-spawn1`];
+
+    const taskId = "pb-stale-room";
+    const staleAttacker = getPowerBankConfigName(SECONDARY_SOURCE_ROOM, TARGET_ROOM, "attacker", 0, taskId, 0);
+    const staleHealer = getPowerBankConfigName(SECONDARY_SOURCE_ROOM, TARGET_ROOM, "healer", 0, taskId, 0);
+    const currentAttacker = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0, taskId, 0);
+    const taskHauler = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "hauler", 0, taskId, 0);
+    const configStore = Memory.data!.creepConfigs ??= {};
+    configStore[staleAttacker] = {
+      role: "powerBankAttacker",
+      args: [TARGET_ROOM, `${SECONDARY_SOURCE_ROOM}|${TARGET_ROOM}`],
+      roomName: SECONDARY_SOURCE_ROOM,
+      taskId,
+      powerBankGeneration: 0,
+    };
+    configStore[staleHealer] = {
+      role: "powerBankHealer",
+      args: [TARGET_ROOM, `${SECONDARY_SOURCE_ROOM}|${TARGET_ROOM}`],
+      roomName: SECONDARY_SOURCE_ROOM,
+      taskId,
+      powerBankGeneration: 0,
+    };
+    configStore[currentAttacker] = {
+      role: "powerBankAttacker",
+      args: [TARGET_ROOM, `${SOURCE_ROOM}|${TARGET_ROOM}`],
+      roomName: SOURCE_ROOM,
+      taskId,
+      powerBankGeneration: 0,
+    };
+    configStore[taskHauler] = {
+      role: "powerBankHauler",
+      args: [TARGET_ROOM, `${SOURCE_ROOM}|${TARGET_ROOM}`],
+      roomName: SOURCE_ROOM,
+      taskId,
+    };
+    staleSpawn.memory.spawnList = [staleAttacker, staleHealer];
+
+    addTask(makeTask({
+      id: taskId,
+      status: POWER_BANK_STATUS.HAULING,
+      sourceRoom: SOURCE_ROOM,
+      power: 1000,
+      observedPower: 1000,
+      haulingStartedTick: Game.time,
+      haulingDeadlineAt: Game.time + 1000,
+      stageEnteredAt: Game.time,
+      bankExpiresAt: Game.time + 1000,
+    }));
+
+    runPowerBankHarvest();
+
+    expect(getCreepConfigService().get(staleAttacker)).toBeUndefined();
+    expect(getCreepConfigService().get(staleHealer)).toBeUndefined();
+    expect(getCreepConfigService().get(currentAttacker)).toBeUndefined();
+    expect(getCreepConfigService().get(taskHauler)).toBeDefined();
+    expect(staleSpawn.memory.spawnList).not.toContain(staleAttacker);
+    expect(staleSpawn.memory.spawnList).not.toContain(staleHealer);
+    expect(staleRoom).toBeDefined();
+  });
 });

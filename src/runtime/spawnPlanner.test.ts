@@ -9,7 +9,7 @@ jest.mock("@/runtime/safeZone", () => ({
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { isDefenseMode } from "@/runtime/defenseMode";
 import { getSafeZone } from "@/runtime/safeZone";
-import { getPowerBankConfigName } from "@/runtime/powerBankConstants";
+import { getPowerBankConfigName, POWER_BANK_STATUS } from "@/runtime/powerBankConstants";
 import { resetPowerCreepControlCacheForTest } from "@/runtime/powerCreepControl";
 import { clearSpawnActiveCacheForTest } from "@/runtime/tickContext";
 
@@ -211,5 +211,263 @@ describe("spawnPlanner queue ownership", () => {
     expect(spawn.memory.spawnList).toContain(configB);
     expect(spawn.memory.spawnList).toContain(ambiguousLegacy);
     expect(spawn.memory.spawnList).not.toContain(exhaustedLegacy);
+  });
+});
+
+describe("spawnPlanner powerbank combat guard", () => {
+  function setupCombatRoom(roomName = "E3N59"): { room: Room; spawn: StructureSpawn } {
+    const room = createRoom(roomName, 7);
+    const spawn = createSpawn(room, `${roomName}-spawn`);
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    addLiveCarrier(room);
+    return { room, spawn };
+  }
+
+  function makeCombatConfig(
+    sourceRoom: string,
+    taskId: string | undefined,
+  ): { name: string; config: Record<string, unknown> } {
+    const name = getPowerBankConfigName(sourceRoom, "E0N60", "attacker", 0, taskId ?? "orphan-task", 0);
+    return {
+      name,
+      config: {
+        role: "powerBankAttacker",
+        args: ["E0N60", `${sourceRoom}|E0N60`],
+        roomName: sourceRoom,
+        taskId,
+      },
+    };
+  }
+
+  it("prunes combat configs whose owning task is in hauling stage and strips queue leftovers", () => {
+    const { spawn } = setupCombatRoom();
+    const config = makeCombatConfig("E3N59", "task-hauling");
+    Memory.data = {
+      powerBankHarvest: {
+        "task-hauling": {
+          id: "task-hauling",
+          sourceRoom: "W1N57",
+          targetRoom: "E0N60",
+          status: "hauling",
+        } as PowerBankHarvestTask,
+      },
+      creepConfigs: { [config.name]: config.config },
+    } as unknown as Memory["data"];
+    spawn.memory.spawnList = [config.name];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(config.name);
+    expect(Memory.data.creepConfigs?.[config.name]).toBeUndefined();
+  });
+
+  it("prunes combat configs left under a previous source room after task re-discovery", () => {
+    const { spawn } = setupCombatRoom();
+    const config = makeCombatConfig("E3N59", "task-rediscovered");
+    Memory.data = {
+      powerBankHarvest: {
+        "task-rediscovered": {
+          id: "task-rediscovered",
+          sourceRoom: "W1N57",
+          targetRoom: "E0N60",
+          status: POWER_BANK_STATUS.SPAWNING,
+        } as PowerBankHarvestTask,
+      },
+      creepConfigs: { [config.name]: config.config },
+    } as unknown as Memory["data"];
+    spawn.memory.spawnList = [config.name];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(config.name);
+    expect(Memory.data.creepConfigs?.[config.name]).toBeUndefined();
+  });
+
+  it("prunes combat configs whose owning task no longer exists", () => {
+    const { spawn } = setupCombatRoom();
+    const config = makeCombatConfig("E3N59", "task-gone");
+    Memory.data = {
+      creepConfigs: { [config.name]: config.config },
+    } as unknown as Memory["data"];
+    spawn.memory.spawnList = [config.name];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(config.name);
+    expect(Memory.data.creepConfigs?.[config.name]).toBeUndefined();
+  });
+
+  it("queues combat configs for an active combat task in the current source room", () => {
+    const { spawn } = setupCombatRoom();
+    const config = makeCombatConfig("E3N59", "task-active");
+    Memory.data = {
+      powerBankHarvest: {
+        "task-active": {
+          id: "task-active",
+          sourceRoom: "E3N59",
+          targetRoom: "E0N60",
+          status: POWER_BANK_STATUS.SPAWNING,
+        } as PowerBankHarvestTask,
+      },
+      creepConfigs: { [config.name]: config.config },
+    } as unknown as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(config.name);
+    expect(Memory.data.creepConfigs?.[config.name]).toBeDefined();
+  });
+
+  it("keeps a retired config alive while its creep still lives but strips its queue entries", () => {
+    const { room, spawn } = setupCombatRoom();
+    const config = makeCombatConfig("E3N59", "task-hauling-live");
+    Game.creeps["powerBankAttacker-live"] = {
+      name: "powerBankAttacker-live",
+      room,
+      memory: { role: "powerBankAttacker", configName: config.name },
+    } as Creep;
+    Memory.data = {
+      powerBankHarvest: {
+        "task-hauling-live": {
+          id: "task-hauling-live",
+          sourceRoom: "E3N59",
+          targetRoom: "E0N60",
+          status: "hauling",
+        } as PowerBankHarvestTask,
+      },
+      creepConfigs: { [config.name]: config.config },
+    } as unknown as Memory["data"];
+    spawn.memory.spawnList = [config.name];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(config.name);
+    expect(Memory.data.creepConfigs?.[config.name]).toBeDefined();
+  });
+});
+
+describe("spawnPlanner powerbank combat guard edge cases", () => {
+  function setupCombatRoom(roomName = "E3N59"): { room: Room; spawn: StructureSpawn } {
+    const room = createRoom(roomName, 7);
+    const spawn = createSpawn(room, `${roomName}-spawn`);
+    Game.rooms[room.name] = room;
+    Game.spawns[spawn.name] = spawn;
+    addLiveCarrier(room);
+    return { room, spawn };
+  }
+
+  function makeCombatConfigEntry(options: {
+    sourceRoom: string;
+    taskId?: string;
+    role?: "powerBankAttacker" | "powerBankHealer";
+    index?: number;
+    generation?: number;
+  }): { name: string; config: Record<string, unknown> } {
+    const taskId = options.taskId ?? "task-edge";
+    const name = getPowerBankConfigName(
+      options.sourceRoom,
+      "E0N60",
+      options.role === "powerBankHealer" ? "healer" : "attacker",
+      options.index ?? 0,
+      taskId,
+      options.generation ?? 0,
+    );
+    return {
+      name,
+      config: {
+        role: options.role ?? "powerBankAttacker",
+        args: ["E0N60", `${options.sourceRoom}|E0N60`],
+        roomName: options.sourceRoom,
+        taskId,
+        powerBankGeneration: options.generation ?? 0,
+      },
+    };
+  }
+
+  it("queues reinforcement combat configs for an active task", () => {
+    const { spawn } = setupCombatRoom();
+    const reinforcement = makeCombatConfigEntry({
+      sourceRoom: "E3N59",
+      taskId: "task-reinforcement",
+      index: 1,
+      generation: 1,
+    });
+    Memory.data = {
+      powerBankHarvest: {
+        "task-reinforcement": {
+          id: "task-reinforcement",
+          sourceRoom: "E3N59",
+          targetRoom: "E0N60",
+          status: POWER_BANK_STATUS.ATTACKING,
+          reinforcement: { index: 1, generation: 1, stage: "spawning" },
+        } as PowerBankHarvestTask,
+      },
+      creepConfigs: { [reinforcement.name]: reinforcement.config },
+    } as unknown as Memory["data"];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).toContain(reinforcement.name);
+    expect(Memory.data.creepConfigs?.[reinforcement.name]).toBeDefined();
+  });
+
+  it("keeps a retired config while its creep is still spawning", () => {
+    const { room, spawn } = setupCombatRoom();
+    const config = makeCombatConfigEntry({ sourceRoom: "E3N59", taskId: "task-spawning" });
+    Memory.creeps["powerBankHealer-spawning"] = {
+      configName: config.name,
+      role: "powerBankHealer",
+    } as CreepMemory;
+    spawn.spawning = {
+      name: "powerBankHealer-spawning",
+      remainingTime: 10,
+      needTime: 40,
+    } as Spawning;
+    Memory.data = {
+      powerBankHarvest: {
+        "task-spawning": {
+          id: "task-spawning",
+          sourceRoom: "E3N59",
+          targetRoom: "E0N60",
+          status: "hauling",
+        } as PowerBankHarvestTask,
+      },
+      creepConfigs: { [config.name]: config.config },
+    } as unknown as Memory["data"];
+    spawn.memory.spawnList = [config.name];
+
+    scheduleSpawnTasks();
+
+    expect(spawn.memory.spawnList).not.toContain(config.name);
+    expect(Memory.data.creepConfigs?.[config.name]).toBeDefined();
+    expect(spawn.spawning?.name).toBe("powerBankHealer-spawning");
+    expect(room).toBeDefined();
+  });
+
+  it("skips queueing combat configs while the source room is in defense mode", () => {
+    (isDefenseMode as jest.Mock).mockReturnValue(true);
+    try {
+      const { spawn } = setupCombatRoom();
+      const config = makeCombatConfigEntry({ sourceRoom: "E3N59", taskId: "task-defense" });
+      Memory.data = {
+        powerBankHarvest: {
+          "task-defense": {
+            id: "task-defense",
+            sourceRoom: "E3N59",
+            targetRoom: "E0N60",
+            status: POWER_BANK_STATUS.SPAWNING,
+          } as PowerBankHarvestTask,
+        },
+        creepConfigs: { [config.name]: config.config },
+      } as unknown as Memory["data"];
+
+      scheduleSpawnTasks();
+
+      expect(spawn.memory.spawnList).not.toContain(config.name);
+      expect(Memory.data.creepConfigs?.[config.name]).toBeDefined();
+    } finally {
+      (isDefenseMode as jest.Mock).mockReturnValue(false);
+    }
   });
 });
