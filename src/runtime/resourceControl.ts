@@ -4339,6 +4339,8 @@ function buildSynthesisShadowDemand(
     maximumBatchAmount,
     priorityClass: intent.priorityClass,
     firstObservedAt: intent.firstObservedAt,
+    // 缺失 observation 时排最后（与输入收集侧 decisionOrder 排序的兜底一致）。
+    decisionOrder: observation?.decisionOrder ?? Number.MAX_SAFE_INTEGER,
     observedAt: intent.observedAt,
     expiresAt: intent.expiresAt,
     ...(intent.deadlineAt === undefined

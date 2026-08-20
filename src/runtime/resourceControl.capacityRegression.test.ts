@@ -887,6 +887,7 @@ describe("resource control live-like capacity recovery", () => {
         maximumBatchAmount: 100,
         priorityClass: "production",
         firstObservedAt: Game.time,
+        decisionOrder: 0,
         observedAt: Game.time,
         expiresAt: Game.time + 30,
       }],
@@ -1576,6 +1577,7 @@ describe("resource control live-like capacity recovery", () => {
       resource: ResourceConstant,
       maximumBatchAmount = 60,
       allowedSourceRooms: string[] = ["A", "B"],
+      decisionOrder = 0,
     ): SynthesisShadowMatcherInput["demands"][number] => ({
       comparisonKey: demandKey,
       demandKey,
@@ -1593,6 +1595,7 @@ describe("resource control live-like capacity recovery", () => {
       maximumBatchAmount,
       priorityClass: "production",
       firstObservedAt: 100,
+      decisionOrder,
       observedAt: 100,
       expiresAt: 200,
       allowedSourceRooms,
@@ -1821,6 +1824,52 @@ describe("resource control live-like capacity recovery", () => {
       ...rejectedInput,
       legacyDecisions: [makeLegacyRouteDecision(blockedDemand, "A")],
     }, 1).unmatched).toEqual(legacyRouteShadowVeto.unmatched);
+
+    // 稀缺源仲裁必须跟随 legacy 规划序（decisionOrder），而不是需求年龄或
+    // 字典序：legacy 先规划 D-beta（消耗 S 的全部 60），后规划的 D-alpha 只能
+    // source_protection。firstObservedAt 故意反向（D-alpha 更老）以证明
+    // decisionOrder 主导仲裁。
+    const arbAlpha = makeDemand("arb-alpha", "T1", xResource, 60, ["S"], 5);
+    const arbBeta = makeDemand("arb-beta", "T2", xResource, 60, ["S"], 1);
+    const arbitrationInput: SynthesisShadowMatcherInput = {
+      ...baseMatcherInput,
+      demands: [
+        { ...arbAlpha, firstObservedAt: 50 },
+        { ...arbBeta, firstObservedAt: 100 },
+      ],
+      rooms: [
+        createShadowMatcherRoom("S", [{
+          resource: xResource,
+          sourceAvailableAmount: 60,
+          sourceTerminalAmount: 60,
+          receiverResourceHeadroom: 100,
+        }]),
+        createShadowMatcherRoom("T1", [{
+          resource: xResource,
+          sourceAvailableAmount: 0,
+          sourceTerminalAmount: 0,
+          receiverResourceHeadroom: 100,
+        }]),
+        createShadowMatcherRoom("T2", [{
+          resource: xResource,
+          sourceAvailableAmount: 0,
+          sourceTerminalAmount: 0,
+          receiverResourceHeadroom: 100,
+        }]),
+      ],
+    };
+    const arbitration = runPagedShadowMatcher(arbitrationInput, 4);
+    expect(arbitration.decisions.map((entry) => entry.comparisonKey)).toEqual(["arb-beta"]);
+    expect(arbitration.decisions[0]).toEqual(expect.objectContaining({
+      sourceRoom: "S",
+      amount: 60,
+    }));
+    expect(arbitration.unmatched).toEqual([
+      expect.objectContaining({
+        comparisonKey: "arb-alpha",
+        reason: "source_protection",
+      }),
+    ]);
 
     const receiverVetoDemand = makeDemand(
       "receiver-veto",

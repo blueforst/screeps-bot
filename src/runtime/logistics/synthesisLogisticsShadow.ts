@@ -208,6 +208,12 @@ export interface SynthesisShadowDemandObservation {
   deadlineAt?: number;
   allowedSourceRooms?: readonly string[];
   fixedSourceRoom?: string;
+  /**
+   * Legacy 在 producer batch 内的实际规划序（追加序）。同优先级稀缺源的
+   * 仲裁必须按该顺序进行，否则 Shadow 与 legacy 会把同一份库存分给不同
+   * 需求，制造 legacy_unpaired / source_protection 假差异。
+   */
+  decisionOrder: number;
 }
 
 export interface SynthesisShadowRoomResourceFact {
@@ -603,15 +609,11 @@ function comparePreparedDemands(left: PreparedDemand, right: PreparedDemand): nu
     ? b.deadlineAt!
     : Number.MAX_SAFE_INTEGER;
   if (leftDeadline !== rightDeadline) return leftDeadline - rightDeadline;
-  const leftFirstObserved = isFiniteTick(a.firstObservedAt)
-    ? a.firstObservedAt
-    : Number.MAX_SAFE_INTEGER;
-  const rightFirstObserved = isFiniteTick(b.firstObservedAt)
-    ? b.firstObservedAt
-    : Number.MAX_SAFE_INTEGER;
-  if (leftFirstObserved !== rightFirstObserved) {
-    return leftFirstObserved - rightFirstObserved;
-  }
+  // 同优先级（及同 deadline）内按 legacy 规划序仲裁：decisionOrder 是 legacy
+  // 在本 batch 内顺序消耗 donor 库存的真实顺序。firstObservedAt 不参与仲裁
+  // ——legacy 没有该概念，曾把更老的 E1N57 需求排在实际先规划的 E5N59 之前，
+  // 导致同一稀缺源被两侧分给不同接收方。
+  if (a.decisionOrder !== b.decisionOrder) return a.decisionOrder - b.decisionOrder;
   const leftKey = isBoundedString(a.comparisonKey, SYNTHESIS_SHADOW_MAX_KEY_LENGTH)
     ? a.comparisonKey
     : "";
