@@ -174,5 +174,51 @@ describe("mountSpawn", () => {
         expect.objectContaining({ directions: [TOP] }),
       );
     }
+
+    // 孵化期间出生位被已出生 creep 占据：向其发出让路指令；无可用出口时不发。
+    {
+      const blockerMove = jest.fn(() => OK);
+      const blocker = { move: blockerMove } as unknown as Creep;
+      const makePos = (x: number, y: number, terrain: string = "plain") => ({
+        x,
+        y,
+        lookFor: (type: string): unknown[] => {
+          if (type === LOOK_TERRAIN) {
+            return [terrain];
+          }
+          if (type === LOOK_CREEPS && x === 25 && y === 25) {
+            return [blocker];
+          }
+          return [];
+        },
+      });
+      const makeRoom = (name: string) =>
+        ({ name, getPositionAt: (x: number, y: number) => makePos(x, y) }) as unknown as Room;
+      const makeSpawningSpawn = (name: string, room: Room) =>
+        ({
+          name,
+          room,
+          spawning: { name: "incoming" },
+          pos: makePos(25, 25),
+          memory: { spawnList: ["queued"] },
+          spawnCreep: jest.fn(),
+        }) as unknown as StructureSpawn;
+
+      const openSpawn = makeSpawningSpawn("Spawn1", makeRoom("E1N57"));
+      Object.setPrototypeOf(openSpawn, prototype);
+      prototype.work.call(openSpawn);
+      expect(blockerMove).toHaveBeenCalledWith(TOP);
+      expect(openSpawn.spawnCreep).not.toHaveBeenCalled();
+
+      blockerMove.mockClear();
+      const walledRoom = {
+        name: "E5N59",
+        getPositionAt: (x: number, y: number) => makePos(x, y, x === 25 && y === 24 ? "wall" : "plain"),
+      } as unknown as Room;
+      const walledSpawn = makeSpawningSpawn("Spawn20", walledRoom);
+      Object.setPrototypeOf(walledSpawn, prototype);
+      prototype.work.call(walledSpawn);
+      expect(blockerMove).not.toHaveBeenCalled();
+    }
   });
 });

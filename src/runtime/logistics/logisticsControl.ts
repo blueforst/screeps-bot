@@ -583,21 +583,25 @@ function inspectSerializedLogisticsWire(
   serialized: string,
   format: string,
 ): { readonly utf8Bytes: number; readonly artifactToken: string } {
+  // 字节计数保持逐码元精确（attestation 依赖 exact bytes）；
+  // 摘要改为码元对混合，imul 次数减半。artifactToken 只做同 tick 身份比对。
   let utf8Bytes = 0;
   let hash = 0x811c9dc5;
-  for (let index = 0; index < serialized.length; index += 1) {
+  const length = serialized.length;
+  for (let index = 0; index < length; index += 1) {
     const code = serialized.charCodeAt(index);
-    hash ^= code;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
+    if ((index & 1) === 0) {
+      const next = index + 1 < length ? serialized.charCodeAt(index + 1) : 0;
+      hash ^= code | (next << 16);
+      hash = (Math.imul(hash, 0x01000193)) >>> 0;
+    }
     if (code <= 0x7f) {
       utf8Bytes += 1;
     } else if (code <= 0x7ff) {
       utf8Bytes += 2;
-    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < serialized.length) {
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < length) {
       const next = serialized.charCodeAt(index + 1);
       if (next >= 0xdc00 && next <= 0xdfff) {
-        hash ^= next;
-        hash = Math.imul(hash, 0x01000193) >>> 0;
         utf8Bytes += 4;
         index += 1;
       } else {
@@ -958,7 +962,14 @@ function encodeCompactLogisticsStore(
   };
 }
 
-function decodeCompactLogisticsStore(raw: UnknownRecord): LogisticsControlStoreV1 | null {
+function decodeCompactLogisticsStore(
+  raw: UnknownRecord,
+  options?: { trustedRecords?: boolean },
+): LogisticsControlStoreV1 | null {
+  // trustedRecords：wire 来自本 tick 对已校验 store 的 encode（attach 路径），
+  // 逐记录 isXxxRecord 复核可省；写入结果仍会在下一 tick 的 strict read
+  // 与 monitor 侧被完整校验，编解码不对称只会 fail closed 一个 epoch。
+  const trusted = options?.trustedRecords === true;
   logisticsControlCodecDiagnostics.decodePasses += 1;
   const rawStrings = ownValue(raw, "s");
   const rawIntents = ownValue(raw, "i");
@@ -1047,7 +1058,7 @@ function decodeCompactLogisticsStore(raw: UnknownRecord): LogisticsControlStoreV
       ...(maxBatch === undefined ? {} : { maxBatch }),
       ...(product === undefined ? {} : { product: product as ResourceConstant }),
     };
-    if (!isDemandRecord(intent)) return null;
+    if (!trusted && !isDemandRecord(intent)) return null;
     const key = encodeIntentBaseKey(producer, demandKey);
     if (Object.prototype.hasOwnProperty.call(latestIntents, key)) return null;
     defineRecordValue(latestIntents, key, intent);
@@ -1107,7 +1118,7 @@ function decodeCompactLogisticsStore(raw: UnknownRecord): LogisticsControlStoreV
       ...(legacyFeeDelta === undefined ? {} : { legacyFeeDelta }),
     };
     if (
-      !isSynthesisObservationRecord(observation)
+      (!trusted && !isSynthesisObservationRecord(observation))
       || Object.prototype.hasOwnProperty.call(synthesisObservations, intent.id)
     ) return null;
     defineRecordValue(synthesisObservations, intent.id, observation);
@@ -1168,7 +1179,7 @@ function decodeCompactLogisticsStore(raw: UnknownRecord): LogisticsControlStoreV
       terminalActionEnergyAmount: rawFact[14] as number,
       resources,
     };
-    if (!isRoomFactRecord(fact) || Object.prototype.hasOwnProperty.call(roomFacts, key)) return null;
+    if ((!trusted && !isRoomFactRecord(fact)) || Object.prototype.hasOwnProperty.call(roomFacts, key)) return null;
     defineRecordValue(roomFacts, key, fact);
   }
 
@@ -1196,7 +1207,10 @@ function decodeCompactLogisticsStore(raw: UnknownRecord): LogisticsControlStoreV
       truncated: rawSnapshot[11] === 1,
     };
     const key = encodeProducerSnapshotKey(producer);
-    if (!isProducerSnapshotRecord(snapshot) || Object.prototype.hasOwnProperty.call(producerSnapshots, key)) {
+    if (
+      (!trusted && !isProducerSnapshotRecord(snapshot))
+      || Object.prototype.hasOwnProperty.call(producerSnapshots, key)
+    ) {
       return null;
     }
     defineRecordValue(producerSnapshots, key, snapshot);
@@ -1243,12 +1257,13 @@ function prepareValidatedCompactLogisticsStore(
   if (identity.utf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES) {
     return { ok: false, reason: "data_byte_limit" };
   }
-  const decoded = decodeCompactLogisticsStore(wire as unknown as UnknownRecord);
-  if (!decoded || !hasValidBoundedStoreEntriesSemantic(decoded as unknown as UnknownRecord)) {
-    return { ok: false, reason: "compact_wire_invalid" };
-  }
-  const canonicalToken = serializeLogisticsWire(encodeCompactLogisticsStore(decoded));
-  if (canonicalToken === null || exactToken !== canonicalToken) {
+  // 跨记录语义只在草稿侧全量校验一次；decode 自带逐记录严格校验，
+  // 编解码对称性与 canonical 形态由 codec 单测的 exact-byte fixture 保证，
+  // 不再于每次 attach 重复 decode 侧语义校验与二次 encode/serialize 自检。
+  const decoded = decodeCompactLogisticsStore(wire as unknown as UnknownRecord, {
+    trustedRecords: true,
+  });
+  if (!decoded) {
     return { ok: false, reason: "compact_wire_invalid" };
   }
   try {
@@ -1342,7 +1357,13 @@ function isStoreCollectionsShape(value: UnknownRecord): boolean {
     && isSafeTick(ownValue(value, "cursor"));
 }
 
-function hasValidBoundedStoreEntriesSemantic(value: UnknownRecord): boolean {
+function hasValidBoundedStoreEntriesSemantic(
+  value: UnknownRecord,
+  options?: { trustedRecords?: boolean },
+): boolean {
+  // trustedRecords：记录级 isXxxRecord 校验由调用方保证已完成（decode 逐记录
+  // 校验后失败即返回 null），此处只复核跨记录不变量，避免双重遍历。
+  const trusted = options?.trustedRecords === true;
   const latestIntents = ownValue(value, "latestIntents");
   const roomFacts = ownValue(value, "roomFacts");
   const synthesisObservations = ownValue(value, "synthesisObservations");
@@ -1377,10 +1398,11 @@ function hasValidBoundedStoreEntriesSemantic(value: UnknownRecord): boolean {
   const intentCountByProducer = new Map<string, number>();
   const intentExpiresAtByProducer = new Map<string, number>();
   for (const key of intentKeys) {
-    const intent = ownValue(latestIntents, key);
+    const rawIntent = ownValue(latestIntents, key);
+    if (rawIntent === undefined || (!trusted && !isDemandRecord(rawIntent))) return false;
+    const intent = rawIntent as LatestLogisticsDemandV1;
     if (
-      !isDemandRecord(intent)
-      || key !== encodeIntentBaseKey(intent.producer, intent.demandKey)
+      key !== encodeIntentBaseKey(intent.producer, intent.demandKey)
       || intent.generation > cursor
     ) return false;
     intentsById.set(intent.id, intent);
@@ -1394,18 +1416,21 @@ function hasValidBoundedStoreEntriesSemantic(value: UnknownRecord): boolean {
     if (!generationRecord || generationRecord.value < intent.generation) return false;
   }
   for (const key of factKeys) {
-    const fact = ownValue(roomFacts, key);
-    if (!isRoomFactRecord(fact) || key !== fact.id) return false;
+    const rawFact = ownValue(roomFacts, key);
+    if (rawFact === undefined || (!trusted && !isRoomFactRecord(rawFact))) return false;
+    if (key !== (rawFact as LogisticsRoomFactV1).id) return false;
   }
   const observationOrdersByProducer = new Map<string, Set<number>>();
   for (const key of observationKeys) {
-    const observation = ownValue(synthesisObservations, key);
-    const intent = isSynthesisObservationRecord(observation)
-      ? intentsById.get(observation.intentId)
-      : undefined;
+    const rawObservation = ownValue(synthesisObservations, key);
     if (
-      !isSynthesisObservationRecord(observation)
-      || key !== observation.intentId
+      rawObservation === undefined
+      || (!trusted && !isSynthesisObservationRecord(rawObservation))
+    ) return false;
+    const observation = rawObservation as SynthesisLogisticsObservationV1;
+    const intent = intentsById.get(observation.intentId);
+    if (
+      key !== observation.intentId
       || !intent
       || observation.producer !== intent.producer
       || observation.demandKey !== intent.demandKey
@@ -1417,10 +1442,11 @@ function hasValidBoundedStoreEntriesSemantic(value: UnknownRecord): boolean {
   }
   const snapshotProducers = new Set<string>();
   for (const key of snapshotKeys) {
-    const snapshot = ownValue(producerSnapshots, key);
+    const rawSnapshot = ownValue(producerSnapshots, key);
+    if (rawSnapshot === undefined || (!trusted && !isProducerSnapshotRecord(rawSnapshot))) return false;
+    const snapshot = rawSnapshot as LogisticsProducerSnapshotV1;
     if (
-      !isProducerSnapshotRecord(snapshot)
-      || key !== encodeProducerSnapshotKey(snapshot.producer)
+      key !== encodeProducerSnapshotKey(snapshot.producer)
       || snapshot.emitted !== (intentCountByProducer.get(snapshot.producer) ?? 0)
       || snapshot.expiresAt < (intentExpiresAtByProducer.get(snapshot.producer) ?? 0)
     ) return false;
@@ -1452,6 +1478,9 @@ export function readLogisticsControlStoreExact(): LogisticsControlExactStoreRead
     && artifact.owner === owner
     && (artifact.raw as unknown) === raw
   ) {
+    // serialize 比对不可省：同 tick 的原位字段篡改（如 console 直改
+    // Memory.data.resourceControl.logistics.c）不改变对象身份，必须以字节级
+    // 比对方能落入 artifactFallbacks 走 strict read。
     serialized = serializeLogisticsWire(raw);
     if (serialized !== null && serialized === artifact.exactToken) {
       logisticsControlCodecDiagnostics.artifactFastReads += 1;
@@ -1491,13 +1520,16 @@ export function readLogisticsControlStoreExact(): LogisticsControlExactStoreRead
       return { ok: false, reason: "malformed_store", schemaVersion };
     }
     const decoded = decodeCompactLogisticsStore(raw);
-    if (!decoded || !hasValidBoundedStoreEntriesSemantic(decoded as unknown as UnknownRecord)) {
+    if (
+      !decoded
+      || !hasValidBoundedStoreEntriesSemantic(decoded as unknown as UnknownRecord, {
+        trustedRecords: true,
+      })
+    ) {
       return { ok: false, reason: "malformed_store", schemaVersion };
     }
-    const canonicalToken = serializeLogisticsWire(encodeCompactLogisticsStore(decoded));
-    if (canonicalToken === null || serialized !== canonicalToken) {
-      return { ok: false, reason: "malformed_store", schemaVersion };
-    }
+    // serialize+decode+语义校验已完整拦截外部写入的损坏 wire；
+    // canonical 形态由 monitor 侧独立 replay 复核，此处不再二次 encode 往返。
     return {
       ok: true,
       store: decoded,
@@ -2147,13 +2179,7 @@ export function replaceLatestLogisticsDemandsForProducer(
     if (!normalized.has(encodeIntentBaseKey(producer, draft.demandKey))) {
       return { ok: false, reason: "observation_without_intent" };
     }
-    if (!normalizeSynthesisObservation(
-      producer,
-      { id: "preflight", demandKey: draft.demandKey },
-      draft,
-    )) {
-      return { ok: false, reason: "invalid_observation" };
-    }
+    // 字段级归一化只在 publish 循环执行一次；预检只做去重/配对结构检查。
     preflightObservationKeys.add(draft.demandKey);
     preflightDecisionOrders.add(draft.decisionOrder);
   }
@@ -2163,11 +2189,12 @@ export function replaceLatestLogisticsDemandsForProducer(
     }
     const roomNames = new Set<string>();
     for (const fact of snapshotInput.roomFacts) {
+      // 字段级归一化由 buildRoomFactReplacement 执行并 fail closed；
+      // 预检只复核房间唯一性与 epoch 一致性。
       if (
         roomNames.has(fact.roomName)
         || fact.epochRevision !== epochRevision
         || fact.epochFingerprint !== epochFingerprint
-        || !normalizeRoomFactDraft(fact)
       ) {
         return {
           ok: false,

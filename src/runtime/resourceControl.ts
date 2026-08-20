@@ -2808,8 +2808,17 @@ function readLogisticsShadowCpuUsed(): number | undefined {
 }
 
 function logisticsShadowHash(value: string): string {
+  // FNV-1a 变体：每次迭代混合两个 UTF-16 码元，迭代与 imul 次数减半。
+  // 哈希值只做单次部署内的逐 epoch 比较（不跨部署持久比对），算法变更
+  // 仅在部署切换时使 epoch 标识值发生一次不连续。
   let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
+  const length = value.length;
+  let index = 0;
+  for (; index + 1 < length; index += 2) {
+    hash ^= value.charCodeAt(index) | (value.charCodeAt(index + 1) << 16);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  if (index < length) {
     hash ^= value.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193);
   }
@@ -4019,36 +4028,69 @@ export type SynthesisShadowEpochCaptureResult =
       readonly reason: SynthesisShadowEpochCaptureFailureReason;
     };
 
-function canonicalizeSynthesisShadowEpochFacts(
+/**
+ * 原 canonicalizeSynthesisShadowEpochFacts 的等价确定性摘要：同一字段集合、
+ * 同一排序规则，但直接增量混入 FNV 状态，不构建中间大字符串。分隔符 mix
+ * 防止相邻字段值拼接歧义；哈希值只在单次部署内比较。
+ */
+function hashSynthesisShadowEpochFacts(
   resources: readonly ResourceConstant[],
   facts: readonly SynthesisShadowRoomFact[],
 ): string {
-  return JSON.stringify({
-    resources: [...resources].sort(),
-    rooms: [...facts]
-      .sort((left, right) => left.roomName.localeCompare(right.roomName))
-      .map((room) => ({
-        roomName: room.roomName,
-        observedAt: room.observedAt,
-        expiresAt: room.expiresAt,
-        owned: room.owned,
-        hasStorage: room.hasStorage,
-        hasTerminal: room.hasTerminal,
-        terminalReachable: room.terminalReachable,
-        terminalReadyAt: room.terminalReadyAt,
-        transferBatchSize: room.transferBatchSize,
-        capacityState: room.capacityState,
-        receiverEligible: room.receiverEligible,
-        receiverStorageHeadroom: room.receiverStorageHeadroom,
-        receiverTerminalHeadroom: room.receiverTerminalHeadroom,
-        terminalStagingFreeCapacity: room.terminalStagingFreeCapacity,
-        actionEnergyBudget: room.actionEnergyBudget,
-        terminalActionEnergyAmount: room.terminalActionEnergyAmount,
-        resources: [...room.resources]
-          .sort((left, right) => left.resource.localeCompare(right.resource))
-          .map((resource) => ({ ...resource })),
-      })),
-  });
+  let hash = 0x811c9dc5;
+  const mixString = (value: string): void => {
+    const length = value.length;
+    let index = 0;
+    for (; index + 1 < length; index += 2) {
+      hash ^= value.charCodeAt(index) | (value.charCodeAt(index + 1) << 16);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    if (index < length) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    hash ^= 0x1f;
+    hash = Math.imul(hash, 0x01000193);
+  };
+  const mixNumber = (value: number): void => {
+    mixString(`${value}`);
+  };
+  const mixFlag = (value: boolean): void => {
+    mixString(value ? "1" : "0");
+  };
+  mixString("synthesis-room-epoch/v2");
+  mixString([...resources].sort().join(","));
+  const sortedFacts = [...facts].sort((left, right) =>
+    left.roomName.localeCompare(right.roomName),
+  );
+  for (const room of sortedFacts) {
+    mixString(room.roomName);
+    mixNumber(room.observedAt);
+    mixNumber(room.expiresAt);
+    mixFlag(room.owned);
+    mixFlag(room.hasStorage);
+    mixFlag(room.hasTerminal);
+    mixFlag(room.terminalReachable);
+    mixNumber(room.terminalReadyAt);
+    mixNumber(room.transferBatchSize);
+    mixString(room.capacityState);
+    mixFlag(room.receiverEligible);
+    mixNumber(room.receiverStorageHeadroom);
+    mixNumber(room.receiverTerminalHeadroom);
+    mixNumber(room.terminalStagingFreeCapacity);
+    mixNumber(room.actionEnergyBudget);
+    mixNumber(room.terminalActionEnergyAmount);
+    const sortedResources = [...room.resources].sort((left, right) =>
+      left.resource.localeCompare(right.resource),
+    );
+    for (const resource of sortedResources) {
+      mixString(resource.resource);
+      mixNumber(resource.sourceAvailableAmount);
+      mixNumber(resource.sourceTerminalAmount);
+      mixNumber(resource.receiverResourceHeadroom);
+    }
+  }
+  return (hash >>> 0).toString(36);
 }
 
 /**
@@ -4226,12 +4268,7 @@ export function beginSynthesisShadowEpochCapture(
             capturedSourceFacts,
           );
       const epochFingerprint = `synthesis-room-epoch/v1:${
-        logisticsShadowHash(
-          canonicalizeSynthesisShadowEpochFacts(
-            normalizedResources,
-            provisional,
-          ),
-        )
+        hashSynthesisShadowEpochFacts(normalizedResources, provisional)
       }`;
       const roomFacts = provisional.map((room) => ({
         ...room,

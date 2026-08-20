@@ -695,9 +695,9 @@ describe("resource transfer task health v2", () => {
     expect(compactStore.artifactToken.length).toBeLessThan(64);
     expect(compactStore.usage.utf8Bytes).toBe(5_043);
     expect(getLogisticsControlCodecDiagnostics()).toEqual({
-      encodePasses: 2,
+      encodePasses: 1,
       decodePasses: 1,
-      wireSerializePasses: 4,
+      wireSerializePasses: 3,
       strictReads: 0,
       artifactFastReads: 2,
       artifactFallbacks: 0,
@@ -775,9 +775,9 @@ describe("resource transfer task health v2", () => {
     if (!compactRoundTrip.ok) return;
     expect(compactRoundTrip.readSource).toBe("strict_compact");
     expect(getLogisticsControlCodecDiagnostics()).toEqual(expect.objectContaining({
-      encodePasses: 1,
+      encodePasses: 0,
       decodePasses: 1,
-      wireSerializePasses: 2,
+      wireSerializePasses: 1,
       strictReads: 1,
       artifactFastReads: 0,
       artifactFallbacks: 1,
@@ -938,9 +938,9 @@ describe("resource transfer task health v2", () => {
     }])).toEqual({ ok: false, reason: "generation_cursor_overflow" });
     expect(JSON.stringify(Memory.data)).toBe(cursorOverflowBefore);
     expect(getLogisticsControlCodecDiagnostics()).toEqual(expect.objectContaining({
-      encodePasses: 1,
+      encodePasses: 0,
       decodePasses: 1,
-      wireSerializePasses: 2,
+      wireSerializePasses: 1,
       strictReads: 1,
       artifactFastReads: 0,
       artifactFallbacks: 1,

@@ -50,6 +50,61 @@ function getSpawnExitDirections(spawn: StructureSpawn): DirectionConstant[] | un
   return undefined;
 }
 
+const EXIT_DIRECTION_DELTAS: Readonly<Record<DirectionConstant, readonly [number, number]>> = {
+  [TOP]: [0, -1],
+  [TOP_RIGHT]: [1, -1],
+  [RIGHT]: [1, 0],
+  [BOTTOM_RIGHT]: [1, 1],
+  [BOTTOM]: [0, 1],
+  [BOTTOM_LEFT]: [-1, 1],
+  [LEFT]: [-1, 0],
+  [TOP_LEFT]: [-1, -1],
+};
+
+const DEFAULT_EXIT_DIRECTIONS: readonly DirectionConstant[] = [
+  TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT,
+];
+
+function isClearSpawnExit(room: Room, x: number, y: number): boolean {
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 49 || y < 0 || y > 49) {
+    return false;
+  }
+  const pos = room.getPositionAt(x, y);
+  if (!pos || pos.lookFor(LOOK_TERRAIN)[0] === "wall") {
+    return false;
+  }
+  if (pos.lookFor(LOOK_STRUCTURES).some((structure) =>
+    (OBSTACLE_OBJECT_TYPES as readonly string[]).includes(structure.structureType)
+  )) {
+    return false;
+  }
+  return pos.lookFor(LOOK_CREEPS).length === 0;
+}
+
+/**
+ * 出生位被已出生 creep 占据会让 Spawning 卡死到移开为止。
+ * 孵化期间向挡位 creep 发出一步让路指令；命令可能被该 creep
+ * 自身随后执行的移动逻辑覆盖，这对正常运转的 creep 无副作用，
+ * 而停摆 creep（真正的阻塞来源）会按指令离开出生位。
+ */
+function directBlockingCreepsOffSpawn(spawn: StructureSpawn): void {
+  const blockers = spawn.pos.lookFor(LOOK_CREEPS);
+  if (blockers.length === 0) {
+    return;
+  }
+  const candidates = getSpawnExitDirections(spawn) ?? DEFAULT_EXIT_DIRECTIONS;
+  const exit = candidates.find((direction) => {
+    const [dx, dy] = EXIT_DIRECTION_DELTAS[direction];
+    return isClearSpawnExit(spawn.room, spawn.pos.x + dx, spawn.pos.y + dy);
+  });
+  if (!exit) {
+    return;
+  }
+  for (const creep of blockers) {
+    creep.move(exit);
+  }
+}
+
 function isWarConfigName(configName: string): boolean {
   return configName.includes(":war:");
 }
@@ -202,6 +257,7 @@ export function mountSpawn(): void {
 
   StructureSpawn.prototype.work = function work(): void {
     if (this.spawning) {
+      directBlockingCreepsOffSpawn(this);
       return;
     }
 
