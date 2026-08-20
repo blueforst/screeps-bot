@@ -2405,6 +2405,8 @@ export interface MarketBaseResourceShadowObservation {
     | "safe_opportunity"
     | "safe_no_opportunity"
     | "production_priority_wait"
+    /** arbiter/terminal 被生产占用且本周期无安全候选：等待中的空窗。 */
+    | "wait_no_opportunity"
     | "incomplete";
   blocker?: string;
 }
@@ -3287,7 +3289,9 @@ function planSingleShadowLane(
     result:
       scope.writeContext.pendingState !== "none" ||
       scope.writeContext.arbiterState !== "available"
-        ? "production_priority_wait"
+        ? local.safeCandidates.length > 0
+          ? "production_priority_wait"
+          : "wait_no_opportunity"
         : local.safeCandidates.length > 0
           ? "safe_opportunity"
           : "safe_no_opportunity",
@@ -3639,8 +3643,10 @@ function tryPlanPureShadowBatch(
     : "batch_candidate";
   const result =
     scope.writeContext.pendingState !== "none" ||
-      scope.writeContext.arbiterState !== "available"
-      ? "production_priority_wait"
+    scope.writeContext.arbiterState !== "available"
+      ? batch.safeCandidates.length > 0
+        ? "production_priority_wait"
+        : "wait_no_opportunity"
       : undefined;
   const safeBindings = new Set(
     batch.safeCandidates.map((candidate) =>
