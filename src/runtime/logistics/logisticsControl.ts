@@ -427,6 +427,7 @@ export interface LogisticsControlExactStoreReadSuccess {
   readonly usage: LogisticsControlStoreUsage;
   readonly readSource:
     | "same_tick_validated_artifact"
+    | "unchanged_wire_cache"
     | "strict_compact"
     | "strict_expanded";
   /** Bounded identity for pairing reads; exact mutation checks use the full private token. */
@@ -443,6 +444,7 @@ export interface LogisticsControlCodecDiagnostics {
   readonly wireSerializePasses: number;
   readonly strictReads: number;
   readonly artifactFastReads: number;
+  readonly unchangedWireFastReads: number;
   readonly artifactFallbacks: number;
   readonly attachSuccesses: number;
   readonly roomFactEpochShortCircuits: number;
@@ -498,6 +500,7 @@ const logisticsControlCodecDiagnostics: {
   wireSerializePasses: 0,
   strictReads: 0,
   artifactFastReads: 0,
+  unchangedWireFastReads: 0,
   artifactFallbacks: 0,
   attachSuccesses: 0,
   roomFactEpochShortCircuits: 0,
@@ -505,6 +508,21 @@ const logisticsControlCodecDiagnostics: {
 };
 
 let sameTickValidatedArtifact: LogisticsControlValidatedArtifact | undefined;
+
+/**
+ * 跨 tick 的 wire 等值缓存：记录最近一次 attach 成功时的完整 serialized
+ * wire 与对应已冻结 store。下一 epoch 的首读（wire 尚未被任何人改写）与
+ * 该 token 全串等值时直接复用 decode 结果，跳过 decode + 逐记录语义校验。
+ * 命中依据是字节级全串比较，与 same-tick artifact 的防篡改强度一致：
+ * 任何外部原位篡改都会改变 serialize 结果而回落到完整 strict read。
+ */
+interface UnchangedWireCache {
+  readonly exactToken: string;
+  readonly artifactToken: string;
+  readonly store: LogisticsControlStoreV1;
+  readonly usage: LogisticsControlStoreUsage;
+}
+let unchangedWireCache: UnchangedWireCache | undefined;
 
 function isRecord(value: unknown): value is UnknownRecord {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -659,6 +677,7 @@ export function resetLogisticsControlCodecDiagnosticsForTest(): void {
 
 export function clearLogisticsControlValidatedArtifactForTest(): void {
   sameTickValidatedArtifact = undefined;
+  unchangedWireCache = undefined;
 }
 
 export function getLogisticsControlStoreUsage(
@@ -1243,7 +1262,17 @@ function readResourceControlOwner(): ResourceControlOwnerWithLogistics | undefin
 function prepareValidatedCompactLogisticsStore(
   store: Readonly<LogisticsControlStoreV1>,
 ): LogisticsControlPreparedCommit | LogisticsControlCommitFailure {
-  if (!hasValidBoundedStoreEntriesSemantic(store as unknown as UnknownRecord)) {
+  // store 全部来自已校验输入：保留条目经 strict read / same-tick artifact /
+  // unchanged-wire 缓存的完整校验，新条目经草稿归一化 + preflight 跨记录配对
+  // + buildRoomFactReplacement fail-closed 归一化。逐记录 isXxxRecord 复核
+  // 在该路径上属重复劳动；跨记录不变量（intent↔observation 配对、snapshot
+  // emitted 计数、generation/cursor 一致）仍全量复核，构造错误最迟在下一
+  // tick strict read fail closed 一个 epoch。
+  if (
+    !hasValidBoundedStoreEntriesSemantic(store as unknown as UnknownRecord, {
+      trustedRecords: true,
+    })
+  ) {
     return { ok: false, reason: "store_invariant" };
   }
   const wire = encodeCompactLogisticsStore(store);
@@ -1257,9 +1286,10 @@ function prepareValidatedCompactLogisticsStore(
   if (identity.utf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES) {
     return { ok: false, reason: "data_byte_limit" };
   }
-  // 跨记录语义只在草稿侧全量校验一次；decode 自带逐记录严格校验，
-  // 编解码对称性与 canonical 形态由 codec 单测的 exact-byte fixture 保证，
-  // 不再于每次 attach 重复 decode 侧语义校验与二次 encode/serialize 自检。
+  // artifact store 必须保持 decode 侧 canonical 形态（字段序与 wire 解码
+  // 一致，monitor replay 与测试的字节级比较依赖它），故保留 decode 往返；
+  // trustedRecords 表示 encode 输入已通过上方跨记录校验，decode 侧跳过
+  // 逐记录谓词复核。
   const decoded = decodeCompactLogisticsStore(wire as unknown as UnknownRecord, {
     trustedRecords: true,
   });
@@ -1332,6 +1362,12 @@ function attachLogisticsStore(
     usage: prepared.usage,
   };
   sameTickValidatedArtifact = artifact;
+  unchangedWireCache = {
+    exactToken: prepared.exactToken,
+    artifactToken: prepared.artifactToken,
+    store: prepared.store,
+    usage: prepared.usage,
+  };
   logisticsControlCodecDiagnostics.attachSuccesses += 1;
   return { ok: true, artifact };
 }
@@ -1519,6 +1555,22 @@ export function readLogisticsControlStoreExact(): LogisticsControlExactStoreRead
     if (identity.utf8Bytes > LOGISTICS_CONTROL_DATA_LIMIT_BYTES) {
       return { ok: false, reason: "malformed_store", schemaVersion };
     }
+    // 跨 epoch 未改写的 wire：与最近一次 attach 的 token 全串等值即可复用
+    // 其已冻结的 decode 结果。等值是字节级比较，原位篡改必然 miss 并回落
+    // 到下方完整 strict 校验。
+    if (
+      unchangedWireCache
+      && unchangedWireCache.exactToken === serialized
+    ) {
+      logisticsControlCodecDiagnostics.unchangedWireFastReads += 1;
+      return {
+        ok: true,
+        store: unchangedWireCache.store,
+        usage: unchangedWireCache.usage,
+        readSource: "unchanged_wire_cache",
+        artifactToken: identity.artifactToken,
+      };
+    }
     const decoded = decodeCompactLogisticsStore(raw);
     if (
       !decoded
@@ -1530,10 +1582,23 @@ export function readLogisticsControlStoreExact(): LogisticsControlExactStoreRead
     }
     // serialize+decode+语义校验已完整拦截外部写入的损坏 wire；
     // canonical 形态由 monitor 侧独立 replay 复核，此处不再二次 encode 往返。
+    try {
+      // 冻结后建立跨 epoch 等值缓存基线：后续 epoch 未改写的 wire 命中
+      // token 比对即可跳过整条 decode+校验管线。
+      freezeLogisticsControlArtifactStore(decoded);
+      unchangedWireCache = {
+        exactToken: serialized,
+        artifactToken: identity.artifactToken,
+        store: decoded,
+        usage: logisticsControlStoreUsageFromBytes(decoded, identity.utf8Bytes),
+      };
+    } catch {
+      return { ok: false, reason: "malformed_store", schemaVersion };
+    }
     return {
       ok: true,
       store: decoded,
-      usage: logisticsControlStoreUsageFromBytes(decoded, identity.utf8Bytes),
+      usage: unchangedWireCache.usage,
       readSource: "strict_compact",
       artifactToken: identity.artifactToken,
     };
@@ -1628,6 +1693,15 @@ export function ensureLogisticsControlStore(): EnsureLogisticsControlStoreResult
           generation: (generation ?? createRecord<LogisticsGenerationV1>()) as Record<string, LogisticsGenerationV1>,
           cursor: (cursor ?? 0) as number,
         };
+        // repair 集合来自未通过 strict 读的外部原始数据：attach 前必须做
+        // 非 trusted 逐记录校验。prepare 侧的 trusted 复核只信任已校验
+        // 输入，不能替代这里对损坏记录的拦截，否则损坏态会以 compact
+        // wire 形式提交并被跨 epoch 等值缓存长期遮蔽。
+        if (
+          !hasValidBoundedStoreEntriesSemantic(repaired as unknown as UnknownRecord)
+        ) {
+          return current;
+        }
         const committed = attachLogisticsStore(owner, repaired);
         if (!committed.ok) return current;
         return { ok: true, store: committed.artifact.store, created: false };
@@ -1905,22 +1979,36 @@ function normalizeDemandDraft(draft: LatestLogisticsDemandDraft): Omit<LatestLog
   };
 }
 
-function demandSemanticSignature(value: Omit<LatestLogisticsDemandV1, "id" | "producer" | "generation" | "revision" | "firstObservedAt" | "observedAt" | "expiresAt">): string {
-  return JSON.stringify([
-    value.kind,
-    value.origin,
-    value.active,
-    value.demandKey,
-    value.targetRoomName,
-    value.resource,
-    value.desiredAmount,
-    value.priorityClass,
-    value.deadlineAt ?? null,
-    value.fixedSourceRoomNames ?? [],
-    value.minBatch ?? null,
-    value.maxBatch ?? null,
-    value.product ?? null,
-  ]);
+/**
+ * 逐字段等价比较（kind/origin/active/demandKey/targetRoomName/resource/
+ * desiredAmount/priorityClass/deadlineAt/fixedSourceRoomNames/minBatch/
+ * maxBatch/product 全集）；仅用于 sameSemantic 判定，避免每 epoch 为两侧
+ * 各构建一次 JSON 签名串。
+ */
+function isSameDemandSemantic(
+  left: Omit<LatestLogisticsDemandV1, "id" | "producer" | "generation" | "revision" | "firstObservedAt" | "observedAt" | "expiresAt">,
+  right: Omit<LatestLogisticsDemandV1, "id" | "producer" | "generation" | "revision" | "firstObservedAt" | "observedAt" | "expiresAt">,
+): boolean {
+  if (
+    left.kind !== right.kind
+    || left.origin !== right.origin
+    || left.active !== right.active
+    || left.demandKey !== right.demandKey
+    || left.targetRoomName !== right.targetRoomName
+    || left.resource !== right.resource
+    || left.desiredAmount !== right.desiredAmount
+    || left.priorityClass !== right.priorityClass
+    || left.deadlineAt !== right.deadlineAt
+    || left.minBatch !== right.minBatch
+    || left.maxBatch !== right.maxBatch
+    || left.product !== right.product
+  ) return false;
+  // 空数组与省略在语义上等价（旧 JSON 签名对 undefined ?? [] 归一），
+  // store 中 legacy/外部写入的 [] 不能触发 revision 无谓递增。
+  const leftFixed = left.fixedSourceRoomNames ?? [];
+  const rightFixed = right.fixedSourceRoomNames ?? [];
+  if (leftFixed.length !== rightFixed.length) return false;
+  return leftFixed.every((roomName, index) => roomName === rightFixed[index]);
 }
 
 function isDemandRecord(value: unknown): value is LatestLogisticsDemandV1 {
@@ -2244,7 +2332,7 @@ export function replaceLatestLogisticsDemandsForProducer(
     }
     const generation = startsLifecycle ? nextCursor : validCurrent.generation;
     const sameSemantic = validCurrent && !expired
-      ? demandSemanticSignature(validCurrent) === demandSemanticSignature(semantic)
+      ? isSameDemandSemantic(validCurrent, semantic)
       : false;
     const revision = validCurrent && !startsLifecycle
       ? (sameSemantic ? validCurrent.revision : validCurrent.revision + 1)
@@ -2458,26 +2546,40 @@ function normalizeRoomFactDraft(draft: LogisticsRoomFactDraft): LogisticsRoomFac
   };
 }
 
-function roomFactSemanticSignature(value: LogisticsRoomFactSemantic): string {
-  return JSON.stringify([
-    value.roomName,
-    value.epochRevision,
-    value.epochFingerprint,
-    value.owned,
-    value.hasStorage,
-    value.hasTerminal,
-    value.terminalReachable,
-    value.terminalReadyAt,
-    value.capacityState,
-    value.receiverEligible,
-    value.receiverStorageHeadroom,
-    value.receiverTerminalHeadroom,
-    value.terminalStagingFreeCapacity,
-    value.transferBatchSize,
-    value.actionEnergyBudget,
-    value.terminalActionEnergyAmount,
-    value.resources,
-  ]);
+/**
+ * 逐字段等价比较（roomFact 全语义字段 + 逐资源三元组）；仅用于
+ * sameSemantic 判定，避免每 epoch 为两侧各构建一次 JSON 签名串。
+ */
+function isSameRoomFactSemantic(
+  left: LogisticsRoomFactSemantic,
+  right: LogisticsRoomFactSemantic,
+): boolean {
+  if (
+    left.roomName !== right.roomName
+    || left.epochRevision !== right.epochRevision
+    || left.epochFingerprint !== right.epochFingerprint
+    || left.owned !== right.owned
+    || left.hasStorage !== right.hasStorage
+    || left.hasTerminal !== right.hasTerminal
+    || left.terminalReachable !== right.terminalReachable
+    || left.terminalReadyAt !== right.terminalReadyAt
+    || left.capacityState !== right.capacityState
+    || left.receiverEligible !== right.receiverEligible
+    || left.receiverStorageHeadroom !== right.receiverStorageHeadroom
+    || left.receiverTerminalHeadroom !== right.receiverTerminalHeadroom
+    || left.terminalStagingFreeCapacity !== right.terminalStagingFreeCapacity
+    || left.transferBatchSize !== right.transferBatchSize
+    || left.actionEnergyBudget !== right.actionEnergyBudget
+    || left.terminalActionEnergyAmount !== right.terminalActionEnergyAmount
+    || left.resources.length !== right.resources.length
+  ) return false;
+  return left.resources.every((resource, index) => {
+    const other = right.resources[index];
+    return resource.resource === other.resource
+      && resource.sourceAvailableAmount === other.sourceAvailableAmount
+      && resource.sourceTerminalAmount === other.sourceTerminalAmount
+      && resource.receiverResourceHeadroom === other.receiverResourceHeadroom;
+  });
 }
 
 function isRoomResourceFactRecord(value: unknown): value is LogisticsRoomResourceFactV1 {
@@ -2562,7 +2664,7 @@ function buildRoomFactReplacement(
         logisticsControlCodecDiagnostics.roomFactEpochShortCircuits += 1;
       } else {
         logisticsControlCodecDiagnostics.roomFactSemanticComparisons += 1;
-        sameSemantic = roomFactSemanticSignature(current) === roomFactSemanticSignature(semantic);
+        sameSemantic = isSameRoomFactSemantic(current, semantic);
       }
     }
     const observedAt = sameSemantic && validCurrent

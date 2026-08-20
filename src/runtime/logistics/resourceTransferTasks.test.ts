@@ -696,10 +696,13 @@ describe("resource transfer task health v2", () => {
     expect(compactStore.usage.utf8Bytes).toBe(5_043);
     expect(getLogisticsControlCodecDiagnostics()).toEqual({
       encodePasses: 1,
+      // prepare 保留 decode 往返以维持 canonical 形态；decode 侧逐记录
+      // 谓词已被 trusted 校验替代。本 tick 内全部读取走 artifact 快路径。
       decodePasses: 1,
       wireSerializePasses: 3,
       strictReads: 0,
       artifactFastReads: 2,
+      unchangedWireFastReads: 0,
       artifactFallbacks: 0,
       attachSuccesses: 1,
       roomFactEpochShortCircuits: 0,
@@ -770,6 +773,24 @@ describe("resource transfer task health v2", () => {
     Memory.data = JSON.parse(JSON.stringify(Memory.data)) as Memory["data"];
     resetRuntimeServices();
     registerRuntimeServices();
+    // 引擎式 Memory 往返后 wire 内容未改写：跨 tick 等值缓存以字节级 token
+    // 比对直接复用已冻结 store，跳过 decode+逐记录校验。
+    const cachedRoundTrip = readLogisticsControlStoreExact();
+    expect(cachedRoundTrip).toEqual(expect.objectContaining({ ok: true }));
+    if (!cachedRoundTrip.ok) return;
+    expect(cachedRoundTrip.readSource).toBe("unchanged_wire_cache");
+    expect(JSON.stringify(cachedRoundTrip.store)).toBe(compactSemantic);
+    expect(getLogisticsControlCodecDiagnostics()).toEqual(expect.objectContaining({
+      decodePasses: 0,
+      wireSerializePasses: 1,
+      strictReads: 1,
+      unchangedWireFastReads: 1,
+      artifactFallbacks: 1,
+    }));
+    // 清掉缓存后同 wire 必须仍能走完整 strict_compact 校验（防外部篡改
+    // 场景的回归覆盖）。
+    clearLogisticsControlValidatedArtifactForTest();
+    resetLogisticsControlCodecDiagnosticsForTest();
     const compactRoundTrip = readLogisticsControlStoreExact();
     expect(compactRoundTrip).toEqual(expect.objectContaining({ ok: true }));
     if (!compactRoundTrip.ok) return;
@@ -780,7 +801,8 @@ describe("resource transfer task health v2", () => {
       wireSerializePasses: 1,
       strictReads: 1,
       artifactFastReads: 0,
-      artifactFallbacks: 1,
+      // artifact 已被测试助手直接清除，本读没有 fallback 计数。
+      artifactFallbacks: 0,
       attachSuccesses: 0,
     }));
     expect(JSON.stringify(compactRoundTrip.store)).toBe(compactSemantic);
@@ -851,10 +873,13 @@ describe("resource transfer task health v2", () => {
     const tickRolloverRead = readLogisticsControlStoreExact();
     expect(tickRolloverRead).toEqual(expect.objectContaining({
       ok: true,
-      readSource: "strict_compact",
+      // tick 翻转使 same-tick artifact 失效，但 wire 未被改写：跨 tick 等值
+      // 缓存以字节级 token 比对命中，跳过完整 strict 校验。
+      readSource: "unchanged_wire_cache",
     }));
     expect(getLogisticsControlCodecDiagnostics()).toEqual(expect.objectContaining({
       strictReads: 1,
+      unchangedWireFastReads: 1,
       artifactFastReads: 0,
       artifactFallbacks: 1,
     }));

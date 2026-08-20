@@ -4053,6 +4053,17 @@ function hashSynthesisShadowEpochFacts(
     hash = Math.imul(hash, 0x01000193);
   };
   const mixNumber = (value: number): void => {
+    // room facts 数值全为安全整数：直接位混合避免逐数字符串化分配；
+    // 非整数（不应出现）回退字符串路径保持确定性。
+    if (Number.isSafeInteger(value)) {
+      hash ^= value & 0xffff;
+      hash = Math.imul(hash, 0x01000193);
+      hash ^= Math.floor(value / 0x10000) & 0xffff;
+      hash = Math.imul(hash, 0x01000193);
+      hash ^= 0x1f;
+      hash = Math.imul(hash, 0x01000193);
+      return;
+    }
     mixString(`${value}`);
   };
   const mixFlag = (value: boolean): void => {
