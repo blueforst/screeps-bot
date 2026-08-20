@@ -388,6 +388,8 @@ export interface MarketBaseResourcePlanningSnapshot {
   evaluatedShadowResourceCount: number;
   candidateIdentityOrderChecks: number;
   cpuTrace?: MarketBaseResourceCpuTrace;
+  /** 本轮 shadow observation 的 incomplete blocker 频次（诊断合同）。 */
+  shadowBlockers?: Record<string, number>;
 }
 
 export interface MarketBaseResourcePricingRatchetState {
@@ -8434,6 +8436,19 @@ function reconcilePending(
   );
 }
 
+function summarizeShadowObservationBlockers(
+  observations: readonly MarketBaseResourceShadowObservation[],
+): Record<string, number> | undefined {
+  let blockers: Record<string, number> | undefined;
+  for (const observation of observations) {
+    if (observation.result !== "incomplete") continue;
+    blockers ??= {};
+    const key = (observation.blocker || "unknown").slice(0, 120);
+    blockers[key] = (blockers[key] || 0) + 1;
+  }
+  return blockers;
+}
+
 function planningSnapshotFrom(
   tick: number,
   plan: MarketBaseResourceTwoReadPlan,
@@ -8475,6 +8490,9 @@ function planningSnapshotFrom(
       plan.actualTransactionEnergyEvaluations,
     evaluatedShadowResourceCount: plan.evaluatedShadowResourceCount,
     candidateIdentityOrderChecks: plan.candidateIdentityOrderChecks,
+    shadowBlockers: summarizeShadowObservationBlockers(
+      plan.shadowObservations,
+    ),
     ...(cpuTrace ? { cpuTrace: { ...cpuTrace } } : {}),
   };
 }
