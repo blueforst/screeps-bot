@@ -175,14 +175,20 @@ describe("mountSpawn", () => {
       );
     }
 
-    // 孵化期间出生位被已出生 creep 占据：向其发出让路指令；
-    // Spawn20 的出生位是 TOP 邻格（directions 约束），blocker 从自身
-    // 周围离开且不得被推回出生格；无可用出口时不发。
+    // 孵化期间出生位被已出生 creep 占据：向其下达让位指令（memory 传递
+    // + 直接 move）；Spawn20 的出生位是 TOP 邻格（directions 约束），
+    // blocker 从自身周围离开且不得被推回出生格；无可用出口时不发。
     {
       const blockerMove = jest.fn(() => OK);
       const blockerPos = { x: 25, y: 25 };
+      const blockerMemory: Record<string, unknown> = {};
       const blockerRoom = { room: undefined as unknown as Room };
-      const blocker = { move: blockerMove, pos: blockerPos, get room() { return blockerRoom.room; } } as unknown as Creep;
+      const blocker = {
+        move: blockerMove,
+        pos: blockerPos,
+        memory: blockerMemory,
+        get room() { return blockerRoom.room; },
+      } as unknown as Creep;
       const makePos = (
         x: number,
         y: number,
@@ -212,14 +218,26 @@ describe("mountSpawn", () => {
           spawnCreep: jest.fn(),
         }) as unknown as StructureSpawn;
 
-      // 默认 spawn：出生位 = spawn 自身格 (25,25)，TOP (25,24) 可走 → 让向 TOP。
+      // 默认 spawn：出生位 = spawn 8 邻格（spawn 自身格不可落 creep）。
+      // blocker 站在 RIGHT 邻格 (26,25)：其邻格中出生格外的第一个可走
+      // 方向是 TOP_RIGHT (27,24) → 让向 TOP_RIGHT 并下达 memory 指令。
+      blockerPos.x = 26;
       const openRoom = makeRoom("E1N57", () => "plain");
       blockerRoom.room = openRoom;
       const openSpawn = makeSpawningSpawn("Spawn1", openRoom);
       Object.setPrototypeOf(openSpawn, prototype);
       prototype.work.call(openSpawn);
-      expect(blockerMove).toHaveBeenCalledWith(TOP);
+      expect(blockerMove).toHaveBeenCalledWith(TOP_RIGHT);
+      expect(blockerMemory._spawnYield).toEqual({ dir: TOP_RIGHT, tick: Game.time });
       expect(openSpawn.spawnCreep).not.toHaveBeenCalled();
+
+      // 默认 spawn：blocker 站在 spawn 自身格 (25,25) 不挡出生位，不发指令。
+      blockerMove.mockClear();
+      blockerPos.x = 25;
+      const centerSpawn = makeSpawningSpawn("Spawn1", openRoom);
+      Object.setPrototypeOf(centerSpawn, prototype);
+      prototype.work.call(centerSpawn);
+      expect(blockerMove).not.toHaveBeenCalled();
 
       // Spawn20：出生位 = TOP 邻格 (25,24)；blocker 站在出生位上，
       // 其 TOP (25,23) 为墙，其余邻格可走 → 让向 TOP_RIGHT（不会推回出生位）。

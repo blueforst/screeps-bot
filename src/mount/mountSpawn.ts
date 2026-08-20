@@ -89,8 +89,17 @@ function isClearExitTile(room: Room, x: number, y: number): boolean {
 function getSpawnBirthPositions(spawn: StructureSpawn): RoomPosition[] {
   const exits = getSpawnExitDirections(spawn);
   if (!exits) {
-    // 无 directions 约束时新生儿落在 spawn 自身格。
-    return [spawn.pos];
+    // 无 directions 约束时新生儿由引擎放置在 spawn 相邻的可用格
+    // （spawn 自身格不可落 creep），出生位集合取全部 8 邻格；挡位
+    // creep 只会出现在可走格上，无需在此预过滤地形。
+    const positions: RoomPosition[] = [];
+    for (const [dx, dy] of BIRTH_TILE_DELTAS) {
+      const pos = spawn.room.getPositionAt(spawn.pos.x + dx, spawn.pos.y + dy);
+      if (pos) {
+        positions.push(pos);
+      }
+    }
+    return positions;
   }
   const positions: RoomPosition[] = [];
   for (const direction of exits) {
@@ -103,12 +112,20 @@ function getSpawnBirthPositions(spawn: StructureSpawn): RoomPosition[] {
   return positions;
 }
 
+const BIRTH_TILE_DELTAS: readonly (readonly [number, number])[] = [
+  [-1, -1], [0, -1], [1, -1],
+  [-1, 0], [1, 0],
+  [-1, 1], [0, 1], [1, 1],
+];
+
 /**
- * 出生位被已出生 creep 占据会让 Spawning 卡死到移开为止。
- * 孵化期间向挡位 creep 发出一步让路指令：目标格取 blocker 自身
+ * 出生位被已出生 creep 占据会让 Spawning 冻结到移开为止。
+ * 孵化期间向挡位 creep 下达一步让位指令：目标格取 blocker 自身
  * 周围的可走邻格（排除任一出生格），避免把 blocker 推进另一条
- * 出生路线。指令可能被该 creep 自身随后执行的移动逻辑覆盖，对
- * 正常运转的 creep 无副作用；停摆 creep 会按指令离开出生位。
+ * 出生路线。指令经 memory 传递并在 creep work 入口优先消费——
+ * spawn.work 先于 creep.work 执行，直接 creep.move() 会被挡位
+ * creep 随后执行的自身移动逻辑覆盖；同时保留一次直接 move，
+ * 覆盖停摆（无逻辑）creep 的场景。
  */
 function directBlockingCreepsOffSpawn(spawn: StructureSpawn): void {
   const birthPositions = getSpawnBirthPositions(spawn);
@@ -125,6 +142,7 @@ function directBlockingCreepsOffSpawn(spawn: StructureSpawn): void {
       return !birthKeys.has(`${x}:${y}`) && isClearExitTile(creep.room, x, y);
     });
     if (exit) {
+      creep.memory._spawnYield = { dir: exit, tick: Game.time };
       creep.move(exit);
     }
   }

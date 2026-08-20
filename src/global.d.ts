@@ -622,6 +622,7 @@ declare global {
     configName?: string;
     working?: boolean;
     ready?: boolean;
+    _spawnYield?: { dir: DirectionConstant; tick: number };
     colonizationLastHits?: number;
     colonizationLastSeenAt?: number;
     colonizationLastRoomName?: string;
