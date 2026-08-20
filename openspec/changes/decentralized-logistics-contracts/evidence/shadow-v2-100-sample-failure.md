@@ -93,3 +93,17 @@ warmup 10 点 gateUsed：`5.367/5.474/5.084/6.533/7.168/5.620/5.570/4.713/5.559/
 
 - 修复 bundle 版本号使用 `2026.8.19-2` 及以上；不得改动冻结 canonical Memory 根 `.d.ts`、主循环 phase 顺序、`test/memoryDeclarationBoundaries.test.ts`，Jest 预算保持 167 suites / 500 cases。
 - 修复部署后不得自行重新开启 Shadow；需用户再次明确授权，并按规范重新冻结同口径 disabled pre 基线、从零执行 10 warmup + 100 measured；旧窗口不得拼接或倒填，本记录的 CPU、差异标签与因果样本不得追认为 8.5a/9.1a/9.4 通过。
+
+## Producer 修复记录（2026-08-20，版本 2026.8.20-1）
+
+按上述归因执行了 segment 级本地 profiling（live-like 8 房间 / 4 intents fixture，`performance.now()` 驱动 `Game.cpu.getUsed`，Node `--cpu-prof` 函数级 self-time 复核），确认热点为：codec 往返冗余（每 epoch 4 次 wire serialize、3 次 encode、2 次 decode、4 轮全量语义校验）、逐字符 FNV 哈希（占 ~30%）与 observation/roomFact 双重归一化。已实施（语义保持：exact bytes 不变、fail-closed 不变、冻结 artifact 不变、monitor 兼容不变、下一 tick strict read 仍全量校验）：
+
+- attach 路径删除 decode 侧语义重校验与二次 encode/serialize 自检；strict read 删除 canonical re-encode 往返（保留 serialize+decode+跨记录语义校验作为外部写入腐蚀防线）；artifact 快读保留 serialize 字节比对（防同 tick 原位篡改，`generation_cursor_overflow` 负例锁定该行为）。
+- decode 增加 `trustedRecords` 选项：attach 对本 tick 自有 encode 的 wire 跳过逐记录复核；strict read 仍全量校验。
+- `logisticsShadowHash` 与 `inspectSerializedLogisticsWire` 摘要改为 UTF-16 码元对混合（imul 次数减半；utf8 字节计数保持逐码元精确）。哈希值仅单次部署内比较，算法变更只在部署切换时产生一次 epoch 标识不连续。
+- epochFingerprint 由 `canonicalizeSynthesisShadowEpochFacts`（构建 ~6KB 中间 JSON 字符串）改为同字段集合的增量 FNV 摘要 `hashSynthesisShadowEpochFacts`。
+- observation 与 roomFact 的预检不再重复字段级归一化（publish/buildRoomFactReplacement 内单次执行并 fail closed）。
+
+本地 profile 结果（同 fixture、同口径）：producer avg `2.087 → 1.131`（-45.8%）、p95 `2.098 → 1.342`（-36.0%）；每 epoch wire serialize `4 → 2`。**该数字为本地静态验证，不构成 live gate 证据**；live 结论必须以重新授权后的新 10+100 窗口为准。验证链：双 `tsc --noEmit`、聚焦测试、`test:budget` 167/500、`npm run build`、`node --check dist/main.js`、OpenSpec strict 全部通过；codec 诊断计数断言已按新管线更新，exact 5,043-byte compact fixture 断言保持不变。未改动冻结 canonical Memory 根 `.d.ts`、主循环 phase 顺序与 `test/memoryDeclarationBoundaries.test.ts`。
+
+版本说明：任务书预计同日修复使用 `2026.8.19-2`；实际修复完成时本地日期已翻至 2026-08-20，按仓库日期版本规范使用 `2026.8.20-1`。Shadow 保持 `disabled`，重新开启需用户明确授权。
