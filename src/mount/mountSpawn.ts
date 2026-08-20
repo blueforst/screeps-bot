@@ -65,7 +65,7 @@ const DEFAULT_EXIT_DIRECTIONS: readonly DirectionConstant[] = [
   TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT,
 ];
 
-function isClearSpawnExit(room: Room, x: number, y: number): boolean {
+function isClearExitTile(room: Room, x: number, y: number): boolean {
   if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x > 49 || y < 0 || y > 49) {
     return false;
   }
@@ -78,30 +78,55 @@ function isClearSpawnExit(room: Room, x: number, y: number): boolean {
   )) {
     return false;
   }
+  if (pos.lookFor(LOOK_CONSTRUCTION_SITES).some((site) =>
+    !(OBSTACLE_OBJECT_TYPES as readonly string[]).includes(site.structureType) === false
+  )) {
+    return false;
+  }
   return pos.lookFor(LOOK_CREEPS).length === 0;
+}
+
+function getSpawnBirthPositions(spawn: StructureSpawn): RoomPosition[] {
+  const exits = getSpawnExitDirections(spawn);
+  if (!exits) {
+    // 无 directions 约束时新生儿落在 spawn 自身格。
+    return [spawn.pos];
+  }
+  const positions: RoomPosition[] = [];
+  for (const direction of exits) {
+    const [dx, dy] = EXIT_DIRECTION_DELTAS[direction];
+    const pos = spawn.room.getPositionAt(spawn.pos.x + dx, spawn.pos.y + dy);
+    if (pos) {
+      positions.push(pos);
+    }
+  }
+  return positions;
 }
 
 /**
  * 出生位被已出生 creep 占据会让 Spawning 卡死到移开为止。
- * 孵化期间向挡位 creep 发出一步让路指令；命令可能被该 creep
- * 自身随后执行的移动逻辑覆盖，这对正常运转的 creep 无副作用，
- * 而停摆 creep（真正的阻塞来源）会按指令离开出生位。
+ * 孵化期间向挡位 creep 发出一步让路指令：目标格取 blocker 自身
+ * 周围的可走邻格（排除任一出生格），避免把 blocker 推进另一条
+ * 出生路线。指令可能被该 creep 自身随后执行的移动逻辑覆盖，对
+ * 正常运转的 creep 无副作用；停摆 creep 会按指令离开出生位。
  */
 function directBlockingCreepsOffSpawn(spawn: StructureSpawn): void {
-  const blockers = spawn.pos.lookFor(LOOK_CREEPS);
+  const birthPositions = getSpawnBirthPositions(spawn);
+  const blockers = birthPositions.flatMap((pos) => pos.lookFor(LOOK_CREEPS));
   if (blockers.length === 0) {
     return;
   }
-  const candidates = getSpawnExitDirections(spawn) ?? DEFAULT_EXIT_DIRECTIONS;
-  const exit = candidates.find((direction) => {
-    const [dx, dy] = EXIT_DIRECTION_DELTAS[direction];
-    return isClearSpawnExit(spawn.room, spawn.pos.x + dx, spawn.pos.y + dy);
-  });
-  if (!exit) {
-    return;
-  }
+  const birthKeys = new Set(birthPositions.map((pos) => `${pos.x}:${pos.y}`));
   for (const creep of blockers) {
-    creep.move(exit);
+    const exit = DEFAULT_EXIT_DIRECTIONS.find((direction) => {
+      const [dx, dy] = EXIT_DIRECTION_DELTAS[direction];
+      const x = creep.pos.x + dx;
+      const y = creep.pos.y + dy;
+      return !birthKeys.has(`${x}:${y}`) && isClearExitTile(creep.room, x, y);
+    });
+    if (exit) {
+      creep.move(exit);
+    }
   }
 }
 
