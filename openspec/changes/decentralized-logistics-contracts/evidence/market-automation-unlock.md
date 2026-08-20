@@ -49,3 +49,8 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 
 - 修复后实测速率 ~89 tick/周期（56 lane 轮转采样），100 周期 qualified 预计修复后 ~6.7 小时；tick 73135056 时全部 lane 已达 9 周期（跨部署连续，completeCycles 持久于 Memory.data）。
 - 已设置一次性定时验收（400 分钟后）：读 live 直方图/stages/confirmedCanaries，结果追加至本文档"live 验证"章节；若出现新 blocker 如实记录并定位（只读，不改 src）。
+
+### 中途手动验收快照（tick 73135106）
+
+- cycles 直方图 `{"9":32,"10":24}`（采样相位差），stages 全部 shadow，max=10；`ledger.confirmedCanaries` 空（预期——canary 前置是 qualified）；snapshot blockers=null 持续无 incomplete。
+- 判定：**晋级机制运转正常，qualified/canary 的预期时点（修复后 ~6.7 小时）尚未到达**；不手动篡改 lifecycle 绕过 100 周期证据（伪造验收且违反 permit 权威流程）。定时任务（automation-aa34e7c0）时点核算覆盖 qualified 预期 tick ≈73143160，将自动完成最终验收并回写本节。
