@@ -32,9 +32,16 @@ r3 窗口与诊断 probe（激活 op `6a86a0d7516631001378f391`）抓到同一�
 - 双 tsc（build + test config）、Jest 167 suites / 500 cases（预算精确保持，无新增文件/case 数）、`npm run build` + `node --check dist/main.js` 全部通过；
 - compact wire codec 未改动，5,043-byte exact fixture 保持不变（`resourceTransferTasks.test.ts` 通过即含该断言）。
 
-## 部署与验证窗口
+## 部署与验证窗口（已完成）
 
-- bundle `2026.8.20-3`，部署后按常设授权自主重开 Shadow 采集验证窗口（目标：`legacy_unpaired/no_donor` 类别消失、`expected_policy_difference/equal` 结构健康、CPU 三分量水位复测），完成后回退 disabled。结果见本文件追加段。
+- 部署读回 tag `2026.8.20-3+3175a2a@2026-08-20T07:00:45.256Z`；部署前先回退诊断 probe 遗留的 shadow（op `6a86a6506b4b630013994a12`）；
+- 新 bundle disabled 基线：14 样本 tick `73130590..73130720` cadence 通过，avg `2.737135`、p95 **`3.625482`**、110% 上限 **`3.988030`**；原始 `monitor-data/shadow-v2-baseline4.jsonl` SHA-256 `bbfcf4987f4c79f18ed05bf90c6297be14fc07a9db5f7234a16ed116310cf713`（不入库）；
+- 按常设授权重开 Shadow（op `6a86a898fd367900136706ef`，读回 `mode=shadow`），采集 17 个连续 epoch（tick `73130740..73130900`，含冷启动），窗口期间 tag 恒定；原始 `monitor-data/shadow-v2-gate-r4.jsonl` SHA-256 `0cafe4bb946f7da175d17820b372b0a92f21059a194fba0a8878d008172a2afb`（不入库）；
+- 回退 op `6a86ab416b4b630013994b86`，读回 cfg `disabled`、runtime `blocker=mode_disabled`、authority legacy、九项安全零。
+
+**配对修复验证通过**：17/17 个 epoch 的 `byReason` 全部为 `{"equal":5,"expected_policy_difference":3}`（一个 6-intent epoch 为 4+2），`byCausalCode` 全部为 `{matched, source_protection}`，`unresolved=0`，结构校验全部有效（含 CPU 同 tick 对齐）——r3 窗口 16/16 出现的 `legacy_unpaired + no_donor + shadow_only_route` 及反向 `legacy_only_route` 假差异**完全消失**。analyzer 首次能够累计有效窗口（warmup 10 + measured 顺延），证明正式 10+100 窗口在本 bundle 上已可构造。
+
+CPU 水位（剔除冷启动，n=16）：outer avg `3.466`、producer avg `2.673`、gateUsed avg `6.139`（区间 `5.367–7.867`）vs 上限 `3.988030`（约 1.5×）——CPU 维度仍结构性超限，与"残留风险"声明一致，待 producer capture 共享 / consumer 复用 / 门槛经济学工单。
 
 ## 残留风险
 
