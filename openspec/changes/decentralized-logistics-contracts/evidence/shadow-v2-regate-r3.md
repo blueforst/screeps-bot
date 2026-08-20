@@ -27,7 +27,7 @@ mode 已回退并验证 `disabled`。本记录不更新 8.5a/9.1a/9.4 状态（�
 - 每个 epoch 结构校验（除上述配对类别外）全部通过：schema v2、authority legacy、九项安全零、`unresolved=0`、matcher 单索引（`indexBuilds=1`、`candidateEvaluations=32`、`budgetExhausted=false`）、attestation 匹配、无 blocker/截断/inconclusive、Memory 合计 ~12.3KB（≤32KiB）、bucket `10000`、CPU 同 tick 对齐（`cpuTick===updatedAt`、`gateUsed=outer+producer` 双计排除 consumer）；
 - 原始只读采集：`monitor-data/shadow-v2-gate-r3.jsonl`（24 次抓取、16 去重 epoch，含 1 次 mid-tick 未对齐记录被同 epoch 有效记录替换），SHA-256 `3ed994af0efe701198224ae3f4a65e8aa3da383e8500b9ed2c354822ccf75210`（不入库）；冻结明细见 `shadow-v2-regate-r3-metrics.tsv`。
 
-三分量归因（剔除冷启动 epoch 73129610 后，n=15）：outer avg `3.852`（baseline 同期 legacy-only avg `2.496`，Shadow capture 在 outer 内新增约 `1.36`）、producer avg `3.013`、consumer avg `1.630`；gateUsed avg `6.862` vs 上限 `3.422093`。
+三分量归因（剔除冷启动 epoch 73129610 后，n=15）：outer avg `3.852`（baseline 同期 legacy-only avg `2.496`，Shadow capture 在 outer 内新增约 `1.36`）、producer avg `3.013`、consumer avg `1.630`；gateUsed avg `6.864` vs 上限 `3.422093`。
 
 ## 中止决策依据
 
