@@ -3219,6 +3219,16 @@ function planSingleShadowLane(
                   // suspended，且本模块不拥有任何写入口。
                   authorization: "writable",
                 },
+                // claimed 是 tick 级 arbiter 互斥事实（RC/synthesis 转运
+                // 常年占用 terminal 使其恒为 true），对不落地的推演不适用；
+                // 保留它会让每条 shadow 观察都撞 lane_scope_invalid、周期
+                // 计数永远清零，lane 永远无法晋级（live 曾因此 56 lane
+                // 全部 completeCycles=0、零成交）。真实写路径的 arbiter
+                // 检查不受影响。
+                terminal: {
+                  ...plannerLane.terminal,
+                  claimed: false,
+                },
               },
             ],
             book,
@@ -3408,6 +3418,12 @@ function tryPlanPureShadowBatch(
           // 批调用中每条 lane 都必须可被 planner 评估；真实授权仍只
           // 存在于原 scope，且本结果没有任何写入消费者。
           authorization: "writable",
+        },
+        // 与 planSingleShadowLane 同理：claimed 是真实写路径的 tick 级
+        // 互斥事实，纯函数推演按终端空闲假设评估机会。
+        terminal: {
+          ...record.plannerLane.terminal,
+          claimed: false,
         },
       })),
       book: first.book,
