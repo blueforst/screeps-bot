@@ -3272,10 +3272,14 @@ function planSingleShadowLane(
     };
   }
   if (!local.complete) {
+    const detail = local.blocker?.detail;
     return {
       laneId: sourceLane.laneId,
       result: "incomplete",
-      blocker: local.blocker?.reason || "market_base_shadow_plan_incomplete",
+      blocker: (local.blocker?.reason || "market_base_shadow_plan_incomplete") +
+        (typeof detail === "string" && detail.length > 0
+          ? `:${detail.slice(0, 80)}`
+          : ""),
     };
   }
   return {
