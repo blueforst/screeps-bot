@@ -14,5 +14,6 @@
 
 - [x] 3.1 运行 market 定向测试、全量 `npm run test`、`npx tsc --noEmit`、`npm run build`、`npx openspec validate market-v3-shadow-evidence-noise --strict`
   - 证据：定向 3/3、全量 167 suites / 510 tests 全绿；tsc 零输出；build 成功；openspec strict valid。预算门禁 exit 0（manifest 漂移为既有状态：powerBankHarvest/spawnPlanner 等已超预算，本变更 +1 与之同类）。
-- [ ] 3.2 subagent 影响范围审查（晋级安全、观测通道、v2 兼容、内存/CPU）
+- [x] 3.2 subagent 影响范围审查（晋级安全、观测通道、v2 兼容、内存/CPU）
+  - 结论：A 晋级安全 / B 消费方清点 / C CPU fallback / D 观测通道 / E v2 兼容与写面 / F 内存 CPU 全部 PASS，零 P0/P1；6 个 P2（三重冲突复活、appliedResetCount 语义注释、3 处陈旧注释、测试缺口）已全部修复并复测通过（含 [A,B,A] 冲突 no-op、wait 累计、100 门槛驱动 qualified、qualified+incomplete 冻结、rollback 清零断言）。
 - [ ] 3.3 部署后只读验收：live cycles 不再整体回退、shadowBlockers 诊断仍可见 incomplete 频次、qualified 后续推进记录回 evidence
