@@ -70,3 +70,9 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - 监测窗口内（部署前）未再复现清零事件，cycles 32→38 稳步推进；CPU 峰值 19.3/25、outer session 偶发 1.7–1.95（常态 ~0.3），佐证超限清零风险真实存在。
 - 部署后只读验收（tick 73153412）：cycles 直方图 `{"39":8,"40":40,"41":8}`——**跨部署无清零**（部署前读数 36–38），snapshot 正常更新（observedAt=73153410）、blocker=`market_base_no_writable_lane`（56 lane 仍 shadow，预期）、shadowBlockers=null、bucket=10000。
 - 晋级预期：当前 ~40 周期，按 ~70 tick/周期还需 ~4,200 tick；按监测实测 ~3.5 s/tick（shard 满载）约 **4 小时**后首批 lane qualified；此后 permit grant → canary（1 笔真实 1,000 成交）→ review_paused → continuous。后续验收（qualified/canary/成交）由一次性定时任务回写本节。
+
+### 监测闭环（2026-08-21 06:16，tick 73153514，100 分钟窗口结束）
+
+- /tmp/market-cycle-monitor.jsonl 共 25 个采样（tick 73152734→73153514，跨度 780 tick，含部署切换点），**零清零事件**；cycles 32→42（`{"41":48,"42":8}`），+10/11 周期与理论速率 70 tick/周期完全吻合。
+- 对比：修复前 17,577 tick 仅 +21 周期（等效 ~864 tick/周期，被成串清零打断）；修复后速率回归理论值且单调无回退——**修复在 live 生效的直接证据**。
+- 窗口内 CPU 峰值 19.5/25（outer session 尖峰 1.9–2.8），未触发 ceiling 截断；若未来出现超限轮，新语义下其 incomplete 观察为 no-op，不再影响周期证据（shadowBlockers 诊断仍可见）。
