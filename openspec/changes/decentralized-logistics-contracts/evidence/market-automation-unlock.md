@@ -69,4 +69,4 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - 修复已提交并部署：`5539ffc`（fix(market): stop collection noise from resetting v3 shadow cycle evidence，openspec change `market-v3-shadow-evidence-noise`）+ `c3026ad`（版本 `2026.8.21-2`，npm run push 已上传）。
 - 监测窗口内（部署前）未再复现清零事件，cycles 32→38 稳步推进；CPU 峰值 19.3/25、outer session 偶发 1.7–1.95（常态 ~0.3），佐证超限清零风险真实存在。
 - 部署后只读验收（tick 73153412）：cycles 直方图 `{"39":8,"40":40,"41":8}`——**跨部署无清零**（部署前读数 36–38），snapshot 正常更新（observedAt=73153410）、blocker=`market_base_no_writable_lane`（56 lane 仍 shadow，预期）、shadowBlockers=null、bucket=10000。
-- 晋级预期：当前 ~40 周期，按 ~70 tick/周期还需 ~4,200 tick（约 1.7 小时）首批 lane qualified；此后 permit grant → canary（1 笔真实 1,000 成交）→ review_paused → continuous。后续验收（qualified/canary/成交）由一次性定时任务回写本节。
+- 晋级预期：当前 ~40 周期，按 ~70 tick/周期还需 ~4,200 tick；按监测实测 ~3.5 s/tick（shard 满载）约 **4 小时**后首批 lane qualified；此后 permit grant → canary（1 笔真实 1,000 成交）→ review_paused → continuous。后续验收（qualified/canary/成交）由一次性定时任务回写本节。

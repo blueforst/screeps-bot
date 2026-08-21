@@ -17,4 +17,4 @@
 - [x] 3.2 subagent 影响范围审查（晋级安全、观测通道、v2 兼容、内存/CPU）
   - 结论：A 晋级安全 / B 消费方清点 / C CPU fallback / D 观测通道 / E v2 兼容与写面 / F 内存 CPU 全部 PASS，零 P0/P1；6 个 P2（三重冲突复活、appliedResetCount 语义注释、3 处陈旧注释、测试缺口）已全部修复并复测通过（含 [A,B,A] 冲突 no-op、wait 累计、100 门槛驱动 qualified、qualified+incomplete 冻结、rollback 清零断言）。
 - [x] 3.3 部署后只读验收：live cycles 不再整体回退、shadowBlockers 诊断仍可见 incomplete 频次、qualified 后续推进记录回 evidence
-  - 证据：版本 `2026.8.21-2` 部署（`c3026ad`）后 tick 73153412 读数 cycles `{"39":8,"40":40,"41":8}`，跨部署无清零（部署前 36–38）；snapshot 正常更新、shadowBlockers=null（当轮无 incomplete）、bucket=10000。qualified/canary/成交的后续推进由一次性定时验收任务回写 `decentralized-logistics-contracts/evidence/market-automation-unlock.md`（预计部署后 ~2 小时）。
+  - 证据：版本 `2026.8.21-2` 部署（`c3026ad`）后 tick 73153412 读数 cycles `{"39":8,"40":40,"41":8}`，跨部署无清零（部署前 36–38）；snapshot 正常更新、shadowBlockers=null（当轮无 incomplete）、bucket=10000。qualified/canary/成交的后续推进由一次性定时验收任务回写 `decentralized-logistics-contracts/evidence/market-automation-unlock.md`（预计部署后 ~4 小时，按实测 ~3.5 s/tick）。
