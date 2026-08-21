@@ -52,3 +52,14 @@
 2. 降低 epoch 频率（RC `sampleInterval` 10 → 20/30）摊薄每 tick 成本，代价是 comparator 对照新鲜度下降。
 3. 上调绝对上限（例如 5.5，覆盖本窗口 p95）——放宽需用户明确批准。
 4. 维持 disabled，待 market 复杂体（窗口期 ~42 CPU/tick）等大 CPU 消费方收缩后复测。
+
+## 口径修订：绝对上限 4.0 → 5.0（2026-08-21 二次决策）
+
+- **用户决策**：四选项提出后，用户答复"上限调整为5"——采纳上调绝对上限路线，上限取 **5.0**（较提案的 5.5 更紧）。
+- **判定含义**：接受 shadow 增量 ~5 CPU/epoch 的长期预算，以换取物流重构解锁；安全维度门槛（authority 恒 legacy、零 contract/lease/claim、零 arbiter 归属、零 invariant、Memory ≤ 32 KiB、shadow/disabled 二态常设授权）全部维持不变。
+- **旧窗口处置**：首个 attribution v2 窗口 p95 4.996 虽 ≤ 5.0，但 (a) 余量仅 0.004，非稳健通过；(b) 口径条款规定变更后旧窗口不得追认。故须从当前 bundle 重新执行 10 warmup + 100 measured 新窗口，按 5.0 判定。
+- **执行**：重开 shadow（cfg mode=disabled→shadow，常设授权范围内）→ 新窗口采样（`monitor-data/shadow-v2-gate-cap5.jsonl` 本地归档）→ p95 ≤ 5.0 则 gate 通过、shadow 转常驻 comparator（canary 仍需用户单独授权）；p95 > 5.0 则再次回退 disabled 并回报数据与选项。
+
+## 新窗口结果
+
+（待回写）
