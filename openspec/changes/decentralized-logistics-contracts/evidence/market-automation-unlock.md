@@ -113,4 +113,6 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **恢复（用户批准方案 A：状态重置重建）**：清除 `directAutomation.baseResourceV3` 与三个 activation anchor/blocker 字段（v2 历史账本/trustedFloors 全保留）→ 运行时自举 fresh state（catalog r2、56 lane 重推）→ 空参 v2-cutover propose+accept 原子执行成功（新链 epoch 2、permit `mbr-permit-v3:2:csh1:cf923c...`、anchor activationBlocker=null）→ 周期恢复累积（tick 73161009 `{"0":48,"1":8}`、快照正常）。
 - **代价与时间线**：56 lane 资格清零重积累（~87.6 tick/周期 × 100 ≈ 8,760 tick ≈ **8–9 小时**，过夜完成）；重新 qualified 后重跑 X/E6N59 canary 两步授权（用户在方案 A 中已预先批准由我直接重做）；此后首笔成交仍受 ratchet 地板约束——live trustedFloors[X]=589.857（2026-08-20 历史，每日最多 -5%），降到出价 500 以下约需 **3–4 天**（硬地板 480 为必要条件，ratchet 为剩余约束）。
 - **后续工作（未执行，用户仅批 A）**：permit 链"策略常量升级"迁移路径（保留资格/canary 的 re-sign 或 config-upgrade 操作符）——避免未来任何策略值变更再次触发全量重置。
+- **已接受残留风险（subagent 审查 P2）**：离线校验工具 `verifyMarketBaseFloorEvidence`（marketBaseResourcePolicy.ts，无 src/test/scripts 调用方）要求 canonical evidence 的 `policy.X` 与当前常量逐字匹配，r2 下调后重跑会报 `floor_evidence_policy_mismatch:X`。`floor-bootstrap-evidence.canonical.json` 是 2026-07-27 bootstrap 时刻的历史证据，**不随策略演进篡改**；该 mismatch 属工具对策略演进的预期提示，运行时 bootstrap 验证（`validateMarketBaseFloorBootstrap`）不含 policy 段、零影响。若未来需要重用该工具，应改为带 revision 参数的比较而非改历史证据。
+- subagent 影响范围审查（P1=0、P2=1 已留档）：策略值/fixture 最小化/生产语义一致性/evidence 事实准确性/无未提交变更/510-510 全绿，逐项 PASS。
 - 监视：过夜资格监视器运行中（每 10 分钟读 stages/cycles/X 出价，出现 qualified 即提醒执行 canary 重授权）。
