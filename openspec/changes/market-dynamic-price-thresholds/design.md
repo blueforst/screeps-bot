@@ -23,9 +23,16 @@
 
 ## D4 库存分量
 
-- `surplusRatio = protectionSellable / max(rollingMaxAmount, 1)`（每 lane、每保护账本刷新时更新）。
+- `surplusRatio = protectionSellable / max(rollingMaxAmount, 1)`（每 lane、每保护账本刷新时更新；protectionSellable 已在生产预留与实际需求扣除之后）。
 - `inventoryFactor ∈ [0, 1]`：surplusRatio ≥ surplusHigh（如 3）→ 1（全额走廊下探）；≤ surplusLow（如 1）→ 0（不下探）；中间线性。系数进签名层。
 - 语义：盈余巨大 → 接近市场出清价也卖；盈余接近滚动上限 → 不为卖而降。
+
+## D7 生产预留显性化（按资源差异化）
+
+- 现状：`laneReserve`（策略表，每 lane 100,000，7 资源同值）经保护账本 forecastBuffer 分量扣除——机制与"生产优先于市场"语义已存在且 live 生效（X/E6N59 protected 100,180、H/E3N59 protected 100,000）。本变只做显性化与差异化，不新增第二套预留机制。
+- 数值语义：`laneReserve` 重命名投影为 `strategicReserve`（策略字段名保留以兼容 permit 结构，或随 P0 迁移一次改名）；取值从"统一 100k"改为"每资源独立"，由用户按生产规划给出（示例：X 150k——boost 链刚需大；H 60k——富余资源低预留）。
+- 约束：`laneReserve ≥ 1_000`（现有校验，forecastBuffer 最低门槛保留）；差异化数值变更走 P0 迁移操作；迁移提案的 resourceFloorDeltas 扩展为 resourcePolicyDeltas（地板与预留同表声明）。
+- 投影：lastPlanningSnapshot/monitor 每资源输出 `reserve / liveDemand / sellable` 三层，预留足迹可观察、可对账（protected − reserve ≈ 实际生产需求）。
 
 ## D5 观察模式与验收
 

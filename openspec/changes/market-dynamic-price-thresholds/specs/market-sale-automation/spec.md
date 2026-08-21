@@ -33,3 +33,18 @@
 #### Scenario: 观察模式
 - **WHEN** 签名层 dynamicFloorMode 为 observe
 - **THEN** 系统投影 dynamicFloor 各分量、surplusRatio 与"若生效将选中的订单"，但 planner 合成仍使用现行地板；模式切换本身必须经迁移操作
+
+### Requirement: 按资源生产战略预留
+系统 SHALL 以策略表每 lane 的预留值（`laneReserve`/strategicReserve，经保护账本 forecastBuffer 分量）在任何出售可售量计算前扣除生产预留；预留 MUST 保持生产对市场的恒定优先级，MUST NOT 被动态价格分量、观察模式或任何 planner 决策穿透。预留值 SHALL 按资源独立定义（不再要求 7 资源同值），其变更 MUST 经 permit 迁移操作；monitor MUST 投影每资源"预留 / 实际生产需求 / 可售"三层数量。
+
+#### Scenario: 预留差异化调整
+- **WHEN** operator 经迁移操作将某资源预留从默认 100,000 调整为独立值（如 X 上调至 150k、H 下调至 60k）
+- **THEN** 新预留即时参与下一保护账本刷新，sellable 相应收缩/扩张，lane 资格与 canary 状态不受影响
+
+#### Scenario: 动态分量不穿透预留
+- **WHEN** 动态价格分量（bookFloor/inventoryFactor）在盈余巨大时下探走廊至最低价
+- **THEN** 出售可售量仍以扣除预留后的 sellable 为上限，预留库存永不被出售路径消耗
+
+#### Scenario: 预留足迹可对账
+- **WHEN** monitor 读取某 lane 保护账本
+- **THEN** 能区分 reserve、实际生产需求与 sellable 三层（protected − reserve ≈ 实时需求），且三层数量有界投影
