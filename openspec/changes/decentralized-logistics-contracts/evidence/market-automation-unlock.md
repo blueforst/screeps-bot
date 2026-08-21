@@ -92,3 +92,15 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - 判定：**修复目标全部达成**（采集噪声清零修复 + 56 lane 全量 qualified）；真实成交的最后一环（首条 lane canary → 1 笔真实 1,000 成交）为真实资金操作，按 permit 链设计待操作员显式授权后执行（已于 2026-08-21 19:40 向用户提出，未获应答前保持封锁）。
 - 数据归档：`monitor-data/market-promotion-watch.jsonl`（16:38–18:57，70→97）与 `monitor-data/market-promotion-watch2.jsonl`（18:58–19:32，97→100，零 poll-error）。
 - 待授权上下文（tick 73159009 行情快照，`Game.market.getAllOrders()` 962 单）：X 最优 ≥1,000 量 BUY 为 **500 价、127,172 量（E51N18）**——X/E6N59 lane canary 首笔 1,000 单位毛收入约 50 万 credits（受底价/保护账本/交易能耗修正）；其余参考：H 542×1,487（E21N9）、L 407×2,000、O 125×1,662。两次（19:40、19:52）向用户提出授权确认均未获应答，维持封锁待命。
+
+### Canary 授权执行与首笔成交阻塞分析（2026-08-21 21:0x，tick ~73160100）
+
+- **授权执行**：用户口头"授权"后，propose+accept 于同一控制台表达式原子执行成功（tick 73159182，permit epoch 3 `mbr-permit-v3:3`）；lane X/E6N59 → `canary` + `newDealGrant=enabled`，stages `{qualified:55, canary:1}`。首次分离式执行因 `market_base_proposal_source_changed`（提案与 accept 之间源状态推进）失败，原子式为标准做法。
+- **40 分钟监视零成交**（/tmp/canary-deal-watch.jsonl，35 轮），诊断链（逐项排除）：
+  1. snapshot `complete=true`、`eligibleOrderCount=2`、`selected=null`、无 blocker → lane 侧静默跳过（planner `marketDirectContinuousPlanner.ts:1796-1808` 的 continue 分支：cooldown/ready 或 sellable/resourceAmount 不足）。
+  2. terminal 实测排除：E6N59 `cooldown=0`、X=145,971、energy=26,000（≥ 预留 25,000 + 能耗 777）。
+  3. 保护投影排除：`candidates` 投影 `E6N59:X sellable=141,247`（protected 100,180）——生产保护已预留足量，可售为真实盈余。
+  4. **真因：价格地板**。X 硬/经济地板 **600**（`marketBaseResourcePolicy.ts` v3 表与 v2 冻结一致）vs 市场最优 BUY **500**（358,769 量 @E51N18；27 个能耗合格 X 订单全部 <600）→ 系统按设计拒绝低于地板出售，`selected=null` 无 blocker。
+- **单坑位规则**（拟换 H lane 先成交时实测）：H/E3N59 canary 提案被拒 `market_base_other_canary_must_resolve_first`；X 撤销提案被拒 `market_base_canary_suspension_requires_terminal_attempt`（canary 须先有真实成交尝试才可撤销，`marketSaleAutomation.ts:9245-9255`）——坑位由 X 独占直至成交。
+- **H/E3N59 备选双阻**：动态地板 561.655 > 出价 532.199（ratchet 每日最多 -5%，`marketSalePricing.ts:708-718`，约 1–2 天可过价）+ terminal 能量 21,317 < 所需 ~25,865（`direct_terminal_energy_unsafe`，预留 25,000）。L（407.7 vs 地板 169）与 Z（59.9 vs 45）现价即可成交但坑位被占。
+- **处置**：下调 X 地板属经济政策决策（500 vs 600，141k 盈余差价 ~1,400 万 credits），已向用户提出三选项（下调至 480 / 等价格回升 / 维持）未获应答——按安全默认执行"等价格回升"，已挂 X 出价长时监视（≥600 或成交即通知；canary 已武装，达标自动成交 → review_paused）。买侧按用户指示不启动（"先做好出售才有能力购买"）。
