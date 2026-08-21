@@ -1,5 +1,7 @@
 # Design: market-dynamic-price-thresholds
 
+> 参数决策（2026-08-22 用户批准）：预留全部资源维持 100k 不差异化；动态阈值采用建议默认——listingBuffer=3%、maxDailyDynamicDrop=15%/日、surplusHigh=3×、surplusLow=1×；dynamicFloorMode 首版 observe。
+
 ## D1 结构/动态分层（核心决策）
 
 签名层（permit 指纹绑定，改动走迁移操作）只保留**结构与界**：hardFloor、listingBuffer 走廊 `[floor, ceiling]`、maxDailyDynamicDrop、库存映射系数、EMA 周期。动态层（不进签名、无需 re-sign）：history/ratchet（现状）+ bookFloor EMA + surplusRatio。
