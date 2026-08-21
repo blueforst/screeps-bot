@@ -38,7 +38,7 @@ describe("marketSaleConfig", () => {
         [RESOURCE_LEMERGIUM]: 161,
         [RESOURCE_KEANIUM]: 96,
         [RESOURCE_ZYNTHIUM]: 43,
-        [RESOURCE_CATALYST]: 600,
+        [RESOURCE_CATALYST]: 480,
       },
       economicFloor: {
         [RESOURCE_HYDROGEN]: 451,
@@ -47,7 +47,7 @@ describe("marketSaleConfig", () => {
         [RESOURCE_LEMERGIUM]: 169,
         [RESOURCE_KEANIUM]: 101,
         [RESOURCE_ZYNTHIUM]: 45,
-        [RESOURCE_CATALYST]: 600,
+        [RESOURCE_CATALYST]: 480,
       },
       forecastBuffer: {
         [RESOURCE_HYDROGEN]: 100_000,
@@ -65,7 +65,7 @@ describe("marketSaleConfig", () => {
       maxDirectDealAmount: 1_000,
       maxDirectDealsPerCycle: 1,
       minDirectOrderAmount: 1_000,
-      minDirectOrderNotional: 600_000,
+      minDirectOrderNotional: 480_000,
       maxDirectRawOrdersScannedPerCycle: 1_000,
       maxDirectEligibleOrdersPricedPerCycle: 200,
       maxDirectTransactionEnergy: 1_000,

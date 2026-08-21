@@ -24,7 +24,7 @@ export const MARKET_BASE_RESOURCE_EVIDENCE_SHA256 =
 export const MARKET_BASE_RESOURCE_EVIDENCE_IMPLEMENTATION_BLOB =
   "f55503b3d45352e14513e9928706251c82992ecc" as const;
 export const MARKET_BASE_RESOURCE_CONFIG_REVISION =
-  "market-base-resource-v3-r1" as const;
+  "market-base-resource-v3-r2" as const;
 
 export const MARKET_BASE_RESOURCE_MAX_ROOMS = 16 as const;
 export const MARKET_BASE_RESOURCE_MAX_KNOWN_ROOM_NAMES = 32 as const;
@@ -252,15 +252,15 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     terminalEnergyReserve: 25_000,
   },
   {
-    policyId: "base-x-v3-r1",
-    policyRevision: "base-x-v3-r1",
+    policyId: "base-x-v3-r2",
+    policyRevision: "base-x-v3-r2",
     resource: "X",
     resourceClass: "base-mineral",
-    hardFloor: 600,
-    economicFloor: 600,
+    hardFloor: 480,
+    economicFloor: 480,
     laneReserve: 100_000,
     minOrderAmount: 1_000,
-    minOrderNotional: 600_000,
+    minOrderNotional: 480_000,
     maxDealAmount: 1_000,
     cooldownTicks: 1_000,
     rollingWindowTicks: 30_000,

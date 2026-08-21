@@ -26,6 +26,7 @@ import {
   MARKET_BASE_RESOURCE_CATALOG,
   MARKET_BASE_RESOURCE_CATALOG_REVISION,
   MARKET_BASE_RESOURCE_CONFIG_REVISION,
+  MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
   MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE,
   MARKET_BASE_RESOURCE_POLICIES,
   createMarketBaseSharedPolicy,
@@ -346,7 +347,7 @@ function v3Config() {
     maxDirectDealAmount: 1_000,
     maxDirectDealsPerCycle: 1,
     minDirectOrderAmount: 1_000,
-    minDirectOrderNotional: 600_000,
+    minDirectOrderNotional: 480_000,
     maxDirectRawOrdersScannedPerCycle: 1_000,
     maxDirectEligibleOrdersPricedPerCycle: 200,
     maxDirectTransactionEnergy: 1_000,
@@ -664,7 +665,13 @@ function v3RuntimeFixture(writableCatalyst = true): {
         MARKET_BASE_RESOURCE_POLICIES.map((policy) => [
           policy.resource,
           {
-            value: policy.economicFloor,
+            // 生产语义：trusted floor 不低于 bootstrap 高水位（ratchet 单调
+            // 不降守卫），X 地板 r1→r2 下调时也保持该不变量。
+            value: Math.max(
+              policy.economicFloor,
+              MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.resources[policy.resource]
+                .ratchetFloor,
+            ),
             marketDate: "2026-07-27",
             updatedAt: harness.tick,
           },
@@ -737,9 +744,23 @@ function v3RuntimeFixture(writableCatalyst = true): {
             resourceType: policy.resource,
             protectionEntry: v3Protection(harness.tick, policy.resource),
             historyTrusted: true,
-            historyFloor: policy.economicFloor,
-            ratchetFloor: policy.economicFloor,
-            effectiveNetFloor: policy.economicFloor,
+            // 候选地板与 trusted/ratchet 高水位保持生产不变量：有效地板
+            // = max(策略地板, bootstrap ratchet)，不得低于 ratchet。
+            historyFloor: Math.max(
+              policy.economicFloor,
+              MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.resources[policy.resource]
+                .ratchetFloor,
+            ),
+            ratchetFloor: Math.max(
+              policy.economicFloor,
+              MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.resources[policy.resource]
+                .ratchetFloor,
+            ),
+            effectiveNetFloor: Math.max(
+              policy.economicFloor,
+              MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.resources[policy.resource]
+                .ratchetFloor,
+            ),
             effectiveEnergyShadowPrice: 20,
             energyShadowObservedAt: harness.tick,
             energyShadowComponents: {

@@ -255,7 +255,7 @@ function installMarketBaseV3DirectConfig(): void {
       maxDirectDealAmount: 1_000,
       maxDirectDealsPerCycle: 1,
       minDirectOrderAmount: 1_000,
-      minDirectOrderNotional: 600_000,
+      minDirectOrderNotional: 480_000,
       maxDirectRawOrdersScannedPerCycle: 1_000,
       maxDirectEligibleOrdersPricedPerCycle: 200,
       maxDirectTransactionEnergy: 1_000,

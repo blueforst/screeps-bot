@@ -104,3 +104,13 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **单坑位规则**（拟换 H lane 先成交时实测）：H/E3N59 canary 提案被拒 `market_base_other_canary_must_resolve_first`；X 撤销提案被拒 `market_base_canary_suspension_requires_terminal_attempt`（canary 须先有真实成交尝试才可撤销，`marketSaleAutomation.ts:9245-9255`）——坑位由 X 独占直至成交。
 - **H/E3N59 备选双阻**：动态地板 561.655 > 出价 532.199（ratchet 每日最多 -5%，`marketSalePricing.ts:708-718`，约 1–2 天可过价）+ terminal 能量 21,317 < 所需 ~25,865（`direct_terminal_energy_unsafe`，预留 25,000）。L（407.7 vs 地板 169）与 Z（59.9 vs 45）现价即可成交但坑位被占。
 - **处置**：下调 X 地板属经济政策决策（500 vs 600，141k 盈余差价 ~1,400 万 credits），已向用户提出三选项（下调至 480 / 等价格回升 / 维持）未获应答——按安全默认执行"等价格回升"，已挂 X 出价长时监视（≥600 或成交即通知；canary 已武装，达标自动成交 → review_paused）。买侧按用户指示不启动（"先做好出售才有能力购买"）。
+
+### X 地板下调（600→480）与 permit 链协议空缺事故（2026-08-21 22:0x–22:3x）
+
+- **用户决策**："下调 X 地板至 ~480"。
+- **代码变更**（部署 2026.8.21-3）：`marketBaseResourcePolicy.ts` X 条目 r1→r2（hard/economicFloor 600→480、minOrderNotional 600k→480k）+ `MARKET_BASE_RESOURCE_CONFIG_REVISION` v3-r1→v3-r2；测试 fixture 同步（v2 冻结表不动）。tsc ✓、**510/510 全绿**（fixture 修复三处：v2 阶段 fixture 保持 600、v3 阶段取 480、runtime fixture 的 trustedFloors/candidates 地板补"不低于 bootstrap ratchet 高水位"生产不变量）。
+- **事故**：v3 permit 链验证**绑定当前策略常量指纹**——常量变更后现存链（epoch 3，56 grant 旧指纹）按新代码验证即失效，触发 `market_base_v3_config_rollback_after_cutover` 安全闩锁（每 tick 重写 anchor/persistent blocker，无自动解除；propose 被闩锁拒绝；空参 cutover 重建又与现存 lane 身份冲突 `derived_lane_identity_conflict`）。**v3 协议没有"策略常量升级"迁移路径**——部署前未识别此设计空缺，属执行失误。事故期间零错误写入（fail-closed）、资金零风险、v2 历史账本完好。
+- **恢复（用户批准方案 A：状态重置重建）**：清除 `directAutomation.baseResourceV3` 与三个 activation anchor/blocker 字段（v2 历史账本/trustedFloors 全保留）→ 运行时自举 fresh state（catalog r2、56 lane 重推）→ 空参 v2-cutover propose+accept 原子执行成功（新链 epoch 2、permit `mbr-permit-v3:2:csh1:cf923c...`、anchor activationBlocker=null）→ 周期恢复累积（tick 73161009 `{"0":48,"1":8}`、快照正常）。
+- **代价与时间线**：56 lane 资格清零重积累（~87.6 tick/周期 × 100 ≈ 8,760 tick ≈ **8–9 小时**，过夜完成）；重新 qualified 后重跑 X/E6N59 canary 两步授权（用户在方案 A 中已预先批准由我直接重做）；此后首笔成交仍受 ratchet 地板约束——live trustedFloors[X]=589.857（2026-08-20 历史，每日最多 -5%），降到出价 500 以下约需 **3–4 天**（硬地板 480 为必要条件，ratchet 为剩余约束）。
+- **后续工作（未执行，用户仅批 A）**：permit 链"策略常量升级"迁移路径（保留资格/canary 的 re-sign 或 config-upgrade 操作符）——避免未来任何策略值变更再次触发全量重置。
+- 监视：过夜资格监视器运行中（每 10 分钟读 stages/cycles/X 出价，出现 qualified 即提醒执行 canary 重授权）。
