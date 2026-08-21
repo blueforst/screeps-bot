@@ -76,3 +76,10 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - /tmp/market-cycle-monitor.jsonl 共 25 个采样（tick 73152734→73153514，跨度 780 tick，含部署切换点），**零清零事件**；cycles 32→42（`{"41":48,"42":8}`），+10/11 周期与理论速率 70 tick/周期完全吻合。
 - 对比：修复前 17,577 tick 仅 +21 周期（等效 ~864 tick/周期，被成串清零打断）；修复后速率回归理论值且单调无回退——**修复在 live 生效的直接证据**。
 - 窗口内 CPU 峰值 19.5/25（outer session 尖峰 1.9–2.8），未触发 ceiling 截断；若未来出现超限轮，新语义下其 incomplete 观察为 no-op，不再影响周期证据（shadowBlockers 诊断仍可见）。
+
+### 部署后晋级验收（2026-08-21 18:51，tick 73158075，一次性任务 automation-2e7faf39 自动触发）
+
+- 读数：cycles 直方图 `{"95":48,"96":8}`（56/56 lane 位于 95–96 周期），stages 全部 `shadow`；`ledger.confirmedCanaries` 空；recentActions 无新增成交条目（仅历史 v2 era 记录，tick ~72600391–72604731）；snapshot 健康（observedAt=73158060、blocker=`market_base_no_writable_lane`，全 shadow 期预期）。
+- **判定：修复生效但窗口未满**。自部署（tick 73153412，cycles≈40）以来 4,663 tick 累积 ~55 周期，直方图 40→50→70→87→95–96 全程单调、零清零回退。
+- 速率：近段实测 ~87.4 tick/周期（tick 73157459 avg 88.1 → 73158075 avg 95.1，616 tick / 7.05 周期），慢于理论 70——同期 shadow v2 gate 采样负载在 RC tick 上的观察已记录于 `shadow-v2-gate-attribution-v2.md`（非 shadow 单因子），晋升仅延迟不被阻断。
+- 预计：剩余 4–5 周期 × ~87.5 ≈ ~440 tick（~26 分钟）后首批 lane 达 100 qualified（**~19:17–19:20**），随后 permit grant → canary（1 笔真实 1,000 成交）→ review_paused → continuous 由系统自动推进。最终验收（qualified/canary/成交）由本地接力监视在 ~19:32 手动回写本文件后续小节。
