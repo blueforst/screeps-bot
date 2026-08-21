@@ -83,3 +83,11 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **判定：修复生效但窗口未满**。自部署（tick 73153412，cycles≈40）以来 4,663 tick 累积 ~55 周期，直方图 40→50→70→87→95–96 全程单调、零清零回退。
 - 速率：近段实测 ~87.4 tick/周期（tick 73157459 avg 88.1 → 73158075 avg 95.1，616 tick / 7.05 周期），慢于理论 70——同期 shadow v2 gate 采样负载在 RC tick 上的观察已记录于 `shadow-v2-gate-attribution-v2.md`（非 shadow 单因子），晋升仅延迟不被阻断。
 - 预计：剩余 4–5 周期 × ~87.5 ≈ ~440 tick（~26 分钟）后首批 lane 达 100 qualified（**~19:17–19:20**），随后 permit grant → canary（1 笔真实 1,000 成交）→ review_paused → continuous 由系统自动推进。最终验收（qualified/canary/成交）由本地接力监视在 ~19:32 手动回写本文件后续小节。
+
+### 最终晋级验收（2026-08-21 19:33，tick 73158742，接力监视手动验收）
+
+- **56/56 lane 全部达 100 周期、stage=qualified**（19:28 首见 tick 73158665 `{"100":56}`；tick 73158742 复读仍 `{"qualified":56}`）。
+- **全程单调零清零**：部署点 tick 73153412（c≈40）→ 73158665（c=100），5,253 tick / 60 周期 ≈ **87.6 tick/周期**（理论 70；含 shadow gate 采样期的负载观察，见 `shadow-v2-gate-attribution-v2.md`）。对比修复前等效 ~864 tick/周期——**修复在完整晋级窗口内稳定生效**。
+- **canary/成交未启动，且非缺陷——是设计上的操作员授权门槛**。现场证据（tick 73158811）：current permit 仍为 v2 冻结表（epoch=1、3 grants X/H/Z）、`baseResourceV3.proposedPermit=null`、`readinessAuthorization=null`。按 `market-base-resource-all-rooms` 规范："current permit 仍为 v2 时 v3 lifecycle 只能只读 Shadow"；晋级到可写需操作员两步 permit 协议（`proposeMarketBaseResourcePermit` 空参 cutover → `acceptMarketBaseResourcePermit` → 逐 lane `{laneId,targetStage:"canary"}` propose → accept），代码内无自动 propose 路径（`buildMarketBaseV2CutoverProposal` 仅由 operator 入口调用）。
+- 判定：**修复目标全部达成**（采集噪声清零修复 + 56 lane 全量 qualified）；真实成交的最后一环（v3 cutover + 首条 lane canary → 1 笔真实 1,000 成交）为真实资金操作，按 permit 链设计待操作员显式授权后执行。
+- 数据归档：`monitor-data/market-promotion-watch.jsonl`（16:38–18:57，70→97）与 `monitor-data/market-promotion-watch2.jsonl`（18:58–19:32，97→100，零 poll-error）。
