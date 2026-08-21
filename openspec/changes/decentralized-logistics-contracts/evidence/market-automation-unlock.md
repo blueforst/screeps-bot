@@ -63,3 +63,10 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **新发现：周期证据被反复整体清零**。自中途快照（tick 73135106，cycles≈10）至本次（tick 73152683，cycles≈32）共 17,577 tick，按 70 tick/周期应累计 ~250 周期，实际仅 +21。直方图紧凑单峰（32/33 相差 1）表明清零是"成串爆发后恢复"模式：最近一次全量清零约 32×70≈2,240 tick 前，其后稳定累积。结论：qualified 需要一段无清零事件的连续窗口（100 周期 ≈ 7,000 tick ≈ ~2 小时），而清零事件反复打断该窗口。
 - **根因候选**（按代码路径排查，待 live 现场确认）：`applyMarketBaseResourceShadowObservations` 对 `incomplete` 观察清零该 lane；incomplete 的产生点为 terminal 读取不完整（`market_base_terminal_incomplete`）、protection 账本不完整（`market_base_protection_incomplete`）、BUY book 读取 blocker 与 CPU ceiling 超限轮的观察降级（`emptyResult` 在 `market_base_cpu_ceiling_exceeded` 时仅保留 incomplete 观察）。live p95 CPU ~19.5/25 ceiling 余量偏小，CPU 压力期连续超限可整批清零。
 - **后续动作**：已启动本地只读监测（/tmp/market-cycle-monitor.mjs，每 ~75s 采样 cycles 直方图 + snapshot blocker/shadowBlockers/CPU/bucket，输出 /tmp/market-cycle-monitor.jsonl，监测 100 分钟）抓取下一次清零事件的当轮 blocker；根因确认后单独提交修复，本节只读验收不改 src。
+
+### 修复部署与部署后验收（2026-08-21，tick 73153412）
+
+- 修复已提交并部署：`5539ffc`（fix(market): stop collection noise from resetting v3 shadow cycle evidence，openspec change `market-v3-shadow-evidence-noise`）+ `c3026ad`（版本 `2026.8.21-2`，npm run push 已上传）。
+- 监测窗口内（部署前）未再复现清零事件，cycles 32→38 稳步推进；CPU 峰值 19.3/25、outer session 偶发 1.7–1.95（常态 ~0.3），佐证超限清零风险真实存在。
+- 部署后只读验收（tick 73153412）：cycles 直方图 `{"39":8,"40":40,"41":8}`——**跨部署无清零**（部署前读数 36–38），snapshot 正常更新（observedAt=73153410）、blocker=`market_base_no_writable_lane`（56 lane 仍 shadow，预期）、shadowBlockers=null、bucket=10000。
+- 晋级预期：当前 ~40 周期，按 ~70 tick/周期还需 ~4,200 tick（约 1.7 小时）首批 lane qualified；此后 permit grant → canary（1 笔真实 1,000 成交）→ review_paused → continuous。后续验收（qualified/canary/成交）由一次性定时任务回写本节。
