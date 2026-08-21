@@ -62,4 +62,12 @@
 
 ## 新窗口结果
 
-（待回写）
+- 采样：同首窗口脚本与口径，窗口 tick **73156010–73157310**（1,300 tick），**111 个 distinct epoch**，原始数据 `monitor-data/shadow-v2-gate-cap5.jsonl`（本地归档）。
+- cadence：15 处非 10-tick 缺口（**+20×10、+30×5**）全部与轮询延迟量级自洽（wallClock 66–128s，+20 ≈ 2 个轮询周期、+30 ≈ 3 个；implied 3.3–4.3 s/tick 与正常样本同量级）。与首窗口相同的限定：纯采样数据无法严格区分"轮询漏采"与"运行时停摆 20–30 tick"（数据形态相同），判定依据是缺口时长与轮询周期量级吻合；完美 cadence 下 1,300 tick 应有 131 epoch，缺口共缺失 20 个、实得 111，自洽。剔除前 10 warmup 后 **101 个 measured epoch ≥ 100**，窗口成立。
+- 归因合同：111/111 `attributionVersion=2`、`measurementAvailable=true`、`sampleTick=updatedAt`。
+- 安全维度（全绿）：全部 epoch `requestedMode=shadow`、`effectiveAuthority=legacy`、`blocker=null`；安全九项全部为 0、`violations=[]`；Memory 峰值 **13,294 B ≤ 32 KiB**。
+- **CPU 维度**：measured shadowUsed median 3.579 / mean 3.881 / p90 4.409 / **p95 4.937** / p99 8.406 / min 3.006 / max 14.604；5/101 超过 5.0。分项 p95：producer 3.069、consumer 1.757。
+- **判定：PASS**（shadowUsed p95 4.937 ≤ 5.0）。与首窗口（p95 4.996 / median 3.630）一致性好——增量真实分布稳定在 p95 ~4.9–5.0，落在用户批准的预算内。余量 0.063 偏薄：约定漂移复核机制——以 monitor 已投影的 shadowUsed 为观察位，**滚动 100-epoch shadowUsed p95 ≥ 5.0 或单 epoch > 8.0 连续出现即触发人工复核**（回退 disabled 或另行决策）。
+- 配对维度披露：本窗口 `comparison.inScope/outOfScope` 全程为 null（111/111，配对数据未采集）——与首窗口相同；v2 正式门槛不含配对维度，决策正确性结论继续依赖 r5 先例，**配对采集恢复仍为未完成项**。
+- **处置**：shadow 转常驻 comparator（读回原文摘录：`{"schemaVersion":2,"updatedAt":73157370,"expiresAt":73157390,"requestedMode":"shadow","effectiveAuthority":"legacy","available":true,"complete":true,...,"inScopeByOrigin":{"synthesis_room":10},...}`）；`canary`/`enabled` 仍需用户单独授权，常设授权范围（shadow/disabled 二态）不变。
+- 副作用观察：本窗口期间 market v3 周期累积速率按直方图均值计 ~88 tick/周期（71.86→86.14，1,261 tick；首窗口期间 ~71、理论 70；两窗口 shadow 均开启，非 shadow 单因子，疑与共享 tick CPU/终端读取轮次有关；"71→87"指直方图桶 max 变化）。无清零、直方图单调，晋升仅被延迟不被阻断；数据源为本地监视日志（/tmp/market-promotion-watch.jsonl，18:57 结束后随验收归档），由 18:51 验收任务继续覆盖。
