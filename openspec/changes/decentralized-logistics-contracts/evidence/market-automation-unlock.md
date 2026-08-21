@@ -54,3 +54,12 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 
 - cycles 直方图 `{"9":32,"10":24}`（采样相位差），stages 全部 shadow，max=10；`ledger.confirmedCanaries` 空（预期——canary 前置是 qualified）；snapshot blockers=null 持续无 incomplete。
 - 判定：**晋级机制运转正常，qualified/canary 的预期时点（修复后 ~6.7 小时）尚未到达**；不手动篡改 lifecycle 绕过 100 周期证据（伪造验收且违反 permit 权威流程）。定时任务（automation-aa34e7c0）时点核算覆盖 qualified 预期 tick ≈73143160，将自动完成最终验收并回写本节。
+
+### 最终验收结果（2026-08-21，tick 73152683，手动补录）
+
+- 定时验收任务（automation-aa34e7c0）实际未执行（runCount=0、disabled、宿主侧未触发），本节为手动只读补录（api-console/api-read，仅写 `Memory.runtime.diagM*` 诊断字段，未改 src/配置）。
+- **晋级未达成**：cycles 直方图 `{"32":24,"33":32}`（minC=32/maxC=33），stages 全部 shadow（56/56），`ledger.confirmedCanaries` 空，零成交持续。
+- **机制本身健康**：各 lane `lastCompleteTick` 间隔 10–20 tick，实测周期速率 **~70 tick/周期**（RC `sampleInterval` 默认 10 × 7 个 resource-major cohort 轮转），快照 `blocker=market_base_no_writable_lane` 且持续无 incomplete——观察与周期累积按设计运转。
+- **新发现：周期证据被反复整体清零**。自中途快照（tick 73135106，cycles≈10）至本次（tick 73152683，cycles≈32）共 17,577 tick，按 70 tick/周期应累计 ~250 周期，实际仅 +21。直方图紧凑单峰（32/33 相差 1）表明清零是"成串爆发后恢复"模式：最近一次全量清零约 32×70≈2,240 tick 前，其后稳定累积。结论：qualified 需要一段无清零事件的连续窗口（100 周期 ≈ 7,000 tick ≈ ~2 小时），而清零事件反复打断该窗口。
+- **根因候选**（按代码路径排查，待 live 现场确认）：`applyMarketBaseResourceShadowObservations` 对 `incomplete` 观察清零该 lane；incomplete 的产生点为 terminal 读取不完整（`market_base_terminal_incomplete`）、protection 账本不完整（`market_base_protection_incomplete`）、BUY book 读取 blocker 与 CPU ceiling 超限轮的观察降级（`emptyResult` 在 `market_base_cpu_ceiling_exceeded` 时仅保留 incomplete 观察）。live p95 CPU ~19.5/25 ceiling 余量偏小，CPU 压力期连续超限可整批清零。
+- **后续动作**：已启动本地只读监测（/tmp/market-cycle-monitor.mjs，每 ~75s 采样 cycles 直方图 + snapshot blocker/shadowBlockers/CPU/bucket，输出 /tmp/market-cycle-monitor.jsonl，监测 100 分钟）抓取下一次清零事件的当轮 blocker；根因确认后单独提交修复，本节只读验收不改 src。
