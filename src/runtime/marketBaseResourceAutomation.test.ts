@@ -1179,7 +1179,7 @@ describe("Market Base Resource high-risk decision and retirement contracts", () 
 
 describe("Market Base Resource V3 live WAL glue", () => {
 
-  it("Shadow batch 内 CPU cut 仍为已确定的 99-cycle reset 铸造 fallback", () => {
+  it("Shadow batch 内 CPU cut 携带 incomplete fallback 但不再销毁已积累周期", () => {
     const { state, harness, deps, input } = v3RuntimeFixture(false);
     harness.tick = 200;
     state.preflightAt = harness.tick;
@@ -1245,10 +1245,139 @@ describe("Market Base Resource V3 live WAL glue", () => {
     ).toMatchObject({
       stage: "shadow",
       status: "suspended",
-      shadowEvidence: { completeCycles: 0 },
+      shadowEvidence: { completeCycles: 99 },
     });
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();
     expect(deps.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it("incomplete 与同 tick 冲突观察保持周期证据，tick 回滚仍清零", () => {
+    const { state } = v3RuntimeFixture(false);
+    const lane = state.scope!.laneLifecycles[0]!;
+    const scope = state.scope!;
+
+    const accumulated = applyMarketBaseResourceShadowObservations(
+      scope,
+      100,
+      [{ laneId: lane.laneId, result: "safe_no_opportunity" }],
+      undefined,
+    );
+    const accumulatedLane = accumulated.laneLifecycles.find(
+      (candidate) => candidate.laneId === lane.laneId,
+    )!;
+    expect(accumulatedLane.shadowEvidence.completeCycles).toBe(1);
+
+    const afterIncomplete = applyMarketBaseResourceShadowObservations(
+      accumulated,
+      110,
+      [
+        {
+          laneId: lane.laneId,
+          result: "incomplete",
+          blocker: "market_base_terminal_incomplete",
+        },
+      ],
+      undefined,
+    );
+    const incompleteLane = afterIncomplete.laneLifecycles.find(
+      (candidate) => candidate.laneId === lane.laneId,
+    )!;
+    expect(incompleteLane.shadowEvidence.completeCycles).toBe(1);
+    expect(incompleteLane.shadowEvidence.lastCompleteTick).toBe(100);
+    expect(incompleteLane.shadowEvidence.evidenceDigest).toBe(
+      accumulatedLane.shadowEvidence.evidenceDigest,
+    );
+
+    const afterConflict = applyMarketBaseResourceShadowObservations(
+      afterIncomplete,
+      120,
+      [
+        { laneId: lane.laneId, result: "safe_opportunity" },
+        { laneId: lane.laneId, result: "safe_no_opportunity" },
+      ],
+      undefined,
+    );
+    const conflictLane = afterConflict.laneLifecycles.find(
+      (candidate) => candidate.laneId === lane.laneId,
+    )!;
+    expect(conflictLane.shadowEvidence.completeCycles).toBe(1);
+    expect(conflictLane.shadowEvidence.lastCompleteTick).toBe(100);
+
+    // 三重冲突 [A,B,A]：第 3 条与第 1 条相同的观察不得复活计数
+    const afterTripleConflict = applyMarketBaseResourceShadowObservations(
+      afterConflict,
+      130,
+      [
+        { laneId: lane.laneId, result: "safe_opportunity" },
+        { laneId: lane.laneId, result: "safe_no_opportunity" },
+        { laneId: lane.laneId, result: "safe_opportunity" },
+      ],
+      undefined,
+    );
+    const tripleConflictLane = afterTripleConflict.laneLifecycles.find(
+      (candidate) => candidate.laneId === lane.laneId,
+    )!;
+    expect(tripleConflictLane.shadowEvidence.completeCycles).toBe(1);
+    expect(tripleConflictLane.shadowEvidence.lastCompleteTick).toBe(100);
+
+    const afterRollback = applyMarketBaseResourceShadowObservations(
+      afterTripleConflict,
+      99,
+      [{ laneId: lane.laneId, result: "safe_no_opportunity" }],
+      undefined,
+    );
+    const rollbackLane = afterRollback.laneLifecycles.find(
+      (candidate) => candidate.laneId === lane.laneId,
+    )!;
+    expect(rollbackLane.shadowEvidence.completeCycles).toBe(0);
+
+    // wait 类结果是完整观察，照常累计
+    let waitScope = afterRollback;
+    for (let tick = 200; tick <= 298; tick += 1) {
+      waitScope = applyMarketBaseResourceShadowObservations(
+        waitScope,
+        tick,
+        [{ laneId: lane.laneId, result: "production_priority_wait" }],
+        undefined,
+      );
+    }
+    const waitLane = waitScope.laneLifecycles.find(
+      (candidate) => candidate.laneId === lane.laneId,
+    )!;
+    expect(waitLane.shadowEvidence.completeCycles).toBe(99);
+    expect(waitLane.stage).toBe("shadow");
+
+    // 第 100 个完整观察触发 qualified，此后 incomplete 保持 qualified（冻结）
+    let qualifiedScope = applyMarketBaseResourceShadowObservations(
+      waitScope,
+      299,
+      [{ laneId: lane.laneId, result: "wait_no_opportunity" }],
+      undefined,
+    );
+    let qualifiedLane = qualifiedScope.laneLifecycles.find(
+      (candidate) => candidate.laneId === lane.laneId,
+    )!;
+    expect(qualifiedLane.stage).toBe("qualified");
+    expect(qualifiedLane.shadowEvidence.completeCycles).toBe(100);
+
+    qualifiedScope = applyMarketBaseResourceShadowObservations(
+      qualifiedScope,
+      300,
+      [
+        {
+          laneId: lane.laneId,
+          result: "incomplete",
+          blocker: "market_base_protection_incomplete",
+        },
+      ],
+      undefined,
+    );
+    qualifiedLane = qualifiedScope.laneLifecycles.find(
+      (candidate) => candidate.laneId === lane.laneId,
+    )!;
+    expect(qualifiedLane.stage).toBe("qualified");
+    expect(qualifiedLane.shadowEvidence.completeCycles).toBe(100);
+    expect(qualifiedLane.shadowEvidence.lastCompleteTick).toBe(299);
   });
 });

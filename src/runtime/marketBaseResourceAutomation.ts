@@ -2418,22 +2418,24 @@ export function applyMarketBaseResourceShadowObservations(
   nextShadowCursor: string | undefined,
 ): MarketBaseResourceScopeState {
   const byLaneId = new Map<string, MarketBaseResourceShadowObservation>();
+  const conflictedLaneIds = new Set<string>();
   for (const observation of observations) {
-    const previous = byLaneId.get(observation.laneId);
+    const laneId = observation.laneId;
+    if (conflictedLaneIds.has(laneId)) continue;
+    const previous = byLaneId.get(laneId);
     if (!previous) {
-      byLaneId.set(observation.laneId, observation);
+      byLaneId.set(laneId, observation);
       continue;
     }
     if (
       canonicalStableHashV1(previous) !== canonicalStableHashV1(observation)
     ) {
       // 同 tick 同 lane 只能有一份确定观测。冲突输入不能靠数组顺序
-      // 选赢家，否则重入/合并顺序会虚增 qualification 证据。
-      byLaneId.set(observation.laneId, {
-        laneId: observation.laneId,
-        result: "incomplete",
-        blocker: "conflicting_same_tick_shadow_observation",
-      });
+      // 选赢家，否则重入/合并顺序会虚增 qualification 证据；但冲突也
+      // 只是本轮采集异常，不销毁既有周期证据——标记冲突并丢弃该
+      // lane 本轮全部观察（含后续重试出现的同 tick 重复），保持 no-op。
+      byLaneId.delete(laneId);
+      conflictedLaneIds.add(laneId);
     }
   }
   const laneLifecycles = scope.laneLifecycles.map((lane) => {
@@ -2446,21 +2448,11 @@ export function applyMarketBaseResourceShadowObservations(
       return lane;
     }
     if (observation.result === "incomplete") {
-      return {
-        ...lane,
-        stage: "shadow" as const,
-        shadowEvidence: {
-          completeCycles: 0,
-          lastCompleteTick: tick,
-          evidenceDigest: canonicalStableHashV1({
-            blocker: observation.blocker || "incomplete",
-            domain: "market-base-resource:shadow-reset-v1",
-            laneId: lane.laneId,
-            stableFingerprint: lane.stableFingerprint,
-            tick,
-          }),
-        },
-      };
+      // 采集噪声（terminal/protection 单轮不可用、book blocker、CPU
+      // 超限降级）只中断本轮推进，不作废已积累证据；持续 incomplete
+      // 的 lane 周期停涨，天然保持 fail-closed。真正的证据重置保留
+      // 给 tick rollback 与 scope reconcile 的身份/配置层。
+      return lane;
     }
     const previousTick = lane.shadowEvidence.lastCompleteTick;
     if (previousTick === tick) {
@@ -5044,6 +5036,7 @@ export interface MarketBaseResourceCpuFallbackResult {
   state: MarketBaseResourceV3RuntimeState;
   ledgerRuntimeAnchor: MarketBaseResourceLedgerRuntimeAnchor;
   readinessRuntimeCapability: MarketBaseResourceReadinessRuntimeCapability;
+  /** fallback 管道携带的 incomplete 观察数（apply 层为 no-op，不再清零周期证据）。 */
   appliedResetCount: number;
 }
 
@@ -6496,9 +6489,10 @@ function boundedCpuFallbackIncompleteObservations(
   ) {
     return undefined;
   }
-  // 已经处于零周期 Shadow 的 lane 没有任何正向资格可清除。outer CPU
-  // cut 时不为刷新负向 digest 强迫构造第二份 canonical root；一旦存在
-  // 正向周期或 qualified 状态，reset 必须进入 fallback。
+  // 已经处于零周期 Shadow 的 lane 没有任何正向资格可随 fallback 携带。outer CPU
+  // cut 时不为 no-op 观察强迫构造第二份 canonical root；一旦存在正向周期或
+  // qualified 状态，仍通过 fallback 管道携带 incomplete（apply 层为 no-op，
+  // 仅保证 canonical commit 语义与诊断可见性）。
   return observations
     .filter((observation) => {
       const lane = laneById.get(observation.laneId)!;
@@ -8951,8 +8945,8 @@ export function runMarketBaseResourceAutomation(
     );
   if (pureShadowFallbackEligible) {
     // capability 必须在 incomplete/CPU early return 之前铸造。否则 99-cycle
-    // 或 qualified lane 已确定的 incomplete reset 会随 outer 全 root 一同
-    // 被 CPU gate 丢弃，canonical 仍残留旧正向资格。
+    // 或 qualified lane 已确定的 incomplete 观察会随 outer 全 root 一同
+    // 被 CPU gate 丢弃，fallback 管道无法为其保留 canonical commit 义务。
     cpuFallbackCapability = issueMarketBaseResourceCpuFallbackCapability(
       state,
       runtimeSession,
@@ -8993,9 +8987,10 @@ export function runMarketBaseResourceAutomation(
     }
   }
   if (!plan.complete || cpuExceededAfterPlan) {
-    // 已确定的 lane-local incomplete 必须立即清零旧 99/qualified 证据；
-    // shared/second-read/CPU blocker 不能吞掉 reset。完整观测和 cursor
-    // 仍保持零推进。
+    // 已确定的 lane-local incomplete 仍随 rollback 进入 apply（no-op：
+    // 只中断本轮推进，不作废旧周期证据）；shared/second-read/CPU
+    // blocker 不能吞掉这批观察的 canonical 通道。完整观测和 cursor
+    // 保持零推进。
     rollbackPlanningState(plan.shadowObservations);
     if (cpuExceededAfterPlan) {
       markPlanningCpuExceeded(
