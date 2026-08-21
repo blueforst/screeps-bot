@@ -33,4 +33,22 @@
 
 ## 窗口结果
 
-（待回写）
+- 采样：本地脚本轮询 `Memory.runtime.resourceControl.logistics`（~35s/次，按 `updatedAt` 去重），窗口 tick **73154380–73155660**（1,280 tick），**119 个 distinct epoch**，原始数据 `monitor-data/shadow-v2-gate-attribution-v2.jsonl`（本地归档，与 r5/baseline5 同例不入库）。
+- cadence：7 处非 10-tick 缺口（+20×5、+30×1、+40×1）逐一经 wallClock 复核与 ~35s 轮询周期自洽（对应 39–173s），按 r5 先例接纳为采样侧缺口。注：纯采样数据无法严格区分"轮询漏采"与"运行时停摆 20–40 tick"（数据形态相同），本判定依据是缺口时长与轮询周期量级吻合。剔除前 10 warmup 后 **109 个 measured epoch ≥ 100**，窗口成立。
+- 归因合同：119/119 样本 `attributionVersion=2`、`measurementAvailable=true`、`sampleTick=updatedAt`。
+- 安全维度（全绿）：全部 epoch `requestedMode=shadow`、`effectiveAuthority=legacy`、`blocker=null`；安全九项（nonLegacyAuthorityRecords / activeContracts / activeLeases / activeClaims / shadowArbiterActor / shadowClaim / shadowJournal / shadowCarrierTask / shadowReceiverReservation）全部为 0，`violations=[]`；Memory 峰值 **13,156 B ≤ 32 KiB**。
+- **CPU 维度（唯一失败项）**：measured shadowUsed（producer+consumer）median 3.630 / mean 3.914 / p90 4.379 / **p95 4.996** / p99 8.913 / min 2.964 / max 14.414；**24/109 超过 4.0 上限**。分项 p95：producer 3.005、consumer 1.747。
+- **判定：FAIL**（shadowUsed p95 4.996 > 4.0）。
+- **回退已执行**：console op `6a880bdf9192cf0013dfb64b` 将 cfg mode 置回 `disabled`；tick 73155720 读回原文：cfg=`{"schemaVersion":1,"mode":"disabled"}`，runtime `{updatedAt:73155720, requestedMode:"disabled", effectiveAuthority:"legacy", blocker:"mode_disabled"}`（读回摘录仅含 mode 相关字段；后续复测建议将读回原文随归档保存）。
+
+### 结论
+
+- attribution v2 达成了口径目的：本次失败**不再是 v1 的"被测对象混入 legacy 本体与邻域波动"问题**——增量本身（典型 3.6–3.9，中位 3.63 距上限仅 ~9% 余量）已实际落在 4.0 之上。尾部（p99 8.9 / max 14.4）按 r5 先例推断主要来自共享 tick 波动（本窗口数据无 GC 标记，无法直接验证）；判定对尾部剔除稳健——剔 top 1/3/5/10 极端值后 p95 分别为 4.833/4.476/4.379/4.199，需剔除全部 24 个超限值才降到 3.938。
+- 配对维度本窗口未作为门槛，且 comparison 投影全程为 null（配对数据未采集）；本文件安全九项全零、authority 恒 legacy 佐证 shadow 无副作用，但决策正确性结论依赖 r5 先例（口径变更只影响 CPU 计量，不影响决策逻辑）。后续复测窗口应恢复配对采集。
+
+### 下一步提案（需用户决策，未执行）
+
+1. 继续 CPU 结构削减：consumer 侧 matcher（r5 单段最大 ~0.354）与 finalize 段为主要剩余目标；producer store 管线已在 6635241 削减 65%。
+2. 降低 epoch 频率（RC `sampleInterval` 10 → 20/30）摊薄每 tick 成本，代价是 comparator 对照新鲜度下降。
+3. 上调绝对上限（例如 5.5，覆盖本窗口 p95）——放宽需用户明确批准。
+4. 维持 disabled，待 market 复杂体（窗口期 ~42 CPU/tick）等大 CPU 消费方收缩后复测。
