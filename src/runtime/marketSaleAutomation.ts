@@ -9816,7 +9816,9 @@ function buildMarketBasePolicyMigrationProposal(
   const reviewedEvidence: MarketBaseResourceReviewedEvidence[] = [];
   for (const priorGrant of priorPermit.signedLaneGrants) {
     if (priorGrant.status !== "active") {
-      activeGrants.push(tombstonedMarketBaseGrant(priorGrant));
+      // tombstone grant 不 re-sign（旧指纹无法通过新 permit 的 policy
+      // 匹配校验）；直接省略，由链 append 的 tombstone checkpoint 按
+      // "prior tombstoned+suspended grant 不在 next"自动排放留档。
       continue;
     }
     const lane = laneById.get(priorGrant.laneId);
@@ -10013,7 +10015,8 @@ export function proposeMarketBaseResourcePolicyMigration(): OperatorResult {
 }
 
 export function proposeMarketBaseResourcePermit(
-  request: MarketBaseResourcePermitRequest = {},): OperatorResult {
+  request: MarketBaseResourcePermitRequest = {},
+): OperatorResult {
   enforceLegacyMarketSafetyLatch();
   const sourceData = ensureDataState();
   const sourceDirect = sourceData.directAutomation;
@@ -10465,6 +10468,28 @@ export function acceptMarketBaseResourcePermit(
       ) {
         throw new TypeError("market_base_proposal_source_changed");
       }
+      // 与 propose 对称的 WAL 静默复查：propose→accept 窗口内出现的新
+      // pending/quarantine 不在 source fingerprint 覆盖内，必须在此拦截，
+      // 否则整体替换会静默丢弃 WAL 记录。
+      if (
+        state.ledger?.pending ||
+        Object.keys(direct.quarantinedPendingDirectDeals ?? {}).length > 0
+      ) {
+        throw new TypeError("market_base_migration_wal_not_quiescent");
+      }
+      // persistent activation blocker 的恢复边界：迁移只解除常量回拨类
+      // 闩锁（它正是迁移的恢复语义）；其他事故闩锁必须走各自协议，
+      // 不允许被一次策略迁移掩盖。
+      const persistentBlocker = data.baseResourceV3ActivationBlocker;
+      if (
+        persistentBlocker &&
+        persistentBlocker.code !==
+          "market_base_v3_config_rollback_after_cutover"
+      ) {
+        throw new TypeError(
+          `market_base_migration_blocker_unrecoverable:${persistentBlocker.code}`,
+        );
+      }
       const migrationNext: MarketBaseResourceV3RuntimeState = {
         ...state,
         scope: cloneMarketBaseOperatorValue(proposal.targetScope),
@@ -10504,6 +10529,11 @@ export function acceptMarketBaseResourcePermit(
       data.baseResourceV3ActivationAnchor = migrationAnchor;
       data.baseResourceV3ActivationAnchorMirror =
         cloneMarketBaseOperatorValue(migrationAnchor);
+      // 干净 anchor 落位的同时必须清除 persistent blocker，否则下一 tick
+      // activation gate 会因"anchor 无 blocker 但 persistent 存在"重新
+      // 闩锁（market_base_activation_blocker_anchor_missing），且二次
+      // 迁移会被 no_policy_change 拒绝——死锁只能手改 Memory。
+      delete data.baseResourceV3ActivationBlocker;
       delete data.baseResourceV3ProposedTransition;
       delete data.baseResourceV3ProposedContinuousReview;
       appendAudit(data, {

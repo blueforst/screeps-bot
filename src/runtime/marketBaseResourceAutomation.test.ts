@@ -1450,8 +1450,15 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
     return { policies, shared };
   }
 
-  function installPastV3World(options: { armCanary?: boolean } = {}): {
+  function installPastV3World(
+    options: {
+      armCanary?: boolean;
+      persistentBlocker?: string;
+      retireFirstLane?: boolean;
+    } = {},
+  ): {
     laneIds: string[];
+    retiredLaneId?: string;
     data: NonNullable<Memory["data"]>["marketSaleAutomation"];
   } {
     Game.rooms = {
@@ -1485,7 +1492,7 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
       ],
     });
     if (!reconciled.ok) throw new Error("fixture scope rejected");
-    const pastLanes = reconciled.state.laneLifecycles.map((lane, index) => {
+    const allPastLanes = reconciled.state.laneLifecycles.map((lane, index) => {
       const policy = past.policies.find(
         (candidate) => candidate.resource === lane.resource,
       )!;
@@ -1517,6 +1524,11 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
         }),
       };
     });
+    // retireFirstLane：首条 lane 已退役——scope 移除该 lane，链尾 permit
+    // 保留其 tombstone grant（迁移须省略而非 re-sign 的场景）。
+    const retiredLane =
+      options.retireFirstLane === true ? allPastLanes[0] : undefined;
+    const pastLanes = retiredLane ? allPastLanes.slice(1) : allPastLanes;
     const rawLegacyPermit = buildMarketDirectContinuousPermit({
       epoch: 1,
       accountIdentity: V3_TEST_ACCOUNT,
@@ -1612,22 +1624,36 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
         }),
     });
     let effectiveLedger = ledger;
-    if (options.armCanary) {
-      // armed canary 由 successor permit 授予（首张 v3 permit 必须
-      // shadow+suspended）；追加一张把首条 lane 升为 canary enabled 的
-      // successor，并 rebind ledger anchor。
-      const grants = pastLanes.map((lane) =>
-        lane.stage === "canary"
-          ? buildMarketBaseResourceSignedLaneGrant({
-              lane,
-              stage: "canary",
-              newDealGrant: "enabled",
-            })
-          : buildMarketBaseResourceSignedLaneGrant({ lane, stage: "shadow" }),
-      );
+    if (options.armCanary || retiredLane) {
+      // canary 授权与 lane 退役都由 successor permit 承载（首张 v3
+      // permit 必须全 shadow+suspended active），并 rebind ledger anchor。
+      const grants = [
+        ...(retiredLane
+          ? [
+              buildMarketBaseResourceSignedLaneGrant({
+                lane: retiredLane,
+                status: "tombstoned",
+                stage: "shadow",
+                newDealGrant: "suspended",
+              }),
+            ]
+          : []),
+        ...pastLanes.map((lane) =>
+          lane.stage === "canary"
+            ? buildMarketBaseResourceSignedLaneGrant({
+                lane,
+                stage: "canary",
+                newDealGrant: "enabled",
+              })
+            : buildMarketBaseResourceSignedLaneGrant({
+                lane,
+                stage: "shadow",
+              }),
+        ),
+      ];
       const canaryGrant = grants.find(
-        (grant) => grant.stage === "canary",
-      )!;
+        (grant) => grant.stage === "canary" && grant.status === "active",
+      );
       const successor = buildDetachedMarketBaseResourcePermitForReplay({
         epoch: chain.permitEpochHighWater + 1,
         accountIdentity: V3_TEST_ACCOUNT,
@@ -1635,18 +1661,23 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
         resourcePolicies: past.policies,
         ratchetHighWater,
         signedLaneGrants: grants,
-        reviewedEvidence: [
-          {
-            laneId: canaryGrant.laneId,
-            kind: "shadow_qualification" as const,
-            evidenceKey: canonicalStableHashV1({
-              domain: "market-base-resource:shadow-qualification-review-v1",
-              laneId: canaryGrant.laneId,
-              lifecycleEvidenceDigest: canaryGrant.lifecycleEvidenceDigest,
-            }),
-            digest: canaryGrant.lifecycleEvidenceDigest,
-          },
-        ],
+        ...(canaryGrant
+          ? {
+              reviewedEvidence: [
+                {
+                  laneId: canaryGrant.laneId,
+                  kind: "shadow_qualification" as const,
+                  evidenceKey: canonicalStableHashV1({
+                    domain:
+                      "market-base-resource:shadow-qualification-review-v1",
+                    laneId: canaryGrant.laneId,
+                    lifecycleEvidenceDigest: canaryGrant.lifecycleEvidenceDigest,
+                  }),
+                  digest: canaryGrant.lifecycleEvidenceDigest,
+                },
+              ],
+            }
+          : {}),
         previousPermitId: chain.currentPermitId,
         previousPermitHead: chain.permitChainHead,
         previousLedgerHead: V3_V2_HEAD,
@@ -1751,6 +1782,18 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
         // post-cutover 世界必然带 activation anchor；它让 ensureDataState
         // 保留 raw identity（不走 normalizer 重建），这正是迁移的目标世界。
         baseResourceV3ActivationAnchor: {} as never,
+        ...(options.persistentBlocker
+          ? {
+              // 部署 r3 后 cfg 仍 r2 的第一 tick 会持久化 rollback 闩锁；
+              // 迁移的目标环境必然带着它（subagent 审查 P0 场景）。
+              baseResourceV3ActivationBlocker: {
+                schemaVersion: 1,
+                code: options.persistentBlocker,
+                detectedAt: 100,
+                detailHash: v3Digest("rollback-latch"),
+              } as never,
+            }
+          : {}),
         trustedFloors: Object.fromEntries([
           ...ratchetHighWater.map((entry) => [
             entry.resource,
@@ -1762,6 +1805,7 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
     } as unknown as Memory["data"];
     return {
       laneIds: pastLanes.map((lane) => lane.laneId),
+      retiredLaneId: retiredLane?.laneId,
       data: Memory.data.marketSaleAutomation,
     };
   }
@@ -1848,6 +1892,88 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
     };
     expect(result.ok).toBe(false);
     expect(result.error).toContain("market_base_migration_canary_unresolved");
+  });
+
+  it("闩锁态（persistent rollback blocker）迁移后 blocker 被清除且 anchor 干净", () => {
+    installPastV3World({
+      persistentBlocker: "market_base_v3_config_rollback_after_cutover",
+    });
+    const container = () =>
+      Memory.data!.marketSaleAutomation as {
+        baseResourceV3ActivationBlocker?: unknown;
+        baseResourceV3ActivationAnchor?: { activationBlocker: unknown };
+      };
+    expect(container().baseResourceV3ActivationBlocker).toBeDefined();
+    const propose = proposeMarketBaseResourcePolicyMigration() as {
+      ok: boolean;
+      error?: string;
+      proposalId?: string;
+    };
+    expect(propose.ok).toBe(true);
+    const accept = acceptMarketBaseResourcePermit(
+      propose.proposalId!,
+    ) as unknown as { ok: boolean; error?: string };
+    expect(accept.ok).toBe(true);
+    // P0 修复断言：persistent blocker 必须随干净 anchor 一并清除，
+    // 否则下一 tick activation gate 重新闩锁且二次迁移被拒。
+    expect(container().baseResourceV3ActivationBlocker).toBeUndefined();
+    expect(container().baseResourceV3ActivationAnchor?.activationBlocker).toBeNull();
+  });
+
+  it("非 rollback 类 persistent blocker 不能被迁移掩盖", () => {
+    installPastV3World({
+      persistentBlocker: "market_base_some_other_incident",
+    });
+    const propose = proposeMarketBaseResourcePolicyMigration() as {
+      ok: boolean;
+      error?: string;
+      proposalId?: string;
+    };
+    expect(propose.ok).toBe(true);
+    const accept = acceptMarketBaseResourcePermit(
+      propose.proposalId!,
+    ) as unknown as { ok: boolean; error?: string };
+    expect(accept.ok).toBe(false);
+    expect(accept.error).toContain(
+      "market_base_migration_blocker_unrecoverable",
+    );
+  });
+
+  it("链尾含 tombstone grant 时迁移省略而非 re-sign，且链校验通过", () => {
+    const world = installPastV3World({ retireFirstLane: true });
+    const propose = proposeMarketBaseResourcePolicyMigration() as {
+      ok: boolean;
+      error?: string;
+      proposalId?: string;
+    };
+    expect(propose.ok).toBe(true);
+    const accept = acceptMarketBaseResourcePermit(
+      propose.proposalId!,
+    ) as unknown as { ok: boolean; error?: string; permitEpoch?: number };
+    expect(accept.ok).toBe(true);
+    const after = (Memory.data!.marketSaleAutomation as {
+      directAutomation: {
+        baseResourceV3: MarketBaseResourceV3RuntimeState;
+      };
+    }).directAutomation.baseResourceV3;
+    const tailPermit = after.permitChain!.retainedPermits[
+      after.permitChain!.retainedPermits.length - 1
+    ] as unknown as {
+      signedLaneGrants: { laneId: string; status: string }[];
+    };
+    // 被退役 lane 的 grant 不出现在新 permit（由链 tombstone checkpoint
+    // 自动排放留档），其余 lane 全量 re-sign 保留。
+    const retiredLaneId = world.retiredLaneId!;
+    expect(retiredLaneId).toBeDefined();
+    expect(
+      tailPermit.signedLaneGrants.some(
+        (grant) => grant.laneId === retiredLaneId,
+      ),
+    ).toBe(false);
+    expect(tailPermit.signedLaneGrants).toHaveLength(world.laneIds.length);
+    expect(
+      validateMarketBaseResourcePermitChain(after.permitChain!).ok,
+    ).toBe(true);
   });
 
   it("提案后源状态变化时 accept 被拒（source_changed）", () => {
