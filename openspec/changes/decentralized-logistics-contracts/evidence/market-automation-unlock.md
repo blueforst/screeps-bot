@@ -149,3 +149,9 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **canary 重授权**（用户方案 A 预批）：X/E6N59 lane 原子两步授权成功——permit epoch 3→4（successor），stages {qualified:47, shadow:8(Z), canary:1}，链尾 X canary grant `newDealGrant=enabled`。单 canary 坑位由 X 独占。
 - **成交条件现状**：X 有效地板 = max(硬 480, 经济 480, ratchet 589.857→衰减中 −5%/日)；市场 ≥1,000 量最优 BUY ~505–520。ratchet 衰减至出价预计 **11–20 小时**（无需人工干预，达价自动成交 → review_paused）。长时监视已挂（每 10 分钟读 xFloor/canary stage，成交即报）。
 - 至此 2026-08-21 深夜事故（X 地板下调触发 permit 链协议空缺）的恢复链全部闭合：状态重置 → 常量升级迁移协议（P0）→ r2→r3 实弹迁移 → 资格零损失重建 → canary 重武装。
+
+### 用户决策记录（2026-08-22 晚）
+
+- **生产预留**：维持 7 资源统一 `laneReserve=100k`（不差异化）。用户补充背景："我们的 X 产量很大"——X 盈余将长期偏高，surplusRatio/inventoryFactor 相应走高，动态地板的盈余下探机制（observe 中，enforce 待确认）正是该场景的设计目标。此背景供 observe 窗口验收与 enforce 决策参考。
+- **continuous 预授权**（用户："现在预授权"）：X/E6N59 canary 首笔成交进入 review_paused 后，操作员复核成交记录无异常（成交价 ≥ 当轮有效地板、数量 1,000、交易能耗 ≤ 上限、无异常 rejection）即可由我直接执行 review_paused → continuous 两步推进，无需再次询问。**边界**：预授权仅覆盖 X/E6N59 这一条 lane；复核发现任何异常则不推进、带详情回报；其他 lane 的 canary 武装仍需逐条显式授权。
+- 后续决策点（待我主动提交）：canary 成交 + observe 窗口 ≥1 天后的 **enforce 切换确认**（将携带 bookEMA/inventoryFactor/日锚投影轨迹数据）。
