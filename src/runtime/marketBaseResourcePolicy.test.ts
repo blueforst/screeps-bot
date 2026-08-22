@@ -44,9 +44,10 @@ function requireSuccessfulRooms(
   return result;
 }
 
-describe("marketBaseResourcePolicy catalog/config/bootstrap", () => {
-
-  it("bootstrap 缺失、digest 改写、日期回拨和重复初始化全部 fail-closed", () => {
+describe("marketBaseResourcePolicy 重合同（bootstrap 准入 + 房/lane 建立）", () => {
+  // Jest 预算归并（reduce-jest-suite-to-500 约定）：原 catalog/bootstrap
+  // 与 room admission 两个参数化变体合并为单一代表性重合同用例。
+  it("bootstrap fail-closed 与新房 generation/lane 建立覆盖同一合同面", () => {
     expect(
       validateMarketBaseFloorBootstrap(MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP),
     ).toEqual({ valid: true, invalidReasons: [] });
@@ -90,14 +91,9 @@ describe("marketBaseResourcePolicy catalog/config/bootstrap", () => {
         previousFingerprint: MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.fingerprint,
       }).invalidReasons,
     ).toContain("base_floor_bootstrap_duplicate");
-  });
-});
 
-describe("marketBaseResourcePolicy room admission/incarnation/lane", () => {
-  const admission = createMarketBaseRoomAdmissionPolicy("Forst");
-  const shared = createMarketBaseSharedPolicy("Forst");
-
-  it("自动新房建立 generation 1 和七条 shadow+suspended lane", () => {
+    const admission = createMarketBaseRoomAdmissionPolicy("Forst");
+    const shared = createMarketBaseSharedPolicy("Forst");
     const rooms = requireSuccessfulRooms(
       reconcileMarketBaseSellerRooms({
         tick: 1,
@@ -135,7 +131,9 @@ describe("marketBaseResourcePolicy room admission/incarnation/lane", () => {
 });
 
 describe("Market Base 动态地板投影（bookEMA + 库存分量 + 日限幅）", () => {
-  it("bookEMA：首观测 seed、间隔自适应 α、无效输入保守回退", () => {
+  // Jest 预算归并：EMA 边界、地板合成+跨日锚、无盈余退化三个参数化
+  // 变体合并为单一代表性重合同用例。
+  it("EMA seed/α/回退与投影合成、日锚限幅、无盈余退化覆盖同一合同面", () => {
     const seed = updateMarketBaseBookEma({
       previousEma: null,
       previousObservedAt: 0,
@@ -164,9 +162,7 @@ describe("Market Base 动态地板投影（bookEMA + 库存分量 + 日限幅）
     });
     expect(invalid.ema).toBe(next.ema);
     expect(invalid.observedAt).toBe(next.observedAt);
-  });
 
-  it("投影：EMA 建立后按盈余比下探且受 hardFloor 与日限幅约束", () => {
     const hPolicy = MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE.H;
     const state = buildMarketBaseDynamicFloorState({
       previous: undefined,
@@ -217,10 +213,8 @@ describe("Market Base 动态地板投影（bookEMA + 库存分量 + 日限幅）
     expect(hNext.dailyAnchor).toBeCloseTo(hNext.dynamicFloor as number, 10);
     expect(hNext.dynamicFloor).toBeGreaterThanOrEqual(anchor * 0.85 - 1e-9);
     expect(hNext.dynamicFloor).toBeGreaterThanOrEqual(hPolicy.hardFloor);
-  });
 
-  it("无盈余输入时 inventoryFactor=0（纯 ratchet 语义，不下探）", () => {
-    const state = buildMarketBaseDynamicFloorState({
+    const noSurplus = buildMarketBaseDynamicFloorState({
       previous: undefined,
       tick: 500,
       marketDate: "2026-08-22",
@@ -228,10 +222,12 @@ describe("Market Base 动态地板投影（bookEMA + 库存分量 + 日限幅）
       laneSurplus: [],
       ratchetFloorByResource: { X: 589.857 },
     });
-    const x = state.entries.find((entry) => entry.resource === "X")!;
-    expect(x.surplusRatio).toBeNull();
-    expect(x.inventoryFactor).toBe(0);
+    const xNoSurplus = noSurplus.entries.find(
+      (entry) => entry.resource === "X",
+    )!;
+    expect(xNoSurplus.surplusRatio).toBeNull();
+    expect(xNoSurplus.inventoryFactor).toBe(0);
     // listingFloor = 505×(1+0)=505 < ratchet → rawDynamic=505（仍受日锚=505）。
-    expect(x.dynamicFloor).toBeCloseTo(505, 10);
+    expect(xNoSurplus.dynamicFloor).toBeCloseTo(505, 10);
   });
 });

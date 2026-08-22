@@ -72,8 +72,24 @@ beforeEach(() => {
   Game.time += 1;
 });
 
-describe("spawnPlanner queue ownership", () => {
-  it("distributes managed configs across active spawns without duplicate owners", () => {
+const resetScenarioWorld = () => {
+  // Jest 预算归并后多个场景在同一 it 内顺序执行；这里复刻全局
+  // beforeEach 的隔离，并额外清空房/spawn/creep 注册，避免跨场景残留。
+  (isDefenseMode as jest.Mock).mockReturnValue(false);
+  (getSafeZone as jest.Mock).mockReturnValue(new Set());
+  resetRuntimeServices();
+  resetPowerCreepControlCacheForTest();
+  clearSpawnActiveCacheForTest();
+  Game.time += 1;
+  Game.rooms = {};
+  Game.spawns = {};
+  Game.creeps = {};
+  Memory.spawns = {};
+};
+
+describe("spawnPlanner queue ownership 重合同", () => {
+  // Jest 预算归并：原 4 个所有权参数化变体合并为单一代表性用例。
+  const scenarioDistribute = () => {
     const room = createRoom("W6N1");
     const spawnA = createSpawn(room, "W6N1-spawn-a");
     const spawnB = createSpawn(room, "W6N1-spawn-b");
@@ -96,9 +112,9 @@ describe("spawnPlanner queue ownership", () => {
     }
     expect(spawnA.memory.spawnList).toEqual([configNames[0], configNames[2]]);
     expect(spawnB.memory.spawnList).toEqual([configNames[1], configNames[3]]);
-  });
+  };
 
-  it("moves stale inactive ownership to an active spawn without rewriting spawnOnce time", () => {
+  const scenarioStaleOwner = () => {
     const room = createRoom("E4N63");
     const inactive = createSpawn(room, "E4N63-spawn-a", false);
     const active = createSpawn(room, "E4N63-spawn-b", true);
@@ -128,9 +144,9 @@ describe("spawnPlanner queue ownership", () => {
     expect(active.memory.spawnList!.filter((name) => name === worker)).toHaveLength(1);
     expect(active.memory.spawnList!.filter((name) => name === spawnOnce)).toHaveLength(1);
     expect(Memory.data.creepConfigs![spawnOnce].spawnOnce?.queuedAt).toBe(queuedAt);
-  });
+  };
 
-  it("removes every queued copy when the config already has a spawning owner", () => {
+  const scenarioSpawningDedupe = () => {
     const room = createRoom("E4N64");
     const spawnA = createSpawn(room, "E4N64-spawn-a");
     const spawnB = createSpawn(room, "E4N64-spawn-b");
@@ -157,9 +173,9 @@ describe("spawnPlanner queue ownership", () => {
     expect(spawnA.memory.spawnList).not.toContain(configName);
     expect(spawnB.memory.spawnList).not.toContain(configName);
     expect(spawnA.spawning?.name).toBe("worker-spawning");
-  });
+  };
 
-  it("uses PowerBank owner tokens and does not guess ambiguous legacy ownership", () => {
+  const scenarioOwnerTokens = () => {
     const sourceRoom = "W4N4";
     const sharedTarget = "E3N60";
     const uniqueTarget = "E4N60";
@@ -211,10 +227,20 @@ describe("spawnPlanner queue ownership", () => {
     expect(spawn.memory.spawnList).toContain(configB);
     expect(spawn.memory.spawnList).toContain(ambiguousLegacy);
     expect(spawn.memory.spawnList).not.toContain(exhaustedLegacy);
+  };
+
+  it("分布/陈旧回收/去重/PowerBank token 覆盖同一合同面", () => {
+    scenarioDistribute();
+    resetScenarioWorld();
+    scenarioStaleOwner();
+    resetScenarioWorld();
+    scenarioSpawningDedupe();
+    resetScenarioWorld();
+    scenarioOwnerTokens();
   });
 });
 
-describe("spawnPlanner powerbank combat guard", () => {
+describe("spawnPlanner powerbank combat guard 重合同", () => {
   function setupCombatRoom(roomName = "E3N59"): { room: Room; spawn: StructureSpawn } {
     const room = createRoom(roomName, 7);
     const spawn = createSpawn(room, `${roomName}-spawn`);
@@ -240,7 +266,7 @@ describe("spawnPlanner powerbank combat guard", () => {
     };
   }
 
-  it("prunes combat configs whose owning task is in hauling stage and strips queue leftovers", () => {
+  const scenarioPruneHauling = () => {
     const { spawn } = setupCombatRoom();
     const config = makeCombatConfig("E3N59", "task-hauling");
     Memory.data = {
@@ -260,9 +286,9 @@ describe("spawnPlanner powerbank combat guard", () => {
 
     expect(spawn.memory.spawnList).not.toContain(config.name);
     expect(Memory.data.creepConfigs?.[config.name]).toBeUndefined();
-  });
+  };
 
-  it("prunes combat configs left under a previous source room after task re-discovery", () => {
+  const scenarioPruneSource = () => {
     const { spawn } = setupCombatRoom();
     const config = makeCombatConfig("E3N59", "task-rediscovered");
     Memory.data = {
@@ -282,9 +308,9 @@ describe("spawnPlanner powerbank combat guard", () => {
 
     expect(spawn.memory.spawnList).not.toContain(config.name);
     expect(Memory.data.creepConfigs?.[config.name]).toBeUndefined();
-  });
+  };
 
-  it("prunes combat configs whose owning task no longer exists", () => {
+  const scenarioPruneOrphan = () => {
     const { spawn } = setupCombatRoom();
     const config = makeCombatConfig("E3N59", "task-gone");
     Memory.data = {
@@ -296,9 +322,9 @@ describe("spawnPlanner powerbank combat guard", () => {
 
     expect(spawn.memory.spawnList).not.toContain(config.name);
     expect(Memory.data.creepConfigs?.[config.name]).toBeUndefined();
-  });
+  };
 
-  it("queues combat configs for an active combat task in the current source room", () => {
+  const scenarioQueueActive = () => {
     const { spawn } = setupCombatRoom();
     const config = makeCombatConfig("E3N59", "task-active");
     Memory.data = {
@@ -317,9 +343,9 @@ describe("spawnPlanner powerbank combat guard", () => {
 
     expect(spawn.memory.spawnList).toContain(config.name);
     expect(Memory.data.creepConfigs?.[config.name]).toBeDefined();
-  });
+  };
 
-  it("keeps a retired config alive while its creep still lives but strips its queue entries", () => {
+  const scenarioRetiredAlive = () => {
     const { room, spawn } = setupCombatRoom();
     const config = makeCombatConfig("E3N59", "task-hauling-live");
     Game.creeps["powerBankAttacker-live"] = {
@@ -344,10 +370,22 @@ describe("spawnPlanner powerbank combat guard", () => {
 
     expect(spawn.memory.spawnList).not.toContain(config.name);
     expect(Memory.data.creepConfigs?.[config.name]).toBeDefined();
+  };
+
+  it("修剪（hauling/前源房/孤儿任务）与保活排队（活跃任务/退役保活）覆盖同一合同面", () => {
+    scenarioPruneHauling();
+    resetScenarioWorld();
+    scenarioPruneSource();
+    resetScenarioWorld();
+    scenarioPruneOrphan();
+    resetScenarioWorld();
+    scenarioQueueActive();
+    resetScenarioWorld();
+    scenarioRetiredAlive();
   });
 });
 
-describe("spawnPlanner powerbank combat guard edge cases", () => {
+describe("spawnPlanner powerbank combat guard edge cases 重合同", () => {
   function setupCombatRoom(roomName = "E3N59"): { room: Room; spawn: StructureSpawn } {
     const room = createRoom(roomName, 7);
     const spawn = createSpawn(room, `${roomName}-spawn`);
@@ -385,7 +423,7 @@ describe("spawnPlanner powerbank combat guard edge cases", () => {
     };
   }
 
-  it("queues reinforcement combat configs for an active task", () => {
+  const scenarioReinforce = () => {
     const { spawn } = setupCombatRoom();
     const reinforcement = makeCombatConfigEntry({
       sourceRoom: "E3N59",
@@ -410,9 +448,9 @@ describe("spawnPlanner powerbank combat guard edge cases", () => {
 
     expect(spawn.memory.spawnList).toContain(reinforcement.name);
     expect(Memory.data.creepConfigs?.[reinforcement.name]).toBeDefined();
-  });
+  };
 
-  it("keeps a retired config while its creep is still spawning", () => {
+  const scenarioSpawningRetired = () => {
     const { room, spawn } = setupCombatRoom();
     const config = makeCombatConfigEntry({ sourceRoom: "E3N59", taskId: "task-spawning" });
     Memory.creeps["powerBankHealer-spawning"] = {
@@ -443,9 +481,9 @@ describe("spawnPlanner powerbank combat guard edge cases", () => {
     expect(Memory.data.creepConfigs?.[config.name]).toBeDefined();
     expect(spawn.spawning?.name).toBe("powerBankHealer-spawning");
     expect(room).toBeDefined();
-  });
+  };
 
-  it("skips queueing combat configs while the source room is in defense mode", () => {
+  const scenarioDefense = () => {
     (isDefenseMode as jest.Mock).mockReturnValue(true);
     try {
       const { spawn } = setupCombatRoom();
@@ -469,5 +507,15 @@ describe("spawnPlanner powerbank combat guard edge cases", () => {
     } finally {
       (isDefenseMode as jest.Mock).mockReturnValue(false);
     }
+  };
+
+  it("增援与孵化中退役覆盖同一合同面", () => {
+    scenarioReinforce();
+    resetScenarioWorld();
+    scenarioSpawningRetired();
+  });
+
+  it("defense 模式下跳过战斗配置排队", () => {
+    scenarioDefense();
   });
 });

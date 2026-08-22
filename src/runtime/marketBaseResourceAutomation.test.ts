@@ -920,9 +920,10 @@ function scopeChurnObservations(
   }));
 }
 
-describe("Market Base Resource high-risk decision and retirement contracts", () => {
-
-  it("覆盖最高净价、二读与 outer CAS fail-closed，以及 225+ retirement 边界", () => {
+describe("Market Base V3 运行时重合同（高风险决策/WAL/证据隔离/observe 投影）", () => {
+  // Jest 预算归并（reduce-jest-suite-to-500 约定）：原 5 个运行时用例合并
+  // 为单一代表性重合同；各场景保留原断言面。
+  const scenarioHighRisk = () => {
     // 子场景 1：fresh planner fixture，normal lane 跨资源统一按单位净价选 winner。
     {
       const h = entry(RESOURCE_HYDROGEN, ["W1N1"], "writable", 100);
@@ -1203,12 +1204,9 @@ describe("Market Base Resource high-risk decision and retirement contracts", () 
         "room_incarnation_external_checkpoint_mismatch",
       );
     }
-  });
-});
+  };
 
-describe("Market Base Resource V3 live WAL glue", () => {
-
-  it("Shadow batch 内 CPU cut 携带 incomplete fallback 但不再销毁已积累周期", () => {
+  const scenarioWalCpuCut = () => {
     const { state, harness, deps, input } = v3RuntimeFixture(false);
     harness.tick = 200;
     state.preflightAt = harness.tick;
@@ -1279,9 +1277,9 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(deps.commitPreparedState).not.toHaveBeenCalled();
     expect(deps.claimPrepared).not.toHaveBeenCalled();
     expect(deps.executePrepared).not.toHaveBeenCalled();
-  });
+  };
 
-  it("incomplete 与同 tick 冲突观察保持周期证据，tick 回滚仍清零", () => {
+  const scenarioWalEvidenceLifecycle = () => {
     const { state } = v3RuntimeFixture(false);
     const lane = state.scope!.laneLifecycles[0]!;
     const scope = state.scope!;
@@ -1408,10 +1406,88 @@ describe("Market Base Resource V3 live WAL glue", () => {
     expect(qualifiedLane.stage).toBe("qualified");
     expect(qualifiedLane.shadowEvidence.completeCycles).toBe(100);
     expect(qualifiedLane.shadowEvidence.lastCompleteTick).toBe(299);
+  };
+
+  const scenarioObserveProjection = () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    const result = runMarketBaseResourceAutomation(state, input(), deps);
+    expect(result.planComplete).toBe(true);
+    const projection = state.dynamicFloorProjection;
+    expect(projection).toBeDefined();
+    expect(projection!.schemaVersion).toBe(1);
+    expect(projection!.entries).toHaveLength(7);
+    const x = projection!.entries.find(
+      (candidate) => candidate.resource === RESOURCE_CATALYST,
+    )!;
+    // fixture 的 book 只有 X 一张 700×1000 买单；EMA seed 即首观测。
+    expect(x.bookEma).toBe(700);
+    expect(x.lastObservedPrice).toBe(700);
+    expect(x.dynamicFloor).not.toBeNull();
+    expect(x.dynamicFloor!).toBeLessThanOrEqual(700 * (1 + 0.03));
+    const h = projection!.entries.find(
+      (candidate) => candidate.resource === RESOURCE_HYDROGEN,
+    )!;
+    expect(h.bookEma).toBeNull();
+    expect(h.dynamicFloor).toBeNull();
+  };
+
+  const scenarioCandidateIsolation = () => {
+    const { state, deps, input } = v3RuntimeFixture(false);
+    const baseInput = input();
+    const originalReadCandidates = baseInput.readCandidates!;
+    baseInput.readCandidates = () =>
+      originalReadCandidates().map((candidate) =>
+        candidate.resourceType === RESOURCE_ZYNTHIUM
+          ? {
+              ...candidate,
+              // 模拟低流动性资源 history 滑出信任窗口：定价证据不再
+              // 完整（ratchetFloor 低于高水位）。
+              historyTrusted: false,
+              ratchetFloor: 1,
+              effectiveNetFloor: 1,
+            }
+          : candidate,
+      );
+    const zLaneBefore = state.scope!.laneLifecycles.find(
+      (lane) => lane.resource === RESOURCE_ZYNTHIUM,
+    )!;
+    const before = state.scope!.laneLifecycles.map(
+      (lane) => lane.shadowEvidence.completeCycles,
+    );
+    const result = runMarketBaseResourceAutomation(state, baseInput, deps);
+    expect(result.planComplete).toBe(true);
+    expect(
+      result.rejectedByReason["market_base_v3_candidate_incomplete:W9N9:Z"],
+    ).toBeUndefined();
+    // shadow gate 每 planning 轮只采样部分 lane；断言收敛为：
+    // (1) 整轮不再被 Z 的陈旧证据 fail-closed（planComplete + 无拒绝）；
+    // (2) 被隔离的 Z lane 周期停涨且证据不清零；
+    // (3) 至少一条健康 lane 的周期 +1（观察通道恢复推进）。
+    const lanes = state.scope!.laneLifecycles;
+    const zAfter = lanes.find(
+      (lane) => lane.resource === RESOURCE_ZYNTHIUM,
+    )!;
+    const zBefore = state === undefined ? 0 : before[lanes.indexOf(zAfter)];
+    expect(zAfter.shadowEvidence.completeCycles).toBe(zBefore);
+    const advanced = lanes.filter(
+      (lane, index) =>
+        lane.resource !== RESOURCE_ZYNTHIUM &&
+        lane.shadowEvidence.completeCycles === before[index] + 1,
+    );
+    expect(advanced.length).toBeGreaterThan(0);
+    expect(zLaneBefore.stage).toBe("shadow");
+  };
+
+  it("覆盖最高净价/二读 CAS/retirement、WAL CPU fallback 与证据生命周期、候选证据隔离与动态地板投影", () => {
+    scenarioHighRisk();
+    scenarioWalCpuCut();
+    scenarioWalEvidenceLifecycle();
+    scenarioObserveProjection();
+    scenarioCandidateIsolation();
   });
 });
 
-describe("Market Base policy migration（re-sign 常量升级）", () => {
+describe("Market Base policy migration 重合同（re-sign 常量升级）", () => {
   function pastPolicySet(): {
     policies: typeof MARKET_BASE_RESOURCE_POLICIES;
     shared: ReturnType<typeof createMarketBaseSharedPolicy>;
@@ -1810,7 +1886,7 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
     };
   }
 
-  it("迁移 re-sign 全链并零损失保留 lane 资格与 laneId", () => {
+  const scenarioMigrationRoundTrip = () => {
     const world = installPastV3World();
     const propose = proposeMarketBaseResourcePolicyMigration() as {
       ok: boolean;
@@ -1864,82 +1940,9 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
     expect(
       validateMarketBaseResourcePermitChain(after.permitChain!).ok,
     ).toBe(true);
-  });
+  };
 
-  it("cfg 未采纳新常量时迁移提案被拒", () => {
-    installPastV3World();
-    // 已冻结的 cfg 不能原地改；整体替换为携带旧 revision 的副本。
-    Memory.cfg = {
-      ...(Memory.cfg as Memory["cfg"]),
-      marketSaleAutomation: {
-        ...v3Config(),
-        configRevision: "market-base-resource-v3-r0",
-      },
-    } as Memory["cfg"];
-    const result = proposeMarketBaseResourcePolicyMigration() as {
-      ok: boolean;
-      error?: string;
-    };
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("base_resource");
-  });
-
-  it("armed canary 未解决时迁移提案被拒", () => {
-    installPastV3World({ armCanary: true });
-    const result = proposeMarketBaseResourcePolicyMigration() as {
-      ok: boolean;
-      error?: string;
-    };
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("market_base_migration_canary_unresolved");
-  });
-
-  it("闩锁态（persistent rollback blocker）迁移后 blocker 被清除且 anchor 干净", () => {
-    installPastV3World({
-      persistentBlocker: "market_base_v3_config_rollback_after_cutover",
-    });
-    const container = () =>
-      Memory.data!.marketSaleAutomation as {
-        baseResourceV3ActivationBlocker?: unknown;
-        baseResourceV3ActivationAnchor?: { activationBlocker: unknown };
-      };
-    expect(container().baseResourceV3ActivationBlocker).toBeDefined();
-    const propose = proposeMarketBaseResourcePolicyMigration() as {
-      ok: boolean;
-      error?: string;
-      proposalId?: string;
-    };
-    expect(propose.ok).toBe(true);
-    const accept = acceptMarketBaseResourcePermit(
-      propose.proposalId!,
-    ) as unknown as { ok: boolean; error?: string };
-    expect(accept.ok).toBe(true);
-    // P0 修复断言：persistent blocker 必须随干净 anchor 一并清除，
-    // 否则下一 tick activation gate 重新闩锁且二次迁移被拒。
-    expect(container().baseResourceV3ActivationBlocker).toBeUndefined();
-    expect(container().baseResourceV3ActivationAnchor?.activationBlocker).toBeNull();
-  });
-
-  it("非 rollback 类 persistent blocker 不能被迁移掩盖", () => {
-    installPastV3World({
-      persistentBlocker: "market_base_some_other_incident",
-    });
-    const propose = proposeMarketBaseResourcePolicyMigration() as {
-      ok: boolean;
-      error?: string;
-      proposalId?: string;
-    };
-    expect(propose.ok).toBe(true);
-    const accept = acceptMarketBaseResourcePermit(
-      propose.proposalId!,
-    ) as unknown as { ok: boolean; error?: string };
-    expect(accept.ok).toBe(false);
-    expect(accept.error).toContain(
-      "market_base_migration_blocker_unrecoverable",
-    );
-  });
-
-  it("链尾含 tombstone grant 时迁移省略而非 re-sign，且链校验通过", () => {
+  const scenarioMigrationTombstone = () => {
     const world = installPastV3World({ retireFirstLane: true });
     const propose = proposeMarketBaseResourcePolicyMigration() as {
       ok: boolean;
@@ -1974,105 +1977,110 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
     expect(
       validateMarketBaseResourcePermitChain(after.permitChain!).ok,
     ).toBe(true);
-  });
+  };
 
-  it("提案后源状态变化时 accept 被拒（source_changed）", () => {
-    installPastV3World();
-    const propose = proposeMarketBaseResourcePolicyMigration() as {
-      ok: boolean;
-      proposalId?: string;
+  const scenarioMigrationRejections = () => {
+  installPastV3World();
+  // 已冻结的 cfg 不能原地改；整体替换为携带旧 revision 的副本。
+  Memory.cfg = {
+    ...(Memory.cfg as Memory["cfg"]),
+    marketSaleAutomation: {
+      ...v3Config(),
+      configRevision: "market-base-resource-v3-r0",
+    },
+  } as Memory["cfg"];
+  const result = proposeMarketBaseResourcePolicyMigration() as {
+    ok: boolean;
+    error?: string;
+  };
+  expect(result.ok).toBe(false);
+  expect(result.error).toContain("base_resource");
+
+    { // --- armed canary 未解决 ---
+  installPastV3World({ armCanary: true });
+  const result = proposeMarketBaseResourcePolicyMigration() as {
+    ok: boolean;
+    error?: string;
+  };
+  expect(result.ok).toBe(false);
+  expect(result.error).toContain("market_base_migration_canary_unresolved");
+
+    }
+    { // --- 闩锁态 blocker 清除 ---
+  installPastV3World({
+    persistentBlocker: "market_base_v3_config_rollback_after_cutover",
+  });
+  const container = () =>
+    Memory.data!.marketSaleAutomation as {
+      baseResourceV3ActivationBlocker?: unknown;
+      baseResourceV3ActivationAnchor?: { activationBlocker: unknown };
     };
-    expect(propose.ok).toBe(true);
-    // 提交后的快照已冻结；用整容器克隆模拟外部篡改 source 状态。
-    const cloned = JSON.parse(
-      JSON.stringify(Memory.data!.marketSaleAutomation),
-    ) as {
-      directAutomation: {
-        baseResourceV3: MarketBaseResourceV3RuntimeState;
-      };
+  expect(container().baseResourceV3ActivationBlocker).toBeDefined();
+  const propose = proposeMarketBaseResourcePolicyMigration() as {
+    ok: boolean;
+    error?: string;
+    proposalId?: string;
+  };
+  expect(propose.ok).toBe(true);
+  const accept = acceptMarketBaseResourcePermit(
+    propose.proposalId!,
+  ) as unknown as { ok: boolean; error?: string };
+  expect(accept.ok).toBe(true);
+  // P0 修复断言：persistent blocker 必须随干净 anchor 一并清除，
+  // 否则下一 tick activation gate 重新闩锁且二次迁移被拒。
+  expect(container().baseResourceV3ActivationBlocker).toBeUndefined();
+  expect(container().baseResourceV3ActivationAnchor?.activationBlocker).toBeNull();
+
+    }
+    { // --- 非 rollback blocker 不可掩盖 ---
+  installPastV3World({
+    persistentBlocker: "market_base_some_other_incident",
+  });
+  const propose = proposeMarketBaseResourcePolicyMigration() as {
+    ok: boolean;
+    error?: string;
+    proposalId?: string;
+  };
+  expect(propose.ok).toBe(true);
+  const accept = acceptMarketBaseResourcePermit(
+    propose.proposalId!,
+  ) as unknown as { ok: boolean; error?: string };
+  expect(accept.ok).toBe(false);
+  expect(accept.error).toContain(
+    "market_base_migration_blocker_unrecoverable",
+  );
+
+    }
+    { // --- source_changed ---
+  installPastV3World();
+  const propose = proposeMarketBaseResourcePolicyMigration() as {
+    ok: boolean;
+    proposalId?: string;
+  };
+  expect(propose.ok).toBe(true);
+  // 提交后的快照已冻结；用整容器克隆模拟外部篡改 source 状态。
+  const cloned = JSON.parse(
+    JSON.stringify(Memory.data!.marketSaleAutomation),
+  ) as {
+    directAutomation: {
+      baseResourceV3: MarketBaseResourceV3RuntimeState;
     };
-    cloned.directAutomation.baseResourceV3.scope!.laneSetFingerprint =
-      v3Digest("tampered");
-    (Memory.data as { marketSaleAutomation: unknown }).marketSaleAutomation =
-      cloned;
-    const accept = acceptMarketBaseResourcePermit(
-      propose.proposalId!,
-    ) as unknown as { ok: boolean; error?: string };
-    expect(accept.ok).toBe(false);
-    expect(accept.error).toBe("market_base_proposal_source_changed");
-  });
-});
+  };
+  cloned.directAutomation.baseResourceV3.scope!.laneSetFingerprint =
+    v3Digest("tampered");
+  (Memory.data as { marketSaleAutomation: unknown }).marketSaleAutomation =
+    cloned;
+  const accept = acceptMarketBaseResourcePermit(
+    propose.proposalId!,
+  ) as unknown as { ok: boolean; error?: string };
+  expect(accept.ok).toBe(false);
+  expect(accept.error).toBe("market_base_proposal_source_changed");
+    }
+  };
 
-describe("Market Base 动态地板 observe 投影接线", () => {
-  it("成功 planning 周期后 state.dynamicFloorProjection 按 book 输入推进", () => {
-    const { state, deps, input } = v3RuntimeFixture();
-    const result = runMarketBaseResourceAutomation(state, input(), deps);
-    expect(result.planComplete).toBe(true);
-    const projection = state.dynamicFloorProjection;
-    expect(projection).toBeDefined();
-    expect(projection!.schemaVersion).toBe(1);
-    expect(projection!.entries).toHaveLength(7);
-    const x = projection!.entries.find(
-      (candidate) => candidate.resource === RESOURCE_CATALYST,
-    )!;
-    // fixture 的 book 只有 X 一张 700×1000 买单；EMA seed 即首观测。
-    expect(x.bookEma).toBe(700);
-    expect(x.lastObservedPrice).toBe(700);
-    expect(x.dynamicFloor).not.toBeNull();
-    expect(x.dynamicFloor!).toBeLessThanOrEqual(700 * (1 + 0.03));
-    const h = projection!.entries.find(
-      (candidate) => candidate.resource === RESOURCE_HYDROGEN,
-    )!;
-    expect(h.bookEma).toBeNull();
-    expect(h.dynamicFloor).toBeNull();
-  });
-});
-
-describe("Market Base 候选证据缺失的资源级隔离", () => {
-  it("shadow-only 资源候选不完整只停该资源周期，其余 lane 照常推进", () => {
-    const { state, deps, input } = v3RuntimeFixture(false);
-    const baseInput = input();
-    const originalReadCandidates = baseInput.readCandidates!;
-    baseInput.readCandidates = () =>
-      originalReadCandidates().map((candidate) =>
-        candidate.resourceType === RESOURCE_ZYNTHIUM
-          ? {
-              ...candidate,
-              // 模拟低流动性资源 history 滑出信任窗口：定价证据不再
-              // 完整（ratchetFloor 低于高水位）。
-              historyTrusted: false,
-              ratchetFloor: 1,
-              effectiveNetFloor: 1,
-            }
-          : candidate,
-      );
-    const zLaneBefore = state.scope!.laneLifecycles.find(
-      (lane) => lane.resource === RESOURCE_ZYNTHIUM,
-    )!;
-    const before = state.scope!.laneLifecycles.map(
-      (lane) => lane.shadowEvidence.completeCycles,
-    );
-    const result = runMarketBaseResourceAutomation(state, baseInput, deps);
-    expect(result.planComplete).toBe(true);
-    expect(
-      result.rejectedByReason["market_base_v3_candidate_incomplete:W9N9:Z"],
-    ).toBeUndefined();
-    // shadow gate 每 planning 轮只采样部分 lane；断言收敛为：
-    // (1) 整轮不再被 Z 的陈旧证据 fail-closed（planComplete + 无拒绝）；
-    // (2) 被隔离的 Z lane 周期停涨且证据不清零；
-    // (3) 至少一条健康 lane 的周期 +1（观察通道恢复推进）。
-    const lanes = state.scope!.laneLifecycles;
-    const zAfter = lanes.find(
-      (lane) => lane.resource === RESOURCE_ZYNTHIUM,
-    )!;
-    const zBefore = state === undefined ? 0 : before[lanes.indexOf(zAfter)];
-    expect(zAfter.shadowEvidence.completeCycles).toBe(zBefore);
-    const advanced = lanes.filter(
-      (lane, index) =>
-        lane.resource !== RESOURCE_ZYNTHIUM &&
-        lane.shadowEvidence.completeCycles === before[index] + 1,
-    );
-    expect(advanced.length).toBeGreaterThan(0);
-    expect(zLaneBefore.stage).toBe("shadow");
+  it("round-trip/tombstone 零损失保留，cfg/canary/闩锁/源变化五类拒绝覆盖同一合同面", () => {
+    scenarioMigrationRoundTrip();
+    scenarioMigrationTombstone();
+    scenarioMigrationRejections();
   });
 });

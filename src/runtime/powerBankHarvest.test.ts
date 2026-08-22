@@ -375,7 +375,7 @@ describe("powerBankHarvest", () => {
     expect((healer.memory as PowerBankTestMemory).taskId).toBe("pb-taskid-test");
   });
 
-  it("aborts boost preparation atomically in defense mode and releases its owner", () => {
+  it("defense 模式原子中止 boost 与源房 fail-closed 选择覆盖同一合同面", () => {
     setupSourceRoom();
     const releaseSpy = mockReleaseBoostLabs();
     const configName = getPowerBankConfigName(SOURCE_ROOM, TARGET_ROOM, "attacker", 0);
@@ -400,6 +400,55 @@ describe("powerBankHarvest", () => {
     }));
     expect(releaseSpy).toHaveBeenCalledWith("pb-test", SOURCE_ROOM);
     expect(configStore.get(configName)).toBeUndefined();
+
+    // Jest 预算归并：源房 fail-closed 选择（compounds/route）与 defense
+    // 中止同属防御性放弃/重选合同面。
+    {
+      for (const rejectedBy of ["compounds", "route"] as const) {
+        resetPowerBankFixture();
+        setupOwnedRoom(SOURCE_ROOM, rejectedBy === "compounds" ? {
+          compounds: {
+            [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 1,
+            [RESOURCE_CATALYZED_UTRIUM_ACID]: 1,
+          },
+        } : {});
+        setupOwnedRoom(SECONDARY_SOURCE_ROOM);
+        jest.spyOn(require("@/runtime/powerBankObserver"), "hasPowerBankObserverCoverage")
+          .mockReturnValue(true);
+        jest.spyOn(require("@/runtime/powerBankBoost"), "findBestDonorRoom").mockReturnValue(null);
+        Game.map.findRoute = jest.fn((fromRoom: string) => {
+          if (fromRoom === SOURCE_ROOM) {
+            return rejectedBy === "route"
+              ? ERR_NO_PATH
+              : [{ room: TARGET_ROOM, exit: FIND_EXIT_RIGHT }];
+          }
+          return rejectedBy === "route"
+            ? [{ room: TARGET_ROOM, exit: FIND_EXIT_RIGHT }]
+            : [
+                { room: "E4N60", exit: FIND_EXIT_RIGHT },
+                { room: TARGET_ROOM, exit: FIND_EXIT_RIGHT },
+              ];
+        }) as typeof Game.map.findRoute;
+        addTask(makeTask({
+          id: `pb-source-${rejectedBy}`,
+          hits: 100_000,
+          power: 1000,
+          ticksToDecay: 5000,
+          discoveredTick: Game.time,
+          lastSeenTick: Game.time,
+          bankExpiresAt: Game.time + 5000,
+        }));
+
+        runPowerBankHarvest();
+
+        expect(Memory.data?.powerBankHarvestHistory).toEqual([]);
+        expect(getTask(`pb-source-${rejectedBy}`)).toMatchObject({
+          status: POWER_BANK_STATUS.PREPARING_BOOSTS,
+          sourceRoom: SECONDARY_SOURCE_ROOM,
+          routeDistance: rejectedBy === "route" ? 1 : 2,
+        });
+      }
+    }
   });
 
   it("requests recovery at 100 idle ticks and fails closed after the 250-tick progress deadline", () => {
@@ -606,52 +655,6 @@ describe("powerBankHarvest", () => {
       .toHaveLength(1);
   });
 
-  it("selects only viable source rooms when compounds or routes fail closed", () => {
-    for (const rejectedBy of ["compounds", "route"] as const) {
-      resetPowerBankFixture();
-      setupOwnedRoom(SOURCE_ROOM, rejectedBy === "compounds" ? {
-        compounds: {
-          [RESOURCE_CATALYZED_GHODIUM_ALKALIDE]: 1,
-          [RESOURCE_CATALYZED_UTRIUM_ACID]: 1,
-        },
-      } : {});
-      setupOwnedRoom(SECONDARY_SOURCE_ROOM);
-      jest.spyOn(require("@/runtime/powerBankObserver"), "hasPowerBankObserverCoverage")
-        .mockReturnValue(true);
-      jest.spyOn(require("@/runtime/powerBankBoost"), "findBestDonorRoom").mockReturnValue(null);
-      Game.map.findRoute = jest.fn((fromRoom: string) => {
-        if (fromRoom === SOURCE_ROOM) {
-          return rejectedBy === "route"
-            ? ERR_NO_PATH
-            : [{ room: TARGET_ROOM, exit: FIND_EXIT_RIGHT }];
-        }
-        return rejectedBy === "route"
-          ? [{ room: TARGET_ROOM, exit: FIND_EXIT_RIGHT }]
-          : [
-              { room: "E4N60", exit: FIND_EXIT_RIGHT },
-              { room: TARGET_ROOM, exit: FIND_EXIT_RIGHT },
-            ];
-      }) as typeof Game.map.findRoute;
-      addTask(makeTask({
-        id: `pb-source-${rejectedBy}`,
-        hits: 100_000,
-        power: 1000,
-        ticksToDecay: 5000,
-        discoveredTick: Game.time,
-        lastSeenTick: Game.time,
-        bankExpiresAt: Game.time + 5000,
-      }));
-
-      runPowerBankHarvest();
-
-      expect(Memory.data?.powerBankHarvestHistory).toEqual([]);
-      expect(getTask(`pb-source-${rejectedBy}`)).toMatchObject({
-        status: POWER_BANK_STATUS.PREPARING_BOOSTS,
-        sourceRoom: SECONDARY_SOURCE_ROOM,
-        routeDistance: rejectedBy === "route" ? 1 : 2,
-      });
-    }
-  });
 
   it("hauling cleanup removes combat configs left under a previous source room", () => {
     setupSourceRoom();
