@@ -56,6 +56,7 @@ import {
   MARKET_BASE_RESOURCE_MAX_ROOMS,
   MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE,
   type MarketBaseResource,
+  buildMarketBaseDynamicFloorState,
   createMarketBaseRoomAdmissionPolicy,
   createMarketBaseSharedPolicy,
   marketBaseDerivedLaneSetFingerprint,
@@ -64,6 +65,8 @@ import {
   reconcileMarketBaseSellerRooms,
   validateMarketBaseDerivedLaneLifecycle,
   type MarketBaseDerivedLaneLifecycle,
+  type MarketBaseDynamicFloorState,
+  type MarketBaseDynamicFloorSurplusLane,
   type MarketBaseRoomIncarnationRegistry,
   type MarketBaseRoomObservation,
   type MarketBaseSellerRoomState,
@@ -502,6 +505,11 @@ export interface MarketBaseResourceV3RuntimeState {
   preflightAt?: number;
   cutoverLatched?: true;
   pricingRatchet?: MarketBaseResourcePricingRatchetState;
+  /**
+   * observe 模式动态地板投影（动态层，不进 permit 签名）。仅诊断与
+   * 验收窗口使用；enforce 切换（一次迁移操作）前不参与 planner 合成。
+   */
+  dynamicFloorProjection?: MarketBaseDynamicFloorState;
   proposedPermit?: MarketBaseResourcePermitProposal;
   /**
    * Pending/WAL reconciliation contradictions are not transient planning
@@ -2526,6 +2534,9 @@ export interface MarketBaseResourceTwoReadPlan {
   secondCredits?: number;
   selectedTerminalRead?: MarketBaseResourceTerminalRead;
   nextPricingRatchet?: MarketBaseResourcePricingRatchetState;
+  /** observe 模式动态地板投影的 first-read 输入（complete 路径填充）。 */
+  firstBookBestPrices?: FullReadResult["bookBestPrices"];
+  firstLaneSurplus?: readonly MarketBaseDynamicFloorSurplusLane[];
   sampledShadowLaneIds: string[];
   nextShadowCursor?: string;
   shadowObservations: MarketBaseResourceShadowObservation[];
@@ -2568,6 +2579,15 @@ interface FullReadResult {
   candidateIdentityOrderChecks: number;
   evidence?: MarketBaseResourceFullReadEvidence;
   terminalReads?: Record<string, MarketBaseResourceTerminalRead>;
+  /**
+   * observe 模式动态地板投影的订单簿输入：本轮 full read 各资源
+   * eligible 买单的最优价（gross；能耗可行性由 planner 单独评估，
+   * 投影按可执行名义口径近似）。
+   */
+  bookBestPrices: Array<{
+    resource: MarketBaseResource;
+    price: number;
+  }>;
 }
 
 function stableCompare(left: string, right: string): number {
@@ -3093,6 +3113,7 @@ function blockedFullRead(
     actualTransactionEnergyEvaluations: 0,
     evaluatedShadowResourceCount: 0,
     candidateIdentityOrderChecks: 0,
+    bookBestPrices: [],
     ...partial,
   };
 }
@@ -3716,6 +3737,7 @@ function collectFullRead(
   ).size;
   const seenOrderIds = new Map<string, string>();
   const books = new Map<string, MarketDirectContinuousBook>();
+  const bookBestPrices: FullReadResult["bookBestPrices"] = [];
   const detachedShadowBooks = new Map<
     string,
     MarketDirectContinuousDetachedBookSnapshot
@@ -3804,6 +3826,18 @@ function collectFullRead(
       continue;
     }
     eligibleOrderCount += eligible.length;
+    let bestPrice = 0;
+    for (const order of eligible) {
+      if (
+        Number.isFinite(order.price) &&
+        order.price > bestPrice
+      ) {
+        bestPrice = order.price;
+      }
+    }
+    if (bestPrice > 0) {
+      bookBestPrices.push({ resource: resource as MarketBaseResource, price: bestPrice });
+    }
     for (const order of eligible) {
       evaluatedDistinctOrderRooms.add(order.roomName!);
     }
@@ -4374,6 +4408,7 @@ function collectFullRead(
       shadowPlanningMetrics.candidateIdentityOrderChecks,
     ...(evidence ? { evidence } : {}),
     terminalReads,
+    bookBestPrices,
   };
 }
 
@@ -4560,6 +4595,8 @@ export function planMarketBaseResourceTwoRead(
     return {
       ...emptyResult(cpuDelta, "market_base_no_writable_lane", firstRead),
       complete: true,
+      firstBookBestPrices: firstRead.bookBestPrices,
+      firstLaneSurplus: laneSurplusInputsFromRead(firstRead),
     };
   }
   const first = planMarketDirectContinuous(firstRead.plannerInput);
@@ -4783,6 +4820,8 @@ export function planMarketBaseResourceTwoRead(
         )
       ],
     nextPricingRatchet: secondRead.scope.pricingRatchet,
+    firstBookBestPrices: firstRead.bookBestPrices,
+    firstLaneSurplus: laneSurplusInputsFromRead(firstRead),
     sampledShadowLaneIds: firstRead.sampledShadowLaneIds,
     nextShadowCursor: firstRead.nextShadowCursor,
     shadowObservations: firstRead.shadowObservations,
@@ -4798,8 +4837,38 @@ export function planMarketBaseResourceTwoRead(
 const MARKET_BASE_RESOURCE_ACTOR = "marketSaleAutomation:base-resource-v3";
 const MAX_OUTGOING_TRANSACTIONS = 100;
 
-function convertLiveOrder(order: Order): MarketOrderSnapshot {
-  return {
+/**
+ * 从 full-read 的 scope snapshot 提取每 lane 盈余输入（保护后可售量 /
+ * lane 滚动上限），供 observe 模式动态地板投影聚合到资源级。
+ */
+function laneSurplusInputsFromRead(
+  read: FullReadResult,
+): MarketBaseDynamicFloorSurplusLane[] {
+  const inputs: MarketBaseDynamicFloorSurplusLane[] = [];
+  for (const entry of read.scope.entries) {
+    for (const lane of entry.lanes) {
+      const sellable = lane.protection?.sellableAmount;
+      const rollingMax = lane.quota?.laneRollingCap;
+      if (
+        typeof sellable === "number" &&
+        Number.isFinite(sellable) &&
+        sellable >= 0 &&
+        typeof rollingMax === "number" &&
+        Number.isFinite(rollingMax) &&
+        rollingMax > 0
+      ) {
+        inputs.push({
+          resource: entry.policy.resourceType as MarketBaseResource,
+          sellable,
+          rollingMax,
+        });
+      }
+    }
+  }
+  return inputs;
+}
+
+function convertLiveOrder(order: Order): MarketOrderSnapshot {  return {
     id: order.id,
     type: order.type === ORDER_BUY ? "buy" : "sell",
     resourceType: order.resourceType,
@@ -9057,6 +9126,22 @@ export function runMarketBaseResourceAutomation(
     runtimeSession,
     nextRatchet,
   );
+  // observe 模式动态地板投影：随成功 planning 周期推进（含纯 shadow
+  // 轮），EMA/日锚持续积累；任何 CPU/回滚路径都不会执行到这里，投影
+  // 不会超前于 canonical 提交。
+  state.dynamicFloorProjection = buildMarketBaseDynamicFloorState({
+    previous: state.dynamicFloorProjection,
+    tick: input.tick,
+    marketDate: nextRatchet.entries.reduce(
+      (latest, entry) => (entry.marketDate > latest ? entry.marketDate : latest),
+      "",
+    ),
+    bookBestPrices: plan.firstBookBestPrices ?? [],
+    laneSurplus: plan.firstLaneSurplus ?? [],
+    ratchetFloorByResource: Object.fromEntries(
+      nextRatchet.entries.map((entry) => [entry.resource, entry.value]),
+    ),
+  });
   if (
     observeMarketBaseResourceCpuTrace(
       cpuTraceRecorder,

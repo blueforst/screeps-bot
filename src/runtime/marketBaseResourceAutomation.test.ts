@@ -1876,3 +1876,28 @@ describe("Market Base policy migration（re-sign 常量升级）", () => {
     expect(accept.error).toBe("market_base_proposal_source_changed");
   });
 });
+
+describe("Market Base 动态地板 observe 投影接线", () => {
+  it("成功 planning 周期后 state.dynamicFloorProjection 按 book 输入推进", () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    const result = runMarketBaseResourceAutomation(state, input(), deps);
+    expect(result.planComplete).toBe(true);
+    const projection = state.dynamicFloorProjection;
+    expect(projection).toBeDefined();
+    expect(projection!.schemaVersion).toBe(1);
+    expect(projection!.entries).toHaveLength(7);
+    const x = projection!.entries.find(
+      (candidate) => candidate.resource === RESOURCE_CATALYST,
+    )!;
+    // fixture 的 book 只有 X 一张 700×1000 买单；EMA seed 即首观测。
+    expect(x.bookEma).toBe(700);
+    expect(x.lastObservedPrice).toBe(700);
+    expect(x.dynamicFloor).not.toBeNull();
+    expect(x.dynamicFloor!).toBeLessThanOrEqual(700 * (1 + 0.03));
+    const h = projection!.entries.find(
+      (candidate) => candidate.resource === RESOURCE_HYDROGEN,
+    )!;
+    expect(h.bookEma).toBeNull();
+    expect(h.dynamicFloor).toBeNull();
+  });
+});

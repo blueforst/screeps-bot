@@ -2759,3 +2759,209 @@ export function clampMarketBaseDynamicFloorDailyDrop(input: {
     input.previous * Math.pow(1 - input.maxDailyDynamicDrop, input.daysAdvanced);
   return Math.max(input.target, floor);
 }
+
+/**
+ * 订单簿 EMA 时间常数（tick）。Screeps tick ≈ 3s，6h ≈ 7200 ticks；
+ * α 按 tick 间隔自适应折算（1 − e^(−Δt/τ)），跳 tick/休眠后不突刺。
+ */
+export const MARKET_BASE_BOOK_EMA_TICK_TIME_CONSTANT = 7_200;
+
+export function updateMarketBaseBookEma(input: {
+  readonly previousEma: number | null;
+  readonly previousObservedAt: number;
+  readonly observedPrice: number;
+  readonly tick: number;
+  readonly timeConstantTicks?: number;
+}): { ema: number; observedAt: number } {
+  const timeConstant =
+    input.timeConstantTicks ?? MARKET_BASE_BOOK_EMA_TICK_TIME_CONSTANT;
+  if (
+    !Number.isFinite(input.observedPrice) ||
+    input.observedPrice <= 0 ||
+    !Number.isSafeInteger(input.tick) ||
+    input.tick < 0 ||
+    !Number.isFinite(timeConstant) ||
+    timeConstant <= 0
+  ) {
+    return {
+      ema: input.previousEma,
+      observedAt: input.previousObservedAt,
+    };
+  }
+  if (
+    input.previousEma === null ||
+    !Number.isFinite(input.previousEma) ||
+    input.previousEma <= 0 ||
+    !Number.isSafeInteger(input.previousObservedAt) ||
+    input.previousObservedAt < 0 ||
+    input.previousObservedAt > input.tick
+  ) {
+    // 首个有效观测直接作为 seed，不做指数拉扯。
+    return { ema: input.observedPrice, observedAt: input.tick };
+  }
+  const elapsed = Math.max(0, input.tick - input.previousObservedAt);
+  const alpha = elapsed === 0 ? 0 : 1 - Math.exp(-elapsed / timeConstant);
+  return {
+    ema: alpha * input.observedPrice + (1 - alpha) * input.previousEma,
+    observedAt: input.tick,
+  };
+}
+
+export interface MarketBaseDynamicFloorEntryState {
+  readonly resource: MarketBaseResource;
+  /** 订单簿最优可执行买价 EMA；无观测历史时为 null。 */
+  readonly bookEma: number | null;
+  /** 最近一次订单簿观测 tick（无观测为 0）。 */
+  readonly bookObservedAt: number;
+  /** 最近一次原始最优买价（诊断对照 EMA 滞后用）。 */
+  readonly lastObservedPrice: number | null;
+  /** observe 投影的 dynamicFloor（含日限幅）；EMA 未建立时为 null。 */
+  readonly dynamicFloor: number | null;
+  readonly inventoryFactor: number;
+  /** 聚合到资源级的最大 lane 盈余比（sellable/rollingMax）。 */
+  readonly surplusRatio: number | null;
+  /** 当日 dynamicFloor 锚点（日降幅限幅的基准值）。 */
+  readonly dailyAnchor: number;
+  readonly anchorDate: string;
+}
+
+export interface MarketBaseDynamicFloorState {
+  readonly schemaVersion: 1;
+  readonly updatedAt: number;
+  readonly entries: readonly MarketBaseDynamicFloorEntryState[];
+}
+
+export interface MarketBaseDynamicFloorBookInput {
+  readonly resource: MarketBaseResource;
+  readonly price: number;
+}
+
+export interface MarketBaseDynamicFloorSurplusLane {
+  readonly resource: MarketBaseResource;
+  readonly sellable: number;
+  readonly rollingMax: number;
+}
+
+/**
+ * observe 模式的动态地板投影（动态层，不进 permit 签名）。每 full
+ * planning tick 由调用方喂入：本 tick 订单簿最优可执行买价、各 lane
+ * 保护后可售量、当前 ratchet 地板。输出只写入 runtime 投影供
+ * monitor/验收窗口对账；enforce 切换前不参与 planner 合成。
+ */
+export function buildMarketBaseDynamicFloorState(input: {
+  readonly previous: MarketBaseDynamicFloorState | undefined;
+  readonly tick: number;
+  readonly marketDate: string;
+  readonly bookBestPrices: readonly MarketBaseDynamicFloorBookInput[];
+  readonly laneSurplus: readonly MarketBaseDynamicFloorSurplusLane[];
+  readonly ratchetFloorByResource: Readonly<
+    Record<string, number | undefined>
+  >;
+}): MarketBaseDynamicFloorState {
+  const previousByResource = new Map(
+    (input.previous?.entries ?? []).map((entry) => [entry.resource, entry]),
+  );
+  const priceByResource = new Map(
+    input.bookBestPrices.map((entry) => [entry.resource, entry.price]),
+  );
+  const surplusByResource = new Map<MarketBaseResource, number>();
+  for (const lane of input.laneSurplus) {
+    if (
+      !Number.isFinite(lane.sellable) ||
+      lane.sellable < 0 ||
+      !Number.isFinite(lane.rollingMax) ||
+      lane.rollingMax <= 0
+    ) {
+      continue;
+    }
+    const ratio = lane.sellable / lane.rollingMax;
+    const prior = surplusByResource.get(lane.resource);
+    if (prior === undefined || ratio > prior) {
+      surplusByResource.set(lane.resource, ratio);
+    }
+  }
+  const entries = MARKET_BASE_RESOURCE_CATALOG.map((resource) => {
+    const policy = MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE[resource];
+    const previous = previousByResource.get(resource);
+    const observedPrice = priceByResource.get(resource);
+    const ratchetFloor = input.ratchetFloorByResource[resource];
+    const emaUpdate =
+      observedPrice !== undefined
+        ? updateMarketBaseBookEma({
+            previousEma: previous?.bookEma ?? null,
+            previousObservedAt: previous?.bookObservedAt ?? 0,
+            observedPrice,
+            tick: input.tick,
+          })
+        : {
+            ema: previous?.bookEma ?? null,
+            observedAt: previous?.bookObservedAt ?? 0,
+          };
+    const surplusRatio = surplusByResource.get(resource) ?? null;
+    const ratchet =
+      Number.isFinite(ratchetFloor) && (ratchetFloor as number) > 0
+        ? (ratchetFloor as number)
+        : null;
+    const bookEma =
+      emaUpdate.ema !== null &&
+      Number.isFinite(emaUpdate.ema) &&
+      emaUpdate.ema > 0
+        ? emaUpdate.ema
+        : null;
+    const computation =
+      ratchet !== null && bookEma !== null
+        ? computeMarketBaseDynamicFloor({
+            policy,
+            ratchetFloor: ratchet,
+            bookEma,
+            surplusRatio,
+          })
+        : null;
+    let dynamicFloor: number | null = null;
+    if (computation && bookEma !== null) {
+      const sameDay =
+        previous !== undefined && previous.anchorDate === input.marketDate;
+      const previousAnchor = previous?.dailyAnchor ?? 0;
+      if (!Number.isFinite(previousAnchor) || previousAnchor <= 0) {
+        // 首次建立投影：当日首个投影值直接立锚，无限幅历史可比。
+        dynamicFloor = computation.rawDynamicFloor;
+      } else {
+        // 同日沿用当日锚；跨日限幅基准是前日锚，限幅后的投影成为新日锚。
+        dynamicFloor = clampMarketBaseDynamicFloorDailyDrop({
+          target: computation.rawDynamicFloor,
+          previous: previousAnchor,
+          maxDailyDynamicDrop: policy.maxDailyDynamicDrop,
+          daysAdvanced: sameDay ? 0 : 1,
+        });
+      }
+      const anchor = sameDay ? previousAnchor : (dynamicFloor as number);
+      return {
+        resource,
+        bookEma,
+        bookObservedAt: emaUpdate.observedAt,
+        lastObservedPrice: observedPrice ?? previous?.lastObservedPrice ?? null,
+        dynamicFloor,
+        inventoryFactor: computation.inventoryFactor,
+        surplusRatio,
+        dailyAnchor: anchor,
+        anchorDate: input.marketDate,
+      };
+    }
+    return {
+      resource,
+      bookEma,
+      bookObservedAt: emaUpdate.observedAt,
+      lastObservedPrice: observedPrice ?? previous?.lastObservedPrice ?? null,
+      dynamicFloor,
+      inventoryFactor: 0,
+      surplusRatio,
+      dailyAnchor: previous?.dailyAnchor ?? 0,
+      anchorDate: previous?.anchorDate ?? "",
+    };
+  });
+  return {
+    schemaVersion: 1,
+    updatedAt: input.tick,
+    entries,
+  };
+}

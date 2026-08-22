@@ -1,10 +1,14 @@
 import {
   createMarketBaseRoomAdmissionPolicy,
   createMarketBaseSharedPolicy,
+  MARKET_BASE_BOOK_EMA_TICK_TIME_CONSTANT,
   MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
+  MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE,
+  buildMarketBaseDynamicFloorState,
   marketBaseDerivedLaneSetFingerprint,
   reconcileMarketBaseDerivedLanes,
   reconcileMarketBaseSellerRooms,
+  updateMarketBaseBookEma,
   type MarketBaseRoomObservation,
   validateMarketBaseFloorBootstrap,
 } from "@/runtime/marketBaseResourcePolicy";
@@ -127,5 +131,107 @@ describe("marketBaseResourcePolicy room admission/incarnation/lane", () => {
     expect(lanes.laneSetFingerprint).toBe(
       marketBaseDerivedLaneSetFingerprint(lanes.lanes!),
     );
+  });
+});
+
+describe("Market Base 动态地板投影（bookEMA + 库存分量 + 日限幅）", () => {
+  it("bookEMA：首观测 seed、间隔自适应 α、无效输入保守回退", () => {
+    const seed = updateMarketBaseBookEma({
+      previousEma: null,
+      previousObservedAt: 0,
+      observedPrice: 500,
+      tick: 100,
+    });
+    expect(seed.ema).toBe(500);
+    expect(seed.observedAt).toBe(100);
+    // 一整个时间常数后 α=1−e^−1。
+    const next = updateMarketBaseBookEma({
+      previousEma: seed.ema,
+      previousObservedAt: seed.observedAt,
+      observedPrice: 400,
+      tick: 100 + MARKET_BASE_BOOK_EMA_TICK_TIME_CONSTANT,
+    });
+    expect(next.ema).toBeCloseTo(
+      (1 - Math.exp(-1)) * 400 + Math.exp(-1) * 500,
+      8,
+    );
+    // 非法观测价格不更新。
+    const invalid = updateMarketBaseBookEma({
+      previousEma: next.ema,
+      previousObservedAt: next.observedAt,
+      observedPrice: -1,
+      tick: 200,
+    });
+    expect(invalid.ema).toBe(next.ema);
+    expect(invalid.observedAt).toBe(next.observedAt);
+  });
+
+  it("投影：EMA 建立后按盈余比下探且受 hardFloor 与日限幅约束", () => {
+    const hPolicy = MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE.H;
+    const state = buildMarketBaseDynamicFloorState({
+      previous: undefined,
+      tick: 1_000,
+      marketDate: "2026-08-22",
+      bookBestPrices: [{ resource: "H", price: 460 }],
+      laneSurplus: [
+        // surplusRatio = 200_000/80_000 = 2.5 → factor=(2.5−1)/(3−1)=0.75
+        { resource: "H", sellable: 200_000, rollingMax: 80_000 },
+      ],
+      ratchetFloorByResource: { H: 520 },
+    });
+    const h = state.entries.find((entry) => entry.resource === "H")!;
+    expect(h.bookEma).toBe(460);
+    expect(h.surplusRatio).toBe(2.5);
+    expect(h.inventoryFactor).toBeCloseTo(0.75, 10);
+    // rawDynamic = max(hard, min(520, 460×(1+0.03×0.75))) = 470.35
+    expect(h.dynamicFloor).toBeCloseTo(460 * (1 + 0.03 * 0.75), 10);
+    expect(h.dailyAnchor).toBeCloseTo(460 * (1 + 0.03 * 0.75), 10);
+    expect(h.anchorDate).toBe("2026-08-22");
+    // 其余资源无观测：EMA null、dynamicFloor null、状态安全。
+    const x = state.entries.find((entry) => entry.resource === "X")!;
+    expect(x.bookEma).toBeNull();
+    expect(x.dynamicFloor).toBeNull();
+
+    // 次日订单簿崩到 300：EMA 拉低后投影受 15%/日限幅，
+    // 下限 = anchor × 0.85。
+    const decayed = buildMarketBaseDynamicFloorState({
+      previous: state,
+      tick: 30_000,
+      marketDate: "2026-08-23",
+      bookBestPrices: [{ resource: "H", price: 300 }],
+      laneSurplus: [
+        { resource: "H", sellable: 240_000, rollingMax: 80_000 },
+      ],
+      ratchetFloorByResource: { H: 520 },
+    });
+    const hNext = decayed.entries.find((entry) => entry.resource === "H")!;
+    expect(hNext.inventoryFactor).toBe(1);
+    const anchor = h.dailyAnchor;
+    // 次日 EMA≈302.8（Δt≈4 个时间常数）→ rawDynamic=max(hard 428, 302.8×1.03)。
+    // 跨日限幅下限 = 前日锚×0.85 ≈ 399.8 < 428 → 投影落在 hardFloor，
+    // 且新日锚立为限幅后的实际投影值。
+    expect(hNext.dynamicFloor).toBeCloseTo(
+      Math.max(hPolicy.hardFloor, anchor * 0.85, 300 * 1.03),
+      10,
+    );
+    expect(hNext.dailyAnchor).toBeCloseTo(hNext.dynamicFloor as number, 10);
+    expect(hNext.dynamicFloor).toBeGreaterThanOrEqual(anchor * 0.85 - 1e-9);
+    expect(hNext.dynamicFloor).toBeGreaterThanOrEqual(hPolicy.hardFloor);
+  });
+
+  it("无盈余输入时 inventoryFactor=0（纯 ratchet 语义，不下探）", () => {
+    const state = buildMarketBaseDynamicFloorState({
+      previous: undefined,
+      tick: 500,
+      marketDate: "2026-08-22",
+      bookBestPrices: [{ resource: "X", price: 505 }],
+      laneSurplus: [],
+      ratchetFloorByResource: { X: 589.857 },
+    });
+    const x = state.entries.find((entry) => entry.resource === "X")!;
+    expect(x.surplusRatio).toBeNull();
+    expect(x.inventoryFactor).toBe(0);
+    // listingFloor = 505×(1+0)=505 < ratchet → rawDynamic=505（仍受日锚=505）。
+    expect(x.dynamicFloor).toBeCloseTo(505, 10);
   });
 });
