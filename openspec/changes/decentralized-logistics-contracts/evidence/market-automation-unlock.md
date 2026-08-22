@@ -155,3 +155,15 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **生产预留**：维持 7 资源统一 `laneReserve=100k`（不差异化）。用户补充背景："我们的 X 产量很大"——X 盈余将长期偏高，surplusRatio/inventoryFactor 相应走高，动态地板的盈余下探机制（observe 中，enforce 待确认）正是该场景的设计目标。此背景供 observe 窗口验收与 enforce 决策参考。
 - **continuous 预授权**（用户："现在预授权"）：X/E6N59 canary 首笔成交进入 review_paused 后，操作员复核成交记录无异常（成交价 ≥ 当轮有效地板、数量 1,000、交易能耗 ≤ 上限、无异常 rejection）即可由我直接执行 review_paused → continuous 两步推进，无需再次询问。**边界**：预授权仅覆盖 X/E6N59 这一条 lane；复核发现任何异常则不推进、带详情回报；其他 lane 的 canary 武装仍需逐条显式授权。
 - 后续决策点（待我主动提交）：canary 成交 + observe 窗口 ≥1 天后的 **enforce 切换确认**（将携带 bookEMA/inventoryFactor/日锚投影轨迹数据）。
+
+### Observe 投影 live 首日轨迹与每日归档机制（2026-08-22 晚，tick 73182879）
+
+- **投影轨迹（anchorDate=2026-08-21，跨日锚首次实际生效前）**：
+  - H：bookEMA 582.54（lastObserved 580.44）→ dynamicFloor 561.655；
+  - L：bookEMA 548.29 → dynamicFloor 398.486；
+  - X：bookEMA 520.00（seed）→ dynamicFloor 535.6（=EMA×1.03，inventoryFactor=0）；
+  - K/O/U/Z 无 eligible BUY 观测（EMA null、dynamicFloor null、安全默认，挂单继续 ratchet 语义）。
+  - inventoryFactor 全 0 的解释：资源级 surplus 输入仅在 sellable>0 且 rollingCap>0 的可写 lane 上产生；当前可写 lane（含 canary X/E6N59）protection sellable 尚未超限。X 产量大的背景（用户决策记录）意味着盈余通道建立后 factor 将上行——这正是 enforce 验收要观察的分量。
+- **归档机制（任务 4.3）**：`monitor-data/market-dynamic-floor-projection.jsonl`（gitignored 本地归档）——canary 监视器（/tmp/deal-watch2.mjs）每 15 分钟读取 `dynamicFloorProjection` + ratchet + lane stages，按（投影 tick + 每资源 ema/df/anchor/anchorDate/factor + X ratchet 值）去重追加；`lastObservedPrice` 即"若 enforce 生效将以之为基准下探的 eligible 最高买价"（订单 ID 不驻留 Memory，为内存预算决策）。首条已落档。
+- **canary 状态**：X ratchet 589.857@2026-08-21（8/22 市场数据未发布，8/23 应用后预计 560.36）；lane stages {qualified:47, shadow:8(Z 隔离), canary:1}；成交预计 8/24–8/25（ratchet 日步 589.857→560.36→532.34→505.72 ≤ 出价 520）。
+- openspec `--strict` 校验通过（2026-08-22）；tasks 1.5/4.3/5.2 已补勾，仅剩 4.4（observe 窗口 ≥1 天验收 → enforce 用户确认，预计 8/23 晚起满足窗口条件）。
