@@ -125,3 +125,12 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **测试**：P0 四用例（r2 世界 round-trip 零损失 + epoch 3 + 链校验通过；cfg 未采纳拒；armed canary 拒——含 successor permit + shadow_qualification 证据的完整夹具；source_changed 拒）；P1 三纯函数用例 + 一接线用例（成功 run 后 X=700 book seed、无观测资源 EMA null）。**全套 518/518 绿**（预算 500 归并待办 5.1）。
 - **重资格进度**（过夜监视）：监视器两次被系统休眠中断；直接探查（tick 73175790）：56 lane 全 shadow、maxC=**99**（即将 qualified）；X ≥1,000 量最优 BUY **520**（> 经济地板 480）。时序约束：**迁移必须先于 canary 重授权**（armed canary 阻塞迁移）。
 - 待办：subagent P0 审查结论回填；部署 r3（策略表新字段 + 迁移 op + P1 投影同捆）→ console cfg 更新 → 原子迁移 → canary 重授权（用户已预批）→ ratchet 衰减至出价（~1.5 天）成交。
+
+### Subagent 审查回填与修复（2026-08-22，commit 7f65230）
+
+- **审查结论**：框架健全，但 1×P0 + 2×P1（均已在 7f65230 修复并补测试，521/521 绿）：
+  - **P0**：迁移 accept 未清除 persistent activation blocker——正常部署顺序（bundle 先行、cfg 滞后一步）必然带 `market_base_v3_config_rollback_after_cutover` 持久闩锁进入迁移，迁移后下 tick 以 `market_base_activation_blocker_anchor_missing` 重新闩锁，且二次迁移被 `no_policy_change` 拒绝（死锁回到手改 Memory）。修复：accept 在写干净 anchor 的同时 `delete data.baseResourceV3ActivationBlocker`，且**仅允许恢复 config-rollback 类 blocker**（其他事故闩锁拒绝 `market_base_migration_blocker_unrecoverable:<code>`，防止迁移掩盖）。原 4 用例未覆盖此路径（fixture 无 persistent blocker）。
+  - **P1**：① tombstone grant re-sign 携旧指纹无法通过新 permit 校验 → 迁移必败且闩锁态无其他出路。修复：迁移**省略** tombstone grant，链 tombstone checkpoint 自动排放留档。② accept 不复查 WAL 静默（source fingerprint 不含 pending/attemptSeq）→ propose→accept 窗口内新 pending 会被整体替换静默丢失。修复：accept 对称复查 `market_base_migration_wal_not_quiescent`。
+  - **新增 3 用例**：闩锁态端到端（迁移后 persistent blocker 清除 + anchor 干净）、非 rollback blocker 拒绝、tombstone 省略 round-trip（新 permit 无该 grant、链校验通过）。
+- **P1-2（已接受残留风险 + 运维约束）**：部署若恰好落在 WAL prepare→finalize 两 tick 之间，闩锁态引擎短路使 pending 永久停驻、迁移被 `wal_not_quiescent` 拒绝，需手工清理。约束：**迁移类部署选择零成交静默窗口**（当前 56 lane 全 shadow、无 pending，正是静默窗口；本次部署满足）。未来若迁移常态化，可考虑闩锁态 WAL drain 路径。
+- **P2 留档**：链校验自洽指纹重算开销（≤64 permit × 7 policy/permit/tick，FNV 快哈希，当前可接受，链变长需关注）；proposedPermit 快照双份 ledger 驻留（propose→accept 窗口应短，原子单表达式执行）；migration anchor 的 firstV3Permit 在已裁剪链上非链史首张（自洽无 bug，operator 观测注意）；detached replay builder 无生产引用；ratchet/trustedFloors 不随迁移重铸（本次 hardFloor 不变无影响，未来 hardFloor 迁移需评估 max() 语义）。
