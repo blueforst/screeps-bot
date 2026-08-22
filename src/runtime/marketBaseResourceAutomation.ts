@@ -2175,6 +2175,12 @@ export interface MarketBaseResourcePlanningScopeSnapshot {
   knownRoomNameCount: number;
   activeLaneCount: number;
   entries: readonly V3EntryInput[];
+  /**
+   * 候选定价/能耗证据缺失的资源级隔离 lane（仅 shadow-only 资源）。
+   * 这些 lane 本轮记 incomplete 观察（周期停涨、证据不清零），
+   * 不进 planner；writable 资源不走隔离而是整轮 fail-closed。
+   */
+  isolatedCandidateLaneIds?: readonly string[];
   energyShadow: PlanMarketDirectContinuousInput["energyShadow"];
   globalQuota: PlanMarketDirectContinuousInput["globalQuota"];
   writeContext: PlanMarketDirectContinuousInput["writeContext"];
@@ -3743,6 +3749,9 @@ function collectFullRead(
     MarketDirectContinuousDetachedBookSnapshot
   >();
   const shadowBookBlockers = new Map<string, string>();
+  const isolatedCandidateLaneIds = new Set(
+    scope.isolatedCandidateLaneIds ?? [],
+  );
   const terminalEvidence: unknown[] = [];
   const terminalReads: Record<string, MarketBaseResourceTerminalRead> = {};
   let rawOrderCount = 0;
@@ -3751,13 +3760,18 @@ function collectFullRead(
 
   // 资源级完整 book 每次 full read 只调用一次。即使只有 Shadow lane，
   // 也读取其资源 book；同资源的 writable/shadow lane 共享一个 clone。
+  // 候选证据被隔离的资源（全部 lane 都会记 incomplete）不再读 book。
   const evaluatedResources = scope.entries
-    .filter((entry) =>
-      entry.lanes.some(
-        (lane) =>
-          lane.lane.authorization === "writable" ||
-          sampledShadowSet.has(lane.laneId),
-      ),
+    .filter(
+      (entry) =>
+        !entry.lanes.every((lane) =>
+          isolatedCandidateLaneIds.has(lane.laneId),
+        ) &&
+        entry.lanes.some(
+          (lane) =>
+            lane.lane.authorization === "writable" ||
+            sampledShadowSet.has(lane.laneId),
+        ),
     )
     .map((entry) => entry.policy.resourceType)
     .sort(stableCompare);
@@ -4013,6 +4027,16 @@ function collectFullRead(
       const writable = lane.lane.authorization === "writable";
       const sampledShadow = sampledShadowSet.has(lane.laneId);
       if (!writable && !sampledShadow) continue;
+      if (isolatedCandidateLaneIds.has(lane.laneId)) {
+        // 资源级候选证据隔离：该 lane 记 incomplete 观察（周期停涨、
+        // 证据不清零），不进 planner，不消耗读取预算。
+        shadowObservations.push({
+          laneId: lane.laneId,
+          result: "incomplete",
+          blocker: "market_base_v3_candidate_evidence_stale",
+        });
+        continue;
+      }
       const shadowBookBlocker = sampledShadow
         ? shadowBookBlockers.get(lane.laneId)
         : undefined;
@@ -7753,6 +7777,11 @@ function liveScopeForRead(
     const entries: V3EntryInput[] = [];
     let energySignature: string | undefined;
     let energyPrice = 0;
+    // 候选证据缺失（如低流动性资源的 history 滑出信任窗口）只承载
+    // shadow lane 时，做资源级隔离：该资源 lane 本轮记 incomplete 观察
+    // （周期停涨、证据不清零），其余资源照常推进。承载 writable lane 的
+    // 资源仍整轮 fail-closed——成交安全不接受降级。
+    const candidateIsolatedResources = new Set<string>();
     for (const resource of MARKET_BASE_RESOURCE_CATALOG) {
       const policy = MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE[resource];
       const resourceLanes = scope.laneLifecycles.filter(
@@ -7822,6 +7851,13 @@ function liveScopeForRead(
             trustedEnergyFloor,
           )
         ) {
+          const resourceHasWritableLane = resourceLanes.some((lane) =>
+            laneAllowsRuntimeWrite(session, executorShard, lane),
+          );
+          if (!resourceHasWritableLane) {
+            candidateIsolatedResources.add(resource);
+            continue;
+          }
           return incomplete(
             `market_base_v3_candidate_incomplete:${runtimeCandidateKey(
               candidate.roomName,
@@ -8001,6 +8037,14 @@ function liveScopeForRead(
       knownRoomNameCount: scope.roomRegistry.knownRoomNames.length,
       activeLaneCount: scope.laneLifecycles.length,
       entries,
+      ...(candidateIsolatedResources.size > 0
+        ? {
+            isolatedCandidateLaneIds: scope.laneLifecycles
+              .filter((lane) => candidateIsolatedResources.has(lane.resource))
+              .map((lane) => lane.laneId)
+              .sort(stableCompare),
+          }
+        : {}),
       energyShadow: {
         complete: true,
         revision:

@@ -2027,3 +2027,52 @@ describe("Market Base 动态地板 observe 投影接线", () => {
     expect(h.dynamicFloor).toBeNull();
   });
 });
+
+describe("Market Base 候选证据缺失的资源级隔离", () => {
+  it("shadow-only 资源候选不完整只停该资源周期，其余 lane 照常推进", () => {
+    const { state, deps, input } = v3RuntimeFixture(false);
+    const baseInput = input();
+    const originalReadCandidates = baseInput.readCandidates!;
+    baseInput.readCandidates = () =>
+      originalReadCandidates().map((candidate) =>
+        candidate.resourceType === RESOURCE_ZYNTHIUM
+          ? {
+              ...candidate,
+              // 模拟低流动性资源 history 滑出信任窗口：定价证据不再
+              // 完整（ratchetFloor 低于高水位）。
+              historyTrusted: false,
+              ratchetFloor: 1,
+              effectiveNetFloor: 1,
+            }
+          : candidate,
+      );
+    const zLaneBefore = state.scope!.laneLifecycles.find(
+      (lane) => lane.resource === RESOURCE_ZYNTHIUM,
+    )!;
+    const before = state.scope!.laneLifecycles.map(
+      (lane) => lane.shadowEvidence.completeCycles,
+    );
+    const result = runMarketBaseResourceAutomation(state, baseInput, deps);
+    expect(result.planComplete).toBe(true);
+    expect(
+      result.rejectedByReason["market_base_v3_candidate_incomplete:W9N9:Z"],
+    ).toBeUndefined();
+    // shadow gate 每 planning 轮只采样部分 lane；断言收敛为：
+    // (1) 整轮不再被 Z 的陈旧证据 fail-closed（planComplete + 无拒绝）；
+    // (2) 被隔离的 Z lane 周期停涨且证据不清零；
+    // (3) 至少一条健康 lane 的周期 +1（观察通道恢复推进）。
+    const lanes = state.scope!.laneLifecycles;
+    const zAfter = lanes.find(
+      (lane) => lane.resource === RESOURCE_ZYNTHIUM,
+    )!;
+    const zBefore = state === undefined ? 0 : before[lanes.indexOf(zAfter)];
+    expect(zAfter.shadowEvidence.completeCycles).toBe(zBefore);
+    const advanced = lanes.filter(
+      (lane, index) =>
+        lane.resource !== RESOURCE_ZYNTHIUM &&
+        lane.shadowEvidence.completeCycles === before[index] + 1,
+    );
+    expect(advanced.length).toBeGreaterThan(0);
+    expect(zLaneBefore.stage).toBe("shadow");
+  });
+});
