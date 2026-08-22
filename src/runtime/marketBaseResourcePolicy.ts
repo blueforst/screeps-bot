@@ -24,7 +24,7 @@ export const MARKET_BASE_RESOURCE_EVIDENCE_SHA256 =
 export const MARKET_BASE_RESOURCE_EVIDENCE_IMPLEMENTATION_BLOB =
   "f55503b3d45352e14513e9928706251c82992ecc" as const;
 export const MARKET_BASE_RESOURCE_CONFIG_REVISION =
-  "market-base-resource-v3-r2" as const;
+  "market-base-resource-v3-r3" as const;
 
 export const MARKET_BASE_RESOURCE_MAX_ROOMS = 16 as const;
 export const MARKET_BASE_RESOURCE_MAX_KNOWN_ROOM_NAMES = 32 as const;
@@ -140,6 +140,17 @@ export interface MarketBaseResourcePolicy {
   readonly maxEligibleOrdersPriced: 200;
   readonly maxTransactionEnergy: 1000;
   readonly terminalEnergyReserve: 25000;
+  /**
+   * 动态价格阈值（observe/enforce 共用参数；mode=observe 时只投影不参与
+   * planner 合成）。listingBuffer 是 bookEMA 之上的最低溢价缓冲，
+   * maxDailyDynamicDrop 是 dynamicFloor 单日最大下移比例，surplusLow/High
+   * 把保护后盈余倍数线性映射为 inventoryFactor ∈ [0,1]。
+   */
+  readonly listingBuffer: number;
+  readonly maxDailyDynamicDrop: number;
+  readonly surplusLow: number;
+  readonly surplusHigh: number;
+  readonly dynamicFloorMode: "observe" | "enforce";
   readonly fingerprint: string;
 }
 
@@ -153,7 +164,7 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
 >([
   {
     policyId: "base-h-v3-r1",
-    policyRevision: "base-h-v3-r1",
+    policyRevision: "base-h-v3-r2",
     resource: "H",
     resourceClass: "base-mineral",
     hardFloor: 428,
@@ -170,10 +181,15 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxEligibleOrdersPriced: 200,
     maxTransactionEnergy: 1_000,
     terminalEnergyReserve: 25_000,
+    listingBuffer: 0.03,
+    maxDailyDynamicDrop: 0.15,
+    surplusLow: 1,
+    surplusHigh: 3,
+    dynamicFloorMode: "observe",
   },
   {
     policyId: "base-k-v3-r1",
-    policyRevision: "base-k-v3-r1",
+    policyRevision: "base-k-v3-r2",
     resource: "K",
     resourceClass: "base-mineral",
     hardFloor: 96,
@@ -190,10 +206,15 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxEligibleOrdersPriced: 200,
     maxTransactionEnergy: 1_000,
     terminalEnergyReserve: 25_000,
+    listingBuffer: 0.03,
+    maxDailyDynamicDrop: 0.15,
+    surplusLow: 1,
+    surplusHigh: 3,
+    dynamicFloorMode: "observe",
   },
   {
     policyId: "base-l-v3-r1",
-    policyRevision: "base-l-v3-r1",
+    policyRevision: "base-l-v3-r2",
     resource: "L",
     resourceClass: "base-mineral",
     hardFloor: 161,
@@ -210,10 +231,15 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxEligibleOrdersPriced: 200,
     maxTransactionEnergy: 1_000,
     terminalEnergyReserve: 25_000,
+    listingBuffer: 0.03,
+    maxDailyDynamicDrop: 0.15,
+    surplusLow: 1,
+    surplusHigh: 3,
+    dynamicFloorMode: "observe",
   },
   {
     policyId: "base-o-v3-r1",
-    policyRevision: "base-o-v3-r1",
+    policyRevision: "base-o-v3-r2",
     resource: "O",
     resourceClass: "base-mineral",
     hardFloor: 138,
@@ -230,10 +256,15 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxEligibleOrdersPriced: 200,
     maxTransactionEnergy: 1_000,
     terminalEnergyReserve: 25_000,
+    listingBuffer: 0.03,
+    maxDailyDynamicDrop: 0.15,
+    surplusLow: 1,
+    surplusHigh: 3,
+    dynamicFloorMode: "observe",
   },
   {
     policyId: "base-u-v3-r1",
-    policyRevision: "base-u-v3-r1",
+    policyRevision: "base-u-v3-r2",
     resource: "U",
     resourceClass: "base-mineral",
     hardFloor: 44,
@@ -250,10 +281,15 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxEligibleOrdersPriced: 200,
     maxTransactionEnergy: 1_000,
     terminalEnergyReserve: 25_000,
+    listingBuffer: 0.03,
+    maxDailyDynamicDrop: 0.15,
+    surplusLow: 1,
+    surplusHigh: 3,
+    dynamicFloorMode: "observe",
   },
   {
     policyId: "base-x-v3-r2",
-    policyRevision: "base-x-v3-r2",
+    policyRevision: "base-x-v3-r3",
     resource: "X",
     resourceClass: "base-mineral",
     hardFloor: 480,
@@ -270,10 +306,15 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxEligibleOrdersPriced: 200,
     maxTransactionEnergy: 1_000,
     terminalEnergyReserve: 25_000,
+    listingBuffer: 0.03,
+    maxDailyDynamicDrop: 0.15,
+    surplusLow: 1,
+    surplusHigh: 3,
+    dynamicFloorMode: "observe",
   },
   {
     policyId: "base-z-v3-r1",
-    policyRevision: "base-z-v3-r1",
+    policyRevision: "base-z-v3-r2",
     resource: "Z",
     resourceClass: "base-mineral",
     hardFloor: 43,
@@ -290,6 +331,11 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxEligibleOrdersPriced: 200,
     maxTransactionEnergy: 1_000,
     terminalEnergyReserve: 25_000,
+    listingBuffer: 0.03,
+    maxDailyDynamicDrop: 0.15,
+    surplusLow: 1,
+    surplusHigh: 3,
+    dynamicFloorMode: "observe",
   },
 ]);
 
@@ -301,6 +347,17 @@ function marketBaseResourcePolicyFingerprint(
     policy,
     schemaVersion: MARKET_BASE_RESOURCE_SCHEMA_VERSION,
   });
+}
+
+/**
+ * 重算单个 resource policy 的指纹。历史 permit 内嵌的 policy 可能是
+ * 旧常量版本（字段集合与当前不同），只要按其实际字段重算能对上内嵌
+ * fingerprint，就视为自洽。仅依赖 recipe domain/schemaVersion 稳定。
+ */
+export function computeMarketBaseResourcePolicyFingerprint(
+  policy: Omit<MarketBaseResourcePolicy, "fingerprint">,
+): string {
+  return marketBaseResourcePolicyFingerprint(policy);
 }
 
 export const MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
@@ -2525,4 +2582,180 @@ export function reconcileMarketBaseDerivedLanes(input: {
     retiredLaneIds: deepFreeze(retiredLaneIds),
     laneSetFingerprint: marketBaseDerivedLaneSetFingerprint(lanes),
   };
+}
+
+export interface MarketBaseLanePolicyMigrationResult {
+  readonly ok: boolean;
+  readonly blockers: readonly string[];
+  readonly lanes?: readonly MarketBaseDerivedLaneLifecycle[];
+  readonly laneSetFingerprint?: string;
+  readonly fingerprintChanges?: number;
+}
+
+/**
+ * 策略常量升级迁移：以当前策略指纹重铸每条 lane 的 stable 字段
+ * （laneId 由 policyId+roomInstanceId 派生，policyId 集合不变则 laneId
+ * 不变），原样携带 stage/status/shadowEvidence。它是显式 operator 迁移
+ * 的一部分，不经过常规 reconcile——常规 reconcile 要求 stable 指纹逐字
+ * 相等，会把任何策略升级判为 identity conflict。
+ */
+export function migrateMarketBaseDerivedLanes(input: {
+  readonly previous: readonly MarketBaseDerivedLaneLifecycle[];
+  readonly sharedPolicyFingerprint: string;
+}): MarketBaseLanePolicyMigrationResult {
+  const blockers: string[] = [];
+  if (!Array.isArray(input.previous) || input.previous.length === 0) {
+    return {
+      ok: false,
+      blockers: ["migration_previous_lanes_missing"],
+    };
+  }
+  const policyById = new Map(
+    MARKET_BASE_RESOURCE_POLICIES.map((policy) => [policy.policyId, policy]),
+  );
+  const seen = new Set<string>();
+  const lanes: MarketBaseDerivedLaneLifecycle[] = [];
+  let fingerprintChanges = 0;
+  for (const previous of input.previous) {
+    if (!validExistingLane(previous)) {
+      blockers.push(`migration_previous_lane_invalid:${previous?.laneId}`);
+      continue;
+    }
+    const policy = policyById.get(previous.resourcePolicyId);
+    if (!policy || policy.resource !== previous.resource) {
+      // policyId 是 lane 身份的一部分；迁移不允许改名/增删策略身份。
+      blockers.push(`migration_policy_identity_unstable:${previous.laneId}`);
+      continue;
+    }
+    if (seen.has(previous.laneId)) {
+      blockers.push(`migration_previous_lane_duplicate:${previous.laneId}`);
+      continue;
+    }
+    seen.add(previous.laneId);
+    const stable = {
+      laneId: deriveMarketBaseLaneId({
+        resourcePolicyId: policy.policyId,
+        roomInstanceId: previous.roomInstanceId,
+      }),
+      resource: policy.resource,
+      resourcePolicyId: policy.policyId,
+      resourcePolicyFingerprint: policy.fingerprint,
+      roomInstanceId: previous.roomInstanceId,
+      sellerRoomName: previous.sellerRoomName,
+      roomFingerprint: previous.roomFingerprint,
+      sharedPolicyFingerprint: input.sharedPolicyFingerprint,
+    };
+    if (stable.laneId !== previous.laneId) {
+      blockers.push(`migration_lane_identity_drift:${previous.laneId}`);
+      continue;
+    }
+    if (
+      previous.resourcePolicyFingerprint !== policy.fingerprint ||
+      previous.sharedPolicyFingerprint !== input.sharedPolicyFingerprint
+    ) {
+      fingerprintChanges += 1;
+    }
+    lanes.push(
+      deepFreeze({
+        ...stable,
+        stage: previous.stage,
+        status: previous.status,
+        shadowEvidence: previous.shadowEvidence,
+        stableFingerprint: laneStableFingerprint(stable),
+      }),
+    );
+  }
+  if (blockers.length > 0 || lanes.length === 0) {
+    return {
+      ok: false,
+      blockers: deepFreeze(blockers.sort()),
+    };
+  }
+  lanes.sort((left, right) => left.laneId.localeCompare(right.laneId));
+  return {
+    ok: true,
+    blockers: deepFreeze([]),
+    lanes: deepFreeze(lanes),
+    laneSetFingerprint: marketBaseDerivedLaneSetFingerprint(lanes),
+    fingerprintChanges,
+  };
+}
+
+export interface MarketBaseDynamicFloorComputation {
+  readonly inventoryFactor: number;
+  readonly rawDynamicFloor: number;
+}
+
+/**
+ * 动态地板纯计算（observe 投影与未来 enforce 共用）：
+ * dynamicFloor = max(hardFloor, min(ratchetFloor, bookEma × (1 + listingBuffer × inventoryFactor)))。
+ * bookFloor 只降不升地板上界、永不击穿 hardFloor；surplusRatio 缺失时
+ * inventoryFactor=0（退化为纯 ratchet）。日降幅钳制由调用方基于持久化
+ * 的前值另行应用（clampMarketBaseDynamicFloorDailyDrop）。
+ */
+export function computeMarketBaseDynamicFloor(input: {
+  readonly policy: MarketBaseResourcePolicy;
+  readonly ratchetFloor: number;
+  readonly bookEma: number | null;
+  readonly surplusRatio: number | null;
+}): MarketBaseDynamicFloorComputation {
+  const { policy } = input;
+  let inventoryFactor = 0;
+  if (
+    input.surplusRatio !== null &&
+    Number.isFinite(input.surplusRatio) &&
+    input.surplusRatio >= 0 &&
+    policy.surplusHigh > policy.surplusLow
+  ) {
+    inventoryFactor = Math.min(
+      1,
+      Math.max(
+        0,
+        (input.surplusRatio - policy.surplusLow) /
+          (policy.surplusHigh - policy.surplusLow),
+      ),
+    );
+  }
+  if (
+    input.bookEma === null ||
+    !Number.isFinite(input.bookEma) ||
+    input.bookEma <= 0 ||
+    !Number.isFinite(input.ratchetFloor) ||
+    input.ratchetFloor <= 0
+  ) {
+    return { inventoryFactor, rawDynamicFloor: input.ratchetFloor };
+  }
+  const listingFloor =
+    input.bookEma * (1 + policy.listingBuffer * inventoryFactor);
+  return {
+    inventoryFactor,
+    rawDynamicFloor: Math.max(
+      policy.hardFloor,
+      Math.min(input.ratchetFloor, listingFloor),
+    ),
+  };
+}
+
+/** dynamicFloor 单日最大下移钳制；daysAdvanced 聚合多日时按指数叠加。 */
+export function clampMarketBaseDynamicFloorDailyDrop(input: {
+  readonly target: number;
+  readonly previous: number;
+  readonly maxDailyDynamicDrop: number;
+  readonly daysAdvanced: number;
+}): number {
+  if (
+    !Number.isFinite(input.target) ||
+    !Number.isFinite(input.previous) ||
+    input.previous <= 0 ||
+    !Number.isFinite(input.maxDailyDynamicDrop) ||
+    input.maxDailyDynamicDrop < 0 ||
+    input.maxDailyDynamicDrop >= 1 ||
+    !Number.isSafeInteger(input.daysAdvanced) ||
+    input.daysAdvanced < 0
+  ) {
+    return input.target;
+  }
+  const floor =
+    input.previous * Math.pow(1 - input.maxDailyDynamicDrop, input.daysAdvanced);
+  return Math.max(input.target, floor);
 }

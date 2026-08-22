@@ -146,6 +146,13 @@ declare global {
         [key: string]: unknown;
       })
     | undefined;
+  var proposeMarketBaseResourcePolicyMigration:
+    | (() => {
+        ok: boolean;
+        error?: string;
+        [key: string]: unknown;
+      })
+    | undefined;
   var acceptMarketBaseResourcePermit:
     | ((
         proposalId: string,

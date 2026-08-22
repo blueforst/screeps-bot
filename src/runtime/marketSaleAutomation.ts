@@ -91,6 +91,7 @@ import {
   createMarketBaseSharedPolicy,
   isMarketBaseResource,
   marketBaseDerivedLaneLifecycleCheckpointCommitment,
+  migrateMarketBaseDerivedLanes,
   validateMarketBaseDerivedLaneLifecycle,
   type MarketBaseDerivedLaneLifecycle,
   type MarketBaseResource,
@@ -2724,6 +2725,7 @@ type OperatorGlobals = typeof global & {
   proposeMarketBaseResourcePermit?: (
     request?: MarketBaseResourcePermitRequest,
   ) => OperatorResult;
+  proposeMarketBaseResourcePolicyMigration?: () => OperatorResult;
   acceptMarketBaseResourcePermit?: (proposalId: string) => OperatorResult;
   marketBaseResourceStatus?: () => unknown;
 };
@@ -6214,6 +6216,8 @@ function registerOperatorControls(): void {
   operatorGlobals.marketDirectContinuousStatus = marketDirectContinuousStatus;
   operatorGlobals.proposeMarketBaseResourcePermit =
     proposeMarketBaseResourcePermit;
+  operatorGlobals.proposeMarketBaseResourcePolicyMigration =
+    proposeMarketBaseResourcePolicyMigration;
   operatorGlobals.acceptMarketBaseResourcePermit =
     acceptMarketBaseResourcePermit;
   operatorGlobals.marketBaseResourceStatus = marketBaseResourceStatus;
@@ -9644,9 +9648,372 @@ function copyMarketSaleDataForOperator(
   };
 }
 
+function marketBasePolicyMigrationSourceFingerprint(
+  state: MarketBaseResourceV3RuntimeState,
+): string | undefined {
+  const permit = currentMarketBaseV3Permit(state);
+  if (!state.scope || !state.permitChain || !state.ledger || !permit) {
+    return undefined;
+  }
+  return canonicalStableHashV1({
+    domain: "market-base-resource:policy-migration-source-v1",
+    permitId: permit.permitId,
+    permitHead: permit.permitHead,
+    epoch: state.permitChain.currentPermitEpoch,
+    receiptHeadHash: state.ledger.receiptHeadHash,
+    laneSetFingerprint: state.scope.laneSetFingerprint,
+    sharedPolicyFingerprint: state.scope.sharedPolicyFingerprint,
+  });
+}
+
+function buildMarketBasePolicyMigrationAnchor(input: {
+  proposal: MarketBaseResourcePermitProposal;
+  scope: MarketBaseResourceScopeState;
+  direct: MarketDirectContinuousAutomationState;
+  acceptedAt: number;
+}): MarketBaseResourceActivationAnchor {
+  const firstPermit = input.proposal.targetPermitChain.retainedPermits.find(
+    (record) => record.schemaVersion === 3,
+  );
+  const cutover = input.proposal.targetPermitChain.v2EventCutoverCheckpoint;
+  if (
+    input.proposal.kind !== "v3-policy-migration" ||
+    !firstPermit ||
+    firstPermit.schemaVersion !== 3 ||
+    !cutover ||
+    input.proposal.targetPermitChain.legacyV2GrantSuspended !== true
+  ) {
+    throw new TypeError("market_base_migration_anchor_invalid");
+  }
+  const payload: MarketBaseResourceActivationAnchorPayload = {
+    schemaVersion: 1,
+    hashRevision: MARKET_BASE_RESOURCE_ACTIVATION_ANCHOR_REVISION,
+    accountIdentity: input.proposal.accountIdentity,
+    executorShard: input.proposal.executorShard,
+    acceptedAt: input.acceptedAt,
+    updatedAt: input.acceptedAt,
+    operatorAuthorizationFingerprint:
+      input.proposal.operatorAuthorizationFingerprint,
+    cutoverCheckpointHash: cutover.checkpointHash,
+    legacyV2QuiescenceCommitment: marketBaseLegacyV2QuiescenceCommitment(
+      input.direct,
+    ),
+    firstV3PermitEpoch: firstPermit.epoch,
+    firstV3PermitId: firstPermit.permitId,
+    firstV3PermitHead: firstPermit.permitHead,
+    laneTombstoneCheckpointCommitment:
+      input.proposal.targetPermitChain.laneTombstoneCheckpoint
+        .checkpointCommitment,
+    laneTombstoneDischargeCheckpointCommitment:
+      input.scope.laneTombstoneDischargeCheckpoint.checkpointCommitment,
+    laneLifecycleHighWater: marketBaseResourceLaneLifecycleHighWater(
+      input.scope,
+    ),
+    scopeCommitment: marketBaseResourceOuterScopeCommitment(input.scope),
+    roomRegistryCheckpointCommitment:
+      input.scope.roomRegistry.checkpointCommitment,
+    roomIncarnationHighWater: marketBaseResourceRoomIncarnationHighWater(
+      input.scope,
+    ),
+    laneLifecycleCommitment: marketBaseResourceLaneLifecycleCommitment(
+      input.scope,
+    ),
+    ...marketBaseResourceRuntimeSafetyProjection(
+      {
+        ledger: input.proposal.targetLedger,
+        permitChain: input.proposal.targetPermitChain,
+        pricingRatchet: input.proposal.targetPricingRatchet,
+        hardBlocker: undefined,
+      },
+      input.proposal.targetTrustedFloors,
+    ),
+    activationBlocker: null,
+  };
+  return {
+    ...payload,
+    anchorHash: marketBaseResourceActivationAnchorHash(payload),
+  };
+}
+
+/**
+ * 策略常量升级迁移提案：以当前常量派生的新 sharedPolicy/resourcePolicies
+ * 对全部 active grant re-sign，laneId/stage/status/shadowEvidence 原样保留。
+ * 这是 permit 链唯一的常量升级路径；不经它的常量变更维持 rollback 闩锁。
+ */
+function buildMarketBasePolicyMigrationProposal(
+  data: MarketSaleDataState,
+  direct: MarketDirectContinuousAutomationState,
+  state: MarketBaseResourceV3RuntimeState,
+  config: ResolvedMarketSaleAutomationConfig,
+  tick: number,
+): MarketBaseResourcePermitProposal {
+  const accountIdentity = readLiveMarketBaseAccountIdentity();
+  if (
+    !accountIdentity ||
+    (Game.shard?.name || "") !== "shard1" ||
+    !state.scope ||
+    !state.permitChain ||
+    !state.ledger ||
+    !state.pricingRatchet
+  ) {
+    throw new TypeError("market_base_migration_state_incomplete");
+  }
+  if (
+    state.ledger.pending ||
+    Object.keys(direct.quarantinedPendingDirectDeals).length > 0
+  ) {
+    throw new TypeError("market_base_migration_wal_not_quiescent");
+  }
+  const configReasons = marketBaseResourceV3ConfigMismatchReasons(config);
+  if (configReasons.length > 0) {
+    // cfg 必须先采纳新常量（console 顺序：部署 → cfg → 迁移）。
+    throw new TypeError(configReasons[0]);
+  }
+  const priorPermit = currentMarketBaseV3Permit(state);
+  if (!priorPermit) {
+    throw new TypeError("market_base_migration_permit_missing");
+  }
+  const sharedPolicy = createMarketBaseSharedPolicy(accountIdentity);
+  if (priorPermit.sharedPolicy.fingerprint === sharedPolicy.fingerprint) {
+    throw new TypeError("market_base_migration_no_policy_change");
+  }
+  const migration = migrateMarketBaseDerivedLanes({
+    previous: state.scope.laneLifecycles,
+    sharedPolicyFingerprint: sharedPolicy.fingerprint,
+  });
+  if (!migration.ok || !migration.lanes || !migration.laneSetFingerprint) {
+    throw new TypeError(
+      migration.blockers[0] || "market_base_migration_lanes_invalid",
+    );
+  }
+  const targetScope: MarketBaseResourceScopeState = {
+    ...state.scope,
+    sharedPolicyFingerprint: sharedPolicy.fingerprint,
+    laneLifecycles: migration.lanes,
+    laneSetFingerprint: migration.laneSetFingerprint,
+    updatedAt: tick,
+  };
+  const lifecycleBlocker = validateMarketBaseScopeLifecycleEvidence(targetScope);
+  if (lifecycleBlocker) {
+    throw new TypeError(lifecycleBlocker);
+  }
+  const laneById = new Map(migration.lanes.map((lane) => [lane.laneId, lane]));
+  const priorQualificationByLane = new Map(
+    priorPermit.reviewedEvidence
+      .filter((entry) => entry.kind === "shadow_qualification")
+      .map((entry) => [entry.laneId, entry]),
+  );
+  if (
+    priorPermit.reviewedEvidence.some(
+      (entry) => entry.kind !== "shadow_qualification",
+    )
+  ) {
+    // canary/continuous/suspension review 绑定尚未支持跨策略迁移；出现时
+    // 需先按各自协议解决（成交确认/复核），再执行迁移。
+    throw new TypeError("market_base_migration_active_reviews_unsupported");
+  }
+  const activeGrants: MarketBaseResourceSignedLaneGrant[] = [];
+  const reviewedEvidence: MarketBaseResourceReviewedEvidence[] = [];
+  for (const priorGrant of priorPermit.signedLaneGrants) {
+    if (priorGrant.status !== "active") {
+      activeGrants.push(tombstonedMarketBaseGrant(priorGrant));
+      continue;
+    }
+    const lane = laneById.get(priorGrant.laneId);
+    if (!lane) {
+      throw new TypeError(
+        `market_base_migration_lane_missing:${priorGrant.laneId}`,
+      );
+    }
+    if (
+      priorGrant.stage === "canary" &&
+      priorGrant.newDealGrant === "enabled"
+    ) {
+      // 单 canary 坑位：armed canary 必须先成交（review_paused）再迁移。
+      throw new TypeError(
+        `market_base_migration_canary_unresolved:${priorGrant.laneId}`,
+      );
+    }
+    const grant = buildMarketBaseResourceSignedLaneGrant({
+      lane: {
+        ...lane,
+        status:
+          priorGrant.newDealGrant === "enabled" ? "writable" : "suspended",
+      },
+      stage: priorGrant.stage,
+      status: "active",
+      newDealGrant: priorGrant.newDealGrant,
+    });
+    activeGrants.push(grant);
+    if (priorQualificationByLane.has(priorGrant.laneId)) {
+      reviewedEvidence.push({
+        laneId: priorGrant.laneId,
+        kind: "shadow_qualification",
+        evidenceKey: canonicalStableHashV1({
+          domain: "market-base-resource:shadow-qualification-review-v1",
+          laneId: priorGrant.laneId,
+          lifecycleEvidenceDigest: grant.lifecycleEvidenceDigest,
+        }),
+        digest: grant.lifecycleEvidenceDigest,
+      });
+    }
+  }
+  const permitChain = state.permitChain;
+  const ledger = state.ledger;
+  const permit = buildMarketBaseResourcePermit({
+    epoch: permitChain.permitEpochHighWater + 1,
+    accountIdentity,
+    sharedPolicy,
+    resourcePolicies: MARKET_BASE_RESOURCE_POLICIES,
+    ratchetHighWater: priorPermit.ratchetHighWater,
+    signedLaneGrants: activeGrants,
+    reviewedEvidence,
+    previousPermitId: permitChain.currentPermitId,
+    previousPermitHead: permitChain.permitChainHead,
+    previousLedgerHead: ledger.receiptHeadHash,
+    createdAt: tick,
+    operatorAuthorizationFingerprint:
+      marketBaseResourceOperatorAuthorizationFingerprint(config),
+  });
+  const receiptReferences = marketBaseResourceRetainedReceiptPermitReferences(
+    ledger,
+    permitChain,
+  );
+  const appended = appendMarketBaseResourcePermit(permitChain, permit, {
+    tick,
+    currentShard: "shard1",
+    currentLedgerHead: ledger.receiptHeadHash,
+    currentLedgerCheckpointHash: ledger.checkpoint.checkpointHash,
+    currentLedgerPermitAnchorHash: ledger.permitAnchor.anchorHash,
+    currentDerivedLanes: migration.lanes,
+    currentLifecycleCheckpointCommitment:
+      marketBaseDerivedLaneLifecycleCheckpointCommitment(migration.lanes),
+    hasPending: false,
+    hasQuarantine: false,
+    hasGap: false,
+    hasUnmatchedReservation: false,
+    receiptPermitReferences: receiptReferences,
+  });
+  if (appended.status === "rejected" || appended.status === "conflict") {
+    throw new TypeError(`market_base_migration_${appended.reason}`);
+  }
+  const reboundLedger = rebindMarketBaseResourceLedgerPermitAnchor(
+    ledger,
+    appended.state,
+  );
+  const ledgerValidation = validateMarketBaseResourceLedger(
+    reboundLedger,
+    tick,
+    appended.state,
+  );
+  if (!ledgerValidation.ok) {
+    throw new TypeError(
+      ledgerValidation.reason || "market_base_migration_ledger_invalid",
+    );
+  }
+  const sourceFingerprint = marketBasePolicyMigrationSourceFingerprint(state);
+  if (!sourceFingerprint) {
+    throw new TypeError("market_base_migration_state_incomplete");
+  }
+  return inertMarketBaseProposal({
+    schemaVersion: 3,
+    kind: "v3-policy-migration",
+    proposedAt: tick,
+    sourceStateFingerprint: sourceFingerprint,
+    operatorAuthorizationFingerprint:
+      marketBaseResourceOperatorAuthorizationFingerprint(config),
+    accountIdentity,
+    executorShard: "shard1",
+    rosterFingerprint: targetScope.rosterFingerprint,
+    laneSetFingerprint: targetScope.laneSetFingerprint,
+    targetScope,
+    targetPermitChain: appended.state,
+    targetLedger: reboundLedger,
+    targetPricingRatchet: state.pricingRatchet,
+    targetTrustedFloors: cloneMarketBaseOperatorValue(data.trustedFloors),
+  });
+}
+
+/**
+ * 策略常量升级迁移提案（operator 两步协议第一步）。与普通 propose 不同：
+ * 允许在 rollback 闩锁态执行——部署新常量 → console 更新 cfg → 本提案 →
+ * accept 即完成零损失升级（事故恢复与常态升级共用同一路径）。
+ */
+export function proposeMarketBaseResourcePolicyMigration(): OperatorResult {
+  enforceLegacyMarketSafetyLatch();
+  const sourceData = ensureDataState();
+  const sourceDirect = sourceData.directAutomation;
+  if (!isContinuousDirectState(sourceDirect)) {
+    return { ok: false, error: "continuous_direct_state_required" };
+  }
+  const config = resolveMarketSaleAutomationConfig();
+  const configBlocker = marketBaseResourceV3ConfigBlocker(config);
+  if (configBlocker) {
+    return { ok: false, error: configBlocker };
+  }
+  let commitAttempted = false;
+  try {
+    const data = copyMarketSaleDataForOperator(sourceData);
+    const direct = data.directAutomation;
+    if (!isContinuousDirectState(direct)) {
+      throw new TypeError("continuous_direct_state_required");
+    }
+    const state = direct.baseResourceV3;
+    if (!state) {
+      throw new TypeError("market_base_migration_state_incomplete");
+    }
+    const proposal = buildMarketBasePolicyMigrationProposal(
+      data,
+      direct,
+      state,
+      config,
+      Game.time,
+    );
+    const base = direct.baseResourceV3 ?? state;
+    direct.baseResourceV3 = {
+      ...base,
+      proposedPermit: proposal,
+    };
+    appendAudit(data, {
+      action: "market_base_permit_proposed:v3-policy-migration",
+      requestId: proposal.proposalId,
+    });
+    data.pendingDirectDeals = direct.pendingDirectDeals;
+    data.directAutomation = direct;
+    commitAttempted = true;
+    commitMarketSaleDataSnapshot(data);
+    return {
+      ok: true,
+      proposalId: proposal.proposalId,
+      kind: proposal.kind,
+      laneCount: proposal.targetScope.laneLifecycles.length,
+    };
+  } catch (error) {
+    const reason =
+      error instanceof Error
+        ? error.message
+        : "market_base_policy_migration_proposal_failed";
+    if (commitAttempted) {
+      return {
+        ok: false,
+        error: "market_base_policy_migration_commit_failed",
+      };
+    }
+    const rejected = copyMarketSaleDataForOperator(sourceData);
+    appendAudit(rejected, {
+      action: `market_base_permit_proposal_rejected:${reason.slice(0, 80)}`,
+    });
+    try {
+      commitMarketSaleDataSnapshot(rejected);
+    } catch {
+      // 单次 replacement 失败时原 canonical container 保持不变。
+    }
+    return { ok: false, error: reason };
+  }
+}
+
 export function proposeMarketBaseResourcePermit(
-  request: MarketBaseResourcePermitRequest = {},
-): OperatorResult {
+  request: MarketBaseResourcePermitRequest = {},): OperatorResult {
   enforceLegacyMarketSafetyLatch();
   const sourceData = ensureDataState();
   const sourceDirect = sourceData.directAutomation;
@@ -10088,6 +10455,75 @@ export function acceptMarketBaseResourcePermit(
       proposal.executorShard !== (Game.shard?.name || "")
     ) {
       throw new TypeError("market_base_proposal_authorization_changed");
+    }
+    if (proposal.kind === "v3-policy-migration") {
+      // 迁移允许在 rollback 闩锁态执行（这正是它的恢复语义）；来源校验用
+      // 迁移专属指纹，然后整体替换 scope/chain/ledger 并重铸干净 anchor。
+      if (
+        marketBasePolicyMigrationSourceFingerprint(state) !==
+        proposal.sourceStateFingerprint
+      ) {
+        throw new TypeError("market_base_proposal_source_changed");
+      }
+      const migrationNext: MarketBaseResourceV3RuntimeState = {
+        ...state,
+        scope: cloneMarketBaseOperatorValue(proposal.targetScope),
+        permitChain: cloneMarketBaseOperatorValue(proposal.targetPermitChain),
+        ledger: cloneMarketBaseOperatorValue(proposal.targetLedger),
+        pricingRatchet: state.pricingRatchet!,
+        cutoverLatched: true,
+        lastLifecycleAppliedAttemptSeq:
+          proposal.targetLedger.finalizedAttemptSeq,
+      };
+      delete migrationNext.proposedPermit;
+      delete migrationNext.blocker;
+      delete migrationNext.readinessAuthorization;
+      delete migrationNext.preflightAt;
+      const migrationTrustedFloors = synchronizeMarketBaseTrustedFloors(
+        data.trustedFloors,
+        migrationNext.pricingRatchet!,
+        Game.time,
+      );
+      const migrationAnchor = buildMarketBasePolicyMigrationAnchor({
+        proposal,
+        scope: migrationNext.scope!,
+        direct,
+        acceptedAt: Game.time,
+      });
+      const migrationNestedBlocker =
+        validateMarketBaseNestedActivationState(
+          migrationNext,
+          migrationAnchor,
+          migrationTrustedFloors,
+        );
+      if (migrationNestedBlocker) {
+        throw new TypeError(migrationNestedBlocker);
+      }
+      direct.baseResourceV3 = migrationNext;
+      data.trustedFloors = migrationTrustedFloors;
+      data.baseResourceV3ActivationAnchor = migrationAnchor;
+      data.baseResourceV3ActivationAnchorMirror =
+        cloneMarketBaseOperatorValue(migrationAnchor);
+      delete data.baseResourceV3ProposedTransition;
+      delete data.baseResourceV3ProposedContinuousReview;
+      appendAudit(data, {
+        action: "market_base_permit_accepted:v3-policy-migration",
+        requestId: normalizedId,
+      });
+      data.pendingDirectDeals = direct.pendingDirectDeals;
+      data.directAutomation = direct;
+      commitAttempted = true;
+      commitMarketSaleDataSnapshot(data);
+      return {
+        ok: true,
+        proposalId: normalizedId,
+        kind: proposal.kind,
+        permitId:
+          proposal.targetPermitChain.retainedPermits[
+            proposal.targetPermitChain.retainedPermits.length - 1
+          ].permitId,
+        permitEpoch: proposal.targetPermitChain.currentPermitEpoch,
+      };
     }
     const sourceBlocker =
       proposal.kind === "v2-cutover"

@@ -21,6 +21,7 @@ import {
   type MarketBaseSellerRoomState,
   type MarketBaseSharedPolicy,
   marketBaseDerivedLaneLifecycleCheckpointCommitment,
+  computeMarketBaseResourcePolicyFingerprint,
   validateMarketBaseDerivedLaneLifecycle,
 } from "@/runtime/marketBaseResourcePolicy";
 import {
@@ -937,6 +938,53 @@ function validateResourcePolicies(
   );
 }
 
+/**
+ * 历史permit的自洽校验：不与当前部署常量比对，只要求内嵌 policy 集合
+ * （1）覆盖且仅覆盖 catalog 资源、（2）每条 fingerprint 能按其实际字段
+ * 重算复原、（3）与同一 permit 内嵌的 sharedPolicy.resourcePolicyFingerprints
+ * 名单一致。permit 的 selfHash 已保证内容不可篡改，这里补的是结构性
+ * 自洽，使常量升级（re-sign 迁移）后链上旧版本 permit 仍可验证。
+ */
+function selfConsistentResourcePolicies(
+  sharedPolicy: MarketBaseSharedPolicy,
+  policies: readonly MarketBaseResourcePolicy[],
+): boolean {
+  if (
+    policies.length !== MARKET_BASE_RESOURCE_CATALOG.length ||
+    policies.some(
+      (policy, index) =>
+        policy.resource !== MARKET_BASE_RESOURCE_CATALOG[index] ||
+        typeof policy.policyId !== "string" ||
+        policy.policyId.length === 0 ||
+        !isDigest(policy.fingerprint),
+    )
+  ) {
+    return false;
+  }
+  if (
+    policies.some((policy) => {
+      const { fingerprint: _fingerprint, ...raw } = policy;
+      return (
+        policy.fingerprint !== computeMarketBaseResourcePolicyFingerprint(raw)
+      );
+    })
+  ) {
+    return false;
+  }
+  const policyFingerprints = policies
+    .map((policy) => policy.fingerprint)
+    .sort();
+  const sharedFingerprints = [
+    ...sharedPolicy.resourcePolicyFingerprints,
+  ].sort();
+  return (
+    policyFingerprints.length === sharedFingerprints.length &&
+    policyFingerprints.every(
+      (fingerprint, index) => fingerprint === sharedFingerprints[index],
+    )
+  );
+}
+
 function validateSignedLaneGrants(
   grants: readonly MarketBaseResourceSignedLaneGrant[],
   sharedPolicy: MarketBaseSharedPolicy,
@@ -1119,8 +1167,14 @@ export interface BuildMarketBaseResourcePermitInput {
   readonly operatorAuthorizationFingerprint: string;
 }
 
-export function buildMarketBaseResourcePermit(
+type MarketBaseResourcePolicySetValidator = (
+  sharedPolicy: MarketBaseSharedPolicy,
+  policies: readonly MarketBaseResourcePolicy[],
+) => boolean;
+
+function mintMarketBaseResourcePermit(
   input: BuildMarketBaseResourcePermitInput,
+  policySetValidator: MarketBaseResourcePolicySetValidator,
 ): MarketBaseResourcePermit {
   if (
     !isPositiveSafeInteger(input.epoch) ||
@@ -1142,7 +1196,7 @@ export function buildMarketBaseResourcePermit(
   const signedLaneGrants = sortGrants(input.signedLaneGrants);
   const ratchetHighWater = sortedRatchetHighWater(input.ratchetHighWater);
   const reviewedEvidence = sortReviewedEvidence(input.reviewedEvidence ?? []);
-  if (!validateResourcePolicies(input.sharedPolicy, resourcePolicies)) {
+  if (!policySetValidator(input.sharedPolicy, resourcePolicies)) {
     throw new TypeError("invalid v3 permit resource policies");
   }
   if (!validateMarketBaseResourceRatchetHighWater(ratchetHighWater)) {
@@ -1204,6 +1258,27 @@ export function buildMarketBaseResourcePermit(
     selfHash,
     permitHead: permitHeadFor(input.previousPermitHead, permitId, selfHash),
   }) as MarketBaseResourcePermit;
+}
+
+export function buildMarketBaseResourcePermit(
+  input: BuildMarketBaseResourcePermitInput,
+): MarketBaseResourcePermit {
+  return mintMarketBaseResourcePermit(input, validateResourcePolicies);
+}
+
+/**
+ * 仅供测试/历史重放：按自洽规则铸造 v3 permit，允许使用非当前部署
+ * 版本的 policy 集合（用于复现"常量升级前"的世界状态）。生产路径
+ * 必须走 buildMarketBaseResourcePermit——它要求 policy 集合与当前
+ * 部署常量逐条一致，防止铸造出与部署代码脱节的 permit。
+ */
+export function buildDetachedMarketBaseResourcePermitForReplay(
+  input: BuildMarketBaseResourcePermitInput,
+): MarketBaseResourcePermit {
+  return mintMarketBaseResourcePermit(
+    input,
+    selfConsistentResourcePolicies,
+  );
 }
 
 export interface MarketBaseResourcePermitBinding {
@@ -1814,7 +1889,10 @@ function validV3PermitSelfIdentity(permit: MarketBaseResourcePermit): boolean {
     permitId === permitIdFor(permit.epoch, expectedSelfHash) &&
     permitHead ===
       permitHeadFor(permit.previousPermitHead, permitId, expectedSelfHash) &&
-    validateResourcePolicies(permit.sharedPolicy, permit.resourcePolicies) &&
+    selfConsistentResourcePolicies(
+      permit.sharedPolicy,
+      permit.resourcePolicies,
+    ) &&
     validateMarketBaseResourceRatchetHighWater(permit.ratchetHighWater) &&
     validateSignedLaneGrants(
       permit.signedLaneGrants,
@@ -2170,7 +2248,10 @@ function currentPermitRuntimeAuthorityCommitment(
       !isPlainRecord(permit.sharedPolicy) ||
       !isDigest(permit.sharedPolicy.fingerprint) ||
       !Array.isArray(permit.resourcePolicies) ||
-      !validateResourcePolicies(permit.sharedPolicy, permit.resourcePolicies) ||
+      !selfConsistentResourcePolicies(
+        permit.sharedPolicy,
+        permit.resourcePolicies,
+      ) ||
       !Array.isArray(permit.ratchetHighWater) ||
       !validateMarketBaseResourceRatchetHighWater(permit.ratchetHighWater) ||
       !Array.isArray(permit.signedLaneGrants) ||

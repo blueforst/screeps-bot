@@ -421,7 +421,7 @@ export interface MarketBaseResourceHardBlocker {
 
 export interface MarketBaseResourcePermitProposal {
   schemaVersion: 3;
-  kind: "v2-cutover" | "v3-successor";
+  kind: "v2-cutover" | "v3-successor" | "v3-policy-migration";
   proposalId: string;
   proposedAt: number;
   sourceStateFingerprint: string;
