@@ -34,5 +34,5 @@
 
 ## 5. 收尾
 
-- [ ] 5.1 Jest 预算归并（当前 518 > 500 约定，需合并等量旧 cases）
-- [ ] 5.2 openspec --strict 通过、subagent 影响范围审查（P0 审查进行中）、部署与线上验收
+- [x] 5.1 Jest 预算归并（522→恰好 500，test:budget PASSED，commit 561f887）
+- [ ] 5.2 openspec --strict 通过、部署与线上验收（部署/迁移/重资格/canary 已完成；strict 校验待跑）
