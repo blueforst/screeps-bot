@@ -142,3 +142,10 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **修复（2026.8.22-2，commit 61d3ca5 附近）**：候选证据缺失改为**资源级隔离**——无 writable lane 的资源，其 lane 记 incomplete 观察（`market_base_v3_candidate_evidence_stale`，周期停涨、证据不清零）、不进 planner、不读 book；有 writable lane 的资源保持整轮 fail-closed（成交安全不降级）。新增测试（stale Z 不再整轮拒绝、Z 周期冻结、健康 lane 继续推进），套件 522/522。
 - **部署后验证**（tick ~73177310）：`candidate_incomplete` 从拒绝理由消失、snapshot.observedAt 恢复推进、**首条 lane 达 100 → qualified**（stages {shadow:55, qualified:1}）、P1 动态地板投影 `dynamicFloorProjection` live 写入（dyn=live）。偶发 `market_base_cpu_ceiling_exceeded`（1-2 次/轮）由既有 CPU fallback 吸收，无周期损失。
 - **待完成**：全量 qualified（预计 ~25 分钟）→ X/E6N59 canary 两步重授权（用户方案 A 预批）→ ratchet 衰减至 X 出价（~505-520，trustedFloors[X]=589.857 每日 -5%，约 1.5-2 天）→ 首笔成交 → review_paused 闭环。Z 证据恢复依赖市场历史重新入窗。
+
+### 全量重资格完成与 canary 重授权（2026-08-22 晚，tick ~73177828）
+
+- **重资格**：隔离修复部署后周期恢复推进，6 资源 48 lane 全部 qualified（~25 分钟内从 1→48）；Z 8 lane 因市场历史滑出信任窗保持隔离（周期停涨、证据保留，等 Z 成交历史重新入窗）。
+- **canary 重授权**（用户方案 A 预批）：X/E6N59 lane 原子两步授权成功——permit epoch 3→4（successor），stages {qualified:47, shadow:8(Z), canary:1}，链尾 X canary grant `newDealGrant=enabled`。单 canary 坑位由 X 独占。
+- **成交条件现状**：X 有效地板 = max(硬 480, 经济 480, ratchet 589.857→衰减中 −5%/日)；市场 ≥1,000 量最优 BUY ~505–520。ratchet 衰减至出价预计 **11–20 小时**（无需人工干预，达价自动成交 → review_paused）。长时监视已挂（每 10 分钟读 xFloor/canary stage，成交即报）。
+- 至此 2026-08-21 深夜事故（X 地板下调触发 permit 链协议空缺）的恢复链全部闭合：状态重置 → 常量升级迁移协议（P0）→ r2→r3 实弹迁移 → 资格零损失重建 → canary 重武装。
