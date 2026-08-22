@@ -167,3 +167,10 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **归档机制（任务 4.3）**：`monitor-data/market-dynamic-floor-projection.jsonl`（gitignored 本地归档）——canary 监视器（/tmp/deal-watch2.mjs）每 15 分钟读取 `dynamicFloorProjection` + ratchet + lane stages，按（投影 tick + 每资源 ema/df/anchor/anchorDate/factor + X ratchet 值）去重追加；`lastObservedPrice` 即"若 enforce 生效将以之为基准下探的 eligible 最高买价"（订单 ID 不驻留 Memory，为内存预算决策）。首条已落档。
 - **canary 状态**：X ratchet 589.857@2026-08-21（8/22 市场数据未发布，8/23 应用后预计 560.36）；lane stages {qualified:47, shadow:8(Z 隔离), canary:1}；成交预计 8/24–8/25（ratchet 日步 589.857→560.36→532.34→505.72 ≤ 出价 520）。
 - openspec `--strict` 校验通过（2026-08-22）；tasks 1.5/4.3/5.2 已补勾，仅剩 4.4（observe 窗口 ≥1 天验收 → enforce 用户确认，预计 8/23 晚起满足窗口条件）。
+
+### 归档机制 subagent 审查回填（2026-08-22 晚，commit ec6ef2b 后）
+
+- **审查结论**：数据面（evidence 手写投影数字 vs 归档 jsonl 首条）逐字段一致，无虚报；发现 2×P1 + 5×P2。
+- **P1-1 双实例并行（已修复）**：会话重启后旧任务句柄失效但进程存活（19:27 起的旧版监视器无归档逻辑），与新实例并存。已 kill 双实例并以修复版单实例重启（run_in_background，完成通知链恢复）。
+- **P1-2 ETA 矛盾（本条即修正）**：上一节"ratchet 衰减至出价预计 11–20 小时"系早期乐观估计，**已被日步模型取代**——ratchet 每日仅在新市场数据应用时步进（−5%/日），8/22 数据 8/23 应用，故 589.857→560.36(8/23)→532.34(8/24)→505.72(8/25) ≤ 出价 520，**成交窗口修正为 8/24–8/25**（若市场出价 ≥532.34 则可提前至 8/24）。72h 监视时限（8/25 12:23Z 截止）覆盖该窗口，但若成交晚于时限需人工续挂监视。
+- **P2 留档（已顺手修复 2 项，其余留档）**：已修复——①归档脚本三路读取失败时跳过追加（避免 tick:null 空记录污染）；②canary 阶段与 lane 分布纳入去重键（阶段跃迁必追加）。留档——③去重键不含非 X ratchet/lastObservedPrice/surplusRatio（非 X 资源 ratchet 日衰减若不伴随投影 tick 前进则不触发追加，对 X 主线无影响）；④appendFile 部分写入无检测（磁盘满场景）；⑤tasks 4.3 键字段列举为实际键子集（evidence 本节描述为准）。

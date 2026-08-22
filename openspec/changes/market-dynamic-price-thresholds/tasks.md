@@ -29,7 +29,7 @@
 - [x] 4.1 dynamicFloorMode: observe/enforce（签名层，默认 observe）— b7b9a5d 策略表
 - [x] 4.2 state.dynamicFloorProjection（每资源 bookEma/lastObservedPrice/dynamicFloor/inventoryFactor/surplusRatio/日锚）— 4440518
 - [x] 4.2a 接线测试：成功 run（含选中订单路径）写入投影 — 4440518
-- [x] 4.3 monitor 每日轨迹汇总（"若生效将选中的订单"投影）— monitor-data/market-dynamic-floor-projection.jsonl：监视器每 15 分钟读取，按（投影 tick+每资源 ema/df/anchor+ratchet X）去重追加；lastObservedPrice 即"若 enforce 生效将以之为基准下探的 eligible 最高买价"；首条 2026-08-22（锚 08-21，H/L/X 有观测、K/O/U/Z 无 eligible 观测保持 null）
+- [x] 4.3 monitor 每日轨迹汇总（"若生效将选中的订单"投影）— monitor-data/market-dynamic-floor-projection.jsonl：监视器每 15 分钟读取，按（投影 tick + 每资源 ema/df/anchor/anchorDate/factor + X ratchet + canary 阶段/lane 分布）去重追加；lastObservedPrice 即"若 enforce 生效将以之为基准下探的 eligible 最高买价"；首条 2026-08-22（锚 08-21，H/L/X 有观测、K/O/U/Z 无 eligible 观测保持 null）
 - [ ] 4.4 observe 窗口 ≥1 天验收 → 用户确认 enforce
 
 ## 5. 收尾
