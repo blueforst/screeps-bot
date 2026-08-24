@@ -175,9 +175,10 @@ describe("mountSpawn", () => {
       );
     }
 
-    // 孵化期间出生位被已出生 creep 占据：向其下达让位指令（memory 传递
-    // + 直接 move）；Spawn20 的出生位是 TOP 邻格（directions 约束），
-    // blocker 从自身周围离开且不得被推回出生格；无可用出口时不发。
+    // 要落地的那一 tick（remainingTime 归零，含出生位被堵的冻结期）出生位
+    // 被已出生 creep 占据：向其下达让位指令（memory 传递 + 直接 move）；
+    // Spawn20 的出生位是 TOP 邻格（directions 约束），blocker 从自身周围
+    // 离开且不得被推回出生格；无可用出口时不发。
     {
       const blockerMove = jest.fn(() => OK);
       const blockerPos = { x: 25, y: 25 };
@@ -222,11 +223,11 @@ describe("mountSpawn", () => {
       });
       const makeRoom = (name: string, terrain: (x: number, y: number) => string) =>
         ({ name, getPositionAt: (x: number, y: number) => makePos(x, y, terrain) }) as unknown as Room;
-      const makeSpawningSpawn = (name: string, room: Room) =>
+      const makeSpawningSpawn = (name: string, room: Room, remainingTime = 0) =>
         ({
           name,
           room,
-          spawning: { name: "incoming" },
+          spawning: { name: "incoming", remainingTime },
           pos: makePos(25, 25),
           memory: { spawnList: ["queued"] },
           spawnCreep: jest.fn(),
@@ -236,9 +237,22 @@ describe("mountSpawn", () => {
       // blocker 站在 RIGHT 邻格 (26,25)：其邻格中出生格外的第一个可走
       // 方向是 TOP_RIGHT (27,24)；powerCreep 站 TOP 邻格 (25,24) 同样
       // 挡位，让向出生格外的 TOP (25,23)。两者均收到 memory 指令。
+      // 孵化中期（remainingTime > 0，未到落地 tick）不赶人——出生格
+      // 在此期间仍可正常使用。边界 1（> 0 最近值）同样不触发。
       blockerPos.x = 26;
       const openRoom = makeRoom("E1N57", () => "plain");
       blockerRoom.room = openRoom;
+      const midIncubationSpawn = makeSpawningSpawn("Spawn1", openRoom, 42);
+      Object.setPrototypeOf(midIncubationSpawn, prototype);
+      prototype.work.call(midIncubationSpawn);
+      expect(blockerMove).not.toHaveBeenCalled();
+      expect(blockerMemory._spawnYield).toBeUndefined();
+      expect(powerCreepMove).not.toHaveBeenCalled();
+      expect(powerCreepMemory._spawnYield).toBeUndefined();
+
+      // 要落地的那一 tick（remainingTime=0）：向挡位者下达让位指令。
+      blockerMove.mockClear();
+      powerCreepMove.mockClear();
       const openSpawn = makeSpawningSpawn("Spawn1", openRoom);
       Object.setPrototypeOf(openSpawn, prototype);
       prototype.work.call(openSpawn);
@@ -247,6 +261,24 @@ describe("mountSpawn", () => {
       expect(powerCreepMove).toHaveBeenCalledWith(TOP);
       expect(powerCreepMemory._spawnYield).toEqual({ dir: TOP, tick: Game.time });
       expect(openSpawn.spawnCreep).not.toHaveBeenCalled();
+
+      // 边界锁定：remainingTime=1（> 0 最近值）不触发；-0.4（小数 needTime
+      // 落地 / 冻结期真实取值）触发——防止未来误改为 === 0 使冻结场景回归。
+      blockerMove.mockClear();
+      powerCreepMove.mockClear();
+      const almostDueSpawn = makeSpawningSpawn("Spawn1", openRoom, 1);
+      Object.setPrototypeOf(almostDueSpawn, prototype);
+      prototype.work.call(almostDueSpawn);
+      expect(blockerMove).not.toHaveBeenCalled();
+      expect(powerCreepMove).not.toHaveBeenCalled();
+
+      blockerMove.mockClear();
+      powerCreepMove.mockClear();
+      const fractionalDueSpawn = makeSpawningSpawn("Spawn1", openRoom, -0.4);
+      Object.setPrototypeOf(fractionalDueSpawn, prototype);
+      prototype.work.call(fractionalDueSpawn);
+      expect(blockerMove).toHaveBeenCalledWith(TOP_RIGHT);
+      expect(powerCreepMove).toHaveBeenCalledWith(TOP);
 
       // 默认 spawn：blocker 站在 spawn 自身格 (25,25) 不挡出生位；
       // powerCreep 仍挡 (25,24)，只让 powerCreep。

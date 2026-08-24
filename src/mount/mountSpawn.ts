@@ -126,9 +126,12 @@ const BIRTH_TILE_DELTAS: readonly (readonly [number, number])[] = [
  * PowerCreep 不在 LOOK_CREEPS 里，但同样占据出生格——现场证据（W1N57
  * Spawn6 冻结 2.4 天）表明 operator 站在唯一可用出生格时孵化永久冻结，
  * 因此两类挡位者都必须处理。指令经 memory 传递并在各自 work 入口优先
- * 消费——spawn.work 先于 creep/powerCreep 逻辑执行，直接 move() 会被
- * 挡位者随后执行的自身移动逻辑覆盖；同时保留一次直接 move，覆盖停摆
- * （无逻辑）挡位者的场景。
+ * 消费——普通 creep 的逻辑后于 spawn.work 执行，直接 move() 会被挡位者
+ * 随后执行的自身移动逻辑覆盖；powerCreepControl 虽先于 spawnWork 执行
+ * （指令滞后一 tick 消费，TTL 2 覆盖），但 spawn 侧直接 move 后于其任务
+ * 逻辑、同 tick 生效。同时保留一次直接 move，覆盖停摆（无逻辑）挡位者
+ * 的场景。remainingTime 理论上恒为 number；极端 undefined 时下方比较为
+ * false（不触发），退化为冻结等待，失败方向安全。
  */
 function directBlockingCreepsOffSpawn(spawn: StructureSpawn): void {
   const birthPositions = getSpawnBirthPositions(spawn);
@@ -306,7 +309,12 @@ export function mountSpawn(): void {
 
   StructureSpawn.prototype.work = function work(): void {
     if (this.spawning) {
-      directBlockingCreepsOffSpawn(this);
+      // 只在要落地的那一 tick（remainingTime 归零，含出生位被堵的冻结期）
+      // 赶人：孵化进行中出生格仍可正常使用，提前驱离会打断在 spawn 邻格
+      // 工作的 creep。
+      if (this.spawning.remainingTime <= 0) {
+        directBlockingCreepsOffSpawn(this);
+      }
       return;
     }
 
