@@ -174,3 +174,12 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **P1-1 双实例并行（已修复）**：会话重启后旧任务句柄失效但进程存活（19:27 起的旧版监视器无归档逻辑），与新实例并存。已 kill 双实例并以修复版单实例重启（run_in_background，完成通知链恢复）。
 - **P1-2 ETA 矛盾（本条即修正）**：上一节"ratchet 衰减至出价预计 11–20 小时"系早期乐观估计，**已被日步模型取代**——ratchet 每日仅在新市场数据应用时步进（−5%/日），8/22 数据 8/23 应用，故 589.857→560.36(8/23)→532.34(8/24)→505.72(8/25) ≤ 出价 520，**成交窗口修正为 8/24–8/25**（若市场出价 ≥532.34 则可提前至 8/24）。72h 监视时限（8/25 12:23Z 截止）覆盖该窗口，但若成交晚于时限需人工续挂监视。
 - **P2 留档（已顺手修复 2 项，其余留档）**：已修复——①归档脚本三路读取失败时跳过追加（避免 tick:null 空记录污染）；②canary 阶段与 lane 分布纳入去重键（阶段跃迁必追加）。留档——③去重键不含非 X ratchet/lastObservedPrice/surplusRatio（非 X 资源 ratchet 日衰减若不伴随投影 tick 前进则不触发追加，对 X 主线无影响）；④appendFile 部分写入无检测（磁盘满场景）；⑤tasks 4.3 键字段列举为实际键子集（evidence 本节描述为准）。
+
+### 8/24 检查：ratchet 语义修正与 enforce 决策数据成熟（2026-08-24 午）
+
+- **重要修正——前两次成交 ETA 均错误，根因相同**：`advanceTrustedFloor` 的公式是 `nextFloor = max(observedFloor, 前值 × 0.95^天数)`——**-5%/日是跌幅保护下限，不是自动衰减**。trustedFloor 每日由市场 7 日历史对数中位价 × 0.95 重算（MAD 离群过滤），只要市场中位数稳定，ratchet 就稳定。X 的 7 日中位 ≈621 → observedFloor≈589.86 → ratchet 钉在 589.857（8/23 数据应用后精确不变证实；H 561.655→562.893、L 398.486→414.704 上移同理——中位价在涨）。**observe 模式下 canary 永不成交**：成交需 eligible BUY ≥589.857，而市场最高买 520.35。
+- **Z 隔离解除**：Z 市场历史重新入窗，8 lane 从 shadow 恢复 qualified（stages {qualified:55, canary:1}，56 lane 全活跃）；ledger 无 pending、无 quarantined、周期健康。
+- **市场对手方健康（8/24 13:20 shard1 订单簿）**：X eligible 买 13 张，最高买 520.353 q10000@E51N18（其下 520.352/520.344/514.559 q30087）；卖最低 810（590-650 区间无人挂卖）。E6N59 无我方挂单（Direct 为吃单模式，正常）。
+- **8/23 投影轨迹**（已归档 jsonl）：X 锚 535.6→520（跨日重算，盈余输入消失致 inventoryFactor 1→0：8/21 首投影时 X protection sellable 超限 factor=1 得 520×1.03=535.6，8/22 起 sellable 回落 sr=null）；H/L 投影被 ratchet 压制（df=ratchet 值）。**book 观测自 8/22 晚停滞**（bookObservedAt 冻结 73177770，EMA 520 无新观测）——与订单簿现状 520 无偏差，但 enforce 验收时应确认观测恢复。
+- **监视器修复**：8/23 晚—8/24 晨长串 fetch failed（网络/休眠），8/24 05:00 成功一轮后挂起（fetch 无超时）。已加 30s AbortSignal 超时并重启（exec_14bf84fb）。
+- **enforce 决策数据成熟（提交用户）**：observe 窗口已 3 天（08-21 锚起）。enforce 效果预演——仅 X 实际下探（df 520 vs ratchet 589.857，降 70，恰好覆盖"X 产量大"场景）；H/L 的 df=ratchet 无变化；K/O/U/Z 无观测 null 无变化。enforce 后 canary 可吃 E51N18 的 520.353 单成交（df 520 ≤ 520.353）。observe 下 canary 无成交路径，enforce 切换是成交的前提。
