@@ -200,3 +200,21 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **迁移**：mode 在 policy 指纹内 → 切换必须 v3-policy-migration（协议就绪）；投影字段在迁移 accept 的 {...state} 展开中保留；建议连带升 configRevision 常量（v3-r3→r4）并重推导 canonical safety fingerprint。
 - **X 数值推演（修复后）**：EMA 恢复跟随市场（约 520）→ df≈520.15（listingBuffer 3%）→ enforce 地板 520.15 ≤ 最优买 520.35 → 成交（能耗影子成本 ≤0.20/单位时）。
 - **切换前置清单（依赖序）**：① 修断流（路径 6 携带 firstRead.bookBestPrices/firstLaneSurplus——最小改动，数据已提取）→ ② N6 年龄门槛 + N1 daysAdvanced 修正 → ③ enforce 接线（df 注入通道 + 对称校验组 + null 回退）→ ④ v3-policy-migration（含 configRevision 升级）→ ⑤ 补测试（断流回归、对称性参数化、超龄回退、X 端到端、迁移投影续算）→ ⑥ 观察一轮 EMA 恢复 → ⑦ 切 enforce。
+
+### Enforce 前置工程实现与部署（2026-08-24 晚，commit 7a1a84a / 部署 2026.8.24-2）
+
+**阶段 1（observe 下即时生效）**：
+- **断流修复**：`!first.complete || !first.selected` 路径显式携带 firstRead 的 book/盈余输入；emptyResult 对完整 read 统一附带。**live 验证**：部署后 X 的 bookObservedAt 从 73177770（8/22 晚冻结）跳至部署 tick，EMA=520.35（吸收市场最优买新观测），投影与 snapshot 同步推进。
+- **N6 年龄门槛**：EMA 观测超 2τ（14400 tick）→ df 降级 null（ratchet 回退），EMA/锚保留；"最新观测时间"以本轮有观测则取 tick，杜绝恢复轮误判超龄。
+- **N1 多日限幅**：daysAdvanced 按 marketDate 与前锚的 UTC 日序差（≥1），中断 N 日后限幅=0.85^N 叠加（旧行为单日硬编码会阻止应有限幅的下探）。
+
+**阶段 2（休眠接线，常量仍 observe——本次部署零行为变化、零迁移）**：
+- `computeEffectiveNetFloor` 新增 dynamicFloor 替代性分量（有效时整体替代 {history, ratchet}，非法回退四分量）；adapter options 通道；runtime 从 v3 投影注入。
+- 对称性：`marketBaseEnforcedDynamicFloors`（policy.ts）单源提取——**milli 归一（roundMarketPriceUp）**在源头完成，adapter 生成与 candidatePricingComplete 重算（<1e-9 容差）天然对称；candidatePricingComplete 加 df 参数、planner policy 两 NetFloor 字段 df 同值注入——三方同 tick 同源。
+- **缓存一致性**：pricingResultCache 签名绑定 enforced floors epoch（仅 enforce 生效时参与；observe 零 CPU 变化）——修复审查发现的 TTL 窗口内隔轮交替 fail-closed。
+- adapter 非法 df 防御回退四分量（不静默降地板）。
+- 测试：断流回归（490 低于地板场景 EMA 仍 seed）、超龄降级、多日限幅（含反断旧行为）、adapter df 分支（hard 兜底/df 主导）——并入现有 it，500/500 + 预算 PASSED。
+
+**subagent 审查结论**：阶段 1 正确、observe 零变化验证通过；发现 2 个切换时缺陷已修复（df milli 归一 P0、缓存 epoch P1）。留档 P2×3：maker 门控（maker exposure 已清退，切换前再评估）、candidatePricingComplete/planner 注入分支无直接单测（常量 observe 下 e2e 不可达，切换部署时以全量回归覆盖）、超龄跨日边界细节。
+
+**阶段 3（切换清单，EMA 恢复 + 用户确认后执行）**：① 观察投影轨迹 ≥1 个市场日（验证 EMA 跟随与日锚重立）；② 7 资源常量 dynamicFloorMode: "enforce" + configRevision v3-r3→r4 + canonical safety fingerprint 重推导；③ v3 fixture/pastPolicySet 指纹适配 + enforce 端到端测试；④ 静默窗口部署 → console cfg → v3-policy-migration（armed canary 需先处置：X/E6N59 canary 未成交，迁移会因 canary_unresolved 被拒——**需先退 canary 或接受先迁移后重授权路径**，执行时按 propose 校验结果定）；⑤ maker 门控 P2 决策；⑥ 切换后 X 首笔成交复核（预授权边界内）→ continuous。
