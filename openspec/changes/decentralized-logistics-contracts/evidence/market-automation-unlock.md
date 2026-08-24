@@ -239,4 +239,11 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 
 **下一轮候选（未实施）**：creep 目标选择滞后（pathing 缓存命中 77%→90%+，估 3-6）、ERR_BUSY 保留路径缓存（1-3）、synthesisControl/productionMonitor/remoteMining 等 2-6 级模块审计（合计 ~13）、intent 11 为引擎固定成本（仅减 creep 数可降）。
 
+**部署后验证（2026-08-24 深夜）**：
+- **测量锁相发现**：cpuProfiler sampleInterval=10 与 resourceControl planning 周期（10 tick）锁相——历史 avgTotalUsed≈108.8 全部是 planning tick 采样（重 tick 视角），非 planning tick 从未被测量。已 console 改 sampleInterval=7（错相，LCM 70 → 采样 10% 命中 planning）。混相 EMA 在 89-112 波动 → 真实全相位平均约 90-100。
+- **可见收益**：creepWork:pathing 锁相窗口 20.1→15.8-18.8（矩阵缓存 -2~4，但 creep 活动自然波动 ±5，单项贡献需更长窗口统计）。
+- **不可见收益**（测量盲区）：skipOuterCollection 的节省全部落在非 planning tick（90% 的 tick）；collectRoomFloors 直读的 planning 侧节省（~2-4×3 次）被 7a1a84a 断流修复后 planner 自然变忙（基线 32.2 本身是断流期低保值）部分抵消，锁相窗口市场 phase 反而 +2~3。
+- **市场健康**：部署 -3 后投影持续更新（updatedAt 跟随 tick）、H bookObservedAt 新鲜（观测流正常）、56 lane {qualified:55, canary:1}、bucket 9900-10000 稳定。enforce 切换前置不受影响。
+- **结构性结论**：当前 ~90-100 真实平均的构成 = creepWork ~35（intent 11 引擎固定 + pathing 16-20 + decision 3-4）+ 市场 ~33（planning 摊销 + preflight 8.3）+ 基础设施 ~25。显著下降需结构性决策（减 creep 规模、拉长 planning 周期、remote 规模收缩），非本轮语义等价优化可及。
+
 **阶段 3（切换清单，EMA 恢复 + 用户确认后执行）**：① 观察投影轨迹 ≥1 个市场日（验证 EMA 跟随与日锚重立）；② 7 资源常量 dynamicFloorMode: "enforce" + configRevision v3-r3→r4 + canonical safety fingerprint 重推导；③ v3 fixture/pastPolicySet 指纹适配 + enforce 端到端测试；④ 静默窗口部署 → console cfg → v3-policy-migration（armed canary 需先处置：X/E6N59 canary 未成交，迁移会因 canary_unresolved 被拒——**需先退 canary 或接受先迁移后重授权路径**，执行时按 propose 校验结果定）；⑤ maker 门控 P2 决策；⑥ 切换后 X 首笔成交复核（预授权边界内）→ continuous。
