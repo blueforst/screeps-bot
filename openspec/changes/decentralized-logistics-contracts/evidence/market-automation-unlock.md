@@ -183,3 +183,20 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **8/23 投影轨迹**（已归档 jsonl）：X 锚 535.6→520（跨日重算，盈余输入消失致 inventoryFactor 1→0：8/21 首投影时 X protection sellable 超限 factor=1 得 520×1.03=535.6，8/22 起 sellable 回落 sr=null）；H/L 投影被 ratchet 压制（df=ratchet 值）。**book 观测自 8/22 晚停滞**（bookObservedAt 冻结 73177770，EMA 520 无新观测）——与订单簿现状 520 无偏差，但 enforce 验收时应确认观测恢复。
 - **监视器修复**：8/23 晚—8/24 晨长串 fetch failed（网络/休眠），8/24 05:00 成功一轮后挂起（fetch 无超时）。已加 30s AbortSignal 超时并重启（exec_14bf84fb）。
 - **enforce 决策数据成熟（提交用户）**：observe 窗口已 3 天（08-21 锚起）。enforce 效果预演——仅 X 实际下探（df 520 vs ratchet 589.857，降 70，恰好覆盖"X 产量大"场景）；H/L 的 df=ratchet 无变化；K/O/U/Z 无观测 null 无变化。enforce 后 canary 可吃 E51N18 的 520.353 单成交（df 520 ≤ 520.353）。observe 下 canary 无成交路径，enforce 切换是成交的前提。
+
+### Enforce 切换前严格审计（2026-08-24，主审计 + subagent 独立交叉验证）
+
+**结论：当前不能切 enforce。** 存在 2×P0（其一为复合死锁）与 4×P1；"仅 X 下探 520、风险面极小"的切换提案被推翻——enforce 生效逻辑根本不存在。
+
+- **P0-A：enforce 生效逻辑不存在**。`dynamicFloorMode`（policy 常量 7 处 "observe"）全仓零消费点。成交地板 = `computeEffectiveNetFloor` 四分量 max(hard, economic, history, ratchet)（marketSalePricing.ts:733），无 df 分量接线。切换需新写接线而非改常量。
+- **P0-N0（复合死锁）**：planMarketBaseResourceTwoRead 的 15 个 return 路径中仅 2 个（no_writable_lane、second-read 成功）携带 firstBookBestPrices；**"有 writable lane 但无可成交订单"路径（!first.complete || !first.selected，4644）不带**——而"市场价低于地板"恰是最需要 book 观测的场景。live 证实：8/22 晚 canary 授权后 H/L/X 的 EMA/lastObserved 全冻结（归档 24 条轨迹一致），投影每轮重建但输入恒空。不先修此，enforce 后 df 恒为冻结值/null，对 X 无效。
+- **P1-B**：即上述断流（N0 的底层缺陷）：eligibleForBudget 已提取 bestPrice（数据在手）却在无选中路径丢弃。
+- **P1-N1**：跨日限幅 daysAdvanced 硬编码 {0,1}（2934），多日中断恢复后限幅不足（允许超跌，方向 unsafe）；应按 anchorDate 日序差计算。
+- **P1-N5**：df（runtime 投影，上轮 planning 基准）与 candidate 定价证据（本 tick adapter snapshot）跨数据面，注入需定义 tick 漂移一致性契约，否则整轮 incomplete fail-closed。
+- **P1-N6**：无 EMA 观测最大年龄门槛：陈旧 EMA 永久被采用；停滞多日恢复时 α=1−e^(−Δt/τ)≈1 突跳（向下被同日禁降挡住，向上同日无限制幅仅 ratchet 封顶）。建议 tick−bookObservedAt>2τ(14400) 时 df 降级 null 回退 ratchet。
+- **P2×3**：clamp 无效参数 fail-open（2746）；ratchet<hardFloor 异常态 df 破 ≤ratchet 不变量（方向安全）；无选中路径快照 complete=true 无 blocker，病理不可观测（只能靠 EMA 冻结倒推）。
+- **对称性清单（enforce 接线必须同步修改的全部校验点）**：computeEffectiveNetFloor / pricingAdapter:852 / planner policy 合成（marketDirectContinuousPlanner:383 要求 ≥2 分量非 undefined，df 不能置 undefined 两分量——需以 df 值注入或扩展结构）/ candidatePricingComplete:7181 / candidateEnergyEvidence:7128 / pricingBasis:7816 / energySignature:7105 / toMarketBaseResourceRuntimeCandidates:3857（df 注入通道）/ computeEnergyShadowPrice:779。
+- **接线语义**：df 不能简单加入 max()——history（7 日中位×0.95）与 ratchet 同源（X≈560/590）会盖掉 df(520)。正确语义：enforce 且 df 非 null 时 **df 替代 {history, ratchet}**，effectiveFloor=max(hard, economic, df)；df=null 回退 observe 语义（保留四分量 max）。economicFloor 必须保留在 max 中（H/L 的 economic>hard）。
+- **迁移**：mode 在 policy 指纹内 → 切换必须 v3-policy-migration（协议就绪）；投影字段在迁移 accept 的 {...state} 展开中保留；建议连带升 configRevision 常量（v3-r3→r4）并重推导 canonical safety fingerprint。
+- **X 数值推演（修复后）**：EMA 恢复跟随市场（约 520）→ df≈520.15（listingBuffer 3%）→ enforce 地板 520.15 ≤ 最优买 520.35 → 成交（能耗影子成本 ≤0.20/单位时）。
+- **切换前置清单（依赖序）**：① 修断流（路径 6 携带 firstRead.bookBestPrices/firstLaneSurplus——最小改动，数据已提取）→ ② N6 年龄门槛 + N1 daysAdvanced 修正 → ③ enforce 接线（df 注入通道 + 对称校验组 + null 回退）→ ④ v3-policy-migration（含 configRevision 升级）→ ⑤ 补测试（断流回归、对称性参数化、超龄回退、X 端到端、迁移投影续算）→ ⑥ 观察一轮 EMA 恢复 → ⑦ 切 enforce。
