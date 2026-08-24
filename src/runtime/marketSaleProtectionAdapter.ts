@@ -26,8 +26,7 @@ import {
 import type { MarketSaleAutomationConfig } from "@/runtime/marketSaleConfig";
 import { getProductReagents } from "@/runtime/reactionMap";
 import {
-  collectResourceControlSnapshots,
-  type ResourceControlSnapshot,
+  resolveRoomConfig,
 } from "@/runtime/resourceControl";
 import { POWER_BANK_BOOST_REQUIREMENTS } from "@/runtime/powerBankConstants";
 import {
@@ -200,16 +199,23 @@ function collectStock(
 function collectRoomFloors(
   candidates: readonly MarketProtectionCandidate[],
 ): SourceCollection {
-  let snapshots: ResourceControlSnapshot[];
+  // mineralFloor/mineralExportStart 是 room config 的派生值（resolveRoomConfig
+  // 归一化产物，ResourceControlSnapshot 的同两字段即取自它），与 room 实时
+  // store/structure 状态无关——直接读 config，免去全量快照采集。不走
+  // tickContext.getMyRooms 的 per-tick 缓存，保持本 collector 无跨调用
+  // 共享状态。
+  let byRoom: Map<string, ReturnType<typeof resolveRoomConfig>>;
   try {
-    snapshots = collectResourceControlSnapshots();
+    byRoom = new Map(
+      Object.values(Game.rooms || {})
+        .filter(
+          (room) => room.controller?.my === true && room.terminal !== undefined,
+        )
+        .map((room) => [room.name, resolveRoomConfig(room.name)] as const),
+    );
   } catch {
     return { complete: false, facts: [] };
   }
-
-  const byRoom = new Map(
-    snapshots.map((snapshot) => [snapshot.roomName, snapshot] as const),
-  );
   let factoryConfig: ReturnType<typeof parseFactoryConfig> | undefined;
   try {
     factoryConfig = parseFactoryConfig();
@@ -219,10 +225,10 @@ function collectRoomFloors(
   let complete = true;
   const facts: MarketProtectionFact[] = [];
   for (const candidate of candidates) {
-    const roomSnapshot = byRoom.get(candidate.roomName);
-    const floor = roomSnapshot?.mineralFloor[candidate.resource];
+    const roomConfig = byRoom.get(candidate.roomName);
+    const floor = roomConfig?.mineralFloor[candidate.resource];
     const exportStart =
-      roomSnapshot?.mineralExportStart?.[candidate.resource];
+      roomConfig?.mineralExportStart?.[candidate.resource];
     if (BASE_REACTION_MINERALS.has(candidate.resource)) {
       if (!finiteNonNegative(floor) || !finiteNonNegative(exportStart)) {
         complete = false;

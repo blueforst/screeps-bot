@@ -389,5 +389,35 @@ describe("market sale live composition", () => {
     expect(collectPricing).toHaveBeenCalledTimes(2);
     expect(collectPricing.mock.results.map((result) => result.value.observedAt))
       .toEqual([100, 200]);
+
+    // 非 planning tick 且无 exposure 待观测（quarantined-only 形态：
+    // hasExposureState 为真但 exposureCandidates 为空）时跳过外层
+    // protection 采集、runAutomation 收空 candidates；一旦出现
+    // pendingDirectDeals 即恢复全量采集路径。
+    (dependencies.collectProtection as jest.Mock).mockClear();
+    Game.time = 201;
+    const dataState = Memory.data!.marketSaleAutomation as unknown as {
+      directAutomation?: Record<string, unknown>;
+    };
+    dataState.directAutomation = {
+      capability: "market-direct-continuous",
+      migrationStatus: "active",
+      pendingDirectDeals: {},
+      quarantinedPendingDirectDeals: {
+        q1: { roomName: "W1N1", resource: RESOURCE_KEANIUM },
+      },
+      ledger: {},
+    };
+    runLiveMarketSaleAutomation(dependencies);
+    expect(dependencies.collectProtection).not.toHaveBeenCalled();
+    expect(dependencies.runAutomation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ candidates: [] }),
+    );
+
+    dataState.directAutomation!.pendingDirectDeals = {
+      p1: { roomName: "W1N1", resource: RESOURCE_KEANIUM },
+    };
+    runLiveMarketSaleAutomation(dependencies);
+    expect(dependencies.collectProtection).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,6 @@
 jest.mock("@/runtime/resourceControl", () => ({
   collectResourceControlSnapshots: jest.fn(),
+  resolveRoomConfig: jest.fn(),
 }));
 
 import {
@@ -22,7 +23,7 @@ import {
   resolveMarketSaleAutomationConfig,
   type MarketSaleAutomationConfig,
 } from "@/runtime/marketSaleConfig";
-import { collectResourceControlSnapshots } from "@/runtime/resourceControl";
+import { resolveRoomConfig } from "@/runtime/resourceControl";
 import {
   beginHubProtectionAttempt,
   buildCommittedHubProtectionSnapshot,
@@ -32,10 +33,9 @@ import {
 
 const ROOM = "W1N1";
 const TICK = 1_000;
-const mockedCollectResourceControlSnapshots =
-  collectResourceControlSnapshots as jest.MockedFunction<
-    typeof collectResourceControlSnapshots
-  >;
+const mockedResolveRoomConfig = resolveRoomConfig as jest.MockedFunction<
+  typeof resolveRoomConfig
+>;
 
 function createStore(
   resources: Partial<Record<ResourceConstant, number>>,
@@ -119,12 +119,11 @@ function config(
 function mockFloors(
   floorsByRoom: Record<string, Partial<Record<ResourceConstant, number>>>,
 ): void {
-  mockedCollectResourceControlSnapshots.mockReturnValue(
-    Object.entries(floorsByRoom).map(([roomName, mineralFloor]) => ({
-      roomName,
-      mineralFloor,
-      mineralExportStart: { ...mineralFloor },
-    })) as ReturnType<typeof collectResourceControlSnapshots>,
+  mockedResolveRoomConfig.mockImplementation((roomName: string) =>
+    ({
+      mineralFloor: floorsByRoom[roomName] ?? {},
+      mineralExportStart: { ...(floorsByRoom[roomName] ?? {}) },
+    }) as ReturnType<typeof resolveRoomConfig>,
   );
 }
 
@@ -153,7 +152,7 @@ function commitCurrentHubProtection(
 beforeEach(() => {
   clearCarrierTaskBoardForTest();
   clearCreepAssignmentStateForTest();
-  mockedCollectResourceControlSnapshots.mockReset();
+  mockedResolveRoomConfig.mockReset();
   Game.time = TICK;
   Game.rooms = {};
   Game.creeps = {};

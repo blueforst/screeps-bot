@@ -884,15 +884,25 @@ export function runLiveMarketSaleAutomation(
     // This lets stale-price candidates fail closed and cancel existing exposure.
     const canonicalContinuousProtection =
       continuousProtectionOptions(config);
-    const protection = collectProtection(
-      config,
-      isPlainRecord(data.managedOrders)
-        ? data.managedOrders
-        : undefined,
-      resourceControlCurrent
-        ? canonicalContinuousProtection
-        : { candidates: exposureCandidates },
-    );
+    // 非 planning tick（ResourceControl 未更新）且无 exposure 待观测时，
+    // 下面的 protection/candidates 没有任何消费者：v3 planner 仅在 planning
+    // tick 做 full read（回调自带 fresh 采集），projectCandidate 投影与
+    // maker 校验也仅 planning tick，exposure 保护走 exposureCandidates 通道
+    // （此时为空）。跳过全量 ledger 扫描；一旦出现 exposure（pending deal
+    // 观测等）自动回到全量路径。
+    const skipOuterCollection =
+      !resourceControlCurrent && exposureCandidates.length === 0;
+    const protection = skipOuterCollection
+      ? undefined
+      : collectProtection(
+          config,
+          isPlainRecord(data.managedOrders)
+            ? data.managedOrders
+            : undefined,
+          resourceControlCurrent
+            ? canonicalContinuousProtection
+            : { candidates: exposureCandidates },
+        );
     const usesMarketBaseResourceSuccessor =
       config.directCapability === "continuous-v3";
     // V3 preflight 会递归冻结 canonical trustedFloors 以关闭 TOCTOU。
@@ -952,12 +962,14 @@ export function runLiveMarketSaleAutomation(
       pricingEvidenceFresh,
       pricingRejectionReason,
     };
-    const candidates = composeMarketSalePlanCandidates(
-      config,
-      protection,
-      pricing,
-      compositionContext,
-    );
+    const candidates = protection
+      ? composeMarketSalePlanCandidates(
+          config,
+          protection,
+          pricing,
+          compositionContext,
+        )
+      : [];
     const readMarketBaseResourceCandidates =
       config.directCapability ===
       "continuous-v3"

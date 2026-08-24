@@ -2120,12 +2120,29 @@ export function reconcileLiveMarketBaseResourceScope(
   return reconcileLiveMarketBaseResourceScopeCore(input, false);
 }
 
+// Game.rooms 视图与 hub 配置在同一 tick 内不变，观察结果按 tick 记忆化；
+// accountIdentity 参与 terminalOwned 判定，一并进 key。命中返回浅拷贝，
+// 隔离下游对数组的 sort/push。
+let liveMarketBaseRoomObservationsCache: {
+  tick: number;
+  accountIdentity: string;
+  value: MarketBaseRoomObservation[];
+} | undefined;
+
 export function collectLiveMarketBaseRoomObservations(
   accountIdentity: string,
 ): MarketBaseRoomObservation[] {
+  const cached = liveMarketBaseRoomObservationsCache;
+  if (
+    cached &&
+    cached.tick === Game.time &&
+    cached.accountIdentity === accountIdentity
+  ) {
+    return cached.value.slice();
+  }
   const hubRoomName =
     Memory.cfg?.hub?.enabled === true ? Memory.cfg.hub.hubRoomName : undefined;
-  return Object.values(Game.rooms || {})
+  const value = Object.values(Game.rooms || {})
     .map((room): MarketBaseRoomObservation => {
       const terminal = room.terminal;
       const controllerOwner = room.controller?.owner?.username;
@@ -2144,6 +2161,12 @@ export function collectLiveMarketBaseRoomObservations(
       };
     })
     .sort((left, right) => stableCompare(left.roomName, right.roomName));
+  liveMarketBaseRoomObservationsCache = {
+    tick: Game.time,
+    accountIdentity,
+    value,
+  };
+  return value.slice();
 }
 
 type V3LaneInput = MarketDirectContinuousLaneInput & {

@@ -26,6 +26,14 @@ const MULTI_ROOM_SEGMENT_MAX_STEPS = 100;
 const dynamicNextRoomCache: Record<string, DynamicRouteCacheEntry> = {};
 let liveRoomSafetyCacheTick = -1;
 let liveRoomSafetyCache: Record<string, boolean> = {};
+// 跨房旅行矩阵的静态部分（structures/sites/source containers/controller
+// 区域）按 tick 记忆化：同 tick 内房间布局不变，PathFinder 可能修改
+// roomCallback 返回的矩阵，因此每次返回 clone 再叠加 creep 位。
+const TRAVEL_MATRIX_CACHE_MAX = 64;
+const travelMatrixCache = new Map<
+  string,
+  { tick: number; matrix: CostMatrix }
+>();
 
 export function clearRoutingCachesForTest(): void {
   for (const key of Object.keys(dynamicNextRoomCache)) {
@@ -33,6 +41,7 @@ export function clearRoutingCachesForTest(): void {
   }
   liveRoomSafetyCacheTick = -1;
   liveRoomSafetyCache = {};
+  travelMatrixCache.clear();
 }
 
 export function getCurrentColonizationRoute(targetRoom: string, fallbackEncodedRoute?: string): string | undefined {
@@ -758,69 +767,85 @@ function createMultiRoomTravelCallback(
 }
 
 function buildMultiRoomTravelMatrix(creep: Creep, roomName: string, options: MoveToTargetOptions): CostMatrix {
-  const matrix = new PathFinder.CostMatrix();
-  const room = Game.rooms[roomName];
-  if (!room) {
-    return matrix;
+  const firstEntry = travelMatrixCache.entries().next().value;
+  if (firstEntry !== undefined && firstEntry[1].tick !== Game.time) {
+    travelMatrixCache.clear();
   }
+  let cached = travelMatrixCache.get(roomName);
+  if (!cached || cached.tick !== Game.time) {
+    const room = Game.rooms[roomName];
+    const matrix = new PathFinder.CostMatrix();
+    if (room) {
+      const roomContext = getTickContextService().getRoomContext(room);
+      const structures = roomContext?.getStructures() ?? room.find(FIND_STRUCTURES);
+      for (const structure of structures) {
+        if (structure.structureType === STRUCTURE_ROAD) {
+          matrix.set(structure.pos.x, structure.pos.y, 1);
+          continue;
+        }
+        if (!isWalkableStructure(structure)) {
+          matrix.set(structure.pos.x, structure.pos.y, 0xff);
+        }
+      }
 
-  const roomContext = getTickContextService().getRoomContext(room);
-  const structures = roomContext?.getStructures() ?? room.find(FIND_STRUCTURES);
-  for (const structure of structures) {
-    if (structure.structureType === STRUCTURE_ROAD) {
-      matrix.set(structure.pos.x, structure.pos.y, 1);
-      continue;
-    }
-    if (!isWalkableStructure(structure)) {
-      matrix.set(structure.pos.x, structure.pos.y, 0xff);
-    }
-  }
+      const sites = roomContext?.getConstructionSites() ?? room.find(FIND_CONSTRUCTION_SITES);
+      for (const site of sites) {
+        if (!site.my) {
+          continue;
+        }
+        if (!isWalkableConstructionSite(site)) {
+          matrix.set(site.pos.x, site.pos.y, 0xff);
+        } else if (site.structureType === STRUCTURE_ROAD) {
+          matrix.set(site.pos.x, site.pos.y, 1);
+        }
+      }
 
-  const sites = roomContext?.getConstructionSites() ?? room.find(FIND_CONSTRUCTION_SITES);
-  for (const site of sites) {
-    if (!site.my) {
-      continue;
-    }
-    if (!isWalkableConstructionSite(site)) {
-      matrix.set(site.pos.x, site.pos.y, 0xff);
-    } else if (site.structureType === STRUCTURE_ROAD) {
-      matrix.set(site.pos.x, site.pos.y, 1);
-    }
-  }
+      for (const pos of getSourceContainerPositionsForRoom(roomName)) {
+        if (matrix.get(pos.x, pos.y) < 0xfe) {
+          matrix.set(pos.x, pos.y, 0xfe);
+        }
+      }
 
-  for (const pos of getSourceContainerPositionsForRoom(roomName)) {
-    if (matrix.get(pos.x, pos.y) < 0xfe) {
-      matrix.set(pos.x, pos.y, 0xfe);
-    }
-  }
-
-  if (room.controller?.my) {
-    const cPos = room.controller.pos;
-    for (let dx = -3; dx <= 3; dx += 1) {
-      for (let dy = -3; dy <= 3; dy += 1) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) > 3) continue;
-        const x = cPos.x + dx;
-        const y = cPos.y + dy;
-        if (x < 1 || x > 48 || y < 1 || y > 48) continue;
-        if (matrix.get(x, y) < 0xfe) {
-          matrix.set(x, y, 0xfe);
+      if (room.controller?.my) {
+        const cPos = room.controller.pos;
+        for (let dx = -3; dx <= 3; dx += 1) {
+          for (let dy = -3; dy <= 3; dy += 1) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) > 3) continue;
+            const x = cPos.x + dx;
+            const y = cPos.y + dy;
+            if (x < 1 || x > 48 || y < 1 || y > 48) continue;
+            if (matrix.get(x, y) < 0xfe) {
+              matrix.set(x, y, 0xfe);
+            }
+          }
         }
       }
     }
+    cached = { tick: Game.time, matrix };
+    if (travelMatrixCache.size >= TRAVEL_MATRIX_CACHE_MAX) {
+      travelMatrixCache.clear();
+    }
+    travelMatrixCache.set(roomName, cached);
   }
 
+  const result = cached.matrix.clone();
   if (options.ignoreCreeps ?? true) {
-    return matrix;
+    return result;
   }
 
+  const room = Game.rooms[roomName];
+  if (!room) {
+    return result;
+  }
+  const roomContext = getTickContextService().getRoomContext(room);
   const creeps = roomContext?.getMyCreeps() ?? room.find(FIND_MY_CREEPS);
   for (const otherCreep of creeps) {
     if (otherCreep.name !== creep.name) {
-      matrix.set(otherCreep.pos.x, otherCreep.pos.y, 0xfe);
+      result.set(otherCreep.pos.x, otherCreep.pos.y, 0xfe);
     }
   }
 
-  return matrix;
+  return result;
 }
 
 function getTravelState(creep: Creep, targetRoom: string): TravelState {

@@ -217,4 +217,26 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 
 **subagent 审查结论**：阶段 1 正确、observe 零变化验证通过；发现 2 个切换时缺陷已修复（df milli 归一 P0、缓存 epoch P1）。留档 P2×3：maker 门控（maker exposure 已清退，切换前再评估）、candidatePricingComplete/planner 注入分支无直接单测（常量 observe 下 e2e 不可达，切换部署时以全量回归覆盖）、超龄跨日边界细节。
 
+### 8/24 晚新会话交接校验与 df 上浮新发现（2026-08-24 18:2x CST）
+
+- **交接校验通过**：git log（907f837）/ evidence 尾部三节 / 监视器存活（PID 69123，jsonl 每 15 分钟稳定追加）与交接一致；监视器脚本已从 /tmp 备份至 `monitor-data/deal-watch2.mjs`（防 macOS 清理）。
+- **EMA 恢复确认（部署 2026.8.24-2 后 5 条归档）**：8/24 09:21Z 起 X 的 bookEma 从冻结 520.000 吸收新观测至 520.351 后稳定跟随（lastObserved 520.351→520.353）；H 的 bookEma 持续从冻结 582.5 下移（549.9→548.9）向市场靠拢；Z 恢复观测（df=43）。断流修复 live 有效。
+- **重要新发现——X 的 df 上浮至 535.96，推翻"df≈520 即可成交"预演**：盈余输入随断流修复一并恢复（X surplusRatio=56.4%）→ inventoryFactor 从 0 回到 1（满格）→ listingBuffer 0.03 全额生效 → df = 520.35×1.03 = **535.96**（`min(ratchet 589.857, listingFloor)`，见 computeMarketBaseDynamicFloor，observe 投影与 enforce 共用此值）。**enforce 后 X 首笔成交需市场买价 ≥535.96（若 if 仍=1），现价 ~520.35 下不会成交**；if 何时回落取决于 X 盈余（surplusRatio 降到 surplusHigh 阈值下）。此发现必须纳入切换确认简报，早前 evidence 185/201 节的"df≈520.15 成交在望"预演已过时（其数据基于断流期 if=0 的投影）。
+- **守望机制**：旧会话监视器进程存活未重启（避免双写）；新设每 2 小时定时守望（jsonl 停更>30 分钟重建监视器 / marketDate 前进且日锚重立后生成 enforce 切换确认简报至 `monitor-data/enforce-switch-brief.md` / canary 阶段变化即报）。
+
+### CPU 优化第一轮：市场采集链降本（2026-08-24 晚，部署 2026.8.24-3）
+
+**背景**：live cpuMonitor（analytics.cpuMonitor，120 采样滚动）显示 avgTotalUsed≈108.8/120 贴近上限，热点：creepWork 38.6（pathing 20.1 / intent 11.0 引擎固定成本 / decision 3.7）、marketSaleAutomation 32.2 + marketSalePreflight 8.5（市场合计 40.7，37%）、synthesisControl 5.6、零碎 ~24。市场模块两个 Explore agent 全链走读 + 主审计交叉验证后实施。
+
+**改动（全部语义等价，enforce 切换零影响——subagent 审查 PASS，4 项 P3/可接受残留）**：
+1. collectRoomFloors 直读 room config（resolveRoomConfig 导出）：原经 collectResourceControlSnapshots 全量快照（每房 ~66 资源 store API + 2 次 room.find，每 tick 调 1-3 次），但只消费 config 派生的 mineralFloor/mineralExportStart（resourceControl.ts:1181-1182 直通）。等价论证：Game.rooms 直扫（controller my + terminal）与原 getMyRooms().filter(terminal) 逐位一致；不走 tickContext per-tick 缓存（保持 collector 无共享状态，规避测试同 tick 污染）。
+2. collectLiveMarketBaseRoomObservations per-tick memo（key: tick+accountIdentity，命中 slice() 浅拷贝）：Game.rooms 视图同 tick 不变；7 调用点 accountIdentity 同 tick 稳定；下游 room_observation_same_tick_conflict 校验本就要求同 tick 一致，memo 反而强化。
+3. runLiveMarketSaleAutomation skipOuterCollection（!resourceControlCurrent && exposureCandidates 为空时跳过外层 protection 采集+compose，candidates 传 []）：v3 planner 仅 planning tick full read（回调自带 fresh 采集），projectCandidate/maker 校验仅 planning tick；canary/pendingDirectDeals 等 exposure 形态走 exposureCandidates 通道非空即恢复全量路径。测试：quarantined-only skip + pendingDirectDeals 恢复断言（并入既有 it）。
+4. buildMultiRoomTravelMatrix 静态部分 per-tick 缓存（clone 返回，creep 位叠加在 clone；上限 64）：跨房 PathFinder.search 的 roomCallback 每房重建矩阵 → 同 tick 只建一次。
+5. 放弃项：findStrictRouteNextRoom 缓存——测试暴露 findRoute 依赖 describeExits（连通性），缓存会削弱"next room 变化→段失效"安全阀，回退。
+
+**验证**：500/500 + 预算 PASSED（新断言全部并入现有 it）；部署 2026.8.24-3（tick ~73228180）后待 CPU 曲线实证。残留（已接受）：skip 分支外 production falsy 不可达路径、>64 房间矩阵缓存退化、memo 无 forTest 清理。
+
+**下一轮候选（未实施）**：creep 目标选择滞后（pathing 缓存命中 77%→90%+，估 3-6）、ERR_BUSY 保留路径缓存（1-3）、synthesisControl/productionMonitor/remoteMining 等 2-6 级模块审计（合计 ~13）、intent 11 为引擎固定成本（仅减 creep 数可降）。
+
 **阶段 3（切换清单，EMA 恢复 + 用户确认后执行）**：① 观察投影轨迹 ≥1 个市场日（验证 EMA 跟随与日锚重立）；② 7 资源常量 dynamicFloorMode: "enforce" + configRevision v3-r3→r4 + canonical safety fingerprint 重推导；③ v3 fixture/pastPolicySet 指纹适配 + enforce 端到端测试；④ 静默窗口部署 → console cfg → v3-policy-migration（armed canary 需先处置：X/E6N59 canary 未成交，迁移会因 canary_unresolved 被拒——**需先退 canary 或接受先迁移后重授权路径**，执行时按 propose 校验结果定）；⑤ maker 门控 P2 决策；⑥ 切换后 X 首笔成交复核（预授权边界内）→ continuous。

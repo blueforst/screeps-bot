@@ -1033,7 +1033,7 @@ export function normalizeCapacityConfig(
   };
 }
 
-function resolveRoomConfig(roomName: string): ResourceControlRoomConfig {
+export function resolveRoomConfig(roomName: string): ResourceControlRoomConfig {
   const cfg = Memory.cfg?.resourceControl;
   const roomConfigRaw = cfg?.rooms ? cfg.rooms[roomName] : undefined;
   return normalizeRoomConfig(roomConfigRaw);
