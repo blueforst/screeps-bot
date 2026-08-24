@@ -144,6 +144,14 @@ export interface CollectMarketSalePriceSnapshotsOptions {
   utcNow?: Date;
   /** V3 activation anchor 使用不可回退高水位；日期可推进，floor 不得下降。 */
   nondecreasingTrustedFloors?: boolean;
+  /**
+   * enforce 动态地板（资源 → 生效地板）：命中的资源以该值整体替代
+   * effectiveNetFloor 的 {history, ratchet} 分量；缺席资源保持 observe
+   * 四分量语义。由 baseResourceV3 侧从 dynamicFloorProjection 构建。
+   */
+  dynamicFloorByResource?: Readonly<
+    Partial<Record<ResourceConstant, number>>
+  >;
 }
 
 interface ResolvedCandidate {
@@ -849,12 +857,28 @@ export function collectMarketSalePriceSnapshots(
       finitePositive(snapshot.historyFloor) &&
       finitePositive(snapshot.ratchetFloor)
     ) {
-      const effective = computeEffectiveNetFloor({
-        hardFloor: hardFloor!,
-        economicFloor: config.economicFloor[candidate.resource],
-        historyFloor: snapshot.historyFloor,
-        ratchetFloor: snapshot.ratchetFloor,
-      });
+      const dynamicFloor =
+        options.dynamicFloorByResource !== undefined
+          ? options.dynamicFloorByResource[candidate.resource]
+          : undefined;
+      // 非法 df 回退 observe 四分量（当前 wiring 经 map 过滤不可达，
+      // 防御未来注入面）；不得静默走 max(hard, economic) 降地板。
+      const effective = computeEffectiveNetFloor(
+        dynamicFloor !== undefined &&
+          Number.isFinite(dynamicFloor) &&
+          dynamicFloor > 0
+          ? {
+              hardFloor: hardFloor!,
+              economicFloor: config.economicFloor[candidate.resource],
+              dynamicFloor,
+            }
+          : {
+              hardFloor: hardFloor!,
+              economicFloor: config.economicFloor[candidate.resource],
+              historyFloor: snapshot.historyFloor,
+              ratchetFloor: snapshot.ratchetFloor,
+            },
+      );
       if (effective.valid && finitePositive(effective.floor)) {
         snapshot.effectiveNetFloor = effective.floor;
       } else {

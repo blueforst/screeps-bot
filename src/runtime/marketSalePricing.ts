@@ -94,9 +94,21 @@ export interface EffectiveNetFloorInput {
   economicFloor?: number;
   historyFloor?: number;
   ratchetFloor?: number;
+  /**
+   * enforce 模式动态地板：提供且有效时整体替代 {history, ratchet} 两
+   * 分量（动态地板自身已满足 ≤ratchet、≥hardFloor 的区间约束，简单
+   * 加入 max 会被同源的 history/ratchet 盖掉）。缺席时保持 observe
+   * 四分量语义。
+   */
+  dynamicFloor?: number;
 }
 
-export type EffectiveFloorComponent = "hard" | "economic" | "history" | "ratchet";
+export type EffectiveFloorComponent =
+  | "hard"
+  | "economic"
+  | "history"
+  | "ratchet"
+  | "dynamic";
 
 export interface EffectiveNetFloorResult {
   valid: boolean;
@@ -109,6 +121,7 @@ export interface EffectiveNetFloorResult {
     economic?: number;
     history?: number;
     ratchet?: number;
+    dynamic?: number;
   };
 }
 
@@ -742,12 +755,19 @@ export function computeEffectiveNetFloor(
     };
   }
 
-  const entries: Array<[EffectiveFloorComponent, number | undefined]> = [
-    ["hard", input.hardFloor],
-    ["economic", input.economicFloor],
-    ["history", input.historyFloor],
-    ["ratchet", input.ratchetFloor],
-  ];
+  const entries: Array<[EffectiveFloorComponent, number | undefined]> =
+    isFinitePositive(input.dynamicFloor)
+      ? [
+          ["hard", input.hardFloor],
+          ["economic", input.economicFloor],
+          ["dynamic", input.dynamicFloor],
+        ]
+      : [
+          ["hard", input.hardFloor],
+          ["economic", input.economicFloor],
+          ["history", input.historyFloor],
+          ["ratchet", input.ratchetFloor],
+        ];
   let dominantComponent: EffectiveFloorComponent = "hard";
   let maximum = input.hardFloor;
   for (const [name, value] of entries) {

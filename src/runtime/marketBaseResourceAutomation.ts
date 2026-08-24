@@ -60,6 +60,7 @@ import {
   createMarketBaseRoomAdmissionPolicy,
   createMarketBaseSharedPolicy,
   marketBaseDerivedLaneSetFingerprint,
+  marketBaseEnforcedDynamicFloors,
   marketBaseRoomObservationIsAdmitted,
   reconcileMarketBaseDerivedLanes,
   reconcileMarketBaseSellerRooms,
@@ -4474,6 +4475,16 @@ function emptyResult(
       read?.evaluatedShadowResourceCount || 0,
     candidateIdentityOrderChecks:
       read?.candidateIdentityOrderChecks || 0,
+    // observe 投影依赖 book/盈余输入持续积累。"无可成交订单"是低价市场
+    // 的常态（正是动态地板要服务的场景），book 数据在完整 full read 中
+    // 已提取，任何携带完整 read 的空结果都必须转交投影，否则 EMA 恰在
+    // 最需要跟踪市场时断流（live 曾因此 H/L/X 冻结两天）。
+    ...(read?.complete
+      ? {
+          firstBookBestPrices: read.bookBestPrices,
+          firstLaneSurplus: laneSurplusInputsFromRead(read),
+        }
+      : {}),
     cpuUsed,
   };
 }
@@ -4619,8 +4630,6 @@ export function planMarketBaseResourceTwoRead(
     return {
       ...emptyResult(cpuDelta, "market_base_no_writable_lane", firstRead),
       complete: true,
-      firstBookBestPrices: firstRead.bookBestPrices,
-      firstLaneSurplus: laneSurplusInputsFromRead(firstRead),
     };
   }
   const first = planMarketDirectContinuous(firstRead.plannerInput);
@@ -4652,6 +4661,10 @@ export function planMarketBaseResourceTwoRead(
       sampledShadowLaneIds: firstRead.sampledShadowLaneIds,
       nextShadowCursor: firstRead.nextShadowCursor,
       shadowObservations: firstRead.shadowObservations,
+      // firstRead 已完整（前面 gate 过 incomplete/CPU）；无可成交订单时
+      // book/盈余输入仍需转交 observe 投影（EMA 低温市场持续跟踪）。
+      firstBookBestPrices: firstRead.bookBestPrices,
+      firstLaneSurplus: laneSurplusInputsFromRead(firstRead),
       rawOrderCount: firstRead.rawOrderCount,
       eligibleOrderCount: firstRead.eligibleOrderCount,
       distinctOrderRoomCount: firstRead.distinctOrderRoomCount,
@@ -7175,15 +7188,23 @@ function candidatePricingComplete(
   signedRatchetHighWater: number,
   stateRatchetHighWater: number,
   trustedFloor: MarketBaseResourceTrustedFloorObservation,
+  dynamicFloor?: number,
 ): boolean {
   const policy =
     MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE[candidate.resourceType];
-  const effectiveFloor = Math.max(
-    policy.hardFloor,
-    policy.economicFloor,
-    candidate.historyFloor,
-    trustedFloor.value,
-  );
+  // enforce 对称重算：dynamicFloor 有效时替代 {history, ratchet} 分量，
+  // 与 adapter 侧 computeEffectiveNetFloor 的分支保持同一映射来源
+  //（state.dynamicFloorProjection，本 tick 内不变），否则整轮
+  // candidate_incomplete fail-closed。
+  const effectiveFloor =
+    dynamicFloor !== undefined && Number.isFinite(dynamicFloor)
+      ? Math.max(policy.hardFloor, policy.economicFloor, dynamicFloor)
+      : Math.max(
+          policy.hardFloor,
+          policy.economicFloor,
+          candidate.historyFloor,
+          trustedFloor.value,
+        );
   const bootstrapRatchet =
     MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP.resources[candidate.resourceType]
       .ratchetFloor;
@@ -7775,6 +7796,11 @@ function liveScopeForRead(
           stableCompare(left.roomName, right.roomName),
       );
     const entries: V3EntryInput[] = [];
+    // enforce 动态地板映射：adapter 定价、candidate 校验与 planner policy
+    // 注入共用同一来源（本 tick 内投影不变）。
+    const enforcedDynamicFloors = marketBaseEnforcedDynamicFloors(
+      state.dynamicFloorProjection,
+    );
     let energySignature: string | undefined;
     let energyPrice = 0;
     // 候选证据缺失（如低流动性资源的 history 滑出信任窗口）只承载
@@ -7843,6 +7869,7 @@ function liveScopeForRead(
             signedRatchetHighWater.ratchetFloor,
             stateRatchetHighWater.value,
             trustedFloor,
+            enforcedDynamicFloors[resource],
           ) ||
           !candidateEnergyEvidence(
             candidate,
@@ -7964,10 +7991,18 @@ function liveScopeForRead(
           grant: currentGrant?.stage === "canary" ? "canary" : "continuous",
           hardNetFloor: policy.hardFloor,
           economicNetFloor: policy.economicFloor,
-          historyNetFloor: (
-            resourceCandidates[0] as MarketBaseResourceRuntimeCandidate
-          ).historyFloor,
-          ratchetNetFloor: trustedFloor.value,
+          // enforce：df 有效时两分量同值注入（planner 取 max 后等于
+          // max(hard, economic, df)，与 adapter/candidate 校验一致）。
+          historyNetFloor:
+            enforcedDynamicFloors[resource] !== undefined
+              ? enforcedDynamicFloors[resource]
+              : (
+                  resourceCandidates[0] as MarketBaseResourceRuntimeCandidate
+                ).historyFloor,
+          ratchetNetFloor:
+            enforcedDynamicFloors[resource] !== undefined
+              ? enforcedDynamicFloors[resource]
+              : trustedFloor.value,
           minExecutableNotional: policy.minOrderNotional,
           maxRawOrders: policy.maxRawOrdersScanned,
           maxEligibleOrders: policy.maxEligibleOrdersPriced,

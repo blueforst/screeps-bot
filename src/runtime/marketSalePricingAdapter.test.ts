@@ -212,5 +212,39 @@ describe("collectMarketSalePriceSnapshots", () => {
       },
     });
     expect(snapshot?.referenceSellBook?.trusted).toBe(true);
+
+    // enforce 动态地板：options.dynamicFloorByResource 命中的资源以 df
+    // 整体替代 {history, ratchet} 分量（简单加入 max 会被同源分量盖掉）；
+    // 未命中资源保持 observe 四分量语义。
+    const enforced = collectMarketSalePriceSnapshots(
+      cfg,
+      {},
+      [{ resource: RESOURCE_KEANIUM, makerAmount: 1_000, feeDebtMilli: 0 }],
+      {
+        market: api.market,
+        gameTime: 300,
+        utcNow: UTC_NOW,
+        dynamicFloorByResource: { [RESOURCE_KEANIUM]: 0.9 },
+      },
+    );
+    expect(enforced.snapshots[RESOURCE_KEANIUM]).toMatchObject({
+      historyFloor: 0.8,
+      ratchetFloor: 0.8,
+      // max(hard 1, economic, df 0.9) = 1（hard 仍兜底）；df 高于其余
+      // 分量时主导。
+      effectiveNetFloor: 1,
+    });
+    const dominant = collectMarketSalePriceSnapshots(
+      cfg,
+      {},
+      [{ resource: RESOURCE_KEANIUM, makerAmount: 1_000, feeDebtMilli: 0 }],
+      {
+        market: api.market,
+        gameTime: 300,
+        utcNow: UTC_NOW,
+        dynamicFloorByResource: { [RESOURCE_KEANIUM]: 1.4 },
+      },
+    );
+    expect(dominant.snapshots[RESOURCE_KEANIUM]?.effectiveNetFloor).toBe(1.4);
   });
 });

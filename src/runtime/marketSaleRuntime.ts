@@ -13,9 +13,11 @@ import {
 import {
   MARKET_DIRECT_CONTINUOUS_EXECUTION_TABLE,
 } from "@/runtime/marketDirectContinuousPolicy";
+import type { MarketDirectContinuousAutomationState } from "@/runtime/marketDirectContinuousAutomation";
 import {
   MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE,
   isMarketBaseResource,
+  marketBaseEnforcedDynamicFloors,
 } from "@/runtime/marketBaseResourcePolicy";
 import {
   collectMarketSalePriceSnapshots,
@@ -315,6 +317,7 @@ function cacheSignature(config: MarketSaleAutomationConfig): string {
 function pricingResultSignature(
   config: MarketSaleAutomationConfig,
   pricingStore: MarketSalePricingDataStore,
+  dynamicFloorEpoch?: string,
 ): string {
   const resources = [...config.sellResources].sort();
   const trustedFloors = isPlainRecord(pricingStore.trustedFloors)
@@ -341,6 +344,11 @@ function pricingResultSignature(
       pricingStore.carriedFeeDebtMilli?.[resource] ?? 0,
     ]),
     trustedFloors,
+    // enforce 生效时（存在已生效动态地板）投影每成功 planning 轮推进，
+    // 缓存必须随之失效——否则 TTL 窗口内 adapter 用旧 df、
+    // candidatePricingComplete 用新投影，对称校验隔轮交替 fail-closed。
+    // observe 下 undefined，不参与签名（零 CPU 变化）。
+    dynamicFloorEpoch,
   });
 }
 
@@ -470,7 +478,24 @@ function collectCachedPricing(
   collectPricing: CollectPricing,
 ): MarketSalePriceSnapshotCollection {
   ensurePricingCacheSignature(cacheSignature(config));
-  const signature = pricingResultSignature(config, pricingStore);
+  const enforcedFloors = marketBaseEnforcedDynamicFloors(
+    (Memory.data?.marketSaleAutomation?.directAutomation as
+      | MarketDirectContinuousAutomationState
+      | undefined
+      | null)?.baseResourceV3?.dynamicFloorProjection,
+  );
+  const enforceActive = Object.keys(enforcedFloors).length > 0;
+  const dynamicFloorEpoch = enforceActive
+    ? `enforced:${Object.entries(enforcedFloors)
+        .map(([resource, floor]) => `${resource}:${floor}`)
+        .sort()
+        .join("|")}`
+    : undefined;
+  const signature = pricingResultSignature(
+    config,
+    pricingStore,
+    dynamicFloorEpoch,
+  );
   const resultCacheTtl = pricingResultCacheTtl(config);
   if (
     pricingResultCache &&
@@ -489,6 +514,10 @@ function collectCachedPricing(
     gameTime: Game.time,
     nondecreasingTrustedFloors:
       config.directCapability === "continuous-v3",
+    // enforce 动态地板：从 baseResourceV3 投影提取（本 tick 内不变）。
+    // 签名绑定 enforced floors——投影推进即失效重算，保证 adapter 与
+    // candidatePricingComplete 始终同源；observe 下为空 map，零变化。
+    dynamicFloorByResource: enforcedFloors,
   };
   const value = collectPricing(
     config,
@@ -503,7 +532,12 @@ function collectCachedPricing(
   pricingResultCache = {
     // Adapter 可在 detached store 上推进 trusted-floor successor；缓存必须
     // 绑定推进后的 commitment，不能让旧 floor root 命中新的定价证据。
-    signature: pricingResultSignature(config, pricingStore),
+    // 与读侧同源（本 tick 的 enforcedFloors epoch），读写签名一致。
+    signature: pricingResultSignature(
+      config,
+      pricingStore,
+      dynamicFloorEpoch,
+    ),
     refreshedAt: Game.time,
     value,
   };

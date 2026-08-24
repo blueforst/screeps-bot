@@ -1431,6 +1431,28 @@ describe("Market Base V3 运行时重合同（高风险决策/WAL/证据隔离/o
     expect(h.dynamicFloor).toBeNull();
   };
 
+  const scenarioObserveProjectionNoSelection = () => {
+    const { state, deps, input } = v3RuntimeFixture();
+    // 490 eligible（490k ≥ minOrderNotional 480k）但低于有效地板
+    // （fixture X trusted floor 559.43）→ planner 无可成交订单。断流
+    // 回归：该路径必须仍把 book 观测转交投影，否则 EMA 恰在市场价低于
+    // 地板（最需要跟踪的场景）时断流。
+    deps.readCurrentBuyOrders.mockImplementation((resource: ResourceConstant) =>
+      resource === RESOURCE_CATALYST
+        ? [order("x-low", resource, 490, 1_000, "E1S1")]
+        : [],
+    );
+    const result = runMarketBaseResourceAutomation(state, input(), deps);
+    expect(result.planComplete).toBe(true);
+    const x = state.dynamicFloorProjection?.entries.find(
+      (candidate) => candidate.resource === RESOURCE_CATALYST,
+    )!;
+    expect(x.bookEma).toBe(490);
+    expect(x.lastObservedPrice).toBe(490);
+    // df = min(ratchet 559.43, 490×1.03) = 504.7（受 ratchet 只降不升）。
+    expect(x.dynamicFloor).toBeCloseTo(490 * 1.03, 6);
+  };
+
   const scenarioCandidateIsolation = () => {
     const { state, deps, input } = v3RuntimeFixture(false);
     const baseInput = input();
@@ -1483,6 +1505,7 @@ describe("Market Base V3 运行时重合同（高风险决策/WAL/证据隔离/o
     scenarioWalCpuCut();
     scenarioWalEvidenceLifecycle();
     scenarioObserveProjection();
+    scenarioObserveProjectionNoSelection();
     scenarioCandidateIsolation();
   });
 });

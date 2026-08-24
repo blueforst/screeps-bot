@@ -1,6 +1,7 @@
 import {
   createMarketBaseRoomAdmissionPolicy,
   createMarketBaseSharedPolicy,
+  MARKET_BASE_BOOK_EMA_MAX_AGE_TICKS,
   MARKET_BASE_BOOK_EMA_TICK_TIME_CONSTANT,
   MARKET_BASE_RESOURCE_FLOOR_BOOTSTRAP,
   MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE,
@@ -213,6 +214,53 @@ describe("Market Base 动态地板投影（bookEMA + 库存分量 + 日限幅）
     expect(hNext.dailyAnchor).toBeCloseTo(hNext.dynamicFloor as number, 10);
     expect(hNext.dynamicFloor).toBeGreaterThanOrEqual(anchor * 0.85 - 1e-9);
     expect(hNext.dynamicFloor).toBeGreaterThanOrEqual(hPolicy.hardFloor);
+
+    // EMA 停滞超过两个时间常数（2τ=14400 tick）：df 降级 null（回退
+    // ratchet 语义），EMA 状态与日锚保留。
+    const stale = buildMarketBaseDynamicFloorState({
+      previous: state,
+      tick: 1_000 + MARKET_BASE_BOOK_EMA_MAX_AGE_TICKS + 1,
+      marketDate: "2026-08-22",
+      bookBestPrices: [],
+      laneSurplus: [],
+      ratchetFloorByResource: { H: 520 },
+    });
+    const hStale = stale.entries.find((entry) => entry.resource === "H")!;
+    expect(hStale.bookEma).toBe(460);
+    expect(hStale.dynamicFloor).toBeNull();
+    expect(hStale.dailyAnchor).toBeCloseTo(460 * (1 + 0.03 * 0.75), 10);
+
+    // 观测中断 3 日后恢复：跨日限幅按日序差叠加——下限 = 前锚×0.85³。
+    // X seed 590（ratchet 同值）→ 3 日后观测 300：raw = max(480, 309)=480，
+    // 多日下限 590×0.85³≈361.8 → df=480。旧的单日硬编码会错误地给出
+    // max(480, 501.5)=501.5（阻止下探）。
+    const xSeed = buildMarketBaseDynamicFloorState({
+      previous: undefined,
+      tick: 2_000,
+      marketDate: "2026-08-22",
+      bookBestPrices: [{ resource: "X", price: 590 }],
+      laneSurplus: [],
+      ratchetFloorByResource: { X: 590 },
+    });
+    const xRecovered = buildMarketBaseDynamicFloorState({
+      previous: xSeed,
+      tick: 2_000 + 3 * 24_000,
+      marketDate: "2026-08-25",
+      bookBestPrices: [{ resource: "X", price: 300 }],
+      laneSurplus: [],
+      ratchetFloorByResource: { X: 590 },
+    });
+    const xNext = xRecovered.entries.find(
+      (entry) => entry.resource === "X",
+    )!;
+    expect(xNext.dynamicFloor).toBeCloseTo(
+      Math.max(480, 590 * Math.pow(0.85, 3), 300 * 1.03),
+      6,
+    );
+    expect(xNext.dynamicFloor).not.toBeCloseTo(
+      Math.max(480, 590 * 0.85, 300 * 1.03),
+      6,
+    );
 
     const noSurplus = buildMarketBaseDynamicFloorState({
       previous: undefined,

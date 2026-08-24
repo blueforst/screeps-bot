@@ -1,5 +1,6 @@
 import {
   buildTrustedHistoryFloor,
+  roundMarketPriceUp,
   type MarketHistoryDay,
 } from "@/runtime/marketSalePricing";
 import { canonicalStableHashV1 } from "@/runtime/marketDirectContinuousPolicy";
@@ -2766,6 +2767,20 @@ export function clampMarketBaseDynamicFloorDailyDrop(input: {
  */
 export const MARKET_BASE_BOOK_EMA_TICK_TIME_CONSTANT = 7_200;
 
+/**
+ * EMA 观测最大年龄（tick）：超过后该资源的 dynamicFloor 降级为 null
+ * （回退 ratchet 语义），防止陈旧 book 观测长期支配定价。
+ */
+export const MARKET_BASE_BOOK_EMA_MAX_AGE_TICKS =
+  MARKET_BASE_BOOK_EMA_TICK_TIME_CONSTANT * 2;
+
+function marketBaseIsoDayNumber(date: string): number {
+  return (
+    Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)) /
+    86_400_000
+  );
+}
+
 export function updateMarketBaseBookEma(input: {
   readonly previousEma: number | null;
   readonly previousObservedAt: number;
@@ -2829,6 +2844,38 @@ export interface MarketBaseDynamicFloorState {
   readonly schemaVersion: 1;
   readonly updatedAt: number;
   readonly entries: readonly MarketBaseDynamicFloorEntryState[];
+}
+
+/**
+ * enforce 提取：从动态地板投影构建"资源 → 生效地板"映射。仅纳入
+ * policy.dynamicFloorMode==="enforce" 且投影 dynamicFloor 为有效正数的
+ * 资源；其余资源缺席（消费方回退 observe 四分量语义）。所有消费点
+ *（adapter 定价、candidatePricingComplete 重算、planner policy 注入）
+ * 必须共用同一映射，保证同一 tick 内 candidate.effectiveNetFloor 的
+ * 生成与校验一致（投影在本 tick 内不变）。
+ */
+export function marketBaseEnforcedDynamicFloors(
+  projection: MarketBaseDynamicFloorState | undefined,
+): Partial<Record<MarketBaseResource, number>> {
+  const enforced: Partial<Record<MarketBaseResource, number>> = {};
+  if (!projection) return enforced;
+  for (const entry of projection.entries) {
+    if (
+      MARKET_BASE_RESOURCE_POLICY_BY_RESOURCE[entry.resource]
+        ?.dynamicFloorMode !== "enforce"
+    ) {
+      continue;
+    }
+    const floor = entry.dynamicFloor;
+    if (floor !== null && Number.isFinite(floor) && floor > 0) {
+      // milli 归一（向上取整到毫）：adapter 的 effectiveNetFloor 经过
+      // priceToMilliUp/milliToCredits，candidatePricingComplete 以
+      // <1e-9 容差对称重算——未归一的 df（EMA 任意精度浮点）会在
+      // enforce 下每轮 candidate_incomplete fail-closed。
+      enforced[entry.resource] = roundMarketPriceUp(floor);
+    }
+  }
+  return enforced;
 }
 
 export interface MarketBaseDynamicFloorBookInput {
@@ -2908,8 +2955,18 @@ export function buildMarketBaseDynamicFloorState(input: {
       emaUpdate.ema > 0
         ? emaUpdate.ema
         : null;
+    // EMA 观测年龄门槛：停滞超过两个时间常数的 EMA 不再参与 df 合成
+    //（df=null 回退 ratchet 语义）。EMA 状态本身保留，恢复观测后按
+    // 间隔自适应 α 平滑续算。无此门槛时陈旧 EMA 会被永久采用，且长停
+    // 滞后恢复瞬间 α≈1 直接跳向新观测。
+    const latestObservedAt =
+      observedPrice !== undefined ? input.tick : emaUpdate.observedAt;
+    const emaStale =
+      bookEma !== null &&
+      (!Number.isSafeInteger(latestObservedAt) ||
+        input.tick - latestObservedAt > MARKET_BASE_BOOK_EMA_MAX_AGE_TICKS);
     const computation =
-      ratchet !== null && bookEma !== null
+      !emaStale && ratchet !== null && bookEma !== null
         ? computeMarketBaseDynamicFloor({
             policy,
             ratchetFloor: ratchet,
@@ -2927,11 +2984,21 @@ export function buildMarketBaseDynamicFloorState(input: {
         dynamicFloor = computation.rawDynamicFloor;
       } else {
         // 同日沿用当日锚；跨日限幅基准是前日锚，限幅后的投影成为新日锚。
+        // 观测中断数日时按日序差叠加限幅（允许 N 日累积降幅），否则一次
+        // 跨多日的恢复会跌穿本应逐日约束的下界。
+        const dayGap = previous
+          ? marketBaseIsoDayNumber(input.marketDate) -
+            marketBaseIsoDayNumber(previous.anchorDate)
+          : 1;
         dynamicFloor = clampMarketBaseDynamicFloorDailyDrop({
           target: computation.rawDynamicFloor,
           previous: previousAnchor,
           maxDailyDynamicDrop: policy.maxDailyDynamicDrop,
-          daysAdvanced: sameDay ? 0 : 1,
+          daysAdvanced: sameDay
+            ? 0
+            : Number.isSafeInteger(dayGap) && dayGap >= 1
+              ? dayGap
+              : 1,
         });
       }
       const anchor = sameDay ? previousAnchor : (dynamicFloor as number);
