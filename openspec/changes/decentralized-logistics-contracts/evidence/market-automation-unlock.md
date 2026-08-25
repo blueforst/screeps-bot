@@ -247,3 +247,11 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **结构性结论**：当前 ~90-100 真实平均的构成 = creepWork ~35（intent 11 引擎固定 + pathing 16-20 + decision 3-4）+ 市场 ~33（planning 摊销 + preflight 8.3）+ 基础设施 ~25。显著下降需结构性决策（减 creep 规模、拉长 planning 周期、remote 规模收缩），非本轮语义等价优化可及。
 
 **阶段 3（切换清单，EMA 恢复 + 用户确认后执行）**：① 观察投影轨迹 ≥1 个市场日（验证 EMA 跟随与日锚重立）；② 7 资源常量 dynamicFloorMode: "enforce" + configRevision v3-r3→r4 + canonical safety fingerprint 重推导；③ v3 fixture/pastPolicySet 指纹适配 + enforce 端到端测试；④ 静默窗口部署 → console cfg → v3-policy-migration（armed canary 需先处置：X/E6N59 canary 未成交，迁移会因 canary_unresolved 被拒——**需先退 canary 或接受先迁移后重授权路径**，执行时按 propose 校验结果定）；⑤ maker 门控 P2 决策；⑥ 切换后 X 首笔成交复核（预授权边界内）→ continuous。
+
+### 观察期收官与切换决策悬置（2026-08-25 14:5x CST）
+
+- **两项验收全部通过**：① EMA 持续跟随（8/24 断流修复后 X 520→593 跟随买价上涨，H/L/Z 有观测、O 在日锚重立后恢复）；② 日锚重立正常（8/25 白天 marketDate→08-24，锚值全部符合规则：EMA×buffer / ratchet 压顶 / 无观测回退）。切换确认简报已交付 `monitor-data/enforce-switch-brief.md`。
+- **用户交互**：用户确认"数据应该采集够了"（观察期收官认可）；切换决策问询未获回答——**按授权边界维持 observe 不翻常量**，决策悬置待用户明确指示。
+- **格局变化（决策依据）**：市场大涨（X 买价 605）使 X 的 df=min(ratchet 589.857, EMA 592×1.03) 被压顶=ratchet——**enforce 与 observe 成交条件当前完全等价**，切换价值退化为"买价跌破 ratchet 时的地板跟随保险"，无紧迫性。L 的 ratchet 随 7 日中位上涨 414.7→464.2。
+- **canary**：observe 下成交窗口持续开放（买价≥地板 589.86、E6N59 能量拦截已解除、lane writable），此前未成交根因 terminal_energy_unsafe（21 次累计，已停涨）；剩余拦截为间歇 gate（hub_room_blocked/critical_conflict/protection_not_current 各 7）。成交→review_paused→按 X/E6N59 预授权复核推进 continuous。
+- **监视器**：8/25 07:06 起 hang（进程存活不写入，疑似休眠唤醒 fetch 悬挂）→ 14:30 进程消失 → 按守则重建（新 PID 49442），归档恢复正常；jsonl 缺 07:06–13:07 段，日锚重立前后轨迹由 live 直读补齐。
