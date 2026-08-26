@@ -21,7 +21,7 @@ import {
   MARKET_DIRECT_CONTINUOUS_ROOM_ROLLING_CAP,
   type MarketDirectContinuousEntryInput,
 } from "@/runtime/marketDirectContinuousPlanner";
-import type { MarketOrderSnapshot } from "@/runtime/marketSalePricing";
+import { roundMarketPriceUp, type MarketOrderSnapshot } from "@/runtime/marketSalePricing";
 import {
   MARKET_BASE_RESOURCE_CATALOG,
   MARKET_BASE_RESOURCE_CATALOG_REVISION,
@@ -32,6 +32,7 @@ import {
   createMarketBaseSharedPolicy,
   marketBaseDerivedLaneLifecycleCheckpointCommitment,
   marketBaseDerivedLaneSetFingerprint,
+  marketBaseEnforcedDynamicFloors,
   type MarketBaseDerivedLaneLifecycle,
   type MarketBaseRoomObservation,
 } from "@/runtime/marketBaseResourcePolicy";
@@ -1429,10 +1430,18 @@ describe("Market Base V3 运行时重合同（高风险决策/WAL/证据隔离/o
     )!;
     expect(h.bookEma).toBeNull();
     expect(h.dynamicFloor).toBeNull();
+    // enforce 切换端到端（r4）：常量翻 enforce 后，同一投影经
+    // marketBaseEnforcedDynamicFloors 必须产出 X 的生效地板（milli 归一）；
+    // 无观测资源（H）缺席，消费方回退 observe 四分量语义。
+    const enforced = marketBaseEnforcedDynamicFloors(projection);
+    expect(enforced[RESOURCE_CATALYST]).toBe(
+      roundMarketPriceUp(x.dynamicFloor!),
+    );
+    expect(enforced[RESOURCE_HYDROGEN]).toBeUndefined();
   };
 
   const scenarioObserveProjectionNoSelection = () => {
-    const { state, deps, input } = v3RuntimeFixture();
+    const { state, deps, input, harness } = v3RuntimeFixture();
     // 490 eligible（490k ≥ minOrderNotional 480k）但低于有效地板
     // （fixture X trusted floor 559.43）→ planner 无可成交订单。断流
     // 回归：该路径必须仍把 book 观测转交投影，否则 EMA 恰在市场价低于
@@ -1451,6 +1460,41 @@ describe("Market Base V3 运行时重合同（高风险决策/WAL/证据隔离/o
     expect(x.lastObservedPrice).toBe(490);
     // df = min(ratchet 559.43, 490×1.03) = 504.7（受 ratchet 只降不升）。
     expect(x.dynamicFloor).toBeCloseTo(490 * 1.03, 6);
+    // enforce 区分性负例（r4）：第二轮投影非空，X df=504.7 ≠ observe
+    // trusted 559.43。候选仍按 observe 语义携带 559.43 → candidatePricing
+    // Complete 以 max(hard, economic, df) 对称重算不匹配 → fail-closed 拒单。
+    // observe 常量下该轮 planComplete=true，本断言只在 enforce 生效时成立。
+    harness.tick += 1;
+    const second = runMarketBaseResourceAutomation(state, input(), deps);
+    expect(second.planComplete).toBe(false);
+    expect(
+      Object.keys(second.rejectedByReason ?? {}).some((key) =>
+        key.startsWith("market_base_v3_candidate_incomplete:"),
+      ),
+    ).toBe(true);
+    // enforce 激活链路正向（r4）：第三轮注入 enforce 语义候选
+    // （X effectiveNetFloor=max(hard 480, econ 480, df)=roundUp(504.7)，
+    // history/ratchet 分量保持 observe 值以证明被 df 整体替代）→
+    // candidatePricingComplete 对称重算通过，planning 恢复完整。
+    harness.tick += 1;
+    const thirdInput = input();
+    const originalReadCandidates = thirdInput.readCandidates!;
+    thirdInput.readCandidates = () =>
+      originalReadCandidates().map((candidate) =>
+        candidate.resourceType === RESOURCE_CATALYST
+          ? {
+              ...candidate,
+              effectiveNetFloor: roundMarketPriceUp(x.dynamicFloor!),
+            }
+          : candidate,
+      );
+    const third = runMarketBaseResourceAutomation(state, thirdInput, deps);
+    expect(third.planComplete).toBe(true);
+    expect(
+      Object.keys(third.rejectedByReason ?? {}).some((key) =>
+        key.startsWith("market_base_v3_candidate_incomplete:"),
+      ),
+    ).toBe(false);
   };
 
   const scenarioCandidateIsolation = () => {

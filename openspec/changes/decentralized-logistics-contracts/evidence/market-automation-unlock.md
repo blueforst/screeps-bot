@@ -255,3 +255,29 @@ terminal 恒被物流占用 → arbiterBlocked 恒 true → 所有 lane `termina
 - **格局变化（决策依据）**：市场大涨（X 买价 605）使 X 的 df=min(ratchet 589.857, EMA 592×1.03) 被压顶=ratchet——**enforce 与 observe 成交条件当前完全等价**，切换价值退化为"买价跌破 ratchet 时的地板跟随保险"，无紧迫性。L 的 ratchet 随 7 日中位上涨 414.7→464.2。
 - **canary**：observe 下成交窗口持续开放（买价≥地板 589.86、E6N59 能量拦截已解除、lane writable），此前未成交根因 terminal_energy_unsafe（21 次累计，已停涨）；剩余拦截为间歇 gate（hub_room_blocked/critical_conflict/protection_not_current 各 7）。成交→review_paused→按 X/E6N59 预授权复核推进 continuous。
 - **监视器**：8/25 07:06 起 hang（进程存活不写入，疑似休眠唤醒 fetch 悬挂）→ 14:30 进程消失 → 按守则重建（新 PID 49442），归档恢复正常；jsonl 缺 07:06–13:07 段，日锚重立前后轨迹由 live 直读补齐。
+
+### enforce 切换执行（2026-08-26 晚，用户确认"切换吧"后）
+
+**前置分析（关键顺序约束，subagent 双重验证）**：
+- **suspend 需 terminal attempt**：`market_base_canary_suspension_requires_terminal_attempt`（marketSaleAutomation.ts:9248-9258）——canary lane 的 suspend（退休）前置 `marketBaseResourceCanaryReviewFactsFor` 非 null，依赖 `ledger.canaryAttemptHighWater[laneId]` 或 retired 记录（marketBaseResourceLedger.ts:5608-5612）。live 直读确认高水位为空（canary 从未发起过 pending attempt）→ **当前无法直接退休 canary，必须等首笔成交**。
+- **部署顺序死锁风险**：若先部署 r4（cfg 仍 r3）→ rollback 闩锁 fail-closed（2172-2181）→ canary 永不成交 → suspend 不可做（闩锁下 successor propose 被拒）→ migration 被 canary_unresolved 拒 → **死锁仅能手改 Memory 解除**。故顺序定为：**成交 → suspend → 部署 → cfg → migration**。
+- **"重授权在后"修正**：简报原预期"退休→迁移→重新授权 canary"，实际 suspend 不可逆（canary→qualified 无路径，preserveWritableGrantSuspension 保 stage）；X 其他 qualified lane 以后可再进 canary 坑位，验证职责由 enforce 后首笔成交复核承接。
+- **promote 陷阱**：成交后若按预授权推进 continuous，会写 continuous_review evidence → migration 被 active_reviews_unsupported 拒。**成交后走 suspend 而非 promote**（原 X/E6N59 continuous 预授权据此调整：为迁移让路，该 lane 退休，X 销售由其余 qualified lane 承接）。
+
+**代码变更（本 commit，部署持到 canary 成交）**：
+1. `marketBaseResourcePolicy.ts`：7 处 `dynamicFloorMode: "observe"→"enforce"` + `MARKET_BASE_RESOURCE_CONFIG_REVISION` v3-r3→**v3-r4**。指纹自动重推导（canonicalStableHashV1 覆盖 policy 对象）；无 fixture 硬编码需改（pastPolicySet/v3Config 均从当前常量派生）。
+2. `marketBaseResourceAutomation.test.ts` 三组 enforce 激活断言（全并入既有 it，预算 500 不变）：
+   - 纯函数层：`marketBaseEnforcedDynamicFloors(projection)` 产出 X 生效地板（milli 归一）、无观测资源缺席；
+   - **区分性负例**：NoSelection 第二轮投影非空（X df=504.7≠observe trusted 559.43），observe 语义候选被 `market_base_v3_candidate_incomplete:*` fail-closed 拒——**observe 常量下该断言红（已临时翻转验证），enforce 下绿**；
+   - 正向：第三轮注入 enforce 语义候选（effectiveNetFloor=max(480,480,504.7)，history/ratchet 保留 observe 值证明被 df 整体替代）→ planning 恢复完整。
+
+**subagent 影响审查（PASS，无 P0/P1）**：
+- 消费面恰三点（adapter wiring marketSaleRuntime.ts:481-545 / candidatePricingComplete automation:7824→7895 / planner 注入 8020-8028），同 tick 同源；monitor/保护快照与 df 无交集，jsonl 不断流。
+- df 公式 `max(hard, min(ratchet, ema×(1+buffer×f)))` 在全部消费点保持 max(hard, econ, df)，不绕过任何既有下限；milli 归一对称，缺失时 fail-closed。
+- CPU：纯分支翻转零新遍历；enforce 激活后定价缓存随投影推进失效（设计内，TTL 读缓存兜底）。
+- 回滚对称：revert→部署→cfg 回 r3→migration（闩锁态允许 propose）→accept；enforce 不写 trustedFloors/ratchet，投影不进 permit 签名。
+- 残留（已接受）：**P2** marketSaleRuntime 侧 df epoch wiring 无直接测试（P2-d，fail-closed 对称+P2 区分性负例兜底）；**P3-1** 迁移解锁后首 tick 用冻结投影 enforce 一次（方向 fail-safe：地板最多偏高阻单，量级受 hard/ratchet/日锚三重钳制）；**P3-2** 定价缓存失效换正确性的 CPU 开销上线后观察。
+
+**验证**：tsc 干净、500/500、test:budget PASSED、build 成功。
+
+**待执行序列（canary 成交触发）**：console 查 laneId → `proposeMarketBaseResourcePermit({laneId, targetStage:"suspend"})` → accept → `npm run push` → console `Memory.cfg.marketSaleAutomation = Object.assign(JSON.parse(JSON.stringify(...)), {configRevision:"market-base-resource-v3-r4"})` → `proposeMarketBaseResourcePolicyMigration()` → accept → live 验证 enforce 生效（投影推进+无闩锁）→ 首笔 enforce 成交复核。守望 cron（automation-582220ae）继续监视 canaryStage 离开 canary 即触发。

@@ -25,7 +25,7 @@ export const MARKET_BASE_RESOURCE_EVIDENCE_SHA256 =
 export const MARKET_BASE_RESOURCE_EVIDENCE_IMPLEMENTATION_BLOB =
   "f55503b3d45352e14513e9928706251c82992ecc" as const;
 export const MARKET_BASE_RESOURCE_CONFIG_REVISION =
-  "market-base-resource-v3-r3" as const;
+  "market-base-resource-v3-r4" as const;
 
 export const MARKET_BASE_RESOURCE_MAX_ROOMS = 16 as const;
 export const MARKET_BASE_RESOURCE_MAX_KNOWN_ROOM_NAMES = 32 as const;
@@ -186,7 +186,7 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxDailyDynamicDrop: 0.15,
     surplusLow: 1,
     surplusHigh: 3,
-    dynamicFloorMode: "observe",
+    dynamicFloorMode: "enforce",
   },
   {
     policyId: "base-k-v3-r1",
@@ -211,7 +211,7 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxDailyDynamicDrop: 0.15,
     surplusLow: 1,
     surplusHigh: 3,
-    dynamicFloorMode: "observe",
+    dynamicFloorMode: "enforce",
   },
   {
     policyId: "base-l-v3-r1",
@@ -236,7 +236,7 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxDailyDynamicDrop: 0.15,
     surplusLow: 1,
     surplusHigh: 3,
-    dynamicFloorMode: "observe",
+    dynamicFloorMode: "enforce",
   },
   {
     policyId: "base-o-v3-r1",
@@ -261,7 +261,7 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxDailyDynamicDrop: 0.15,
     surplusLow: 1,
     surplusHigh: 3,
-    dynamicFloorMode: "observe",
+    dynamicFloorMode: "enforce",
   },
   {
     policyId: "base-u-v3-r1",
@@ -286,7 +286,7 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxDailyDynamicDrop: 0.15,
     surplusLow: 1,
     surplusHigh: 3,
-    dynamicFloorMode: "observe",
+    dynamicFloorMode: "enforce",
   },
   {
     policyId: "base-x-v3-r2",
@@ -311,7 +311,7 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxDailyDynamicDrop: 0.15,
     surplusLow: 1,
     surplusHigh: 3,
-    dynamicFloorMode: "observe",
+    dynamicFloorMode: "enforce",
   },
   {
     policyId: "base-z-v3-r1",
@@ -336,7 +336,7 @@ const RAW_MARKET_BASE_RESOURCE_POLICIES = deepFreeze<
     maxDailyDynamicDrop: 0.15,
     surplusLow: 1,
     surplusHigh: 3,
-    dynamicFloorMode: "observe",
+    dynamicFloorMode: "enforce",
   },
 ]);
 
