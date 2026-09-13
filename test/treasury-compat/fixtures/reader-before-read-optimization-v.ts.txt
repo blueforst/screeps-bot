@@ -84,12 +84,8 @@ function direct(room: Room | undefined, kind: Kind, resources: readonly string[]
     if (room.controller?.my !== true) return { status: "not_owned" };
     const s = room[kind];
     if (!s) return { status: "absent" };
-    if (s.my !== true || !str(s.id, 96)) return { status: "unreadable" };
-    // Endpoint-local reference only: no value or Store is retained across calls.
-    // Core observation still obtains its own Store and independently enumerates it.
-    const store = s.store;
-    if (!store || typeof s.isActive !== "function") return { status: "unreadable" };
-    const used = store.getUsedCapacity(), free = store.getFreeCapacity(), capacity = store.getCapacity();
+    if (s.my !== true || !str(s.id, 96) || !s.store || typeof s.isActive !== "function") return { status: "unreadable" };
+    const used = s.store.getUsedCapacity(), free = s.store.getFreeCapacity(), capacity = s.store.getCapacity();
     const active = s.isActive(), cooldown = kind === "terminal" ? (s as StructureTerminal).cooldown : null;
     // Capacity reduction may leave inventory above capacity. Preserve signed
     // free or a saturated zero, rather than inventing capacity=used+free.
@@ -98,7 +94,7 @@ function direct(room: Room | undefined, kind: Kind, resources: readonly string[]
       || typeof active !== "boolean" || (kind === "terminal" && !nonneg(cooldown))) return { status: "unreadable" };
     const amounts: Record<string, number> = Object.create(null);
     for (const r of resources) {
-      const a = store.getUsedCapacity(r as ResourceConstant);
+      const a = s.store.getUsedCapacity(r as ResourceConstant);
       if (!nonneg(a) || a > used) return { status: "unreadable" };
       amounts[r] = a;
     }

@@ -3,9 +3,19 @@
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const ts = require('typescript');
 const H = require('./helpers.cjs');
-const OLD_BLOB = 'c44d8a306f2b11986c6556e098be7d2e10315fa6';
-const oldText = () => fs.readFileSync(path.join(__dirname, 'fixtures/core-before-loader-optimization.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
+const OLD_BLOB = '7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3';
+const oldText = () => fs.readFileSync(path.join(__dirname, 'fixtures/core-before-read-optimization-v.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
 const newText = () => fs.readFileSync(H.file('treasuryCompatReadCore.generated.ts'), 'utf8').replace(/\r\n/g, '\n');
+const oldReaderText = () => fs.readFileSync(path.join(__dirname, 'fixtures/reader-before-read-optimization-v.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
+const newReaderText = () => fs.readFileSync(H.file('treasuryCompatRead.ts'), 'utf8').replace(/\r\n/g, '\n');
+function readerApi(text) {
+  const js = ts.transpileModule(text, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2019 } }).outputText;
+  const ctx = vm.createContext({ exports: {}, require: k => {
+    if (k === './treasuryCompatCpu') return H.load('treasuryCompatCpu.ts');
+    throw new Error('unexpected reader import:' + k);
+  } });
+  vm.runInContext(js, ctx, { timeout: 5000 }); return ctx.exports;
+}
 const task = (o = {}) => ({ id: 't', origin: 'manual', status: 'pending', resource: 'H', fromRoomName: 'W1N1', toRoomName: 'W2N1', amount: 100, remainingAmount: 70, createdAt: 1, updatedAt: 1, lastProgressAt: 1, ...o });
 const reservation = (o = {}) => ({ roomName: 'W1N1', resource: 'H', holderId: 'synthesis:W1N1:H', amount: 25, updatedAt: 1, expiresAt: 500, ...o });
 function capsule(text, s, hook = () => {}) {
@@ -23,6 +33,7 @@ function make(text = newText(), diagnostics = true, hook) {
   const s = H.scene({ rooms: ['W1N1', 'W2N1'] });
   s.game.rooms.W2N1 = H.makeRoom('W2N1');
   s.resources = ['energy', 'H', 'O', 'U'];
+  s.api = readerApi(text === oldText() ? oldReaderText() : newReaderText());
   s.factories = [];
   s.core = capsule(text, s, id => { s.factories.push(id); if (hook) hook(id, s); });
   s.ports.readers = () => { s.calls.readers++; const c = s.core.createCompatibilityReadCore();
@@ -75,4 +86,26 @@ function compareScenario(name) {
     commitments: [a.calls.commitments, b.calls.commitments], reports: b.lines.length,
     actualEngineMeasurement: false };
 }
-module.exports = { H, ts, fs, path, oldText, newText, OLD_BLOB, capsule, make, build, task, reservation, scenarios, compareScenario };
+module.exports = { H, ts, fs, path, oldText, newText, oldReaderText, newReaderText, readerApi, OLD_BLOB, capsule, make, build, task, reservation, scenarios, compareScenario };
+
+/** Count host-property access, NOT milliseconds or Screeps CPU. */
+function measureStoreReads(text = newText(), resources = ['energy', 'H']) {
+  const s = make(text); s.cfg = { ...s.cfg, resources };
+  let inDirect = true, direct = 0, core = 0; const methods = [];
+  for (const room of Object.values(s.game.rooms)) for (const kind of ['storage', 'terminal']) {
+    const endpoint = room[kind], store = endpoint.store;
+    Object.defineProperty(endpoint, 'store', { configurable: true, get() { if (inDirect) direct++; else core++; return store; } });
+    for (const name of ['getUsedCapacity', 'getFreeCapacity', 'getCapacity']) {
+      const fn = store[name]; Object.defineProperty(store, name, { configurable: true, value: function (...args) {
+        if (this !== store) throw new Error('store method receiver lost');
+        methods.push([room.name, kind, inDirect ? 'direct' : 'core', name, ...args]);
+        return Reflect.apply(fn, this, args);
+      } });
+    }
+  }
+  const readers = s.ports.readers;
+  s.ports.readers = () => { inDirect = false; return readers(); };
+  s.observer = s.api.createTreasuryCompatPreview(s.cfg, s.ports, { cpuDiagnostics: true });
+  s.observer.run(); return { directStorePropertyReads: direct, coreStorePropertyReads: core, methods, line: s.lines[0] };
+}
+module.exports.measureStoreReads = measureStoreReads;
