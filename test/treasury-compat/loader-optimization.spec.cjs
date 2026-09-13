@@ -10,9 +10,9 @@ const mutable = ['src/runtime/treasury/commitments.ts', 'src/runtime/treasury/co
 test('read V baseline fixture is the exact original Git blob', () => {
   const b = Buffer.from(oldText()); assert.equal(G.blob(b), S.OLD_BLOB); assert.equal(b.length, 64604);
 });
-test('read V exactly reversible context substitutions recover every canonical factory byte', () => {
+test('read V context substitutions recover canonical factories after reversing VII build transform', () => {
   const before = oldText().split(G.MARKER)[0];
-  const after = newText().split('/** Read Optimization V:')[0];
+  const after = G.B.restore(newText().split('/** Read Optimization V:')[0]);
   assert.equal(G.X.restore(after), before);
   assert.equal(ids(newText()).length, 8); // unused original revision body retained, not invoked
   assert.equal(G.main(['--check']).status, 'COMPAT_LOADER_REGENERATION_VERIFIED');
@@ -286,8 +286,8 @@ test('read V preview accessor-table guard is unchanged and does not invoke the b
 test('read V canonical transform refuses a shifted body rather than approximating a match', () => {
   const prefix = oldText().split(G.MARKER)[0]; assert.throws(() => G.X.transform(prefix.replace('new Set(RESOURCES_ALL)', 'new Set([])')), /CONTEXT_TRANSFORM_COUNT/);
 });
-test('read V only commitment factory and one explicit dependency edge are adapted', () => {
-  const before = oldText().split(G.MARKER)[0], after = newText().split('/** Read Optimization V:')[0];
+test('read V layer only adapts commitment context and its edge after reversing VII layer', () => {
+  const before = oldText().split(G.MARKER)[0], after = G.B.restore(newText().split('/** Read Optimization V:')[0]);
   const [a, b] = G.X.region(before), [c, d] = G.X.region(after);
   assert.equal(before.slice(0, a), after.slice(0, c));
   assert.equal(G.X.restore(after), before); assert.notEqual(before.slice(a, b), after.slice(c, d));

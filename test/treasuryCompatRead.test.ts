@@ -8,8 +8,9 @@ describe("Treasury old-production read compatibility bridge", () => {
     const result = spawnSync(process.execPath, ["--test",
       resolve(__dirname, "treasury-compat/bridge.spec.cjs"),
       resolve(__dirname, "treasury-compat/real-readers.spec.cjs"),
-      resolve(__dirname, "treasury-compat/loader-optimization.spec.cjs")], {
-      cwd: resolve(__dirname, ".."), encoding: "utf8", timeout: 45000,
+      resolve(__dirname, "treasury-compat/loader-optimization.spec.cjs"),
+      resolve(__dirname, "treasury-compat/build-optimization.spec.cjs")], {
+      cwd: resolve(__dirname, ".."), encoding: "utf8", timeout: 180000,
     });
     if (result.status !== 0) throw new Error([result.error?.message, result.stdout, result.stderr].filter(Boolean).join("\n"));
     expect(result.status).toBe(0);

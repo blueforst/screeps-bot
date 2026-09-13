@@ -310,12 +310,17 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         indexQueries: 0,
     };
     // ── transfer task 索引（pending 维度与旧 amount index 对齐）───────────────
-    // VII: full task indexes share storage by scope/room, not by sample.
-    // These private maps are fresh for EVERY build. Route and reservation
-    // indexes retain their own maps; no validation or query is deferred.
-    const taskScopes = new Map();
-    const taskRooms = new Map();
+    const outgoing = new Map();
+    const outgoingByReason = new Map();
+    const pendingIncoming = new Map();
+    const incoming = new Map();
+    const incomingTaskCountByRoom = new Map();
+    const outgoingTaskCountByRoom = new Map();
+    // route merge 预构建索引：mergeKey → taskId（查询零线性扫描）。
     const mergeIndex = new Map();
+    // receiver 维度预聚合：房间 → 健康入站合计/任务数（canonical 谓词）。
+    const healthyIncomingByRoom = new Map();
+    const healthyIncomingCountByRoom = new Map();
     // completeness（第五轮）：损坏记录不进聚合、不删原数据；能定位 bucket 的
     // 标记 (room,resource) scope incomplete，连 scope 都无法确定的标记全局
     // incomplete——incomplete scope 的 spendable/授权必须 fail closed。
@@ -352,83 +357,51 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         const reason = task.reason || "";
         // 聚合安全整数检查：多条合法安全整数相加后仍须安全——溢出即该 task
         // 影响的全部 scope incomplete（数值不再作为授权依据），不静默丢弃。
-        // Stable JSON record fields. Use the SAME canonical NUL scope keys;
-        // self-routes and key aliases must share the same bucket object.
-        const fromRoom = task.fromRoomName, toRoom = task.toRoomName;
-        const outKey = taskKey(fromRoom, task.resource);
-        const inKey = taskKey(toRoom, task.resource);
-        let outBucket = taskScopes.get(outKey), inBucket = taskScopes.get(inKey);
-        const mergedOutgoing = addSafeInteger(outBucket ? outBucket.outgoing : 0, task.remainingAmount);
-        const mergedPendingIncoming = addSafeInteger(inBucket ? inBucket.pendingIncoming : 0, task.remainingAmount);
+        const outKey = taskKey(task.fromRoomName, task.resource);
+        const mergedOutgoing = addSafeInteger((_d = outgoing.get(outKey)) !== null && _d !== void 0 ? _d : 0, task.remainingAmount);
+        const mergedPendingIncoming = addSafeInteger((_e = pendingIncoming.get(taskKey(task.toRoomName, task.resource))) !== null && _e !== void 0 ? _e : 0, task.remainingAmount);
         if (mergedOutgoing === null || mergedPendingIncoming === null) {
             recordInvalid();
             incompleteScopes.add(outKey);
-            incompleteScopes.add(inKey);
+            incompleteScopes.add(taskKey(task.toRoomName, task.resource));
             continue;
         }
-        let fromBucket = taskRooms.get(fromRoom);
-        if (!fromBucket) {
-            fromBucket = { outgoingCount: 0, incomingCount: 0, healthyAmount: 0, healthyCount: 0 };
-            taskRooms.set(fromRoom, fromBucket);
-        }
-        fromBucket.outgoingCount += 1;
-        if (!outBucket) {
-            outBucket = { outgoing: 0, pendingIncoming: 0, incoming: 0, reasons: undefined };
-            taskScopes.set(outKey, outBucket);
-        }
-        outBucket.outgoing = mergedOutgoing;
-        const byReason = outBucket.reasons !== undefined ? outBucket.reasons : new Map();
+        outgoingTaskCountByRoom.set(task.fromRoomName, ((_f = outgoingTaskCountByRoom.get(task.fromRoomName)) !== null && _f !== void 0 ? _f : 0) + 1);
+        outgoing.set(outKey, mergedOutgoing);
+        const byReason = (_g = outgoingByReason.get(outKey)) !== null && _g !== void 0 ? _g : new Map();
         const mergedByReason = addSafeInteger((_h = byReason.get(reason)) !== null && _h !== void 0 ? _h : 0, task.remainingAmount);
-        // Keep the canonical partial-update order on overflow: outgoing and
-        // outgoingCount above remain updated; pendingIncoming is NOT updated.
         if (mergedByReason === null) {
             recordInvalid();
             incompleteScopes.add(outKey);
             continue;
         }
         byReason.set(reason, mergedByReason);
-        outBucket.reasons = byReason;
-        if (!inBucket) {
-            inBucket = inKey === outKey ? outBucket : { outgoing: 0, pendingIncoming: 0, incoming: 0, reasons: undefined };
-            if (inKey !== outKey) taskScopes.set(inKey, inBucket);
-        }
-        inBucket.pendingIncoming = mergedPendingIncoming;
+        outgoingByReason.set(outKey, byReason);
+        pendingIncoming.set(taskKey(task.toRoomName, task.resource), mergedPendingIncoming);
         const countsTowardDemand = (0, resourceTransferTaskHealth_1.countsResourceTransferTaskTowardDemand)(task, healthOptions);
-        let toBucket;
         if (countsTowardDemand) {
-            const mergedIncoming = addSafeInteger(inBucket.incoming, task.remainingAmount);
+            const inKey = taskKey(task.toRoomName, task.resource);
+            const mergedIncoming = addSafeInteger((_j = incoming.get(inKey)) !== null && _j !== void 0 ? _j : 0, task.remainingAmount);
             if (mergedIncoming === null) {
                 recordInvalid();
                 incompleteScopes.add(inKey);
                 continue;
             }
-            inBucket.incoming = mergedIncoming;
-            toBucket = taskRooms.get(toRoom);
-            if (!toBucket) {
-                toBucket = { outgoingCount: 0, incomingCount: 0, healthyAmount: 0, healthyCount: 0 };
-                taskRooms.set(toRoom, toBucket);
-            }
-            toBucket.incomingCount += 1;
+            incoming.set(inKey, mergedIncoming);
+            incomingTaskCountByRoom.set(task.toRoomName, ((_k = incomingTaskCountByRoom.get(task.toRoomName)) !== null && _k !== void 0 ? _k : 0) + 1);
         }
         if (task.origin === "manual" || countsTowardDemand) {
-            // Canonical first-route-wins order, including manual tasks that do
-            // not contribute healthy demand. Do not overwrite an earlier id.
-            const mergeKey = mergeKeyOf(task.resource, fromRoom, toRoom, task.origin, reason);
+            // 与旧 findMergeablePendingTask 语义一致：manual 无条件、automatic 需
+            // 健康；同 route 重复 key 时保留第一个匹配（Object.values 插入顺序），
+            // 不得用后写覆盖（那是"最后一个匹配"，会改变 merge 目标选择）。
+            const mergeKey = mergeKeyOf(task.resource, task.fromRoomName, task.toRoomName, task.origin, reason);
             if (!mergeIndex.has(mergeKey)) {
                 mergeIndex.set(mergeKey, task.id);
             }
         }
         if ((0, resourceTransferTaskHealth_1.isHealthyReceiverCapacityCommitment)(task, healthOptions.automaticTaskNoProgressTtl)) {
-            if (!toBucket) {
-                toBucket = taskRooms.get(toRoom);
-                if (!toBucket) {
-                    toBucket = { outgoingCount: 0, incomingCount: 0, healthyAmount: 0, healthyCount: 0 };
-                    taskRooms.set(toRoom, toBucket);
-                }
-            }
-            // Keep canonical arithmetic (including its overflow behavior).
-            toBucket.healthyAmount += task.remainingAmount;
-            toBucket.healthyCount += 1;
+            healthyIncomingByRoom.set(task.toRoomName, ((_l = healthyIncomingByRoom.get(task.toRoomName)) !== null && _l !== void 0 ? _l : 0) + task.remainingAmount);
+            healthyIncomingCountByRoom.set(task.toRoomName, ((_m = healthyIncomingCountByRoom.get(task.toRoomName)) !== null && _m !== void 0 ? _m : 0) + 1);
         }
     }
     // ── production reservation 索引（保守 committed：只有 expiresAt 到期或
@@ -525,42 +498,41 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             return incompleteScopes.has(taskKey(roomName, resource)) ? "incomplete-scope" : "complete";
         },
         outgoing(roomName, resource) {
+            var _a;
             metrics.indexQueries += 1;
-            const bucket = taskScopes.get(taskKey(roomName, resource));
-            return bucket ? bucket.outgoing : 0;
+            return (_a = outgoing.get(taskKey(roomName, resource))) !== null && _a !== void 0 ? _a : 0;
         },
         pendingOutgoing(roomName, resource, reasonPrefix) {
             var _a, _b;
             metrics.indexQueries += 1;
-            const bucket = taskScopes.get(taskKey(roomName, resource));
             if (!reasonPrefix)
-                return bucket ? bucket.outgoing : 0;
+                return (_a = outgoing.get(taskKey(roomName, resource))) !== null && _a !== void 0 ? _a : 0;
             let total = 0;
-            for (const [reason, amount] of bucket && bucket.reasons ? bucket.reasons : []) {
+            for (const [reason, amount] of (_b = outgoingByReason.get(taskKey(roomName, resource))) !== null && _b !== void 0 ? _b : []) {
                 if (reason.startsWith(reasonPrefix))
                     total += amount;
             }
             return total;
         },
         incoming(roomName, resource) {
+            var _a;
             metrics.indexQueries += 1;
-            const bucket = taskScopes.get(taskKey(roomName, resource));
-            return bucket ? bucket.incoming : 0;
+            return (_a = incoming.get(taskKey(roomName, resource))) !== null && _a !== void 0 ? _a : 0;
         },
         pendingIncoming(roomName, resource) {
+            var _a;
             metrics.indexQueries += 1;
-            const bucket = taskScopes.get(taskKey(roomName, resource));
-            return bucket ? bucket.pendingIncoming : 0;
+            return (_a = pendingIncoming.get(taskKey(roomName, resource))) !== null && _a !== void 0 ? _a : 0;
         },
         incomingTaskCount(roomName) {
+            var _a;
             metrics.indexQueries += 1;
-            const bucket = taskRooms.get(roomName);
-            return bucket ? bucket.incomingCount : 0;
+            return (_a = incomingTaskCountByRoom.get(roomName)) !== null && _a !== void 0 ? _a : 0;
         },
         outgoingTaskCount(roomName) {
+            var _a;
             metrics.indexQueries += 1;
-            const bucket = taskRooms.get(roomName);
-            return bucket ? bucket.outgoingCount : 0;
+            return (_a = outgoingTaskCountByRoom.get(roomName)) !== null && _a !== void 0 ? _a : 0;
         },
         findMergeableTaskId(resource, fromRoomName, toRoomName, origin, reason) {
             var _a;
@@ -599,9 +571,8 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             // （O(1) map 读）+ 当前 overlay 容量净变化（facade 注入的 O(1) 位置
             // 聚合）。绝不缓存依赖当前 overlay 的 projected 字段——同 tick 结算
             // 新 transaction 后的下一次查询必须立即反映最新投影。
-            const roomBucket = taskRooms.get(roomName);
-            const healthyIncomingAmount = roomBucket ? roomBucket.healthyAmount : 0;
-            const healthyIncomingTaskCount = roomBucket ? roomBucket.healthyCount : 0;
+            const healthyIncomingAmount = (_a = healthyIncomingByRoom.get(roomName)) !== null && _a !== void 0 ? _a : 0;
+            const healthyIncomingTaskCount = (_b = healthyIncomingCountByRoom.get(roomName)) !== null && _b !== void 0 ? _b : 0;
             const storageFreeCapacity = options.observation.freeCapacity(roomName, "storage");
             const terminalFreeCapacity = options.observation.freeCapacity(roomName, "terminal");
             const projectedStorageFree = storageFreeCapacity - capacityDelta(roomName, "storage");
@@ -928,18 +899,14 @@ function buildTreasuryObservation(options) {
             (_c = options.onStoreScanned) === null || _c === void 0 ? void 0 : _c.call(options, storageScan.nonZeroKeys);
         if (terminalScan.exists)
             (_d = options.onStoreScanned) === null || _d === void 0 ? void 0 : _d.call(options, terminalScan.nonZeroKeys);
-        // VII: freeze the one final room object, not a temporary clone.
-        rooms.push(Object.freeze({
+        rooms.push(deepFreezeRoom({
             roomName: room.name,
             storage: freezeLocation(room.name, "storage", storageScan),
             terminal: freezeLocation(room.name, "terminal", terminalScan),
         }));
         // 帝国总量 = 全部位置桶之和（构建期求和；missing 位置贡献 0）。
         for (const scan of [storageScan, terminalScan]) {
-            // VII: amounts is an owned, frozen primitive snapshot here.
-            // Preserve Object.keys order and additions; avoid [key,value] pairs.
-            for (const resource of Object.keys(scan.amounts)) {
-                const amount = scan.amounts[resource];
+            for (const [resource, amount] of Object.entries(scan.amounts)) {
                 empireTotals[resource] = ((_e = empireTotals[resource]) !== null && _e !== void 0 ? _e : 0) + amount;
             }
         }

@@ -1,15 +1,17 @@
 {
-  "revision": "compat-read-optimization-V",
+  "revision": "compat-build-optimization-VII",
   "authoring": [
     "scripts/lib/treasury-compat-loader.template.txt",
-    "scripts/lib/treasury-compat-context.cjs"
+    "scripts/lib/treasury-compat-context.cjs",
+    "scripts/lib/treasury-compat-build.cjs"
   ],
-  "baselineCommit": "af7cfb7507d42bb12a32b8ea9d85dadd87d97fae",
-  "baselineBlob": "7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3",
-  "baselineSha256": "9e28d07181898930a84ff560c73f531935ca6a79c9d6e1e2adbd108555bd9965",
-  "baselineCompiler": "5.9.3",
+  "baselineCommit": "cdecde02ec7d364141d71f45bf21dc23969deff0",
+  "baselineReadVBlob": "fe94ebece8f5118b76701007ce3906adfbb4da08",
+  "canonicalInputBlob": "7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3",
+  "canonicalInputSha256": "9e28d07181898930a84ff560c73f531935ca6a79c9d6e1e2adbd108555bd9965",
+  "canonicalInputCompiler": "5.9.3",
   "originalFactoryPrefixSha256": "6615fa89bc77e6e885a49abb2f67c0b8331306eff8eb7f96bc5c4ffaa3517cba",
-  "adaptedFactoryPrefixSha256": "3c46d505c81659440e5d31902c5d3d17a830639ed8f8f99b1b5282df692b94df",
+  "adaptedFactoryPrefixSha256": "d256a6ae7a9b68e82656526094496495e69042d086c3249300ca1c49f94998ce",
   "reversibleContextTransform": true,
   "contextRules": [
     {
@@ -41,9 +43,57 @@
       "replacements": 4
     }
   ],
+  "reversibleBuildTransform": true,
+  "buildRules": [
+    {
+      "name": "task-map-storage",
+      "replacements": 1
+    },
+    {
+      "name": "valid-pending-task-aggregation",
+      "replacements": 1
+    },
+    {
+      "name": "outgoing-query",
+      "replacements": 1
+    },
+    {
+      "name": "reason-query",
+      "replacements": 1
+    },
+    {
+      "name": "incoming-query",
+      "replacements": 1
+    },
+    {
+      "name": "pendingIncoming-query",
+      "replacements": 1
+    },
+    {
+      "name": "incomingTaskCount-query",
+      "replacements": 1
+    },
+    {
+      "name": "outgoingTaskCount-query",
+      "replacements": 1
+    },
+    {
+      "name": "receiver-query",
+      "replacements": 1
+    },
+    {
+      "name": "observation-room-wrapper",
+      "replacements": 1
+    },
+    {
+      "name": "observation-no-entry-pairs",
+      "replacements": 1
+    }
+  ],
+  "contextOnlyPrefixSha256": "3c46d505c81659440e5d31902c5d3d17a830639ed8f8f99b1b5282df692b94df",
   "loaderSha256": "cfc0d3651f7f7755492ce74f69b8943d03230dd6328ce014f759447ad08093d8",
-  "generatedSha256": "b7a2c14fc7cf15e32abe7703f2fb47c5516b09f2dc80f7ffdd9a5dc0988f0dac",
-  "generatedBlob": "fe94ebece8f5118b76701007ce3906adfbb4da08",
+  "generatedSha256": "1eb28af06a562011dc2c9a02c3aad3bb63b447638c90a76163d3ee323a349ae8",
+  "generatedBlob": "4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be",
   "factories": [
     {
       "path": "src/runtime/configNormalize.ts",
@@ -66,7 +116,7 @@
     {
       "path": "src/runtime/treasury/commitments.ts",
       "originalBodySha256": "8cdecbdb0975612ad8770ba23022222aae10529e0647704e75b29f1c764a5b4c",
-      "adaptation": "explicit-context-parameters-only",
+      "adaptation": "V-explicit-context-and-VII-task-bucket-storage",
       "lifecycle": "shared-definition"
     },
     {
@@ -78,7 +128,7 @@
     {
       "path": "src/runtime/treasury/observation.ts",
       "originalBodySha256": "168fd5d39b6a72d08ab867eeea319c98e300a14dacaca5169839e257ff4c236c",
-      "adaptation": "unchanged",
+      "adaptation": "VII-no-entry-pairs-and-no-room-clone",
       "lifecycle": "shared-definition"
     },
     {
@@ -95,12 +145,19 @@
     }
   ],
   "factoryBodiesChanged": [
-    "src/runtime/treasury/commitments.ts"
+    "src/runtime/treasury/commitments.ts",
+    "src/runtime/treasury/observation.ts"
   ],
   "dependencyEdgesRemoved": [
     "commitments -> commitmentRevision"
   ],
-  "aggregationValidationQueryAlgorithmsChanged": false,
+  "taskIndexStorageRepresentationChanged": true,
+  "validationRulesChanged": false,
+  "aggregationOrderPreserved": true,
+  "querySemanticsPreserved": true,
+  "fullIndexBuiltEagerly": true,
+  "lazySecondaryIndexes": false,
+  "previewSourceChanged": false,
   "revisionSemantics": "private read-only capsule revision zero per builder; NOT the host revision",
   "firstSuccessfulFactoryExecutions": 7,
   "followingFactoryExecutions": 0,
@@ -112,5 +169,5 @@
   "commitmentIndexReused": false,
   "engineCpuGapRepaired": false,
   "engineMeasurementRequired": true,
-  "note": "The canonical source bodies are not edited; generated commitments code threads explicit private context. All aggregation, owner, expiry and completeness operations are retained. The preview output entry is also refreshed; original assembly provenance for other outputs is unchanged."
+  "note": "Only the compatibility capsule is adapted. Canonical host TS sources remain pinned; generated task aggregation/query storage and observation allocation change. All task validation, full-table reads, safe-integer guards, reason/route/receiver results, owner/expiry, reservation processing and independent Store reads are retained. Reversible provenance is distinct from semantic differential evidence."
 }

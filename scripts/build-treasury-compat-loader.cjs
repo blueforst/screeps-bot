@@ -1,9 +1,11 @@
 'use strict';
 /** Regenerates from the exact pre-V capsule; no network, transpilation or deploy.
- * The only body adaptation is reversible lexical-context threading in the
- * commitments factory. All other compiler bodies stay byte-identical. */
+ * V context adaptation is followed by VII task-index storage fusion and
+ * observation allocation reduction. Both transforms are exactly reversible.
+ * Semantic equivalence is tested, not inferred merely from reversibility. */
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const X = require('./lib/treasury-compat-context.cjs');
+const B = require('./lib/treasury-compat-build.cjs');
 const ORIGINAL_SHA = '9e28d07181898930a84ff560c73f531935ca6a79c9d6e1e2adbd108555bd9965';
 const ORIGINAL_BLOB = '7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3';
 const SOURCE_COMMIT = '01bd9831454950c4928df98dd8679692b55603e5';
@@ -23,7 +25,7 @@ function generate(original, template, manifest) {
   check(b.length === 64604 && sha(b) === ORIGINAL_SHA && blob(b) === ORIGINAL_BLOB, 'CORE_BASELINE_MISMATCH');
   const s = b.toString('utf8'), i = s.indexOf(MARKER);
   check(i > 0 && s.indexOf(MARKER, i + 1) < 0, 'LOADER_BOUNDARY_AMBIGUOUS');
-  const originalPrefix = s.slice(0, i), prefix = X.transform(originalPrefix);
+  const originalPrefix = s.slice(0, i), contextPrefix = X.transform(originalPrefix), prefix = B.transform(contextPrefix);
   const t = lf(template).toString('utf8');
   check(t.startsWith('/** Read Optimization V:') && t.endsWith('\n') &&
     t.includes('export function createCompatibilityReadCore(): CompatReadBuilders {'), 'LOADER_TEMPLATE_INVALID');
@@ -36,7 +38,7 @@ function generate(original, template, manifest) {
     const start = m.index + m[0].length;
     const end = k + 1 < matches.length ? matches[k + 1].index - 3 : factoryEnd + 1;
     return { path: m[1], originalBodySha256: sha(Buffer.from(originalPrefix.slice(start, end))),
-      adaptation: m[1].endsWith('/commitments.ts') ? 'explicit-context-parameters-only' : 'unchanged',
+      adaptation: m[1].endsWith('/commitments.ts') ? 'V-explicit-context-and-VII-task-bucket-storage' : m[1].endsWith('/observation.ts') ? 'VII-no-entry-pairs-and-no-room-clone' : 'unchanged',
       lifecycle: m[1].endsWith('/commitmentRevision.ts') ? 'unreachable-retained-original-definition' : 'shared-definition' };
   });
   const m = JSON.parse(JSON.stringify(manifest));
@@ -48,22 +50,27 @@ function generate(original, template, manifest) {
   const preview = m.outputs.filter(x => x.file === 'src/runtime/treasuryCompatRead.ts');
   check(preview.length === 1, 'PREVIEW_MANIFEST_ENTRY_MISSING');
   Object.assign(preview[0], {"bytes": 20118, "sha256": "1141250ec31c12b3439f48b6274267c108c7bb95566d328414f4bd04275bef64", "gitBlob": "58f1ca27d217fdd7af3e50bcec5de45bf3ee14ac"});
-  m.loaderOptimization = { revision: 'V', provenance: PROVENANCE, canonicalSourceCommit: SOURCE_COMMIT,
-    baselineGeneratedBlob: ORIGINAL_BLOB, explicitReadContextAdaptation: true };
+  m.loaderOptimization = { revision: 'VII', provenance: PROVENANCE, canonicalSourceCommit: SOURCE_COMMIT,
+    baselineGeneratedBlob: 'fe94ebece8f5118b76701007ce3906adfbb4da08', canonicalInputGeneratedBlob: ORIGINAL_BLOB, explicitReadContextAdaptation: true, fullTaskBucketFusion: true, observationAllocationReduction: true };
   const provenance = {
-    revision: 'compat-read-optimization-V', authoring: [TEMPLATE, 'scripts/lib/treasury-compat-context.cjs'],
-    baselineCommit: 'af7cfb7507d42bb12a32b8ea9d85dadd87d97fae', baselineBlob: ORIGINAL_BLOB, baselineSha256: ORIGINAL_SHA,
-    baselineCompiler: '5.9.3', originalFactoryPrefixSha256: sha(Buffer.from(originalPrefix)),
+    revision: 'compat-build-optimization-VII', authoring: [TEMPLATE, 'scripts/lib/treasury-compat-context.cjs', 'scripts/lib/treasury-compat-build.cjs'],
+    baselineCommit: 'cdecde02ec7d364141d71f45bf21dc23969deff0',
+    baselineReadVBlob: 'fe94ebece8f5118b76701007ce3906adfbb4da08', canonicalInputBlob: ORIGINAL_BLOB, canonicalInputSha256: ORIGINAL_SHA,
+    canonicalInputCompiler: '5.9.3', originalFactoryPrefixSha256: sha(Buffer.from(originalPrefix)),
     adaptedFactoryPrefixSha256: sha(Buffer.from(prefix)), reversibleContextTransform: true, contextRules: X.rules,
+    reversibleBuildTransform: true, buildRules: B.rules, contextOnlyPrefixSha256: sha(Buffer.from(contextPrefix)),
     loaderSha256: sha(Buffer.from(t)), generatedSha256: sha(out), generatedBlob: blob(out), factories,
-    factoryBodiesChanged: ['src/runtime/treasury/commitments.ts'],
+    factoryBodiesChanged: ['src/runtime/treasury/commitments.ts', 'src/runtime/treasury/observation.ts'],
     dependencyEdgesRemoved: ['commitments -> commitmentRevision'],
-    aggregationValidationQueryAlgorithmsChanged: false, revisionSemantics: 'private read-only capsule revision zero per builder; NOT the host revision',
+    taskIndexStorageRepresentationChanged: true, validationRulesChanged: false,
+    aggregationOrderPreserved: true, querySemanticsPreserved: true, fullIndexBuiltEagerly: true,
+    lazySecondaryIndexes: false, previewSourceChanged: false,
+    revisionSemantics: 'private read-only capsule revision zero per builder; NOT the host revision',
     firstSuccessfulFactoryExecutions: 7, followingFactoryExecutions: 0,
     resourceCatalogCapturedPerBuilder: true, contextGlobalsUsed: false,
     definitionInitializationsMovedOutsideBudget: false, builderInstanceReused: false, observationReused: false, commitmentIndexReused: false,
     engineCpuGapRepaired: false, engineMeasurementRequired: true,
-    note: 'The canonical source bodies are not edited; generated commitments code threads explicit private context. All aggregation, owner, expiry and completeness operations are retained. The preview output entry is also refreshed; original assembly provenance for other outputs is unchanged.'
+    note: 'Only the compatibility capsule is adapted. Canonical host TS sources remain pinned; generated task aggregation/query storage and observation allocation change. All task validation, full-table reads, safe-integer guards, reason/route/receiver results, owner/expiry, reservation processing and independent Store reads are retained. Reversible provenance is distinct from semantic differential evidence.'
   };
   return { [GENERATED]: out, [PROVENANCE]: encode(provenance), [SOURCE_MANIFEST]: encode(m) };
 }
@@ -78,8 +85,8 @@ function main(argv) {
     else check(lf(fs.readFileSync(path.join(root, name))).equals(b), 'GENERATED_OUTPUT_MISMATCH:' + name);
   }
   return { status: argv[0] === '--check' ? 'COMPAT_LOADER_REGENERATION_VERIFIED' : 'COMPAT_LOADER_REGENERATED',
-    files: Object.keys(result), canonicalFactoryBodyRecovery: 'exact', explicitContextAdaptation: true };
+    files: Object.keys(result), canonicalFactoryBodyRecovery: 'exact', explicitContextAdaptation: true, fullTaskBucketFusion: true, observationAllocationReduction: true };
 }
-module.exports = { generate, main, sha, blob, GENERATED, FIXTURE, TEMPLATE, PROVENANCE, SOURCE_MANIFEST, MARKER, X };
+module.exports = { generate, main, sha, blob, GENERATED, FIXTURE, TEMPLATE, PROVENANCE, SOURCE_MANIFEST, MARKER, X, B };
 if (require.main === module) try { console.log(JSON.stringify(main(process.argv.slice(2)))); }
 catch (e) { console.error(JSON.stringify({ status: 'STOP', code: e.code || 'GENERATOR_FAILED' })); process.exitCode = 1; }

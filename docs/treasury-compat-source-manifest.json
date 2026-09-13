@@ -113,9 +113,9 @@
     },
     {
       "file": "src/runtime/treasuryCompatReadCore.generated.ts",
-      "bytes": 64266,
-      "sha256": "b7a2c14fc7cf15e32abe7703f2fb47c5516b09f2dc80f7ffdd9a5dc0988f0dac",
-      "gitBlob": "fe94ebece8f5118b76701007ce3906adfbb4da08"
+      "bytes": 65093,
+      "sha256": "1eb28af06a562011dc2c9a02c3aad3bb63b447638c90a76163d3ee323a349ae8",
+      "gitBlob": "4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be"
     },
     {
       "file": "src/runtime/treasuryCompatTypes.ts",
@@ -173,10 +173,13 @@
     }
   ],
   "loaderOptimization": {
-    "revision": "V",
+    "revision": "VII",
     "provenance": "docs/treasury-compat-loader-optimization.json",
     "canonicalSourceCommit": "01bd9831454950c4928df98dd8679692b55603e5",
-    "baselineGeneratedBlob": "7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3",
-    "explicitReadContextAdaptation": true
+    "baselineGeneratedBlob": "fe94ebece8f5118b76701007ce3906adfbb4da08",
+    "canonicalInputGeneratedBlob": "7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3",
+    "explicitReadContextAdaptation": true,
+    "fullTaskBucketFusion": true,
+    "observationAllocationReduction": true
   }
 }
