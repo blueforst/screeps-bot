@@ -233,6 +233,8 @@
   "publicTypeSurfaceChanged": true,
   "defaultEnabled": false,
   "budget": 2,
+  "sourceManifestOutputValidation": "all-listed-outputs",
+  "sourceManifestOutputIdentityCount": 13,
   "engineCpuGapRepaired": false,
   "engineMeasurementRequired": true,
   "note": "IX adds coarse nested timing boundaries and bounded primitive work counters to the read-only compatibility capsule. The boundaries overlap existing parent phases, do not authorize work, and do not sample once per record or key. Canonical host sources remain pinned."
