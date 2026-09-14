@@ -131,15 +131,15 @@
     },
     {
       "file": "src/runtime/treasuryCompatRead.ts",
-      "bytes": 21526,
-      "sha256": "1d5bd4d7f5922dfad3e6c44522d04695b490ba2bb711a83306858544dde70dec",
-      "gitBlob": "556c6d565b3962c407bc82a4b5706d5382935c53"
+      "bytes": 21631,
+      "sha256": "9e454bde732a08ba1880cae02ada391219054c70cb54aff600d7a8bde667bd2f",
+      "gitBlob": "fe92498f5e76d860e4fef98d842df3c2e8fc48ad"
     },
     {
       "file": "src/runtime/treasuryCompatReadCore.generated.ts",
-      "bytes": 68416,
-      "sha256": "75a600170f04c99520369b0d48b55d385979b5180f47cce3b427143b99956da1",
-      "gitBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1"
+      "bytes": 69357,
+      "sha256": "3bd42eee815562492a440bef2f0e2879707dba1bd61a78eb15083fe3ef2fc92c",
+      "gitBlob": "21c4bba26d732ead7df4d6a9f5b9dea357fd9583"
     },
     {
       "file": "src/runtime/treasuryCompatRuntime.ts",
@@ -173,22 +173,28 @@
     },
     {
       "file": "test/treasuryCompatRead.test.ts",
-      "bytes": 1064,
-      "sha256": "5703123386542aabf4ab56307f6c433398478d6c2738adc4bf35ed87191a6026",
-      "gitBlob": "c1b5e04c4ac41c881bfc426a3fbce759cc823722"
+      "bytes": 1139,
+      "sha256": "7e0190e8ca5f7910cca57133e0f044a57868f4c6d768c9c0958a8b167ba6d9d7",
+      "gitBlob": "551a1a3557cdde27f02096487b2e338757038b4f"
     }
   ],
   "loaderOptimization": {
-    "revision": "IX",
+    "revision": "XI",
     "provenance": "docs/treasury-compat-loader-optimization.json",
     "canonicalSourceCommit": "01bd9831454950c4928df98dd8679692b55603e5",
-    "baselineGeneratedBlob": "4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be",
+    "baselineGeneratedBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1",
     "canonicalInputGeneratedBlob": "7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3",
     "explicitReadContextAdaptation": true,
     "fullTaskBucketFusion": true,
     "observationAllocationReduction": true,
     "boundedSubphaseAttribution": true,
     "attributionChangesAuthorization": false,
+    "sparseKeyEnumerationReuse": true,
+    "observationLookupBuiltInRoomPass": true,
+    "singleAuthorityTableEnumeration": true,
+    "canonicalDemandHelperFastPath": true,
+    "previewSelectedTotalSinglePass": true,
+    "previewResourceCatalogSingleRead": true,
     "sourceManifestOutputValidation": "all-listed-outputs",
     "sourceManifestOutputIdentityCount": 13
   }

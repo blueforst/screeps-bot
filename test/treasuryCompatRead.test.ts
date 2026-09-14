@@ -10,8 +10,9 @@ describe("Treasury old-production read compatibility bridge", () => {
       resolve(__dirname, "treasury-compat/real-readers.spec.cjs"),
       resolve(__dirname, "treasury-compat/loader-optimization.spec.cjs"),
       resolve(__dirname, "treasury-compat/build-optimization.spec.cjs"),
-      resolve(__dirname, "treasury-compat/attribution.spec.cjs")], {
-      cwd: resolve(__dirname, ".."), encoding: "utf8", timeout: 240000,
+      resolve(__dirname, "treasury-compat/attribution.spec.cjs"),
+      resolve(__dirname, "treasury-compat/hotpath-optimization.spec.cjs")], {
+      cwd: resolve(__dirname, ".."), encoding: "utf8", timeout: 360000,
     });
     if (result.status !== 0) throw new Error([result.error?.message, result.stdout, result.stderr].filter(Boolean).join("\n"));
     expect(result.status).toBe(0);

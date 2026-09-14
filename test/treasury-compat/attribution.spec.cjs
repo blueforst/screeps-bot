@@ -7,6 +7,15 @@ const os = require('node:os');
 const A = require('./attribution-test-support.cjs');
 const { S, H } = A;
 const G = require(path.join(H.ROOT, 'scripts/build-treasury-compat-loader.cjs'));
+function generatedCurrent() {
+  return G.generate(fs.readFileSync(path.join(H.ROOT, G.FIXTURE)), fs.readFileSync(path.join(H.ROOT, G.TEMPLATE)),
+    JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8')), fs.readFileSync(path.join(H.ROOT, G.PREVIEW_FIXTURE)));
+}
+function assertGeneratedCurrent() {
+  const r = generatedCurrent();
+  for (const [name, bytes] of Object.entries(r)) assert.equal(fs.readFileSync(path.join(H.ROOT, name)).toString('utf8').replace(/\r\n/g, '\n'), bytes.toString('utf8'));
+  return r;
+}
 
 // CPU-accounting unit boundaries: nested attribution never replaces the parent total.
 test('IX accounting omits attribution when no boundary or work was recorded', () => {
@@ -55,7 +64,7 @@ test('IX accounting rejects non-monotonic and unlisted subphase boundaries', () 
 test('IX transform exactly restores the committed Build VII core prefix', () => {
   const marker = '/** Read Optimization V:';
   assert.equal(G.A.restore(A.afterText().split(marker)[0]), A.beforeText().split(marker)[0]);
-  assert.equal(G.A.rules.length, 14); const generated = G.generate(fs.readFileSync(path.join(H.ROOT, G.FIXTURE)), fs.readFileSync(path.join(H.ROOT, G.TEMPLATE)), JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8'))); assert.equal(generated[G.GENERATED].length, 68416);
+  assert.equal(G.A.rules.length, 14); const generated = assertGeneratedCurrent(); assert.equal(generated[G.GENERATED].length, 69357);
 });
 test('IX transform refuses shifted source instead of approximately instrumenting it', () => {
   const prefix = A.beforeText().split('/** Read Optimization V:')[0];
@@ -168,19 +177,19 @@ for (const name of Object.keys(S.scenarios)) test('IX Build VII/IX diagnostics-o
 
 function manifestFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-manifest-gate-'));
-  for (const n of [G.FIXTURE, G.TEMPLATE, G.SOURCE_MANIFEST, G.GENERATED, G.PROVENANCE]) {
+  for (const n of [G.FIXTURE, G.PREVIEW_FIXTURE, G.TEMPLATE, G.SOURCE_MANIFEST, G.GENERATED, G.PREVIEW, G.PROVENANCE]) {
     const src = path.join(H.ROOT, n), dst = path.join(root, n);
     fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.copyFileSync(src, dst);
   }
   return root;
 }
 function withManifestFixture(fn) { const root = manifestFixture(); try { return fn(root); } finally { fs.rmSync(root, { recursive: true, force: true }); } }
-function generatedFor(root) { return G.generate(fs.readFileSync(path.join(root, G.FIXTURE)), fs.readFileSync(path.join(root, G.TEMPLATE)), JSON.parse(fs.readFileSync(path.join(root, G.SOURCE_MANIFEST), 'utf8'))); }
+function generatedFor(root) { return G.generate(fs.readFileSync(path.join(root, G.FIXTURE)), fs.readFileSync(path.join(root, G.TEMPLATE)), JSON.parse(fs.readFileSync(path.join(root, G.SOURCE_MANIFEST), 'utf8')), fs.readFileSync(path.join(root, G.PREVIEW_FIXTURE))); }
 
 test('IX source manifest gate covers every listed output identity', () => {
   const m = JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8'));
   assert.deepEqual(m.outputs.map(x => x.file).sort(), G.EXPECTED_OUTPUT_PATHS);
-  assert.equal(Object.keys(G.FIXED_OUTPUTS).length, 12); assert.equal(G.EXPECTED_OUTPUT_PATHS.length, 13);
+  assert.equal(Object.keys(G.FIXED_OUTPUTS).length, 11); assert.equal(G.EXPECTED_OUTPUT_PATHS.length, 13);
   assert.equal(m.loaderOptimization.sourceManifestOutputValidation, 'all-listed-outputs');
 });
 test('IX generated-output gate rejects a stale manifest identity', () => withManifestFixture(root => {
@@ -192,7 +201,7 @@ test('IX generated-output gate rejects a stale manifest identity', () => withMan
 test('IX fixed-output gate rejects a byte-changed listed output', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-output-identity-'));
   try {
-    const rel = 'src/runtime/treasuryCompatRead.ts', dst = path.join(root, rel); fs.mkdirSync(path.dirname(dst), { recursive: true });
+    const rel = 'src/runtime/treasuryCompatRuntime.ts', dst = path.join(root, rel); fs.mkdirSync(path.dirname(dst), { recursive: true });
     fs.copyFileSync(path.join(H.ROOT, rel), dst); G.verifyOutputIdentities(root, { [rel]: G.FIXED_OUTPUTS[rel] });
     fs.appendFileSync(dst, '\n'); assert.throws(() => G.verifyOutputIdentities(root, { [rel]: G.FIXED_OUTPUTS[rel] }), /FIXED_SOURCE_MISMATCH/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

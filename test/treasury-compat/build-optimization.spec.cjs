@@ -3,9 +3,19 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const path = require('node:path');
+const fs = require('node:fs');
 const S = require('./build-test-support.cjs');
 const { H, beforeText, afterText, make, build, snapshot, task, reservation } = S;
 const G = require('../../scripts/build-treasury-compat-loader.cjs');
+function generatedCurrent() {
+  return G.generate(fs.readFileSync(path.join(H.ROOT, G.FIXTURE)), fs.readFileSync(path.join(H.ROOT, G.TEMPLATE)),
+    JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8')), fs.readFileSync(path.join(H.ROOT, G.PREVIEW_FIXTURE)));
+}
+function assertGeneratedCurrent() {
+  const r = generatedCurrent();
+  for (const [name, bytes] of Object.entries(r)) assert.equal(fs.readFileSync(path.join(H.ROOT, name)).toString('utf8').replace(/\r\n/g, '\n'), bytes.toString('utf8'));
+  return r;
+}
 function pair(setup, extra) {
   const a = make(beforeText()), b = make(afterText()); setup(a); setup(b);
   const ga={writes:0},gb={writes:0}; a.memory=H.guard(a.memory,ga);b.memory=H.guard(b.memory,gb);
@@ -19,7 +29,7 @@ test('build VII reversible authoring restores all Read V bytes before the unchan
   const marker='/** Read Optimization V:';
   assert.equal(G.B.restore(afterText().split(marker)[0]),beforeText().split(marker)[0]);
   assert.equal(afterText().split(marker)[1],beforeText().split(marker)[1]);
-  assert.equal(G.main(['--check']).status,'COMPAT_LOADER_REGENERATION_VERIFIED');
+  assertGeneratedCurrent();
 });
 test('build VII shifted source is rejected rather than approximately transformed',()=>{
   assert.throws(()=>G.B.transform(beforeText().replace('const outgoing = new Map();','const outgoing = new Map([]);')),/BUILD_TRANSFORM_COUNT/);

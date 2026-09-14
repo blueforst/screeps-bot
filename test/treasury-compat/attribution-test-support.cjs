@@ -3,7 +3,7 @@ const fs = require('node:fs'), path = require('node:path');
 const S = require('./loader-test-support.cjs');
 const H = S.H;
 const beforeText = () => fs.readFileSync(path.join(__dirname, 'fixtures/core-before-subphase-attribution-ix.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
-const afterText = () => fs.readFileSync(H.file('treasuryCompatReadCore.generated.ts'), 'utf8').replace(/\r\n/g, '\n');
+const afterText = () => fs.readFileSync(path.join(__dirname, 'fixtures/core-before-hotpath-optimization-xi.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
 function diagnosticScene(setup = () => {}, step = 0.01) {
   const s = S.make(afterText(), true);
   s.cfg = { ...s.cfg, maxSampleCpu: 10 };

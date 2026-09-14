@@ -5,6 +5,15 @@ const crypto = require('node:crypto');
 const S = require('./loader-test-support.cjs');
 const { H, fs, path, make, build, task, reservation, oldText, newText } = S;
 const G = require(path.join(H.ROOT, 'scripts/build-treasury-compat-loader.cjs'));
+function generatedCurrent() {
+  return G.generate(fs.readFileSync(path.join(H.ROOT, G.FIXTURE)), fs.readFileSync(path.join(H.ROOT, G.TEMPLATE)),
+    JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8')), fs.readFileSync(path.join(H.ROOT, G.PREVIEW_FIXTURE)));
+}
+function assertGeneratedCurrent() {
+  const r = generatedCurrent();
+  for (const [name, bytes] of Object.entries(r)) assert.equal(fs.readFileSync(path.join(H.ROOT, name)).toString('utf8').replace(/\r\n/g, '\n'), bytes.toString('utf8'));
+  return r;
+}
 const ids = text => [...text.matchAll(/^"([^"]+)": function\(exports, require\)/gm)].map(x => x[1]);
 const mutable = ['src/runtime/treasury/commitments.ts', 'src/runtime/treasury/commitmentRevision.ts'];
 test('read V baseline fixture is the exact original Git blob', () => {
@@ -12,11 +21,11 @@ test('read V baseline fixture is the exact original Git blob', () => {
 });
 test('read V context substitutions recover canonical factories after reversing IX and VII transforms', () => {
   const before = oldText().split(G.MARKER)[0];
-  const afterIX = G.A.restore(newText().split('/** Read Optimization V:')[0]);
+  const afterIX = G.A.restore(G.H.restore(newText().split('/** Read Optimization V:')[0]));
   const afterVII = G.B.restore(afterIX);
   assert.equal(G.X.restore(afterVII), before);
   assert.equal(ids(newText()).length, 8); // unused original revision body retained, not invoked
-  assert.equal(G.main(['--check']).status, 'COMPAT_LOADER_REGENERATION_VERIFIED');
+  assertGeneratedCurrent();
 });
 test('read V module import alone performs no Game Memory or catalog read', () => {
   const s = new Proxy({}, { get() { throw new Error('global touched'); } });
@@ -149,7 +158,8 @@ test('read V inherited dependency property never becomes a host import', () => {
 test('read V generator is byte deterministic and idempotent on metadata', () => {
   const original = Buffer.from(oldText()); const template = fs.readFileSync(path.join(H.ROOT, G.TEMPLATE));
   const manifest = JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST)));
-  const a = G.generate(original, template, manifest); const b = G.generate(original, template, JSON.parse(a[G.SOURCE_MANIFEST]));
+  const preview = fs.readFileSync(path.join(H.ROOT, G.PREVIEW_FIXTURE));
+  const a = G.generate(original, template, manifest, preview); const b = G.generate(original, template, JSON.parse(a[G.SOURCE_MANIFEST]), preview);
   for (const name of Object.keys(a)) assert.ok(a[name].equals(b[name]));
 });
 test('read V generator provenance keeps all eight canonical source identities', () => {
@@ -289,7 +299,7 @@ test('read V canonical transform refuses a shifted body rather than approximatin
   const prefix = oldText().split(G.MARKER)[0]; assert.throws(() => G.X.transform(prefix.replace('new Set(RESOURCES_ALL)', 'new Set([])')), /CONTEXT_TRANSFORM_COUNT/);
 });
 test('read V layer only adapts commitment context and its edge after reversing VII layer', () => {
-  const before = oldText().split(G.MARKER)[0], after = G.B.restore(G.A.restore(newText().split('/** Read Optimization V:')[0]));
+  const before = oldText().split(G.MARKER)[0], after = G.B.restore(G.A.restore(G.H.restore(newText().split('/** Read Optimization V:')[0])));
   const [a, b] = G.X.region(before), [c, d] = G.X.region(after);
   assert.equal(before.slice(0, a), after.slice(0, c));
   assert.equal(G.X.restore(after), before); assert.notEqual(before.slice(a, b), after.slice(c, d));

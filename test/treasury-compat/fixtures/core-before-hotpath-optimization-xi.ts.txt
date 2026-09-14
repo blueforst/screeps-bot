@@ -342,10 +342,8 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
     attributionInvalidRegion = "tasks";
     if (compatDiagnostics)
         compatDiagnostics.boundary("commitmentTasks");
-    const taskIds = Object.keys(options.tasks);
-    metrics.taskRecords = taskIds.length;
-    for (const taskId of taskIds) {
-        const task = options.tasks[taskId];
+    metrics.taskRecords = Object.keys(options.tasks).length;
+    for (const task of Object.values(options.tasks)) {
         if (!isValidTreasuryTransferTaskForCommitment(task, compatContext)) {
             // 损坏任务影响 donor 与 receiver 双侧 bucket：能定位哪侧就标记哪侧
             // scope incomplete；双侧都不可定位（连资源/房间都读不出）则全局
@@ -376,7 +374,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         const fromRoom = task.fromRoomName, toRoom = task.toRoomName;
         const outKey = taskKey(fromRoom, task.resource);
         const inKey = taskKey(toRoom, task.resource);
-        let outBucket = taskScopes.get(outKey), inBucket = inKey === outKey ? outBucket : taskScopes.get(inKey);
+        let outBucket = taskScopes.get(outKey), inBucket = taskScopes.get(inKey);
         const mergedOutgoing = addSafeInteger(outBucket ? outBucket.outgoing : 0, task.remainingAmount);
         const mergedPendingIncoming = addSafeInteger(inBucket ? inBucket.pendingIncoming : 0, task.remainingAmount);
         if (mergedOutgoing === null || mergedPendingIncoming === null) {
@@ -413,10 +411,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         }
         inBucket.pendingIncoming = mergedPendingIncoming;
         attributionDemandHealthChecks += 1;
-        // XI: this task is already validated pending. Manual intent is always
-        // covered; automatic expiry still delegates to the canonical helper.
-        const countsTowardDemand = task.origin === "manual" ||
-            (0, resourceTransferTaskHealth_1.getResourceTransferTaskDemandCoverageExpirationReason)(task, healthOptions) === null;
+        const countsTowardDemand = (0, resourceTransferTaskHealth_1.countsResourceTransferTaskTowardDemand)(task, healthOptions);
         let toBucket;
         if (countsTowardDemand) {
             const mergedIncoming = addSafeInteger(inBucket.incoming, task.remainingAmount);
@@ -465,10 +460,8 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         compatDiagnostics.boundary("commitmentReservations");
     const reservationSnapshot = [];
     const reservedByRoomResource = new Map();
-    const reservationIds = Object.keys(options.reservations);
-    metrics.reservationRecords = reservationIds.length;
-    for (const reservationId of reservationIds) {
-        const entry = options.reservations[reservationId];
+    metrics.reservationRecords = Object.keys(options.reservations).length;
+    for (const entry of Object.values(options.reservations)) {
         if (!isValidReservationForCommitment(entry, compatContext)) {
             recordInvalid();
             const roomLocated = typeof (entry === null || entry === void 0 ? void 0 : entry.roomName) === "string" && entry.roomName.length > 0;
@@ -826,40 +819,32 @@ function bumpTreasuryWorldSequence() {
     }
     Memory.runtime.treasuryWorldSequence = readTreasuryWorldSequence() + 1;
 }
-const EMPTY_AMOUNT_KEYS = Object.freeze([]);
 function scanLocation(structure) {
     if (!structure) {
         return {
             exists: false,
             structureId: undefined,
             amounts: {},
-            amountKeys: EMPTY_AMOUNT_KEYS,
             usedCapacity: 0,
             freeCapacity: 0,
             nonZeroKeys: 0,
         };
     }
-    // XI: retain the FIRST sparse key enumeration for the later empire fold.
-    // The array is compacted in-place after each source index has been read;
-    // callbacks still run before totals and no live Store value is reread.
+    // 单次 Object.keys 稀疏枚举：store 本体即资源→数量记录（ts 类型上隐藏）。
     const record = structure.store;
-    const amountKeys = Object.keys(record);
     const amounts = {};
     let nonZeroKeys = 0;
-    for (const key of amountKeys) {
+    for (const key of Object.keys(record)) {
         const amount = record[key];
         if (typeof amount === "number" && amount > 0) {
             amounts[key] = amount;
-            amountKeys[nonZeroKeys] = key;
             nonZeroKeys += 1;
         }
     }
-    amountKeys.length = nonZeroKeys;
     return {
         exists: true,
         structureId: structure.id,
         amounts,
-        amountKeys,
         usedCapacity: structure.store.getUsedCapacity(),
         freeCapacity: structure.store.getFreeCapacity(),
         nonZeroKeys,
@@ -883,12 +868,15 @@ function deepFreezeRoom(room) {
         terminal: room.terminal,
     });
 }
-function createObservationView(data, roomByName) {
+function createObservationView(data) {
     const roomsByOrdinal = data.rooms;
+    const roomByName = new Map();
+    for (const room of roomsByOrdinal)
+        roomByName.set(room.roomName, room);
     let cachedEmpireResources;
     const roomResourcesCache = new Map();
     const locationOf = (roomName, kind) => {
-        const room = roomByName[roomName];
+        const room = roomByName.get(roomName);
         if (!room) {
             return Object.freeze({
                 roomName,
@@ -909,7 +897,7 @@ function createObservationView(data, roomByName) {
             return roomsByOrdinal.map((room) => room.roomName);
         },
         hasRoom(roomName) {
-            return Object.prototype.hasOwnProperty.call(roomByName, roomName);
+            return roomByName.has(roomName);
         },
         locationExists(roomName, kind) {
             return locationOf(roomName, kind).exists;
@@ -921,7 +909,7 @@ function createObservationView(data, roomByName) {
         },
         roomAmount(roomName, resource) {
             var _a, _b;
-            const room = roomByName[roomName];
+            const room = roomByName.get(roomName);
             if (!room)
                 return 0;
             return ((_a = room.storage.amounts[resource]) !== null && _a !== void 0 ? _a : 0) + ((_b = room.terminal.amounts[resource]) !== null && _b !== void 0 ? _b : 0);
@@ -930,7 +918,7 @@ function createObservationView(data, roomByName) {
             const cached = roomResourcesCache.get(roomName);
             if (cached)
                 return cached;
-            const room = roomByName[roomName];
+            const room = roomByName.get(roomName);
             const merged = new Set();
             if (room) {
                 for (const key of Object.keys(room.storage.amounts))
@@ -981,9 +969,6 @@ function buildTreasuryObservation(options) {
         worldSequence: readTreasuryWorldSequence(),
     };
     const rooms = [];
-    // XI: build the last-room-wins lookup in the existing ordinal pass. A
-    // null-prototype record preserves arbitrary own names without Map setup.
-    const roomByName = Object.create(null);
     const empireTotals = {};
     if (compatDiagnostics)
         compatDiagnostics.boundary("observationRooms");
@@ -998,19 +983,17 @@ function buildTreasuryObservation(options) {
             (_c = options.onStoreScanned) === null || _c === void 0 ? void 0 : _c.call(options, storageScan.nonZeroKeys);
         if (terminalScan.exists)
             (_d = options.onStoreScanned) === null || _d === void 0 ? void 0 : _d.call(options, terminalScan.nonZeroKeys);
-        // XI keeps one final room object and indexes the SAME snapshot.
-        const roomSnapshot = Object.freeze({
+        // VII: freeze the one final room object, not a temporary clone.
+        rooms.push(Object.freeze({
             roomName: room.name,
             storage: freezeLocation(room.name, "storage", storageScan),
             terminal: freezeLocation(room.name, "terminal", terminalScan),
-        });
-        rooms.push(roomSnapshot);
-        roomByName[room.name] = roomSnapshot;
+        }));
         // 帝国总量 = 全部位置桶之和（构建期求和；missing 位置贡献 0）。
         for (const scan of [storageScan, terminalScan]) {
-            // XI: preserve sparse key order and addition order while reusing the
-            // first Store enumeration retained by scanLocation.
-            for (const resource of scan.amountKeys) {
+            // VII: amounts is an owned, frozen primitive snapshot here.
+            // Preserve Object.keys order and additions; avoid [key,value] pairs.
+            for (const resource of Object.keys(scan.amounts)) {
                 const amount = scan.amounts[resource];
                 empireTotals[resource] = ((_e = empireTotals[resource]) !== null && _e !== void 0 ? _e : 0) + amount;
             }
@@ -1025,7 +1008,7 @@ function buildTreasuryObservation(options) {
     });
     if (compatDiagnostics)
         compatDiagnostics.boundary("observationView");
-    const view = createObservationView(data, roomByName);
+    const view = createObservationView(data);
     if (compatDiagnostics) {
         compatDiagnostics.work({
             observationRooms: options.rooms.length,
