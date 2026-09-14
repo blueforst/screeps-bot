@@ -70,7 +70,7 @@ const scenarios = {
   legacyMismatch: s => { s.memory.runtime.resourceControl = { updatedAt: 100, rooms: { W1N1: { terminalUsedCapacity: 1, terminalFreeCapacity: 1, terminalEnergy: 1 } } }; },
 };
 function compareScenario(name) {
-  const a = make(oldText()), b = make(newText());
+  const a = make(oldText(), false), b = make(newText(), false);
   scenarios[name](a); scenarios[name](b);
   const guardA = { writes: 0 }, guardB = { writes: 0 };
   a.memory = H.guard(a.memory, guardA); b.memory = H.guard(b.memory, guardB);
@@ -105,7 +105,7 @@ function measureStoreReads(text = newText(), resources = ['energy', 'H']) {
   }
   const readers = s.ports.readers;
   s.ports.readers = () => { inDirect = false; return readers(); };
-  s.observer = s.api.createTreasuryCompatPreview(s.cfg, s.ports, { cpuDiagnostics: true });
+  s.observer = s.api.createTreasuryCompatPreview(s.cfg, s.ports, { cpuDiagnostics: false });
   s.observer.run(); return { directStorePropertyReads: direct, coreStorePropertyReads: core, methods, line: s.lines[0] };
 }
 module.exports.measureStoreReads = measureStoreReads;

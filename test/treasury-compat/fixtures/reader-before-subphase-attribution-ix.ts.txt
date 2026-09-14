@@ -5,8 +5,8 @@
  * remain per sample; only audited definition modules may be reused. Diagnostic
  * profiles never contain a linked history.
  */
-import type { CompatBuilderDiagnostics, CompatConfig, CompatPorts, CompatObservation } from "./treasuryCompatTypes";
-import { createCompatCpuAccounting, type CompatCpuPhase, type CompatCpuProfile, type CompatCpuSubphase, type CompatCpuWorkKey } from "./treasuryCompatCpu";
+import type { CompatConfig, CompatPorts, CompatObservation } from "./treasuryCompatTypes";
+import { createCompatCpuAccounting, type CompatCpuPhase, type CompatCpuProfile } from "./treasuryCompatCpu";
 
 type Rec = Record<string, unknown>;
 type Kind = "storage" | "terminal";
@@ -173,22 +173,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
         latestCpu = c.used;
         return c.used - start.used < cfg.maxSampleCpu && c.tickLimit - c.used >= cfg.reserveCpu && c.bucket >= cfg.minBucket;
       };
-      // Builder boundaries are diagnostic-only and never authorize work. Each
-      // boundary samples the same CPU port, so its overhead remains in both the
-      // parent phase and the reported subphase interval. Builders emit bounded
-      // primitive work counters instead of sampling once per record/key/query.
-      const builderDiagnostics: CompatBuilderDiagnostics | undefined = accounting ? (() => {
-        const sampleAccounting = accounting;
-        return Object.freeze({
-          boundary(phase?: CompatCpuSubphase) {
-            const c = ports.cpu();
-            if (!validCpu(c) || c.used < latestCpu) throw new Error("invalid CPU progression");
-            sampleAccounting.attributionBoundary(c.used, phase);
-            latestCpu = c.used;
-          },
-          work(values: Readonly<Partial<Record<CompatCpuWorkKey, number>>>) { sampleAccounting.attributionWork(values); },
-        });
-      })() : undefined;
       const memory = ports.memory();
       const tasks = table(memory, ["data", "resourceControl", "tasks"]);
       const reservations = table(memory, ["runtime", "resourceReservations"]);
@@ -239,7 +223,7 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
         readers = ports.readers();
         if (budget("observationBuild")) {
           accounting?.invoked("observationBuild");
-          observations = readers.buildObservation({ scope: "market-fresh", epochSeq: 1, rooms: validRooms, compatDiagnostics: builderDiagnostics });
+          observations = readers.buildObservation({ scope: "market-fresh", epochSeq: 1, rooms: validRooms });
         } else limited = true;
       } else if (!budget()) limited = true;
       // Diagnostic-only extra checkpoint: its cost is NOT removed from budget.
@@ -263,10 +247,8 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
       if (!tasks.value || !reservations.value) report.commitments = { status: "unavailable_legacy_input", rows: null };
       else if (readers && observations && budget("commitmentBuild")) {
         accounting?.invoked("commitmentBuild");
-        const index = readers.buildCommitments({ tick, tasks: tasks.value, reservations: reservations.value, observation: observations, compatDiagnostics: builderDiagnostics });
+        const index = readers.buildCommitments({ tick, tasks: tasks.value, reservations: reservations.value, observation: observations });
         const fields: Rec[] = [];
-        const projectionRowsPlanned = validRooms.length * cfg.resources.length;
-        builderDiagnostics?.boundary("projectionRows");
         for (const name of validRooms.map(r => r.name)) for (const resource of cfg.resources) {
           if (!budget("commitmentProjection")) { limited = true; break; }
           const outgoing = index.outgoing(name, resource), incoming = index.incoming(name, resource), reserved = index.reservedProduction(name, resource);
@@ -274,8 +256,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
           fields.push({ room: name, resource, scope: "room_not_endpoint", outgoing, incoming,
             productionReserved: reserved, completeness: index.commitmentCompleteness(name, resource) });
         }
-        builderDiagnostics?.work({ projectionRowsPlanned, projectionRowsCompleted: fields.length, projectionIndexQueries: fields.length * 4 });
-        builderDiagnostics?.boundary();
         const c = index.completeness;
         if (!c || typeof c.complete !== "boolean" || typeof c.globalIncomplete !== "boolean"
           || !nonneg(c.invalidRecords) || !nonneg(c.incompleteScopeCount)) throw new Error("invalid index health");

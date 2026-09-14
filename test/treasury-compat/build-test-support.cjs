@@ -6,7 +6,7 @@ const fs = require('node:fs'), path = require('node:path'), vm = require('node:v
 const S = require('./loader-test-support.cjs');
 const { H, ts, task, reservation } = S;
 const beforeText = () => fs.readFileSync(path.join(__dirname, 'fixtures/core-before-build-optimization-vii.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
-const afterText = S.newText;
+const afterText = () => fs.readFileSync(path.join(__dirname, 'fixtures/core-before-subphase-attribution-ix.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
 const emptyCounts = () => ({ mapNew: 0, mapGet: 0, mapSet: 0, mapHas: 0, entryCalls: 0, entryPairs: 0, keysCalls: 0, valuesCalls: 0, roomCloneCalls: 0 });
 function measuredCore(text, state) {
   const context = vm.createContext({ exports: {}, require: x => { throw new Error('unlisted host import:' + x); },
@@ -66,7 +66,7 @@ function snapshot(b, roomNames = ['W1N1', 'W2N1', 'W3N1'], resources = ['H', 'en
     completeness: i.completeness, rows, rooms, merges, reservations: reservationSnapshot(), metrics: i.metrics, observation });
 }
 function compareScenario(name) {
-  const a = make(beforeText()), b = make(afterText()); S.scenarios[name](a); S.scenarios[name](b);
+  const a = make(beforeText(), false), b = make(afterText(), false); S.scenarios[name](a); S.scenarios[name](b);
   const ga = { writes: 0 }, gb = { writes: 0 }; a.memory = H.guard(a.memory,ga); b.memory = H.guard(b.memory,gb);
   for (let n = 1; n <= 12; n++) {
     a.game.time = b.game.time = n * 100; a.cpuValue = b.cpuValue = .1;

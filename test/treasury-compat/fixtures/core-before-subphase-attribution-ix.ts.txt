@@ -289,16 +289,6 @@ const taskKey = (roomName, resource) => `${roomName}\u0000${resource}`;
 const mergeKeyOf = (resource, fromRoomName, toRoomName, origin, reason) => `${resource}\u0000${fromRoomName}\u0000${toRoomName}\u0000${origin}\u0000${reason}`;
 function buildTreasuryCommitmentIndex(options, compatContext) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
-    const compatDiagnostics = options.compatDiagnostics;
-    if (compatDiagnostics)
-        compatDiagnostics.boundary("commitmentSetup");
-    let attributionInvalidRegion = "setup";
-    let attributionTaskInvalidEvents = 0;
-    let attributionReservationInvalidEvents = 0;
-    let attributionDemandHealthChecks = 0;
-    let attributionReceiverHealthChecks = 0;
-    let attributionRouteCandidates = 0;
-    let attributionOwnerEvaluations = 0;
     const tick = options.tick;
     const revision = compatContext.revision;
     const healthOptions = (0, resourceTransferTaskHealth_1.resolveResourceTransferTaskHealthOptions)();
@@ -334,14 +324,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
     let globalIncomplete = false;
     const recordInvalid = () => {
         invalidCommitmentRecords.count += 1;
-        if (attributionInvalidRegion === "tasks")
-            attributionTaskInvalidEvents += 1;
-        else if (attributionInvalidRegion === "reservations")
-            attributionReservationInvalidEvents += 1;
     };
-    attributionInvalidRegion = "tasks";
-    if (compatDiagnostics)
-        compatDiagnostics.boundary("commitmentTasks");
     metrics.taskRecords = Object.keys(options.tasks).length;
     for (const task of Object.values(options.tasks)) {
         if (!isValidTreasuryTransferTaskForCommitment(task, compatContext)) {
@@ -410,7 +393,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             if (inKey !== outKey) taskScopes.set(inKey, inBucket);
         }
         inBucket.pendingIncoming = mergedPendingIncoming;
-        attributionDemandHealthChecks += 1;
         const countsTowardDemand = (0, resourceTransferTaskHealth_1.countsResourceTransferTaskTowardDemand)(task, healthOptions);
         let toBucket;
         if (countsTowardDemand) {
@@ -429,7 +411,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             toBucket.incomingCount += 1;
         }
         if (task.origin === "manual" || countsTowardDemand) {
-            attributionRouteCandidates += 1;
             // Canonical first-route-wins order, including manual tasks that do
             // not contribute healthy demand. Do not overwrite an earlier id.
             const mergeKey = mergeKeyOf(task.resource, fromRoom, toRoom, task.origin, reason);
@@ -437,7 +418,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
                 mergeIndex.set(mergeKey, task.id);
             }
         }
-        attributionReceiverHealthChecks += 1;
         if ((0, resourceTransferTaskHealth_1.isHealthyReceiverCapacityCommitment)(task, healthOptions.automaticTaskNoProgressTtl)) {
             if (!toBucket) {
                 toBucket = taskRooms.get(toRoom);
@@ -455,9 +435,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
     //    显式 release 解除占用；owner 无法确证失效一律继续全额扣除）──────────
     //    orphan 语义修正（第五轮）：missing/active-unresolved owner 只是诊断
     //    分类，不代表库存可重新支配——绝不从 committed 排除。
-    attributionInvalidRegion = "reservations";
-    if (compatDiagnostics)
-        compatDiagnostics.boundary("commitmentReservations");
     const reservationSnapshot = [];
     const reservedByRoomResource = new Map();
     metrics.reservationRecords = Object.keys(options.reservations).length;
@@ -474,7 +451,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             continue;
         }
         const expired = entry.expiresAt < tick;
-        attributionOwnerEvaluations += 1;
         const owner = (0, ownerIdentity_1.isValidTreasuryOwnerIdentity)(entry.owner)
             ? entry.owner
             : (0, ownerIdentity_1.classifyTreasuryHolderIdAsOwner)(entry.holderId);
@@ -530,9 +506,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         bucket.byOwner.set(ownerKey, mergedOwner);
         reservedByRoomResource.set(key, bucket);
     }
-    attributionInvalidRegion = "finalize";
-    if (compatDiagnostics)
-        compatDiagnostics.boundary("commitmentFinalize");
     metrics.invalidCommitmentRecords = invalidCommitmentRecords.count;
     metrics.incompleteCommitmentScopes = incompleteScopes.size;
     metrics.globallyIncomplete = globalIncomplete;
@@ -665,25 +638,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             });
         },
         metrics, };
-    if (compatDiagnostics) {
-        compatDiagnostics.work({
-            commitmentTaskRecords: metrics.taskRecords,
-            commitmentPendingTaskRecords: metrics.pendingTaskRecords,
-            commitmentTaskInvalidEvents: attributionTaskInvalidEvents,
-            commitmentDemandHealthChecks: attributionDemandHealthChecks,
-            commitmentReceiverHealthChecks: attributionReceiverHealthChecks,
-            commitmentRouteCandidates: attributionRouteCandidates,
-            commitmentReservationRecords: metrics.reservationRecords,
-            commitmentReservationInvalidEvents: attributionReservationInvalidEvents,
-            commitmentOwnerEvaluations: attributionOwnerEvaluations,
-            commitmentActiveReservations: metrics.activeReservationRecords,
-            commitmentScopeBuckets: taskScopes.size,
-            commitmentRoomBuckets: taskRooms.size,
-            commitmentMergeRoutes: mergeIndex.size,
-            commitmentReservationScopes: reservedByRoomResource.size,
-        });
-        compatDiagnostics.boundary();
-    }
     return index;
 }
 
@@ -957,11 +911,6 @@ function createObservationView(data) {
  */
 function buildTreasuryObservation(options) {
     var _a, _b, _c, _d, _e;
-    const compatDiagnostics = options.compatDiagnostics;
-    if (compatDiagnostics)
-        compatDiagnostics.boundary("observationSetup");
-    let attributionExistingLocations = 0;
-    let attributionResourceKeys = 0;
     const epoch = {
         scope: options.scope,
         epochSeq: options.epochSeq,
@@ -970,13 +919,9 @@ function buildTreasuryObservation(options) {
     };
     const rooms = [];
     const empireTotals = {};
-    if (compatDiagnostics)
-        compatDiagnostics.boundary("observationRooms");
     for (const room of options.rooms) {
         const storageScan = scanLocation((_a = room.storage) !== null && _a !== void 0 ? _a : undefined);
         const terminalScan = scanLocation((_b = room.terminal) !== null && _b !== void 0 ? _b : undefined);
-        attributionExistingLocations += (storageScan.exists ? 1 : 0) + (terminalScan.exists ? 1 : 0);
-        attributionResourceKeys += storageScan.nonZeroKeys + terminalScan.nonZeroKeys;
         // 只对真实存在的 Store 计数枚举（missing 位置无枚举成本）；
         // nonZeroKeys 复用 scanLocation 的单次枚举结果。
         if (storageScan.exists)
@@ -999,26 +944,12 @@ function buildTreasuryObservation(options) {
             }
         }
     }
-    if (compatDiagnostics)
-        compatDiagnostics.boundary("observationFinalize");
     const data = Object.freeze({
         epoch: Object.freeze(epoch),
         rooms: Object.freeze(rooms),
         empireTotals: Object.freeze(empireTotals),
     });
-    if (compatDiagnostics)
-        compatDiagnostics.boundary("observationView");
-    const view = createObservationView(data);
-    if (compatDiagnostics) {
-        compatDiagnostics.work({
-            observationRooms: options.rooms.length,
-            observationLocations: options.rooms.length * 2,
-            observationExistingLocations: attributionExistingLocations,
-            observationResourceKeys: attributionResourceKeys,
-        });
-        compatDiagnostics.boundary();
-    }
-    return view;
+    return createObservationView(data);
 }
 /** 供 shadow/测试用的位置桶枚举（冻结数据，无 Game 读）。 */
 function treasuryLocationBuckets(observation) {

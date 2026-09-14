@@ -1,17 +1,20 @@
 {
-  "revision": "compat-build-optimization-VII",
+  "revision": "compat-subphase-attribution-IX",
   "authoring": [
     "scripts/lib/treasury-compat-loader.template.txt",
     "scripts/lib/treasury-compat-context.cjs",
-    "scripts/lib/treasury-compat-build.cjs"
+    "scripts/lib/treasury-compat-build.cjs",
+    "scripts/lib/treasury-compat-attribution.cjs"
   ],
-  "baselineCommit": "cdecde02ec7d364141d71f45bf21dc23969deff0",
-  "baselineReadVBlob": "fe94ebece8f5118b76701007ce3906adfbb4da08",
+  "baselineCommit": "ef23c464c83b90b413d43d07857f67d538f512a3",
+  "baselineBuildVIIBlob": "4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be",
   "canonicalInputBlob": "7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3",
   "canonicalInputSha256": "9e28d07181898930a84ff560c73f531935ca6a79c9d6e1e2adbd108555bd9965",
   "canonicalInputCompiler": "5.9.3",
   "originalFactoryPrefixSha256": "6615fa89bc77e6e885a49abb2f67c0b8331306eff8eb7f96bc5c4ffaa3517cba",
-  "adaptedFactoryPrefixSha256": "d256a6ae7a9b68e82656526094496495e69042d086c3249300ca1c49f94998ce",
+  "contextOnlyPrefixSha256": "3c46d505c81659440e5d31902c5d3d17a830639ed8f8f99b1b5282df692b94df",
+  "buildVIIOnlyPrefixSha256": "d256a6ae7a9b68e82656526094496495e69042d086c3249300ca1c49f94998ce",
+  "adaptedFactoryPrefixSha256": "89e3e2b82e1c744712ec3b23f3cbe5a706ec4f4c0654887a5fdc5eeec26e7771",
   "reversibleContextTransform": true,
   "contextRules": [
     {
@@ -90,10 +93,68 @@
       "replacements": 1
     }
   ],
-  "contextOnlyPrefixSha256": "3c46d505c81659440e5d31902c5d3d17a830639ed8f8f99b1b5282df692b94df",
+  "reversibleAttributionTransform": true,
+  "attributionRules": [
+    {
+      "name": "commitment-entry",
+      "replacements": 1
+    },
+    {
+      "name": "invalid-region",
+      "replacements": 1
+    },
+    {
+      "name": "demand-health-count",
+      "replacements": 1
+    },
+    {
+      "name": "route-count",
+      "replacements": 1
+    },
+    {
+      "name": "receiver-health-count",
+      "replacements": 1
+    },
+    {
+      "name": "reservation-boundary",
+      "replacements": 1
+    },
+    {
+      "name": "owner-count",
+      "replacements": 1
+    },
+    {
+      "name": "finalize-boundary",
+      "replacements": 1
+    },
+    {
+      "name": "commitment-end",
+      "replacements": 1
+    },
+    {
+      "name": "observation-entry",
+      "replacements": 1
+    },
+    {
+      "name": "observation-rooms-boundary",
+      "replacements": 1
+    },
+    {
+      "name": "observation-counts",
+      "replacements": 1
+    },
+    {
+      "name": "observation-finalize",
+      "replacements": 1
+    },
+    {
+      "name": "observation-end",
+      "replacements": 1
+    }
+  ],
   "loaderSha256": "cfc0d3651f7f7755492ce74f69b8943d03230dd6328ce014f759447ad08093d8",
-  "generatedSha256": "1eb28af06a562011dc2c9a02c3aad3bb63b447638c90a76163d3ee323a349ae8",
-  "generatedBlob": "4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be",
+  "generatedSha256": "75a600170f04c99520369b0d48b55d385979b5180f47cce3b427143b99956da1",
+  "generatedBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1",
   "factories": [
     {
       "path": "src/runtime/configNormalize.ts",
@@ -116,7 +177,7 @@
     {
       "path": "src/runtime/treasury/commitments.ts",
       "originalBodySha256": "8cdecbdb0975612ad8770ba23022222aae10529e0647704e75b29f1c764a5b4c",
-      "adaptation": "V-explicit-context-and-VII-task-bucket-storage",
+      "adaptation": "V-context+VII-buckets+IX-attribution",
       "lifecycle": "shared-definition"
     },
     {
@@ -128,7 +189,7 @@
     {
       "path": "src/runtime/treasury/observation.ts",
       "originalBodySha256": "168fd5d39b6a72d08ab867eeea319c98e300a14dacaca5169839e257ff4c236c",
-      "adaptation": "VII-no-entry-pairs-and-no-room-clone",
+      "adaptation": "VII-allocation+IX-attribution",
       "lifecycle": "shared-definition"
     },
     {
@@ -148,26 +209,31 @@
     "src/runtime/treasury/commitments.ts",
     "src/runtime/treasury/observation.ts"
   ],
-  "dependencyEdgesRemoved": [
-    "commitments -> commitmentRevision"
+  "diagnosticRegions": [
+    "observationSetup",
+    "observationRooms",
+    "observationFinalize",
+    "observationView",
+    "commitmentSetup",
+    "commitmentTasks",
+    "commitmentReservations",
+    "commitmentFinalize",
+    "projectionRows"
   ],
-  "taskIndexStorageRepresentationChanged": true,
-  "validationRulesChanged": false,
-  "aggregationOrderPreserved": true,
-  "querySemanticsPreserved": true,
+  "perRecordCpuSamples": false,
+  "primitiveWorkCountersOnly": true,
+  "diagnosticOverheadSubtracted": false,
+  "topLevelCpuBudgetAuthorityChanged": false,
+  "businessValidationChanged": false,
+  "querySemanticsChanged": false,
   "fullIndexBuiltEagerly": true,
   "lazySecondaryIndexes": false,
-  "previewSourceChanged": false,
-  "revisionSemantics": "private read-only capsule revision zero per builder; NOT the host revision",
-  "firstSuccessfulFactoryExecutions": 7,
-  "followingFactoryExecutions": 0,
-  "resourceCatalogCapturedPerBuilder": true,
-  "contextGlobalsUsed": false,
-  "definitionInitializationsMovedOutsideBudget": false,
-  "builderInstanceReused": false,
-  "observationReused": false,
-  "commitmentIndexReused": false,
+  "previewSourceChanged": true,
+  "cpuAccountingChanged": true,
+  "publicTypeSurfaceChanged": true,
+  "defaultEnabled": false,
+  "budget": 2,
   "engineCpuGapRepaired": false,
   "engineMeasurementRequired": true,
-  "note": "Only the compatibility capsule is adapted. Canonical host TS sources remain pinned; generated task aggregation/query storage and observation allocation change. All task validation, full-table reads, safe-integer guards, reason/route/receiver results, owner/expiry, reservation processing and independent Store reads are retained. Reversible provenance is distinct from semantic differential evidence."
+  "note": "IX adds coarse nested timing boundaries and bounded primitive work counters to the read-only compatibility capsule. The boundaries overlap existing parent phases, do not authorize work, and do not sample once per record or key. Canonical host sources remain pinned."
 }

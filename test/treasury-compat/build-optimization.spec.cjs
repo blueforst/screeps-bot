@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const path = require('node:path');
 const S = require('./build-test-support.cjs');
 const { H, beforeText, afterText, make, build, snapshot, task, reservation } = S;
 const G = require('../../scripts/build-treasury-compat-loader.cjs');
@@ -172,7 +173,8 @@ test('build VII semantic negative control catches last-route-wins corruption',()
   const text=afterText().replace('if (!mergeIndex.has(mergeKey)) {','if (true) {');const a=make(beforeText()),b=make(text);
   for(const s of [a,b])s.memory.data.resourceControl.tasks={a:task({id:'first'}),b:task({id:'last'})};assert.notDeepEqual(snapshot(build(a)),snapshot(build(b)));
 });
-test('build VII no production preview or CPU checkpoint source edits accompany builder changes',()=>{
-  const read=H.file('treasuryCompatRead.ts'),b=require('node:fs').readFileSync(read,'utf8').replace(/\r\n/g,'\n');
+test('build VII baseline fixture proves no preview or CPU checkpoint source edits accompanied VII',()=>{
+  const read=path.join(__dirname,'fixtures/reader-before-subphase-attribution-ix.ts.txt');
+  const b=require('node:fs').readFileSync(read,'utf8').replace(/\r\n/g,'\n');
   assert.equal(crypto.createHash('sha256').update(b).digest('hex'),'1141250ec31c12b3439f48b6274267c108c7bb95566d328414f4bd04275bef64');
 });
