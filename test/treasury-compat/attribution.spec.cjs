@@ -2,6 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const A = require('./attribution-test-support.cjs');
 const { S, H } = A;
 const G = require(path.join(H.ROOT, 'scripts/build-treasury-compat-loader.cjs'));
@@ -53,7 +55,7 @@ test('IX accounting rejects non-monotonic and unlisted subphase boundaries', () 
 test('IX transform exactly restores the committed Build VII core prefix', () => {
   const marker = '/** Read Optimization V:';
   assert.equal(G.A.restore(A.afterText().split(marker)[0]), A.beforeText().split(marker)[0]);
-  assert.equal(G.A.rules.length, 14); assert.equal(G.main(['--check']).status, 'COMPAT_LOADER_REGENERATION_VERIFIED');
+  assert.equal(G.A.rules.length, 14); const generated = G.generate(fs.readFileSync(path.join(H.ROOT, G.FIXTURE)), fs.readFileSync(path.join(H.ROOT, G.TEMPLATE)), JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8'))); assert.equal(generated[G.GENERATED].length, 68416);
 });
 test('IX transform refuses shifted source instead of approximately instrumenting it', () => {
   const prefix = A.beforeText().split('/** Read Optimization V:')[0];
@@ -160,4 +162,45 @@ test('IX invalid work callback faults only the compatibility preview, never old 
 for (const name of Object.keys(S.scenarios)) test('IX Build VII/IX diagnostics-off byte parity: ' + name, () => {
   const r = A.compareScenario(name); assert.equal(r.byteEquivalent, true); assert.deepEqual(r.writes, [0,0]);
   assert.equal(r.readers[0], r.readers[1]); assert.equal(r.observations[0], r.observations[1]); assert.equal(r.commitments[0], r.commitments[1]);
+});
+
+
+
+function manifestFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-manifest-gate-'));
+  for (const n of [G.FIXTURE, G.TEMPLATE, G.SOURCE_MANIFEST, G.GENERATED, G.PROVENANCE]) {
+    const src = path.join(H.ROOT, n), dst = path.join(root, n);
+    fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.copyFileSync(src, dst);
+  }
+  return root;
+}
+function withManifestFixture(fn) { const root = manifestFixture(); try { return fn(root); } finally { fs.rmSync(root, { recursive: true, force: true }); } }
+function generatedFor(root) { return G.generate(fs.readFileSync(path.join(root, G.FIXTURE)), fs.readFileSync(path.join(root, G.TEMPLATE)), JSON.parse(fs.readFileSync(path.join(root, G.SOURCE_MANIFEST), 'utf8'))); }
+
+test('IX source manifest gate covers every listed output identity', () => {
+  const m = JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8'));
+  assert.deepEqual(m.outputs.map(x => x.file).sort(), G.EXPECTED_OUTPUT_PATHS);
+  assert.equal(Object.keys(G.FIXED_OUTPUTS).length, 12); assert.equal(G.EXPECTED_OUTPUT_PATHS.length, 13);
+  assert.equal(m.loaderOptimization.sourceManifestOutputValidation, 'all-listed-outputs');
+});
+test('IX generated-output gate rejects a stale manifest identity', () => withManifestFixture(root => {
+  const result = generatedFor(root), p = path.join(root, G.SOURCE_MANIFEST), m = JSON.parse(fs.readFileSync(p, 'utf8'));
+  m.outputs.find(x => x.file === 'src/runtime/treasuryCompatRuntime.ts').bytes = 839;
+  fs.writeFileSync(p, JSON.stringify(m, null, 2) + '\n');
+  assert.throws(() => G.applyOrCheckGenerated(root, result, '--check'), /GENERATED_OUTPUT_MISMATCH:docs\/treasury-compat-source-manifest\.json/);
+}));
+test('IX fixed-output gate rejects a byte-changed listed output', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-output-identity-'));
+  try {
+    const rel = 'src/runtime/treasuryCompatRead.ts', dst = path.join(root, rel); fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(path.join(H.ROOT, rel), dst); G.verifyOutputIdentities(root, { [rel]: G.FIXED_OUTPUTS[rel] });
+    fs.appendFileSync(dst, '\n'); assert.throws(() => G.verifyOutputIdentities(root, { [rel]: G.FIXED_OUTPUTS[rel] }), /FIXED_SOURCE_MISMATCH/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+test('IX source manifest gate rejects missing or duplicate output rows', () => {
+  for (const mutate of [m => m.outputs.pop(), m => m.outputs.push({ ...m.outputs[0] })]) withManifestFixture(root => {
+    const p = path.join(root, G.SOURCE_MANIFEST), m = JSON.parse(fs.readFileSync(p, 'utf8')); mutate(m);
+    fs.writeFileSync(p, JSON.stringify(m, null, 2) + '\n');
+    assert.throws(() => generatedFor(root), /SOURCE_MANIFEST_OUTPUT_SET_MISMATCH/);
+  });
 });

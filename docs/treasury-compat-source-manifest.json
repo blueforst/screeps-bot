@@ -143,9 +143,9 @@
     },
     {
       "file": "src/runtime/treasuryCompatRuntime.ts",
-      "bytes": 839,
-      "sha256": "1eaf416bbf31110791f2d5ca39561468c17e19c866da16045e3866b4b3ded942",
-      "gitBlob": "682e603d92b333b1d7112cb05693fdc136736a27"
+      "bytes": 865,
+      "sha256": "9f8736eb9a0a45ba3a6390cada1d9790945e5609252da81d62d258b9f76254f4",
+      "gitBlob": "5916fbcafbb88d40cf5463d329b683ba0d776ad8"
     },
     {
       "file": "src/runtime/treasuryCompatTypes.ts",
@@ -161,15 +161,15 @@
     },
     {
       "file": "test/treasury-compat/helpers.cjs",
-      "bytes": 5858,
-      "sha256": "f28959c9fcf64fe607ad40a543790433df3572cde7f5797146e43792ee9cf4de",
-      "gitBlob": "59b332541bf1029c476c55595918b94cecc6ea1b"
+      "bytes": 6806,
+      "sha256": "c200b1f2b6dc55deae8b50ac7ae9f0e5ecb191be6592a42c713fce7d3d289e74",
+      "gitBlob": "f7406cf25124324069c08a444683d383477e0a23"
     },
     {
       "file": "test/treasury-compat/real-readers.spec.cjs",
-      "bytes": 6122,
-      "sha256": "62fd1c33a1b8ffe8a74a0046c5e2ae3f4796a3a31c838b9fcfe0e340b6fe108e",
-      "gitBlob": "f709decb787c553a2dcc614b768e9d88d5701bf6"
+      "bytes": 8178,
+      "sha256": "162630b8712f90fa71bb11eba25d3128dd92408b1474ea8540a2adb02a2f20c2",
+      "gitBlob": "28c78e89a8039518fe9d8d3e4d8027aff0015e8c"
     },
     {
       "file": "test/treasuryCompatRead.test.ts",
@@ -188,6 +188,8 @@
     "fullTaskBucketFusion": true,
     "observationAllocationReduction": true,
     "boundedSubphaseAttribution": true,
-    "attributionChangesAuthorization": false
+    "attributionChangesAuthorization": false,
+    "sourceManifestOutputValidation": "all-listed-outputs",
+    "sourceManifestOutputIdentityCount": 13
   }
 }
