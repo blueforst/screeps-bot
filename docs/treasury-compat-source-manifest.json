@@ -125,15 +125,15 @@
     },
     {
       "file": "src/runtime/treasuryCompatCpu.ts",
-      "bytes": 6724,
-      "sha256": "e7dead62745052c278163281a524d765ef109df9556060a283dac35590fa042c",
-      "gitBlob": "076cc6b1a02518b0ff0e4f503e09e74b8c47464e"
+      "bytes": 7697,
+      "sha256": "c2dd2a61294e799f6aac4739b19ce6fc3d0cea00958a10bfaeef453dd4e022bc",
+      "gitBlob": "c66f1a975778a2b4e5ae951f93c581f43ef598e0"
     },
     {
       "file": "src/runtime/treasuryCompatRead.ts",
-      "bytes": 21631,
-      "sha256": "9e454bde732a08ba1880cae02ada391219054c70cb54aff600d7a8bde667bd2f",
-      "gitBlob": "fe92498f5e76d860e4fef98d842df3c2e8fc48ad"
+      "bytes": 22660,
+      "sha256": "9bc900e4d99c12d4cb8573be50db56c8a427927b3c1c5d905c0f0d6e39a6c1ff",
+      "gitBlob": "c3297bce75ad644d60555fe3a578b09e49f41bec"
     },
     {
       "file": "src/runtime/treasuryCompatReadCore.generated.ts",
@@ -179,7 +179,7 @@
     }
   ],
   "loaderOptimization": {
-    "revision": "XI",
+    "revision": "XII",
     "provenance": "docs/treasury-compat-loader-optimization.json",
     "canonicalSourceCommit": "01bd9831454950c4928df98dd8679692b55603e5",
     "baselineGeneratedBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1",
@@ -195,6 +195,12 @@
     "canonicalDemandHelperFastPath": true,
     "previewSelectedTotalSinglePass": true,
     "previewResourceCatalogSingleRead": true,
+    "diagnosticCompletionTailOnly": true,
+    "sampleRootCursorReuse": true,
+    "legacyProjectionFieldObjectRemoved": true,
+    "boundedRoomMembershipNoSet": true,
+    "singlePassDeltaObject": true,
+    "projectionArrayValidationRemoved": true,
     "sourceManifestOutputValidation": "all-listed-outputs",
     "sourceManifestOutputIdentityCount": 13
   }

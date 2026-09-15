@@ -1,17 +1,19 @@
 {
-  "revision": "compat-hotpath-optimization-XI",
+  "revision": "compat-diagnostic-envelope-optimization-XII",
   "authoring": [
     "scripts/lib/treasury-compat-loader.template.txt",
     "scripts/lib/treasury-compat-context.cjs",
     "scripts/lib/treasury-compat-build.cjs",
     "scripts/lib/treasury-compat-attribution.cjs",
     "scripts/lib/treasury-compat-hotpath.cjs",
-    "scripts/lib/treasury-compat-preview-hotpath.cjs"
+    "scripts/lib/treasury-compat-preview-hotpath.cjs",
+    "scripts/lib/treasury-compat-envelope.cjs"
   ],
-  "baselineCommit": "9adb2739935c03c0450acfebbab94912a5e3e593",
+  "baselineCommit": "91b9a99226a7a135a0e75b8a1d0db255eefe2200",
   "baselineBuildVIIBlob": "4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be",
   "baselineIXCoreBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1",
   "baselineIXPreviewBlob": "556c6d565b3962c407bc82a4b5706d5382935c53",
+  "baselineXIPreviewBlob": "fe92498f5e76d860e4fef98d842df3c2e8fc48ad",
   "canonicalInputBlob": "7c20e7544bdc45bee11b1ee059ac5df2a12f2bf3",
   "canonicalInputSha256": "9e28d07181898930a84ff560c73f531935ca6a79c9d6e1e2adbd108555bd9965",
   "canonicalInputCompiler": "5.9.3",
@@ -219,11 +221,126 @@
       "replacements": 1
     }
   ],
+  "reversiblePreviewEnvelopeTransform": true,
+  "previewEnvelopeRules": [
+    {
+      "name": "path-cursors",
+      "replacements": 1
+    },
+    {
+      "name": "legacy-projection-fields",
+      "replacements": 1
+    },
+    {
+      "name": "legacy-root-cursors",
+      "replacements": 1
+    },
+    {
+      "name": "scope-array-reuse",
+      "replacements": 1
+    },
+    {
+      "name": "delta-single-pass",
+      "replacements": 1
+    },
+    {
+      "name": "bounded-membership",
+      "replacements": 1
+    },
+    {
+      "name": "projection-number-check",
+      "replacements": 1
+    },
+    {
+      "name": "observation-room-array-reuse",
+      "replacements": 1
+    }
+  ],
+  "reversibleCurrentPreviewTransform": true,
+  "currentPreviewRules": [
+    {
+      "name": "direct-selected-total",
+      "replacements": 1,
+      "stage": "XI-hotpath"
+    },
+    {
+      "name": "resource-catalog",
+      "replacements": 1,
+      "stage": "XI-hotpath"
+    },
+    {
+      "name": "valid-room-names-decl",
+      "replacements": 1,
+      "stage": "XI-hotpath"
+    },
+    {
+      "name": "valid-room-push",
+      "replacements": 1,
+      "stage": "XI-hotpath"
+    },
+    {
+      "name": "included-set",
+      "replacements": 1,
+      "stage": "XI-hotpath"
+    },
+    {
+      "name": "projection-names",
+      "replacements": 1,
+      "stage": "XI-hotpath"
+    },
+    {
+      "name": "core-observation-names",
+      "replacements": 1,
+      "stage": "XI-hotpath"
+    },
+    {
+      "name": "path-cursors",
+      "replacements": 1,
+      "stage": "XII-envelope"
+    },
+    {
+      "name": "legacy-projection-fields",
+      "replacements": 1,
+      "stage": "XII-envelope"
+    },
+    {
+      "name": "legacy-root-cursors",
+      "replacements": 1,
+      "stage": "XII-envelope"
+    },
+    {
+      "name": "scope-array-reuse",
+      "replacements": 1,
+      "stage": "XII-envelope"
+    },
+    {
+      "name": "delta-single-pass",
+      "replacements": 1,
+      "stage": "XII-envelope"
+    },
+    {
+      "name": "bounded-membership",
+      "replacements": 1,
+      "stage": "XII-envelope"
+    },
+    {
+      "name": "projection-number-check",
+      "replacements": 1,
+      "stage": "XII-envelope"
+    },
+    {
+      "name": "observation-room-array-reuse",
+      "replacements": 1,
+      "stage": "XII-envelope"
+    }
+  ],
   "loaderSha256": "cfc0d3651f7f7755492ce74f69b8943d03230dd6328ce014f759447ad08093d8",
   "generatedSha256": "3bd42eee815562492a440bef2f0e2879707dba1bd61a78eb15083fe3ef2fc92c",
   "generatedBlob": "21c4bba26d732ead7df4d6a9f5b9dea357fd9583",
-  "previewSha256": "9e454bde732a08ba1880cae02ada391219054c70cb54aff600d7a8bde667bd2f",
-  "previewBlob": "fe92498f5e76d860e4fef98d842df3c2e8fc48ad",
+  "previewXISha256": "9e454bde732a08ba1880cae02ada391219054c70cb54aff600d7a8bde667bd2f",
+  "previewXIBlob": "fe92498f5e76d860e4fef98d842df3c2e8fc48ad",
+  "previewSha256": "9bc900e4d99c12d4cb8573be50db56c8a427927b3c1c5d905c0f0d6e39a6c1ff",
+  "previewBlob": "c3297bce75ad644d60555fe3a578b09e49f41bec",
   "factories": [
     {
       "path": "src/runtime/configNormalize.ts",
@@ -298,12 +415,12 @@
   "fullIndexBuiltEagerly": true,
   "lazySecondaryIndexes": false,
   "previewSourceChanged": true,
-  "sparseKeyEnumerationReuse": true,
-  "observationLookupBuiltInRoomPass": true,
-  "singleAuthorityTableEnumeration": true,
-  "canonicalDemandHelperFastPath": true,
-  "previewSelectedTotalSinglePass": true,
-  "previewResourceCatalogSingleRead": true,
+  "diagnosticCompletionTailOnly": true,
+  "sampleRootCursorReuse": true,
+  "legacyProjectionFieldObjectRemoved": true,
+  "boundedRoomMembershipNoSet": true,
+  "singlePassDeltaObject": true,
+  "projectionArrayValidationRemoved": true,
   "cpuAccountingChanged": true,
   "publicTypeSurfaceChanged": true,
   "defaultEnabled": false,
@@ -312,5 +429,5 @@
   "sourceManifestOutputIdentityCount": 13,
   "engineCpuGapRepaired": false,
   "engineMeasurementRequired": true,
-  "note": "XI removes repeated sparse-key, room-index, authority-table and preview bookkeeping work while preserving IX attribution, canonical health helpers, full-table validation, eager indexes and default OFF."
+  "note": "XII compacts successor-carried completion profiles to measured tail phases and removes bounded preview bookkeeping allocations while preserving independent Store reads, full validation, eager indexes, four projection rows and default OFF."
 }

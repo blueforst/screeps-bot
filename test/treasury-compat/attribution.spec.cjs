@@ -148,11 +148,13 @@ test('IX CPU-port reads remain bounded rather than scaling with 256 tasks', () =
   full.observer.run(); assert.equal(full.calls.cpu, empty.calls.cpu);
   assert.equal(full.report().cpuProfile.attribution.work.commitmentTaskRecords, 256);
 });
-test('IX first and later samples each retain only their own primitive attribution snapshot', () => {
+test('XII first and later samples retain prefix attribution without duplicating it into completion', () => {
   const s = A.diagnosticScene(); s.observer.run(); const first = H.json(s.report().cpuProfile.attribution);
   s.memory.data.resourceControl.tasks.x = S.task(); s.game.time = 200; s.cpuValue = 0.1; s.observer.run();
+  const tail = s.report().previousCpuProfile;
   assert.equal(s.report().cpuProfile.attribution.work.commitmentTaskRecords, 1);
-  assert.equal(first.work.commitmentTaskRecords, 0); assert.equal(s.report().previousCpuProfile.attribution.work.commitmentTaskRecords, 0);
+  assert.equal(first.work.commitmentTaskRecords, 0); assert.equal(tail.completion, 'tail_only');
+  assert.equal(tail.attribution, undefined); assert.deepEqual(Object.keys(tail.phases).sort(), ['emit','retention','serializationAndSize']);
 });
 test('IX partial projection reports planned and completed rows without manufacturing completeness', () => {
   const s = A.diagnosticScene(undefined, 0.11); s.cfg = { ...s.cfg, maxSampleCpu: 2 };

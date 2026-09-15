@@ -53,10 +53,6 @@ export interface CompatCpuProfile {
   readonly calls: Readonly<Record<CompatCpuCall, number>>;
   readonly phases: Readonly<Partial<Record<CompatCpuPhase, number>>>;
   readonly attribution?: CompatCpuAttribution;
-  /** After-retention snapshots are a continuation for the preceding emitted
-   * prefix. They contain only tail phases; the prior report remains authoritative
-   * for calls, parent-prefix phases and attribution. */
-  readonly completion?: "tail_only";
 }
 /** One instance per admitted sample; snapshots contain primitive values only.
  * Each interval is charged to the phase that was active BEFORE the checkpoint.
@@ -114,16 +110,6 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
       }
     },
     snapshot(boundary: CompatCpuProfile["boundary"]): CompatCpuProfile {
-      if (boundary === "afterRetention") {
-        // XII: the preceding report already carries the full prefix snapshot.
-        // Publish only the measured serialization/emit/retention continuation
-        // instead of serializing its attribution and parent phases a second time.
-        const tail: Partial<Record<CompatCpuPhase, number>> = {};
-        for (const key of ["serializationAndSize", "emit", "retention"] as const)
-          if (phases[key] !== undefined) tail[key] = phases[key];
-        return Object.freeze({ version: 1, tick, sampleOrdinal, boundary, elapsed: last - start,
-          checkpoints, calls: Object.freeze({ ...calls }), phases: Object.freeze(tail), completion: "tail_only" });
-      }
       const a = attribution();
       return Object.freeze({ version: 1, tick, sampleOrdinal, boundary, elapsed: last - start,
         checkpoints, calls: Object.freeze({ ...calls }), phases: Object.freeze({ ...phases }), ...(a ? { attribution: a } : {}) });
