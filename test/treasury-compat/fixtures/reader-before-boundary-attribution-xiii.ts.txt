@@ -139,10 +139,8 @@ function legacyProjection(memory: unknown, room: string, kind: Kind, d: Direct, 
 
 type Previous = { tick: number; endpoints: Record<string, Direct> };
 export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPorts,
-  options: { cpuDiagnostics?: boolean; commitmentBoundaryDiagnostics?: boolean; localSafetyStop?: boolean } = {}) {
+  options: { cpuDiagnostics?: boolean } = {}) {
   const cpuDiagnostics = options?.cpuDiagnostics === true;
-  const traceCommitment = cpuDiagnostics && options?.commitmentBoundaryDiagnostics === true;
-  const localSafetyStop = options?.localSafetyStop === true;
   let sampleOrdinal = 0, previousCpuProfile: CompatCpuProfile | null = null;
   let cfg = input, enabled = false, invalid = false;
   try {
@@ -154,22 +152,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
   } catch { invalid = true; }
   let fault = false, lastTick: number | undefined, previous: Previous | undefined;
   let emitted = 0, cpuSkips = 0;
-  // XIII: local containment, never an engine interrupt or a production rollback.
-  // No Memory write. A new heap arriving after the first due tick cannot re-arm.
-  let safetyStop: { tick: number; reason: string; observedCpu: number | null } | undefined;
-  let safetyNoticeAttempted = false;
-  const latch = (tick: number, used: number) => {
-    if (localSafetyStop && used > 5 && !safetyStop)
-      safetyStop = { tick, reason: "CPU_OBSERVED_SAFETY_STOP", observedCpu: used };
-  };
-  const notifySafety = () => {
-    if (!safetyStop || safetyNoticeAttempted) return;
-    safetyNoticeAttempted = true;
-    try { ports.emit(JSON.stringify({ kind: "treasury-compat-safety-stop", version: 1,
-      ...safetyStop, thresholdCpu: 5, stopsFutureSamples: true,
-      currentCallPreempted: false, scope: "preview_heap_instance", authorizesActions: false })); }
-    catch { /* Stop remains latched even if the one control notification fails. */ }
-  };
   let previousRun: { tick: number; cpuIncludingEmit: number; emittedBytes: number; retainedPrimitiveChars: number } | null = null;
   function run(): { status: string } {
     let tick: number | undefined;
@@ -178,16 +160,11 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
       if (invalid) { fault = true; return { status: "invalid_config" }; }
       if (!enabled) return { status: "disabled" };
       if (fault) return { status: "disabled_after_fault" };
-      if (safetyStop) return { status: "disabled_after_safety_stop" };
       tick = ports.tick();
       if (!nonneg(tick)) throw new Error("invalid tick");
       if (tick < cfg.startTick || tick > cfg.endTick) { previous = undefined; return { status: "outside_window" }; }
       if (tick % cfg.intervalTicks !== 0 || tick === lastTick) return { status: "not_due" };
       lastTick = tick;
-      if (localSafetyStop && sampleOrdinal === 0 && tick !== Math.ceil(cfg.startTick / cfg.intervalTicks) * cfg.intervalTicks) {
-        safetyStop = { tick, reason: "WINDOW_RESTART_UNPROVEN", observedCpu: null };
-        notifySafety(); return { status: "disabled_after_safety_stop" };
-      }
       if (ports.shard() !== cfg.shardName) return { status: "wrong_shard" };
       const availableResources = ports.resources();
       if (!cfg.resources.every(r => availableResources.includes(r))) throw new Error("invalid resource");
@@ -198,15 +175,14 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
         cpuSkips = sat(cpuSkips); return { status: "cpu_skipped" };
       }
       sampleOrdinal = sat(sampleOrdinal);
-      if (cpuDiagnostics) accounting = createCompatCpuAccounting(start.used, tick, sampleOrdinal, traceCommitment);
+      if (cpuDiagnostics) accounting = createCompatCpuAccounting(start.used, tick, sampleOrdinal);
       let latestCpu = start.used;
       const budget = (next?: CompatCpuPhase) => {
         const c = ports.cpu();
         if (!validCpu(c) || c.used < latestCpu) throw new Error("invalid CPU progression");
         accounting?.checkpoint(c.used, next);
         latestCpu = c.used;
-        latch(tick!, c.used - start.used);
-        return !safetyStop && c.used - start.used < cfg.maxSampleCpu && c.tickLimit - c.used >= cfg.reserveCpu && c.bucket >= cfg.minBucket;
+        return c.used - start.used < cfg.maxSampleCpu && c.tickLimit - c.used >= cfg.reserveCpu && c.bucket >= cfg.minBucket;
       };
       // Builder boundaries are diagnostic-only and never authorize work. Each
       // boundary samples the same CPU port, so its overhead remains in both the
@@ -220,21 +196,10 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
             if (!validCpu(c) || c.used < latestCpu) throw new Error("invalid CPU progression");
             sampleAccounting.attributionBoundary(c.used, phase);
             latestCpu = c.used;
-            latch(tick!, c.used - start.used);
           },
           work(values: Readonly<Partial<Record<CompatCpuWorkKey, number>>>) { sampleAccounting.attributionWork(values); },
         });
       })() : undefined;
-      // Two added CPU reads per actual traced build. Argument creation stays
-      // inside parentStart -> callStart; wrapper/prologue stays before bodyStart.
-      const markCommitment = (name: "callStart" | "callEnd") => {
-        if (!traceCommitment || !accounting) return;
-        const c = ports.cpu();
-        if (!validCpu(c) || c.used < latestCpu) throw new Error("invalid CPU progression");
-        accounting.commitmentMark(name, c.used);
-        latestCpu = c.used;
-        latch(tick!, c.used - start.used);
-      };
       const memory = ports.memory();
       // XII: resolve the two own-data roots once for this admitted sample. This
       // is not a cross-sample business cache; all tables are still fully scanned.
@@ -316,15 +281,8 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
       // Never manufacture empty inputs from missing/damaged/over-bound tables.
       if (!tasks.value || !reservations.value) report.commitments = { status: "unavailable_legacy_input", rows: null };
       else if (readers && observations && budget("commitmentBuild")) {
-        const commitmentOptions = { tick, tasks: tasks.value, reservations: reservations.value, observation: observations, compatDiagnostics: builderDiagnostics };
-        markCommitment("callStart");
-        if (safetyStop || (traceCommitment && latestCpu - start.used >= cfg.maxSampleCpu)) {
-          limited = true;
-          report.commitments = { status: "not_read_cpu_budget", rows: null };
-        } else {
         accounting?.invoked("commitmentBuild");
-        const index = readers.buildCommitments(commitmentOptions);
-        markCommitment("callEnd");
+        const index = readers.buildCommitments({ tick, tasks: tasks.value, reservations: reservations.value, observation: observations, compatDiagnostics: builderDiagnostics });
         const fields: Rec[] = [];
         const projectionRowsPlanned = validRoomNames.length * cfg.resources.length;
         builderDiagnostics?.boundary("projectionRows");
@@ -342,7 +300,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
           || !nonneg(c.invalidRecords) || !nonneg(c.incompleteScopeCount)) throw new Error("invalid index health");
         report.commitments = { status: limited ? "partial_cpu_budget" : c.complete ? "read_complete" : "read_incomplete",
           rows: fields, completeness: { ...c }, allTableScan: true, tableLimitEach: TABLE_LIMIT };
-        }
       } else if (!budget()) { limited = true; report.commitments = { status: "not_read_cpu_budget", rows: null }; }
       if (!budget("report")) limited = true;
       report.status = limited ? "partial_cpu_budget" : "sampled";
@@ -358,9 +315,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
         report.previousCpuProfile = previousCpuProfile;
       }
       report.cooperativeBudget = true;
-      if (traceCommitment) report.diagnosticRevision = "XIII";
-      if (localSafetyStop) report.localSafety = { thresholdCpu: 5, latched: !!safetyStop,
-        reason: safetyStop?.reason ?? null, scope: "preview_heap_instance", currentCallPreempted: false };
       let line = JSON.stringify(report), status = report.status as string;
       // One UTF-8 traversal per distinct output string. Reuse the size after
       // emit instead of rescanning the identical (immutable) string.
@@ -379,7 +333,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
       if (!validCpu(end) || end.used < latestCpu) throw new Error("invalid ending CPU");
       accounting?.checkpoint(end.used, "retention");
       latestCpu = end.used;
-      latch(tick!, end.used - start.used);
       previous = status === "output_limited" ? undefined : next;
       previousRun = { tick, cpuIncludingEmit: end.used - start.used, emittedBytes,
         retainedPrimitiveChars: previous ? JSON.stringify(previous).length : 0 };
@@ -390,7 +343,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
         budget();
         previousCpuProfile = accounting.snapshot("afterRetention");
       }
-      notifySafety();
       return { status };
     } catch {
       fault = true; previous = undefined;
@@ -404,6 +356,5 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
   }
   return { run, stats: () => ({ fault, emitted, cpuSkips, retainedEndpoints: previous ? Object.keys(previous.endpoints).length : 0,
     previousRun: previousRun ? { ...previousRun } : null,
-    cpuProfile: previousCpuProfile,
-    ...(localSafetyStop ? { safetyStopped: !!safetyStop, safetyReason: safetyStop?.reason ?? null } : {}) }) };
+    cpuProfile: previousCpuProfile }) };
 }

@@ -43,17 +43,6 @@ export interface CompatCpuAttribution {
   readonly intervals: Readonly<Partial<Record<CompatCpuSubphase, number>>>;
   readonly work: Readonly<Partial<Record<CompatCpuWorkKey, number>>>;
 }
-export const COMPAT_COMMITMENT_MARKS = Object.freeze([
-  "parentStart", "callStart", "bodyStart", "bodyEnd", "callEnd", "parentEnd",
-] as const);
-export type CompatCommitmentMark = typeof COMPAT_COMMITMENT_MARKS[number];
-export interface CompatCommitmentEnvelope {
-  readonly version: 1;
-  readonly status: "not_called" | "complete" | "incomplete";
-  /** Offsets from this sample's start; consecutive differences are inclusive.
-   * The inner body span overlaps the four IX commitment intervals. */
-  readonly marks: Readonly<Partial<Record<CompatCommitmentMark, number>>>;
-}
 export interface CompatCpuProfile {
   readonly version: 1;
   readonly tick: number;
@@ -64,7 +53,6 @@ export interface CompatCpuProfile {
   readonly calls: Readonly<Record<CompatCpuCall, number>>;
   readonly phases: Readonly<Partial<Record<CompatCpuPhase, number>>>;
   readonly attribution?: CompatCpuAttribution;
-  readonly commitmentEnvelope?: CompatCommitmentEnvelope;
   /** After-retention snapshots are a continuation for the preceding emitted
    * prefix. They contain only tail phases; the prior report remains authoritative
    * for calls, parent-prefix phases and attribution. */
@@ -76,7 +64,7 @@ export interface CompatCpuProfile {
  * Phase and subphase costs are inclusive intervals, not profiler-overhead-
  * corrected timings. Subphases overlap their parent phase by design.
  */
-export function createCompatCpuAccounting(start: number, tick: number, sampleOrdinal: number, traceCommitment = false) {
+export function createCompatCpuAccounting(start: number, tick: number, sampleOrdinal: number) {
   if (![start, tick, sampleOrdinal].every(Number.isFinite) || start < 0
     || !Number.isSafeInteger(tick) || tick < 0
     || !Number.isSafeInteger(sampleOrdinal) || sampleOrdinal < 1) throw new Error("invalid CPU accounting start");
@@ -90,29 +78,10 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
     ? Object.freeze({ version: 1 as const, boundaries: attributionBoundaries, active: attributionActive,
       intervals: Object.freeze({ ...intervals }), work: Object.freeze({ ...work }) })
     : undefined;
-  const commitmentMarks: Partial<Record<CompatCommitmentMark, number>> = {};
-  let markIndex = -1, markLast = start;
-  const mark = (name: CompatCommitmentMark, used: number) => {
-    if (!traceCommitment) return;
-    const i = COMPAT_COMMITMENT_MARKS.indexOf(name);
-    if (i < 0 || i <= markIndex || !Number.isFinite(used) || used < markLast || used < start)
-      throw new Error("invalid commitment envelope boundary");
-    commitmentMarks[name] = used - start;
-    markIndex = i; markLast = used;
-  };
-  const envelope = (): CompatCommitmentEnvelope | undefined => !traceCommitment ? undefined : Object.freeze({
-    version: 1 as const,
-    status: calls.commitmentBuild === 0 ? "not_called" as const
-      : COMPAT_COMMITMENT_MARKS.every(k => commitmentMarks[k] !== undefined) ? "complete" as const : "incomplete" as const,
-    marks: Object.freeze({ ...commitmentMarks }),
-  });
   return {
-    commitmentMark(name: "callStart" | "callEnd", used: number): void { mark(name, used); },
     checkpoint(used: number, next?: CompatCpuPhase): void {
       if (!Number.isFinite(used) || used < last || !COMPAT_CPU_PHASES.includes(next ?? phase))
         throw new Error("invalid CPU accounting checkpoint");
-      if (traceCommitment && phase !== "commitmentBuild" && next === "commitmentBuild") mark("parentStart", used);
-      if (traceCommitment && phase === "commitmentBuild" && next && next !== "commitmentBuild") mark("parentEnd", used);
       phases[phase] = (phases[phase] ?? 0) + (used - last);
       last = used;
       checkpoints++;
@@ -127,8 +96,6 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
       if (!Number.isFinite(used) || used < start || (attributionLast !== null && used < attributionLast)
         || (next !== undefined && !COMPAT_CPU_SUBPHASES.includes(next)))
         throw new Error("invalid CPU attribution boundary");
-      if (traceCommitment && next === "commitmentSetup") mark("bodyStart", used);
-      if (traceCommitment && attributionActive === "commitmentFinalize" && next === undefined) mark("bodyEnd", used);
       if (attributionActive !== null && attributionLast !== null)
         intervals[attributionActive] = (intervals[attributionActive] ?? 0) + (used - attributionLast);
       attributionBoundaries++;
@@ -157,10 +124,9 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
         return Object.freeze({ version: 1, tick, sampleOrdinal, boundary, elapsed: last - start,
           checkpoints, calls: Object.freeze({ ...calls }), phases: Object.freeze(tail), completion: "tail_only" });
       }
-      const a = attribution(), e = envelope();
+      const a = attribution();
       return Object.freeze({ version: 1, tick, sampleOrdinal, boundary, elapsed: last - start,
-        checkpoints, calls: Object.freeze({ ...calls }), phases: Object.freeze({ ...phases }),
-        ...(a ? { attribution: a } : {}), ...(e ? { commitmentEnvelope: e } : {}) });
+        checkpoints, calls: Object.freeze({ ...calls }), phases: Object.freeze({ ...phases }), ...(a ? { attribution: a } : {}) });
     },
   };
 }

@@ -1,5 +1,5 @@
 {
-  "revision": "compat-diagnostic-envelope-optimization-XII",
+  "revision": "compat-boundary-attribution-XIII",
   "authoring": [
     "scripts/lib/treasury-compat-loader.template.txt",
     "scripts/lib/treasury-compat-context.cjs",
@@ -7,9 +7,10 @@
     "scripts/lib/treasury-compat-attribution.cjs",
     "scripts/lib/treasury-compat-hotpath.cjs",
     "scripts/lib/treasury-compat-preview-hotpath.cjs",
-    "scripts/lib/treasury-compat-envelope.cjs"
+    "scripts/lib/treasury-compat-envelope.cjs",
+    "scripts/lib/treasury-compat-boundary-xiii.cjs"
   ],
-  "baselineCommit": "91b9a99226a7a135a0e75b8a1d0db255eefe2200",
+  "baselineCommit": "8c1ddecc126f4aee116d46b88547eafdd0e47d37",
   "baselineBuildVIIBlob": "4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be",
   "baselineIXCoreBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1",
   "baselineIXPreviewBlob": "556c6d565b3962c407bc82a4b5706d5382935c53",
@@ -256,6 +257,79 @@
       "replacements": 1
     }
   ],
+  "reversibleBoundaryTransform": true,
+  "boundaryRules": [
+    {
+      "name": "options",
+      "replacements": 1
+    },
+    {
+      "name": "latch-state",
+      "replacements": 1
+    },
+    {
+      "name": "latched-return",
+      "replacements": 1
+    },
+    {
+      "name": "reset-admission",
+      "replacements": 1
+    },
+    {
+      "name": "trace-accounting",
+      "replacements": 1
+    },
+    {
+      "name": "budget-latch",
+      "replacements": 1
+    },
+    {
+      "name": "boundary-latch",
+      "replacements": 1
+    },
+    {
+      "name": "call-brackets",
+      "replacements": 1
+    },
+    {
+      "name": "invocation-after-guard",
+      "replacements": 1
+    },
+    {
+      "name": "build-options",
+      "replacements": 1
+    },
+    {
+      "name": "guard-close",
+      "replacements": 1
+    },
+    {
+      "name": "report-revision",
+      "replacements": 1
+    },
+    {
+      "name": "ending-latch",
+      "replacements": 1
+    },
+    {
+      "name": "control-notice",
+      "replacements": 1
+    },
+    {
+      "name": "stats-latch",
+      "replacements": 1
+    }
+  ],
+  "commitmentEnvelopeMarks": [
+    "parentStart",
+    "callStart",
+    "bodyStart",
+    "bodyEnd",
+    "callEnd",
+    "parentEnd"
+  ],
+  "extraCpuReadsPerActualTracedBuild": 2,
+  "localSafetyStopCpu": 5,
   "reversibleCurrentPreviewTransform": true,
   "currentPreviewRules": [
     {
@@ -332,6 +406,81 @@
       "name": "observation-room-array-reuse",
       "replacements": 1,
       "stage": "XII-envelope"
+    },
+    {
+      "name": "options",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "latch-state",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "latched-return",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "reset-admission",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "trace-accounting",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "budget-latch",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "boundary-latch",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "call-brackets",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "invocation-after-guard",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "build-options",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "guard-close",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "report-revision",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "ending-latch",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "control-notice",
+      "replacements": 1,
+      "stage": "XIII-boundary"
+    },
+    {
+      "name": "stats-latch",
+      "replacements": 1,
+      "stage": "XIII-boundary"
     }
   ],
   "loaderSha256": "cfc0d3651f7f7755492ce74f69b8943d03230dd6328ce014f759447ad08093d8",
@@ -339,8 +488,8 @@
   "generatedBlob": "21c4bba26d732ead7df4d6a9f5b9dea357fd9583",
   "previewXISha256": "9e454bde732a08ba1880cae02ada391219054c70cb54aff600d7a8bde667bd2f",
   "previewXIBlob": "fe92498f5e76d860e4fef98d842df3c2e8fc48ad",
-  "previewSha256": "9bc900e4d99c12d4cb8573be50db56c8a427927b3c1c5d905c0f0d6e39a6c1ff",
-  "previewBlob": "c3297bce75ad644d60555fe3a578b09e49f41bec",
+  "previewSha256": "9da241f859211d90d529118fe8d84437f6feee69aff17d318b2f941a60261098",
+  "previewBlob": "fe4eb533b30a360c0f0827c188f4b8979aeada89",
   "factories": [
     {
       "path": "src/runtime/configNormalize.ts",
@@ -429,5 +578,5 @@
   "sourceManifestOutputIdentityCount": 13,
   "engineCpuGapRepaired": false,
   "engineMeasurementRequired": true,
-  "note": "XII compacts successor-carried completion profiles to measured tail phases and removes bounded preview bookkeeping allocations while preserving independent Store reads, full validation, eager indexes, four projection rows and default OFF."
+  "note": "XIII adds bounded call-envelope measurements and local sample containment; it does not optimize or change the commitment index, prewarm it, subtract overhead, or authorize actions."
 }

@@ -9,7 +9,8 @@ const G = require(path.join(H.ROOT, 'scripts/build-treasury-compat-loader.cjs'))
 const D = require(path.join(H.ROOT, 'scripts/lib/treasury-compat-envelope.cjs'));
 const xiReader = () => fs.readFileSync(path.join(__dirname, 'fixtures/reader-before-envelope-optimization-xii.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
 const xiCpu = () => fs.readFileSync(path.join(__dirname, 'fixtures/cpu-before-envelope-optimization-xii.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
-const xiiReader = () => fs.readFileSync(H.file('treasuryCompatRead.ts'), 'utf8').replace(/\r\n/g, '\n');
+const xiiReader = () => fs.readFileSync(path.join(__dirname, 'fixtures/reader-before-boundary-attribution-xiii.ts.txt'), 'utf8').replace(/\r\n/g, '\n');
+const currentReader = () => fs.readFileSync(H.file('treasuryCompatRead.ts'), 'utf8').replace(/\r\n/g, '\n');
 const realmNeutral = value => JSON.stringify(value);
 function cpuApi(text) {
   const js = S.ts.transpileModule(text, { compilerOptions: { module: S.ts.ModuleKind.CommonJS, target: S.ts.ScriptTarget.ES2019 } }).outputText;
@@ -43,9 +44,9 @@ test('XII generator reproduces committed core, preview, provenance and manifest 
   const result = G.generate(fs.readFileSync(path.join(H.ROOT, G.FIXTURE)), fs.readFileSync(path.join(H.ROOT, G.TEMPLATE)),
     JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8')), fs.readFileSync(path.join(H.ROOT, G.PREVIEW_FIXTURE)));
   for (const [name, bytes] of Object.entries(result)) assert.equal(fs.readFileSync(path.join(H.ROOT, name)).toString('utf8').replace(/\r\n/g, '\n'), bytes.toString('utf8'));
-  assert.equal(result[G.PREVIEW].length, 22660); assert.equal(G.D.rules.length, 8);
+  assert.equal(result[G.PREVIEW].length, 25626); assert.equal(G.D.rules.length, 8);
   const ix = fs.readFileSync(path.join(H.ROOT, G.PREVIEW_FIXTURE), 'utf8').replace(/\r\n/g, '\n');
-  assert.equal(G.P.transform(ix), xiiReader()); assert.equal(G.P.restore(xiiReader()), ix);
+  assert.equal(G.P.transform(ix), currentReader()); assert.equal(G.P.restore(currentReader()), ix);
 });
 test('XII after-retention profile is a tail-only completion with exact allowed phases', () => {
   const p = populateAccounting(H.load('treasuryCompatCpu.ts')).completed;
@@ -96,7 +97,7 @@ test('XII root cursors preserve malformed-root and accessor status bytes', () =>
 test('XII source manifest retains all output identities and records envelope flags', () => {
   const m = JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8'));
   assert.deepEqual(m.outputs.map(x => x.file).sort(), G.EXPECTED_OUTPUT_PATHS);
-  assert.equal(m.loaderOptimization.revision, 'XII'); assert.equal(m.loaderOptimization.diagnosticCompletionTailOnly, true);
+  assert.equal(m.loaderOptimization.revision, 'XIII'); assert.equal(m.loaderOptimization.diagnosticCompletionTailOnly, true);
   assert.equal(m.loaderOptimization.sampleRootCursorReuse, true); assert.equal(m.loaderOptimization.boundedRoomMembershipNoSet, true);
   assert.equal(m.loaderOptimization.sourceManifestOutputValidation, 'all-listed-outputs');
 });

@@ -10,15 +10,17 @@ const A = require('./lib/treasury-compat-attribution.cjs');
 const H = require('./lib/treasury-compat-hotpath.cjs');
 const P_XI = require('./lib/treasury-compat-preview-hotpath.cjs');
 const D = require('./lib/treasury-compat-envelope.cjs');
+const N = require('./lib/treasury-compat-boundary-xiii.cjs');
 /** Public current-preview transform. Historical hotpath tests import G.P and
  * therefore it must map the pinned IX preview directly to the current XII
  * preview, while P_XI remains available for intermediate provenance checks. */
 const P = Object.freeze({
-  transform(text) { return D.transform(P_XI.transform(text)); },
-  restore(text) { return P_XI.restore(D.restore(text)); },
+  transform(text) { return N.transform(D.transform(P_XI.transform(text))); },
+  restore(text) { return P_XI.restore(D.restore(N.restore(text))); },
   rules: Object.freeze([
     ...P_XI.rules.map(x => Object.freeze({ ...x, stage: 'XI-hotpath' })),
     ...D.rules.map(x => Object.freeze({ ...x, stage: 'XII-envelope' })),
+    ...N.rules.map(x => Object.freeze({ ...x, stage: 'XIII-boundary' })),
   ]),
 });
 const ORIGINAL_SHA = '9e28d07181898930a84ff560c73f531935ca6a79c9d6e1e2adbd108555bd9965';
@@ -34,7 +36,7 @@ const TEMPLATE = 'scripts/lib/treasury-compat-loader.template.txt';
 const PROVENANCE = 'docs/treasury-compat-loader-optimization.json';
 const SOURCE_MANIFEST = 'docs/treasury-compat-source-manifest.json';
 const MARKER = '/** Loader Optimization III.';
-const BASELINE_COMMIT = '91b9a99226a7a135a0e75b8a1d0db255eefe2200';
+const BASELINE_COMMIT = '8c1ddecc126f4aee116d46b88547eafdd0e47d37';
 const BUILD_VII_BLOB = '4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be';
 const IX_CORE_BLOB = '62752b09e3828e67a9000aeffcda0b2436368bf1';
 const IX_PREVIEW_BLOB = '556c6d565b3962c407bc82a4b5706d5382935c53';
@@ -48,8 +50,8 @@ const FIXED_OUTPUTS = Object.freeze({
   'src/main.test.ts': { bytes: 11031, sha256: '8fbb186cae2a1426496dd539cbc4414ce2317fc4ff848a4bc4ee179ec2d4a0ab', gitBlob: '9b8b42363e8f687742088dfca094a422d6ecf3b0' },
   'src/main.ts': { bytes: 6271, sha256: '3bebfb632d40dd989baa9ae70a87cc49810207df6fc0cfd3f9cda53673f9dc57', gitBlob: 'e8bf1c56e6147dfe4fcbb18052e29ee636da62ac' },
   'src/runtime/treasuryCompatConfig.ts': { bytes: 531, sha256: 'ff291683faf1a2a3711f231b9affe7d1cd759416c3482dc77563cfd9a628ab02', gitBlob: '8e2214fef5a6a69b7eb40c82eee76dda1646ccbf' },
-  'src/runtime/treasuryCompatCpu.ts': { bytes: 7697, sha256: 'c2dd2a61294e799f6aac4739b19ce6fc3d0cea00958a10bfaeef453dd4e022bc', gitBlob: 'c66f1a975778a2b4e5ae951f93c581f43ef598e0' },
-  'src/runtime/treasuryCompatRuntime.ts': { bytes: 865, sha256: '9f8736eb9a0a45ba3a6390cada1d9790945e5609252da81d62d258b9f76254f4', gitBlob: '5916fbcafbb88d40cf5463d329b683ba0d776ad8' },
+  'src/runtime/treasuryCompatCpu.ts': { bytes: 9836, sha256: '99cd14bba85e9306ac4e906720c7d518679ffb65909db1e6c43b3187a6c94780', gitBlob: '0ba1b4671e7c13510d3b0d399c754b98f551b603' },
+  'src/runtime/treasuryCompatRuntime.ts': { bytes: 925, sha256: '2635f501adcb554c47bb39ab93e0b5b89d398a0a9207d9196227595a249cc2b3', gitBlob: '56747c11a66ddb4c7542eb60fd3d47b770285aa9' },
   'src/runtime/treasuryCompatTypes.ts': { bytes: 2509, sha256: '0d39f976aad3d95daaa13b72f31cfe7f9a25a9611329faf152a1ded0c6b3e61b', gitBlob: '1f553df048f322a68b445a71d4b7f2b03d096e72' },
   'test/treasury-compat/bridge.spec.cjs': { bytes: 11489, sha256: '278491b3c996874db2fe560973708ba1d2a0d34cfc94f413ad36f23a3067a50f', gitBlob: '8061a074218ba8a9ce81ec15b5da6e4ad9aa1d83' },
   'test/treasury-compat/helpers.cjs': { bytes: 6806, sha256: 'c200b1f2b6dc55deae8b50ac7ae9f0e5ecb191be6592a42c713fce7d3d289e74', gitBlob: 'f7406cf25124324069c08a444683d383477e0a23' },
@@ -83,8 +85,10 @@ function generate(original, template, manifest, previewOriginal) {
   const previewXI = Buffer.from(P_XI.transform(previewBase.toString('utf8')));
   check(previewXI.length === 21631 && sha(previewXI) === XI_PREVIEW_SHA && blob(previewXI) === XI_PREVIEW_BLOB, 'XI_PREVIEW_MISMATCH');
   const previewOut = Buffer.from(P.transform(previewBase.toString('utf8')));
-  check(previewOut.equals(Buffer.from(D.transform(previewXI.toString('utf8')))), 'CURRENT_PREVIEW_COMPOSITION_MISMATCH');
-  check(previewOut.length === 22660 && sha(previewOut) === XII_PREVIEW_SHA && blob(previewOut) === XII_PREVIEW_BLOB, 'XII_PREVIEW_MISMATCH');
+  const previewXII = Buffer.from(D.transform(previewXI.toString('utf8')));
+  check(previewXII.length === 22660 && sha(previewXII) === XII_PREVIEW_SHA && blob(previewXII) === XII_PREVIEW_BLOB, 'XII_PREVIEW_MISMATCH');
+  check(previewOut.equals(Buffer.from(N.transform(previewXII.toString('utf8')))), 'CURRENT_PREVIEW_COMPOSITION_MISMATCH');
+  check(previewOut.length === 25626 && sha(previewOut) === '9da241f859211d90d529118fe8d84437f6feee69aff17d318b2f941a60261098' && blob(previewOut) === 'fe4eb533b30a360c0f0827c188f4b8979aeada89', 'XIII_PREVIEW_MISMATCH');
   const matches = [...originalPrefix.matchAll(/^"([^"]+)": function\(exports, require\) \{\n/gm)];
   check(matches.length === 8, 'FACTORY_SET_MISMATCH');
   const dependencyStart = originalPrefix.indexOf('const dependencies = {');
@@ -106,7 +110,7 @@ function generate(original, template, manifest, previewOriginal) {
   setOutput(m, PREVIEW, { bytes: previewOut.length, sha256: sha(previewOut), gitBlob: blob(previewOut) });
   for (const [file, value] of Object.entries(FIXED_OUTPUTS)) setOutput(m, file, value);
   m.outputs.sort((a, b) => a.file.localeCompare(b.file));
-  m.loaderOptimization = { revision: 'XII', provenance: PROVENANCE, canonicalSourceCommit: SOURCE_COMMIT,
+  m.loaderOptimization = { revision: 'XIII', provenance: PROVENANCE, canonicalSourceCommit: SOURCE_COMMIT,
     baselineGeneratedBlob: IX_CORE_BLOB, canonicalInputGeneratedBlob: ORIGINAL_BLOB,
     explicitReadContextAdaptation: true, fullTaskBucketFusion: true, observationAllocationReduction: true,
     boundedSubphaseAttribution: true, attributionChangesAuthorization: false,
@@ -118,10 +122,10 @@ function generate(original, template, manifest, previewOriginal) {
     singlePassDeltaObject: true, projectionArrayValidationRemoved: true,
     sourceManifestOutputValidation: 'all-listed-outputs', sourceManifestOutputIdentityCount: EXPECTED_OUTPUT_PATHS.length };
   const provenance = {
-    revision: 'compat-diagnostic-envelope-optimization-XII',
+    revision: 'compat-boundary-attribution-XIII',
     authoring: [TEMPLATE, 'scripts/lib/treasury-compat-context.cjs', 'scripts/lib/treasury-compat-build.cjs',
       'scripts/lib/treasury-compat-attribution.cjs', 'scripts/lib/treasury-compat-hotpath.cjs',
-      'scripts/lib/treasury-compat-preview-hotpath.cjs', 'scripts/lib/treasury-compat-envelope.cjs'],
+      'scripts/lib/treasury-compat-preview-hotpath.cjs', 'scripts/lib/treasury-compat-envelope.cjs', 'scripts/lib/treasury-compat-boundary-xiii.cjs'],
     baselineCommit: BASELINE_COMMIT, baselineBuildVIIBlob: BUILD_VII_BLOB,
     baselineIXCoreBlob: IX_CORE_BLOB, baselineIXPreviewBlob: IX_PREVIEW_BLOB,
     baselineXIPreviewBlob: XI_PREVIEW_BLOB,
@@ -135,6 +139,9 @@ function generate(original, template, manifest, previewOriginal) {
     reversibleHotpathTransform: true, hotpathRules: H.rules,
     reversiblePreviewHotpathTransform: true, previewHotpathRules: P_XI.rules,
     reversiblePreviewEnvelopeTransform: true, previewEnvelopeRules: D.rules,
+    reversibleBoundaryTransform: true, boundaryRules: N.rules,
+    commitmentEnvelopeMarks: ['parentStart','callStart','bodyStart','bodyEnd','callEnd','parentEnd'],
+    extraCpuReadsPerActualTracedBuild: 2, localSafetyStopCpu: 5,
     reversibleCurrentPreviewTransform: true, currentPreviewRules: P.rules,
     loaderSha256: sha(Buffer.from(t)), generatedSha256: sha(out), generatedBlob: blob(out),
     previewXISha256: sha(previewXI), previewXIBlob: blob(previewXI),
@@ -151,7 +158,7 @@ function generate(original, template, manifest, previewOriginal) {
     cpuAccountingChanged: true, publicTypeSurfaceChanged: true, defaultEnabled: false, budget: 2,
     sourceManifestOutputValidation: 'all-listed-outputs', sourceManifestOutputIdentityCount: EXPECTED_OUTPUT_PATHS.length,
     engineCpuGapRepaired: false, engineMeasurementRequired: true,
-    note: 'XII compacts successor-carried completion profiles to measured tail phases and removes bounded preview bookkeeping allocations while preserving independent Store reads, full validation, eager indexes, four projection rows and default OFF.'
+    note: 'XIII adds bounded call-envelope measurements and local sample containment; it does not optimize or change the commitment index, prewarm it, subtract overhead, or authorize actions.'
   };
   return { [GENERATED]: out, [PREVIEW]: previewOut, [PROVENANCE]: encode(provenance), [SOURCE_MANIFEST]: encode(m) };
 }
@@ -184,7 +191,7 @@ function main(argv) {
   check(argv.length === 1, 'ARGUMENT_INVALID');
   return verifyRoot(path.resolve(__dirname, '..'), argv[0]);
 }
-module.exports = { generate, main, sha, blob, GENERATED, FIXTURE, TEMPLATE, PROVENANCE, SOURCE_MANIFEST, MARKER,
+module.exports = { N, generate, main, sha, blob, GENERATED, FIXTURE, TEMPLATE, PROVENANCE, SOURCE_MANIFEST, MARKER,
   X, B, A, H, P_XI, P, D, FIXED_OUTPUTS, EXPECTED_OUTPUT_PATHS, verifyOutputIdentities, applyOrCheckGenerated, verifyRoot,
   BASELINE_COMMIT, BUILD_VII_BLOB, IX_CORE_BLOB, IX_PREVIEW_BLOB, XI_PREVIEW_BLOB,
   PREVIEW, PREVIEW_FIXTURE, XI_PREVIEW_FIXTURE, CPU_XI_FIXTURE };
