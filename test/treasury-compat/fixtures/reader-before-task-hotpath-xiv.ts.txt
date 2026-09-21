@@ -54,9 +54,9 @@ function pathValue(root: unknown, path: readonly string[]): { status: string; va
   let p = root;
   for (const key of path) {
     if (!obj(p)) return { status: "invalid_parent" };
+    if (!own(p, key)) return { status: "absent" };
     const desc = Object.getOwnPropertyDescriptor(p, key);
-    if (!desc) return { status: "absent" };
-    if (!("value" in desc)) return { status: "accessor_unreadable" };
+    if (!desc || !("value" in desc)) return { status: "accessor_unreadable" };
     p = desc.value;
   }
   return { status: "present", value: p };
@@ -113,7 +113,8 @@ function direct(room: Room | undefined, kind: Kind, resources: readonly string[]
       active, cooldown, amounts } };
   } catch { return { status: "unreadable" }; }
 }
-function legacyProjection(raw: Found, room: string, kind: Kind, d: Direct, tick: number) {
+function legacyProjection(memory: unknown, room: string, kind: Kind, d: Direct, tick: number) {
+  const raw = pathValue(memory, ["runtime", "resourceControl"]);
   if (raw.status !== "present") return { status: raw.status };
   if (!obj(raw.value) || !nonneg(raw.value.updatedAt)) return { status: "unreadable" };
   if (raw.value.updatedAt !== tick) return { status: raw.value.updatedAt > tick ? "future_tick" : "stale",
@@ -138,10 +139,9 @@ function legacyProjection(raw: Found, room: string, kind: Kind, d: Direct, tick:
 
 type Previous = { tick: number; endpoints: Record<string, Direct> };
 export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPorts,
-  options: { cpuDiagnostics?: boolean; commitmentBoundaryDiagnostics?: boolean; localSafetyStop?: boolean; taskBoundaryDiagnostics?: boolean } = {}) {
+  options: { cpuDiagnostics?: boolean; commitmentBoundaryDiagnostics?: boolean; localSafetyStop?: boolean } = {}) {
   const cpuDiagnostics = options?.cpuDiagnostics === true;
   const traceCommitment = cpuDiagnostics && options?.commitmentBoundaryDiagnostics === true;
-  const taskBoundaryDiagnostics = traceCommitment && options?.taskBoundaryDiagnostics === true;
   const localSafetyStop = options?.localSafetyStop === true;
   let sampleOrdinal = 0, previousCpuProfile: CompatCpuProfile | null = null;
   let cfg = input, enabled = false, invalid = false;
@@ -198,7 +198,7 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
         cpuSkips = sat(cpuSkips); return { status: "cpu_skipped" };
       }
       sampleOrdinal = sat(sampleOrdinal);
-      if (cpuDiagnostics) accounting = createCompatCpuAccounting(start.used, tick, sampleOrdinal, traceCommitment, taskBoundaryDiagnostics);
+      if (cpuDiagnostics) accounting = createCompatCpuAccounting(start.used, tick, sampleOrdinal, traceCommitment);
       let latestCpu = start.used;
       const budget = (next?: CompatCpuPhase) => {
         const c = ports.cpu();
@@ -223,15 +223,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
             latch(tick!, c.used - start.used);
           },
           work(values: Readonly<Partial<Record<CompatCpuWorkKey, number>>>) { sampleAccounting.attributionWork(values); },
-          ...(taskBoundaryDiagnostics ? {
-            taskBoundary(mark: "firstPendingStart" | "firstPendingEnd", recordOrdinal: number) {
-              const c = ports.cpu();
-              if (!validCpu(c) || c.used < latestCpu) throw new Error("invalid CPU progression");
-              sampleAccounting.taskMark(mark, c.used, recordOrdinal);
-              latestCpu = c.used;
-              latch(tick!, c.used - start.used);
-            },
-          } : {}),
         });
       })() : undefined;
       // Two added CPU reads per actual traced build. Argument creation stays
@@ -261,8 +252,6 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
           reservationVersion: { status: marker.status, value: nonneg(marker.value) ? marker.value : null },
           treasuryCore: { status: existingCore.status === "present" ? "present_not_interpreted" : existingCore.status, activeCount: null } },
       };
-      // XIV: own-data path cursor, local to this admitted sample; never Store authority.
-      let projectionSource: Found | undefined;
       const rows: Rec[] = []; report.endpoints = rows;
       const validRooms: Room[] = [];
       const validRoomNames: string[] = [];
@@ -280,8 +269,7 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
           if (d.status !== "ok" && d.status !== "absent") safe = false;
           if (d.value) {
             row.direct = d.value;
-            projectionSource ??= pathFrom(runtimeRoot, ["resourceControl"]);
-            row.legacyProjection = legacyProjection(projectionSource, name, kind, d.value, tick);
+            row.legacyProjection = legacyProjection(memory, name, kind, d.value, tick);
             const key = name + ":" + kind, old = previous?.endpoints[key];
             next.endpoints[key] = d.value;
             if (!old || !previous) row.change = { status: "no_comparable_previous_sample" };
@@ -370,7 +358,7 @@ export function createTreasuryCompatPreview(input: CompatConfig, ports: CompatPo
         report.previousCpuProfile = previousCpuProfile;
       }
       report.cooperativeBudget = true;
-      if (traceCommitment) report.diagnosticRevision = taskBoundaryDiagnostics ? "XIV" : "XIII";
+      if (traceCommitment) report.diagnosticRevision = "XIII";
       if (localSafetyStop) report.localSafety = { thresholdCpu: 5, latched: !!safetyStop,
         reason: safetyStop?.reason ?? null, scope: "preview_heap_instance", currentCallPreempted: false };
       let line = JSON.stringify(report), status = report.status as string;

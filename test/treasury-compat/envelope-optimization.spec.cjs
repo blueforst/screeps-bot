@@ -44,7 +44,7 @@ test('XII generator reproduces committed core, preview, provenance and manifest 
   const result = G.generate(fs.readFileSync(path.join(H.ROOT, G.FIXTURE)), fs.readFileSync(path.join(H.ROOT, G.TEMPLATE)),
     JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8')), fs.readFileSync(path.join(H.ROOT, G.PREVIEW_FIXTURE)));
   for (const [name, bytes] of Object.entries(result)) assert.equal(fs.readFileSync(path.join(H.ROOT, name)).toString('utf8').replace(/\r\n/g, '\n'), bytes.toString('utf8'));
-  assert.equal(result[G.PREVIEW].length, 25626); assert.equal(G.D.rules.length, 8);
+  assert.equal(result[G.PREVIEW].length, 26415); assert.equal(G.D.rules.length, 8);
   const ix = fs.readFileSync(path.join(H.ROOT, G.PREVIEW_FIXTURE), 'utf8').replace(/\r\n/g, '\n');
   assert.equal(G.P.transform(ix), currentReader()); assert.equal(G.P.restore(currentReader()), ix);
 });
@@ -97,7 +97,7 @@ test('XII root cursors preserve malformed-root and accessor status bytes', () =>
 test('XII source manifest retains all output identities and records envelope flags', () => {
   const m = JSON.parse(fs.readFileSync(path.join(H.ROOT, G.SOURCE_MANIFEST), 'utf8'));
   assert.deepEqual(m.outputs.map(x => x.file).sort(), G.EXPECTED_OUTPUT_PATHS);
-  assert.equal(m.loaderOptimization.revision, 'XIII'); assert.equal(m.loaderOptimization.diagnosticCompletionTailOnly, true);
+  assert.equal(m.loaderOptimization.revision, 'XIV'); assert.equal(m.loaderOptimization.diagnosticCompletionTailOnly, true);
   assert.equal(m.loaderOptimization.sampleRootCursorReuse, true); assert.equal(m.loaderOptimization.boundedRoomMembershipNoSet, true);
   assert.equal(m.loaderOptimization.sourceManifestOutputValidation, 'all-listed-outputs');
 });

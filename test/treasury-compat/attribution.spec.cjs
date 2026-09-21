@@ -64,7 +64,7 @@ test('IX accounting rejects non-monotonic and unlisted subphase boundaries', () 
 test('IX transform exactly restores the committed Build VII core prefix', () => {
   const marker = '/** Read Optimization V:';
   assert.equal(G.A.restore(A.afterText().split(marker)[0]), A.beforeText().split(marker)[0]);
-  assert.equal(G.A.rules.length, 14); const generated = assertGeneratedCurrent(); assert.equal(generated[G.GENERATED].length, 69357);
+  assert.equal(G.A.rules.length, 14); const generated = assertGeneratedCurrent(); assert.equal(generated[G.GENERATED].length, 70224);
 });
 test('IX transform refuses shifted source instead of approximately instrumenting it', () => {
   const prefix = A.beforeText().split('/** Read Optimization V:')[0];

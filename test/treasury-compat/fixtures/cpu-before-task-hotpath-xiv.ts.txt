@@ -54,14 +54,6 @@ export interface CompatCommitmentEnvelope {
    * The inner body span overlaps the four IX commitment intervals. */
   readonly marks: Readonly<Partial<Record<CompatCommitmentMark, number>>>;
 }
-export const COMPAT_TASK_MARKS = Object.freeze(["tasksStart", "firstPendingStart", "firstPendingEnd", "tasksEnd"] as const);
-export type CompatTaskMark = typeof COMPAT_TASK_MARKS[number];
-export interface CompatTaskEnvelope {
-  readonly version: 1;
-  readonly status: "not_called" | "no_pending" | "complete" | "incomplete";
-  readonly firstPendingOrdinal: number | null;
-  readonly marks: Readonly<Partial<Record<CompatTaskMark, number>>>;
-}
 export interface CompatCpuProfile {
   readonly version: 1;
   readonly tick: number;
@@ -73,7 +65,6 @@ export interface CompatCpuProfile {
   readonly phases: Readonly<Partial<Record<CompatCpuPhase, number>>>;
   readonly attribution?: CompatCpuAttribution;
   readonly commitmentEnvelope?: CompatCommitmentEnvelope;
-  readonly taskEnvelope?: CompatTaskEnvelope;
   /** After-retention snapshots are a continuation for the preceding emitted
    * prefix. They contain only tail phases; the prior report remains authoritative
    * for calls, parent-prefix phases and attribution. */
@@ -85,7 +76,7 @@ export interface CompatCpuProfile {
  * Phase and subphase costs are inclusive intervals, not profiler-overhead-
  * corrected timings. Subphases overlap their parent phase by design.
  */
-export function createCompatCpuAccounting(start: number, tick: number, sampleOrdinal: number, traceCommitment = false, traceTasks = false) {
+export function createCompatCpuAccounting(start: number, tick: number, sampleOrdinal: number, traceCommitment = false) {
   if (![start, tick, sampleOrdinal].every(Number.isFinite) || start < 0
     || !Number.isSafeInteger(tick) || tick < 0
     || !Number.isSafeInteger(sampleOrdinal) || sampleOrdinal < 1) throw new Error("invalid CPU accounting start");
@@ -115,31 +106,7 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
       : COMPAT_COMMITMENT_MARKS.every(k => commitmentMarks[k] !== undefined) ? "complete" as const : "incomplete" as const,
     marks: Object.freeze({ ...commitmentMarks }),
   });
-  const taskMarks: Partial<Record<CompatTaskMark, number>> = {};
-  let taskMarkIndex = -1, taskMarkLast = start, firstPendingOrdinal: number | null = null;
-  const taskMark = (name: CompatTaskMark, used: number, ordinal?: number) => {
-    if (!traceTasks) return;
-    const i = COMPAT_TASK_MARKS.indexOf(name);
-    if (i < 0 || i <= taskMarkIndex || !Number.isFinite(used) || used < taskMarkLast || used < start)
-      throw new Error("invalid first pending task boundary");
-    if (name === "firstPendingStart" || name === "firstPendingEnd") {
-      if (!Number.isSafeInteger(ordinal) || ordinal! < 1 || ordinal! > 256
-        || (firstPendingOrdinal !== null && ordinal !== firstPendingOrdinal))
-        throw new Error("invalid first pending task ordinal");
-      firstPendingOrdinal = ordinal!;
-    }
-    taskMarks[name] = used - start; taskMarkIndex = i; taskMarkLast = used;
-  };
-  const taskEnvelope = (): CompatTaskEnvelope | undefined => !traceTasks ? undefined : Object.freeze({
-    version: 1 as const,
-    status: calls.commitmentBuild === 0 ? "not_called" as const
-      : COMPAT_TASK_MARKS.every(k => taskMarks[k] !== undefined) ? "complete" as const
-      : taskMarks.tasksStart !== undefined && taskMarks.tasksEnd !== undefined && firstPendingOrdinal === null
-        ? "no_pending" as const : "incomplete" as const,
-    firstPendingOrdinal, marks: Object.freeze({ ...taskMarks }),
-  });
   return {
-    taskMark(name: "firstPendingStart" | "firstPendingEnd", used: number, ordinal: number): void { taskMark(name, used, ordinal); },
     commitmentMark(name: "callStart" | "callEnd", used: number): void { mark(name, used); },
     checkpoint(used: number, next?: CompatCpuPhase): void {
       if (!Number.isFinite(used) || used < last || !COMPAT_CPU_PHASES.includes(next ?? phase))
@@ -160,8 +127,6 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
       if (!Number.isFinite(used) || used < start || (attributionLast !== null && used < attributionLast)
         || (next !== undefined && !COMPAT_CPU_SUBPHASES.includes(next)))
         throw new Error("invalid CPU attribution boundary");
-      if (traceTasks && next === "commitmentTasks") taskMark("tasksStart", used);
-      if (traceTasks && attributionActive === "commitmentTasks" && next === "commitmentReservations") taskMark("tasksEnd", used);
       if (traceCommitment && next === "commitmentSetup") mark("bodyStart", used);
       if (traceCommitment && attributionActive === "commitmentFinalize" && next === undefined) mark("bodyEnd", used);
       if (attributionActive !== null && attributionLast !== null)
@@ -192,10 +157,10 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
         return Object.freeze({ version: 1, tick, sampleOrdinal, boundary, elapsed: last - start,
           checkpoints, calls: Object.freeze({ ...calls }), phases: Object.freeze(tail), completion: "tail_only" });
       }
-      const a = attribution(), e = envelope(), t = taskEnvelope();
+      const a = attribution(), e = envelope();
       return Object.freeze({ version: 1, tick, sampleOrdinal, boundary, elapsed: last - start,
         checkpoints, calls: Object.freeze({ ...calls }), phases: Object.freeze({ ...phases }),
-        ...(a ? { attribution: a } : {}), ...(e ? { commitmentEnvelope: e } : {}), ...(t ? { taskEnvelope: t } : {}) });
+        ...(a ? { attribution: a } : {}), ...(e ? { commitmentEnvelope: e } : {}) });
     },
   };
 }

@@ -344,11 +344,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         compatDiagnostics.boundary("commitmentTasks");
     const taskIds = Object.keys(options.tasks);
     metrics.taskRecords = taskIds.length;
-    // At most one selected first-pending region per whole table, not per-record sampling.
-    const firstPendingProbe = compatDiagnostics && compatDiagnostics.taskBoundary;
-    let firstPendingObserved = false, taskOrdinal = 0;
     for (const taskId of taskIds) {
-        taskOrdinal += 1;
         const task = options.tasks[taskId];
         if (!isValidTreasuryTransferTaskForCommitment(task, compatContext)) {
             // 损坏任务影响 donor 与 receiver 双侧 bucket：能定位哪侧就标记哪侧
@@ -372,12 +368,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         if (task.status !== "pending")
             continue;
         metrics.pendingTaskRecords += 1;
-        const traceThisPending = !firstPendingObserved && typeof firstPendingProbe === "function";
-        if (traceThisPending) {
-            firstPendingObserved = true;
-            firstPendingProbe.call(compatDiagnostics, "firstPendingStart", taskOrdinal);
-        }
-        try {
         const reason = task.reason || "";
         // 聚合安全整数检查：多条合法安全整数相加后仍须安全——溢出即该 task
         // 影响的全部 scope incomplete（数值不再作为授权依据），不静默丢弃。
@@ -387,10 +377,9 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         const outKey = taskKey(fromRoom, task.resource);
         const inKey = taskKey(toRoom, task.resource);
         let outBucket = taskScopes.get(outKey), inBucket = inKey === outKey ? outBucket : taskScopes.get(inKey);
-        // XIV: same additions and safe-integer guards, without per-record helper calls.
-        const mergedOutgoing = (outBucket ? outBucket.outgoing : 0) + task.remainingAmount;
-        const mergedPendingIncoming = (inBucket ? inBucket.pendingIncoming : 0) + task.remainingAmount;
-        if (!Number.isSafeInteger(mergedOutgoing) || !Number.isSafeInteger(mergedPendingIncoming)) {
+        const mergedOutgoing = addSafeInteger(outBucket ? outBucket.outgoing : 0, task.remainingAmount);
+        const mergedPendingIncoming = addSafeInteger(inBucket ? inBucket.pendingIncoming : 0, task.remainingAmount);
+        if (mergedOutgoing === null || mergedPendingIncoming === null) {
             recordInvalid();
             incompleteScopes.add(outKey);
             incompleteScopes.add(inKey);
@@ -408,10 +397,10 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         }
         outBucket.outgoing = mergedOutgoing;
         const byReason = outBucket.reasons !== undefined ? outBucket.reasons : new Map();
-        const mergedByReason = ((_h = byReason.get(reason)) !== null && _h !== void 0 ? _h : 0) + task.remainingAmount;
+        const mergedByReason = addSafeInteger((_h = byReason.get(reason)) !== null && _h !== void 0 ? _h : 0, task.remainingAmount);
         // Keep the canonical partial-update order on overflow: outgoing and
         // outgoingCount above remain updated; pendingIncoming is NOT updated.
-        if (!Number.isSafeInteger(mergedByReason)) {
+        if (mergedByReason === null) {
             recordInvalid();
             incompleteScopes.add(outKey);
             continue;
@@ -430,8 +419,8 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             (0, resourceTransferTaskHealth_1.getResourceTransferTaskDemandCoverageExpirationReason)(task, healthOptions) === null;
         let toBucket;
         if (countsTowardDemand) {
-            const mergedIncoming = inBucket.incoming + task.remainingAmount;
-            if (!Number.isSafeInteger(mergedIncoming)) {
+            const mergedIncoming = addSafeInteger(inBucket.incoming, task.remainingAmount);
+            if (mergedIncoming === null) {
                 recordInvalid();
                 incompleteScopes.add(inKey);
                 continue;
@@ -465,10 +454,6 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             // Keep canonical arithmetic (including its overflow behavior).
             toBucket.healthyAmount += task.remainingAmount;
             toBucket.healthyCount += 1;
-        }
-        } finally {
-            // Includes every overflow/early-continue path, without inventing a successful task.
-            if (traceThisPending) firstPendingProbe.call(compatDiagnostics, "firstPendingEnd", taskOrdinal);
         }
     }
     // ── production reservation 索引（保守 committed：只有 expiresAt 到期或

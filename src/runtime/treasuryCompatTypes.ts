@@ -35,6 +35,8 @@ export interface CompatIndex {
  */
 export interface CompatBuilderDiagnostics {
   boundary(phase?: CompatCpuSubphase): void;
+  /** Optional XIV probe pair for the first valid pending record only. */
+  taskBoundary?(mark: "firstPendingStart" | "firstPendingEnd", recordOrdinal: number): void;
   work(values: Readonly<Partial<Record<CompatCpuWorkKey, number>>>): void;
 }
 export interface CompatReadBuilders {

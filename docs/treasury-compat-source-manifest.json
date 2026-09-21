@@ -125,33 +125,33 @@
     },
     {
       "file": "src/runtime/treasuryCompatCpu.ts",
-      "bytes": 9836,
-      "sha256": "99cd14bba85e9306ac4e906720c7d518679ffb65909db1e6c43b3187a6c94780",
-      "gitBlob": "0ba1b4671e7c13510d3b0d399c754b98f551b603"
+      "bytes": 12149,
+      "sha256": "e95f80f679d7f36987294d6f8049c2f6987959fc9b95302289b66d27d0e44c1a",
+      "gitBlob": "211837e149159618756545f784f2e3c52a5a8a74"
     },
     {
       "file": "src/runtime/treasuryCompatRead.ts",
-      "bytes": 25626,
-      "sha256": "9da241f859211d90d529118fe8d84437f6feee69aff17d318b2f941a60261098",
-      "gitBlob": "fe4eb533b30a360c0f0827c188f4b8979aeada89"
+      "bytes": 26415,
+      "sha256": "75438e82c4b891fea5debe55d92d8de400252758d7b7e26139608eceab0f2e4e",
+      "gitBlob": "19e4366d67d30fd00dab430799e1fa7951a978f5"
     },
     {
       "file": "src/runtime/treasuryCompatReadCore.generated.ts",
-      "bytes": 69357,
-      "sha256": "3bd42eee815562492a440bef2f0e2879707dba1bd61a78eb15083fe3ef2fc92c",
-      "gitBlob": "21c4bba26d732ead7df4d6a9f5b9dea357fd9583"
+      "bytes": 70224,
+      "sha256": "8eab90fbf64c47da27cf665aa5b13c0f4a18410af17690a81c132275c58904c6",
+      "gitBlob": "08cd1d6f6db42160775c9990c6ba5b52296e0a1f"
     },
     {
       "file": "src/runtime/treasuryCompatRuntime.ts",
-      "bytes": 925,
-      "sha256": "2635f501adcb554c47bb39ab93e0b5b89d398a0a9207d9196227595a249cc2b3",
-      "gitBlob": "56747c11a66ddb4c7542eb60fd3d47b770285aa9"
+      "bytes": 956,
+      "sha256": "7250f9554baca9c2431d109f14c45ebece7df04de95e79e53146f9996dfffe6c",
+      "gitBlob": "13e8e356784da1c606e9c1cc8fccdaaa8d436b0c"
     },
     {
       "file": "src/runtime/treasuryCompatTypes.ts",
-      "bytes": 2509,
-      "sha256": "0d39f976aad3d95daaa13b72f31cfe7f9a25a9611329faf152a1ded0c6b3e61b",
-      "gitBlob": "1f553df048f322a68b445a71d4b7f2b03d096e72"
+      "bytes": 2676,
+      "sha256": "cf8d08d805a36d2f1be05b20f139d865fe953b85f6e26c3a7cb49fff9a6e8c5f",
+      "gitBlob": "048bff28742d6f0b5342f826dff1dbf3cba23780"
     },
     {
       "file": "test/treasury-compat/bridge.spec.cjs",
@@ -179,7 +179,7 @@
     }
   ],
   "loaderOptimization": {
-    "revision": "XIII",
+    "revision": "XIV",
     "provenance": "docs/treasury-compat-loader-optimization.json",
     "canonicalSourceCommit": "01bd9831454950c4928df98dd8679692b55603e5",
     "baselineGeneratedBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1",

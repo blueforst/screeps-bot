@@ -12,5 +12,5 @@ const preview = createTreasuryCompatPreview(TREASURY_COMPAT_CONFIG, {
   resources: () => RESOURCES_ALL,
   readers: createCompatibilityReadCore,
   emit: line => console.log(line),
-}, { cpuDiagnostics: true, commitmentBoundaryDiagnostics: true, localSafetyStop: true });
+}, { cpuDiagnostics: true, commitmentBoundaryDiagnostics: true, taskBoundaryDiagnostics: true, localSafetyStop: true });
 export function runTreasuryCompatRead(): void { preview.run(); }
