@@ -79,13 +79,6 @@ export interface CompatCpuProfile {
    * for calls, parent-prefix phases and attribution. */
   readonly completion?: "tail_only";
 }
-// XV: private, definition-only membership sets, never business/input caches.
-// No mutator or set reference escapes this module. Snapshot/validation semantics
-// and every CPU observation stay unchanged; no diagnostic overhead is subtracted.
-const CPU_PHASE_NAMES = new Set<string>(COMPAT_CPU_PHASES);
-const CPU_SUBPHASE_NAMES = new Set<string>(COMPAT_CPU_SUBPHASES);
-const CPU_WORK_NAMES = new Set<string>(COMPAT_CPU_WORK_KEYS);
-const CPU_TAIL_PHASES = Object.freeze(["serializationAndSize", "emit", "retention"] as const);
 /** One instance per admitted sample; snapshots contain primitive values only.
  * Each interval is charged to the phase that was active BEFORE the checkpoint.
  * Unvisited phases are absent, not invented zero-cost measurements.
@@ -93,7 +86,7 @@ const CPU_TAIL_PHASES = Object.freeze(["serializationAndSize", "emit", "retentio
  * corrected timings. Subphases overlap their parent phase by design.
  */
 export function createCompatCpuAccounting(start: number, tick: number, sampleOrdinal: number, traceCommitment = false, traceTasks = false) {
-  if (!Number.isFinite(start) || !Number.isFinite(tick) || !Number.isFinite(sampleOrdinal) || start < 0
+  if (![start, tick, sampleOrdinal].every(Number.isFinite) || start < 0
     || !Number.isSafeInteger(tick) || tick < 0
     || !Number.isSafeInteger(sampleOrdinal) || sampleOrdinal < 1) throw new Error("invalid CPU accounting start");
   let last = start, phase: CompatCpuPhase = "legacyInputs", checkpoints = 1;
@@ -102,8 +95,7 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
   let attributionLast: number | null = null, attributionActive: CompatCpuSubphase | null = null, attributionBoundaries = 0;
   const intervals: Partial<Record<CompatCpuSubphase, number>> = {};
   const work: Partial<Record<CompatCpuWorkKey, number>> = {};
-  let hasWork = false;
-  const attribution = () => attributionBoundaries || hasWork
+  const attribution = () => attributionBoundaries || Object.keys(work).length
     ? Object.freeze({ version: 1 as const, boundaries: attributionBoundaries, active: attributionActive,
       intervals: Object.freeze({ ...intervals }), work: Object.freeze({ ...work }) })
     : undefined;
@@ -150,7 +142,7 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
     taskMark(name: "firstPendingStart" | "firstPendingEnd", used: number, ordinal: number): void { taskMark(name, used, ordinal); },
     commitmentMark(name: "callStart" | "callEnd", used: number): void { mark(name, used); },
     checkpoint(used: number, next?: CompatCpuPhase): void {
-      if (!Number.isFinite(used) || used < last || !CPU_PHASE_NAMES.has(next ?? phase))
+      if (!Number.isFinite(used) || used < last || !COMPAT_CPU_PHASES.includes(next ?? phase))
         throw new Error("invalid CPU accounting checkpoint");
       if (traceCommitment && phase !== "commitmentBuild" && next === "commitmentBuild") mark("parentStart", used);
       if (traceCommitment && phase === "commitmentBuild" && next && next !== "commitmentBuild") mark("parentEnd", used);
@@ -166,7 +158,7 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
     },
     attributionBoundary(used: number, next?: CompatCpuSubphase): void {
       if (!Number.isFinite(used) || used < start || (attributionLast !== null && used < attributionLast)
-        || (next !== undefined && !CPU_SUBPHASE_NAMES.has(next)))
+        || (next !== undefined && !COMPAT_CPU_SUBPHASES.includes(next)))
         throw new Error("invalid CPU attribution boundary");
       if (traceTasks && next === "commitmentTasks") taskMark("tasksStart", used);
       if (traceTasks && attributionActive === "commitmentTasks" && next === "commitmentReservations") taskMark("tasksEnd", used);
@@ -182,12 +174,11 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
     attributionWork(values: Readonly<Partial<Record<CompatCpuWorkKey, number>>>): void {
       if (!values || typeof values !== "object") throw new Error("invalid CPU attribution work");
       for (const [key, value] of Object.entries(values)) {
-        if (!CPU_WORK_NAMES.has(key) || value === undefined
+        if (!COMPAT_CPU_WORK_KEYS.includes(key as CompatCpuWorkKey) || value === undefined
           || !Number.isSafeInteger(value) || value < 0) throw new Error("invalid CPU attribution work");
         const next = (work[key as CompatCpuWorkKey] ?? 0) + value;
         if (!Number.isSafeInteger(next)) throw new Error("invalid CPU attribution work");
         work[key as CompatCpuWorkKey] = next;
-        hasWork = true;
       }
     },
     snapshot(boundary: CompatCpuProfile["boundary"]): CompatCpuProfile {
@@ -196,7 +187,7 @@ export function createCompatCpuAccounting(start: number, tick: number, sampleOrd
         // Publish only the measured serialization/emit/retention continuation
         // instead of serializing its attribution and parent phases a second time.
         const tail: Partial<Record<CompatCpuPhase, number>> = {};
-        for (const key of CPU_TAIL_PHASES)
+        for (const key of ["serializationAndSize", "emit", "retention"] as const)
           if (phases[key] !== undefined) tail[key] = phases[key];
         return Object.freeze({ version: 1, tick, sampleOrdinal, boundary, elapsed: last - start,
           checkpoints, calls: Object.freeze({ ...calls }), phases: Object.freeze(tail), completion: "tail_only" });

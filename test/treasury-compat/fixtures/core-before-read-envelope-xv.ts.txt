@@ -901,9 +901,7 @@ function deepFreezeRoom(room) {
 function createObservationView(data, roomByName) {
     const roomsByOrdinal = data.rooms;
     let cachedEmpireResources;
-    // XV: query results were already lazy. Allocate their private memo container
-    // only if roomResources is queried; no index or view capability is deferred.
-    let roomResourcesCache;
+    const roomResourcesCache = new Map();
     const locationOf = (roomName, kind) => {
         const room = roomByName[roomName];
         if (!room) {
@@ -944,7 +942,6 @@ function createObservationView(data, roomByName) {
             return ((_a = room.storage.amounts[resource]) !== null && _a !== void 0 ? _a : 0) + ((_b = room.terminal.amounts[resource]) !== null && _b !== void 0 ? _b : 0);
         },
         roomResources(roomName) {
-            if (!roomResourcesCache) roomResourcesCache = new Map();
             const cached = roomResourcesCache.get(roomName);
             if (cached)
                 return cached;

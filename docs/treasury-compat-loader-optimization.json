@@ -1,5 +1,5 @@
 {
-  "revision": "compat-task-hotpath-XIV",
+  "revision": "compat-read-envelope-XV",
   "authoring": [
     "scripts/lib/treasury-compat-loader.template.txt",
     "scripts/lib/treasury-compat-context.cjs",
@@ -9,9 +9,10 @@
     "scripts/lib/treasury-compat-preview-hotpath.cjs",
     "scripts/lib/treasury-compat-envelope.cjs",
     "scripts/lib/treasury-compat-boundary-xiii.cjs",
-    "scripts/lib/treasury-compat-task-xiv.cjs"
+    "scripts/lib/treasury-compat-task-xiv.cjs",
+    "scripts/lib/treasury-compat-read-envelope-xv.cjs"
   ],
-  "baselineCommit": "85177467e71dcdbf9873bf6c2cd6cddb207a1c15",
+  "baselineCommit": "eba6a0df574c9cb6101bd3d7e5ebae729d3dd976",
   "baselineBuildVIIBlob": "4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be",
   "baselineIXCoreBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1",
   "baselineIXPreviewBlob": "556c6d565b3962c407bc82a4b5706d5382935c53",
@@ -23,7 +24,7 @@
   "contextOnlyPrefixSha256": "3c46d505c81659440e5d31902c5d3d17a830639ed8f8f99b1b5282df692b94df",
   "buildVIIOnlyPrefixSha256": "d256a6ae7a9b68e82656526094496495e69042d086c3249300ca1c49f94998ce",
   "attributionOnlyPrefixSha256": "89e3e2b82e1c744712ec3b23f3cbe5a706ec4f4c0654887a5fdc5eeec26e7771",
-  "adaptedFactoryPrefixSha256": "3c75350c84f46b4c592f72cd5dc388ee016d043059d9423b756b52fcd3b5f158",
+  "adaptedFactoryPrefixSha256": "b5d13a374f3d4a5c9a5d49674984b0027bd4191f339ea5bf6a56a9248ce41faa",
   "reversibleContextTransform": true,
   "contextRules": [
     {
@@ -218,6 +219,16 @@
     {
       "name": "first-pending-region-finally",
       "replacements": 1
+    },
+    {
+      "id": "lazy-query-memo-container",
+      "before": "    const roomResourcesCache = new Map();",
+      "after": "    // XV: query results were already lazy. Allocate their private memo container\n    // only if roomResources is queried; no index or view capability is deferred.\n    let roomResourcesCache;"
+    },
+    {
+      "id": "ensure-query-memo-on-use",
+      "before": "        roomResources(roomName) {\n            const cached = roomResourcesCache.get(roomName);",
+      "after": "        roomResources(roomName) {\n            if (!roomResourcesCache) roomResourcesCache = new Map();\n            const cached = roomResourcesCache.get(roomName);"
     }
   ],
   "reversiblePreviewHotpathTransform": true,
@@ -432,6 +443,77 @@
     }
   ],
   "localSafetyStopCpu": 5,
+  "readEnvelopeRules": [
+    {
+      "id": "ascii-byte-length-fast-path",
+      "before": "export function compatUtf8Bytes(s: string): number {\n  let n = 0;",
+      "after": "// XV: stateless ASCII detection; non-ASCII retains the exact surrogate-aware path.\n// The reported byte limit is unchanged. No truncation, dropped fields or estimate.\nconst COMPAT_NON_ASCII = /[^\\x00-\\x7f]/;\nexport function compatUtf8Bytes(s: string): number {\n  if (typeof s === \"string\" && !COMPAT_NON_ASCII.test(s)) return s.length;\n  let n = 0;"
+    },
+    {
+      "id": "one-own-descriptor-per-table-entry",
+      "before": "    if (!own(found.value, key)) continue;\n    const descriptor = Object.getOwnPropertyDescriptor(found.value, key);\n    if (!descriptor || !(\"value\" in descriptor)) return { status: \"accessor_unreadable\", count: null, value: undefined };",
+      "after": "    // XV: the descriptor lookup itself establishes own membership. Inherited\n    // enumerable keys are ignored; own accessors still reject the WHOLE table.\n    const descriptor = Object.getOwnPropertyDescriptor(found.value, key);\n    if (!descriptor) continue;\n    if (!(\"value\" in descriptor)) return { status: \"accessor_unreadable\", count: null, value: undefined };"
+    }
+  ],
+  "diagnosticMembershipRules": [
+    {
+      "id": "private-definition-lookups",
+      "before": "/** One instance per admitted sample; snapshots contain primitive values only.",
+      "after": "// XV: private, definition-only membership sets, never business/input caches.\n// No mutator or set reference escapes this module. Snapshot/validation semantics\n// and every CPU observation stay unchanged; no diagnostic overhead is subtracted.\nconst CPU_PHASE_NAMES = new Set<string>(COMPAT_CPU_PHASES);\nconst CPU_SUBPHASE_NAMES = new Set<string>(COMPAT_CPU_SUBPHASES);\nconst CPU_WORK_NAMES = new Set<string>(COMPAT_CPU_WORK_KEYS);\nconst CPU_TAIL_PHASES = Object.freeze([\"serializationAndSize\", \"emit\", \"retention\"] as const);\n/** One instance per admitted sample; snapshots contain primitive values only."
+    },
+    {
+      "id": "scalar-start-validation",
+      "before": "  if (![start, tick, sampleOrdinal].every(Number.isFinite) || start < 0",
+      "after": "  if (!Number.isFinite(start) || !Number.isFinite(tick) || !Number.isFinite(sampleOrdinal) || start < 0"
+    },
+    {
+      "id": "phase-membership",
+      "before": "!COMPAT_CPU_PHASES.includes(next ?? phase)",
+      "after": "!CPU_PHASE_NAMES.has(next ?? phase)"
+    },
+    {
+      "id": "subphase-membership",
+      "before": "!COMPAT_CPU_SUBPHASES.includes(next)",
+      "after": "!CPU_SUBPHASE_NAMES.has(next)"
+    },
+    {
+      "id": "work-membership",
+      "before": "!COMPAT_CPU_WORK_KEYS.includes(key as CompatCpuWorkKey)",
+      "after": "!CPU_WORK_NAMES.has(key)"
+    },
+    {
+      "id": "bounded-work-presence",
+      "before": "  const work: Partial<Record<CompatCpuWorkKey, number>> = {};\n  const attribution = () => attributionBoundaries || Object.keys(work).length",
+      "after": "  const work: Partial<Record<CompatCpuWorkKey, number>> = {};\n  let hasWork = false;\n  const attribution = () => attributionBoundaries || hasWork"
+    },
+    {
+      "id": "work-presence-update",
+      "before": "        work[key as CompatCpuWorkKey] = next;",
+      "after": "        work[key as CompatCpuWorkKey] = next;\n        hasWork = true;"
+    },
+    {
+      "id": "reuse-tail-key-definition",
+      "before": "for (const key of [\"serializationAndSize\", \"emit\", \"retention\"] as const)",
+      "after": "for (const key of CPU_TAIL_PHASES)"
+    }
+  ],
+  "observationMemoRules": [
+    {
+      "id": "lazy-query-memo-container",
+      "before": "    const roomResourcesCache = new Map();",
+      "after": "    // XV: query results were already lazy. Allocate their private memo container\n    // only if roomResources is queried; no index or view capability is deferred.\n    let roomResourcesCache;"
+    },
+    {
+      "id": "ensure-query-memo-on-use",
+      "before": "        roomResources(roomName) {\n            const cached = roomResourcesCache.get(roomName);",
+      "after": "        roomResources(roomName) {\n            if (!roomResourcesCache) roomResourcesCache = new Map();\n            const cached = roomResourcesCache.get(roomName);"
+    }
+  ],
+  "wireDiagnosticRevision": "XIV",
+  "asciiUtf8ExactFastPath": true,
+  "tableOwnDescriptorSingleLookup": true,
+  "lazyObservationQueryMemoContainerOnly": true,
+  "newCpuObservations": 0,
   "reversibleCurrentPreviewTransform": true,
   "currentPreviewRules": [
     {
@@ -628,15 +710,27 @@
       "name": "report-revision",
       "replacements": 1,
       "stage": "XIV-task"
+    },
+    {
+      "id": "ascii-byte-length-fast-path",
+      "before": "export function compatUtf8Bytes(s: string): number {\n  let n = 0;",
+      "after": "// XV: stateless ASCII detection; non-ASCII retains the exact surrogate-aware path.\n// The reported byte limit is unchanged. No truncation, dropped fields or estimate.\nconst COMPAT_NON_ASCII = /[^\\x00-\\x7f]/;\nexport function compatUtf8Bytes(s: string): number {\n  if (typeof s === \"string\" && !COMPAT_NON_ASCII.test(s)) return s.length;\n  let n = 0;",
+      "stage": "XV-read-envelope"
+    },
+    {
+      "id": "one-own-descriptor-per-table-entry",
+      "before": "    if (!own(found.value, key)) continue;\n    const descriptor = Object.getOwnPropertyDescriptor(found.value, key);\n    if (!descriptor || !(\"value\" in descriptor)) return { status: \"accessor_unreadable\", count: null, value: undefined };",
+      "after": "    // XV: the descriptor lookup itself establishes own membership. Inherited\n    // enumerable keys are ignored; own accessors still reject the WHOLE table.\n    const descriptor = Object.getOwnPropertyDescriptor(found.value, key);\n    if (!descriptor) continue;\n    if (!(\"value\" in descriptor)) return { status: \"accessor_unreadable\", count: null, value: undefined };",
+      "stage": "XV-read-envelope"
     }
   ],
   "loaderSha256": "cfc0d3651f7f7755492ce74f69b8943d03230dd6328ce014f759447ad08093d8",
-  "generatedSha256": "8eab90fbf64c47da27cf665aa5b13c0f4a18410af17690a81c132275c58904c6",
-  "generatedBlob": "08cd1d6f6db42160775c9990c6ba5b52296e0a1f",
+  "generatedSha256": "e03c09619b8b47097e234ff81a5fe0a28c57b1b20180ba0a818139eb0fc05a9d",
+  "generatedBlob": "614e97c72a54cef8385ae6fd0a1a9c756dcb564d",
   "previewXISha256": "9e454bde732a08ba1880cae02ada391219054c70cb54aff600d7a8bde667bd2f",
   "previewXIBlob": "fe92498f5e76d860e4fef98d842df3c2e8fc48ad",
-  "previewSha256": "75438e82c4b891fea5debe55d92d8de400252758d7b7e26139608eceab0f2e4e",
-  "previewBlob": "19e4366d67d30fd00dab430799e1fa7951a978f5",
+  "previewSha256": "2d22e3a9726d88892282f20017e01ecfbf4bc884cb21395e8ea25727c5efc135",
+  "previewBlob": "f1bece4ea0a86e5be5e92079f4d19c4c1fbb4c3c",
   "factories": [
     {
       "path": "src/runtime/configNormalize.ts",
@@ -725,5 +819,5 @@
   "sourceManifestOutputIdentityCount": 13,
   "engineCpuGapRepaired": false,
   "engineMeasurementRequired": true,
-  "note": "XIV removes repeated path/checked-addition dispatch work and adds one bounded first-pending probe pair per table. Canonical validation, full indexes, exact arithmetic/update order, and local containment remain. No engine speedup or root cause is inferred from offline timing."
+  "note": "XV preserves XIV diagnostic wire shape and every CPU observation. Optimizes ASCII byte counting with exact Unicode fallback, redundant own checks, diagnostic enum membership, and unused observation query memo allocation. Commitment algorithms and eager full indexes are unchanged. No engine speedup, stability or spike root cause is inferred from offline work counts."
 }

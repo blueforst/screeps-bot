@@ -9,10 +9,11 @@ const B = require('./lib/treasury-compat-build.cjs');
 const A = require('./lib/treasury-compat-attribution.cjs');
 const H_XI = require('./lib/treasury-compat-hotpath.cjs');
 const T = require('./lib/treasury-compat-task-xiv.cjs');
+const V = require('./lib/treasury-compat-read-envelope-xv.cjs');
 const H = Object.freeze({
-  transform(text) { return T.coreTransform(H_XI.transform(text)); },
-  restore(text) { return H_XI.restore(T.coreRestore(text)); },
-  rules: Object.freeze([...H_XI.rules, ...T.coreRules]),
+  transform(text) { return V.coreTransform(T.coreTransform(H_XI.transform(text))); },
+  restore(text) { return H_XI.restore(T.coreRestore(V.coreRestore(text))); },
+  rules: Object.freeze([...H_XI.rules, ...T.coreRules, ...V.coreRules]),
 });
 const P_XI = require('./lib/treasury-compat-preview-hotpath.cjs');
 const D = require('./lib/treasury-compat-envelope.cjs');
@@ -21,13 +22,14 @@ const N = require('./lib/treasury-compat-boundary-xiii.cjs');
  * therefore it must map the pinned IX preview directly to the current XII
  * preview, while P_XI remains available for intermediate provenance checks. */
 const P = Object.freeze({
-  transform(text) { return T.previewTransform(N.transform(D.transform(P_XI.transform(text)))); },
-  restore(text) { return P_XI.restore(D.restore(N.restore(T.previewRestore(text)))); },
+  transform(text) { return V.previewTransform(T.previewTransform(N.transform(D.transform(P_XI.transform(text))))); },
+  restore(text) { return P_XI.restore(D.restore(N.restore(T.previewRestore(V.previewRestore(text))))); },
   rules: Object.freeze([
     ...P_XI.rules.map(x => Object.freeze({ ...x, stage: 'XI-hotpath' })),
     ...D.rules.map(x => Object.freeze({ ...x, stage: 'XII-envelope' })),
     ...N.rules.map(x => Object.freeze({ ...x, stage: 'XIII-boundary' })),
     ...T.previewRules.map(x => Object.freeze({ ...x, stage: 'XIV-task' })),
+    ...V.previewRules.map(x => Object.freeze({ ...x, stage: 'XV-read-envelope' })),
   ]),
 });
 const ORIGINAL_SHA = '9e28d07181898930a84ff560c73f531935ca6a79c9d6e1e2adbd108555bd9965';
@@ -43,7 +45,7 @@ const TEMPLATE = 'scripts/lib/treasury-compat-loader.template.txt';
 const PROVENANCE = 'docs/treasury-compat-loader-optimization.json';
 const SOURCE_MANIFEST = 'docs/treasury-compat-source-manifest.json';
 const MARKER = '/** Loader Optimization III.';
-const BASELINE_COMMIT = '85177467e71dcdbf9873bf6c2cd6cddb207a1c15';
+const BASELINE_COMMIT = 'eba6a0df574c9cb6101bd3d7e5ebae729d3dd976';
 const BUILD_VII_BLOB = '4f94acf1c06a60de9ca8ff2f0cdd2910cb6913be';
 const IX_CORE_BLOB = '62752b09e3828e67a9000aeffcda0b2436368bf1';
 const IX_PREVIEW_BLOB = '556c6d565b3962c407bc82a4b5706d5382935c53';
@@ -57,7 +59,7 @@ const FIXED_OUTPUTS = Object.freeze({
   'src/main.test.ts': { bytes: 11031, sha256: '8fbb186cae2a1426496dd539cbc4414ce2317fc4ff848a4bc4ee179ec2d4a0ab', gitBlob: '9b8b42363e8f687742088dfca094a422d6ecf3b0' },
   'src/main.ts': { bytes: 6271, sha256: '3bebfb632d40dd989baa9ae70a87cc49810207df6fc0cfd3f9cda53673f9dc57', gitBlob: 'e8bf1c56e6147dfe4fcbb18052e29ee636da62ac' },
   'src/runtime/treasuryCompatConfig.ts': { bytes: 531, sha256: 'ff291683faf1a2a3711f231b9affe7d1cd759416c3482dc77563cfd9a628ab02', gitBlob: '8e2214fef5a6a69b7eb40c82eee76dda1646ccbf' },
-  'src/runtime/treasuryCompatCpu.ts': { bytes: 12149, sha256: 'e95f80f679d7f36987294d6f8049c2f6987959fc9b95302289b66d27d0e44c1a', gitBlob: '211837e149159618756545f784f2e3c52a5a8a74' },
+  'src/runtime/treasuryCompatCpu.ts': { bytes: 12653, sha256: '5599ff052819b5842875ed78bfa67afefd9a182ad6ad4bb4ae55a59f6dd58100', gitBlob: '52bd3edbf77b1a35e7c59bef41888f47c5636613' },
   'src/runtime/treasuryCompatRuntime.ts': { bytes: 956, sha256: '7250f9554baca9c2431d109f14c45ebece7df04de95e79e53146f9996dfffe6c', gitBlob: '13e8e356784da1c606e9c1cc8fccdaaa8d436b0c' },
   'src/runtime/treasuryCompatTypes.ts': { bytes: 2676, sha256: 'cf8d08d805a36d2f1be05b20f139d865fe953b85f6e26c3a7cb49fff9a6e8c5f', gitBlob: '048bff28742d6f0b5342f826dff1dbf3cba23780' },
   'test/treasury-compat/bridge.spec.cjs': { bytes: 11489, sha256: '278491b3c996874db2fe560973708ba1d2a0d34cfc94f413ad36f23a3067a50f', gitBlob: '8061a074218ba8a9ce81ec15b5da6e4ad9aa1d83' },
@@ -94,8 +96,10 @@ function generate(original, template, manifest, previewOriginal) {
   const previewOut = Buffer.from(P.transform(previewBase.toString('utf8')));
   const previewXII = Buffer.from(D.transform(previewXI.toString('utf8')));
   check(previewXII.length === 22660 && sha(previewXII) === XII_PREVIEW_SHA && blob(previewXII) === XII_PREVIEW_BLOB, 'XII_PREVIEW_MISMATCH');
-  check(previewOut.equals(Buffer.from(T.previewTransform(N.transform(previewXII.toString('utf8'))))), 'CURRENT_PREVIEW_COMPOSITION_MISMATCH');
-  check(previewOut.length === 26415 && sha(previewOut) === '75438e82c4b891fea5debe55d92d8de400252758d7b7e26139608eceab0f2e4e' && blob(previewOut) === '19e4366d67d30fd00dab430799e1fa7951a978f5', 'XIV_PREVIEW_MISMATCH');
+  const previewXIV = Buffer.from(T.previewTransform(N.transform(previewXII.toString('utf8'))));
+  check(previewXIV.length === 26415 && sha(previewXIV) === '75438e82c4b891fea5debe55d92d8de400252758d7b7e26139608eceab0f2e4e', 'XIV_PREVIEW_MISMATCH');
+  check(previewOut.equals(Buffer.from(V.previewTransform(previewXIV.toString('utf8')))), 'CURRENT_PREVIEW_COMPOSITION_MISMATCH');
+  check(previewOut.length === 26831 && sha(previewOut) === '2d22e3a9726d88892282f20017e01ecfbf4bc884cb21395e8ea25727c5efc135' && blob(previewOut) === 'f1bece4ea0a86e5be5e92079f4d19c4c1fbb4c3c', 'XV_PREVIEW_MISMATCH');
   const matches = [...originalPrefix.matchAll(/^"([^"]+)": function\(exports, require\) \{\n/gm)];
   check(matches.length === 8, 'FACTORY_SET_MISMATCH');
   const dependencyStart = originalPrefix.indexOf('const dependencies = {');
@@ -117,7 +121,7 @@ function generate(original, template, manifest, previewOriginal) {
   setOutput(m, PREVIEW, { bytes: previewOut.length, sha256: sha(previewOut), gitBlob: blob(previewOut) });
   for (const [file, value] of Object.entries(FIXED_OUTPUTS)) setOutput(m, file, value);
   m.outputs.sort((a, b) => a.file.localeCompare(b.file));
-  m.loaderOptimization = { revision: 'XIV', provenance: PROVENANCE, canonicalSourceCommit: SOURCE_COMMIT,
+  m.loaderOptimization = { revision: 'XV', provenance: PROVENANCE, canonicalSourceCommit: SOURCE_COMMIT,
     baselineGeneratedBlob: IX_CORE_BLOB, canonicalInputGeneratedBlob: ORIGINAL_BLOB,
     explicitReadContextAdaptation: true, fullTaskBucketFusion: true, observationAllocationReduction: true,
     boundedSubphaseAttribution: true, attributionChangesAuthorization: false,
@@ -129,10 +133,10 @@ function generate(original, template, manifest, previewOriginal) {
     singlePassDeltaObject: true, projectionArrayValidationRemoved: true,
     sourceManifestOutputValidation: 'all-listed-outputs', sourceManifestOutputIdentityCount: EXPECTED_OUTPUT_PATHS.length };
   const provenance = {
-    revision: 'compat-task-hotpath-XIV',
+    revision: 'compat-read-envelope-XV',
     authoring: [TEMPLATE, 'scripts/lib/treasury-compat-context.cjs', 'scripts/lib/treasury-compat-build.cjs',
       'scripts/lib/treasury-compat-attribution.cjs', 'scripts/lib/treasury-compat-hotpath.cjs',
-      'scripts/lib/treasury-compat-preview-hotpath.cjs', 'scripts/lib/treasury-compat-envelope.cjs', 'scripts/lib/treasury-compat-boundary-xiii.cjs', 'scripts/lib/treasury-compat-task-xiv.cjs'],
+      'scripts/lib/treasury-compat-preview-hotpath.cjs', 'scripts/lib/treasury-compat-envelope.cjs', 'scripts/lib/treasury-compat-boundary-xiii.cjs', 'scripts/lib/treasury-compat-task-xiv.cjs', 'scripts/lib/treasury-compat-read-envelope-xv.cjs'],
     baselineCommit: BASELINE_COMMIT, baselineBuildVIIBlob: BUILD_VII_BLOB,
     baselineIXCoreBlob: IX_CORE_BLOB, baselineIXPreviewBlob: IX_PREVIEW_BLOB,
     baselineXIPreviewBlob: XI_PREVIEW_BLOB,
@@ -152,6 +156,9 @@ function generate(original, template, manifest, previewOriginal) {
     fixedFirstPendingProbePair: true, taskArithmeticHelperCallsRemoved: true,
     perSampleProjectionPathCursor: true, singleDescriptorPathRead: true,
     taskRules: T.coreRules, taskPreviewRules: T.previewRules, localSafetyStopCpu: 5,
+    readEnvelopeRules: V.previewRules, diagnosticMembershipRules: V.cpuRules, observationMemoRules: V.coreRules,
+    wireDiagnosticRevision: "XIV", asciiUtf8ExactFastPath: true, tableOwnDescriptorSingleLookup: true,
+    lazyObservationQueryMemoContainerOnly: true, newCpuObservations: 0,
     reversibleCurrentPreviewTransform: true, currentPreviewRules: P.rules,
     loaderSha256: sha(Buffer.from(t)), generatedSha256: sha(out), generatedBlob: blob(out),
     previewXISha256: sha(previewXI), previewXIBlob: blob(previewXI),
@@ -168,7 +175,7 @@ function generate(original, template, manifest, previewOriginal) {
     cpuAccountingChanged: true, publicTypeSurfaceChanged: true, defaultEnabled: false, budget: 2,
     sourceManifestOutputValidation: 'all-listed-outputs', sourceManifestOutputIdentityCount: EXPECTED_OUTPUT_PATHS.length,
     engineCpuGapRepaired: false, engineMeasurementRequired: true,
-    note: 'XIV removes repeated path/checked-addition dispatch work and adds one bounded first-pending probe pair per table. Canonical validation, full indexes, exact arithmetic/update order, and local containment remain. No engine speedup or root cause is inferred from offline timing.'
+    note: 'XV preserves XIV diagnostic wire shape and every CPU observation. Optimizes ASCII byte counting with exact Unicode fallback, redundant own checks, diagnostic enum membership, and unused observation query memo allocation. Commitment algorithms and eager full indexes are unchanged. No engine speedup, stability or spike root cause is inferred from offline work counts.'
   };
   return { [GENERATED]: out, [PREVIEW]: previewOut, [PROVENANCE]: encode(provenance), [SOURCE_MANIFEST]: encode(m) };
 }
@@ -201,7 +208,7 @@ function main(argv) {
   check(argv.length === 1, 'ARGUMENT_INVALID');
   return verifyRoot(path.resolve(__dirname, '..'), argv[0]);
 }
-module.exports = { T, H_XI, N, generate, main, sha, blob, GENERATED, FIXTURE, TEMPLATE, PROVENANCE, SOURCE_MANIFEST, MARKER,
+module.exports = { V, T, H_XI, N, generate, main, sha, blob, GENERATED, FIXTURE, TEMPLATE, PROVENANCE, SOURCE_MANIFEST, MARKER,
   X, B, A, H, P_XI, P, D, FIXED_OUTPUTS, EXPECTED_OUTPUT_PATHS, verifyOutputIdentities, applyOrCheckGenerated, verifyRoot,
   BASELINE_COMMIT, BUILD_VII_BLOB, IX_CORE_BLOB, IX_PREVIEW_BLOB, XI_PREVIEW_BLOB,
   PREVIEW, PREVIEW_FIXTURE, XI_PREVIEW_FIXTURE, CPU_XI_FIXTURE };

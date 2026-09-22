@@ -36,11 +36,7 @@ export function validCompatConfig(c: CompatConfig): boolean {
     && finite(c.reserveCpu) && c.reserveCpu >= 1 && c.reserveCpu <= 100
     && nonneg(c.maxLogBytes) && c.maxLogBytes >= 1024 && c.maxLogBytes <= 16384;
 }
-// XV: stateless ASCII detection; non-ASCII retains the exact surrogate-aware path.
-// The reported byte limit is unchanged. No truncation, dropped fields or estimate.
-const COMPAT_NON_ASCII = /[^\x00-\x7f]/;
 export function compatUtf8Bytes(s: string): number {
-  if (typeof s === "string" && !COMPAT_NON_ASCII.test(s)) return s.length;
   let n = 0;
   for (let i = 0; i < s.length; i++) {
     const a = s.charCodeAt(i);
@@ -75,11 +71,9 @@ function tableFound(found: Found) {
   // Stop enumeration at bound+1. Never aggregate a selected prefix as the table.
   let count = 0;
   for (const key in found.value) {
-    // XV: the descriptor lookup itself establishes own membership. Inherited
-    // enumerable keys are ignored; own accessors still reject the WHOLE table.
+    if (!own(found.value, key)) continue;
     const descriptor = Object.getOwnPropertyDescriptor(found.value, key);
-    if (!descriptor) continue;
-    if (!("value" in descriptor)) return { status: "accessor_unreadable", count: null, value: undefined };
+    if (!descriptor || !("value" in descriptor)) return { status: "accessor_unreadable", count: null, value: undefined };
     if (++count > TABLE_LIMIT) return { status: "over_bound", count: null, value: undefined };
   }
   return { status: count === 0 ? "empty" : "nonempty", count, value: found.value };

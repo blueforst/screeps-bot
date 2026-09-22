@@ -125,21 +125,21 @@
     },
     {
       "file": "src/runtime/treasuryCompatCpu.ts",
-      "bytes": 12149,
-      "sha256": "e95f80f679d7f36987294d6f8049c2f6987959fc9b95302289b66d27d0e44c1a",
-      "gitBlob": "211837e149159618756545f784f2e3c52a5a8a74"
+      "bytes": 12653,
+      "sha256": "5599ff052819b5842875ed78bfa67afefd9a182ad6ad4bb4ae55a59f6dd58100",
+      "gitBlob": "52bd3edbf77b1a35e7c59bef41888f47c5636613"
     },
     {
       "file": "src/runtime/treasuryCompatRead.ts",
-      "bytes": 26415,
-      "sha256": "75438e82c4b891fea5debe55d92d8de400252758d7b7e26139608eceab0f2e4e",
-      "gitBlob": "19e4366d67d30fd00dab430799e1fa7951a978f5"
+      "bytes": 26831,
+      "sha256": "2d22e3a9726d88892282f20017e01ecfbf4bc884cb21395e8ea25727c5efc135",
+      "gitBlob": "f1bece4ea0a86e5be5e92079f4d19c4c1fbb4c3c"
     },
     {
       "file": "src/runtime/treasuryCompatReadCore.generated.ts",
-      "bytes": 70224,
-      "sha256": "8eab90fbf64c47da27cf665aa5b13c0f4a18410af17690a81c132275c58904c6",
-      "gitBlob": "08cd1d6f6db42160775c9990c6ba5b52296e0a1f"
+      "bytes": 70443,
+      "sha256": "e03c09619b8b47097e234ff81a5fe0a28c57b1b20180ba0a818139eb0fc05a9d",
+      "gitBlob": "614e97c72a54cef8385ae6fd0a1a9c756dcb564d"
     },
     {
       "file": "src/runtime/treasuryCompatRuntime.ts",
@@ -179,7 +179,7 @@
     }
   ],
   "loaderOptimization": {
-    "revision": "XIV",
+    "revision": "XV",
     "provenance": "docs/treasury-compat-loader-optimization.json",
     "canonicalSourceCommit": "01bd9831454950c4928df98dd8679692b55603e5",
     "baselineGeneratedBlob": "62752b09e3828e67a9000aeffcda0b2436368bf1",
