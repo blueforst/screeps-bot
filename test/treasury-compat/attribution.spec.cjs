@@ -64,7 +64,13 @@ test('IX accounting rejects non-monotonic and unlisted subphase boundaries', () 
 test('IX transform exactly restores the committed Build VII core prefix', () => {
   const marker = '/** Read Optimization V:';
   assert.equal(G.A.restore(A.afterText().split(marker)[0]), A.beforeText().split(marker)[0]);
-  assert.equal(G.A.rules.length, 14); const generated = assertGeneratedCurrent(); assert.equal(generated[G.GENERATED].length, 70443);
+  assert.equal(G.A.rules.length, 14); const generated = assertGeneratedCurrent();
+  // Preserve the predecessor length check at the XV boundary; R1 has its own
+  // exact artifact identity and full-API regression suite, not a new IX budget.
+  const currentCore = generated[G.GENERATED];
+  assert.equal(Buffer.byteLength(G.Q.coreRestore(currentCore.toString('utf8'))), 70443);
+  assert.equal(require('node:crypto').createHash('sha256').update(currentCore).digest('hex'),
+    '4d95104a44554f40065f65501c506f176653f3cb44c4fba0bcd0409cd5830f08');
 });
 test('IX transform refuses shifted source instead of approximately instrumenting it', () => {
   const prefix = A.beforeText().split('/** Read Optimization V:')[0];

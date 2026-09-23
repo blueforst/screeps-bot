@@ -9,7 +9,16 @@ test('hotpath XI shifted source is rejected rather than approximately optimized'
 for(const name of Object.keys(S.scenarios))test('hotpath XI diagnostics-off byte parity: '+name,()=>{const r=pair(name,false);assert.equal(r.byteEquivalent,true);assert.deepEqual(r.writes,[0,0]);assert.deepEqual(r.readers,[12,12]);assert.deepEqual(r.observations,[12,12]);assert.equal(r.commitments[0],r.commitments[1]);});
 test('hotpath XI observation reuses sparse keys; XI and XV remove two eager view Maps',()=>{const a=operationCounts(beforeCore(),0,false,32),b=operationCounts(afterCore(),0,false,32);assert.deepEqual(b.semantics,a.semantics);assert.equal(a.observation.keys,8);assert.equal(b.observation.keys,4);assert.equal(a.observation.mapNew-b.observation.mapNew,2);});
 test('hotpath XI task and reservation tables allocate no Object.values arrays',()=>{const a=operationCounts(beforeCore(),37),b=operationCounts(afterCore(),37);assert.deepEqual(b.semantics,a.semantics);assert.equal(a.commitment.values,2);assert.equal(b.commitment.values,0);assert.equal(a.commitment.keys,2);assert.equal(b.commitment.keys,2);});
-test('hotpath XI self routes avoid one duplicate scope lookup per task',()=>{const a=operationCounts(beforeCore(),37,true),b=operationCounts(afterCore(),37,true);assert.deepEqual(b.semantics,a.semantics);assert.equal(a.commitment.mapGet-b.commitment.mapGet,37);});
+test('hotpath XI self routes avoid one duplicate scope lookup per task',()=>{
+  // The historical Map delta belongs to the predecessor path. R1 replaces
+  // private Maps, so compare its semantics separately without changing 37.
+  const a=operationCounts(beforeCore(),37,true);
+  const b=operationCounts(G.Q.coreRestore(afterCore()),37,true);
+  const current=operationCounts(afterCore(),37,true);
+  assert.deepEqual(b.semantics,a.semantics);
+  assert.deepEqual(current.semantics,b.semantics);
+  assert.equal(a.commitment.mapGet-b.commitment.mapGet,37);
+});
 test('hotpath XI preview removes selected-resource Object.values and repeated room arrays',()=>{const a=readerCounts(beforeCore(),beforeReader()),b=readerCounts(afterCore(),afterReader());assert.equal(a.line,b.line);assert.equal(a.resourcePortCalls,2);assert.equal(b.resourcePortCalls,1);assert.equal(a.counters.values,4);assert.equal(b.counters.values,0);assert.ok(a.counters.map>b.counters.map);assert.ok(a.counters.filter>b.counters.filter);});
 test('hotpath XI duplicate and prototype-like room names retain last-room-wins lookup',()=>{for(const text of [beforeCore(),afterCore()]){const {s,r}=coreBuild(text);const a=H.makeRoom('__proto__'),b=H.makeRoom('__proto__');a.storage.store.H=7;b.storage.store.H=19;const o=r.buildObservation({scope:'market-fresh',epochSeq:1,rooms:[a,b]});assert.equal(JSON.stringify(o.roomNames()),JSON.stringify(['__proto__','__proto__']));assert.equal(o.amount('__proto__','storage','H'),19);assert.equal(o.hasRoom('__proto__'),true);}});
 test('hotpath XI callback order still precedes totals and snapshot values are never reread',()=>{const out=[];for(const text of [beforeCore(),afterCore()]){const {s,r}=coreBuild(text);const trace=[];const opts={scope:'market-fresh',epochSeq:1,rooms:Object.values(s.game.rooms),onStoreScanned(n){trace.push(n);s.game.rooms.W1N1.storage.store.H=999;}};const o=r.buildObservation(opts);out.push({trace,data:H.json(o.data)});assert.equal(o.amount('W1N1','storage','H'),300);}assert.deepEqual(out[1],out[0]);});
