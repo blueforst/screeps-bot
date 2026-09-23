@@ -34,4 +34,12 @@ test('XIII no extra probes when builder never called',()=>{const f=s=>{s.memory.
 });
 test('XIII measurement fault disables preview and cannot escape old bot',()=>{const s=scene(s=>{let n=0;s.ports.cpu=()=>({used:++n>3?NaN:.1,tickLimit:100,bucket:9000});});assert.doesNotThrow(()=>s.observer.run());assert.equal(s.observer.stats().fault,true);assert.equal(s.observer.run().status,'disabled_after_fault');});
 for(const name of Object.keys(S.scenarios))test('XIII business parity and no writes: '+name,()=>{const a=S.make(),b=S.make();a.api=S.readerApi(old());S.scenarios[name](a);S.scenarios[name](b);a.observer=a.api.createTreasuryCompatPreview(a.cfg,a.ports);b.observer=b.api.createTreasuryCompatPreview(b.cfg,b.ports);const ga={writes:0},gb={writes:0};a.memory=H.guard(a.memory,ga);b.memory=H.guard(b.memory,gb);for(let i=1;i<=4;i++){a.game.time=b.game.time=i*100;a.cpuValue=b.cpuValue=.1;a.observer.run();b.observer.run();}assert.equal(JSON.stringify(a.lines),JSON.stringify(b.lines));assert.deepEqual([ga.writes,gb.writes],[0,0]);});
-test('XIII runtime enables trace and local stop without modifying frozen OFF config',()=>{const text=fs.readFileSync(H.file('treasuryCompatRuntime.ts'),'utf8');assert.match(text,/commitmentBoundaryDiagnostics: true/);assert.match(text,/localSafetyStop: true/);assert.match(fs.readFileSync(H.file('treasuryCompatConfig.ts'),'utf8'),/enabled: false/);});
+test('XIII historical runtime retains its original latch; FC1 explicitly owns native admission',()=>{
+ const historical=fs.readFileSync(path.join(__dirname,'fixtures/runtime-before-full-cost-fc1.ts.txt'),'utf8');
+ assert.equal(G.blob(Buffer.from(historical)),'13e8e356784da1c606e9c1cc8fccdaaa8d436b0c');
+ assert.match(historical,/commitmentBoundaryDiagnostics: true/);assert.match(historical,/localSafetyStop: true/);
+ const current=fs.readFileSync(H.file('treasuryCompatRuntime.ts'),'utf8');
+ assert.match(current,/commitmentBoundaryDiagnostics: true/);assert.match(current,/localSafetyStop: false/);
+ assert.match(current,/admissionHeadroomCpu: 55/);assert.match(current,/CPU_OBSERVED_EXPOSURE_STOP/);
+ assert.match(fs.readFileSync(H.file('treasuryCompatConfig.ts'),'utf8'),/enabled: false/);
+});

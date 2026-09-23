@@ -61,7 +61,7 @@ const FIXED_OUTPUTS = Object.freeze({
   'src/main.ts': { bytes: 6271, sha256: '3bebfb632d40dd989baa9ae70a87cc49810207df6fc0cfd3f9cda53673f9dc57', gitBlob: 'e8bf1c56e6147dfe4fcbb18052e29ee636da62ac' },
   'src/runtime/treasuryCompatConfig.ts': { bytes: 531, sha256: 'ff291683faf1a2a3711f231b9affe7d1cd759416c3482dc77563cfd9a628ab02', gitBlob: '8e2214fef5a6a69b7eb40c82eee76dda1646ccbf' },
   'src/runtime/treasuryCompatCpu.ts': { bytes: 12653, sha256: '5599ff052819b5842875ed78bfa67afefd9a182ad6ad4bb4ae55a59f6dd58100', gitBlob: '52bd3edbf77b1a35e7c59bef41888f47c5636613' },
-  'src/runtime/treasuryCompatRuntime.ts': { bytes: 956, sha256: '7250f9554baca9c2431d109f14c45ebece7df04de95e79e53146f9996dfffe6c', gitBlob: '13e8e356784da1c606e9c1cc8fccdaaa8d436b0c' },
+  'src/runtime/treasuryCompatRuntime.ts': { bytes: 7549, sha256: 'dec7d710779248e0689b673a473557c07728a93d422fee7524f3a79082549967', gitBlob: '4e5ee3c2b3ed126a8d4c4dbb0f9e57ef5479fcc7' },
   'src/runtime/treasuryCompatTypes.ts': { bytes: 2676, sha256: 'cf8d08d805a36d2f1be05b20f139d865fe953b85f6e26c3a7cb49fff9a6e8c5f', gitBlob: '048bff28742d6f0b5342f826dff1dbf3cba23780' },
   'test/treasury-compat/bridge.spec.cjs': { bytes: 11489, sha256: '278491b3c996874db2fe560973708ba1d2a0d34cfc94f413ad36f23a3067a50f', gitBlob: '8061a074218ba8a9ce81ec15b5da6e4ad9aa1d83' },
   'test/treasury-compat/helpers.cjs': { bytes: 6806, sha256: 'c200b1f2b6dc55deae8b50ac7ae9f0e5ecb191be6592a42c713fce7d3d289e74', gitBlob: 'f7406cf25124324069c08a444683d383477e0a23' },

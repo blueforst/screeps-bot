@@ -143,9 +143,9 @@
     },
     {
       "file": "src/runtime/treasuryCompatRuntime.ts",
-      "bytes": 956,
-      "sha256": "7250f9554baca9c2431d109f14c45ebece7df04de95e79e53146f9996dfffe6c",
-      "gitBlob": "13e8e356784da1c606e9c1cc8fccdaaa8d436b0c"
+      "bytes": 7549,
+      "sha256": "dec7d710779248e0689b673a473557c07728a93d422fee7524f3a79082549967",
+      "gitBlob": "4e5ee3c2b3ed126a8d4c4dbb0f9e57ef5479fcc7"
     },
     {
       "file": "src/runtime/treasuryCompatTypes.ts",
