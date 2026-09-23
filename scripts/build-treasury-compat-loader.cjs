@@ -10,10 +10,11 @@ const A = require('./lib/treasury-compat-attribution.cjs');
 const H_XI = require('./lib/treasury-compat-hotpath.cjs');
 const T = require('./lib/treasury-compat-task-xiv.cjs');
 const V = require('./lib/treasury-compat-read-envelope-xv.cjs');
+const Q = require('./lib/treasury-compat-read-path-r1.cjs');
 const H = Object.freeze({
-  transform(text) { return V.coreTransform(T.coreTransform(H_XI.transform(text))); },
-  restore(text) { return H_XI.restore(T.coreRestore(V.coreRestore(text))); },
-  rules: Object.freeze([...H_XI.rules, ...T.coreRules, ...V.coreRules]),
+  transform(text) { return Q.coreTransform(V.coreTransform(T.coreTransform(H_XI.transform(text)))); },
+  restore(text) { return H_XI.restore(T.coreRestore(V.coreRestore(Q.coreRestore(text)))); },
+  rules: Object.freeze([...H_XI.rules, ...T.coreRules, ...V.coreRules, ...Q.coreRules]),
 });
 const P_XI = require('./lib/treasury-compat-preview-hotpath.cjs');
 const D = require('./lib/treasury-compat-envelope.cjs');
@@ -177,6 +178,17 @@ function generate(original, template, manifest, previewOriginal) {
     engineCpuGapRepaired: false, engineMeasurementRequired: true,
     note: 'XV preserves XIV diagnostic wire shape and every CPU observation. Optimizes ASCII byte counting with exact Unicode fallback, redundant own checks, diagnostic enum membership, and unused observation query memo allocation. Commitment algorithms and eager full indexes are unchanged. No engine speedup, stability or spike root cause is inferred from offline work counts.'
   };
+  // R1 is a new outer, reversible authoring stage. Historical revision fields
+  // describe the inherited XV pipeline; the current implementation is explicit.
+  const readPathR1 = { implementationRevision: 'READ-PATH-R1',
+    inheritedRevision: 'XV', wireDiagnosticRevision: 'XIV',
+    authoring: 'scripts/lib/treasury-compat-read-path-r1.cjs',
+    rules: Q.coreRules, privateScopeDictionaries: true, sharedBoundQueryDefinitions: true,
+    fullIndexBuiltEagerly: true, newCpuObservations: 0, businessBudget: 2,
+    tableEnumerationPointUnchanged: true, cpuImprovementVerified: false };
+  m.loaderOptimization.readPathR1 = readPathR1;
+  provenance.readPathR1 = readPathR1;
+  provenance.authoring.push(readPathR1.authoring);
   return { [GENERATED]: out, [PREVIEW]: previewOut, [PROVENANCE]: encode(provenance), [SOURCE_MANIFEST]: encode(m) };
 }
 function verifyOutputIdentities(root, expected = FIXED_OUTPUTS) {
@@ -208,7 +220,7 @@ function main(argv) {
   check(argv.length === 1, 'ARGUMENT_INVALID');
   return verifyRoot(path.resolve(__dirname, '..'), argv[0]);
 }
-module.exports = { V, T, H_XI, N, generate, main, sha, blob, GENERATED, FIXTURE, TEMPLATE, PROVENANCE, SOURCE_MANIFEST, MARKER,
+module.exports = { Q, V, T, H_XI, N, generate, main, sha, blob, GENERATED, FIXTURE, TEMPLATE, PROVENANCE, SOURCE_MANIFEST, MARKER,
   X, B, A, H, P_XI, P, D, FIXED_OUTPUTS, EXPECTED_OUTPUT_PATHS, verifyOutputIdentities, applyOrCheckGenerated, verifyRoot,
   BASELINE_COMMIT, BUILD_VII_BLOB, IX_CORE_BLOB, IX_PREVIEW_BLOB, XI_PREVIEW_BLOB,
   PREVIEW, PREVIEW_FIXTURE, XI_PREVIEW_FIXTURE, CPU_XI_FIXTURE };

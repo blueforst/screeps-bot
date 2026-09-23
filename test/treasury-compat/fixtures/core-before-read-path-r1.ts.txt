@@ -287,146 +287,6 @@ function isValidReservationForCommitment(entry, compatContext) {
 }
 const taskKey = (roomName, resource) => `${roomName}\u0000${resource}`;
 const mergeKeyOf = (resource, fromRoomName, toRoomName, origin, reason) => `${resource}\u0000${fromRoomName}\u0000${toRoomName}\u0000${origin}\u0000${reason}`;
-/** Read Path R1: shared query definitions, isolated state for EVERY eager build.
- * Binding preserves detached-method behavior; no public mutable receiver state,
- * no query-time index construction, and no cross-sample business cache. */
-const compatCommitmentQueriesR1 = Object.freeze({
-    commitmentCompleteness(roomName, resource) {
-            this.metrics.indexQueries += 1;
-            if (this.globalIncomplete)
-                return "globally-incomplete";
-            return this.incompleteScopes.has(taskKey(roomName, resource)) ? "incomplete-scope" : "complete";
-        },
-    outgoing(roomName, resource) {
-            this.metrics.indexQueries += 1;
-            const bucket = this.taskScopes[taskKey(roomName, resource)];
-            return bucket ? bucket.outgoing : 0;
-        },
-    pendingOutgoing(roomName, resource, reasonPrefix) {
-            var _a, _b;
-            this.metrics.indexQueries += 1;
-            const bucket = this.taskScopes[taskKey(roomName, resource)];
-            if (!reasonPrefix)
-                return bucket ? bucket.outgoing : 0;
-            let total = 0;
-            for (const [reason, amount] of bucket && bucket.reasons ? bucket.reasons : []) {
-                if (reason.startsWith(reasonPrefix))
-                    total += amount;
-            }
-            return total;
-        },
-    incoming(roomName, resource) {
-            this.metrics.indexQueries += 1;
-            const bucket = this.taskScopes[taskKey(roomName, resource)];
-            return bucket ? bucket.incoming : 0;
-        },
-    pendingIncoming(roomName, resource) {
-            this.metrics.indexQueries += 1;
-            const bucket = this.taskScopes[taskKey(roomName, resource)];
-            return bucket ? bucket.pendingIncoming : 0;
-        },
-    incomingTaskCount(roomName) {
-            this.metrics.indexQueries += 1;
-            const bucket = (typeof roomName === "string" ? this.taskRooms[roomName] : undefined);
-            return bucket ? bucket.incomingCount : 0;
-        },
-    outgoingTaskCount(roomName) {
-            this.metrics.indexQueries += 1;
-            const bucket = (typeof roomName === "string" ? this.taskRooms[roomName] : undefined);
-            return bucket ? bucket.outgoingCount : 0;
-        },
-    findMergeableTaskId(resource, fromRoomName, toRoomName, origin, reason) {
-            var _a;
-            this.metrics.indexQueries += 1;
-            return ((_a = this.mergeIndex.get(mergeKeyOf(resource, fromRoomName, toRoomName, origin, reason || ""))) !== null && _a !== void 0 ? _a : null);
-        },
-    reservedProduction(roomName, resource, excludeOwner) {
-            var _a;
-            this.metrics.indexQueries += 1;
-            const bucket = this.reservedByRoomResource.get(taskKey(roomName, resource));
-            if (!bucket)
-                return 0;
-            if (!excludeOwner)
-                return bucket.total;
-            // 完整 typed identity 比较：同 kind + 同 id + 同 namespace 才排除；
-            // 同字符串不同 kind / legacy-unresolved 不互相排除。
-            return bucket.total - ((_a = bucket.byOwner.get((0, ownerIdentity_1.treasuryOwnerIdentityKey)(excludeOwner))) !== null && _a !== void 0 ? _a : 0);
-        },
-    reservationSnapshot() {
-            this.metrics.indexQueries += 1;
-            return Object.freeze([...this.reservationSnapshot]);
-        },
-    receiverCommitments(roomName) {
-            var _a, _b;
-            this.metrics.indexQueries += 1;
-            let roomComplete = !this.globalIncomplete;
-            if (roomComplete) {
-                for (const scope of this.incompleteScopes) {
-                    if (scope.startsWith(`${roomName}\x00`)) {
-                        roomComplete = false;
-                        break;
-                    }
-                }
-            }
-            // 每次动态组合：静态承诺（healthy incoming，点时快照）+ observed 容量
-            // （O(1) map 读）+ 当前 overlay 容量净变化（facade 注入的 O(1) 位置
-            // 聚合）。绝不缓存依赖当前 overlay 的 projected 字段——同 tick 结算
-            // 新 transaction 后的下一次查询必须立即反映最新投影。
-            const roomBucket = (typeof roomName === "string" ? this.taskRooms[roomName] : undefined);
-            const healthyIncomingAmount = roomBucket ? roomBucket.healthyAmount : 0;
-            const healthyIncomingTaskCount = roomBucket ? roomBucket.healthyCount : 0;
-            const storageFreeCapacity = this.options.observation.freeCapacity(roomName, "storage");
-            const terminalFreeCapacity = this.options.observation.freeCapacity(roomName, "terminal");
-            const projectedStorageFree = storageFreeCapacity - (0, this.capacityDelta)(roomName, "storage");
-            const projectedTerminalFree = terminalFreeCapacity - (0, this.capacityDelta)(roomName, "terminal");
-            // 严格口径（不含 quarantine/intent 风险占用）。
-            const strictStorageFree = storageFreeCapacity - (0, this.strictCapacityDelta)(roomName, "storage");
-            const strictTerminalFree = terminalFreeCapacity - (0, this.strictCapacityDelta)(roomName, "terminal");
-            return Object.freeze({
-                roomName,
-                healthyIncomingAmount,
-                healthyIncomingTaskCount,
-                storageFreeCapacity,
-                terminalFreeCapacity,
-                // 与旧 ReceiverCapacityLedger.getAvailability 的 min 语义一致：
-                // 入站承接是每结构独立扣全量、取 min；任一结构维度超卖即超卖。
-                storageHeadroom: storageFreeCapacity - healthyIncomingAmount,
-                terminalHeadroom: terminalFreeCapacity - healthyIncomingAmount,
-                overcommitted: healthyIncomingAmount > storageFreeCapacity ||
-                    healthyIncomingAmount > terminalFreeCapacity,
-                projectedStorageHeadroom: projectedStorageFree - healthyIncomingAmount,
-                projectedTerminalHeadroom: projectedTerminalFree - healthyIncomingAmount,
-                projectedOvercommitted: healthyIncomingAmount > projectedStorageFree ||
-                    healthyIncomingAmount > projectedTerminalFree,
-                strictStorageHeadroom: strictStorageFree - healthyIncomingAmount,
-                strictTerminalHeadroom: strictTerminalFree - healthyIncomingAmount,
-                strictOvercommitted: healthyIncomingAmount > strictStorageFree ||
-                    healthyIncomingAmount > strictTerminalFree,
-                riskAdjustedStorageHeadroom: projectedStorageFree - healthyIncomingAmount,
-                riskAdjustedTerminalHeadroom: projectedTerminalFree - healthyIncomingAmount,
-                riskAdjustedOvercommitted: healthyIncomingAmount > projectedStorageFree ||
-                    healthyIncomingAmount > projectedTerminalFree,
-                // 承诺视图完整才可用于 receiver admission 授权。
-                commitmentComplete: roomComplete,
-            });
-        }
-});
-function createCompatCommitmentViewR1(state, tick, revision, completenessSnapshot) {
-    return { builtAtTick: tick, revision, completeness: completenessSnapshot,
-        commitmentCompleteness: compatCommitmentQueriesR1.commitmentCompleteness.bind(state),
-        outgoing: compatCommitmentQueriesR1.outgoing.bind(state),
-        pendingOutgoing: compatCommitmentQueriesR1.pendingOutgoing.bind(state),
-        incoming: compatCommitmentQueriesR1.incoming.bind(state),
-        pendingIncoming: compatCommitmentQueriesR1.pendingIncoming.bind(state),
-        incomingTaskCount: compatCommitmentQueriesR1.incomingTaskCount.bind(state),
-        outgoingTaskCount: compatCommitmentQueriesR1.outgoingTaskCount.bind(state),
-        findMergeableTaskId: compatCommitmentQueriesR1.findMergeableTaskId.bind(state),
-        reservedProduction: compatCommitmentQueriesR1.reservedProduction.bind(state),
-        reservationSnapshot: compatCommitmentQueriesR1.reservationSnapshot.bind(state),
-        receiverCommitments: compatCommitmentQueriesR1.receiverCommitments.bind(state),
-        metrics: state.metrics };
-}
-const compatZeroDeltaR1 = () => 0;
 function buildTreasuryCommitmentIndex(options, compatContext) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
     const compatDiagnostics = options.compatDiagnostics;
@@ -443,8 +303,8 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
     const revision = compatContext.revision;
     const healthOptions = (0, resourceTransferTaskHealth_1.resolveResourceTransferTaskHealthOptions)();
     const holderExists = (_a = options.holderExists) !== null && _a !== void 0 ? _a : defaultHolderExists;
-    const capacityDelta = (_b = options.capacityDelta) !== null && _b !== void 0 ? _b : compatZeroDeltaR1;
-    const strictCapacityDelta = (_c = options.strictCapacityDelta) !== null && _c !== void 0 ? _c : compatZeroDeltaR1;
+    const capacityDelta = (_b = options.capacityDelta) !== null && _b !== void 0 ? _b : (() => 0);
+    const strictCapacityDelta = (_c = options.strictCapacityDelta) !== null && _c !== void 0 ? _c : (() => 0);
     const metrics = {
         taskRecords: 0,
         pendingTaskRecords: 0,
@@ -463,16 +323,22 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
     // VII: full task indexes share storage by scope/room, not by sample.
     // These private maps are fresh for EVERY build. Route and reservation
     // indexes retain their own maps; no validation or query is deferred.
-    const taskScopes = Object.create(null);
-    const taskRooms = Object.create(null);
-    let taskScopeCount = 0, taskRoomCount = 0;
+    const taskScopes = new Map();
+    const taskRooms = new Map();
     const mergeIndex = new Map();
     // completeness（第五轮）：损坏记录不进聚合、不删原数据；能定位 bucket 的
     // 标记 (room,resource) scope incomplete，连 scope 都无法确定的标记全局
     // incomplete——incomplete scope 的 spendable/授权必须 fail closed。
-    let invalidCommitmentRecordCount = 0;
+    const invalidCommitmentRecords = { count: 0 };
     const incompleteScopes = new Set();
     let globalIncomplete = false;
+    const recordInvalid = () => {
+        invalidCommitmentRecords.count += 1;
+        if (attributionInvalidRegion === "tasks")
+            attributionTaskInvalidEvents += 1;
+        else if (attributionInvalidRegion === "reservations")
+            attributionReservationInvalidEvents += 1;
+    };
     attributionInvalidRegion = "tasks";
     if (compatDiagnostics)
         compatDiagnostics.boundary("commitmentTasks");
@@ -488,10 +354,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             // 损坏任务影响 donor 与 receiver 双侧 bucket：能定位哪侧就标记哪侧
             // scope incomplete；双侧都不可定位（连资源/房间都读不出）则全局
             // incomplete。绝不静默跳过后给出乐观 spendable，也绝不删除原记录。
-            { invalidCommitmentRecordCount += 1;
-                if (attributionInvalidRegion === "tasks") attributionTaskInvalidEvents += 1;
-                else if (attributionInvalidRegion === "reservations") attributionReservationInvalidEvents += 1;
-            }
+            recordInvalid();
             // scope 定位要求 (room, resource) 二元均合法：非法 resource（不在官方
             // catalog）无法构成任何合法 scope——绝不能因"非法资源不会命中合法
             // 查询"就静默跳过，直接全局 incomplete（一切授权 fail closed）。
@@ -523,28 +386,25 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         const fromRoom = task.fromRoomName, toRoom = task.toRoomName;
         const outKey = taskKey(fromRoom, task.resource);
         const inKey = taskKey(toRoom, task.resource);
-        let outBucket = taskScopes[outKey], inBucket = inKey === outKey ? outBucket : taskScopes[inKey];
+        let outBucket = taskScopes.get(outKey), inBucket = inKey === outKey ? outBucket : taskScopes.get(inKey);
         // XIV: same additions and safe-integer guards, without per-record helper calls.
         const mergedOutgoing = (outBucket ? outBucket.outgoing : 0) + task.remainingAmount;
         const mergedPendingIncoming = (inBucket ? inBucket.pendingIncoming : 0) + task.remainingAmount;
         if (!Number.isSafeInteger(mergedOutgoing) || !Number.isSafeInteger(mergedPendingIncoming)) {
-            { invalidCommitmentRecordCount += 1;
-                if (attributionInvalidRegion === "tasks") attributionTaskInvalidEvents += 1;
-                else if (attributionInvalidRegion === "reservations") attributionReservationInvalidEvents += 1;
-            }
+            recordInvalid();
             incompleteScopes.add(outKey);
             incompleteScopes.add(inKey);
             continue;
         }
-        let fromBucket = taskRooms[fromRoom];
+        let fromBucket = taskRooms.get(fromRoom);
         if (!fromBucket) {
             fromBucket = { outgoingCount: 0, incomingCount: 0, healthyAmount: 0, healthyCount: 0 };
-            taskRooms[fromRoom] = fromBucket; taskRoomCount += 1;
+            taskRooms.set(fromRoom, fromBucket);
         }
         fromBucket.outgoingCount += 1;
         if (!outBucket) {
             outBucket = { outgoing: 0, pendingIncoming: 0, incoming: 0, reasons: undefined };
-            taskScopes[outKey] = outBucket; taskScopeCount += 1;
+            taskScopes.set(outKey, outBucket);
         }
         outBucket.outgoing = mergedOutgoing;
         const byReason = outBucket.reasons !== undefined ? outBucket.reasons : new Map();
@@ -552,10 +412,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         // Keep the canonical partial-update order on overflow: outgoing and
         // outgoingCount above remain updated; pendingIncoming is NOT updated.
         if (!Number.isSafeInteger(mergedByReason)) {
-            { invalidCommitmentRecordCount += 1;
-                if (attributionInvalidRegion === "tasks") attributionTaskInvalidEvents += 1;
-                else if (attributionInvalidRegion === "reservations") attributionReservationInvalidEvents += 1;
-            }
+            recordInvalid();
             incompleteScopes.add(outKey);
             continue;
         }
@@ -563,7 +420,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         outBucket.reasons = byReason;
         if (!inBucket) {
             inBucket = inKey === outKey ? outBucket : { outgoing: 0, pendingIncoming: 0, incoming: 0, reasons: undefined };
-            if (inKey !== outKey) { taskScopes[inKey] = inBucket; taskScopeCount += 1; }
+            if (inKey !== outKey) taskScopes.set(inKey, inBucket);
         }
         inBucket.pendingIncoming = mergedPendingIncoming;
         attributionDemandHealthChecks += 1;
@@ -575,18 +432,15 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         if (countsTowardDemand) {
             const mergedIncoming = inBucket.incoming + task.remainingAmount;
             if (!Number.isSafeInteger(mergedIncoming)) {
-                { invalidCommitmentRecordCount += 1;
-                if (attributionInvalidRegion === "tasks") attributionTaskInvalidEvents += 1;
-                else if (attributionInvalidRegion === "reservations") attributionReservationInvalidEvents += 1;
-            }
+                recordInvalid();
                 incompleteScopes.add(inKey);
                 continue;
             }
             inBucket.incoming = mergedIncoming;
-            toBucket = taskRooms[toRoom];
+            toBucket = taskRooms.get(toRoom);
             if (!toBucket) {
                 toBucket = { outgoingCount: 0, incomingCount: 0, healthyAmount: 0, healthyCount: 0 };
-                taskRooms[toRoom] = toBucket; taskRoomCount += 1;
+                taskRooms.set(toRoom, toBucket);
             }
             toBucket.incomingCount += 1;
         }
@@ -602,10 +456,10 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         attributionReceiverHealthChecks += 1;
         if ((0, resourceTransferTaskHealth_1.isHealthyReceiverCapacityCommitment)(task, healthOptions.automaticTaskNoProgressTtl)) {
             if (!toBucket) {
-                toBucket = taskRooms[toRoom];
+                toBucket = taskRooms.get(toRoom);
                 if (!toBucket) {
                     toBucket = { outgoingCount: 0, incomingCount: 0, healthyAmount: 0, healthyCount: 0 };
-                    taskRooms[toRoom] = toBucket; taskRoomCount += 1;
+                    taskRooms.set(toRoom, toBucket);
                 }
             }
             // Keep canonical arithmetic (including its overflow behavior).
@@ -631,10 +485,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
     for (const reservationId of reservationIds) {
         const entry = options.reservations[reservationId];
         if (!isValidReservationForCommitment(entry, compatContext)) {
-            { invalidCommitmentRecordCount += 1;
-                if (attributionInvalidRegion === "tasks") attributionTaskInvalidEvents += 1;
-                else if (attributionInvalidRegion === "reservations") attributionReservationInvalidEvents += 1;
-            }
+            recordInvalid();
             const roomLocated = typeof (entry === null || entry === void 0 ? void 0 : entry.roomName) === "string" && entry.roomName.length > 0;
             // resource 必须在官方 catalog 内才能构成合法 scope（与 task 同口径）。
             const resourceKnown = typeof (entry === null || entry === void 0 ? void 0 : entry.resource) === "string" && compatContext.resources.has(entry.resource);
@@ -693,10 +544,7 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
         const ownerKey = (0, ownerIdentity_1.treasuryOwnerIdentityKey)(owner);
         const mergedOwner = addSafeInteger((_r = bucket.byOwner.get(ownerKey)) !== null && _r !== void 0 ? _r : 0, entry.amount);
         if (mergedTotal === null || mergedOwner === null) {
-            { invalidCommitmentRecordCount += 1;
-                if (attributionInvalidRegion === "tasks") attributionTaskInvalidEvents += 1;
-                else if (attributionInvalidRegion === "reservations") attributionReservationInvalidEvents += 1;
-            }
+            recordInvalid();
             incompleteScopes.add(key);
             continue;
         }
@@ -707,19 +555,138 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
     attributionInvalidRegion = "finalize";
     if (compatDiagnostics)
         compatDiagnostics.boundary("commitmentFinalize");
-    metrics.invalidCommitmentRecords = invalidCommitmentRecordCount;
+    metrics.invalidCommitmentRecords = invalidCommitmentRecords.count;
     metrics.incompleteCommitmentScopes = incompleteScopes.size;
     metrics.globallyIncomplete = globalIncomplete;
     const completenessSnapshot = Object.freeze({
-        complete: invalidCommitmentRecordCount === 0,
+        complete: invalidCommitmentRecords.count === 0,
         globalIncomplete,
         incompleteScopeCount: incompleteScopes.size,
-        invalidRecords: invalidCommitmentRecordCount,
+        invalidRecords: invalidCommitmentRecords.count,
     });
-    const index = createCompatCommitmentViewR1({
-        metrics, globalIncomplete, incompleteScopes, taskScopes, taskRooms, mergeIndex,
-        reservedByRoomResource, reservationSnapshot, options, capacityDelta, strictCapacityDelta,
-    }, tick, revision, completenessSnapshot);
+    const index = { builtAtTick: tick,
+        revision,
+        completeness: completenessSnapshot,
+        commitmentCompleteness(roomName, resource) {
+            metrics.indexQueries += 1;
+            if (globalIncomplete)
+                return "globally-incomplete";
+            return incompleteScopes.has(taskKey(roomName, resource)) ? "incomplete-scope" : "complete";
+        },
+        outgoing(roomName, resource) {
+            metrics.indexQueries += 1;
+            const bucket = taskScopes.get(taskKey(roomName, resource));
+            return bucket ? bucket.outgoing : 0;
+        },
+        pendingOutgoing(roomName, resource, reasonPrefix) {
+            var _a, _b;
+            metrics.indexQueries += 1;
+            const bucket = taskScopes.get(taskKey(roomName, resource));
+            if (!reasonPrefix)
+                return bucket ? bucket.outgoing : 0;
+            let total = 0;
+            for (const [reason, amount] of bucket && bucket.reasons ? bucket.reasons : []) {
+                if (reason.startsWith(reasonPrefix))
+                    total += amount;
+            }
+            return total;
+        },
+        incoming(roomName, resource) {
+            metrics.indexQueries += 1;
+            const bucket = taskScopes.get(taskKey(roomName, resource));
+            return bucket ? bucket.incoming : 0;
+        },
+        pendingIncoming(roomName, resource) {
+            metrics.indexQueries += 1;
+            const bucket = taskScopes.get(taskKey(roomName, resource));
+            return bucket ? bucket.pendingIncoming : 0;
+        },
+        incomingTaskCount(roomName) {
+            metrics.indexQueries += 1;
+            const bucket = taskRooms.get(roomName);
+            return bucket ? bucket.incomingCount : 0;
+        },
+        outgoingTaskCount(roomName) {
+            metrics.indexQueries += 1;
+            const bucket = taskRooms.get(roomName);
+            return bucket ? bucket.outgoingCount : 0;
+        },
+        findMergeableTaskId(resource, fromRoomName, toRoomName, origin, reason) {
+            var _a;
+            metrics.indexQueries += 1;
+            return ((_a = mergeIndex.get(mergeKeyOf(resource, fromRoomName, toRoomName, origin, reason || ""))) !== null && _a !== void 0 ? _a : null);
+        },
+        reservedProduction(roomName, resource, excludeOwner) {
+            var _a;
+            metrics.indexQueries += 1;
+            const bucket = reservedByRoomResource.get(taskKey(roomName, resource));
+            if (!bucket)
+                return 0;
+            if (!excludeOwner)
+                return bucket.total;
+            // 完整 typed identity 比较：同 kind + 同 id + 同 namespace 才排除；
+            // 同字符串不同 kind / legacy-unresolved 不互相排除。
+            return bucket.total - ((_a = bucket.byOwner.get((0, ownerIdentity_1.treasuryOwnerIdentityKey)(excludeOwner))) !== null && _a !== void 0 ? _a : 0);
+        },
+        reservationSnapshot() {
+            metrics.indexQueries += 1;
+            return Object.freeze([...reservationSnapshot]);
+        },
+        receiverCommitments(roomName) {
+            var _a, _b;
+            metrics.indexQueries += 1;
+            let roomComplete = !globalIncomplete;
+            if (roomComplete) {
+                for (const scope of incompleteScopes) {
+                    if (scope.startsWith(`${roomName}\x00`)) {
+                        roomComplete = false;
+                        break;
+                    }
+                }
+            }
+            // 每次动态组合：静态承诺（healthy incoming，点时快照）+ observed 容量
+            // （O(1) map 读）+ 当前 overlay 容量净变化（facade 注入的 O(1) 位置
+            // 聚合）。绝不缓存依赖当前 overlay 的 projected 字段——同 tick 结算
+            // 新 transaction 后的下一次查询必须立即反映最新投影。
+            const roomBucket = taskRooms.get(roomName);
+            const healthyIncomingAmount = roomBucket ? roomBucket.healthyAmount : 0;
+            const healthyIncomingTaskCount = roomBucket ? roomBucket.healthyCount : 0;
+            const storageFreeCapacity = options.observation.freeCapacity(roomName, "storage");
+            const terminalFreeCapacity = options.observation.freeCapacity(roomName, "terminal");
+            const projectedStorageFree = storageFreeCapacity - capacityDelta(roomName, "storage");
+            const projectedTerminalFree = terminalFreeCapacity - capacityDelta(roomName, "terminal");
+            // 严格口径（不含 quarantine/intent 风险占用）。
+            const strictStorageFree = storageFreeCapacity - strictCapacityDelta(roomName, "storage");
+            const strictTerminalFree = terminalFreeCapacity - strictCapacityDelta(roomName, "terminal");
+            return Object.freeze({
+                roomName,
+                healthyIncomingAmount,
+                healthyIncomingTaskCount,
+                storageFreeCapacity,
+                terminalFreeCapacity,
+                // 与旧 ReceiverCapacityLedger.getAvailability 的 min 语义一致：
+                // 入站承接是每结构独立扣全量、取 min；任一结构维度超卖即超卖。
+                storageHeadroom: storageFreeCapacity - healthyIncomingAmount,
+                terminalHeadroom: terminalFreeCapacity - healthyIncomingAmount,
+                overcommitted: healthyIncomingAmount > storageFreeCapacity ||
+                    healthyIncomingAmount > terminalFreeCapacity,
+                projectedStorageHeadroom: projectedStorageFree - healthyIncomingAmount,
+                projectedTerminalHeadroom: projectedTerminalFree - healthyIncomingAmount,
+                projectedOvercommitted: healthyIncomingAmount > projectedStorageFree ||
+                    healthyIncomingAmount > projectedTerminalFree,
+                strictStorageHeadroom: strictStorageFree - healthyIncomingAmount,
+                strictTerminalHeadroom: strictTerminalFree - healthyIncomingAmount,
+                strictOvercommitted: healthyIncomingAmount > strictStorageFree ||
+                    healthyIncomingAmount > strictTerminalFree,
+                riskAdjustedStorageHeadroom: projectedStorageFree - healthyIncomingAmount,
+                riskAdjustedTerminalHeadroom: projectedTerminalFree - healthyIncomingAmount,
+                riskAdjustedOvercommitted: healthyIncomingAmount > projectedStorageFree ||
+                    healthyIncomingAmount > projectedTerminalFree,
+                // 承诺视图完整才可用于 receiver admission 授权。
+                commitmentComplete: roomComplete,
+            });
+        },
+        metrics, };
     if (compatDiagnostics) {
         compatDiagnostics.work({
             commitmentTaskRecords: metrics.taskRecords,
@@ -732,8 +699,8 @@ function buildTreasuryCommitmentIndex(options, compatContext) {
             commitmentReservationInvalidEvents: attributionReservationInvalidEvents,
             commitmentOwnerEvaluations: attributionOwnerEvaluations,
             commitmentActiveReservations: metrics.activeReservationRecords,
-            commitmentScopeBuckets: taskScopeCount,
-            commitmentRoomBuckets: taskRoomCount,
+            commitmentScopeBuckets: taskScopes.size,
+            commitmentRoomBuckets: taskRooms.size,
             commitmentMergeRoutes: mergeIndex.size,
             commitmentReservationScopes: reservedByRoomResource.size,
         });
@@ -931,12 +898,14 @@ function deepFreezeRoom(room) {
         terminal: room.terminal,
     });
 }
-/** Read Path R1: every view retains its own immutable snapshot and memo state.
- * Shared executable definitions are initialized with the admitted reader module,
- * not with Game data and not by a warm-up call outside the CPU envelope. */
-const compatRoomNameR1 = room => room.roomName;
-const compatObservationLocationR1 = (state, roomName, kind) => {
-        const room = state.roomByName[roomName];
+function createObservationView(data, roomByName) {
+    const roomsByOrdinal = data.rooms;
+    let cachedEmpireResources;
+    // XV: query results were already lazy. Allocate their private memo container
+    // only if roomResources is queried; no index or view capability is deferred.
+    let roomResourcesCache;
+    const locationOf = (roomName, kind) => {
+        const room = roomByName[roomName];
         if (!room) {
             return Object.freeze({
                 roomName,
@@ -950,33 +919,36 @@ const compatObservationLocationR1 = (state, roomName, kind) => {
         }
         return kind === "storage" ? room.storage : room.terminal;
     };
-const compatObservationQueriesR1 = Object.freeze({
-    roomNames() {
-            return this.roomsByOrdinal.map(compatRoomNameR1);
+    return {
+        data,
+        epoch: data.epoch,
+        roomNames() {
+            return roomsByOrdinal.map((room) => room.roomName);
         },
-    hasRoom(roomName) {
-            return Object.prototype.hasOwnProperty.call(this.roomByName, roomName);
+        hasRoom(roomName) {
+            return Object.prototype.hasOwnProperty.call(roomByName, roomName);
         },
-    locationExists(roomName, kind) {
-            return compatObservationLocationR1(this, roomName, kind).exists;
+        locationExists(roomName, kind) {
+            return locationOf(roomName, kind).exists;
         },
-    amount(roomName, kind, resource) {
+        location: locationOf,
+        amount(roomName, kind, resource) {
             var _a;
-            return (_a = compatObservationLocationR1(this, roomName, kind).amounts[resource]) !== null && _a !== void 0 ? _a : 0;
+            return (_a = locationOf(roomName, kind).amounts[resource]) !== null && _a !== void 0 ? _a : 0;
         },
-    roomAmount(roomName, resource) {
+        roomAmount(roomName, resource) {
             var _a, _b;
-            const room = this.roomByName[roomName];
+            const room = roomByName[roomName];
             if (!room)
                 return 0;
             return ((_a = room.storage.amounts[resource]) !== null && _a !== void 0 ? _a : 0) + ((_b = room.terminal.amounts[resource]) !== null && _b !== void 0 ? _b : 0);
         },
-    roomResources(roomName) {
-            if (!this.roomResourcesCache) this.roomResourcesCache = new Map();
-            const cached = this.roomResourcesCache.get(roomName);
+        roomResources(roomName) {
+            if (!roomResourcesCache) roomResourcesCache = new Map();
+            const cached = roomResourcesCache.get(roomName);
             if (cached)
                 return cached;
-            const room = this.roomByName[roomName];
+            const room = roomByName[roomName];
             const merged = new Set();
             if (room) {
                 for (const key of Object.keys(room.storage.amounts))
@@ -985,47 +957,28 @@ const compatObservationQueriesR1 = Object.freeze({
                     merged.add(key);
             }
             const snapshot = Object.freeze([...merged]);
-            this.roomResourcesCache.set(roomName, snapshot);
+            roomResourcesCache.set(roomName, snapshot);
             return snapshot;
         },
-    empireTotal(resource) {
+        empireTotal(resource) {
             var _a;
-            return (_a = this.data.empireTotals[resource]) !== null && _a !== void 0 ? _a : 0;
+            return (_a = data.empireTotals[resource]) !== null && _a !== void 0 ? _a : 0;
         },
-    empireResources() {
-            if (!this.cachedEmpireResources) {
-                this.cachedEmpireResources = Object.freeze(Object.keys(this.data.empireTotals));
+        empireResources() {
+            if (!cachedEmpireResources) {
+                cachedEmpireResources = Object.freeze(Object.keys(data.empireTotals));
             }
-            return this.cachedEmpireResources;
+            return cachedEmpireResources;
         },
-    usedCapacity(roomName, kind) {
-            return compatObservationLocationR1(this, roomName, kind).usedCapacity;
+        usedCapacity(roomName, kind) {
+            return locationOf(roomName, kind).usedCapacity;
         },
-    freeCapacity(roomName, kind) {
-            return compatObservationLocationR1(this, roomName, kind).freeCapacity;
+        freeCapacity(roomName, kind) {
+            return locationOf(roomName, kind).freeCapacity;
         },
-    isStale() {
-            return this.data.epoch.observedAtTick !== Game.time;
-        }
-});
-function createObservationView(data, roomByName) {
-    const state = { data, roomByName, roomsByOrdinal: data.rooms,
-        cachedEmpireResources: undefined, roomResourcesCache: undefined };
-    return {
-        data,
-        epoch: data.epoch,
-        roomNames: compatObservationQueriesR1.roomNames.bind(state),
-        hasRoom: compatObservationQueriesR1.hasRoom.bind(state),
-        locationExists: compatObservationQueriesR1.locationExists.bind(state),
-        location: compatObservationLocationR1.bind(undefined, state),
-        amount: compatObservationQueriesR1.amount.bind(state),
-        roomAmount: compatObservationQueriesR1.roomAmount.bind(state),
-        roomResources: compatObservationQueriesR1.roomResources.bind(state),
-        empireTotal: compatObservationQueriesR1.empireTotal.bind(state),
-        empireResources: compatObservationQueriesR1.empireResources.bind(state),
-        usedCapacity: compatObservationQueriesR1.usedCapacity.bind(state),
-        freeCapacity: compatObservationQueriesR1.freeCapacity.bind(state),
-        isStale: compatObservationQueriesR1.isStale.bind(state),
+        isStale() {
+            return data.epoch.observedAtTick !== Game.time;
+        },
     };
 }
 /**
@@ -1072,8 +1025,7 @@ function buildTreasuryObservation(options) {
         rooms.push(roomSnapshot);
         roomByName[room.name] = roomSnapshot;
         // 帝国总量 = 全部位置桶之和（构建期求和；missing 位置贡献 0）。
-        for (let locationOrdinal = 0; locationOrdinal < 2; locationOrdinal += 1) {
-            const scan = locationOrdinal === 0 ? storageScan : terminalScan;
+        for (const scan of [storageScan, terminalScan]) {
             // XI: preserve sparse key order and addition order while reusing the
             // first Store enumeration retained by scanLocation.
             for (const resource of scan.amountKeys) {
