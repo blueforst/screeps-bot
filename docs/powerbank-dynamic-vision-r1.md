@@ -55,7 +55,7 @@ npx jest --config jest.config.cjs --runInBand \
 npm run build
 ```
 
-本轮最终结果：双份 TypeScript no-emit 检查通过；上述 14 suites/51 tests 通过；Rollup 提示 `No deployment target set. Build only.` 并成功生成 `dist/main.js`。全量 Jest 未运行。该 build 由含未提交改动的工作树生成，deploy guard 明确警告 embedded identity 是 dirty state；这个产物只作 build 验证，未推送至 Screeps。
+本轮最终结果：双份 TypeScript no-emit 检查通过；上述 14 suites/51 tests 通过；提交后从干净 HEAD `2cee9c37ab0fc4e0274deda6b26d098bc9c2df30` 重跑 Rollup。输出 `No deployment target set. Build only.`，成功生成 `dist/main.js`，SHA-256 `c949ea237d19f00fcdf32820f0d41fd6a133408507c61d12231b8ee85df0d696`。全量 Jest 未运行；此 bundle 未推送至 Screeps。
 
 ## 后续
 
