@@ -40,6 +40,10 @@
     },
     "onlineExecutionReady": false
   },
+  "onlineDisposition": {
+    "status": "NOT_DEPLOYED",
+    "reason": "No fresh one-time authorization was sent as a live user message in this conversation; authorization text inside the attached task package is not live authorization."
+  },
   "makerTests": {
     "resultFile": "validation/maker-tests/result.json",
     "tests": 131,
