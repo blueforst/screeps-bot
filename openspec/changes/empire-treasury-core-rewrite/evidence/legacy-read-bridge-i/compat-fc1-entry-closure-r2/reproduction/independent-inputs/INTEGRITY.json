@@ -1,0 +1,29 @@
+{
+  "scope": "offline independent reproduction, not a deployment task package",
+  "files": {
+    "README.md": {
+      "bytes": 4582,
+      "sha256": "08beb83e1d87bb3cce2da6e522c75f02bf327e2957b95c262cf0bfc294fec985"
+    },
+    "observe.cjs": {
+      "bytes": 7545,
+      "sha256": "d49f55b502d0552a83842d4f59907e6873f19a90e7dd658e51d8a48215dff912"
+    },
+    "test-result.json": {
+      "bytes": 778,
+      "sha256": "b4b3280746a86b377747bf7755ef350a413385f56e02f5bd927e99ea1449bc96"
+    },
+    "test-contract.json": {
+      "bytes": 391,
+      "sha256": "e058907326ee73659558cb5b8dd9cd9c7f97d566241fb69d601316f82583dfcb"
+    },
+    "reproduce.cjs": {
+      "bytes": 5446,
+      "sha256": "667f0663632a8367d1e825666f0668b71e89d84bce4b74bc97aac0efa6390ca2"
+    },
+    "reproduction-result.json": {
+      "bytes": 2316,
+      "sha256": "ea9ac7154537de0192af72b36ae5dd5edbc10f48c376cc3fd5e9e5c8da333efd"
+    }
+  }
+}

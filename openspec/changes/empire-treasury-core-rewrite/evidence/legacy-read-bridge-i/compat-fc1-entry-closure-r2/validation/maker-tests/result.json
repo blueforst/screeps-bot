@@ -1,0 +1,15 @@
+{
+  "status": "FC1_MAKER_TESTS_VERIFIED_NOT_DEPLOYMENT_GATE",
+  "packageFingerprint": "b7d8353295a930df805c7c7fe84d793a0a6a14f020c9fcbc9809a3042d1c2ff2",
+  "compiler": "5.9.3",
+  "tests": 131,
+  "passed": 131,
+  "failed": 0,
+  "skipped": 0,
+  "todo": 0,
+  "cancelled": 0,
+  "syntaxFiles": 27,
+  "fullRepositoryGate": false,
+  "realPreviewIntegrationTestsRun": false,
+  "at": "2026-09-24T09:53:19.367Z"
+}

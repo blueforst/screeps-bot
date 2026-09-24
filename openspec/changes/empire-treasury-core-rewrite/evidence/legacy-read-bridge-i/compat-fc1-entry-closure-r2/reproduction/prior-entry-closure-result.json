@@ -1,0 +1,75 @@
+{
+  "status": "BLOCKER_REPRODUCED",
+  "commit": "11b818fb250900273ee485cc60766c10a493b375",
+  "node": "v22.23.3",
+  "scope": "Exact observe.cjs preflight with archived authentic test-result and test-contract. Authorization, Git prerequisites and offline build result are synthetic success fixtures; fs writes prohibited. No full repository suite or online validation.",
+  "inputIdentities": {
+    "observe.cjs": {
+      "bytes": 7545,
+      "gitBlob": "6f5449cbc6a2be91f31d86b3f1a2227efa3a1e5f"
+    },
+    "test-result.json": {
+      "bytes": 778,
+      "gitBlob": "dbb53ea488cc6f141eb1e3d6c5c494bc347d1286"
+    },
+    "test-contract.json": {
+      "bytes": 391,
+      "gitBlob": "d0c4f94e5f8f0423ed8820ef505e72e96271b08f"
+    }
+  },
+  "findings": [
+    {
+      "field": "tests.status",
+      "actual": "FC1_FINAL_EXECUTOR_VERIFIED",
+      "expected": "READ_XV_RETRY_PACKAGE_TESTS_VERIFIED"
+    },
+    {
+      "field": "test-contract.count",
+      "actual": "absent",
+      "comparison": "tests.passed (135) !== undefined"
+    },
+    {
+      "field": "tests.failed (top-level)",
+      "actual": "absent",
+      "comparison": "undefined !== 0"
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "pending_authorization_control",
+      "outcome": "NEW_ROUND_AUTHORIZATION_REQUIRED",
+      "barrierCalls": 0,
+      "networkCalls": 0,
+      "experimentMarkersWritten": 0
+    },
+    {
+      "name": "authentic_archived_result_and_contract",
+      "outcome": "OFFLINE_GATES_MISSING",
+      "barrierCalls": 0,
+      "networkCalls": 0,
+      "experimentMarkersWritten": 0
+    },
+    {
+      "name": "diagnostic_control_change_status_only",
+      "outcome": "OFFLINE_GATES_MISSING",
+      "barrierCalls": 0,
+      "networkCalls": 0,
+      "experimentMarkersWritten": 0
+    },
+    {
+      "name": "diagnostic_control_change_status_and_count",
+      "outcome": "OFFLINE_GATES_MISSING",
+      "barrierCalls": 0,
+      "networkCalls": 0,
+      "experimentMarkersWritten": 0
+    },
+    {
+      "name": "diagnostic_control_satisfy_all_three_legacy_checks",
+      "outcome": "SIDE_EFFECT_BARRIER",
+      "barrierCalls": 1,
+      "networkCalls": 0,
+      "experimentMarkersWritten": 0
+    }
+  ],
+  "warning": "The modified diagnostic controls are not repaired artifacts. Do not modify historical results or bypass the gate to deploy."
+}

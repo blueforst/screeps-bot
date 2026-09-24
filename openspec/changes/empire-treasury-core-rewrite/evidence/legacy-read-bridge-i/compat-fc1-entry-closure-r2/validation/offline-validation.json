@@ -1,0 +1,110 @@
+{
+  "kind": "fc1-entry-closure-r2-offline-validation/v1",
+  "date": "2026-09-24",
+  "environment": {
+    "node": "v22.23.3",
+    "typescript": "5.9.3"
+  },
+  "historicalReproduction": {
+    "status": "BLOCKER_REPRODUCED",
+    "commit": "11b818fb250900273ee485cc60766c10a493b375",
+    "result": "OFFLINE_GATES_MISSING",
+    "evidence": "reproduction/prior-entry-closure-result.json"
+  },
+  "sourceBinding": {
+    "status": "VERIFIED_FROM_COMMITTED_OBJECTS",
+    "head": "0cdbd061c2645366bd409dbdbd262881d277cb35",
+    "tree": "70dff5366fabf4586aef30acd2c62c290824a772",
+    "sourceModified": false,
+    "refactorBase": "b17979591d8308088c774fbb92a43f4cf5a80df7",
+    "priorAttempt": {
+      "path": "openspec/changes/empire-treasury-core-rewrite/evidence/legacy-read-bridge-i/compat-full-cost-fc1-online-i/FINAL-VERIFICATION.json",
+      "blob": "56025614f5913ed07881be2c46e3628b1c9be83b",
+      "terminationReason": "TIMING_PROFILE_INVALID"
+    },
+    "runtimeEmitterId": "treasury-full-cost-FC1-online-I-2026-09-24",
+    "compiledRuntimeArtifacts": 4
+  },
+  "assembledExecutor": {
+    "status": "FC1_OFFLINE_EXECUTOR_ASSEMBLED_AUTHORIZATION_REQUIRED",
+    "kind": "treasury-full-cost-FC1/v1",
+    "path": "executor/",
+    "packageFingerprint": "b4dae518137e322106bfba0396753b16d8f1ce015dd770b872eda1b77ea2c93f",
+    "integrityFiles": 192,
+    "authorizationId": "treasury-full-cost-FC1-online-II-2026-09-24",
+    "runId": "4d9fb3da-29c7-4313-9d53-925fcbdbcb5d",
+    "newRoundAuthorization": {
+      "status": "WAITING_FOR_EXPLICIT_AUTHORIZATION",
+      "authorizationId": null,
+      "runId": null
+    },
+    "onlineExecutionReady": false
+  },
+  "makerTests": {
+    "resultFile": "validation/maker-tests/result.json",
+    "tests": 131,
+    "passed": 131,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "cancelled": 0,
+    "syntaxFiles": 27
+  },
+  "finalExecutorTests": {
+    "resultFile": "validation/final-executor-tests-r6/result.json",
+    "packageFingerprint": "b4dae518137e322106bfba0396753b16d8f1ce015dd770b872eda1b77ea2c93f",
+    "tests": 145,
+    "passed": 145,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "cancelled": 0,
+    "legacyRiskRegressions": 100,
+    "finalFc1Composition": 45,
+    "onlineAttempted": false
+  },
+  "entryClosure": {
+    "tapFile": "validation/entry-closure.integration-r3.tap",
+    "tests": 2,
+    "passed": 2,
+    "failed": 0,
+    "realRunTestsProducer": true,
+    "authAndGit": "synthetic-only",
+    "resultGate": "actual generated observe module and actual result validator",
+    "writeBarrier": "first work-directory mkdir; no directory or marker is created"
+  },
+  "runtimeCollectorCustody": {
+    "test": "full-cost-source-custody.spec.cjs",
+    "status": "PASS",
+    "actualRuntimeAndPreview": true,
+    "reportsEmitted": 4,
+    "costReceiptsEmitted": 4,
+    "reportsAccepted": 4,
+    "costReceiptsAccepted": 4,
+    "authorizationId": "treasury-full-cost-FC1-online-II-2026-09-24",
+    "runtimeEmitterId": "treasury-full-cost-FC1-online-I-2026-09-24"
+  },
+  "syntheticLifecycleFixture": {
+    "candidateCalls": 1,
+    "restoreCalls": 1,
+    "byteAndRuntimeClosure": true,
+    "realScreepsWrites": 0
+  },
+  "actualOnlineActions": {
+    "screepsApiCalls": 0,
+    "candidatePosts": 0,
+    "restorePosts": 0,
+    "experimentMarkers": 0,
+    "completeBusinessSamples": 0,
+    "onlineCostReceipts": 0,
+    "recovery": "NOT_APPLICABLE_NO_DEPLOYMENT"
+  },
+  "notRun": [
+    "499-test repository Node suite",
+    "685-test full Jest suite",
+    "production ON candidate build",
+    "live canonical production identity and ownership check",
+    "live FC1 measurement"
+  ],
+  "conclusion": "The historical entry blocker is reproduced and repaired in the generated offline executor. The result contract, source emitter identity, runtime collector and synthetic lifecycle pass offline. No live CPU measurement or production recovery was performed."
+}

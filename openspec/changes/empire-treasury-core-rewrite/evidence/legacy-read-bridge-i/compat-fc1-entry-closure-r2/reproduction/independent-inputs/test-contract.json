@@ -1,0 +1,16 @@
+{
+  "kind": "full-cost-FC1-final-executor-tests/v1",
+  "legacySpecFiles": [
+    "actions.spec.cjs",
+    "time-budget.spec.cjs",
+    "window-selection.spec.cjs",
+    "workflow.spec.cjs"
+  ],
+  "minimumLegacyTests": 20,
+  "fc1ExecutorSpecFiles": [
+    "full-cost-executor.spec.cjs",
+    "full-cost-admission.spec.cjs"
+  ],
+  "fc1ExecutorTests": 35,
+  "historicalExecutorFullSuiteCount": 165
+}

@@ -1,0 +1,268 @@
+TAP version 13
+# Subtest: repository profile passes both binding and upload admission after selection
+ok 1 - repository profile passes both binding and upload admission after selection
+  ---
+  duration_ms: 148.221667
+  type: 'test'
+  ...
+# Subtest: FC1 rejects legacy 2/5, mixed, expanded and changed-scope profiles
+ok 2 - FC1 rejects legacy 2/5, mixed, expanded and changed-scope profiles
+  ---
+  duration_ms: 151.458625
+  type: 'test'
+  ...
+# Subtest: FC1 refuses a mutated protocol policy instead of admitting a mixed profile
+ok 3 - FC1 refuses a mutated protocol policy instead of admitting a mixed profile
+  ---
+  duration_ms: 151.995916
+  type: 'test'
+  ...
+# Subtest: final collector close waits for four validated cost receipts as well as four reports
+ok 4 - final collector close waits for four validated cost receipts as well as four reports
+  ---
+  duration_ms: 2.696792
+  type: 'test'
+  ...
+# Subtest: expired timing evidence, insufficient time, clock identity drift and expired windows fail closed
+ok 5 - expired timing evidence, insufficient time, clock identity drift and expired windows fail closed
+  ---
+  duration_ms: 151.969125
+  type: 'test'
+  ...
+# Subtest: FC1 generated profile binds, loads as a session, passes upload review, restores once and closes OFF
+ok 6 - FC1 generated profile binds, loads as a session, passes upload review, restores once and closes OFF
+  ---
+  duration_ms: 700.279667
+  type: 'test'
+  ...
+# Subtest: pre-upload review rejects stale timing evidence without a write
+ok 7 - pre-upload review rejects stale timing evidence without a write
+  ---
+  duration_ms: 157.646167
+  type: 'test'
+  ...
+# Subtest: pre-upload review rejects insufficient time without a write
+ok 8 - pre-upload review rejects insufficient time without a write
+  ---
+  duration_ms: 182.401
+  type: 'test'
+  ...
+# Subtest: pre-upload review rejects account identity drift without a write
+ok 9 - pre-upload review rejects account identity drift without a write
+  ---
+  duration_ms: 165.098208
+  type: 'test'
+  ...
+# Subtest: pre-upload review rejects an invalid FC1 profile and an expired window without a write
+ok 10 - pre-upload review rejects an invalid FC1 profile and an expired window without a write
+  ---
+  duration_ms: 331.986292
+  type: 'test'
+  ...
+# Subtest: pending authorization blocks the runner and direct observe entry before side effects
+ok 11 - pending authorization blocks the runner and direct observe entry before side effects
+  ---
+  duration_ms: 12.774875
+  type: 'test'
+  ...
+# Subtest: FC1 accepted sampled report above 2 retains all original profile validation
+ok 12 - FC1 accepted sampled report above 2 retains all original profile validation
+  ---
+  duration_ms: 4.310167
+  type: 'test'
+  ...
+# Subtest: FC1 sampled report above 5 is not a legacy safety failure
+ok 13 - FC1 sampled report above 5 is not a legacy safety failure
+  ---
+  duration_ms: 0.805667
+  type: 'test'
+  ...
+# Subtest: FC1 four reports plus four separately bound cost receipts close measurement
+ok 14 - FC1 four reports plus four separately bound cost receipts close measurement
+  ---
+  duration_ms: 1.781416
+  type: 'test'
+  ...
+# Subtest: FC1 last main tail is available without fabricating a successor sample
+ok 15 - FC1 last main tail is available without fabricating a successor sample
+  ---
+  duration_ms: 0.167625
+  type: 'test'
+  ...
+# Subtest: FC1 main reports alone are insufficient cost evidence
+ok 16 - FC1 main reports alone are insufficient cost evidence
+  ---
+  duration_ms: 0.883375
+  type: 'test'
+  ...
+# Subtest: FC1 does not accept a legacy localSafety block as new runtime evidence
+ok 17 - FC1 does not accept a legacy localSafety block as new runtime evidence
+  ---
+  duration_ms: 0.226166
+  type: 'test'
+  ...
+# Subtest: FC1 rejects forged receipt experiment
+ok 18 - FC1 rejects forged receipt experiment
+  ---
+  duration_ms: 0.135458
+  type: 'test'
+  ...
+# Subtest: FC1 rejects forged receipt tick
+ok 19 - FC1 rejects forged receipt tick
+  ---
+  duration_ms: 0.078625
+  type: 'test'
+  ...
+# Subtest: FC1 rejects forged receipt window
+ok 20 - FC1 rejects forged receipt window
+  ---
+  duration_ms: 0.25975
+  type: 'test'
+  ...
+# Subtest: FC1 rejects forged receipt nativeDelta
+ok 21 - FC1 rejects forged receipt nativeDelta
+  ---
+  duration_ms: 0.29225
+  type: 'test'
+  ...
+# Subtest: FC1 rejects forged receipt tailTotal
+ok 22 - FC1 rejects forged receipt tailTotal
+  ---
+  duration_ms: 0.139459
+  type: 'test'
+  ...
+# Subtest: FC1 rejects forged receipt admission
+ok 23 - FC1 rejects forged receipt admission
+  ---
+  duration_ms: 0.074584
+  type: 'test'
+  ...
+# Subtest: FC1 rejects forged receipt missingTail
+ok 24 - FC1 rejects forged receipt missingTail
+  ---
+  duration_ms: 0.076459
+  type: 'test'
+  ...
+# Subtest: FC1 rejects forged receipt policy
+ok 25 - FC1 rejects forged receipt policy
+  ---
+  duration_ms: 0.0595
+  type: 'test'
+  ...
+# Subtest: FC1 receipt preceding its main report is rejected, not joined speculatively
+ok 26 - FC1 receipt preceding its main report is rejected, not joined speculatively
+  ---
+  duration_ms: 0.165666
+  type: 'test'
+  ...
+# Subtest: FC1 duplicate receipt is a visible evidence issue
+ok 27 - FC1 duplicate receipt is a visible evidence issue
+  ---
+  duration_ms: 0.201708
+  type: 'test'
+  ...
+# Subtest: FC1 partial projection is never promoted by the absence of the 2-CPU line
+ok 28 - FC1 partial projection is never promoted by the absence of the 2-CPU line
+  ---
+  duration_ms: 0.060417
+  type: 'test'
+  ...
+# Subtest: FC1 Core mismatch still rejects the sample
+ok 29 - FC1 Core mismatch still rejects the sample
+  ---
+  duration_ms: 0.090875
+  type: 'test'
+  ...
+# Subtest: FC1 damaged indexes cannot become complete through new measurement policy
+ok 30 - FC1 damaged indexes cannot become complete through new measurement policy
+  ---
+  duration_ms: 0.060709
+  type: 'test'
+  ...
+# Subtest: FC1 native receipt stop state must match actual measured overshoot
+ok 31 - FC1 native receipt stop state must match actual measured overshoot
+  ---
+  duration_ms: 0.119
+  type: 'test'
+  ...
+# Subtest: FC1 cannot continue after predecessor receipt exposed an overshoot
+ok 32 - FC1 cannot continue after predecessor receipt exposed an overshoot
+  ---
+  duration_ms: 0.110667
+  type: 'test'
+  ...
+# Subtest: FC1 previous main byte-length and tail identity remain enforced
+ok 33 - FC1 previous main byte-length and tail identity remain enforced
+  ---
+  duration_ms: 0.124459
+  type: 'test'
+  ...
+# Subtest: FC1 root phase sum cannot be faked to hide cost
+ok 34 - FC1 root phase sum cannot be faked to hide cost
+  ---
+  duration_ms: 0.07125
+  type: 'test'
+  ...
+# Subtest: FC1 cannot label a cooperative-ceiling-truncated prefix as sampled
+ok 35 - FC1 cannot label a cooperative-ceiling-truncated prefix as sampled
+  ---
+  duration_ms: 0.095458
+  type: 'test'
+  ...
+# Subtest: producer contract accepts positive runs of every required group
+ok 36 - producer contract accepts positive runs of every required group
+  ---
+  duration_ms: 13.849334
+  type: 'test'
+  ...
+# Subtest: missing required group is not a green result
+ok 37 - missing required group is not a green result
+  ---
+  duration_ms: 5.113125
+  type: 'test'
+  ...
+# Subtest: zero tests cannot satisfy a required group
+ok 38 - zero tests cannot satisfy a required group
+  ---
+  duration_ms: 5.100833
+  type: 'test'
+  ...
+# Subtest: partial failures and skipped, todo or cancelled cases are rejected
+ok 39 - partial failures and skipped, todo or cancelled cases are rejected
+  ---
+  duration_ms: 20.129541
+  type: 'test'
+  ...
+# Subtest: stale package fingerprints are rejected
+ok 40 - stale package fingerprints are rejected
+  ---
+  duration_ms: 9.553458
+  type: 'test'
+  ...
+# Subtest: file sets and exact FC1 composition counts are part of the contract
+ok 41 - file sets and exact FC1 composition counts are part of the contract
+  ---
+  duration_ms: 9.724542
+  type: 'test'
+  ...
+# Subtest: top-level summary counts must equal the per-group results
+ok 42 - top-level summary counts must equal the per-group results
+  ---
+  duration_ms: 4.7895
+  type: 'test'
+  ...
+# Subtest: unexpected groups or online claims are rejected
+ok 43 - unexpected groups or online claims are rejected
+  ---
+  duration_ms: 9.3665
+  type: 'test'
+  ...
+1..43
+# tests 43
+# suites 0
+# pass 43
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2372.571375
