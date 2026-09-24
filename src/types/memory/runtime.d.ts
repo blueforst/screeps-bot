@@ -595,11 +595,36 @@ declare global {
       updatedAt: number;
       lastObservedRooms: string[];
       coveredRooms: string[];
+      pending?: Record<string, { requestedAt: number; observerId: string; priority: number }>;
+      lastVisibleAt?: Record<string, number>;
+      lastObserverVisibleAt?: Record<string, number>;
+      failures?: Record<string, { count: number; nextAttemptAt: number; reason: string }>;
+      unmet?: Array<{ roomName: string; reason: string; priority: number; deadline: number }>;
+      submittedByObserver?: Record<string, number>;
+      scoutTargets?: string[];
+      scoutUpdatedAt?: number;
+      remoteScoutTargets?: string[];
     };
+    powerBankRegion?: {
+      updatedAt: number;
+      signature: string;
+      targets: Array<{
+        roomName: string;
+        bases: Array<{
+          sourceRoom: string;
+          distance: number;
+          rooms: string[];
+          confidence: "known-risk" | "terrain-only" | "observed";
+        }>;
+      }>;
+      plannedRooms: number;
+      truncated: boolean;
+    };
+    powerBankDangerRevision?: number;
     remoteMining?: {
       lastScanAt?: number;
     };
-    /** Power bank scout transit danger rooms: roomName -> expiresAt tick. */
+    /** Observed temporary route danger; expired entries remain until fresh evidence replaces them. */
     transitDangerRooms?: Record<string, number>;
     /** Power bank scout hostile-owned or hostile-reserved transit rooms. */
     powerBankPermanentDangerRooms?: Record<string, true>;

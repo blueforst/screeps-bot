@@ -1,11 +1,13 @@
 import type { RoleFactory } from "@/types/system";
 import { isExitTile } from "@/movement/common";
 import { getCurrentScoutRoute, moveToTargetRoom } from "@/roles/shared";
+import { hasFreshObserverResult } from "@/runtime/powerBankObserver";
 
 function shouldKeepScoutAliveForRemoteObservation(targetRoom: string): boolean {
   const task = Memory.data?.remoteMining?.[targetRoom];
-  return task?.status === "suspended" ||
+  const pureVisionTask = task?.status === "suspended" ||
     (task?.status === "defending" && task.defenseReason === "npc_invader_core");
+  return !!pureVisionTask && !hasFreshObserverResult(targetRoom);
 }
 
 function recordVisitedRoom(creep: Creep): void {

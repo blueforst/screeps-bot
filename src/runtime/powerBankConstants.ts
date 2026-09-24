@@ -53,19 +53,6 @@ export const POWER_BANK_BODY_TIERS: Record<number, PowerBankBodyTier> = {
 };
 
 // ---------------------------------------------------------------------------
-// Patrol rooms — highway rooms where power banks can spawn
-// ---------------------------------------------------------------------------
-
-export const POWER_BANK_PATROL_ROOMS: string[] = [
-  "E0N60", "E1N60", "E2N60", "E3N60", "E4N60",
-  "E5N60", "E6N60", "E7N60", "E8N60", "E9N60",
-];
-
-export function isPowerBankPatrolRoom(roomName: string): boolean {
-  return POWER_BANK_PATROL_ROOMS.includes(roomName);
-}
-
-// ---------------------------------------------------------------------------
 // Task status constants
 // ---------------------------------------------------------------------------
 

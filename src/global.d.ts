@@ -43,6 +43,8 @@ type AddResourceTransferTasksResult = {
   }>;
 };
 
+import type { PowerBankVisionSnapshot } from "@/runtime/powerBankObserver";
+
 declare global {
   const __BUILD_VERSION__: string;
   const __BUILD_GIT_HASH__: string;
@@ -476,6 +478,30 @@ declare global {
     routeDistance?: number;
     /** Number of haulers needed to collect the dropped power. */
     haulerCount?: number;
+    /** Concrete combat, empty-hauler and loaded-return travel estimates in game ticks. */
+    combatTravelTicks?: number;
+    haulerOutboundTravelTicks?: number;
+    haulerReturnTravelTicks?: number;
+    /** Visibility required before a route with stale or unknown risk is accepted. */
+    planningRooms?: string[];
+    routeConfidence?: "observed" | "terrain-only";
+    receiverRoom?: string;
+    combatPath?: Array<{ x: number; y: number; roomName: string }>;
+    haulPath?: Array<{ x: number; y: number; roomName: string }>;
+    routeOps?: number;
+    /** Bounded operator-facing source evaluation summary; no live Room objects. */
+    sourceCandidateSummaries?: Array<{
+      roomName: string;
+      routeRooms: string[];
+      confidence: "observed" | "terrain-only";
+      combatTravelTicks: number;
+      haulerOutboundTravelTicks: number;
+      haulerReturnTravelTicks: number;
+      killTick: number;
+      haulerReturnTick: number;
+      recoverablePower: number;
+    }>;
+    sourceRejections?: string[];
     /** Viability failure reason(s), set when status becomes failed. */
     failReason?: string;
     /** Tick when task entered a terminal state (complete/failed/aborted). */
@@ -527,6 +553,7 @@ declare global {
     plannedKillTick?: number;
     plannedHaulerSpawnStartTick?: number;
     plannedHaulerArrivalTick?: number;
+    plannedHaulerReturnTick?: number;
     minimumCombatTtl?: number;
     /** Tick on which the manager first confirmed the bank absent in a visible room. */
     bankGoneTick?: number;
@@ -586,7 +613,18 @@ declare global {
     plannedTtk: number | null;
     haulerSpawnIn: number | null;
     haulerArrivalIn: number | null;
+    haulerReturnIn: number | null;
     haulerCount: number;
+    routeDistance: number | null;
+    routeRooms: string[];
+    routeConfidence: "observed" | "terrain-only" | null;
+    combatTravelTicks: number | null;
+    haulerOutboundTravelTicks: number | null;
+    haulerReturnTravelTicks: number | null;
+    receiverRoom: string | null;
+    planningRooms: string[];
+    sourceCandidateSummaries: NonNullable<PowerBankHarvestTask["sourceCandidateSummaries"]>;
+    sourceRejections: string[];
     observedPower: number;
     pickedUpPower: number;
     deliveredPower: number;
@@ -599,6 +637,7 @@ declare global {
     tick: number;
     tasks: PowerBankStatusTaskSnapshot[];
     history: PowerBankHarvestHistoryEntry[];
+    vision: PowerBankVisionSnapshot;
   }
 
   interface PowerBankScoutMemory {

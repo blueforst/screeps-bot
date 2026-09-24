@@ -13,7 +13,7 @@ export const POWER_BANK_ATTACKER_COUNT = 1;
 const TOUGH_HITS = 100;
 const DEFAULT_BOOST_PREP_TIME = 20;
 const DEFAULT_RENEWAL_TIME = 50;
-const DROPPED_POWER_DECAY_TICKS = 1000;
+const CREEP_LIFE_TIME_TICKS = 1500;
 
 type BoostEffect = {
   attack?: number;
@@ -273,13 +273,14 @@ export function computeTimeToKill(
 
 export function computeTimeBudget(params: {
   routeDistance: number;
+  travelTime?: number;
   spawnTime: number;
   boostPrepTime: number;
   renewalBuffer: number;
   ttk: number;
   haulTime: number;
 }): number {
-  const routeTravel = params.routeDistance * POWER_BANK_ROOM_TRAVEL_TICKS;
+  const routeTravel = params.travelTime ?? params.routeDistance * POWER_BANK_ROOM_TRAVEL_TICKS;
   return (
     params.spawnTime +
     params.boostPrepTime +
@@ -304,6 +305,16 @@ export function computeHaulerDepartureTick(
 ): number {
   if (!Number.isFinite(ttk) || !Number.isFinite(haulerBatchSpawnTime)) return Infinity;
   return currentTick + Math.max(0, ttk - haulTravelTime - haulerBatchSpawnTime);
+}
+
+/** Apply Screeps' per-tick dropped-resource decay: amount -= ceil(amount / 1000). */
+export function estimateDroppedPowerAfterTicks(amount: number, ticks: number): number {
+  let remaining = Math.max(0, Math.floor(amount));
+  const elapsed = Math.min(10000, Math.max(0, Math.floor(ticks)));
+  for (let tick = 0; tick < elapsed && remaining > 0; tick += 1) {
+    remaining -= Math.ceil(remaining / 1000);
+  }
+  return remaining;
 }
 
 function computeHaulerSpawnTime(haulerCapacity: number): number {
@@ -369,6 +380,14 @@ export interface PowerBankTimelineInput {
   bankPower: number;
   freeTiles: number;
   routeDistance: number;
+  /** Exact tile-path ETA when the route planner has a complete path. */
+  travelTime?: number;
+  /** Empty-haruler outbound path ETA. */
+  haulerOutboundTravelTime?: number;
+  /** Fully loaded hauler return path ETA. */
+  haulerReturnTravelTime?: number;
+  /** Receiver capacity reserved for this candidate. */
+  receivingHeadroom?: number;
   haulerCapacity: number;
   attackerCount?: number;
   spawnCount?: number;
@@ -395,6 +414,11 @@ export interface PowerBankTimelinePlan {
   haulerBatchSpawnTime: number;
   haulerSpawnStartTick: number;
   haulerArrivalTick: number;
+  haulerPickupTick: number;
+  haulerReturnTravelTime: number;
+  haulerReturnArrivalTick: number;
+  recoverablePower: number;
+  haulerTtlDeadline: number;
   timeBudget: number;
 }
 
@@ -418,7 +442,9 @@ export function planPowerBankTimeline(
   );
   const renewalTime = Math.max(0, params.renewalTime ?? DEFAULT_RENEWAL_TIME);
   const boostPrepTime = Math.max(0, params.boostPrepTime ?? DEFAULT_BOOST_PREP_TIME);
-  const travelTime = Math.max(0, params.routeDistance) * POWER_BANK_ROOM_TRAVEL_TICKS;
+  const travelTime = Math.max(0, params.travelTime ?? Math.max(0, params.routeDistance) * POWER_BANK_ROOM_TRAVEL_TICKS);
+  const haulerOutboundTravelTime = Math.max(0, params.haulerOutboundTravelTime ?? travelTime);
+  const haulerReturnTravelTime = Math.max(0, params.haulerReturnTravelTime ?? haulerOutboundTravelTime);
   const ttk = computeTimeToKill(
     params.bankHits,
     params.profile.dpsPerAttacker,
@@ -437,13 +463,26 @@ export function planPowerBankTimeline(
   );
   const idealHaulerSpawnStart = computeHaulerDepartureTick(
     killTick - params.currentTick,
-    travelTime,
+    haulerOutboundTravelTime,
     params.currentTick,
     haulerBatchSpawnTime,
   );
   const haulerSpawnStartTick = Math.max(combatArrivalTick, idealHaulerSpawnStart);
-  const haulerArrivalTick = haulerSpawnStartTick + haulerBatchSpawnTime + travelTime;
-  const timeBudget = Math.max(killTick, haulerArrivalTick) - params.currentTick;
+  const haulerArrivalTick = haulerSpawnStartTick + haulerBatchSpawnTime + haulerOutboundTravelTime;
+  const haulerPickupTick = Math.max(haulerArrivalTick, killTick);
+  const haulerReturnArrivalTick = haulerPickupTick + haulerReturnTravelTime;
+  const haulerTtlDeadline = haulerSpawnStartTick + haulerBatchSpawnTime + CREEP_LIFE_TIME_TICKS;
+  const remainingAtArrival = estimateDroppedPowerAfterTicks(
+    params.bankPower,
+    Math.max(0, haulerPickupTick - killTick),
+  );
+  const fleetCapacity = params.haulerCapacity * haulerCount;
+  const recoverablePower = Math.max(0, Math.min(
+    remainingAtArrival,
+    fleetCapacity,
+    params.receivingHeadroom ?? Infinity,
+  ));
+  const timeBudget = Math.max(killTick, haulerReturnArrivalTick) - params.currentTick;
 
   return {
     attackerCount,
@@ -460,6 +499,11 @@ export function planPowerBankTimeline(
     haulerBatchSpawnTime,
     haulerSpawnStartTick,
     haulerArrivalTick,
+    haulerPickupTick,
+    haulerReturnTravelTime,
+    haulerReturnArrivalTick,
+    recoverablePower,
+    haulerTtlDeadline,
     timeBudget,
   };
 }
@@ -472,6 +516,8 @@ export interface TimeEstimates {
   timeBudget: number;
   haulerCount: number;
   haulDepartTick: number;
+  haulReturnTick: number;
+  recoverablePower: number;
 }
 
 export interface ViabilityInput {
@@ -488,6 +534,11 @@ export interface ViabilityInput {
   spawnCount?: number;
   spawnQueueTicks?: number;
   spawnReadyIn?: readonly number[];
+  travelTime?: number;
+  haulerOutboundTravelTime?: number;
+  haulerReturnTravelTime?: number;
+  receivingHeadroom?: number;
+  minimumRecoverablePower?: number;
 }
 
 export interface ViabilityResult {
@@ -550,6 +601,10 @@ export function assessViability(params: ViabilityInput): ViabilityResult {
     bankPower: params.bankPower,
     freeTiles: params.freeTiles,
     routeDistance: params.routeDistance,
+    travelTime: params.travelTime,
+    haulerOutboundTravelTime: params.haulerOutboundTravelTime,
+    haulerReturnTravelTime: params.haulerReturnTravelTime,
+    receivingHeadroom: params.receivingHeadroom,
     haulerCapacity: params.haulerCapacity,
     attackerCount: POWER_BANK_ATTACKER_COUNT,
     spawnCount: params.spawnCount,
@@ -578,12 +633,11 @@ export function assessViability(params: ViabilityInput): ViabilityResult {
   if (Number.isFinite(timeline.killTick) && timeline.killTick > bankDespawnTick) {
     reasons.push("decay_too_soon");
   }
-  if (
-    Number.isFinite(timeline.haulerArrivalTick) &&
-    Number.isFinite(timeline.killTick) &&
-    timeline.haulerArrivalTick > timeline.killTick + DROPPED_POWER_DECAY_TICKS
-  ) {
+  if (timeline.recoverablePower < (params.minimumRecoverablePower ?? 1)) {
     reasons.push("insufficient_hauler_timing");
+  }
+  if (timeline.haulerReturnArrivalTick > timeline.haulerTtlDeadline) {
+    reasons.push("hauler_return_exceeds_lifetime");
   }
 
   return {
@@ -597,6 +651,8 @@ export function assessViability(params: ViabilityInput): ViabilityResult {
       timeBudget: timeline.timeBudget,
       haulerCount: timeline.haulerCount,
       haulDepartTick: timeline.haulerSpawnStartTick,
+      haulReturnTick: timeline.haulerReturnArrivalTick,
+      recoverablePower: timeline.recoverablePower,
     },
   };
 }

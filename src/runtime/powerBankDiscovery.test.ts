@@ -51,6 +51,11 @@ describe("powerBankDiscovery", () => {
 
       Game.time = 200;
       const updatedBank = createMockPowerBank({ id: "pb-1", roomName: "E3N60", hits: 1500000, power: 5000, ticksToDecay: 3800 });
+      const existing = ensureDiscoveryStore()["pb-1"];
+      existing.sourceRoom = "W1N1";
+      existing.activeGeneration = 4;
+      existing.haulerIds = ["haul-1"];
+      existing.deliveredPower = 250;
       recordPowerBankDiscovery(updatedBank);
 
       const store = ensureDiscoveryStore();
@@ -59,6 +64,23 @@ describe("powerBankDiscovery", () => {
       expect(task.lastSeenTick).toBe(200);
       expect(task.hits).toBe(1500000);
       expect(task.ticksToDecay).toBe(3800);
+      expect(task.sourceRoom).toBe("W1N1");
+      expect(task.activeGeneration).toBe(4);
+      expect(task.haulerIds).toEqual(["haul-1"]);
+      expect(task.deliveredPower).toBe(250);
+    });
+
+    it("records a naturally visible Bank outside the former fixed patrol strip", () => {
+      Game.map.getRoomTerrain = jest.fn(() => createMockTerrain(Array.from({ length: 50 }, () => Array(50).fill(0))) as any);
+      const bank = createMockPowerBank({ id: "pb-outside", roomName: "W18S7", hits: 900000 });
+
+      recordPowerBankDiscovery(bank);
+
+      expect(ensureDiscoveryStore()["pb-outside"]).toMatchObject({
+        bankId: "pb-outside",
+        targetRoom: "W18S7",
+        status: "discovered",
+      });
     });
   });
 });

@@ -451,6 +451,25 @@ export function upsertScoutConfig(sourceRoom: string, targetRoom: string): void 
   getCreepConfigService().upsert(configName, "scout", [targetRoom], sourceRoom);
 }
 
+/**
+ * The unified Observer scheduler owns pure-vision fallback decisions. Keep
+ * source-route scouts for status="scouting" in this module; these scouts only
+ * cover existing remote tasks whose current status needs visibility.
+ */
+export function reconcileRemoteMiningVisionScouts(): void {
+  const requested = new Set(Memory.runtime?.powerBankObserver?.remoteScoutTargets ?? []);
+  for (const task of Object.values(ensureRemoteMiningStore())) {
+    const pureVisionTask = task.status === "active" || task.status === "suspended" ||
+      (task.status === "defending" && task.defenseReason === "npc_invader_core");
+    if (!pureVisionTask) continue;
+    if (requested.has(task.targetRoom) && !Game.rooms[task.targetRoom]) {
+      upsertScoutConfig(task.sourceRoom, task.targetRoom);
+    } else {
+      removeScoutConfigAndSpawnQueues(task.sourceRoom, task.targetRoom);
+    }
+  }
+}
+
 function removeScoutConfig(sourceRoom: string, targetRoom: string): void {
   const configName = getRemoteMiningScoutConfigName(sourceRoom, targetRoom);
   const creepConfigs = getCreepConfigService();
@@ -1288,10 +1307,6 @@ function maintainInvaderCoreClearance(
   cleanupRemoteConfigs(task);
   removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
 
-  // A scout remains alive for the entire clearance so a source room without an
-  // Observer never mistakes lost visibility for completion.
-  upsertScoutConfig(task.sourceRoom, task.targetRoom);
-
   if (hasActiveInvaderCoreInvulnerability(core)) {
     removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
   } else {
@@ -1365,7 +1380,6 @@ export function processRemoteConfigLifecycle(
         ) {
           if (!hasInvaderCoreClearanceCapacity(task)) {
             suspendInvaderCoreForInsufficientCapacity(task);
-            upsertScoutConfig(task.sourceRoom, task.targetRoom);
           } else {
             maintainInvaderCoreClearance(task, supportedCore);
           }
@@ -1396,7 +1410,7 @@ export function processRemoteConfigLifecycle(
       if (!resumed) {
         if (isSourceRoomValidForRemote(task.sourceRoom) && !isDefenseMode(task.sourceRoom)) {
           if (!Game.rooms[task.targetRoom]) {
-            upsertScoutConfig(task.sourceRoom, task.targetRoom);
+            // The unified Observer scheduler requests this pure-vision refresh.
           } else {
             removeScoutConfig(task.sourceRoom, task.targetRoom);
             removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
@@ -1454,7 +1468,6 @@ export function processRemoteConfigLifecycle(
           cleanupRemoteConfigs(task);
           removeRemoteWorkerConfig(task.sourceRoom, task.targetRoom);
           removeRemoteDefenderConfig(task.sourceRoom, task.targetRoom);
-          upsertScoutConfig(task.sourceRoom, task.targetRoom);
           continue;
         }
 
@@ -1473,7 +1486,6 @@ export function processRemoteConfigLifecycle(
         if (supportedCore) {
           if (!hasInvaderCoreClearanceCapacity(task)) {
             suspendInvaderCoreForInsufficientCapacity(task);
-            upsertScoutConfig(task.sourceRoom, task.targetRoom);
           } else {
             maintainInvaderCoreClearance(task, supportedCore);
           }
@@ -1549,7 +1561,6 @@ export function processRemoteConfigLifecycle(
           if (defenseReason === "npc_invader_core") {
             if (!hasInvaderCoreClearanceCapacity(task)) {
               suspendInvaderCoreForInsufficientCapacity(task);
-              upsertScoutConfig(task.sourceRoom, task.targetRoom);
             } else {
               const supportedCore = getSupportedInvaderCore(visibleTarget);
               if (supportedCore) {
@@ -1592,7 +1603,6 @@ export function processRemoteConfigLifecycle(
           }
         }
       } else {
-        upsertScoutConfig(task.sourceRoom, task.targetRoom);
         upsertRemoteDefenderConfig(task);
         continue;
       }
@@ -1632,7 +1642,6 @@ export function processRemoteConfigLifecycle(
         if (defenseReason === "npc_invader_core") {
           if (!hasInvaderCoreClearanceCapacity(task)) {
             suspendInvaderCoreForInsufficientCapacity(task);
-            upsertScoutConfig(task.sourceRoom, task.targetRoom);
           } else {
             const supportedCore = getSupportedInvaderCore(visibleTarget);
             if (supportedCore) {
@@ -1650,10 +1659,8 @@ export function processRemoteConfigLifecycle(
       }
     }
 
-    // Scout is only needed when room visibility is lost.
-    if (!Game.rooms[task.targetRoom]) {
-      upsertScoutConfig(task.sourceRoom, task.targetRoom);
-    } else {
+    // The Observer scheduler owns periodic pure-vision refresh and fallback.
+    if (Game.rooms[task.targetRoom]) {
       removeScoutConfig(task.sourceRoom, task.targetRoom);
       removeScoutFromSpawnQueues(task.sourceRoom, task.targetRoom);
     }

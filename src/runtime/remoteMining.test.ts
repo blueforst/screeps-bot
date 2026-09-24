@@ -11,10 +11,12 @@ import {
   getRemoteDefenderConfigName,
   runRemoteMining,
   processRemoteConfigLifecycle,
+  reconcileRemoteMiningVisionScouts,
   getActiveDefenseReason,
   REMOTE_INVADER_CORE_MIN_SOURCE_CAPACITY,
 } from "@/runtime/remoteMining";
 import { isDefenseMode } from "@/runtime/defenseMode";
+import { runPowerBankObserver, runPowerBankObserverIntake } from "@/runtime/powerBankObserver";
 
 beforeEach(() => {
   registerRuntimeServices(undefined);
@@ -198,7 +200,7 @@ describe("remote Invader Core clearance", () => {
     return target;
   }
 
-  it("enters Core defense with one stable defender config and keeps scout vision", () => {
+  it("keeps a visible Core task on the Observer path without adding a scout", () => {
     setupSourceRoom();
     const target = setupTarget(createRemoteInvaderCore());
     const task = setupTask();
@@ -207,6 +209,9 @@ describe("remote Invader Core clearance", () => {
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
     Game.time += 1;
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    runPowerBankObserverIntake();
+    runPowerBankObserver();
+    reconcileRemoteMiningVisionScouts();
 
     const defenderName = getRemoteDefenderConfigName("W1N1", "W1N0");
     const scoutName = getRemoteMiningScoutConfigName("W1N1", "W1N0");
@@ -215,9 +220,7 @@ describe("remote Invader Core clearance", () => {
     expect(Memory.data!.creepConfigs![defenderName]).toEqual({
       role: "remoteDefender", args: ["W1N0"], roomName: "W1N1",
     });
-    expect(Memory.data!.creepConfigs![scoutName]).toEqual({
-      role: "scout", args: ["W1N0"], roomName: "W1N1",
-    });
+    expect(Memory.data!.creepConfigs![scoutName]).toBeUndefined();
     expect(Object.keys(Memory.data!.creepConfigs!).filter((name) => name === defenderName)).toHaveLength(1);
   });
 
@@ -234,6 +237,9 @@ describe("remote Invader Core clearance", () => {
     spawn.memory.spawnList = [defenderName, defenderName, "W1N1:worker:0"];
 
     processRemoteConfigLifecycle(store, getRemoteMiningConfig());
+    runPowerBankObserverIntake();
+    runPowerBankObserver();
+    reconcileRemoteMiningVisionScouts();
 
     expect(task.status).toBe("defending");
     expect(task.defenseReason).toBe("npc_invader_core");

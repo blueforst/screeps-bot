@@ -33,7 +33,7 @@ describe("main loop phase ordering", () => {
     ["crossShardSignals", "runCrossShardSignals"],
     ["interShardControl", "runInterShardControl"],
     ["warControl", "runWarControl"],
-    ["powerBankObserver", "runPowerBankObserver"],
+    ["powerBankObserverIntake", "runPowerBankObserverIntake"],
     ["powerBankHarvest", "runPowerBankHarvest"],
     ["powerCreepControl", "runPowerCreepControl"],
     ["powerSpawnControl", "runPowerSpawnControl"],
@@ -46,6 +46,7 @@ describe("main loop phase ordering", () => {
     ["refreshWorkerTasks", "refreshWorkerTasks"],
     ["bootstrapRooms", "bootstrapRooms"],
     ["remoteMining", "runRemoteMining"],
+    ["powerBankObserverDispatch", "runPowerBankVisionDispatch"],
     ["scheduleSpawnTasks", "scheduleSpawnTasks"],
     ["spawnWork", "<inline>"],
     ["creepWork", "<inline>"],
@@ -208,7 +209,10 @@ describe("main loop phase ordering", () => {
 
     expect(phaseContract).toEqual(canonicalTickPhases);
     expect(new Set(order).size).toBe(order.length);
-    expect(order).toHaveLength(39);
+    expect(order).toHaveLength(40);
+    expect(order.indexOf("powerBankObserverIntake")).toBeLessThan(order.indexOf("powerBankHarvest"));
+    expect(order.indexOf("powerBankObserverDispatch")).toBeGreaterThan(order.indexOf("remoteMining"));
+    expect(order.indexOf("powerBankObserverDispatch")).toBeLessThan(order.indexOf("scheduleSpawnTasks"));
   });
 
   it("keeps one-time registrations outside and before gameLoop", () => {

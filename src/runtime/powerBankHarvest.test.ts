@@ -117,8 +117,15 @@ function setupOwnedRoom(
     name: roomName,
     controller: { my: true, level: opts.rcl ?? 8 },
     energyCapacityAvailable: opts.energyCapacity ?? 12_000,
-    storage: { store: createMockStore(storageResources, opts.storeCapacity ?? 100_000) },
-    terminal: { store: createMockStore({}, opts.storeCapacity ?? 50_000), cooldown: 0 },
+    storage: {
+      pos: { x: 25, y: 25, roomName } as RoomPosition,
+      store: createMockStore(storageResources, opts.storeCapacity ?? 100_000),
+    },
+    terminal: {
+      pos: { x: 26, y: 25, roomName } as RoomPosition,
+      store: createMockStore({}, opts.storeCapacity ?? 50_000),
+      cooldown: 0,
+    },
     find: jest.fn(() => labs),
   } as unknown as Room;
   Game.rooms[roomName] = room;
@@ -127,6 +134,7 @@ function setupOwnedRoom(
     Game.spawns[`${roomName}-spawn${index}`] = {
       name: `${roomName}-spawn${index}`,
       room,
+      pos: { x: 25, y: 25, roomName } as RoomPosition,
       memory: { spawnList: [] },
       spawning: null,
       isActive: () => true,
@@ -148,6 +156,19 @@ function setupGameMap(): void {
   if (!Game.map) (Game as any).map = {} as GameMap;
   Game.map.getRoomLinearDistance = jest.fn(() => 5);
   Game.map.findRoute = jest.fn(() => [{ room: "corridor", exit: FIND_EXIT_RIGHT }]);
+  Game.map.getRoomTerrain = jest.fn(() => ({ get: jest.fn(() => 0) })) as unknown as GameMap["getRoomTerrain"];
+}
+
+function setupCompletePathSearches(): void {
+  (global as any).PathFinder = {
+    search: jest.fn((origin: RoomPosition, goal: { pos: RoomPosition }) => ({
+      path: origin.roomName === TARGET_ROOM
+        ? [origin, { x: 24, y: 24, roomName: goal.pos.roomName }]
+        : [{ x: 24, y: 24, roomName: TARGET_ROOM }],
+      incomplete: false,
+      ops: 25,
+    })),
+  };
 }
 
 function setupStore(): Record<string, PowerBankHarvestTask> {
@@ -429,6 +450,9 @@ describe("powerBankHarvest", () => {
                 { room: TARGET_ROOM, exit: FIND_EXIT_RIGHT },
               ];
         }) as typeof Game.map.findRoute;
+        Game.rooms["E4N60"] = { name: "E4N60", find: jest.fn(() => []) } as unknown as Room;
+        setupTargetRoom();
+        setupCompletePathSearches();
         addTask(makeTask({
           id: `pb-source-${rejectedBy}`,
           hits: 100_000,

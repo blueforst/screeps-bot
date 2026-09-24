@@ -1,5 +1,5 @@
 import { moveToTarget, moveToTargetRoom } from "@/roles/shared";
-import { POWER_BANK_STATUS, isPowerBankPatrolRoom } from "@/runtime/powerBankConstants";
+import { POWER_BANK_STATUS } from "@/runtime/powerBankConstants";
 import { measureCreepIntent } from "@/runtime/cpuPhaseProfiler";
 import { getCreepMovementState } from "@/movement/creepState";
 import { getPositionAtDirection } from "@/movement/common";
@@ -346,11 +346,12 @@ function canReachDeliveryTarget(
   creep: Creep,
   target: StructureTerminal | StructureStorage,
   routeLength: number,
+  estimatedTravelTicks?: number,
 ): boolean {
   if (creep.ticksToLive === undefined) return true;
   const requiredTicks = routeLength === 0 && creep.room.name === target.pos.roomName
     ? creep.pos.getRangeTo(target.pos) + 5
-    : routeLength * DELIVERY_TRAVEL_TICKS_PER_ROOM + DELIVERY_ROOM_BUFFER_TICKS;
+    : (estimatedTravelTicks ?? routeLength * DELIVERY_TRAVEL_TICKS_PER_ROOM) + DELIVERY_ROOM_BUFFER_TICKS;
   return creep.ticksToLive > requiredTicks;
 }
 
@@ -358,12 +359,17 @@ function makeDeliveryCandidate(
   creep: Creep,
   room: Room,
   dangerousRooms: Set<string>,
+  task: PowerBankHaulerTask | null,
 ): DeliveryCandidate | null {
   if (!isSafeOwnedDeliveryRoom(room, dangerousRooms)) return null;
   const target = getPreferredDeliveryStructure(room);
   if (!target) return null;
   const routeLength = findSafeRouteLength(creep.room.name, room.name, dangerousRooms);
-  if (routeLength === null || !canReachDeliveryTarget(creep, target, routeLength)) return null;
+  const plannedReturnTicks = task?.receiverRoom === room.name &&
+    Number.isFinite(task.haulerReturnTravelTicks)
+    ? task.haulerReturnTravelTicks
+    : undefined;
+  if (routeLength === null || !canReachDeliveryTarget(creep, target, routeLength, plannedReturnTicks)) return null;
 
   return {
     roomName: room.name,
@@ -378,14 +384,14 @@ function selectDeliveryCandidate(creep: Creep, task: PowerBankHaulerTask | null)
   const dangerousRooms = new Set(getTaskDangerRooms(task));
   const sourceRoom = Game.rooms[sourceRoomName] ?? (creep.room.name === sourceRoomName ? creep.room : undefined);
   if (sourceRoom) {
-    const sourceCandidate = makeDeliveryCandidate(creep, sourceRoom, dangerousRooms);
+    const sourceCandidate = makeDeliveryCandidate(creep, sourceRoom, dangerousRooms, task);
     if (sourceCandidate) return sourceCandidate;
   }
 
   const memory = creep.memory as PowerBankHaulerRuntimeMemory;
   const alternateCandidates = Object.values(Game.rooms)
     .filter((room) => room.name !== sourceRoomName)
-    .map((room) => makeDeliveryCandidate(creep, room, dangerousRooms))
+    .map((room) => makeDeliveryCandidate(creep, room, dangerousRooms, task))
     .filter((candidate): candidate is DeliveryCandidate => candidate !== null)
     .sort((left, right) => {
       const rememberedLeft = left.roomName === memory.powerBankDeliveryRoom ? 1 : 0;
@@ -410,7 +416,10 @@ function classifyDeliveryBlocker(creep: Creep, task: PowerBankHaulerTask | null)
     if (!target) continue;
     hasSafeHeadroom = true;
     const routeLength = findSafeRouteLength(creep.room.name, room.name, dangerousRooms);
-    if (routeLength !== null && !canReachDeliveryTarget(creep, target, routeLength)) {
+    const plannedReturnTicks = task?.receiverRoom === room.name && Number.isFinite(task.haulerReturnTravelTicks)
+      ? task.haulerReturnTravelTicks
+      : undefined;
+    if (routeLength !== null && !canReachDeliveryTarget(creep, target, routeLength, plannedReturnTicks)) {
       hasRouteWithoutEnoughTtl = true;
     }
   }
@@ -534,10 +543,6 @@ function isHaulingEmptyConfirmed(task: PowerBankHarvestTask): boolean {
 function salvagePower(creep: Creep, targetRoom?: string, encodedRouteRooms?: string): boolean {
   const resolvedTargetRoom = getTargetRoomName(creep, targetRoom);
   if (!resolvedTargetRoom) {
-    return true;
-  }
-
-  if (!isPowerBankPatrolRoom(resolvedTargetRoom)) {
     return true;
   }
 

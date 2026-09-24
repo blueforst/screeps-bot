@@ -1,3 +1,5 @@
+import { getPowerBankVisionSnapshot } from "@/runtime/powerBankObserver";
+
 const POWER_BANK_HISTORY_LIMIT = 25;
 
 function ensureHistory(): PowerBankHarvestHistoryEntry[] {
@@ -87,7 +89,20 @@ function toTaskSnapshot(task: PowerBankHarvestTask): PowerBankStatusTaskSnapshot
     haulerArrivalIn: task.plannedHaulerArrivalTick === undefined
       ? null
       : task.plannedHaulerArrivalTick - Game.time,
+    haulerReturnIn: task.plannedHaulerReturnTick === undefined
+      ? null
+      : task.plannedHaulerReturnTick - Game.time,
     haulerCount: task.haulerCount ?? 0,
+    routeDistance: task.routeDistance ?? null,
+    routeRooms: task.routeRooms?.slice() ?? [],
+    routeConfidence: task.routeConfidence ?? null,
+    combatTravelTicks: task.combatTravelTicks ?? null,
+    haulerOutboundTravelTicks: task.haulerOutboundTravelTicks ?? null,
+    haulerReturnTravelTicks: task.haulerReturnTravelTicks ?? null,
+    receiverRoom: task.receiverRoom ?? null,
+    planningRooms: task.planningRooms?.slice() ?? [],
+    sourceCandidateSummaries: (task.sourceCandidateSummaries ?? []).slice(0, 8),
+    sourceRejections: (task.sourceRejections ?? []).slice(0, 32),
     observedPower: task.observedPower ?? 0,
     pickedUpPower: task.pickedUpPower ?? 0,
     deliveredPower: task.deliveredPower ?? 0,
@@ -110,6 +125,7 @@ export function powerBankStatusRaw(): PowerBankStatusSnapshot {
     tick: Game.time,
     tasks,
     history: [...(Memory.data?.powerBankHarvestHistory ?? [])],
+    vision: getPowerBankVisionSnapshot(),
   };
 }
 

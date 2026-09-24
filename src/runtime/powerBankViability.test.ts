@@ -5,6 +5,7 @@ import {
   computeCombatPairSpawnTime,
   computeHaulerCount,
   computeTOUGHSustainability,
+  estimateDroppedPowerAfterTicks,
   computeTimeToKill,
   derivePowerBankTierProfile,
   planPowerBankTimeline,
@@ -80,7 +81,9 @@ describe("powerBankViability", () => {
         spawnCount,
       });
       expect(plan).toMatchObject({ attackerCount: 1, pairSpawnTime, ttk: 1042, killTick });
-      expect(plan.haulerArrivalTick).toBe(killTick);
+      expect(plan.haulerArrivalTick).toBeLessThanOrEqual(killTick);
+      expect(plan.haulerReturnArrivalTick).toBeGreaterThanOrEqual(plan.haulerArrivalTick);
+      expect(plan.recoverablePower).toBe(2500);
     }
 
     const queuedPlan = planPowerBankTimeline({
@@ -140,10 +143,35 @@ describe("powerBankViability", () => {
     }));
     expect(tooLate.viable).toBe(false);
     expect(tooLate.reasons).toContain("decay_too_soon");
-    expect(tooLate.estimates.timeBudget).toBe(1882);
+    expect(tooLate.estimates.timeBudget).toBe(2382);
 
     const underCapacity = assessViability(viableInput({ energyCapacity: 1000 }));
     expect(underCapacity.viable).toBe(false);
     expect(underCapacity.reasons).toContain("insufficient_energy_capacity");
+  });
+
+  it("uses concrete movement estimates and applies per-tick dropped-power decay", () => {
+    const profile = derivePowerBankTierProfile(6);
+    if (!profile) throw new Error("missing RCL6 profile");
+    const plan = planPowerBankTimeline({
+      profile,
+      currentTick: 100,
+      bankHits: 30_000,
+      bankPower: 10_000,
+      freeTiles: 4,
+      routeDistance: 9,
+      travelTime: 18,
+      haulerOutboundTravelTime: 9,
+      haulerReturnTravelTime: 30,
+      receivingHeadroom: 10_000,
+      haulerCapacity: 5000,
+      spawnReadyIn: [0, 0],
+    });
+
+    expect(plan.travelTime).toBe(18);
+    expect(plan.haulerReturnTravelTime).toBe(30);
+    expect(plan.haulerReturnArrivalTick).toBeGreaterThan(plan.haulerArrivalTick);
+    expect(estimateDroppedPowerAfterTicks(10_000, 1000)).toBeGreaterThan(0);
+    expect(estimateDroppedPowerAfterTicks(10_000, 1000)).toBeLessThan(10_000);
   });
 });

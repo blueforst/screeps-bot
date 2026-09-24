@@ -47,22 +47,31 @@ describe("powerBankScoutRole", () => {
     });
   });
 
-  it("moves to first patrol room when no memory", () => {
+  it("moves to the first dynamically assigned gap room", () => {
     const creep = createMockCreep("E5N55");
 
-    powerBankScoutRole().source?.(creep);
+    powerBankScoutRole("E10N60|E11N60").source?.(creep);
 
     expect(moveToTargetRoom).toHaveBeenCalledWith(
       creep,
-      "E0N60",
+      "E10N60",
       undefined,
       expect.objectContaining({ plainCost: 1, swampCost: 1 }),
     );
   });
 
+  it("reuses the main-loop room scan instead of rescanning the same visible room", () => {
+    const creep = createMockCreep("E5N55");
+    Memory.runtime = { powerBankObserver: { lastVisibleAt: { E5N55: Game.time } } } as any;
+
+    powerBankScoutRole("E10N60").source?.(creep);
+
+    expect(creep.room.find).not.toHaveBeenCalledWith(FIND_STRUCTURES);
+  });
+
   describe("getActiveTransitDangerRooms", () => {
 
-    it("retains permanent danger while cleaning expired temporary danger", () => {
+    it("retains permanent danger and keeps expired warnings as unknown-risk evidence", () => {
       Memory.runtime = Memory.runtime || {} as any;
       Memory.runtime.transitDangerRooms = { E2N54: Game.time - 1 };
       (Memory.runtime as any).powerBankPermanentDangerRooms = { E3N57: true };
@@ -70,7 +79,7 @@ describe("powerBankScoutRole", () => {
       const rooms = getActiveTransitDangerRooms();
 
       expect(rooms).toEqual(["E3N57"]);
-      expect(Memory.runtime!.transitDangerRooms!["E2N54"]).toBeUndefined();
+      expect(Memory.runtime!.transitDangerRooms!["E2N54"]).toBe(Game.time - 1);
       expect((Memory.runtime as any).powerBankPermanentDangerRooms?.E3N57).toBe(true);
     });
   });

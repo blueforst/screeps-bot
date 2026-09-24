@@ -26,7 +26,7 @@ import { registerConsoleCommands } from "@/runtime/consoleCommands";
 import { scheduleSpawnTasks } from "@/runtime/spawnPlanner";
 import { runTowerControl } from "@/runtime/towerControl";
 import { runWarControl } from "@/runtime/warControl";
-import { runPowerBankObserver } from "@/runtime/powerBankObserver";
+import { runPowerBankObserverIntake } from "@/runtime/powerBankObserver";
 import { runPowerBankHarvest } from "@/runtime/powerBankHarvest";
 import { runPowerCreepControl } from "@/runtime/powerCreepControl";
 import { runPowerSpawnControl } from "@/runtime/powerSpawnControl";
@@ -36,6 +36,7 @@ import { createTickCpuProfiler, setActiveTickCpuProfiler } from "@/runtime/cpuPh
 import { getMemoryService, getTickContextService } from "@/runtime/runtimeServices";
 import { runHubProgressAnalytics, renderHubProgressOverlays } from "@/runtime/hubProgress";
 import { runRemoteMining } from "@/runtime/remoteMining";
+import { runPowerBankVisionDispatch } from "@/runtime/powerBankMission";
 import { runMarketSalePreflight } from "@/runtime/marketSaleAutomation";
 import { runLiveMarketSaleAutomation } from "@/runtime/marketSaleRuntime";
 import { runEmpireInventoryShadowCheck } from "@/runtime/empireInventoryShadow";
@@ -79,7 +80,7 @@ function gameLoop(): void {
   cpuProfiler.measure("crossShardSignals", runCrossShardSignals);
   cpuProfiler.measure("interShardControl", runInterShardControl);
   cpuProfiler.measure("warControl", runWarControl);
-  cpuProfiler.measure("powerBankObserver", runPowerBankObserver);
+  cpuProfiler.measure("powerBankObserverIntake", runPowerBankObserverIntake);
   cpuProfiler.measure("powerBankHarvest", runPowerBankHarvest);
   cpuProfiler.measure("powerCreepControl", runPowerCreepControl);
   cpuProfiler.measure("powerSpawnControl", runPowerSpawnControl);
@@ -92,6 +93,7 @@ function gameLoop(): void {
   cpuProfiler.measure("refreshWorkerTasks", refreshWorkerTasks);
   cpuProfiler.measure("bootstrapRooms", bootstrapRooms);
   cpuProfiler.measure("remoteMining", runRemoteMining);
+  cpuProfiler.measure("powerBankObserverDispatch", runPowerBankVisionDispatch);
   cpuProfiler.measure("scheduleSpawnTasks", scheduleSpawnTasks);
 
   cpuProfiler.measure("spawnWork", () => {
