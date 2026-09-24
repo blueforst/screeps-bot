@@ -1,0 +1,26 @@
+{
+  "kind": "fc1-admission-defect-reproduction/v1",
+  "baselineAdapter": "unmodified historical fc1-delivery generator",
+  "assembledProfile": {
+    "enabled": true,
+    "shardName": "shard1",
+    "rooms": [
+      "E3N59",
+      "E4N58"
+    ],
+    "resources": [
+      "energy",
+      "H"
+    ],
+    "startTick": 1200,
+    "endTick": 1500,
+    "intervalTicks": 100,
+    "minBucket": 2000,
+    "maxSampleCpu": 10,
+    "reserveCpu": 25,
+    "maxLogBytes": 16384
+  },
+  "finalPlanOutcome": "TIMING_PROFILE_INVALID",
+  "onlineCalls": 0,
+  "sourceWrites": 0
+}

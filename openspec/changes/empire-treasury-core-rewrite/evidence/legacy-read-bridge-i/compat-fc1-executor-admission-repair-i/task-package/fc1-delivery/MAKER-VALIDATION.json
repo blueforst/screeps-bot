@@ -1,0 +1,59 @@
+{
+  "kind": "fc1-executor-admission-repair-validation/v1",
+  "environment": {
+    "os": "Darwin arm64",
+    "node": "v22.23.3",
+    "typescript": "5.9.3"
+  },
+  "makerTests": {
+    "status": "PASS",
+    "tests": 122,
+    "passed": 122,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "cancelled": 0,
+    "syntaxFiles": 21,
+    "fullRepositoryGate": false,
+    "realPreviewIntegrationTestsRun": false
+  },
+  "resolvedExecutorTests": {
+    "status": "PASS",
+    "tests": 135,
+    "passed": 135,
+    "failed": 0,
+    "legacyRiskRegressionTests": 100,
+    "finalFc1CompositionTests": 35,
+    "skipped": 0,
+    "todo": 0,
+    "cancelled": 0,
+    "fullHistorical165TestSuiteRun": false,
+    "onlineAttempted": false
+  },
+  "finalExecutorSpecFiles": [
+    "full-cost-executor.spec.cjs",
+    "full-cost-admission.spec.cjs"
+  ],
+  "legacyRiskRegressionFiles": [
+    "actions.spec.cjs",
+    "time-budget.spec.cjs",
+    "window-selection.spec.cjs",
+    "workflow.spec.cjs"
+  ],
+  "notRun": [
+    "499-test repository Node suite",
+    "Jest full suite",
+    "TypeScript dual tsc",
+    "full repository generator check/write/check",
+    "full API repository replay",
+    "Rollup production bundle",
+    "live Screeps observation, cost receipt capture, or recovery"
+  ],
+  "networkActions": {
+    "screepsReads": 0,
+    "candidatePosts": 0,
+    "restorePosts": 0,
+    "githubWrites": 0
+  },
+  "measurementConclusion": "Offline tests verify protocol admission and evidence validation only; no online CPU or business sample was measured."
+}

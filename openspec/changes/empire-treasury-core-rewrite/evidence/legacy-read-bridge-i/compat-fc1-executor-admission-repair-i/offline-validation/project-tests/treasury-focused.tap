@@ -1,0 +1,460 @@
+TAP version 13
+# Subtest: FC1 OFF does not initialize a preview or read native CPU
+ok 1 - FC1 OFF does not initialize a preview or read native CPU
+  ---
+  duration_ms: 1.500875
+  type: 'test'
+  ...
+# Subtest: FC1 non-due ticks do not sample CPU, Store or Memory
+ok 2 - FC1 non-due ticks do not sample CPU, Store or Memory
+  ---
+  duration_ms: 0.95225
+  type: 'test'
+  ...
+# Subtest: FC1 complete work above 2 CPU is measured without a performance failure
+ok 3 - FC1 complete work above 2 CPU is measured without a performance failure
+  ---
+  duration_ms: 0.331166
+  type: 'test'
+  ...
+# Subtest: FC1 no inherited 5-CPU latch truncates an otherwise complete 6-CPU sample
+ok 4 - FC1 no inherited 5-CPU latch truncates an otherwise complete 6-CPU sample
+  ---
+  duration_ms: 0.293541
+  type: 'test'
+  ...
+# Subtest: FC1 four samples reuse one preview, preserving its state
+ok 5 - FC1 four samples reuse one preview, preserving its state
+  ---
+  duration_ms: 0.359459
+  type: 'test'
+  ...
+# Subtest: FC1 final current tail is emitted without a fifth business sample
+ok 6 - FC1 final current tail is emitted without a fifth business sample
+  ---
+  duration_ms: 0.960125
+  type: 'test'
+  ...
+# Subtest: FC1 retains only the predecessor receipt overhead and does not invent its own tail
+ok 7 - FC1 retains only the predecessor receipt overhead and does not invent its own tail
+  ---
+  duration_ms: 0.367708
+  type: 'test'
+  ...
+# Subtest: FC1 duplicate same-tick invocation does not run or emit twice
+ok 8 - FC1 duplicate same-tick invocation does not run or emit twice
+  ---
+  duration_ms: 0.217041
+  type: 'test'
+  ...
+# Subtest: FC1 a fresh heap cannot begin at a later scheduled point
+ok 9 - FC1 a fresh heap cannot begin at a later scheduled point
+  ---
+  duration_ms: 0.449333
+  type: 'test'
+  ...
+# Subtest: FC1 wrong shard is latched without a reader call
+ok 10 - FC1 wrong shard is latched without a reader call
+  ---
+  duration_ms: 0.438167
+  type: 'test'
+  ...
+# Subtest: FC1 rejects unbound policy old2
+ok 11 - FC1 rejects unbound policy old2
+  ---
+  duration_ms: 0.229917
+  type: 'test'
+  ...
+# Subtest: FC1 rejects unbound policy smallReserve
+ok 12 - FC1 rejects unbound policy smallReserve
+  ---
+  duration_ms: 0.243083
+  type: 'test'
+  ...
+# Subtest: FC1 rejects unbound policy changedInterval
+ok 13 - FC1 rejects unbound policy changedInterval
+  ---
+  duration_ms: 0.197125
+  type: 'test'
+  ...
+# Subtest: FC1 rejects unbound policy extraPoint
+ok 14 - FC1 rejects unbound policy extraPoint
+  ---
+  duration_ms: 0.179459
+  type: 'test'
+  ...
+# Subtest: FC1 rejects unbound policy lowerBucket
+ok 15 - FC1 rejects unbound policy lowerBucket
+  ---
+  duration_ms: 0.160125
+  type: 'test'
+  ...
+# Subtest: FC1 headroom below 55 stops instead of choosing another tick
+ok 16 - FC1 headroom below 55 stops instead of choosing another tick
+  ---
+  duration_ms: 0.1885
+  type: 'test'
+  ...
+# Subtest: FC1 exactly 55 headroom and bucket 2000 are admitted
+ok 17 - FC1 exactly 55 headroom and bucket 2000 are admitted
+  ---
+  duration_ms: 0.197333
+  type: 'test'
+  ...
+# Subtest: FC1 low bucket is rejected even with ample tickLimit
+ok 18 - FC1 low bucket is rejected even with ample tickLimit
+  ---
+  duration_ms: 0.17675
+  type: 'test'
+  ...
+# Subtest: FC1 invalid CPU is fail-closed NaN
+ok 19 - FC1 invalid CPU is fail-closed NaN
+  ---
+  duration_ms: 0.17175
+  type: 'test'
+  ...
+# Subtest: FC1 invalid CPU is fail-closed negative
+ok 20 - FC1 invalid CPU is fail-closed negative
+  ---
+  duration_ms: 0.156083
+  type: 'test'
+  ...
+# Subtest: FC1 invalid CPU is fail-closed badLimit
+ok 21 - FC1 invalid CPU is fail-closed badLimit
+  ---
+  duration_ms: 0.17975
+  type: 'test'
+  ...
+# Subtest: FC1 invalid CPU is fail-closed fractionalBucket
+ok 22 - FC1 invalid CPU is fail-closed fractionalBucket
+  ---
+  duration_ms: 0.171583
+  type: 'test'
+  ...
+# Subtest: FC1 invalid CPU is fail-closed inconsistentLimit
+ok 23 - FC1 invalid CPU is fail-closed inconsistentLimit
+  ---
+  duration_ms: 0.169834
+  type: 'test'
+  ...
+# Subtest: FC1 observed overshoot is reported honestly and future samples stop
+ok 24 - FC1 observed overshoot is reported honestly and future samples stop
+  ---
+  duration_ms: 0.195166
+  type: 'test'
+  ...
+# Subtest: FC1 partial result is not promoted to sampled
+ok 25 - FC1 partial result is not promoted to sampled
+  ---
+  duration_ms: 0.19375
+  type: 'test'
+  ...
+# Subtest: FC1 native return regression is rejected, not clamped to zero
+ok 26 - FC1 native return regression is rejected, not clamped to zero
+  ---
+  duration_ms: 0.199417
+  type: 'test'
+  ...
+# Subtest: FC1 emission fault cannot escape into the old bot or re-arm
+ok 27 - FC1 emission fault cannot escape into the old bot or re-arm
+  ---
+  duration_ms: 0.24325
+  type: 'test'
+  ...
+# Subtest: FC1 observed receipt overhead can stop future samples separately
+ok 28 - FC1 observed receipt overhead can stop future samples separately
+  ---
+  duration_ms: 0.195625
+  type: 'test'
+  ...
+# Subtest: FC1 configuration is not silently increased or mutated by the wrapper
+ok 29 - FC1 configuration is not silently increased or mutated by the wrapper
+  ---
+  duration_ms: 0.200375
+  type: 'test'
+  ...
+# Subtest: FC1 REAL R1 preview completes 4 rows / 16 queries above 2 synthetic CPU with nonempty reservations
+ok 30 - FC1 REAL R1 preview completes 4 rows / 16 queries above 2 synthetic CPU with nonempty reservations
+  ---
+  duration_ms: 80.171542
+  type: 'test'
+  ...
+# Subtest: FC1 REAL R1 keeps damaged-input fail-closed semantics
+ok 31 - FC1 REAL R1 keeps damaged-input fail-closed semantics
+  ---
+  duration_ms: 40.293333
+  type: 'test'
+  ...
+# Subtest: FC1 REAL runtime native admission prevents reader work
+ok 32 - FC1 REAL runtime native admission prevents reader work
+  ---
+  duration_ms: 41.838833
+  type: 'test'
+  ...
+# Subtest: authentic XV Git object and complete source fixture
+ok 33 - authentic XV Git object and complete source fixture
+  ---
+  duration_ms: 0.593875
+  type: 'test'
+  ...
+# Subtest: fixed candidate bytes and complete forward transform
+ok 34 - fixed candidate bytes and complete forward transform
+  ---
+  duration_ms: 0.177834
+  type: 'test'
+  ...
+# Subtest: exact reverse transform preserves all predecessor bytes
+ok 35 - exact reverse transform preserves all predecessor bytes
+  ---
+  duration_ms: 0.085292
+  type: 'test'
+  ...
+# Subtest: double application is rejected
+ok 36 - double application is rejected
+  ---
+  duration_ms: 0.149833
+  type: 'test'
+  ...
+# Subtest: tampered predecessor is rejected rather than patched approximately
+ok 37 - tampered predecessor is rejected rather than patched approximately
+  ---
+  duration_ms: 0.356416
+  type: 'test'
+  ...
+# Subtest: tampered candidate cannot satisfy inverse provenance
+ok 38 - tampered candidate cannot satisfy inverse provenance
+  ---
+  duration_ms: 0.12175
+  type: 'test'
+  ...
+# Subtest: both complete runtime bodies parse and export only two builders
+ok 39 - both complete runtime bodies parse and export only two builders
+  ---
+  duration_ms: 1.382459
+  type: 'test'
+  ...
+# Subtest: zero task and zero reservation retain complete zero indexes
+ok 40 - zero task and zero reservation retain complete zero indexes
+  ---
+  duration_ms: 2.311
+  type: 'test'
+  ...
+# Subtest: single manual transfer and active owner reservation
+ok 41 - single manual transfer and active owner reservation
+  ---
+  duration_ms: 1.835959
+  type: 'test'
+  ...
+# Subtest: all canonical task statuses still undergo full validation
+ok 42 - all canonical task statuses still undergo full validation
+  ---
+  duration_ms: 1.263
+  type: 'test'
+  ...
+# Subtest: unknown status fails closed rather than looking non-pending
+ok 43 - unknown status fails closed rather than looking non-pending
+  ---
+  duration_ms: 1.190333
+  type: 'test'
+  ...
+# Subtest: manual and automatic health and receiver predicates retain meaning
+ok 44 - manual and automatic health and receiver predicates retain meaning
+  ---
+  duration_ms: 1.849667
+  type: 'test'
+  ...
+# Subtest: first-route-wins retains an undefined id and does not overwrite it
+ok 45 - first-route-wins retains an undefined id and does not overwrite it
+  ---
+  duration_ms: 0.922417
+  type: 'test'
+  ...
+# Subtest: self-route aliases share the correct eager scope and room buckets
+ok 46 - self-route aliases share the correct eager scope and room buckets
+  ---
+  duration_ms: 0.916083
+  type: 'test'
+  ...
+# Subtest: null-prototype scope and room dictionaries preserve hostile names
+ok 47 - null-prototype scope and room dictionaries preserve hostile names
+  ---
+  duration_ms: 1.1895
+  type: 'test'
+  ...
+# Subtest: safe-integer aggregation overflow retains partial update order
+ok 48 - safe-integer aggregation overflow retains partial update order
+  ---
+  duration_ms: 1.029542
+  type: 'test'
+  ...
+# Subtest: damaged task fields and global/scope incompleteness agree
+ok 49 - damaged task fields and global/scope incompleteness agree
+  ---
+  duration_ms: 1.216875
+  type: 'test'
+  ...
+# Subtest: all non-pending malformed records still cause incompleteness
+ok 50 - all non-pending malformed records still cause incompleteness
+  ---
+  duration_ms: 0.884542
+  type: 'test'
+  ...
+# Subtest: zero-amount pending records remain visible in counts and routes
+ok 51 - zero-amount pending records remain visible in counts and routes
+  ---
+  duration_ms: 0.92725
+  type: 'test'
+  ...
+# Subtest: reservation expiry is strictly earlier than the current tick
+ok 52 - reservation expiry is strictly earlier than the current tick
+  ---
+  duration_ms: 0.903833
+  type: 'test'
+  ...
+# Subtest: unresolved and missing owners remain fully committed
+ok 53 - unresolved and missing owners remain fully committed
+  ---
+  duration_ms: 1.11575
+  type: 'test'
+  ...
+# Subtest: typed identity namespace and kind self-exclusion are preserved
+ok 54 - typed identity namespace and kind self-exclusion are preserved
+  ---
+  duration_ms: 0.997
+  type: 'test'
+  ...
+# Subtest: reservation integer overflow and invalid identity fail closed
+ok 55 - reservation integer overflow and invalid identity fail closed
+  ---
+  duration_ms: 1.206416
+  type: 'test'
+  ...
+# Subtest: nonempty maximum-size task and reservation paths are both tested offline
+ok 56 - nonempty maximum-size task and reservation paths are both tested offline
+  ---
+  duration_ms: 3.894958
+  type: 'test'
+  ...
+# Subtest: callbacks retain options receiver, order, and expiration behavior
+ok 57 - callbacks retain options receiver, order, and expiration behavior
+  ---
+  duration_ms: 0.938708
+  type: 'test'
+  ...
+# Subtest: detached and rebound public query methods keep their originating state
+ok 58 - detached and rebound public query methods keep their originating state
+  ---
+  duration_ms: 0.719916
+  type: 'test'
+  ...
+# Subtest: delta callbacks retain unbound strict this and remain dynamic
+ok 59 - delta callbacks retain unbound strict this and remain dynamic
+  ---
+  duration_ms: 0.6885
+  type: 'test'
+  ...
+# Subtest: snapshot indexes do not reread task data after construction
+ok 60 - snapshot indexes do not reread task data after construction
+  ---
+  duration_ms: 0.641375
+  type: 'test'
+  ...
+# Subtest: alternating reader instances capture a fresh resource catalog
+ok 61 - alternating reader instances capture a fresh resource catalog
+  ---
+  duration_ms: 0.655208
+  type: 'test'
+  ...
+# Subtest: nested builders cannot replace the outer input context
+ok 62 - nested builders cannot replace the outer input context
+  ---
+  duration_ms: 0.819125
+  type: 'test'
+  ...
+# Subtest: observation APIs, missing locations, sparse resources, freezing and query order
+ok 63 - observation APIs, missing locations, sparse resources, freezing and query order
+  ---
+  duration_ms: 0.979875
+  type: 'test'
+  ...
+# Subtest: observation memo arrays stay private to each snapshot
+ok 64 - observation memo arrays stay private to each snapshot
+  ---
+  duration_ms: 0.674833
+  type: 'test'
+  ...
+# Subtest: detached observation methods ignore unrelated public receivers
+ok 65 - detached observation methods ignore unrelated public receivers
+  ---
+  duration_ms: 0.549209
+  type: 'test'
+  ...
+# Subtest: observation remains stale by Game.time and never rereads Store on query
+ok 66 - observation remains stale by Game.time and never rereads Store on query
+  ---
+  duration_ms: 0.517
+  type: 'test'
+  ...
+# Subtest: duplicate room ordering and last-room-wins lookup remain unchanged
+ok 67 - duplicate room ordering and last-room-wins lookup remain unchanged
+  ---
+  duration_ms: 0.643792
+  type: 'test'
+  ...
+# Subtest: over-capacity signed free and absent Store remain physical observations
+ok 68 - over-capacity signed free and absent Store remain physical observations
+  ---
+  duration_ms: 2.073709
+  type: 'test'
+  ...
+# Subtest: Store scanning callback order remains before empire folding
+ok 69 - Store scanning callback order remains before empire folding
+  ---
+  duration_ms: 0.931958
+  type: 'test'
+  ...
+# Subtest: complete projection executes all four rows and sixteen index queries
+ok 70 - complete projection executes all four rows and sixteen index queries
+  ---
+  duration_ms: 0.728959
+  type: 'test'
+  ...
+# Subtest: diagnostics disabled retains full business semantics
+ok 71 - diagnostics disabled retains full business semantics
+  ---
+  duration_ms: 1.121334
+  type: 'test'
+  ...
+# Subtest: query views no longer contain build-local method definitions
+ok 72 - query views no longer contain build-local method definitions
+  ---
+  duration_ms: 0.067667
+  type: 'test'
+  ...
+# Subtest: instrumented allocation count removes exactly two Map constructions per empty eager index
+ok 73 - instrumented allocation count removes exactly two Map constructions per empty eager index
+  ---
+  duration_ms: 0.635083
+  type: 'test'
+  ...
+# Subtest: 512 seeded mixed-input differential scenarios across full index APIs
+ok 74 - 512 seeded mixed-input differential scenarios across full index APIs
+  ---
+  duration_ms: 620.356875
+  type: 'test'
+  ...
+# Subtest: room-count queries preserve native Map key types without implicit string coercion
+ok 75 - room-count queries preserve native Map key types without implicit string coercion
+  ---
+  duration_ms: 0.945833
+  type: 'test'
+  ...
+1..75
+# tests 75
+# suites 0
+# pass 75
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1038.766917

@@ -1,0 +1,35 @@
+{
+  "status": "FC1_FINAL_EXECUTOR_VERIFIED",
+  "packageFingerprint": "ee396de45c8f08ef3e414f5bd103fe72c29b24aed5ff4b14c165165d7ee2cf76",
+  "legacyRiskRegressions": {
+    "files": [
+      "actions.spec.cjs",
+      "time-budget.spec.cjs",
+      "window-selection.spec.cjs",
+      "workflow.spec.cjs"
+    ],
+    "tests": 100,
+    "passed": 100,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "cancelled": 0
+  },
+  "finalFc1Composition": {
+    "files": [
+      "full-cost-executor.spec.cjs",
+      "full-cost-admission.spec.cjs"
+    ],
+    "tests": 35,
+    "passed": 35,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "cancelled": 0
+  },
+  "tests": 135,
+  "passed": 135,
+  "fullHistoricalExecutorSuiteRun": false,
+  "onlineAttempted": false,
+  "atMs": 1790233959199
+}

@@ -1,0 +1,60 @@
+{
+  "kind": "fc1-final-executor-offline-assembly/v1",
+  "status": "FC1_FINAL_EXECUTOR_VERIFIED_AUTHORIZATION_REQUIRED",
+  "source": {
+    "branch": "compat/treasury-read-bridge-i",
+    "head": "0cdbd061c2645366bd409dbdbd262881d277cb35",
+    "tree": "70dff5366fabf4586aef30acd2c62c290824a772",
+    "sourceModified": false,
+    "productionConfigEnabled": false
+  },
+  "protocol": {
+    "performanceTargetCpu": null,
+    "cooperativeExposureCeilingCpu": 10,
+    "retainedReserveCpu": 25,
+    "nativeEntryHeadroomCpu": 55,
+    "minBucket": 2000,
+    "intervalTicks": 100,
+    "businessSamples": 4,
+    "maxReceiptBytes": 16384
+  },
+  "executor": {
+    "path": "task-package/final-executor",
+    "files": 176,
+    "integrityFingerprint": "ee396de45c8f08ef3e414f5bd103fe72c29b24aed5ff4b14c165165d7ee2cf76",
+    "authorizationStatus": "WAITING_FOR_EXPLICIT_AUTHORIZATION",
+    "onlineExecutionReady": false
+  },
+  "tests": {
+    "makerPackage": {"passed": 122, "failed": 0, "skipped": 0, "todo": 0, "cancelled": 0},
+    "legacyRiskRegressions": {
+      "files": ["actions.spec.cjs", "time-budget.spec.cjs", "window-selection.spec.cjs", "workflow.spec.cjs"],
+      "passed": 100,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "cancelled": 0
+    },
+    "finalComposedExecutor": {
+      "files": ["full-cost-executor.spec.cjs", "full-cost-admission.spec.cjs"],
+      "passed": 35,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "cancelled": 0
+    },
+    "repositoryFocused": {"files": ["full-cost-fc1.spec.cjs", "read-path-r1.spec.cjs"], "passed": 75, "failed": 0},
+    "compatLoaderGeneratorCheck": "COMPAT_LOADER_REGENERATION_VERIFIED"
+  },
+  "online": {
+    "attempted": false,
+    "screepsReads": 0,
+    "candidatePosts": 0,
+    "restorePosts": 0,
+    "costReceipts": 0,
+    "completeBusinessSamples": 0,
+    "recovery": "NOT_DEPLOYED_NO_RECOVERY_ACTION"
+  },
+  "oldRunEvidenceChanged": false,
+  "note": "The supplied API token was not used as a new-round experiment authorization. A separate explicit authorization identity is still required."
+}
